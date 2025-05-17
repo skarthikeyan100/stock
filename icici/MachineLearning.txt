@@ -1,0 +1,116 @@
+1. Understanding Machine Learning
+Supervised Learning
+  - Known input and output (Labeled data)
+Unsupervised Learning
+   - groups data only based on input data  (clustering)
+Reinforcement Learning
+  - Trial and Error learning
+  - Learns through experience, no input data, dynamic
+
+Linear Regression Problem
+  predicts a number of continous value
+Example: Predit house price
+
+Classification problems
+  - predict discrete responses like yes/no
+  - data tagging, categorization
+Example: CLassify flowers
+
+Mathematics:
+Linear algebra
+Basic Equations
+Probability
+
+2. Framing Machine Learning Problems
+works to 
+a. Predict an outcome
+b. Uncover trends and patterns
+c. Have rules and steps that can't be coded
+d. Dataset is too large to process by human
+
+simple rules, predetermined steps - not for machine learning
+
+Frame your problem
+  - Define questions for model
+  Define required inputs and expected outputs
+
+AWS Linear Learner - Classification algorithm
+
+XGBoost Algorithms - for numeric and continuous
+
+Choose the algorithm
+Check your Dataset
+Identify relationships between each feature
+How each feature will predict the target
+
+How will the model's ouput integrate with existing applications
+
+Example: Movie streaming - if predicts more viewership, then cache the movie
+
+Define success metrics
+Long term cost and maintenance to run the model in production
+
+3. Identifying a pre-built model
+
+Train model from scratch
+Use your own data
+
+Use a pre-defined model, speeds up dev cycle, uses a similar benchmarking dataset
+
+Image classification problems 
+  use a pre-built model
+  use a process called transfer learning
+  Model Zoo, AWS marketplace, Amazon SageMaker, Hugging Face (community)
+    Computer Vision
+    Natural Language Processing
+    Audio
+    Speech
+    Sentiment Analysis, Q/A, Language Translation, Text summarization
+
+Understanding tools used to train a model
+  Large Dataset
+  Computing power
+  Train a custom model
+    No-code options
+    Python, Java, R
+    Jupyter notebook
+      Pandas
+        Solid state data-structures
+        N-dimenional matrices
+        Perform exploratory data analysis
+      Numpy
+        NUmerical Computing
+        Support multi dimensional array and matrices
+      Visualize
+        Plotting charts and graphs
+          Matplotlib
+          Seaborn
+      Machine Learning Framework Libraries
+        Scikit-Learn
+        TensorFlow
+        MxNext
+        PyTorch
+        Keras
+
+--------------------------------------------------Preparing Data for Machine Learning----------------------
+Data Sources
+  Internal Datastore
+  Client provided data
+  Open Sources
+  Public datasource
+
+  Supervised Linear Regression Problem: California home cost
+
+Install PIP:
+  curl "https://bootstrap.pypa.io/get-pip.py" -o "get-pip.py"
+  python3 get-pip.py --user
+  pip install jupyterlab
+  jupyter lab
+pip install notebook
+jupyter notebook
+
+!pip show scikit-learn
+
+
+
+    

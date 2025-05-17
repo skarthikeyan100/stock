@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+
+    form {
+      max-width: 400px;
+      margin: 0 auto;
+    }
+
+    /* label {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    input, select {
+      width: 100%;
+      padding: 8px;
+      margin-bottom: 16px;
+      box-sizing: border-box;
+    }
+
+    input[type="radio"] {
+      margin-right: 5px;
+    }
+
+    button {
+      background-color: #4CAF50;
+      color: white;
+      padding: 10px 15px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: #45a049;
+    } */
+  </style>
+</head>
+<body>
+
+  <form id="myForm">
+    <label for="radioGroup">Choose an option:</label>
+    <input type="radio" id="option1" name="radioGroup" value="option1">Option 1
+    <input type="radio" id="option2" name="radioGroup" value="option2">Option 2
+    <input type="radio" id="option3" name="radioGroup" value="option3">Option 3
+
+    <label for="numberField1">Number Field 1:</label>
+    <input type="number" id="numberField1" name="numberField1">
+
+    <label for="numberField2">Number Field 2:</label>
+    <input type="number" id="numberField2" name="numberField2">
+
+    <button type="button" onclick="submitForm()">Submit</button>
+  </form>
+
+  <script>
+    function submitForm() {
+      var form = document.getElementById("myForm");
+      var formData = new FormData(form);
+      var queryString = new URLSearchParams(formData).toString();
+
+      // Replace 'your-api-endpoint' with the actual API endpoint
+      var apiEndpoint = 'https://example.com/api/endpoint?' + queryString;
+
+      // You can use fetch or any other method to call the API
+      fetch(apiEndpoint, {
+        method: 'GET', // Adjust the method as needed (GET, POST, etc.)
+        // Add headers if required
+      })
+      .then(response => response.json())
+      .then(data => {
+        // Handle the API response here
+        console.log(data);
+      })
+      .catch(error => {
+        // Handle errors here
+        console.error('Error:', error);
+      });
+    }
+  </script>
+
+</body>
+</html>

@@ -1,0 +1,144 @@
+1. Put userToken in a file - Done
+2. PUt buyAgainDiff, profitsell and stoploss based on percentage - Test
+3. Find number of lots using the amount - Done
+4. Have a constant for the amount to invest - Done
+5. Buy only using index - Done
+6. cancel order if the price goes in opposite direction
+   - If buyagain triggered, cancel pending sell order - Test
+   - if sellForProfit triggered, cancel pending buy order
+   - have buyorderflag and sellorderflag in the Trade itself
+7. Support 6 type of trades (all 3 indices with PE and CE) 
+8. Automatic buy for the initial order
+9. Multiple trades - Test
+
+FIxes:
+3. Stop loss based on investment - Test
+
+
+HTML:
+1. Request OTP
+2. Login using OTP
+3. Buy Form
+4. Buttons to buy default
+5. Open orders
+6. Open Positions
+7. Timer to get (5) and (6)
+
+
+http://localhost:3000/requestOtp
+http://localhost:3000/login?otp=91645
+http://localhost:3000/order?index=NIFTY&right=put&action=buy&strikePrice=21600&price=79
+http://localhost:3000/addTrade?tsym=NIFTY18JAN24P21700&flqty=200&flprc=78.8trantype=B
+
+http://localhost:3000/order?index=NIFTY&right=call&action=buy&strikePrice=22050&price=83
+
+http://localhost:3000/order?index=NIFTY&right=put
+
+http://localhost:3000/order?index=NIFTY&right=put&action=buy&strikePrice=21700&price=37
+
+
+http://localhost:3000/order?index=BANKNIFTY
+
+Strategy 1: Buy and Hold - Test
+Strategy 2: Buy Low, Multiple Sell Order and Repeat - Test
+Strategy 2a: Buy Low, Single Sell Order and Repeat - Test
+
+Find if trade is actually complete
+
+
+Trail Buy, Trail Sell ? Stoploss??
+Buy fixed quantity, not calculated
+
+
+
+Reason for Loss:
+In Buy/Sell, profit percentage did not reach (10%), so many orders are purchased  - Ideal candidate is Buy/Resell - Fix this as cancel not working
+Fix why option not subscribed on purchase
+
+Always use birectional for Buy/Hold, sell only for a good percentage, Buy at a difference in price
+
+Always use birectional for Buy/Sell
+
+If a buy order is placed, but share price rose to more than profit percentage, cancel buy order
+If a sell order is placed, but share price goes down to more than threshold percentage, cancel sell order and place another one - This will be a loss making trade
+
+One more strategy: Scalp. 
+Buy at a current price - a diff and Sell for a short rise. Quantity should be highest possible. In case of loss buyAgain will be triggered anyway  
+
+
+
+
+Add SequenceNo.
+Based on SequenceNo, determine, profit, buyagain, stoploss price
+Externalize Config
+
+When loss happens, buy in opposite direction with lesser gainprice
+
+Both PE and CE are not showing in monitor
+
+Why 2 trades happened immediately ?
+
+
+Not working:
+Keeps on averaging without stop loss
+Bidirection does not work as one side gets smaller profit and other side gets bigger loss
+        - Should close loss side faster with smaller loss?
+        - Buy opposite direction only when averaging
+Make a trade at 9:15 and stick to it ? Should exit immediately ??
+Find when price can go up by 2 Rs and take a bigger trade
+Use rate of change and number of steps in a direcion, find the direction
+Use ATM, 1 OTM and 2 OTM to find the direction
+Compare price difference and see how it changes
+After 2pm get ITM and play with larger numbers on the expiry date
+1800 for Nifty
+
+
+Tradesmart user Id: 9503046
+
+
+TPIN for Alice Blue: 541232
+TPIN for Shoonya: 572332
+
+Lessons:
+1. Do not buy after 3pm
+2. Have stop loss
+3. Dont average after 2 or 3 trades
+4. Buy both directions to recover loss with shorter profits
+Should i sell individual trades ??
+5. If there are too much change in the index, then expect a rebound
+6. Do not trade if last 2 trades are profitable in the same contract
+7. Do not trade if there are no movements in both call and put - example on hedging. Wait for an indicative direction
+Find why both Call and Put are in loss ? time factor ??
+
+1. Square Off should work
+2. Positions should be cleared on closing trade
+3. Set Target Price or no target price
+4. After login, connect, navigate to home page and refresh positions
+
+1 minute candle for OHLC + Standard deviation
+
+
+Get minute data
+
+Apply price on 
+
+These are feeds. Processor will get only one data at a time.
+0.5 min
+1 minute
+2 minutes
+5 
+10
+15
+20
+30  (Max. period is 12)
+
+Processor
+
+{"ltp":"3231.50","ltt":"1744373991","open":"3289.55","high":"3298.95","low":"3206.00","prevClose":"3246.60","volume":"7108961","token":"TCS"}
+{"ltp":"22828.55","ltt":"1744372024","open":"22695.40","high":"22923.90","low":"22695.40","prevClose":"22399.15","token":"NIFTY"}
+
+1. Find Gap up or Gap down and execute trade immediately (before 9:15:30)
+2. Enable TrailStop
+3. Server buy stock option
+3. In Flutter buy any option including stock option
+    a. Provide text which searches symbol pe or ce or price

@@ -1,0 +1,17 @@
+<html>
+  <body>
+    <div id="content"></div>
+
+    <script type="text/javascript">
+      const source = new EventSource('/events');
+
+      source.addEventListener('message', message => {
+        console.log('Got', message.data);
+
+        // Display the event data in the `content` div
+        document.querySelector('#content').append(JSON.parse(event.data));
+      });
+    </script>
+    Hello
+  </body>
+</html>

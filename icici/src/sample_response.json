@@ -1,0 +1,77 @@
+[{"stockCode":"NIFTY","expiryDate":"29-Sep-2022","strikePrice":"17850","optionType":"Call","action":"Buy","quantity":"200","ltp":225}]
+
+{ Success:
+    { order_id: '202209201600030290',
+      message: 'Successfully Placed the order' },
+
+
+      {"ltp":231,"ltt":"21-Sep-2022 13:16:05","open":191.55,"high":276.9,"low":170.9,"prevClose":176.45}
+
+
+      [ { exchange_code: 'NFO',
+        product_type: '',
+        stock_code: 'NIFTY',
+        expiry_date: '29-Sep-2022',
+        right: 'P',
+        strike_price: 17750,
+        ltp: 445.35,
+        ltt: '23-Sep-2022 14:46:50',
+        best_bid_price: 449.35,
+        best_bid_quantity: '50',
+        best_offer_price: 450.6,
+        best_offer_quantity: '200',
+        open: 265.95,
+        high: 497.95,
+        low: 229.15,
+        previous_close: 225,
+        ltp_percent_change: 9793,
+        upper_circuit: 869.05,
+        lower_circuit: 0.05,
+        total_quantity_traded: '888600',
+        spot_price: '17339.25' } ],
+ 
+        [{"stockCode":"NIFTY","expiryDate":"06-Oct-2022","strikePrice":"17250","right":"Call","action":"NA","quantity":"0","quote":{"ltp":225,"ltt":"23-Sep-2022 14:55:11","open":265.95,"high":497.95,"low":229.15}}]
+
+
+        [ { exchange_code: 'NFO',
+            product_type: '',
+            stock_code: 'NIFTY',
+            expiry_date: '29-Sep-2022',
+            right: 'P',
+            strike_price: 17750,
+            ltp: 461.8,
+            ltt: '23-Sep-2022 15:06:12',
+            best_bid_price: 460.3,
+            best_bid_quantity: '50',
+            best_offer_price: 461.6,
+            best_offer_quantity: '50',
+            open: 265.95,
+            high: 497.95,
+            low: 229.15,
+            previous_close: 225,
+            ltp_percent_change: 10524,
+            upper_circuit: 869.05,
+            lower_circuit: 0.05,
+            total_quantity_traded: '904550',
+            spot_price: '17321.7' } ],
+
+
+
+Incorrect OptionQuote
+            Positions:  [ Position {
+                stockCode: 'NIFTY',
+                expiryDate: '06-Oct-2022',
+                strikePrice: '17250',
+                right: 'Call',
+                action: 'NA',
+                quantity: '0',
+                quote:
+                 OptionQuote {
+                   ltp: 225,
+                   ltt: '23-Sep-2022 15:12:41',
+                   open: 476.05,
+                   high: 476.05,
+                   low: 312.75,
+                   prevClose: undefined } } ]
+            
+     

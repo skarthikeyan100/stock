@@ -1,0 +1,450 @@
+<head><title>
+	Trading &amp; Latest Quote
+</title><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <style type="text/css">
+        @font-face {
+          font-family: 'icomoon';
+          src:  url('https://secure.icicidirect.com/BaseMasterPage/fonts/icomoon.eot?1tmff510/30/2019 5:13:50 PM');
+          src:  url('https://secure.icicidirect.com/BaseMasterPage/fonts/icomoon.eot?1tmff5#iefix10/30/2019 5:13:50 PM') format('embedded-opentype'),
+            url('https://secure.icicidirect.com/BaseMasterPage/fonts/icomoon.ttf?1tmff510/30/2019 5:13:50 PM') format('truetype'),
+            url('https://secure.icicidirect.com/BaseMasterPage/fonts/icomoon.woff?1tmff510/30/2019 5:13:50 PM') format('woff'),
+            url('https://secure.icicidirect.com/BaseMasterPage/fonts/icomoon.svg?1tmff5#icomoon10/30/2019 5:13:50 PM') format('svg');
+          font-weight: normal;
+          font-style: normal;
+        }                        
+    </style>
+
+    <link type="text/css" rel="stylesheet" href="../../BaseMasterPage/styles/jquery-ui.min.css"><link type="text/css" rel="stylesheet" href="../../BaseMasterPage/styles/font-style.css"><link type="text/css" rel="stylesheet" href="../../BaseMasterPage/styles/Style.css?v=1">
+    <script type="text/javascript" src="https://secure.icicidirect.com/BaseMasterPage/Scripts/jquery-3.2.1.min.js"></script>
+    <script type="text/javascript" src="https://secure.icicidirect.com/BaseMasterPage/Scripts/jquery-ui.js"></script>
+    <script type="text/javascript" src="https://secure.icicidirect.com/BaseMasterPage/Scripts/layout.js"></script>
+    <script type="text/javascript" src="https://secure.icicidirect.com/BaseMasterPage/Scripts/webfont.js"></script>
+    <script type="text/javascript" src="https://secure.icicidirect.com/BaseMasterPage/Scripts/mainjs.js"></script>
+    <script type="text/javascript" src="https://secure.icicidirect.com/BaseMasterPage/Scripts/fncomm.js"></script>
+    <script type="text/javascript" src="https://secure.icicidirect.com/BaseMasterPage/Scripts/tinybox.js"></script>
+    <script type="text/javascript">
+        $(document).bind('keydown', function (event) {
+            var trgobj = event.target;            
+            if ($(trgobj).is("[type=text]") || $(trgobj).is(':focus')) {
+                var keycode = (event.keyCode ? event.keyCode : event.which);
+                if (keycode == '13') {
+                    $('#hlnkref').click();
+                    return false;
+                }
+                else {
+                    return true;
+                }
+            }
+        });    
+    </script>
+    <style type="text/css">
+                .dropdown-content {
+    display: none;
+    position: absolute;
+    min-width: 200px;
+    max-width: 200px;
+    overflow: auto;
+    z-index: 10;
+    background-color: #ffffff;
+    box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.5);
+    right: 0;
+    top: -80px;
+}
+.ui-quot.table td, ui-quot.table th
+        {
+            padding:7px;
+        }
+    </style><link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,400i,700" media="all">
+</head>
+<body>
+    <form method="post" action="./stockquote.aspx?1=1&amp;urlpara=tatmot" id="form1">
+<div class="aspNetHidden">
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="/wEPDwUKLTQ4MTY1NjU2NmRk6i9JUxjd14oj5SetGETMYe2okqeMzINVpOivGG9y8f8=">
+</div>
+
+<div class="aspNetHidden">
+
+	<input type="hidden" name="__VIEWSTATEGENERATOR" id="__VIEWSTATEGENERATOR" value="494D95BB">
+</div>
+    <div class="mini_window shadow">
+        <div class="box tabs-container lined_tab">
+            <div class="box-header with-border clear">
+                <h3 class="box-title">TATA MOTORS LIMITED(TATMOT)</h3>
+                <ul class="tabs-menu pull-right" role="tablist">
+                    <li class="current"><a href="javascript://" onclick="window.location.href='https://secure.icicidirect.com/trading/getquote/TATMOT'" role="tab">Equity</a></li>
+                    
+                    
+                    <li class=""><a href="javascript://" onclick="window.location.href='https://secure.icicidirect.com/trading/FNO/GetQuote?FFO_PRDCT_TYP=F&amp;FFO_UNDRLYNG=TATMOT&amp;FFO_EXER_TYP=E&amp;FFO_EXPRY_DT=&amp;FFO_STRK_PRC=0&amp;FFO_OPT_TYP=*&amp;FFO_CTGRY_INDSTK=I&amp;FFO_XCHNG_CD=NFO&amp;FFO_MIN_LOT_QTY=0&amp;FFO_TCK_SZ=0&amp;FFO_LST_TRD_PRC=0'" role="tab">F &amp; O</a></li>
+                    
+                </ul>
+            </div>
+            <!-- /.box-header -->
+            <div class="box-body tabs" style="padding-top:0px !important;">
+                <div id="tab-equity" class="tab-content" tabindex="0" role="tabpanel" aria-labelledby="Tab Equity">
+                    <div class="clear">
+                        <div class="searchbox form-group pull-left col-md-3 pd0">
+                            <input class="form-control ui-autocomplete-input" id="stcode" type="text" placeholder="Search stocks" autocomplete="off" value="TATMOT">
+                            <input type="hidden" id="search-id">
+                        </div>
+                        <div class="mrt10 pull-left col-md-3">
+						    <ul class="adajacent_links mrl5" style="margin-top:-5px;">							
+							    <li>
+                                    <a href="javascript://" id="hlnkref" class="mrt5" setdefault="yes" onclick="PostQuoteData($('#stcode').val());">Refresh</a>
+							    </li>
+							    <li>
+								  
+							    </li>
+						    </ul>
+					    </div>                       
+                        <div class="pull-right">
+                            <ul class="grid_menu quotes_sum">
+                                <li>
+                                    <h2>
+                                        SENSEX <span class="text-status bold pdl5">
+                                            40,051.87</span></h2>
+                                    <small class="block text-status text-right">
+                                        220.03</small> </li>
+                                <li>
+                                    <h2>
+                                        NIFTY <span class="text-status bold pdl5">
+                                            11,844.10</span></h2>
+                                    <small class="block text-status text-right">
+                                        57.25</small> </li>
+                            </ul>
+                        </div>
+                    </div>          
+                    <div id="pnlMain">
+	
+                    <div class="row">
+                        
+                        <div class="col-md-6 diviider">
+                            <table class="ui-quot table light-head">
+                                <thead>
+                                    <tr>
+                                        <th>
+                                        </th>
+                                        
+                                        <th class="text-right">
+                                            BSE
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Last Trade Price
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            171.85
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Day Open
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            174.40
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Day Close&nbsp;<b>*</b>
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            172.55
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Day High
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            175.50
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Day Low
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            166.60
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Prev. Day Close
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            172.55
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Change
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            -0.70
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Change %
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            -0.41
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            High Price Range
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            189.80
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Low Price Range
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            155.30
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Day Volume
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            5663214
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <table class="ui-quot table light-head">
+                                <thead>
+                                    <tr>
+                                        <th>&nbsp;
+                                        </th>
+                                        
+                                        <th class="text-right ">
+                                            BSE
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Date
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            30-Oct-2019
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Last Traded Time
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            15:30:57.755
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Best Bid Price
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            172.30
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Best Offer Price
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            172.40
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Best Bid Qty
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            290
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            Best Offer Qty
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            152
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            52 Wk High
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            239.30
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel">
+                                            52 Wk Low
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            106.00
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel" style="vertical-align:top">
+                                            Life Time High
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            603.49<br>
+                                            <span class="mini-text">(03-Feb-2015)</span>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td class="lightlabel" style="vertical-align:top">
+                                            Life Time Low
+                                        </td>
+                                        
+                                        <td class="text-right">
+                                            41.64<br>
+                                            <span class="mini-text">(04-Apr-2001)</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <div class="clear">
+                        </div>
+                    </div>                   
+                    <div class="control-group">
+                        <ul class="adajacent_links no-seperator navbar-click text-right quote-menu">
+                            <li><a href="javascript://" onclick="openStkInfo()">Stock Information</a></li>
+                            <li><a href="javascript://" onclick="eqBestBid('TATMOT')">Best 5 Bids/Offers</a></li>
+                            <li><a href="javascript://" onclick="eqFiboVals('TATMOT')">Fibonacci Values</a></li>
+                            <li><a href="javascript://" onclick="eqPivotVals('TATMOT')">Pivot/R&amp;S Values</a></li>
+                            
+                            <li class="relative">
+                                <button class="btn btn-theme droppable" type="button">
+                                    Sell <span class="icon-arrow-down"></span>
+                                </button>
+                                <div class="slide-menu dropdown-content">
+                                    <ul class="dropdown-checklist">
+                                        <li><a href="javascript://" onclick="openbuysell('sell','cashsell','c')">Cash Sell</a></li>
+                                        <li><a href="javascript://" onclick="openbuysell('sell','marginsell','m')">Margin Sell</a></li>
+                                    </ul>
+                                </div>
+                            </li>
+                            <li class="relative">
+                                <button class="btn btn-theme droppable" type="button">
+                                    Buy <span class="icon-arrow-down"></span>
+                                </button>
+                                <div class="slide-menu dropdown-content">
+                                    <ul class="dropdown-checklist">
+                                        <li><a href="javascript://" onclick="openbuysell('buy','cashbuy','c')">Cash Buy</a></li>
+                                        <li><a href="javascript://" onclick="openbuysell('buy','marginplus','m')">Margin Plus</a></li>
+                                        <li><a href="javascript://" onclick="openbuysell('buy','marginbuy','m')">Margin Buy</a></li>
+                                    </ul>
+                                </div>
+                            </li>
+                        </ul>
+                    </div>
+                     <div class="mini-text clear pdt20 mrb20">
+                        * ‘Day Close' would display previous day's close price until the current day's
+                        close price is received from the exchange.
+                    </div>
+                    
+</div>
+                    <div id="pnlErr">
+	
+                       <div class="mini-text clear pdt20 mrb20">
+                            
+                        </div>
+                    
+</div>
+                </div>
+                <script type="text/javascript">
+                    function PostQuoteData(_stockcode) {                        
+                        if (_stockcode.trim() == "") {
+                            alert('Please Select Stock Code');
+                            $('#stcode').focus();
+                            return;
+                        }
+                        window.location.href = siteUrl + '/trading/getquote/' + _stockcode.toUpperCase();
+                    }
+                    $(document).ready(function () {
+                        $('#stcode').focus();
+                        $('#stcode').select();
+                    });
+                </script>               
+            </div>
+            <!-- /.box-body -->
+        </div>
+        
+    </div>
+    <span id="lblDebug"></span>
+    </form>
+    <script type="text/javascript">
+        var siteUrl = 'https://secure.icicidirect.com';
+        WebFont.load({
+            google: {
+                families: ['Roboto:300,400,500,400i,700']
+            }
+        });
+        $('#stcode').autocomplete({
+            minLength: 3,
+            source: function (req, add) {
+                SearchJSON(req, add, 'search', '');
+            }
+        });
+        function openbuysell(ordtype, transtype, producttype) {
+            var stock = $('#stcode').val();
+            window.opener.OpenBuysellfromgetQuote(ordtype, transtype, stock, producttype);
+            window.close();
+        }
+        function eqFiboVals(_stkcode) {
+            TINY.box.show({ 'handler': trade, 'pageCode': 'trdpvtcalc', 'postData': 'FML_STCK_CD=' + _stkcode + '&FML_RQST_TYP=F&FML_STK_NM=TATA+MOTORS+LIMITED', 'MsgTitle': 'Fibonacci <span> Values</span>', 'close': 1, 'width': 750, 'height': 600 })
+        }
+
+        function eqPivotVals(_stkcode) {
+            TINY.box.show({ 'handler': trade, 'pageCode': 'trdpvtcalc', 'postData': 'FML_STCK_CD=' + _stkcode + '&FML_RQST_TYP=P&FML_STK_NM=TATA+MOTORS+LIMITED', 'MsgTitle': 'Pivot / R&S <span> Values</span>', 'close': 1, 'width': 750, 'height': 600 })
+        }
+
+        function openStkInfo() {
+            var stock = $('#stcode').val();
+            window.opener.location.href = 'https://secure.icicidirect.com/trading/research-advisory/technicalanalysis/' + stock + '/TATA MOTORS LIMITED';
+            window.close();
+        }
+
+    </script><ul id="ui-id-1" tabindex="0" class="ui-menu ui-widget ui-widget-content ui-autocomplete ui-front" style="display: none;"></ul><div role="status" aria-live="assertive" aria-relevant="additions" class="ui-helper-hidden-accessible"></div><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: Roboto, serif; font-style: normal; font-weight: 300;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: Roboto, sans-serif; font-style: normal; font-weight: 300;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: monospace; font-style: normal; font-weight: 300;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: Roboto, serif; font-style: normal; font-weight: 400;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: Roboto, sans-serif; font-style: normal; font-weight: 400;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: monospace; font-style: normal; font-weight: 400;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: Roboto, serif; font-style: normal; font-weight: 500;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: Roboto, sans-serif; font-style: normal; font-weight: 500;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: monospace; font-style: normal; font-weight: 500;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: Roboto, serif; font-style: italic; font-weight: 400;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: Roboto, sans-serif; font-style: italic; font-weight: 400;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: monospace; font-style: italic; font-weight: 400;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: Roboto, serif; font-style: normal; font-weight: 700;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: Roboto, sans-serif; font-style: normal; font-weight: 700;">BESbswy</span><span aria-hidden="true" style="display: block; position: absolute; top: -9999px; left: -9999px; font-size: 300px; width: auto; height: auto; line-height: normal; margin: 0px; padding: 0px; font-variant: normal; white-space: nowrap; font-family: monospace; font-style: normal; font-weight: 700;">BESbswy</span>
+
+
+</body>

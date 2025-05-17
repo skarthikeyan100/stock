@@ -1,0 +1,20 @@
+1. Variables:
+    - sampleCount
+    - percentage change 
+    - buy and sell at 0.2%
+    - find optimum sampleCount and percentageChange
+
+2. BB
+  Variables:
+    - SD1, 2, 2.5, 3
+    - Bandwidth size
+    - Duration
+    - If bandwidth is low, If average price breaks up in the given duration, buy
+    - If bandwidth is low, If average price breaks down in the given duration, sell
+    - If bandiwidth is high, if average price touches down in the given duration , buy
+    - If bandiwidth is high, if average price touches down in the given duration , sell
+
+
+    low could be 1/4th and high could be 3/4th
+
+    3. If RSI (gain vs loss, count and magnitudemay show a trend)

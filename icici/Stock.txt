@@ -1,0 +1,31 @@
+1. Buy Call and Put in the money with target at 80% and stop loss at 40%
+2. Check closing price, if price keeps increasing and then falling 50%, buy it ??
+3. In a trending market, buy if price breaks upper band and sell if price breaks lower band
+4. In sideways market, buy if price breaks lower band and sell if price breaks upper band
+
+
+NATMIN  - 6000 - 81.26 - 68.64 
+NHPC - 3000 - 90.37 - 
+JioFin - 600 - 348.73 - 
+
+
+4402.319
+
+1,35,520.
+
+Contra Fund
+MidCap
+Consumption
+Next 50
+Fund of Fund
+
+NIPPON INDIA MUTUAL FUND
+KOTAK MAHINDRA MUTUAL FUND
+Momentum Fund
+Value Fund
+Fund of Fund Domestic or Overseas
+Next 50
+MidCap
+Contra Fund
+Nasdaq
+HongKong

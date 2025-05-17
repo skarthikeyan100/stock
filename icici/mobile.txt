@@ -1,0 +1,7 @@
+Show Nifty Price with change
+Show Option Plus Contracts
+Show Option Contracts (only top 4)
+Sell Option Plus
+Buy Option
+Show Open Positions
+Square off

@@ -1,0 +1,16 @@
+export default [
+   "YESBAN",
+   "BHEL",
+   "BANBAR",
+   "ASHLEY",
+   "PUNBAN",
+   "TATMOT",
+   "BHAAIR",
+   "GAIL",
+   "VEDLIM",
+   "NTPC",
+   "INDHO",
+   "STABAN",
+   "ITC",
+   "RELIND",
+]

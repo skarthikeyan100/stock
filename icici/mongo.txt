@@ -1,0 +1,6 @@
+db.OptionQuote.update({}, {$set: {"date": "13-Dec-2019"}}, false, true)
+
+db.OptionQuote.update({_id: {$gt: ObjectId("5df34c6328540421f0b32e50")}}, {$set: {"date": "13-Dec-2019"}}, false, true)
+
+
+db.OptionQuote.find()

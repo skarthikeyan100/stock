@@ -1,0 +1,199 @@
+import 'package:interactive_chart/interactive_chart.dart';
+
+import '../model/nifty_quote.dart';
+import '../model/position.dart';
+import '../util/api_util.dart';
+import '../util/generic_exception.dart';
+
+class Service {
+  Future<void> requestOtp() async {
+    try {
+      await ApiUtil.get('/requestOtp');
+      print('Requested OTP');
+    } on GenericException {
+      print("Exception while Requesting OTP");
+    }
+  }
+
+  Future<void> refreshTrades() async {
+    try {
+      await ApiUtil.get('/refreshTrades');
+      print('Trade list is refreshed');
+    } on GenericException {
+      print("Exception while Refreshing Trades");
+    }
+  }
+
+  Future<void> login(String otp) async {
+    try {
+      dynamic response = await ApiUtil.login(otp);
+      print('Logged in $response');
+    } on GenericException {
+      print("Exception while Logging using otp $otp");
+    }
+  }
+
+  Future<void> logout() async {
+    try {
+      dynamic response = await ApiUtil.get('/logout');
+      print('Logged out');
+    } on GenericException {
+      print("Exception while logging out");
+    }
+  }
+
+  Future<void> connect() async {
+    try {
+      dynamic response = await ApiUtil.get('/connect');
+      print('Websocket is connected $response');
+    } on GenericException {
+      print("Exception while connecting to websockets");
+    }
+  }
+
+  static List<Position> trades = [];
+  Future<List<Position>> getOpenPositions() async {
+    List<Position> positions = [];
+    try {
+      print('***************************** Call /trades');
+      final List<dynamic> response = await ApiUtil.get('/trades');
+      print('Response length:  ${response.length}');
+      for (dynamic element in response) {
+        positions.add(Position.fromJson(element));
+      }
+    } on GenericException {
+      print('Exception while constructing position ${StackTrace.current}');
+    }
+    if (trades.isEmpty) {
+      trades = positions;
+    }
+    return positions;
+  }
+
+  Future<NiftyQuote> getNiftyQuote() async {
+    try {
+      dynamic response = await ApiUtil.get('/niftyquote');
+      NiftyQuote quote = NiftyQuote.fromJson(response);
+      // print("Quote is $quote");
+      return quote;
+    } on GenericException {
+      return NiftyQuote.empty();
+    }
+  }
+
+  Future<List<CandleData>> getCandles() async {
+    try {
+      List<CandleData> candles = [];
+      final List<dynamic> response = await ApiUtil.get('/candles');
+      print('Response length:  ${response.length}');
+      for (dynamic json in response) {
+        print(json);
+        candles.add(CandleData(
+            timestamp: int.parse(json['timestamp']),
+            open: double.parse(json['open']),
+            close: double.parse(json['close']),
+            volume: 10.0,
+            high: double.parse(json['high']),
+            low: double.parse(json['low'])));
+      }
+
+      return candles;
+    } on GenericException {
+      return [];
+    }
+  }
+
+  Future<dynamic> getQuotes() async {
+    try {
+      return await ApiUtil.get('/quotes');
+    } on GenericException {
+      return NiftyQuote.empty();
+    }
+  }
+
+// http://localhost:3000/order?niftyPrice=17,817.60&right=put&action=buy
+//TODO remove niftyPrice param
+  Future<bool> buy(String index, String right) async {
+    try {
+      print("Send request to order");
+      await ApiUtil.get('/order?index=$index&right=$right&action=Buy&depth=1');
+      return true;
+    } on GenericException {
+      return false;
+    }
+  }
+
+// http://localhost:3000/squareoff?expiryDate=29-SEP-2022&right=put&strikePrice=17750
+  Future<bool> squareOff(token, right, qty) async {
+    try {
+      await ApiUtil.get('/squareoff?token=$token&right=$right&qty=$qty');
+      return true;
+    } on GenericException {
+      return false;
+    }
+  }
+
+  Future<bool> setTargetPrice(targetPrice) async {
+    try {
+      await ApiUtil.get('/config?targetPrice=$targetPrice');
+      return true;
+    } on GenericException {
+      return false;
+    }
+  }
+
+  Future<bool> setLotSize(lotSize) async {
+    try {
+      await ApiUtil.get('/config?lotSize=$lotSize');
+      return true;
+    } on GenericException {
+      return false;
+    }
+  }
+
+Future<bool> setDepth(depth) async {
+    try {
+      await ApiUtil.get('/config?depth=$depth');
+      return true;
+    } on GenericException {
+      return false;
+    }
+  }
+  // Future<bool> subscribeOption(expiryDate, strikePrice, right) async {
+  //   try {
+  //     await ApiUtil.get(
+  //         '/subscribeOption?expiryDate=$expiryDate&strikePrice=$strikePrice&right=$right');
+  //     return true;
+  //   } on GenericException {
+  //     return false;
+  //   }
+  // }
+
+  // Future<bool> unsubscribeOption(expiryDate, strikePrice, right) async {
+  //   try {
+  //     await ApiUtil.get(
+  //         '/unsubscribeOption?expiryDate=$expiryDate&strikePrice=$strikePrice&right=$right');
+  //     return true;
+  //   } on GenericException {
+  //     return false;
+  //   }
+  // }
+
+  // Future<bool> subscribeNifty() async {
+  //   try {
+  //     await ApiUtil.get('/subscribe');
+  //     return true;
+  //   } on GenericException {
+  //     return false;
+  //   }
+  // }
+
+  // Future<bool> unsubscribeNifty() async {
+  //   try {
+  //     await ApiUtil.get('/unsubscribe');
+  //     return true;
+  //   } on GenericException {
+  //     return false;
+  //   }
+  // }
+}

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.3/jquery.min.js"></script>
+    <style>
+    
+table, th, td {
+    border: 1px solid black;
+  } 
+
+  td {
+      width: 100px;
+      text-align: center;
+  }
+</style>   
+</head>
+
+<body>
+
+    <h1>Current Status</h1>
+    <div id="result"></div>
+
+    <script>
+
+            // Get the container element where the table will be inserted
+            let container = $("#result");
+
+            // Create the table element
+            let table = $("<table>");
+
+            // Create the header element
+            let thead = $("<thead style=''border 1px solid red>");
+            let tr = $("<tr>");
+
+            // Loop through the column names and create header cells
+                let th = $("<th>");
+                th.text('startPrice'); // Set the column name as the text of the header cell
+                tr.append(th); // Append the header cell to the header row
+                
+                th = $("<th>");
+                th.text('currentPrice'); // Set the column name as the text of the header cell
+                tr.append(th); // Append the header cell to the header row
+                
+                th = $("<th>");
+                th.text('plusCount'); // Set the column name as the text of the header cell
+                tr.append(th); // Append the header cell to the header row
+                
+                th = $("<th>");
+                th.text('minusCount'); // Set the column name as the text of the header cell
+                tr.append(th); // Append the header cell to the header row
+                
+                th = $("<th>");
+                th.text('change'); // Set the column name as the text of the header cell
+                tr.append(th); // Append the header cell to the header row
+
+                thead.append(tr); // Append the header row to the header
+            table.append(tr) // Append the header to the table
+            container.html(table) // Append the table to the container element
+
+
+function convert(data) {
+            let jsonData = JSON.parse(data)
+            console.log('jsonData: ', jsonData)
+
+            //  // Sample JSON data
+            //  let jsonData = [
+            //     {
+            //        name: "Saurabh",
+            //        age: "20",
+            //        city: "Prayagraj"
+            //     },
+            //     {
+            //        name: "Vipin",
+            //        age: 23,
+            //        city: "Lucknow",
+            //     },
+            //     {
+            //        name: "Saksham",
+            //        age: 21,
+            //        city: "Noida"
+            //     }
+            //  ];
+
+
+            // Loop through the JSON data and create table rows
+            // $.each(jsonData, function (i, item) {
+                let tr1 = $("<tr class='row'>");
+
+                // Get the values of the current object in the JSON data
+                let vals = Object.values(jsonData);
+
+                // Loop through the values and create table cells
+                $.each(vals, (i, elem) => {
+                    let td = $("<td>");
+                    td.text(elem); // Set the value as the text of the table cell
+                    tr1.append(td); // Append the table cell to the table row
+                });
+                table.append(tr1); // Append the table row to the table
+            // });
+        }
+
+        if (typeof (EventSource) !== "undefined") {
+            var source = new EventSource("http://localhost:3000/timestream");
+            source.onmessage = function (event) {
+                convert(event.data)
+            };
+        } else {
+            document.getElementById("result").innerHTML = "Sorry, your browser does not support server-sent events...";
+        }
+    </script>
+
+</body>
+
+</html>

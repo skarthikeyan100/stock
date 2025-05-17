@@ -1,0 +1,7 @@
+2025/05/02-16:03:31.918 3ecb Reusing MANIFEST /tmp/flutter_tools.ERTWLS/flutter_tools_chrome_device.BAPKLR/Default/WebStorage/2/IndexedDB/indexeddb.leveldb/MANIFEST-000001
+2025/05/02-16:03:31.918 3ecb Recovering log #3
+2025/05/02-16:03:31.919 3ecb Reusing old log /tmp/flutter_tools.ERTWLS/flutter_tools_chrome_device.BAPKLR/Default/WebStorage/2/IndexedDB/indexeddb.leveldb/000003.log 
+2025/05/02-16:13:34.397 3eca Level-0 table #5: started
+2025/05/02-16:13:34.430 3eca Level-0 table #5: 37590 bytes OK
+2025/05/02-16:13:34.471 3eca Delete type=0 #3
+2025/05/02-16:13:34.471 3eca Manual compaction at level-0 from (begin) .. (end); will stop at (end)
