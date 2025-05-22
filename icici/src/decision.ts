@@ -317,7 +317,7 @@ export default class Decision {
             }
         });
         // const intervals = [10, 15, 30, 45, 60, 120, 300, 600, 900]; // 30s, 1m, 2m, 5m, 10m, 15m, 30m
-        const intervals = [60]; // 10s
+        const intervals = [60, 300]; // 10s
 
         intervals.forEach((interval) => {
             const eventName = `priceUpdate_${interval}`;
@@ -343,7 +343,7 @@ export default class Decision {
     }
     _addPrice = (ltt, number) => {
         const time = new Date().setTime(ltt).toLocaleString();
-        console.log('Add Price ', this._getDate(), ' ', number)
+        // console.log('Add Price ', this._getDate(), ' ', number)
         this._emitPrice(number);
         // if (number != null) {
         //     this._calculateStatistics(this.prices);

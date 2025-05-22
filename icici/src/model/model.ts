@@ -111,34 +111,45 @@ export class Trade {
     }
 }
 
-    export class Order {
-        orderno: string;
-        tsym: string;
-        trantype: string;
-        quantity: number;
-        price: number;
-        token: string;
+export enum OrderStatus {
+    ORDERED = 'ORDERED',
+    BOUGHT = 'BOUGHT',
+}
 
-        static fromPrism(response) {
-            console.log('Constructing order from prism: ', response);
-            const orderno = response.norenordno
-            const tsym = response.tsym
-            const trantype = response.trantype;
-            const quantity = response.qty;
-            const price = response.prc;
-
-            const order = new Order();
-            order.tsym = tsym;
-            order.trantype = trantype;
-            order.orderno = orderno
-            order.quantity = quantity
-            order.price = price
-            
-            return order;
-        }
+export class OrderInfo {
+    contract: string;
+    qty: number;
+    price: number
+    status?: OrderStatus
+    profit?: number
     
+}
 
+export class Order {
+    orderno: string;
+    tsym: string;
+    trantype: string;
+    quantity: number;
+    price: number;
+    token: string;
 
+    static fromPrism(response) {
+        console.log('Constructing order from prism: ', response);
+        const orderno = response.norenordno
+        const tsym = response.tsym
+        const trantype = response.trantype;
+        const quantity = response.qty;
+        const price = response.prc;
+
+        const order = new Order();
+        order.tsym = tsym;
+        order.trantype = trantype;
+        order.orderno = orderno
+        order.quantity = quantity
+        order.price = price
+        
+        return order;
+    }
 }
 
 export class OptionQuote {

@@ -9,7 +9,7 @@ class Variables {
     low
 
 }
-export class ORBPrevious implements Strategy {
+export class ORBPrevious extends Strategy {
     receive(oldStats: any, newStats: any) {
         throw new Error("Method not implemented.");
     }

@@ -26,13 +26,13 @@ HTML:
 
 
 http://localhost:3000/requestOtp
-http://localhost:3000/login?otp=91645
+http://localhost:3000/login?otp=68061
 http://localhost:3000/order?index=NIFTY&right=put&action=buy&strikePrice=21600&price=79
 http://localhost:3000/addTrade?tsym=NIFTY18JAN24P21700&flqty=200&flprc=78.8trantype=B
 
 http://localhost:3000/order?index=NIFTY&right=call&action=buy&strikePrice=22050&price=83
 
-http://localhost:3000/order?index=NIFTY&right=put
+http://localhost:3000/order?index=NIFTY&right=call
 
 http://localhost:3000/order?index=NIFTY&right=put&action=buy&strikePrice=21700&price=37
 
@@ -142,3 +142,31 @@ Processor
 3. Server buy stock option
 3. In Flutter buy any option including stock option
     a. Provide text which searches symbol pe or ce or price
+
+
+    BHARTIARTL29MAY25C1920
+
+    Test
+    1. Buy Contract with trigger price
+    2. Monitor Contract Options
+    
+    http://localhost:3000/order?contract=BHARTIARTL29MAY25C1920
+
+    RELIANCE29MAY25C1420
+
+    Do BiDirection only if trend is sideways,Do not use stoploss if trend is sideways. Use SD to find it or close - open to be less than threshold
+
+    Find the velocity/momentum 
+      - Price changes are faster
+      - Price changes are slower
+
+   
+   Strategy 2
+   Subtract from low and buy PUT
+   Add from high and buy Call
+
+   Strategy 3
+   if (diff > 5) buy call
+   if (diff < -5) buy put
+
+   NA-17476521642LO

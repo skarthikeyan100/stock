@@ -7,7 +7,7 @@ import NorenRestApi from './prism/RestAPI'
 import _ from 'lodash'
 import crypto from 'crypto'
 import delay from 'delay';
-import { NiftyQuote, OptionQuote, Trade, Order } from './model/model';
+import { NiftyQuote, OptionQuote, Trade, Order, OrderInfo } from './model/model';
 import util from 'util';
 const spawn = require('child_process').spawn;
 import myEmitter from './tools/emitter';
@@ -26,6 +26,7 @@ import fs from 'fs';
 import moment from 'moment'
 import ObjectsToCsv from 'objects-to-csv';
 import * as f from './orderList'
+import { Strategy } from 'strategy/strategy';
 
 class StockPrice {
     Stock: string
@@ -928,9 +929,9 @@ export default class Prism {
         }
 
         console.log('Place Order in sell ', order);
-        f.removeOrder(order.tsym)
         await NorenRestApi.place_order(order) as any;
         await this.unsubscribeOption(tsym);
+        f.removeOrder(order.tsym)
     }
 
     cancel = async (orderno) => {
@@ -947,8 +948,7 @@ export default class Prism {
         await NorenRestApi.modify_order(updatedOrder)
     }    
 
-    sendLimitOrder = async (tsym: string, price: number, right: string, action: string, strategy: string) => {
-        const transactionType = "buy" === action ? 'B' : 'S'
+    sendLimitOrder = async (tsym: string, price: number, right: string, action: string, strategy: string) : Promise<OrderInfo> => {
         const limit = "LMT"
         console.log('tsym: ' +tsym);
         const indexObj = tsym.startsWith('BANK') ? indexMap.get('BANKNIFTY') : tsym.startsWith('NIFTY') ? indexMap.get('NIFTY') : indexMap.get('FINNIFTY');
@@ -960,7 +960,7 @@ export default class Prism {
         const callput = "call" === right ? 'C' : 'P'
         const normal = "M" //for fno
         const order = {
-            "trantype": transactionType,
+            "trantype": 'B',
             "prd": normal,
             "exch": nse,
             "tsym": tsym,
@@ -969,22 +969,25 @@ export default class Prism {
             "prc": price
         }
 
-        
-        if (transactionType == 'B') {
-            this._placeOrder(order);
+        this._placeOrder(order);
+        return {
+            "contract": tsym,
+            "qty": qty,
+            "price": price,
         }
+        
     }
 
     _placeOrder = async (order) => {
         
         if (!f.exists(order.tsym)) {
             console.log('Place Order ', order);
-            f.addOrder(order.tsym)
+            
             await NorenRestApi.place_order(order) as any;
-
             const token = await this.getToken(order.tsym);
             console.log(`Subscribe to tsym ${order.tsym} using token ${token}`)
             await this.subscribeOption(token);
+            f.addOrder(order.tsym)
 
             await delay(2000)
         }

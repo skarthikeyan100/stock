@@ -1,5 +1,9 @@
-import { NiftyQuote, Trade } from "model/model";
-
+import { NIFTY } from "../constants";
+import { NiftyQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
+import moment from "moment";
+import Prism from "../prism";
+import config from "../prism/config";
+import * as f from '../orderList'
 export enum Outcome {
     WAIT = "WAIT",
     CALL = "CALL",
@@ -7,11 +11,47 @@ export enum Outcome {
     PENDING_CLOSURE = "PENDING_CLOSURE"
 }
 
-export interface Strategy {
+
+export abstract class Strategy {
     tradeMap : Map<String, Trade>
+    orderMap : Map<String, OrderInfo>
     name: string
+    BUY = 'Buy'
+    SELL = 'Sell'
+    ordered = false
     // process(quote: NiftyQuote, token: String) : Outcome 
     // addTrade(trade: Trade);
-    receive(oldStats, newStats);
-    process(quote);
+    abstract receive(oldStats, newStats);
+    abstract process(quote: NiftyQuote);
+
+    isTimeInRange(): boolean {
+        const now = moment();
+        const startTime = moment().hour(9).minute(30);
+        const endTime = moment().hour(15).minute(0);
+    
+        return now.isAfter(startTime) && now.isBefore(endTime);
+    }
+
+    async addOrder(price, right) {
+        const order = await Prism.getInstance().buyIndex(NIFTY, price, right);
+        this.orderMap.set(order.contract, order);
+        this.ordered = true;
+    }
+
+    getClassName(): string {
+        return this.constructor.name;
+    }
+
+    updateTrade(trade: Trade) {
+        const hasOrder= this.orderMap.has(trade.tsym)
+        console.log(this.getClassName(), ': updateTrade: ', trade.tsym, ' hasOrder: ', hasOrder)
+
+        if (hasOrder && trade.action == this.BUY) {
+            const orderInfo = this.orderMap.get(trade.tsym)
+            orderInfo.status = OrderStatus.BOUGHT
+        } else if (hasOrder && trade.action == this.SELL) {
+            this.ordered = false;
+            this.orderMap.delete(trade.tsym);
+        }
+    }
 }

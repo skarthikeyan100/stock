@@ -535,5 +535,11 @@ function analyzePriceDataForSupportAndResistance(filePath: string, outputFile: s
 
 
 // Example usage
-analyzePriceDataForSupportAndResistance('ohlc_1min.csv', 'output.csv');
+// analyzePriceDataForSupportAndResistance('ohlc_1min.csv', 'output.csv');
+
+const now = moment();
+        const startTime = moment().hour(9).minute(30);
+        const endTime = moment().hour(15).minute(16);
+    
+        console.log(now.isAfter(startTime) && now.isBefore(endTime));
 
