@@ -117,11 +117,14 @@ export enum OrderStatus {
 }
 
 export class OrderInfo {
+    token: string;
     contract: string;
     qty: number;
     price: number
+    lastOrderedPrice: number
     status?: OrderStatus
     profit?: number
+
     
 }
 

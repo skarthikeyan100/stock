@@ -1,4 +1,4 @@
-import { NiftyQuote, Trade } from "model/model";
+import { NiftyQuote, OptionQuote, Trade } from "model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
 import Prism from '../prism'
@@ -15,6 +15,7 @@ export enum Outcome {
 //Strategy: If support is breached, buy PUT. If resistance is breached, buy CALL
 
 export default class DiffStrategy extends Strategy {
+
     tradeMap: Map<String, Trade>;
     name: string;
     previousWindowTrend = 'NEUTRAL'
@@ -31,11 +32,9 @@ export default class DiffStrategy extends Strategy {
     }
 
     receive(oldStats, newStats) {
-        console.log('DiffStrategy: isOldStats null? ', oldStats == null)
-        console.log('DiffStrategy: isNewStats null? ', newStats == null)
+        console.log('Received stats: ?', newStats ? newStats.results.eventName : 'new stats null')
         this.stats = newStats;
         this.diff = newStats.close - newStats.open
-        console.log('Difference in new stats: ', this.diff)
     }
 
     isTimeInRange(): boolean {
@@ -46,9 +45,15 @@ export default class DiffStrategy extends Strategy {
         return now.isAfter(startTime) && now.isBefore(endTime);
     }
 
-    async process(quote) {
-        if (this.stats.results.eventName == 'priceUpdate_300') {
+    async processNiftyQuote(quote) {
+        // if (this.stats != null) {
+        //     console.log(this.getClassName(), ' eventName: ', this.stats.results.eventName )
+        //     console.log(this.getClassName(), ' this.isTimeInRange(): ', this.isTimeInRange() )
+        //     console.log(this.getClassName(), ' diff: ', this.diff, ' ordered: ', this.ordered )
+        // }
+        if (this.stats != null && this.stats.results.eventName == 'priceUpdate_60') {
             if (this.isTimeInRange() && this.diff != null && this.ordered == false) {
+                console.log('DiffStrategy: Diff between close and open: ', this.diff, ' expected diff: ', this.expectedDiff)
                 if (this.diff > this.expectedDiff ) {
                     console.log('DiffStrategy: Buy CALL as diff is ', this.diff)
                     await this.addOrder(quote.ltp, CALL)
@@ -58,6 +63,9 @@ export default class DiffStrategy extends Strategy {
                 }
             }
         }
+    }
+
+    processOptionQuote(quote: OptionQuote) {
     }
 
 }

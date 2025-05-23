@@ -30,9 +30,7 @@ import { OnTrigger } from './onTrigger';
 import moment from 'moment';
 import Monitor from 'monitor';
 import * as f from './orderList'
-import PivotStrategy from './strategy/PivotStrategy';
-import BiDirectionStrategy from './strategy/BiDirectionStrategy';
-import DiffStrategy from './strategy/DiffStrategy';
+import { strategies } from './strategy/strategies';
 
 const CALL = 'call';
 const PUT = 'put';
@@ -46,11 +44,7 @@ export default class Decision {
     static instance: Decision;
     depth = 2;
     onTrigger: OnTrigger;
-    strategies: Array<Strategy> = [
-        new PivotStrategy(),
-        new DiffStrategy(),
-        new BiDirectionStrategy()
-    ];
+ 
 
     static getInstance() {
         if (!Decision.instance) {
@@ -84,6 +78,9 @@ export default class Decision {
         if (this.onTrigger) {
             this.onTrigger.process(quote);
         }
+        for (const strategy of strategies) {
+            strategy.processOptionQuote(quote);
+        }
     }
 
     decidePurchase = async (quote: NiftyQuote) => {
@@ -94,8 +91,8 @@ export default class Decision {
             this._storeHistory(quote);
             this._addPrice(quote.ltt, quote.ltp)
 
-            for (const strategy of this.strategies) {
-                strategy.process(quote);
+            for (const strategy of strategies) {
+                strategy.processNiftyQuote(quote);
             }
 
 
@@ -169,7 +166,7 @@ export default class Decision {
 
     decideSell = async (optionQuote: OptionQuote) => {
         const prism = Prism.getInstance();
-        for (const strategy of this.strategies) {
+        for (const strategy of strategies) {
             const trade = strategy.tradeMap.get(optionQuote.token) as Trade;
             if (trade) {
                 console.log('Trade: ', trade.right, ' qty: ', trade.quantity, ' profit: ', trade.getProfit());
@@ -312,7 +309,7 @@ export default class Decision {
 
         this.eventEmitter.on('stats', (stats) => {
             console.log('Received stats ', stats)
-            for (const strategy of this.strategies) {
+            for (const strategy of strategies) {
                 strategy.receive(stats.oldStats, stats.newStats);
             }
         });

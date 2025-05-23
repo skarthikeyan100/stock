@@ -24,6 +24,8 @@ import { ORBPrevious } from './strategy/ORBPrevious';
 import config from './prism/config';
 import { SystemZone } from 'luxon';
 import moment from 'moment';
+import { strategies } from './strategy/strategies';
+
 
 enum State {
     TRADED,
@@ -335,6 +337,9 @@ export default class Monitor {
 
     _processTradeEvent = async (tradeEvent: Trade) => {
         console.log('Trades length: ', this.trades.length)
+        strategies.forEach( strategy => {
+            strategy.updateTrade(tradeEvent)
+        })
         const prism = Prism.getInstance();
         if (tradeEvent.action == 'Buy') {
             console.log('New Trade ', tradeEvent.tsym, ' ', tradeEvent.quantity)
@@ -387,6 +392,22 @@ export default class Monitor {
     }
 
     _processQuote(optionQuote: OptionQuote) {
+        let canHandle = false;
+        for (let index = 0; index < strategies.length; index++) {
+            const strategy = strategies[index];
+            canHandle = strategy.canHandleOptionQuote(optionQuote);
+            if (canHandle == true) {
+                strategy.processOptionQuote(optionQuote)
+                console.log(strategy.getClassName(), ' handles ', optionQuote.token)
+                const index = this.trades.findIndex(t => t.token == optionQuote.token);
+                if (index != -1) {
+                    console.log('Trade is handled by strategy, so remove from monitor for  ', optionQuote.token)
+                    this.trades.splice(index, 1)
+                }
+                return;
+            }
+        }
+
         const prism = Prism.getInstance()
         // console.log('optionQuote: ', optionQuote)
 

@@ -27,6 +27,8 @@ import moment from 'moment'
 import ObjectsToCsv from 'objects-to-csv';
 import * as f from './orderList'
 import { Strategy } from 'strategy/strategy';
+import { strategies } from './strategy/strategies';
+
 
 class StockPrice {
     Stock: string
@@ -199,7 +201,7 @@ export default class Prism {
                 const optionQuote = OptionQuote.fromPrism(data)
                 Monitor.getInstance().updateQuote(optionQuote);
                 Decision.getInstance().decidePurchaseStockOption(optionQuote);
-                Decision.getInstance().decideSell(optionQuote);
+                // Decision.getInstance().decideSell(optionQuote);
             }
         } else {
             
@@ -456,6 +458,28 @@ export default class Prism {
                 const values = line.split(',');
                 if (tsym === values[4]) {
                     return values[1];
+                }
+            }
+        } catch (e) {
+            console.log(e);
+        } finally {
+            lineReader.close();
+        }
+
+    }
+
+    getContract = async (token) => {
+
+        //If matches exact requested token, then return it
+        var lineReader = readLine.createInterface({
+            input: fs.createReadStream(Config.NFOSymbolsPath)
+        });
+
+        try {
+            for await (const line of lineReader) {
+                const values = line.split(',');
+                if (token === values[1]) {
+                    return values[4];
                 }
             }
         } catch (e) {
@@ -729,6 +753,31 @@ export default class Prism {
         return new NiftyQuote();
     }
 
+    sellContract = async(contract, qty, price?) => {
+        console.log('In Sell Contract contract: ', contract, ' price: ', price)
+        if (!price) {
+            const quote = await this.getStockOptionQuote(contract);
+            price = quote.ltp
+        }
+
+        const transactionType = ''
+        const limit = "LMT"
+        const nse = "NFO"
+        const normal = "M" //for fno
+
+        const order = {
+            "trantype": transactionType,
+            "prd": normal,
+            "exch": nse,
+            "tsym": contract,
+            "qty": qty,
+            "prctyp": limit,
+            "prc": price
+        }
+
+        this._placeOrder(order)
+    }
+
     buyContract = async(contract, price?) => {
         console.log('In Buy Contract contract: ', contract, ' price: ', price)
         if (!price) {
@@ -970,10 +1019,14 @@ export default class Prism {
         }
 
         this._placeOrder(order);
+        const token = await this.getToken(order.tsym);
         return {
             "contract": tsym,
             "qty": qty,
             "price": price,
+            "lastOrderedPrice": price,
+            "token": token,
+            "profit": 0
         }
         
     }

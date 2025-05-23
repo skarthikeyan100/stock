@@ -1,4 +1,4 @@
-import { NiftyQuote, Trade } from "../model/model";
+import { NiftyQuote, OptionQuote, Trade } from "../model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
 import Prism from '../prism'
@@ -13,14 +13,14 @@ export enum Outcome {
 
 //Strategy: If support is breached, buy PUT. If resistance is breached, buy CALL
 
-export default class PivotStrategy extends Strategy {
+export default class PivotStrategy extends Strategy{
     tradeMap: Map<String, Trade>;
     name: string;
     previousWindowTrend = 'NEUTRAL'
     stats: any
 
     constructor() {
-        super();
+        super()
         this.tradeMap = new Map();
         this.name = 'PivotStrategy';
     }
@@ -34,7 +34,7 @@ export default class PivotStrategy extends Strategy {
         }
     }
 
-    async process(quote) {
+    async processNiftyQuote(quote) {
         if (!f.hasExceededTrades()) {
             if (this.isTimeInRange() && !this.ordered) {
                 if (this.stats != null && quote.token === 'NIFTY' && this.stats.S1 != -1 && this.stats.R1 != -1) {
@@ -50,5 +50,7 @@ export default class PivotStrategy extends Strategy {
         }
     }
 
+    processOptionQuote(quote: OptionQuote) {
+    }
 
 }

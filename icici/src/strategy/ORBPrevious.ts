@@ -1,5 +1,5 @@
 import { Strategy, Outcome } from "./strategy";
-import { NiftyQuote, Trade } from "model/model";
+import { NiftyQuote, OptionQuote, Trade } from "model/model";
 import { throwStatement } from "@babel/types";
 
 class Variables {
@@ -10,6 +10,12 @@ class Variables {
 
 }
 export class ORBPrevious extends Strategy {
+    processNiftyQuote(quote: NiftyQuote) {
+        throw new Error("Method not implemented.");
+    }
+    processOptionQuote(quote: OptionQuote) {
+        throw new Error("Method not implemented.");
+    }
     receive(oldStats: any, newStats: any) {
         throw new Error("Method not implemented.");
     }

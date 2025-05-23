@@ -1,9 +1,12 @@
 import { NIFTY } from "../constants";
-import { NiftyQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
+import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
 import moment from "moment";
 import Prism from "../prism";
 import config from "../prism/config";
 import * as f from '../orderList'
+import PivotStrategy from "./PivotStrategy";
+import DiffStrategy from "./DiffStrategy";
+import BiDirectionStrategy from "./BiDirectionStrategy";
 export enum Outcome {
     WAIT = "WAIT",
     CALL = "CALL",
@@ -13,8 +16,8 @@ export enum Outcome {
 
 
 export abstract class Strategy {
-    tradeMap : Map<String, Trade>
-    orderMap : Map<String, OrderInfo>
+    tradeMap : Map<String, Trade> = new Map()
+    orderMap : Map<String, OrderInfo> = new Map()
     name: string
     BUY = 'Buy'
     SELL = 'Sell'
@@ -22,18 +25,24 @@ export abstract class Strategy {
     // process(quote: NiftyQuote, token: String) : Outcome 
     // addTrade(trade: Trade);
     abstract receive(oldStats, newStats);
-    abstract process(quote: NiftyQuote);
-
+    abstract processNiftyQuote(quote: NiftyQuote);
+    abstract processOptionQuote(quote: OptionQuote);
+    
+    canHandleOptionQuote(quote: OptionQuote): boolean {
+        return false;
+    }
+   
     isTimeInRange(): boolean {
         const now = moment();
         const startTime = moment().hour(9).minute(30);
-        const endTime = moment().hour(15).minute(0);
+        const endTime = moment().hour(15).minute(30);
     
         return now.isAfter(startTime) && now.isBefore(endTime);
     }
 
     async addOrder(price, right) {
         const order = await Prism.getInstance().buyIndex(NIFTY, price, right);
+        console.log(this.getClassName + ' In add order ', order)
         this.orderMap.set(order.contract, order);
         this.ordered = true;
     }
