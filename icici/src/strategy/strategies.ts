@@ -4,8 +4,8 @@ import PivotStrategy from "./PivotStrategy";
 import { Strategy } from "./strategy";
 
 const strategies: Array<Strategy> = [
-    new PivotStrategy(),
-    new DiffStrategy(),
+    // new PivotStrategy(),
+    // new DiffStrategy(),
     new BiDirectionStrategy()
 ];
 

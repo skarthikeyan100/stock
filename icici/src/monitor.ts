@@ -398,7 +398,6 @@ export default class Monitor {
             canHandle = strategy.canHandleOptionQuote(optionQuote);
             if (canHandle == true) {
                 strategy.processOptionQuote(optionQuote)
-                console.log(strategy.getClassName(), ' handles ', optionQuote.token)
                 const index = this.trades.findIndex(t => t.token == optionQuote.token);
                 if (index != -1) {
                     console.log('Trade is handled by strategy, so remove from monitor for  ', optionQuote.token)
@@ -407,6 +406,8 @@ export default class Monitor {
                 return;
             }
         }
+
+        console.log('WRONG: Code should not reach here for Bidirection Strategy')
 
         const prism = Prism.getInstance()
         // console.log('optionQuote: ', optionQuote)

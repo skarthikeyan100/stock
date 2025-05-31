@@ -29,6 +29,7 @@ export abstract class Strategy {
     abstract processOptionQuote(quote: OptionQuote);
     
     canHandleOptionQuote(quote: OptionQuote): boolean {
+        console.log(this.getClassName(), ': canHandleOptionQuote: returning false', quote.token)
         return false;
     }
    

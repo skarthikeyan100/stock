@@ -103,6 +103,7 @@ class NorenRestApi {
 
   setUserToken = async (token) => {
     const { writeFile } = require('fs/promises')
+    console.log('Writing token ', token)
     await writeFile("userToken.txt", token);
   }
 

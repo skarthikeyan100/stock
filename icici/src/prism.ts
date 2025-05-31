@@ -301,7 +301,7 @@ export default class Prism {
 
         // TODO Required only if monitoring index prices
         await this.subscribeNifty();
-        await this.refreshTradeList();
+        // await this.refreshTradeList();
     }
 
     startTime = 0;
@@ -760,7 +760,7 @@ export default class Prism {
             price = quote.ltp
         }
 
-        const transactionType = ''
+        const transactionType = 'S'
         const limit = "LMT"
         const nse = "NFO"
         const normal = "M" //for fno
@@ -775,7 +775,7 @@ export default class Prism {
             "prc": price
         }
 
-        this._placeOrder(order)
+        await this._placeOrderWithForce(order)
     }
 
     buyContract = async(contract, price?) => {
@@ -804,7 +804,7 @@ export default class Prism {
             "prc": price
         }
 
-        this._placeOrder(order)
+        await this._placeOrderWithForce(order)
     }
 
     buyIndex = async(index, ltp?, right?) => {
@@ -1034,17 +1034,20 @@ export default class Prism {
     _placeOrder = async (order) => {
         
         if (!f.exists(order.tsym)) {
-            console.log('Place Order ', order);
-            
-            await NorenRestApi.place_order(order) as any;
-            const token = await this.getToken(order.tsym);
-            console.log(`Subscribe to tsym ${order.tsym} using token ${token}`)
-            await this.subscribeOption(token);
+            await this._placeOrderWithForce(order)
             f.addOrder(order.tsym)
-
-            await delay(2000)
         }
 
+    }
+
+    _placeOrderWithForce = async (order) => {
+        console.log('Place Order ', order);
+            
+        await NorenRestApi.place_order(order) as any;
+        const token = await this.getToken(order.tsym);
+        console.log(`Subscribe to tsym ${order.tsym} using token ${token}`)
+        await this.subscribeOption(token);
+        await delay(2000)
     }
     _getIndexFromToken = (token: string) => token.startsWith('BANK') ? 'BANKNIFTY' : token.startsWith('NIFTY') ? 'NIFTY' : 'FINNIFTY'
 
