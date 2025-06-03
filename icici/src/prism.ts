@@ -7,7 +7,7 @@ import NorenRestApi from './prism/RestAPI'
 import _ from 'lodash'
 import crypto from 'crypto'
 import delay from 'delay';
-import { NiftyQuote, OptionQuote, Trade, Order, OrderInfo } from './model/model';
+import { NiftyQuote, OptionQuote, Trade, Order, OrderInfo, OrderStatus } from './model/model';
 import util from 'util';
 const spawn = require('child_process').spawn;
 import myEmitter from './tools/emitter';
@@ -1026,7 +1026,8 @@ export default class Prism {
             "price": price,
             "lastOrderedPrice": price,
             "token": token,
-            "profit": 0
+            "profit": 0,
+            "status": OrderStatus.ORDERED
         }
         
     }

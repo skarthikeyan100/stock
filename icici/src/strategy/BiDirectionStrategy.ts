@@ -14,7 +14,7 @@ export enum Outcome {
 }
 
 const stopLossThreshold = 10
-const buyAgainDiff = 20
+const buyAgainDiff = 10
 const targetPrice = 10
 
 const round = (num) => Math.round(num * 100) / 100;
@@ -30,8 +30,9 @@ export default class BiDirectionStrategy extends Strategy {
     stats: any
     ordered = false
     expectedProfit = 2000
-    callOpened = false
-    putOpened = false
+    maxLoss = 10000
+    isCallActive = false
+    isPutActive = false
     sellCallOrderPlaced = false
     sellPutOrderPlaced = false
     
@@ -66,24 +67,28 @@ export default class BiDirectionStrategy extends Strategy {
         if (this.ordered == true) {
             const profit = this.findProfit(quote.token, quote.ltp)
 
-           
-            
             if (profit > this.expectedProfit) {
+                await this.closeStrategy()
+            }
+
+            if (profit < -this.maxLoss) {
                 await this.closeStrategy()
             }
 
             // Handle negative direction
 
-            if (this.call && this.call.token && this.call.token == quote.token && 
-                (this.call.lastOrderedPrice - quote.ltp) < -stopLossThreshold) {
+            if (this.call && this.call.token && this.call.token == quote.token 
+                && !(this.call.status == OrderStatus.ORDERED)
+                && (quote.ltp - this.call.lastOrderedPrice) < -stopLossThreshold) {
                     console.log('BiDirectionStrategy: buy call contract ', this.call.contract, ' at ', quote.ltp)
                     this.call.lastOrderedPrice = quote.ltp
                     this.call.status = OrderStatus.ORDERED
                     await Prism.getInstance().buyContract(this.call?.contract, quote.ltp)
             }
 
-            if (this.put && this.put.token && this.put.token == quote.token && 
-                (this.put.lastOrderedPrice - quote.ltp) < -stopLossThreshold) {
+            if (this.put && this.put.token && this.put.token == quote.token
+                && !(this.put.status == OrderStatus.ORDERED)
+                && (quote.ltp - this.put.lastOrderedPrice - quote.ltp) < -stopLossThreshold) {
                     console.log('BiDirectionStrategy: buy put contract ', this.put.contract, ' at ', quote.ltp)                
                     this.put.lastOrderedPrice = quote.ltp
                     this.put.status = OrderStatus.ORDERED
@@ -93,27 +98,50 @@ export default class BiDirectionStrategy extends Strategy {
             // Handle positive direction
 
             if (this.call && this.call.token && this.call.token == quote.token && 
-                (quote.ltp - this.call.price) >= targetPrice) {
+                (quote.ltp - this.call.price) >= targetPrice && !this.sellCallOrderPlaced) {
                     console.log('Attempting to sell a call contract: ', this.sellCallOrderPlaced)
                     if (!this.sellCallOrderPlaced) {
                         console.log('BiDirectionStrategy: sell call contract ', this.call.contract, ' at ', quote.ltp)
                         await Prism.getInstance().sellContract(this.call.contract, this.call.qty, quote.ltp)
+                        await this.openCallTrade();
+
                         this.sellCallOrderPlaced = true
-                        this.callOpened = false;
+                        this.isCallActive = false
                     }
             }
 
             if (this.put && this.put.token && this.put.token == quote.token && 
-                (quote.ltp - this.put.price) >= targetPrice) {
+                (quote.ltp - this.put.price) >= targetPrice && !this.sellPutOrderPlaced) {
                     console.log('Attempting to sell a put contract: ', this.sellPutOrderPlaced)
                     if (!this.sellPutOrderPlaced) {
                         console.log('BiDirectionStrategy: sell put contract ', this.put.contract, ' at ', quote.ltp)
                         await Prism.getInstance().sellContract(this.put.contract, this.put.qty, quote.ltp)
+                        await this.openPutTrade();
                         this.sellPutOrderPlaced = true
-                        this.putOpened = false
+                        this.isPutActive = false
                     }
             }
 
+        }
+    }
+
+    openPutTrade = async () => {
+        const putInfo : OrderInfo = await Prism.getInstance().buyIndex(NIFTY, this.stats.high, PUT);
+        console.log('After ordering this.put: ', putInfo)
+        if (putInfo) {
+            this.put = putInfo
+            this.isPutActive = true
+            console.log('Put Trade is open now, so cannot place any PUT order')
+        }
+    }
+
+    openCallTrade = async () => {
+        const callInfo : OrderInfo = await Prism.getInstance().buyIndex(NIFTY, this.stats.low, CALL);
+        console.log('After ordering this.call: ', callInfo)
+        if (callInfo) {
+            this.call = callInfo
+            this.isCallActive = true
+            console.log('Call Trade is open now, so cannot place any CALL order')
         }
     }
     
@@ -121,38 +149,21 @@ export default class BiDirectionStrategy extends Strategy {
         
         // if (this.stats != null) {
         //     console.log(this.getClassName(), ' eventName: ', this.stats.results.eventName )
-        //     console.log(this.getClassName(), ' this.isTimeInRange(): ', this.isTimeInRange() )
-        //     console.log(this.getClassName(), ' ordered: ', this.ordered )
+        //     console.log(this.getClassName(), ' ordered: ', this.ordered, ' putOpened: ', this.putOpened, ' callOpened: ', this.callOpened )
         // }
         if (this.isTimeInRange() && this.stats != null && 
-            this.stats.results.eventName == 'priceUpdate_60' && !this.ordered) {
-                
-            this.ordered = true;
-            console.log('BiDirectionStrategy: Buy CALL and PUT as high is ', this.stats.high, ' and low is ', this.stats.low)
+            this.stats.results.eventName == 'priceUpdate_60' && !this.ordered)  {
 
-            if (this.putOpened == false) {
-                const putInfo : OrderInfo = await Prism.getInstance().buyIndex(NIFTY, this.stats.high, PUT);
-                console.log('After ordering this.put: ', this.put)
-                if (putInfo) {
-                    this.put = putInfo
-                    this.putOpened = true
-                }
-            }
-            
-
-            if (this.callOpened == false) {
-                const callInfo : OrderInfo = await Prism.getInstance().buyIndex(NIFTY, this.stats.low, CALL);
-                console.log('After ordering this.call: ', this.call)
-                if (callInfo) {
-                    this.call = callInfo
-                    this.callOpened = true
-                }
-    
+                this.ordered = true;
+                console.log('BiDirectionStrategy: Buy CALL and PUT as high is ', this.stats.high, ' and low is ', this.stats.low)
+                await this.openCallTrade()
+                await this.openPutTrade()
             }
         }
-    }
+
 
     closeStrategy = async () => {
+        console.log('BiDirectionStrategy: closeStrategy called')
         if (this.call && this.call.contract) {
             await Prism.getInstance().sell(this.call.contract, this.call.qty, this.call.price)
         }
@@ -165,8 +176,8 @@ export default class BiDirectionStrategy extends Strategy {
         this.call = {} as OrderInfo
         this.put = {} as OrderInfo
         this.ordered = false;
-        this.callOpened = false;
-        this.putOpened = false;
+        this.isCallActive = false;
+        this.isPutActive = false;
         this.orderMap.clear();
 
     }
@@ -181,18 +192,16 @@ export default class BiDirectionStrategy extends Strategy {
             this.put.profit = (ltp - this.put.price) * this.put.qty
         }
 
-        console.log('call profit: ', this.call.profit, ' put profit: ', this.put.profit)
-
         profit += this.call?.profit ? this.call?.profit: 0;
         profit += this.put?.profit ? this.put?.profit: 0;
 
         if (token == this.call?.token) {
-            process.stdout.write('\nBiDirectionStrategy: ltp: ' + ltp + ' call diff: ' + round(ltp - this.call.lastOrderedPrice);)
+            process.stdout.write('\nBiDirectionStrategy: ltp: ' + ltp + ' call diff: ' + round(ltp - this.call.lastOrderedPrice));
         }
         if (token == this.put?.token) {
             process.stdout.write('\nBiDirectionStrategy: ltp: ' + ltp + ' put diff: ' + round(ltp - this.put.lastOrderedPrice));
         }
-        process.stdout.write('Profit: ' + round(profit) + ' call: '+ round(this.call.profit) + ' put: ' + round(this.put.profit))
+        process.stdout.write(' Profit: ' + round(profit) + ' call: '+ round(this.call.profit) + ' put: ' + round(this.put.profit) + '\n')
         return profit
     }
 

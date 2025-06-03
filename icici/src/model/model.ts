@@ -122,10 +122,8 @@ export class OrderInfo {
     qty: number;
     price: number
     lastOrderedPrice: number
-    status?: OrderStatus
+    status: OrderStatus
     profit?: number
-
-    
 }
 
 export class Order {
