@@ -35,17 +35,23 @@ export abstract class Strategy {
    
     isTimeInRange(): boolean {
         const now = moment();
-        const startTime = moment().hour(9).minute(30);
+        const startTime = moment().hour(10).minute(30);
         const endTime = moment().hour(15).minute(30);
     
         return now.isAfter(startTime) && now.isBefore(endTime);
     }
 
-    async addOrder(price, right) {
-        const order = await Prism.getInstance().buyIndex(NIFTY, price, right);
+    async addOrder(price, right, quantity?: number) {
+        const order = await Prism.getInstance().buyIndex(NIFTY, price, right, quantity);
         console.log(this.getClassName + ' In add order ', order)
         this.orderMap.set(order.contract, order);
         this.ordered = true;
+        return {
+            contract: order.contract,
+            price: order.price,
+            qty: order.qty,
+            token: order.token
+        }
     }
 
     getClassName(): string {

@@ -83,11 +83,11 @@ table, th, td {
                 });
                 table.append(tr); // Append the table row to the table
             });
-            container.html(table) // Append the table to the container element
+            container.html(data) // Append the table to the container element
         }
 
         if (typeof (EventSource) !== "undefined") {
-            var source = new EventSource("http://localhost:3000/datastream");
+            var source = new EventSource("http://localhost:3000/statusstream");
             source.onmessage = function (event) {
                 convert(event.data)
             };

@@ -17,7 +17,7 @@ import Prism from './prism';
 import Config, { Strategies } from './prism/config';
 import Util from './util';
 import indexMap from './nse_index';
-import { NIFTY, BANKNIFTY, FINNIFTY, SIMULATION } from './constants'
+import { NIFTY, BANKNIFTY, FINNIFTY, SIMULATION, PUT, CALL } from './constants'
 import candleManager, { CandleType } from './candle';
 import { Strategy, Outcome } from './strategy/strategy';
 import { ORBPrevious } from './strategy/ORBPrevious';
@@ -127,7 +127,8 @@ export default class Monitor {
             tradeEvent.token = await prism.getToken(tradeEvent.tsym);
             tradeEvent.action = data.trantype == 'S' ? 'Sell' : 'Buy'
             tradeEvent.status = data.status
-            
+            tradeEvent.right = tradeEvent.tsym.indexOf('P') ? PUT : CALL;
+
             if (tradeEvent.action == 'Buy') {
                 tradeEvent.lastTradePrice = tradeEvent.price
             }
@@ -338,6 +339,7 @@ export default class Monitor {
     _processTradeEvent = async (tradeEvent: Trade) => {
         console.log('Trades length: ', this.trades.length)
         strategies.forEach( strategy => {
+            console.log('Trade Event: ', tradeEvent)
             strategy.updateTrade(tradeEvent)
         })
         const prism = Prism.getInstance();
@@ -400,7 +402,6 @@ export default class Monitor {
                 strategy.processOptionQuote(optionQuote)
                 const index = this.trades.findIndex(t => t.token == optionQuote.token);
                 if (index != -1) {
-                    console.log('Trade is handled by strategy, so remove from monitor for  ', optionQuote.token)
                     this.trades.splice(index, 1)
                 }
                 return;

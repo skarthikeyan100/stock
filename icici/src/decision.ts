@@ -79,7 +79,7 @@ export default class Decision {
             this.onTrigger.process(quote);
         }
         for (const strategy of strategies) {
-            strategy.processOptionQuote(quote);
+            await strategy.processOptionQuote(quote);
         }
     }
 
@@ -200,7 +200,7 @@ export default class Decision {
         // let quote: NiftyQuote;
         // quote = await prism.getOptionQuote(token);
 
-        const trade = await prism.sendLimitOrder(token, quote.ltp, right as string, BUY, strategy);
+        const trade = await prism.sendLimitOrder(token, quote.ltp, right as string, BUY, 75, strategy);
         Mongo.getInstance().insert(trade);
         return trade;
     }
@@ -308,7 +308,6 @@ export default class Decision {
     _registerEventHandlers = () => {
 
         this.eventEmitter.on('stats', (stats) => {
-            console.log('Received stats ', stats)
             for (const strategy of strategies) {
                 strategy.receive(stats.oldStats, stats.newStats);
             }
@@ -322,7 +321,6 @@ export default class Decision {
             this.eventEmitter.on(eventName, (price) => {
                 // console.log(`Process event ${eventName} with price ${price} at ${moment().format("HH:mm:ss")}`);
                 // console.log(`Stored: ${this.priceStorage[eventName]}`);
-                console.log(`Process ${eventName}`)
                 this._calculateStatistics(eventName, this.priceStorage[eventName]);
                 this.priceStorage[eventName] = [];
             });
@@ -501,8 +499,6 @@ export default class Decision {
                 ema: emaCrossoverResults,
                 pivot: pivotResults
             }
-
-            console.log('Support Price: ', this.supportPrice, ' Resistance Price: ', this.resistantPrice);
 
             // this.results.push({ open, high, low, close, average, median, stdDeviation, trend, macd, rsi, bollinger });
             const periodicStats = new PeriodicStats(open, high, low, close, average, median, stdDeviation, trend, 

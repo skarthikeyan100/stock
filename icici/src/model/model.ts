@@ -113,6 +113,7 @@ export class Trade {
 
 export enum OrderStatus {
     ORDERED = 'ORDERED',
+    PENDING = 'PENDING',
     BOUGHT = 'BOUGHT',
 }
 

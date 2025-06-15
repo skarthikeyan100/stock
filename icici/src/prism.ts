@@ -28,7 +28,7 @@ import ObjectsToCsv from 'objects-to-csv';
 import * as f from './orderList'
 import { Strategy } from 'strategy/strategy';
 import { strategies } from './strategy/strategies';
-
+const round = (num) => Math.round(num * 100) / 100;
 
 class StockPrice {
     Stock: string
@@ -406,9 +406,15 @@ export default class Prism {
             await NorenRestApi.start_websocket(this)
         }
 
+        let i = 1;
+
         while (this.started == false) {
             console.log('Waiting for socket to open successfully')
             await this.sleep(2000);
+            i++;
+            if ( i == 5) {
+                throw new Error('Websocket is not opened successfully after 5 attempts. Please check the connection and try again.')
+            }
         }
     }
 
@@ -661,7 +667,7 @@ export default class Prism {
         // await NorenRestApi.subscribe(`NFO|${token}`);
         // const token = await NorenRestApi.searchscrip(contract);
         // NorenRestApi.subscribe('NFO|44236')
-        NorenRestApi.unsubscribe(`NFO|${token}`)
+        // NorenRestApi.unsubscribe(`NFO|${token}`)
         console.log('Unsubscribed Option ', token);
         const index = this.subscribedOptions.indexOf(token);
         if (index != -1) {
@@ -753,7 +759,7 @@ export default class Prism {
         return new NiftyQuote();
     }
 
-    sellContract = async(contract, qty, price?) => {
+    sellContract = async(contract, qty, price) => {
         console.log('In Sell Contract contract: ', contract, ' price: ', price)
         if (!price) {
             const quote = await this.getStockOptionQuote(contract);
@@ -778,7 +784,7 @@ export default class Prism {
         await this._placeOrderWithForce(order)
     }
 
-    buyContract = async(contract, price?) => {
+    buyContract = async(contract, price?, qty?) => {
         console.log('In Buy Contract contract: ', contract, ' price: ', price)
         if (!price) {
             const quote = await this.getStockOptionQuote(contract);
@@ -787,7 +793,9 @@ export default class Prism {
         const token = await this.getToken(contract);
         const lotSize = await this.findLotSizeByContract(contract);
         const lotSizeAsInt = parseInt(lotSize);
-        const qty = 1 * lotSizeAsInt;
+        console.log('Quantity Parameter in buyContract: ', qty)
+        qty = qty ? qty: 1 * lotSizeAsInt;
+        console.log('Quantity in buyContract: ', qty)
 
         const transactionType = 'B'
         const limit = "LMT"
@@ -799,7 +807,7 @@ export default class Prism {
             "prd": normal,
             "exch": nse,
             "tsym": contract,
-            "qty": lotSize,
+            "qty": qty,
             "prctyp": limit,
             "prc": price
         }
@@ -807,7 +815,7 @@ export default class Prism {
         await this._placeOrderWithForce(order)
     }
 
-    buyIndex = async(index, ltp?, right?) => {
+    buyIndex = async(index, ltp?, right?, qty?) => {
         const nseIndex = indexMap.get(index as string);
         let calculatedStrikePrice
         let calculatedRight
@@ -849,8 +857,8 @@ export default class Prism {
             const callQuote = await this.getOptionQuote(callToken);
             const putQuote = await this.getOptionQuote(putToken);
             console.log('Bidirection: ', Config.bidirection)
-            await this.sendLimitOrder(putToken, putQuote.ltp, 'put', 'buy', null);
-            return await this.sendLimitOrder(callToken, callQuote.ltp, 'call', 'buy', null);
+            await this.sendLimitOrder(putToken, putQuote.ltp, 'put', 'buy', qty);
+            return await this.sendLimitOrder(callToken, callQuote.ltp, 'call', 'buy', qty);
     
         } else {
             if (right == 'call' || Config.selectedOption == 'call') {
@@ -858,14 +866,14 @@ export default class Prism {
                     return
                 } else {
                     const callQuote = await this.getOptionQuote(callToken);
-                    return await this.sendLimitOrder(callToken, callQuote.ltp, 'call', 'buy', null);
+                    return await this.sendLimitOrder(callToken, callQuote.ltp, 'call', 'buy', qty);
                 }
             } else if (right == 'put' || Config.selectedOption == 'put') {
                 if (f.exists(putToken)) {
                     return
                 } else {
                     const putQuote = await this.getOptionQuote(putToken);
-                    return await this.sendLimitOrder(putToken, putQuote.ltp, 'put', 'buy', null);
+                    return await this.sendLimitOrder(putToken, putQuote.ltp, 'put', 'buy', qty);
                 }
             } else {
                 const callQuote = await this.getOptionQuote(callToken);
@@ -882,7 +890,7 @@ export default class Prism {
                 calculatedToken = (calculatedRight == 'put') ? putToken : callToken
                 // console.log('calculatedRight: ', calculatedRight, ' calculatedStrikePrice: ', calculatedStrikePrice)
                 // console.log('calculatedOptionPrice: ', calculatedOptionPrice, ' calculatedToken: ', calculatedToken)
-                return await this.sendLimitOrder(calculatedToken, calculatedOptionPrice, calculatedRight, 'buy', null);
+                return await this.sendLimitOrder(calculatedToken, calculatedOptionPrice, calculatedRight, 'buy', qty);
             }
         }
     }
@@ -997,11 +1005,15 @@ export default class Prism {
         await NorenRestApi.modify_order(updatedOrder)
     }    
 
-    sendLimitOrder = async (tsym: string, price: number, right: string, action: string, strategy: string) : Promise<OrderInfo> => {
+    sendLimitOrder = async (tsym: string, price: number, right: string, action: string, quantity: number, strategy?: string) : Promise<OrderInfo> => {
         const limit = "LMT"
         console.log('tsym: ' +tsym);
         const indexObj = tsym.startsWith('BANK') ? indexMap.get('BANKNIFTY') : tsym.startsWith('NIFTY') ? indexMap.get('NIFTY') : indexMap.get('FINNIFTY');
-        const qty = indexObj.getQuantity(price);
+        let qty = quantity;
+        if (!qty) {
+            qty = indexObj.getQuantity(price);
+        }
+        
         if (qty == 0) {
             console.log('Order is not placed, qty: ', qty, ' price: ', price)
         }
@@ -1015,7 +1027,7 @@ export default class Prism {
             "tsym": tsym,
             "qty": qty,
             "prctyp": limit,
-            "prc": price
+            "prc": round(price)
         }
 
         this._placeOrder(order);
@@ -1047,7 +1059,11 @@ export default class Prism {
         await NorenRestApi.place_order(order) as any;
         const token = await this.getToken(order.tsym);
         console.log(`Subscribe to tsym ${order.tsym} using token ${token}`)
-        await this.subscribeOption(token);
+        if (order.trantype == 'B') { 
+            await this.subscribeOption(token);
+        } else if (order.trantype == 'S') {
+            await this.unsubscribeOption(token);
+        } 
         await delay(2000)
     }
     _getIndexFromToken = (token: string) => token.startsWith('BANK') ? 'BANKNIFTY' : token.startsWith('NIFTY') ? 'NIFTY' : 'FINNIFTY'

@@ -42,7 +42,7 @@ export default class PivotStrategy extends Strategy{
                         console.log('PivotStrategy: Buy PUT as support is breached')
                         await this.addOrder(quote.ltp, PUT);
                     } else if ( quote.ltp > this.stats.results.pivot.R1  && this.previousWindowTrend === 'UP' ) {
-                        console.log('PivotStrategy: Buy PUT as resistance is breached')
+                        console.log('PivotStrategy: Buy CALL as resistance is breached')
                         await this.addOrder(quote.ltp, CALL);
                     } 
                 }

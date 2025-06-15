@@ -34,8 +34,8 @@ class Config {
     auto = false
     takePositionInOtherDirection = true
     
-    targetPriceDiff = 10 // TODO= Should be smaller closer to expiry. Bigger difference for bidirection
-    stopLossPriceDiff = 10
+    targetPriceDiff = 1 // TODO= Should be smaller closer to expiry. Bigger difference for bidirection
+    stopLossPriceDiff = 20
     
     buyAgainPriceDiff = 20
     buyTrail = 40 // Ideally should be 2x of buyAgainPrice

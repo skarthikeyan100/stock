@@ -26,7 +26,7 @@ HTML:
 
 
 http://localhost:3000/requestOtp
-http://localhost:3000/login?otp=68061
+http://localhost:3000/login?otp=62352
 http://localhost:3000/order?index=NIFTY&right=put&action=buy&strikePrice=21600&price=79
 http://localhost:3000/addTrade?tsym=NIFTY18JAN24P21700&flqty=200&flprc=78.8trantype=B
 

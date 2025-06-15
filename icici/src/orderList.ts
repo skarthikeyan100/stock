@@ -24,6 +24,8 @@ export function addOrder(contract) {
 }
 
 export function exists(contract) {
+    console.log('Check if order exists for ' + contract);
+    console.log('Current contract list: ' + contractList);
     if (tradesCount >= Config.totalTradesPerDay) {
         console.log('Total trades per day is reached: ' + tradesCount);
         return true; // Denies further trades
