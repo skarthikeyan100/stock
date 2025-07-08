@@ -4,7 +4,7 @@
 import axios, { AxiosRequestConfig } from 'axios'
 import NorenRestApi from './prism/RestAPI'
 
-import _ from 'lodash'
+import _, { forIn } from 'lodash'
 import crypto from 'crypto'
 import delay from 'delay';
 import { NiftyQuote, OptionQuote, Trade, Order, OrderInfo, OrderStatus } from './model/model';
@@ -27,7 +27,7 @@ import moment from 'moment'
 import ObjectsToCsv from 'objects-to-csv';
 import * as f from './orderList'
 import { Strategy } from 'strategy/strategy';
-import { strategies } from './strategy/strategies';
+import  strategies from './strategy/strategies';
 const round = (num) => Math.round(num * 100) / 100;
 
 class StockPrice {
@@ -132,6 +132,15 @@ class OpenInterestSeries {
 let priceSeries: PriceSeries[] = [];
 let openInterestSeries: OpenInterestSeries[] = [];
 
+function splitQty(qty) {
+    const max = 1800;
+    const result = [];
+    while (qty > 0) {
+        result.push(Math.min(qty, max));
+        qty -= max;
+    }
+    return result;
+}
 
 export default class Prism {
     setOnTrigger = (contract: string, triggerPrice) => {
@@ -447,9 +456,7 @@ export default class Prism {
             await NorenRestApi.subscribe(`NFO|${token}`)
             this.subscribedOptions.push(token)
             console.log('Subscribed Option ', token);
-        } else {
-            console.log('Already subscribed for the option ', token)
-        }
+        } 
     }
 
     getToken = async (tsym) => {
@@ -759,7 +766,7 @@ export default class Prism {
         return new NiftyQuote();
     }
 
-    sellContract = async(contract, qty, price) => {
+    sellContract = async(contract, qty, price) : Promise<void> => {
         console.log('In Sell Contract contract: ', contract, ' price: ', price)
         if (!price) {
             const quote = await this.getStockOptionQuote(contract);
@@ -771,20 +778,80 @@ export default class Prism {
         const nse = "NFO"
         const normal = "M" //for fno
 
-        const order = {
-            "trantype": transactionType,
-            "prd": normal,
-            "exch": nse,
-            "tsym": contract,
-            "qty": qty,
-            "prctyp": limit,
-            "prc": price
-        }
+        const parts = splitQty(qty)
+        for (let i = 0; i < parts.length; i++) {
+            const order = {
+                "trantype": transactionType,
+                "prd": normal,
+                "exch": nse,
+                "tsym": contract,
+                "qty": parts[i],
+                "prctyp": limit,
+                "prc": price
+            }
 
-        await this._placeOrderWithForce(order)
+            await this._placeOrderWithForce(order)
+        }
     }
 
-    buyContract = async(contract, price?, qty?) => {
+    
+
+    getContractByPriceRange = async(ltp: number, right: string): Promise<string> => {
+        let result = null;
+        const index = 'NIFTY'
+        const nseIndex = indexMap.get(index);
+        const factor = 50
+        const floorPrice = Math.floor(ltp/factor) * factor;
+        const ceilPrice = Math.ceil(ltp/factor) * factor;
+        const floorDiff = Math.abs(floorPrice - ltp)
+        const ceilDiff = Math.abs(ceilPrice - ltp)
+        
+
+        for(var depth = 0; depth < 5; depth++) {
+            let strikePrice = floorDiff > ceilDiff ? ceilPrice: floorPrice
+            if (right == 'call') {
+                strikePrice += (depth * factor)
+            } else {
+                strikePrice -= (depth * factor)
+            }
+            
+            const contract = await nseIndex.findTokenFor(index, right, strikePrice);
+            const quote = await this.getOptionQuote(contract);
+            console.log('strikePrice: ', strikePrice, ' ltp: ', quote.ltp)
+            
+            if (f.isPriceInRange(quote.ltp)) {
+                result = contract;
+                break;
+
+            }
+        }
+
+        if (result == null) {
+            for(var depth = 1; depth < 5; depth++) {
+                let strikePrice = floorDiff > ceilDiff ? ceilPrice: floorPrice
+                if (right == 'call') {
+                    strikePrice -= (depth * factor)
+                } else {
+                    strikePrice += (depth * factor)
+                }
+                
+                const contract = await nseIndex.findTokenFor(index, right, strikePrice);
+                const quote = await this.getOptionQuote(contract);
+                console.log('strikePrice: ', strikePrice, ' ltp: ', quote.ltp)
+                
+                if (f.isPriceInRange(quote.ltp)) {
+                    result = contract;
+                    break;
+                }
+            }
+        }
+
+        return result
+
+    }
+
+    buyContract = async(contract, qty?, price?) => {
+
         console.log('In Buy Contract contract: ', contract, ' price: ', price)
         if (!price) {
             const quote = await this.getStockOptionQuote(contract);
@@ -793,26 +860,35 @@ export default class Prism {
         const token = await this.getToken(contract);
         const lotSize = await this.findLotSizeByContract(contract);
         const lotSizeAsInt = parseInt(lotSize);
-        console.log('Quantity Parameter in buyContract: ', qty)
         qty = qty ? qty: 1 * lotSizeAsInt;
-        console.log('Quantity in buyContract: ', qty)
 
         const transactionType = 'B'
         const limit = "LMT"
         const nse = "NFO"
         const normal = "M" //for fno
+        let response= {} as any
 
-        const order = {
-            "trantype": transactionType,
-            "prd": normal,
-            "exch": nse,
-            "tsym": contract,
-            "qty": qty,
-            "prctyp": limit,
-            "prc": price
+        const parts = splitQty(qty)
+        for (let i = 0; i < parts.length; i++) {
+            const partQty = parts[i];
+            const order = {
+                "trantype": transactionType,
+                "prd": normal,
+                "exch": nse,
+                "tsym": contract,
+                "qty": partQty,
+                "prctyp": limit,
+                "prc": price
+            }
+    
+            response = await this._placeOrderWithForce(order)
+            console.log('Response for part order: ', response)
         }
+        
 
-        await this._placeOrderWithForce(order)
+        response.qty = qty
+        return response
+
     }
 
     buyIndex = async(index, ltp?, right?, qty?) => {
@@ -1058,14 +1134,24 @@ export default class Prism {
             
         await NorenRestApi.place_order(order) as any;
         const token = await this.getToken(order.tsym);
-        console.log(`Subscribe to tsym ${order.tsym} using token ${token}`)
         if (order.trantype == 'B') { 
             await this.subscribeOption(token);
         } else if (order.trantype == 'S') {
             await this.unsubscribeOption(token);
         } 
         await delay(2000)
+
+        return {
+            "contract": order.tsym,
+            "qty": order.qty,
+            "price": order.prc,
+            "lastOrderedPrice": order.prc,
+            "token": token,
+            "profit": 0,
+            "status": OrderStatus.ORDERED
+        }
     }
+
     _getIndexFromToken = (token: string) => token.startsWith('BANK') ? 'BANKNIFTY' : token.startsWith('NIFTY') ? 'NIFTY' : 'FINNIFTY'
 
     squareOffOrder = async (token, qty) => {

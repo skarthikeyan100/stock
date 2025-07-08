@@ -138,6 +138,8 @@ import Config from './prism/config';
 import { NiftyQuote, OptionQuote } from './model/model';
 import Mongo from './tools/mongo';
 import { NIFTY, BANKNIFTY } from './constants';
+import strategies from './strategy/strategies';
+import DiffStrategy from 'strategy/DiffStrategy';
 
 let apiSession = '1644073';
 let sessionToken = 'U0VTSEExMDA6ODAyMDc4';
@@ -245,6 +247,21 @@ app.get('/start', async function (req: express.Request, res) {
         await prism.buyIndex('NIFTY')
         await prism.buyIndex('BANKNIFTY')
         res.sendStatus(200);
+    } catch (e) {
+        console.log(e)
+        res.sendStatus(500)
+    }
+
+})
+
+app.get('/strategies', async function (req: express.Request, res) {
+    try {
+        const { strategy, enable} = req.query;
+        strategies.forEach((s) => {
+            if (s.getClassName() == strategy) {
+                s.enabled = enable == 'true';
+            }
+        })
     } catch (e) {
         console.log(e)
         res.sendStatus(500)
@@ -816,7 +833,7 @@ console.log(routes)
 var server = app.listen(3000, async function () {
     console.log('Icici server started ')
     Mongo.init();
-    console.log('What Happens now? ', executeGap)
+    // console.log('What Happens now? ', executeGap)
     // let config = require("./prism/config").default;
 
     // new CronJob(`0 ${config.startMin} ${config.startHour} * * *`, async function() {

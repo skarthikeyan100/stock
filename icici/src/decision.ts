@@ -23,14 +23,14 @@ import { Strategy, Outcome } from './strategy/strategy';
 import { ORBPrevious } from './strategy/ORBPrevious';
 import stats from 'stats-lite';
 import regression from 'regression';
-import { EMA, RSI } from 'technicalindicators'; 
+import { EMA, RSI, SD } from 'technicalindicators'; 
 import EventEmitter from 'events';
 import executeGap from './executeGap'
 import { OnTrigger } from './onTrigger';
 import moment from 'moment';
 import Monitor from 'monitor';
 import * as f from './orderList'
-import { strategies } from './strategy/strategies';
+import strategies from './strategy/strategies';
 
 const CALL = 'call';
 const PUT = 'put';
@@ -79,6 +79,7 @@ export default class Decision {
             this.onTrigger.process(quote);
         }
         for (const strategy of strategies) {
+            // console.log('Process strategy ', strategy.getClassName())
             await strategy.processOptionQuote(quote);
         }
     }
@@ -313,7 +314,7 @@ export default class Decision {
             }
         });
         // const intervals = [10, 15, 30, 45, 60, 120, 300, 600, 900]; // 30s, 1m, 2m, 5m, 10m, 15m, 30m
-        const intervals = [60, 300]; // 10s
+        const intervals = [60]; // 10s
 
         intervals.forEach((interval) => {
             const eventName = `priceUpdate_${interval}`;

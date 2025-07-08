@@ -23,17 +23,17 @@ export class ExecuteGap {
                 const gapUpSize = niftyQuote.ltp - prevNiftyQuote.high;
                 console.log("Gap up " + gapUpSize + " ltp: " + niftyQuote.ltp + " prev high:  " + prevNiftyQuote.high);
                 if (gapUpSize > 100) {
-                    prism.buyIndex(this.nifty, 'call');
+                    // prism.buyIndex(this.nifty, 'call');
                 } else {
-                    prism.buyIndex(this.nifty, 'put');
+                    // prism.buyIndex(this.nifty, 'put');
                 }
             } else if (niftyQuote.ltp < prevNiftyQuote.low) {
                 const gapDownSize =  prevNiftyQuote.high - niftyQuote.ltp
                 console.log("Gap down " + gapDownSize + " ltp: " + niftyQuote.ltp + " prev low:  " + prevNiftyQuote.low);
                 if (gapDownSize > 100) {
-                    prism.buyIndex(this.nifty, 'put');
+                    // prism.buyIndex(this.nifty, 'put');
                 } else {
-                    prism.buyIndex(this.nifty, 'call');
+                    // prism.buyIndex(this.nifty, 'call');
                 }
 
             } else {

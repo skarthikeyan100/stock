@@ -24,7 +24,7 @@ import { ORBPrevious } from './strategy/ORBPrevious';
 import config from './prism/config';
 import { SystemZone } from 'luxon';
 import moment from 'moment';
-import { strategies } from './strategy/strategies';
+import strategies from './strategy/strategies';
 
 
 enum State {
@@ -149,7 +149,7 @@ export default class Monitor {
                     this.state = State.TRADED;
                 }                
     
-                console.log('Update Trade ', data)
+                // console.log('Update Trade ', data)
                 this._processTradeEvent(tradeEvent)
 
             //     ////// LEGACY CODE START
@@ -393,13 +393,13 @@ export default class Monitor {
         return now.isAfter(endTime);
     }
 
-    _processQuote(optionQuote: OptionQuote) {
+    async _processQuote(optionQuote: OptionQuote) {
         let canHandle = false;
         for (let index = 0; index < strategies.length; index++) {
             const strategy = strategies[index];
             canHandle = strategy.canHandleOptionQuote(optionQuote);
             if (canHandle == true) {
-                strategy.processOptionQuote(optionQuote)
+                await strategy.processOptionQuote(optionQuote)
                 const index = this.trades.findIndex(t => t.token == optionQuote.token);
                 if (index != -1) {
                     this.trades.splice(index, 1)
@@ -442,14 +442,6 @@ export default class Monitor {
                     trade.stopLossPrice = this.round(stopLossPrice);
                 }
 
-
-                const message: Message = new Message()
-                message.tsym = trade.tsym
-                message.traded = trade.price
-                message.ltp = optionQuote.ltp
-                message.buyAt = this.round(buyPrice)
-                messages.push(message)
-                console.log(trade.tsym, 'Traded: ', trade.price, 'ltp: ', optionQuote.ltp, ' sellAt: ', trade.targetPrice, ' stopAt: ', trade.stopLossPrice, ' profit: ', this.round(trade.getProfit()))
 
                 if ( optionQuote.ltp <= trade.stopLossPrice) {
                     console.log('Sell for stoploss ')
@@ -519,9 +511,6 @@ export default class Monitor {
                 // }
             }
         });
-        myEmitter.emit("status", messages)
-
-        
 
         // Handle pending orders
         // this.pendingOrders.forEach(async order => {

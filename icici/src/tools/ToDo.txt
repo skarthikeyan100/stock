@@ -26,7 +26,7 @@ HTML:
 
 
 http://localhost:3000/requestOtp
-http://localhost:3000/login?otp=62352
+http://localhost:3000/login?otp=53820
 http://localhost:3000/order?index=NIFTY&right=put&action=buy&strikePrice=21600&price=79
 http://localhost:3000/addTrade?tsym=NIFTY18JAN24P21700&flqty=200&flprc=78.8trantype=B
 
@@ -98,6 +98,7 @@ Tradesmart user Id: 9503046
 
 TPIN for Alice Blue: 541232
 TPIN for Shoonya: 572332
+TPIN for Raja: 020172
 
 Lessons:
 1. Do not buy after 3pm
@@ -170,3 +171,52 @@ Processor
    if (diff < -5) buy put
 
    NA-17476521642LO
+
+DL Application Number: 1406199125
+
+In Panic mode, there will be loss at either PE or CE
+
+If there is a loss above certain value, 
+   If loss is decreasing by certain amount
+   or if loss is increasing by certain amount
+
+   buy a bigger quantity and trade in certain profit. (may be 2 or 5 based on magnitude of loss)
+
+
+Based on the price, determine average quantity
+
+https://money.usnews.com/investing/articles/top-stocks-to-buy-in-different-sectors - 11 stocks from each sector
+
+
+Add Gold, Silver, 
+Add Natural Gas, Crude Oil
+
+Freeze Quantity - Done
+Fine tune parameters - Done
+Only one contract at a time, only if required go bidirectional - Done
+Find contract based on the price - Done
+
+3. Separate instances for Raja and Karthik
+When buying again, buy in opposite direction too for the same amount
+Every iteration, multiply base number
+
+1. Use all strategies
+2. Have a strategy to buy and sell with profit or stoploss
+3. Strategy specific parameters in yml file
+4. Run multiple strategies at once
+5. Use MongoStream to use same data, added advantage is that data will be stored in Mongo
+6. Finetune parameters at runtime
+7. Refresh open trades for specific strategy
+8. Save Data for analysis - use Mongo Stream
+9. Find support and resistance for various time periods, MACD, RSA - use ML
+10. Set target and average threshold based on standard deviation
+
+Have in 1 direction, only if there is considerable loss, start in another direction - this is for day 1
+
+11. Save trades to find strategy and average price
+
+If waiting for averaging, getting lost in small ups if the price is between purchase price and threshold
+
+If opposite direction, still in loss, buy at last ordered price
+
+

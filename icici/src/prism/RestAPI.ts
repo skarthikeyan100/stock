@@ -11,21 +11,23 @@ class NorenRestApi {
 
   //Karthik
   userId = 'FA96552'
-  passwd = 'Api@127'
+  
+  passwd = 'Api@128'
   vendorCode = 'FA96552_U'
   imei = 'abc1234'
   apiKey = 'cac8568d15187897a1a38209da48c1fe'
   twoFA = '78601'
-  otpRequest = {"uid":"FA96552","pan":"835f37e5be4552d54875aedbb6a0056a911b33b9eec3e3d1d655e61c26f4bae8"}
+  otpRequest = {"uid":"FA96552","pan":"3ca672c1a0717120ef3035b90ad6a9f6591783970b361784fbcd91435d666ac4"}
 
-  //Raja
+
+  //Raja //AJAPR6032J
   // userId = 'FA396690'
-  // passwd = 'Raja@72'
+  // passwd = 'SRaja@72'
   // vendorCode = 'FA396690_U'
   // imei = 'abc1234'
   // apiKey = 'b29b6326ad9282d0b2aa80e49843d26c'
   // twoFA = '78601'
-  // otpRequest = {"uid":"FA396690","pan":"555acb52642fb6182e3d337365c489bae8d4f16632a04aed12a3c315367aeee0"}
+  // otpRequest = {"uid":"FA96552","pan":"344e0e2df4e870bfc2a28403817fa32e88981fb2dfcd1116c35406d088c91566"}
 
   endpoint = 'test';
   userToken = '9d388557d894a8137d4c1663f8b41dd32801b36e68ecebef177c24f082f0bcd1';
@@ -61,7 +63,7 @@ class NorenRestApi {
     this.endpoint = Config.endpoint;
 
     axios.interceptors.request.use(req => {
-      console.log("use::", `${req.method} ${req.url} ${req.data}`);
+      // console.log("use::", `${req.method} ${req.url} ${req.data}`);
       // Important: request interceptors **must** return the request.
       return req;
     });

@@ -122,14 +122,22 @@ class PositionCard extends ConsumerWidget {
           (ElevatedButton(
               onPressed: () {
                 print('Data to squareoff is $data');
-
-
                 notifier.squareOff(data.tsym, data.right, data.quantity);
               },
               child: const Text(
                 'Square Off',
                 style: TextStyle(fontSize: 18),
+              ))),
+            (ElevatedButton(
+              onPressed: () {
+                print('Add more to $data');
+                notifier.squareOff(data.tsym, data.right, 900);
+              },
+              child: const Text(
+                'Square Off',
+                style: TextStyle(fontSize: 18),
               )))
+
         ],
       ),
     );

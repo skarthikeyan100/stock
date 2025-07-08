@@ -6,7 +6,6 @@ import config from "../prism/config";
 import * as f from '../orderList'
 import PivotStrategy from "./PivotStrategy";
 import DiffStrategy from "./DiffStrategy";
-import BiDirectionStrategy from "./BiDirectionStrategy";
 export enum Outcome {
     WAIT = "WAIT",
     CALL = "CALL",
@@ -22,6 +21,7 @@ export abstract class Strategy {
     BUY = 'Buy'
     SELL = 'Sell'
     ordered = false
+    enabled = false
     // process(quote: NiftyQuote, token: String) : Outcome 
     // addTrade(trade: Trade);
     abstract receive(oldStats, newStats);
@@ -29,13 +29,12 @@ export abstract class Strategy {
     abstract processOptionQuote(quote: OptionQuote);
     
     canHandleOptionQuote(quote: OptionQuote): boolean {
-        console.log(this.getClassName(), ': canHandleOptionQuote: returning false', quote.token)
         return false;
     }
    
     isTimeInRange(): boolean {
         const now = moment();
-        const startTime = moment().hour(10).minute(30);
+        const startTime = moment().hour(10).minute(0);
         const endTime = moment().hour(15).minute(30);
     
         return now.isAfter(startTime) && now.isBefore(endTime);

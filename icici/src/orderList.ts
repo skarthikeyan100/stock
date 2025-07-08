@@ -24,13 +24,14 @@ export function addOrder(contract) {
 }
 
 export function exists(contract) {
-    console.log('Check if order exists for ' + contract);
-    console.log('Current contract list: ' + contractList);
-    if (tradesCount >= Config.totalTradesPerDay) {
-        console.log('Total trades per day is reached: ' + tradesCount);
-        return true; // Denies further trades
-    }
-    return contractList.includes(contract)
+    // console.log('Check if order exists for ' + contract);
+    // console.log('Current contract list: ' + contractList);
+    // if (tradesCount >= Config.totalTradesPerDay) {
+    //     console.log('Total trades per day is reached: ' + tradesCount);
+    //     return true; // Denies further trades
+    // }
+    // return contractList.includes(contract)
+    return false; // Temporaty to test single strategy
 }
 
 export function hasExceededTrades() {
@@ -38,4 +39,8 @@ export function hasExceededTrades() {
         console.log('Total trades per day is reached: ' + tradesCount);
         return true; // Denies further trades
     }
+}
+
+export function isPriceInRange(price) {
+    return price > 10 && price < 120;
 }

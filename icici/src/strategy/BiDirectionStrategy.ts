@@ -4,8 +4,8 @@ import * as f from '../orderList'
 import Prism from '../prism'
 import { NIFTY, CALL, PUT, BOUGHT } from '../constants'
 import myEmitter from '../tools/emitter';
+import { TouchSequence } from "selenium-webdriver";
 
-import moment from "moment";
 
 export enum Outcome {
     WAIT = "WAIT",
@@ -15,21 +15,39 @@ export enum Outcome {
 
 }
 
-const stopLossThreshold = 20
-const buyAgainDiff = 2 // After sell
+
+// Consider volatility or standard deviation too
+const averageThreshold = 10
+const buyAgainDiff = 0 // After sell
 const targetPrice = 5
+const fixedProfit = 1000; // will be used only when average price is < 50
+const expectedProfit = 1000;
+const initialQuantity = 75;
+const incrementQuantity = 75;
+const doubleAverage = false;
 
 const round = (num) => Math.round(num * 100) / 100;
 
 
 //Strategy: If support is breached, buy put?. If resistance is breached, buy CALL
 
+class ContraOrder {
+    right: string
+    quantity: number
+
+    constructor(right: string, quantity: number) {
+        this.right = right;
+        this.quantity = quantity;
+    }
+}
+
 class Contract {
     contract: string;
-    price: number;
-    qty: number;
+    price: number = 0;
+    qty: number = 0;
     token: string;
     lastOrderedPrice: number;
+    lastOrderedQuantity: number = 0;
     profit: number = 0;
     ltp: number = 0;
     BUY = 'Buy'
@@ -37,17 +55,16 @@ class Contract {
     buyOrderPlaced = false
     sellOrderPlaced = false
     status: OrderStatus = OrderStatus.PENDING;
-    escalateQuantity = 750
-    isEscalated = false
-    realized: number = 0;
     iterationCount: number = 1;
+    buyAt: number = 0;
+    sellAt: number = 0;
 
-    constructor(contract, price, qty, token) {
+    constructor(contract) {
         this.contract = contract;
-        this.price = price;
-        this.qty = qty;
+    }
+
+    update = (token) => {
         this.token = token;
-        this.lastOrderedPrice = price;
     }
 
     toString = () => {
@@ -59,97 +76,127 @@ class Contract {
         this.lastOrderedPrice = 0;
         this.price = 0;
         this.profit = 0;
+        this.buyAt = 0;
+        this.sellAt = 0;
+        this.iterationCount = 1;
     }
 
     canHandleOptionQuote = (token) => {
         return this.token != null && this.token == token;
     }
 
-    escalate = async () => {
-        if (this.ltp && !this.isEscalated) {
-            console.log('BiDirectionStrategy: escalate put contract ')
-            this.isEscalated = true
-            await Prism.getInstance().buyContract(this.contract, this.ltp - 2, this.escalateQuantity)
-        }
-    }
 
-    processOptionQuote = async (quote: OptionQuote) => {
-
+    processOptionQuote = async (quote: OptionQuote) : Promise<ContraOrder | null>=> {
+        let contraOrder = null;
         this.ltp = quote.ltp;
+        // console.log('Calculate profit ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty)
+        this.profit = round((quote.ltp - this.price) * this.qty)
+        console.log('Set profit for ', this.contract, ' ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty)
+        const diff = quote.ltp - this.lastOrderedPrice
+        const percent = round(diff/ this.lastOrderedPrice * 100)
+
         //Handle negative direction
         if (this.token && this.token == quote.token
             && !this.buyOrderPlaced
-            && (quote.ltp - this.lastOrderedPrice) < -stopLossThreshold) {
+            && (quote.ltp - this.lastOrderedPrice) < -averageThreshold) {
             
+            console.log('Percent change: ', percent);
             this.lastOrderedPrice = quote.ltp
             this.buyOrderPlaced = true
             // if (this.qty > 1200) {
             //     console.log('Sell for loss for the contract ', this.contract )
             //     await Prism.getInstance().sellContract(this.contract, this.qty, quote.ltp)
             // } else {
-                console.log('BiDirectionStrategy: buy call contract ', this.contract, ' at ', quote.ltp)
+                console.log('BiDirectionStrategy: buy contract ', this.contract, ' at ', quote.ltp)
                 this.iterationCount++
-                const qty = this.iterationCount * 75;
+                let qty = 0;
+                if (doubleAverage) {
+                    qty = this.qty * 2
+                } else {
+                    qty =  this.iterationCount * incrementQuantity;
+                }
+                const right = this.contract.indexOf('CE') > -1 ? PUT : CALL
+                contraOrder = new ContraOrder(right, qty);
 
                 if (this.iterationCount < 10) {
-                    await Prism.getInstance().buyContract(this.contract, quote.ltp, qty)
+                    await Prism.getInstance().buyContract(this.contract, qty, quote.ltp)
                 } else {
                     console.log('BiDirectionStrategy: Iteration count exceeded for contract ', this.contract)
                 }
 
-                
             // }
-            
+            return contraOrder
         }
 
         //Handle positive direction
+        let canSell = false
+        if (this.price > 50) {
+            canSell = (quote.ltp - this.price) >= targetPrice
+        } else {
+            canSell = this.profit >= fixedProfit
+        }
+        // const canSell = this.profit >= fixedProfit
+        console.log('canSell: ', canSell)
+        console.log('contract: ', this.contract, ' ltp: ', quote.ltp, ' profit: ', this.profit, ' canSell: ', canSell)
+
 
         if (this.token && this.token == quote.token &&
-            (quote.ltp - this.price) >= targetPrice && !this.sellOrderPlaced) {
+            canSell == true && !this.sellOrderPlaced) {
             console.log('Attempting to sell a contract: ', this.contract)
             if (!this.sellOrderPlaced) {
                 this.sellOrderPlaced = true
-                this.isEscalated = false
+                this.iterationCount = 1;
                 console.log('BiDirectionStrategy: sell call contract ', this.contract, ' at ', quote.ltp)
                 await Prism.getInstance().sellContract(this.contract, this.qty, quote.ltp)
             }
         }
+
     }
 
-    updateTrade = async (trade: Trade) => {
+    updateTrade = async (trade: Trade) : Promise<boolean> => {
+        let tradeClosed = false
         console.log('Bidirection Strategy: Update Trade action: ', trade.action, ' ', trade.right, ' ', trade.tsym, ' ', trade.token)
+        console.log('condition: ', (trade.tsym == this.contract), ' trade.sym: ', trade.tsym, ' this.contract: ', this.contract)
         if (trade.tsym == this.contract) {
+            console.log('Symbol matches')
             if (trade.action == this.BUY) {
+                console.log('Buy action matches')
                 this.status = OrderStatus.BOUGHT;
                 this.buyOrderPlaced = false;
                 this.lastOrderedPrice = round(trade.price)
+                this.lastOrderedQuantity = trade.quantity
+                console.log('Calculate totalAmount: ', this.qty, ' ', this.price, ' ', trade.quantity, ' ', trade.price)
                 const totalAmount = (this.qty * this.price) + (trade.quantity * trade.price)
+                console.log('Total Amount: ', totalAmount)
                 this.qty = this.qty + trade.quantity
+                console.log('Quantity after buy: ', this.qty)
                 this.price = round(totalAmount / this.qty)
+                this.buyAt = round(this.lastOrderedPrice - averageThreshold);
+                this.sellAt = round((expectedProfit / this.qty) + this.price);
 
                 console.log('Bidirection Strategy: After Buy Trade, contract: ', this)
-                const buyAt = round(this.lastOrderedPrice - stopLossThreshold)
-                const sellAt = round(this.price + targetPrice)
-
-                console.log('Bidirection Strategy: buy ', this.contract, ' at ', buyAt, ' sell at : ', sellAt)
-
+                console.log('Bidirection Strategy: buy ', this.contract, ' buy at ', this.buyAt, ' sell at : ', this.sellAt)
             }
 
             if (trade.action == this.SELL) {
                 this.sellOrderPlaced = false;
-                const bought = this.price * this.qty;
+                
                 this.clear();
-                const sold = trade.price * trade.quantity
-                this.realized = sold - bought
+                
                 const price = round(trade.price - buyAgainDiff)
-                console.log('Realized Profit: ', this.realized)
-                console.log('After sell, Place a buy order for put contract: ', this.contract, ' at price: ', price)
-                await Prism.getInstance().buyContract(this.contract, price, 75)
+                if (f.isPriceInRange(price)) {
+                    await Prism.getInstance().buyContract(this.contract, initialQuantity, price )
+                } else {
+                    console.log(' Trade is closed')
+                    tradeClosed = true;
+                }
+                
 
                 console.log('After Sell Trade, contract: ', this)
+                
             }
         }
-
+        return tradeClosed;
     }
 }
 
@@ -160,12 +207,7 @@ export default class BiDirectionStrategy extends Strategy {
     previousWindowTrend = 'NEUTRAL'
     stats: any
     ordered = false
-    expectedProfit = 2000
     maxLoss = 10000
-    escalateQuantity = 750
-    escalateTrigger = 450
-    callEscalated = false
-    putEscalated = false
     isCallActive = false
     isPutActive = false
     sellCallOrderPlaced = false
@@ -179,48 +221,61 @@ export default class BiDirectionStrategy extends Strategy {
         this.tradeMap = new Map();
         this.name = 'BiDirectionStrategy';
         console.log('BiDirectionStrategy: constructor called')
+        this.enabled = true
     }
 
-    receive = (oldStats, newStats) => {
-        this.stats = newStats;
-    }
+    receive(oldStats, newStats) {
+        if (oldStats != null) {
+            this.previousWindowTrend = oldStats.close > oldStats.open ? 'UP' : 'DOWN';
+            this.stats = newStats;
+            console.log('Received stats : ', ' Resistance: ', this.stats.results.pivot.R1, ' Support: ', this.stats.results.pivot.S1)
+        }
+    }    
 
     canHandleOptionQuote = (quote: OptionQuote): boolean => {
+        let handled = false;
         const token = quote.token
-        return this.call.canHandleOptionQuote(token) || this.put.canHandleOptionQuote(token)
+        if (this.call.canHandleOptionQuote) {
+            handled = this.call.canHandleOptionQuote(token)
+        }
+        if (!handled && this.put.canHandleOptionQuote) {
+            handled = this.put.canHandleOptionQuote(token)
+        } else {
+            console.log('Shouldnot come here for the token ', token)
+            handled = false;
+        }
+        return handled;
     }
 
     processOptionQuote = async (quote: OptionQuote) => {
+        
         if (this.ordered == true) {
-            const unrealized = this.findProfit(quote.token, quote.ltp)
+            // const profit = this.findProfit(quote.token, quote.ltp)
 
-            if (this.call && this.put) {
-                const realized = this.call.realized + this.put.realized 
-                const profit = this.call.realized + this.put.realized + unrealized;
-                console.log('Realized: ', round(realized), ' Unrealized: ', round(unrealized), ' Total: ' + round(profit))
-                
-                const msg = { 
-                    'realized': round(realized),
-                    'unrealized': round(unrealized),
-                    'total': round(profit),
-                    'call': {
-                        'token': this.call.contract,
-                        'price': this.call.price,
-                        'qty': this.call.qty,
-                        'ltp': quote.ltp
-                    },
-                    'put': {
-                        'token': this.put.contract,
-                        'price': this.put.price,
-                        'qty': this.put.qty,
-                        'ltp': quote.ltp
-                    }
-
+            const msg = {} as any
+            if (this.call && this.call.contract) {
+                msg.call = {
+                    price: this.call.price,
+                    qty: this.call.qty,
+                    buyAt: this.call.buyAt,
+                    sellAt: this.call.sellAt,
+                    ltp: this.call.ltp,
+                    profit: round(this.call.profit),
                 }
-                myEmitter.emit('status', msg);
-
             }
-            
+
+            if (this.put && this.put.contract) {
+                msg.put = {
+                    price: this.put.price,
+                    qty: this.put.qty, 
+                    buyAt: this.put.buyAt,
+                    sellAt: this.put.sellAt,
+                    ltp: this.put.ltp,
+                    profit: round(this.put.profit),
+                }
+            }
+
+            myEmitter.emit('status', msg);
 
             // if (profit > this.expectedProfit) {
             //     await this.closeStrategy()
@@ -230,49 +285,90 @@ export default class BiDirectionStrategy extends Strategy {
             //     await this.closeStrategy()
             // }
 
-            if (this.call.processOptionQuote) {
-                await this.call.processOptionQuote(quote);
+            if (this.call && this.isCallActive) {
+                const contraOrder = await this.call.processOptionQuote(quote);
+                if (contraOrder && contraOrder.right == PUT) {
+                    console.log('BiDirectionStrategy: Buying PUT as CALL price has reduced')
+                    await this.openPutTrade(contraOrder.quantity)
+                }
             }
 
-            if (this.put.processOptionQuote) {
-                await this.put.processOptionQuote(quote)
+            if (this.put && this.isPutActive) {
+                const contraOrder = await this.put.processOptionQuote(quote)
+                if (contraOrder && contraOrder.right == CALL) {
+                    console.log('BiDirectionStrategy: Buying CALL as PUT price has reduced')
+                    await this.openCallTrade(contraOrder.quantity)
+                }
             }
         }
     }
 
-    openPutTrade = async () => {
-        const putInfo: OrderInfo = await Prism.getInstance().buyIndex(NIFTY, this.stats.high, PUT);
-        console.log('After ordering this.put: ', putInfo)
-        if (putInfo) {
-            putInfo.qty = 0; // Reset quantity to 0 as this will be updated in updateTrade
-            this.put = new Contract(putInfo.contract, putInfo.price, putInfo.qty, putInfo.token);
-            this.isPutActive = true
+    openPutTrade = async (additionalQuantity?: number) => {
+        if (additionalQuantity) {
+            console.log('This is a contra order for PUT with additional quantity: ', additionalQuantity)
+        }
+        if (!this.isPutActive) {
+            const contract = await Prism.getInstance().getContractByPriceRange(this.stats.low, PUT)
+            this.put = new Contract(contract)
+            const putInfo: OrderInfo = await Prism.getInstance().buyContract(contract, initialQuantity)
+            console.log('After ordering this.put: ', putInfo)
+            if (putInfo) {
+                this.put.update(putInfo.token);
+                this.isPutActive = true
+            }
+        } else {
+            await Prism.getInstance().buyContract(this.call.contract, additionalQuantity)
+            
         }
     }
 
-    openCallTrade = async () => {
-        const callInfo: OrderInfo = await Prism.getInstance().buyIndex(NIFTY, this.stats.low, CALL);
-        console.log('After ordering this.call: ', callInfo)
-        if (callInfo) {
-            callInfo.qty = 0; // Reset quantity to 0 as this will be updated in updateTrade
-            this.call = new Contract(callInfo.contract, callInfo.price, callInfo.qty, callInfo.token);
-            this.isCallActive = true
+    openCallTrade = async (additionalQuantity?: number) => {
+        if (additionalQuantity) {
+            console.log('This is a contra order for CALL with additional quantity: ', additionalQuantity)
+        }
+        if (!this.isCallActive) {
+            const contract = await Prism.getInstance().getContractByPriceRange(this.stats.high, CALL)
+            this.call = new Contract(contract)
+            const callInfo: OrderInfo = await Prism.getInstance().buyContract(contract, initialQuantity)
+            console.log('After ordering this.call: ', callInfo)
+            if (callInfo) {
+                this.call.update(callInfo.token);
+                this.isCallActive = true
+            }
+        } else {
+            await Prism.getInstance().buyContract(this.call.contract, additionalQuantity)
+            
         }
     }
 
     async processNiftyQuote(quote: NiftyQuote) {
 
-        // if (this.stats != null) {
-        //     console.log(this.getClassName(), ' eventName: ', this.stats.results.eventName )
-        //     console.log(this.getClassName(), ' ordered: ', this.ordered, ' putOpened: ', this.putOpened, ' callOpened: ', this.callOpened )
-        // }
+        console.log('BiDirectionStrategy: processNiftyQuote called with quote: ', quote.ltp)
+
+        if (this.stats != null) {
+            console.log('BiDirectionStrategy: isTimeInRange: ', this.isTimeInRange(), ' ordered: ', this.ordered, ' stats: ', this.stats.results.eventName, ' previousWindowTrend: ', this.previousWindowTrend)
+        }
+        
         if (this.isTimeInRange() && this.stats != null &&
             this.stats.results.eventName == 'priceUpdate_60' && !this.ordered) {
 
-            this.ordered = true;
-            console.log('BiDirectionStrategy: Buy CALL and PUT as high is ', this.stats.high, ' and low is ', this.stats.low)
-            await this.openCallTrade()
-            await this.openPutTrade()
+                // console.log('BiDirectionStrategy: processNiftyQuote called with quote: ', quote)
+
+                if (quote.token === 'NIFTY' && this.stats.results.pivot.S1 != -1 && this.stats.results.pivot.R1 != -1) {
+                    // console.log('BiDirectionStrategy: Inside if loop"')
+                    if ( quote.ltp < this.stats.results.pivot.S1  && this.previousWindowTrend === 'DOWN') {
+                        this.ordered = true;
+                        console.log('BiDirectionStrategy: Buy PUT as support is breached')
+                        await this.openPutTrade()
+                        
+                    } else if ( quote.ltp > this.stats.results.pivot.R1  && this.previousWindowTrend === 'UP' ) {
+                        this.ordered = true;
+                        console.log('BiDirectionStrategy: Buy CALL as resistance is breached')
+                        await this.openCallTrade()
+                    } else {
+                        console.log('BiDirectionStrategy: Waiting S1: ', this.stats.results.pivot.S1, ' ltp: ', quote.ltp, ' R1: ',  this.stats.results.pivot.R1)
+                    }
+                }
         }
     }
 
@@ -283,15 +379,13 @@ export default class BiDirectionStrategy extends Strategy {
             await Prism.getInstance().sell(this.call.contract, this.call.qty, this.call.price)
         }
 
-        if (this.put && this.put?.contract) {
+        if (this.put && this.put.contract) {
             await Prism.getInstance().sell(this.put.contract, this.put.qty, this.put.price)
         }
 
 
         this.call.clear()
         this.put.clear()
-        this.callEscalated = false
-        this.putEscalated = false;
         this.ordered = false;
         this.isCallActive = false;
         this.isPutActive = false;
@@ -301,24 +395,16 @@ export default class BiDirectionStrategy extends Strategy {
 
     findProfit = (token, ltp) => {
         let profit = 0
-        if (this.call && this.call.token == token) {
+        if (this.call && this.call.token == token && this.isCallActive) {
             this.call.profit = (ltp - this.call.price) * this.call.qty
         }
 
-        if (this.put && this.put?.token == token) {
+        if (this.put && this.put?.token == token && this.isPutActive) {
             this.put.profit = (ltp - this.put.price) * this.put.qty
         }
 
-        profit += this.call?.profit ? this.call.profit : 0;
-        profit += this.put?.profit ? this.put.profit : 0;
-
-        // if (token == this.call?.token) {
-        //     process.stdout.write('\nBiDirectionStrategy: ltp: ' + ltp + ' call diff: ' + round(ltp - this.call.lastOrderedPrice));
-        // }
-        // if (token == this.put?.token) {
-        //     process.stdout.write('\nBiDirectionStrategy: ltp: ' + ltp + ' put diff: ' + round(ltp - this.put.lastOrderedPrice));
-        // }
-        // process.stdout.write(' Profit: ' + round(profit) + ' call: '+ round(this.call.profit) + ' put: ' + round(this.put.profit) + '\n')
+        profit = this.call.profit + this.put.profit
+        console.log('findProfit: call: ', this.call.profit, ' put: ', this.put.profit, ' profit: ', profit)
         return profit
     }
 
@@ -328,20 +414,21 @@ export default class BiDirectionStrategy extends Strategy {
         console.log('Bidirection Strategy: Update Trade action: ', trade.action, ' ', trade.right, ' ', trade.tsym, ' ', trade.token)
 
         if (this.call.updateTrade) {
-            await this.call.updateTrade(trade)
+            const tradeClosed = await this.call.updateTrade(trade)
+            if (tradeClosed) {
+                this.isCallActive = false;
+                await this.openCallTrade();
+            }
         }
         
         if (this.put.updateTrade) {
-            await this.put.updateTrade(trade)
+            const tradeClosed = await this.put.updateTrade(trade)
+            if (tradeClosed) {
+                this.isPutActive = false;
+                await this.openPutTrade();
+            }
+
         }
-
-        // if (this.call.qty == this.escalateTrigger) {
-        //     await this.put.escalate()
-        // }
-
-        // if (this.put.qty == this.escalateTrigger) {
-        //     await this.call.escalate()
-        // }
 
     }
 }
