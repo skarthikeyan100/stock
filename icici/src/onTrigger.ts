@@ -26,7 +26,7 @@ export class OnTrigger {
         console.log('Trigger Option Quote: ', this.contract, ' trigger: ', this.triggerPrice, ' ltp: ', optionQuote.ltp);
         if (!this.processed && optionQuote.token === this.token && optionQuote.ltp >= this.triggerPrice) {
             const prism = Prism.getInstance()
-            prism.buyContract(this.contract, orderQuantity, this.triggerPrice)
+            // prism.buyContract(this.contract, orderQuantity, this.triggerPrice)
             this.processed = true;
         }
     }

@@ -10,6 +10,9 @@ export class NiftyQuote {
     close
     prevClose
     volume
+    buyQty
+    sellQty
+    change
 
     constructor(response?) {
         if (response != null && response != undefined) {
@@ -35,6 +38,9 @@ export class NiftyQuote {
         quote.prevClose = response.c
         quote.volume = response.v
         quote.token = response.symname
+        quote.buyQty = parseInt(response.bq1) + parseInt(response.bq2) + parseInt(response.bq3) + parseInt(response.bq4) + parseInt(response.bq5)
+        quote.sellQty = parseInt(response.sq1) + parseInt(response.sq2) + parseInt(response.sq3) + parseInt(response.sq4) + parseInt(response.sq5)
+        quote.change = quote.prevClose ? (quote.ltp - quote.prevClose) / quote.prevClose * 100 : 0;
         return quote;
     }
 }
@@ -213,32 +219,35 @@ export class RealTimeTrend {
     rsi
     bollinger
 }
+
+const round = (num) => Math.round(num * 100) / 100;
 export class PeriodicStats {
 
-    _round = (num) => Math.round(num * 100) / 100;
+    
 
-    constructor(open, high, low, close, average, median, stdDeviation, trend, 
+    constructor(open, high, low, close, average, median, stdDeviation, mad, trend, 
         results) {
 
-        this.open = open;
-        this.high = high;
-        this.low = low;
+        // this.open = open;
+        // this.high = high;
+        // this.low = low;
         this.close = close;
-        this.average = average;
+        // this.average = average;
         this.median = median;
         this.stdDeviation = stdDeviation;
-        this.rateOfChange = this._round( (this.close - this.open)/ this.open * 100)
-        this.trend = trend;
-        this.results = results;
-        this.time = Date.now();
-        this.diff = this._round(this.close - this.open);
-        this.range = this._round(this.high - this.low);
-        if (this.range == 0) {
-            this.diffFromHigh = 0;
-        } else {
-            this.diffFromHigh = ((this.high - this.close) / this.range) * 100;
-            this.diffFromHigh = this._round(this.diffFromHigh);
-        }
+        this.mad = round(mad);
+        // this.rateOfChange = this._round( (this.close - this.open)/ this.open * 100)
+        // this.trend = trend;
+        // this.results = results;
+        // this.time = Date.now();
+        this.diff = round(close - open);
+        this.range = round(high - low);
+        // if (this.range == 0) {
+        //     this.diffFromHigh = 0;
+        // } else {
+        //     this.diffFromHigh = ((this.high - this.close) / this.range) * 100;
+        //     this.diffFromHigh = round(this.diffFromHigh);
+        // }
     }
     open
     high
@@ -247,6 +256,7 @@ export class PeriodicStats {
     average
     median
     stdDeviation
+    mad
     rateOfChange
     diff
     range

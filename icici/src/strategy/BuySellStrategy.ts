@@ -1,27 +1,33 @@
 import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
 import { Strategy } from "./strategy";
+import IntermittentStrategy from "./IntermittentStrategy";
 import * as f from '../orderList'
 import Prism from '../prism'
 import { NIFTY, CALL, PUT, BOUGHT } from '../constants'
 import myEmitter from '../tools/emitter';
 import { TouchSequence } from "selenium-webdriver";
+import configService from '../prism/ConfigService'
+import  strategies from './strategies';
 
 
-export enum Outcome {
-    WAIT = "WAIT",
-    CALL = "CALL",
-    PUT = "PUT",
-    PENDING_CLOSURE = "PENDING_CLOSURE"
-
-}
+let buyOrderPlaced = false
+let sellOrderPlaced = false
 
 
 // Consider volatility or standard deviation too
-const averageThreshold = 5
-const targetPrice = 2
-const initialQuantity = 300;
-const incrementQuantity = 75;
+// let averageThreshold = 5
+// let targetPrice = 5
+// const initialQuantity = 75;
 const stopEnabled = false;
+
+const updatePrice = (price) => {
+    const round = (num) => Math.round(num * 10) / 10;
+    const percent = (price, num) => (price * num/100) 
+    const updated = round(percent(price, 10))
+    console.log('Updated Threshold or Target to ', updated);
+    return updated
+}
+
 
 const round = (num) => Math.round(num * 100) / 100;
 
@@ -49,21 +55,21 @@ class Contract {
     ltp: number = 0;
     BUY = 'Buy'
     SELL = 'Sell'
-    orderPlaced = false
     status: OrderStatus = OrderStatus.PENDING;
-    iterationCount: number = 1;
+    iterationCount: number = 0;
     buyAt: number = 0;
     sellAt: number = 0;
     lastOrderedPrice: number = 0;
+    lastOrderedQuantity: number = 0;
+    strategy: Strategy = {} as Strategy;
 
-    constructor(contract) {
+    constructor(strategy, contract) {
         this.contract = contract;
-        console.log('Contract created: ', this.contract)
+        this.strategy = strategy;
     }
 
     update = (token) => {
         this.token = token;
-        console.log('Contract token updated: ', this.token)
     }
 
     toString = () => {
@@ -76,11 +82,13 @@ class Contract {
         this.qty = 0;
         this.price = 0;
         this.lastOrderedPrice = 0;
+        this.lastOrderedQuantity = 0;
         this.profit = 0;
         this.buyAt = 0;
         this.sellAt = 0;
-        this.orderPlaced =false;
-        this.iterationCount = 1;
+        this.iterationCount = 0;
+        buyOrderPlaced = false;
+        sellOrderPlaced = false;
     }
 
     canHandleOptionQuote = (token) => {
@@ -89,42 +97,79 @@ class Contract {
 
 
     processOptionQuote = async (quote: OptionQuote) : Promise<ContraOrder | null>=> {
+        if (this.price == 0) {
+            return // Order is not processed yet, but the option is subscribed
+        }
+        const averageThreshold = configService.getConfig().buySellStrategy.averageThreshold;
+        const targetPrice = configService.getConfig().buySellStrategy.targetPrice;
+        const initialQuantity = configService.getConfig().buySellStrategy.initialQuantity;
+        const activateIntermittentCount = configService.getConfig().buySellStrategy.activateIntermittentCount;
+        const maxIterationCount = configService.getConfig().buySellStrategy.maxIterationCount;
+        const logEnabled = configService.getConfig().buySellStrategy.logEnabled
+        
         let nextOrder;
         if (this.token == quote.token) {
             this.ltp = quote.ltp;
             // console.log('Calculate profit ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty)
             this.profit = round((quote.ltp - this.price) * this.qty)
-            console.log(this.contract, ' ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty, ' profit: ', this.profit)
+            const buyAt = round(this.lastOrderedPrice - averageThreshold)
+            const sellAt = round(this.lastOrderedPrice + targetPrice)
+            if (logEnabled) {
+                console.log('BuySellStrategy: ', this.contract, ' ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty, ' profit: ', this.profit, ' buyAt: ', buyAt, ' sellAt: ', sellAt)
+                console.log('BuySellStrategy: lastOrderedPrice: ', this.lastOrderedPrice, ' buyOrderPlaced: ', buyOrderPlaced, ' sellOrderPlaced: ', sellOrderPlaced)
     
-            //Handle negative direction
+            }
+            
+    
+            //Handle negative directionq
             
                 if (this.token && this.token == quote.token
-                    && !this.orderPlaced
                     && this.lastOrderedPrice > 0
                     && (quote.ltp - this.lastOrderedPrice) < -averageThreshold) {
-                        this.orderPlaced = true
-                        if (stopEnabled) {
+                        if (!sellOrderPlaced && stopEnabled) {
+                            sellOrderPlaced = true;
                             await Prism.getInstance().sellContract(this.contract, this.qty, quote.ltp)
-                            const right = this.contract.indexOf('CE') > -1 ? PUT : CALL
+                            const right = this.contract.indexOf('C') > -1 ? PUT : CALL
                             nextOrder = new ContraOrder(right, initialQuantity, quote.ltp);
                         } else {
-                            this.iterationCount++
-                            await Prism.getInstance().buyContract(this.contract, this.iterationCount * incrementQuantity, quote.ltp)
+                            if (!buyOrderPlaced) {
+                                this.iterationCount++
+                                console.log('this.iterationCount: ', this.iterationCount, ' maxIterationCount: ', maxIterationCount)
+                                if (this.iterationCount <= maxIterationCount) {
+                                    const incrementFactor = configService.getConfig().buySellStrategy.incrementFactor;
+                                    const incrementQuantity = configService.getConfig().buySellStrategy.incrementQuantity;
+                                    let quantity = this.iterationCount * incrementQuantity
+                                    if ("double" == incrementFactor) {
+                                        quantity = this.lastOrderedQuantity * 2;
+                                    }
+                                    
+                                    buyOrderPlaced = true;
+                                    await Prism.getInstance().buyContract(this.strategy, this.contract, quantity, quote.ltp)
+    
+        
+                                    if (this.iterationCount >= activateIntermittentCount ) {
+                                        const right = this.contract.indexOf('C') !== -1 ? PUT : CALL
+                                        console.log('BuySellStrategy: Start Intermittent Strategy buy ', ' for the iteration count ', this.iterationCount, ' contract: ', this.contract, ' index: ', this.contract.indexOf('C'))
+                                        const intermittentStrategy = new IntermittentStrategy();
+                                        intermittentStrategy.buyIndex(quote.ltp, right)
+                                        strategies.addToList(intermittentStrategy)
+                                        console.log('Strategies length: ', strategies.getList().length)
+                                    }
+                                }
+                            }
                         }
                 }
             
             //Handle positive direction
             const canSell = (quote.ltp - this.price) >= targetPrice
+            // console.log('BuySellStrategy: canSell: ', canSell, ' sellOrderPlaced: ', sellOrderPlaced), ' targetPrice: ', targetPrice, ' diff: ', (quote.ltp - this.price);
+
     
             if (this.token && this.token == quote.token &&
-                canSell == true && !this.orderPlaced) {
-                this.orderPlaced = true
+                canSell == true && !sellOrderPlaced) {
                 console.log('BuySellStrategy: sell contract ', this.contract, ' at ', quote.ltp)
+                sellOrderPlaced = true;
                 await Prism.getInstance().sellContract(this.contract, this.qty, quote.ltp)
-
-                //Following code is commented as any sell is considered as tradeclosed and a new order will be created
-                // const right = this.contract.indexOf('CE') > -1 ? CALL : PUT
-                // nextOrder = new ContraOrder(right, initialQuantity, quote.ltp);
             }
     
         }
@@ -133,27 +178,40 @@ class Contract {
     }
 
     updateTrade = async (trade: Trade) : Promise<boolean> => {
+        console.log('BuySellStrategy: Update Trade called: ', trade.action, ' ', trade.quantity, ' ', this.contract)
         let tradeClosed = false
         if (trade.tsym == this.contract) {
-            if (trade.action == this.BUY) {
-                this.orderPlaced = false;
+            console.log('BuySellStrategy: buyOrderPlaced: ', buyOrderPlaced, ' trade action: ', trade.action)
+            if (buyOrderPlaced && trade.action == this.BUY) {
+                buyOrderPlaced = false;
                 this.lastOrderedPrice = trade.price
+                this.lastOrderedQuantity = trade.quantity
                 if (this.qty == 0) {
+                    console.log('BuySellStrategy: Set qty and price for the first time, qty: ', trade.quantity, ' price: ', trade.price)
                     this.qty = trade.quantity
                     this.price = trade.price
                 } else {
                     const totalAmount = (this.qty * this.price) + (trade.quantity * trade.price)
                     this.qty = this.qty + trade.quantity
                     this.price = round(totalAmount / this.qty)
+                    console.log('BuySellStrategy: Quantity and price are updated, qty: ', this.qty, ' price: ', this.price)
                 }
+
+                const averageThreshold = configService.getConfig().buySellStrategy.averageThreshold;
+                const targetPrice = configService.getConfig().buySellStrategy.targetPrice;
+        
+                console.log('BuySellStrategy: ', this.contract, ' buyAt: ', round(this.lastOrderedPrice - averageThreshold), 'sellAt: ', round(this.price + targetPrice))
+                // averageThreshold = updatePrice(this.price)
+                // targetPrice = updatePrice(this.price)
             }
 
-            if (trade.action == this.SELL) {
+            if (sellOrderPlaced && trade.action == this.SELL) {
                 this.clear();
                 tradeClosed = true;
                 console.log('After Sell Trade, contract: ', this)
             }
-        }
+            console.log('this contract: ', this.contract)
+                }
         return tradeClosed;
     }
 }
@@ -172,11 +230,16 @@ export default class BuySellStrategy extends Strategy {
     }
 
     receive(oldStats, newStats) {
+        if(oldStats != null) {
+            console.log('change: ', newStats.close - oldStats.close)
+            console.log('Stats: ', newStats)
+        }
     }    
 
     canHandleOptionQuote = (quote: OptionQuote): boolean => {
         let handled = false;
         const token = quote.token
+        
         if (this.contract?.canHandleOptionQuote) {
             handled = this.contract.canHandleOptionQuote(token)
         }
@@ -201,21 +264,31 @@ export default class BuySellStrategy extends Strategy {
     openTrade = async (contraOrder : ContraOrder) => {
         if (contraOrder) {
             const response = await Prism.getInstance().buyIndex(NIFTY, null, contraOrder.right, contraOrder.quantity);
+            console.log('openTrade: response: ', response)
             if (response) {
-                this.contract = new Contract(response.contract);
+                this.contract = new Contract(this, response.contract);
                 this.contract.update(response.token);
             }
         }
     }
 
     async processNiftyQuote(quote: NiftyQuote) {
+        const enabled = configService.getConfig().buySellStrategy.enabled;
+        const targetPrice = configService.getConfig().buySellStrategy.targetPrice;
+        const averageThreshold = configService.getConfig().buySellStrategy.averageThreshold;
+        const initialQuantity = configService.getConfig().buySellStrategy.initialQuantity;
 
-        if (this.isTimeInRange() && !this.ordered) {
+        if (enabled && this.isTimeInRange() && !this.ordered) {
             this.ordered = true;
             console.log('Initiate buy index for NIFTY at ', quote.ltp, ' with initial quantity: ', initialQuantity)
-            const response = await Prism.getInstance().buyIndex(NIFTY, quote.ltp, "any", initialQuantity);
+            buyOrderPlaced = true
+            const right = await Prism.getInstance().calculateRight(quote.ltp)
+            const contract = await Prism.getInstance().getContractByPriceRange(quote.ltp, right)
+            this.contract = new Contract(this, contract);
+            const response = await Prism.getInstance().buyContract(this, contract, initialQuantity)
+            // const response = await Prism.getInstance().buyIndex(NIFTY, quote.ltp-2, "any", initialQuantity);
+            console.log('BuySellStrategy: buyContract response: ', response)
             if (response) {
-                this.contract = new Contract(response.contract);
                 this.contract.update(response.token);
             }
         }
@@ -243,9 +316,9 @@ export default class BuySellStrategy extends Strategy {
 
 
     updateTrade = async (trade: Trade) => {
-        console.log('Bidirection Strategy: Update Trade action: ', trade.action, ' ', trade.right, ' ', trade.tsym, ' ', trade.token)
-
+        console.log('Update Trade is called at buySellStrategy: ', trade.tsym, ' action: ', trade.action, ' price: ', trade.price, ' quantity: ', trade.quantity)
         if (this.contract?.updateTrade) {
+            console.log('Updating the trade in contract: ', this.contract.contract)
             const tradeClosed = await this.contract.updateTrade(trade)
             if (tradeClosed) {
                 this.ordered = false;

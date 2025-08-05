@@ -42,7 +42,7 @@ class Config {
 
     trailStop = true
     optionDirection = "OTM" // OTM is lesser price
-    depth = 1 // TODO= Change every day. On the day of expiry, it should be 0
+    depth = 0 // TODO= Change every day. On the day of expiry, it should be 0
     bidirection = false // buy both call and put
     selectedOption = "none" // if "call" buy call, if "put" buy put, otherwise calculate. applicable only if bidirection is false
     //TODO= Buy only when price is low when compared to index value

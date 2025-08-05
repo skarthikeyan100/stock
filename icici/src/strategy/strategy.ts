@@ -22,6 +22,7 @@ export abstract class Strategy {
     SELL = 'Sell'
     ordered = false
     enabled = false
+    token: string
     // process(quote: NiftyQuote, token: String) : Outcome 
     // addTrade(trade: Trade);
     abstract receive(oldStats, newStats);
@@ -35,7 +36,7 @@ export abstract class Strategy {
     isTimeInRange(): boolean {
         const now = moment();
         const startTime = moment().hour(10).minute(0);
-        const endTime = moment().hour(15).minute(30);
+        const endTime = moment().hour(15).minute(0);
     
         return now.isAfter(startTime) && now.isBefore(endTime);
     }
@@ -57,7 +58,8 @@ export abstract class Strategy {
         return this.constructor.name;
     }
 
-    updateTrade(trade: Trade) {
+    async updateTrade(trade: Trade): Promise<void> {
+        console.log("Base class's updateTrade called");
         const hasOrder= this.orderMap.has(trade.tsym)
         console.log(this.getClassName(), ': updateTrade: ', trade.tsym, ' hasOrder: ', hasOrder)
 

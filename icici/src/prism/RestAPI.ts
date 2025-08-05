@@ -11,7 +11,6 @@ class NorenRestApi {
 
   //Karthik
   userId = 'FA96552'
-  
   passwd = 'Api@128'
   vendorCode = 'FA96552_U'
   imei = 'abc1234'
@@ -27,7 +26,7 @@ class NorenRestApi {
   // imei = 'abc1234'
   // apiKey = 'b29b6326ad9282d0b2aa80e49843d26c'
   // twoFA = '78601'
-  // otpRequest = {"uid":"FA96552","pan":"344e0e2df4e870bfc2a28403817fa32e88981fb2dfcd1116c35406d088c91566"}
+  // otpRequest = {"uid":"FA396690","pan":"344e0e2df4e870bfc2a28403817fa32e88981fb2dfcd1116c35406d088c91566"}
 
   endpoint = 'test';
   userToken = '9d388557d894a8137d4c1663f8b41dd32801b36e68ecebef177c24f082f0bcd1';
@@ -63,7 +62,7 @@ class NorenRestApi {
     this.endpoint = Config.endpoint;
 
     axios.interceptors.request.use(req => {
-      // console.log("use::", `${req.method} ${req.url} ${req.data}`);
+      console.log("use::", `${req.method} ${req.url} ${req.data}`);
       // Important: request interceptors **must** return the request.
       return req;
     });
@@ -297,6 +296,22 @@ class NorenRestApi {
     return reply;
 
   };
+
+  option_chain = async (ltp) => {
+    let values = { };
+    values["uid"] = this.userId;
+    values["tsym"] = 'NIFTY31JUL25F';
+    values["exch"] = 'NFO'
+    values["strprc"] = ltp
+    values["cnt"] = "1";
+
+    let reply = this.post_request("optionchain", values);
+    console.log('Reply: ', reply)
+    return reply;
+
+  };
+
+
   /**
        * Description
        * @method modify_order

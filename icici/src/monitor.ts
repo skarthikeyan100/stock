@@ -115,7 +115,7 @@ export default class Monitor {
     round = (num) => Math.round(num * 10) / 10;
     percent = (price, num) => (price * num/100) 
 
-    async updateTrade(data) {
+    async updateTrade(data): Promise<Trade|void>{
         // console.log('Trade data: ', data)
         
         const prism = Prism.getInstance();
@@ -127,12 +127,12 @@ export default class Monitor {
             tradeEvent.token = await prism.getToken(tradeEvent.tsym);
             tradeEvent.action = data.trantype == 'S' ? 'Sell' : 'Buy'
             tradeEvent.status = data.status
-            tradeEvent.right = tradeEvent.tsym.indexOf('P') ? PUT : CALL;
+            tradeEvent.right = tradeEvent.tsym.indexOf('P') !== -1 ? PUT : CALL;
 
             if (tradeEvent.action == 'Buy') {
                 tradeEvent.lastTradePrice = tradeEvent.price
             }
-            console.log('Notified ', tradeEvent.tsym, ' qty: ', data.qty, ' flqty: ', data.flqty, ' fillshares: ', data.fillshares, ' status: ', data.status, ' orderno: ', data.norenordno)
+            // console.log('Notified ', tradeEvent.tsym, ' qty: ', data.qty, ' flqty: ', data.flqty, ' fillshares: ', data.fillshares, ' status: ', data.status, ' orderno: ', data.norenordno)
             let isCompleted = data.fillshares == data.qty && data.status == 'COMPLETE';
             
             if (isCompleted) {
@@ -151,6 +151,7 @@ export default class Monitor {
     
                 // console.log('Update Trade ', data)
                 this._processTradeEvent(tradeEvent)
+                return tradeEvent
 
             //     ////// LEGACY CODE START
             //     const strategy = this._getStrategy(tradeEvent.tsym)
@@ -272,6 +273,7 @@ export default class Monitor {
             }
             myEmitter.emit('position', this.trades);
         }
+        
     }
 
     // WARNING: If price reaches target, but sell is not made, then there is possibility of more loss
@@ -337,11 +339,7 @@ export default class Monitor {
     };
 
     _processTradeEvent = async (tradeEvent: Trade) => {
-        console.log('Trades length: ', this.trades.length)
-        strategies.forEach( strategy => {
-            console.log('Trade Event: ', tradeEvent)
-            strategy.updateTrade(tradeEvent)
-        })
+        strategies.getList().forEach(s => console.log('Strategy: ', s.getClassName()))
         const prism = Prism.getInstance();
         if (tradeEvent.action == 'Buy') {
             console.log('New Trade ', tradeEvent.tsym, ' ', tradeEvent.quantity)
@@ -395,8 +393,8 @@ export default class Monitor {
 
     async _processQuote(optionQuote: OptionQuote) {
         let canHandle = false;
-        for (let index = 0; index < strategies.length; index++) {
-            const strategy = strategies[index];
+        for (let index = 0; index < strategies.getList().length; index++) {
+            const strategy = strategies.getList()[index];
             canHandle = strategy.canHandleOptionQuote(optionQuote);
             if (canHandle == true) {
                 await strategy.processOptionQuote(optionQuote)
@@ -405,10 +403,11 @@ export default class Monitor {
                     this.trades.splice(index, 1)
                 }
                 return;
-            }
+            } 
         }
 
-        console.log('WRONG: Code should not reach here for Bidirection Strategy')
+        // console.log('WRONG: Code should not reach here for Bidirection Strategy, token: ', optionQuote.token, ' ltp: ', optionQuote.ltp)
+        // console.log('Available strategies: ', strategies.getList().map(s => s.getClassName()))
 
         const prism = Prism.getInstance()
         // console.log('optionQuote: ', optionQuote)

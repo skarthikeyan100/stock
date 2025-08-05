@@ -537,9 +537,70 @@ function analyzePriceDataForSupportAndResistance(filePath: string, outputFile: s
 // Example usage
 // analyzePriceDataForSupportAndResistance('ohlc_1min.csv', 'output.csv');
 
-const now = moment();
-        const startTime = moment().hour(9).minute(30);
-        const endTime = moment().hour(15).minute(16);
-    
-        console.log(now.isAfter(startTime) && now.isBefore(endTime));
+import strategies from './strategy/strategies';
+
+
+async function test() {
+
+    const _nextMonday = (date: Date) => {
+        if (date.getDay() == 4) {
+            return date;
+        }
+
+        console.log(date.getDate() )
+        console.log(date.getDay() )
+        console.log((7 - date.getDay() + 4))
+        console.log(((7 - date.getDay() + 4) % 7))
+        return new Date(
+            date.setDate(
+                date.getDate() + ((7 - date.getDay() + 4) % 7 || 7),
+            ),
+        );
+    }
+
+
+    const _findPrismExpiryDate = () => {
+        var now = new Date();
+
+        var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        // console.log("Tuesday date: " + this._nextTuesday(date));
+
+        // var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        // console.log("Webnesday date: " + this._nextWednesday(date));
+
+        // var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        // console.log("Thursday date: " + this._nextThursday(date));
+
+
+        date = _nextMonday(date);
+        let monthNames = ["JAN", "FEB", "MAR", "APR",
+            "MAY", "JUN", "JUL", "AUG",
+            "SEP", "OCT", "NOV", "DEC"];
+
+        let day = date.getDate();
+        let prefix = day < 10 ? 0 : '';
+        let monthIndex = date.getMonth();
+        let monthName = monthNames[monthIndex];
+        let year = date.getFullYear().toString().substr(2);
+        return `${prefix}${day}${monthName}${year}`;
+    }
+
+    console.log(_findPrismExpiryDate())
+
+}
+
+const updatePrice = (price) => {
+    const round = (num) => Math.round(num * 10) / 10;
+    const percent = (price, num) => (price * num/100) 
+    const updated = round(percent(price, 10))
+    console.log('Updated Threshold or Target to ', updated);
+    return updated
+}
+
+
+
+test()
+
+
+
 

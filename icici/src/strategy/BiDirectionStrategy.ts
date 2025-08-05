@@ -25,6 +25,7 @@ const expectedProfit = 1000;
 const initialQuantity = 75;
 const incrementQuantity = 75;
 const doubleAverage = false;
+const eventName = 'priceUpdate_60'
 
 const round = (num) => Math.round(num * 100) / 100;
 
@@ -58,9 +59,11 @@ class Contract {
     iterationCount: number = 1;
     buyAt: number = 0;
     sellAt: number = 0;
+    strategy: Strategy = {} as Strategy;
 
-    constructor(contract) {
+    constructor(strategy, contract) {
         this.contract = contract;
+        this.strategy = strategy;
     }
 
     update = (token) => {
@@ -115,11 +118,11 @@ class Contract {
                 } else {
                     qty =  this.iterationCount * incrementQuantity;
                 }
-                const right = this.contract.indexOf('CE') > -1 ? PUT : CALL
+                const right = this.contract.indexOf('C') > -1 ? PUT : CALL
                 contraOrder = new ContraOrder(right, qty);
 
                 if (this.iterationCount < 10) {
-                    await Prism.getInstance().buyContract(this.contract, qty, quote.ltp)
+                    await Prism.getInstance().buyContract(this.strategy, this.contract, qty, quote.ltp)
                 } else {
                     console.log('BiDirectionStrategy: Iteration count exceeded for contract ', this.contract)
                 }
@@ -184,12 +187,8 @@ class Contract {
                 this.clear();
                 
                 const price = round(trade.price - buyAgainDiff)
-                if (f.isPriceInRange(price)) {
-                    await Prism.getInstance().buyContract(this.contract, initialQuantity, price )
-                } else {
-                    console.log(' Trade is closed')
-                    tradeClosed = true;
-                }
+                // Fix: Trade will never be closed, hence needs to monitor
+                await Prism.getInstance().buyContract(this.strategy, this.contract, initialQuantity, price )
                 
 
                 console.log('After Sell Trade, contract: ', this)
@@ -309,15 +308,15 @@ export default class BiDirectionStrategy extends Strategy {
         }
         if (!this.isPutActive) {
             const contract = await Prism.getInstance().getContractByPriceRange(this.stats.low, PUT)
-            this.put = new Contract(contract)
-            const putInfo: OrderInfo = await Prism.getInstance().buyContract(contract, initialQuantity)
+            this.put = new Contract(this, contract)
+            const putInfo: OrderInfo = await Prism.getInstance().buyContract(this, contract, initialQuantity)
             console.log('After ordering this.put: ', putInfo)
             if (putInfo) {
                 this.put.update(putInfo.token);
                 this.isPutActive = true
             }
         } else {
-            await Prism.getInstance().buyContract(this.call.contract, additionalQuantity)
+            await Prism.getInstance().buyContract(this, this.put.contract, additionalQuantity)
             
         }
     }
@@ -328,15 +327,15 @@ export default class BiDirectionStrategy extends Strategy {
         }
         if (!this.isCallActive) {
             const contract = await Prism.getInstance().getContractByPriceRange(this.stats.high, CALL)
-            this.call = new Contract(contract)
-            const callInfo: OrderInfo = await Prism.getInstance().buyContract(contract, initialQuantity)
+            this.call = new Contract(this, contract)
+            const callInfo: OrderInfo = await Prism.getInstance().buyContract(this, contract, initialQuantity)
             console.log('After ordering this.call: ', callInfo)
             if (callInfo) {
                 this.call.update(callInfo.token);
                 this.isCallActive = true
             }
         } else {
-            await Prism.getInstance().buyContract(this.call.contract, additionalQuantity)
+            await Prism.getInstance().buyContract(this, this.call.contract, additionalQuantity)
             
         }
     }
@@ -350,7 +349,7 @@ export default class BiDirectionStrategy extends Strategy {
         }
         
         if (this.isTimeInRange() && this.stats != null &&
-            this.stats.results.eventName == 'priceUpdate_60' && !this.ordered) {
+            this.stats.results.eventName == eventName && !this.ordered) {
 
                 // console.log('BiDirectionStrategy: processNiftyQuote called with quote: ', quote)
 

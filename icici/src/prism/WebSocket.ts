@@ -3,7 +3,8 @@ let web_socket = require("ws");
 let triggers = {
     "open": [],
     "quote": [],
-    "order": []
+    "order": [],
+    "close": []
 
 };
 

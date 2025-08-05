@@ -109,6 +109,7 @@ import Monitor from './monitor';
 import { CronJob } from 'cron';
 import { Trade, Message } from './model/model';
 import executeGap from './executeGap'
+import configService  from "./prism/ConfigService";
 
 
 
@@ -257,7 +258,7 @@ app.get('/start', async function (req: express.Request, res) {
 app.get('/strategies', async function (req: express.Request, res) {
     try {
         const { strategy, enable} = req.query;
-        strategies.forEach((s) => {
+        strategies.getList().forEach((s) => {
             if (s.getClassName() == strategy) {
                 s.enabled = enable == 'true';
             }
@@ -322,12 +323,12 @@ app.get('/order', async function (req: express.Request, res) {
         
         console.log('strikePrice: ', strikePrice, ' right: ', right)
         if (contract) {
-            if (triggerPrice) {
-                Prism.getInstance().setOnTrigger(contract as string, triggerPrice as string)
-            } else {
-                console.log('Buy a contract at the current price')
-                prism.buyContract(contract as string);
-            }
+            // if (triggerPrice) {
+            //     Prism.getInstance().setOnTrigger(contract as string, triggerPrice as string)
+            // } else {
+            //     console.log('Buy a contract at the current price')
+            //     prism.buyContract(contract as string);
+            // }
             
         } else {
             if (right && !strikePrice) {
@@ -661,7 +662,7 @@ app.get('/test', async function (req, res) {
     const { index } = req.query;
     const prism = Prism.getInstance();
     // prism.findDirectionAndStrikePrice(index as string);
-    prism.subscribeIndex(index as string);
+    await prism.getOptionChain()
     res.send('Done')
 })
 
@@ -774,29 +775,39 @@ app.get('/executeGap', async function (req, res) {
     }
 })
 
-app.get('/config', async function (req, res) {
-    console.log('In Config ' + JSON.stringify(req.query));
-    const targetPrice = parseInt(req.query.targetPrice as string);
-    if (targetPrice) {
-        if (targetPrice == 0 ) {
-            Config.targetPriceDiff = 100;
-        } else {
-            Config.targetPriceDiff = targetPrice;
-        }
-    }
+// app.get('/config', async function (req, res) {
+//     console.log('In Config ' + JSON.stringify(req.query));
+//     const targetPrice = parseInt(req.query.targetPrice as string);
+//     if (targetPrice) {
+//         if (targetPrice == 0 ) {
+//             Config.targetPriceDiff = 100;
+//         } else {
+//             Config.targetPriceDiff = targetPrice;
+//         }
+//     }
 
-    const depth = parseInt(req.query.depth as string);
-    if (depth) {
-        Config.depth = depth;
-    }
+//     const depth = parseInt(req.query.depth as string);
+//     if (depth) {
+//         Config.depth = depth;
+//     }
 
-    const lotSize = parseInt(req.query.lotSize as string);
-    if (lotSize) {
-        Config.lotCount = lotSize;
-    }
+//     const lotSize = parseInt(req.query.lotSize as string);
+//     if (lotSize) {
+//         Config.lotCount = lotSize;
+//     }
 
-    console.log(Config.targetPriceDiff)
-});
+//     console.log(Config.targetPriceDiff)
+// });
+
+app.get('/config', (req, res) => {
+    res.json(configService.getConfig());
+  });
+  
+app.post('/config', (req, res) => {
+    const newConfig = req.body;
+    configService.writeConfig(newConfig);
+    res.send('Config updated!');
+  });
 
 var route, routes = [];
 
@@ -834,7 +845,9 @@ var server = app.listen(3000, async function () {
     console.log('Icici server started ')
     Mongo.init();
     // console.log('What Happens now? ', executeGap)
-    // let config = require("./prism/config").default;
+    
+
+    console.log('********************  Threshold: ', configService.getConfig().buySellStrategy.averageThreshold);
 
     // new CronJob(`0 ${config.startMin} ${config.startHour} * * *`, async function() {
     //     console.log('Buy Nifty Index')

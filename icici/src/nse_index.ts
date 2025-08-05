@@ -15,7 +15,7 @@ export class Index {
     token: string
     lotSize: number
     increment: number
-    expiryWeekDiff = 1
+    expiryWeekDiff = 0
 
     constructor(token, lotSize, increment) {
         this.token = token;
@@ -123,15 +123,7 @@ export class Index {
         const expiryDate = this._findPrismExpiryDate();
 
         const callput = "call" === right ? 'C' : 'P'
-        if (this.token === this.niftyToken) {
-            token = `NIFTY${expiryDate}${callput}${strikePrice}`;
-        }
-        if (this.token === this.finNiftyToken) {
-            token = `FINNIFTY${expiryDate}${callput}${strikePrice}`;
-        }
-        if (this.token === this.bankNiftyToken) {
-            token = `BANKNIFTY${expiryDate}${callput}${strikePrice}`;
-        }
+        token = `NIFTY${expiryDate}${callput}${strikePrice}`;
         token = await prism.search(token, index, expiryDate, strikePrice, right);
         return token;
 
