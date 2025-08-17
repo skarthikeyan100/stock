@@ -62,7 +62,7 @@ class NorenRestApi {
     this.endpoint = Config.endpoint;
 
     axios.interceptors.request.use(req => {
-      console.log("use::", `${req.method} ${req.url} ${req.data}`);
+      // console.log("use::", `${req.method} ${req.url} ${req.data}`);
       // Important: request interceptors **must** return the request.
       return req;
     });

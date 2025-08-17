@@ -104,7 +104,7 @@ class Contract {
                     && this.lastOrderedPrice > 0
                     && (quote.ltp - this.lastOrderedPrice) < -averageThreshold) {
                         this.orderPlaced = true
-                        await Prism.getInstance().buyContract(this.strategy, this.contract, 600, quote.ltp)
+                        this.strategy.buyContract(this.contract, 600, quote.ltp)
                 }
             
             //Handle positive direction
@@ -114,7 +114,7 @@ class Contract {
                 canSell == true && !this.orderPlaced) {
                 this.orderPlaced = true
                 console.log('BuySellStrategy: sell contract ', this.contract, ' at ', quote.ltp)
-                await Prism.getInstance().sellContract(this.contract, this.qty, quote.ltp)
+                await this.strategy.sellContract(this.contract, this.qty, quote.ltp)
             }
     
         }

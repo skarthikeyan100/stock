@@ -339,7 +339,6 @@ export default class Monitor {
     };
 
     _processTradeEvent = async (tradeEvent: Trade) => {
-        strategies.getList().forEach(s => console.log('Strategy: ', s.getClassName()))
         const prism = Prism.getInstance();
         if (tradeEvent.action == 'Buy') {
             console.log('New Trade ', tradeEvent.tsym, ' ', tradeEvent.quantity)

@@ -83,7 +83,7 @@ export default class DiffStrategy extends Strategy {
                 canSell == true && !this.orderPlaced) {
                 this.orderPlaced = true
                 console.log('DiffStrategy: sell contract ', this.contract, ' at ', quote.ltp)
-                await Prism.getInstance().sellContract(this.contract, this.qty, quote.ltp)
+                super.sellContract(this.contract, this.qty, quote.ltp)
             }
     
         }

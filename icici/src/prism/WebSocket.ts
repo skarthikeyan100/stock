@@ -100,7 +100,6 @@ class WebSocketClient {
 
     send = async (data) =>  {
         await this.ws.send(data);
-        console.log('Data is sent')
     };
 
     on = (e, callback) => {

@@ -38,11 +38,12 @@ class Contract {
     constructor(strategy, contract) {
         this.contract = contract;
         this.strategy = strategy;
+        this.buyOrderPlaced = true
     }
 
     update = (token) => {
         this.token = token;
-        this.buyOrderPlaced = true
+        
     }
 
     setStrategyId = (id) => {
@@ -62,7 +63,6 @@ class Contract {
 
 
     processOptionQuote = async (quote: OptionQuote) : Promise<void> => {
-        console.log(quote)
         const enabled = configService.getConfig().intermittentStrategy.enabled;
         const targetPrice = configService.getConfig().intermittentStrategy.targetPrice;
         const threshold = configService.getConfig().intermittentStrategy.threshold;
@@ -96,27 +96,26 @@ class Contract {
 
             //Handle positive direction
             if (this.price > 0) {
-                console.log('IntermittenStrategy: ', ' this.token: ', this.token, ' quote.token:', quote.token, ' ltp: ', quote.ltp, ' ', (this.token && this.token == quote.token)) 
                 if (this.token && this.token == quote.token &&
                     canSell == true && !this.sellOrderPlaced) {
                     this.sellOrderPlaced = true
                     console.log(this.strategyId, 'handling positive direction sell contract ', this.contract, ' at ', quote.ltp)
-                    await Prism.getInstance().sellContract(this.contract, this.quantity, quote.ltp)
+                    this.strategy.sellContract(this.contract, this.quantity, quote.ltp)
                 }
             }
         }
     }
 
     updateTrade = async (trade: Trade) : Promise<boolean> => {
-        console.log(this.strategyId, 'Update Trade: ', trade.action, ' ', trade.quantity, ' ', trade.tsym, ' ', trade.token)
+        console.log('Intermittent Strategy: Update Trade: ', trade.action, ' ', trade.quantity, ' ', trade.tsym, ' ', trade.token)
         
         const enabled = configService.getConfig().intermittentStrategy.enabled;
         const quantity = configService.getConfig().intermittentStrategy.quantity;
         const loopCount = configService.getConfig().intermittentStrategy.loopCount;
         const targetPrice = configService.getConfig().intermittentStrategy.loopCount;
         let tradeClosed = false
-        console.log('Enabled: ', enabled, ' Contract: ', this.contract, ' Quantity: ', this.quantity, trade.quantity == this.quantity, ' Traded Quantity: ', trade.quantity);
-        if (enabled && trade.tsym == this.contract && (this.quantity == 0 || trade.quantity == this.quantity)) {
+        console.log('Enabled: ', enabled, ' Contract: ', this.contract, 'trade.tsym: ', trade.tsym, ' buyOrderPlaced: ', this.buyOrderPlaced, ' action: ', trade.action, ' quantity: ', this.quantity);
+        if (enabled && trade.tsym == this.contract) {
             if (this.buyOrderPlaced && trade.action == BUY ) {
                 this.buyOrderPlaced = false;
                 if (this.quantity == 0) {
@@ -139,7 +138,11 @@ class Contract {
                 if (this.iterationCount <= loopCount) {
                     console.log(this.strategyId, 'Re-buy contract ', this.contract, ' at ', round(trade.price - 2), ' iteration: ', this.iterationCount)
                     this.buyOrderPlaced = true;
-                    await Prism.getInstance().buyContract(this.strategy, this.contract, this.quantity, round(trade.price - 2));
+                    setTimeout(async () => {
+                        console.log(this.strategyId, 'Place Re-buy contract order now')
+                        this.strategy.buyContract(this.contract, this.quantity, round(trade.price - 2));
+                      }, 1000);
+                    
                 } else {
                     tradeClosed = true;
                     this.clear();
@@ -174,13 +177,13 @@ export default class IntermittentStrategy extends Strategy {
     }
 
     buyIndex = async (ltp, right) => {
-        console.log(this.id, 'buyIndex called with right: ', right);
+        console.log(this.id, 'buyIndex called with right: ', right, ' and ltp is ', ltp);
         const quantity = configService.getConfig().intermittentStrategy.quantity;
 
-        const contract = await Prism.getInstance().getContractByPriceRange(ltp, right)
+        const contract = await Prism.getInstance().getContractByPriceRange(right)
         this.contract = new Contract(this, contract);
-        const response = await Prism.getInstance().buyContract(this, contract, quantity)
-        console.log('BuySellStrategy: buyContract response: ', response)
+        const response = await super.buyContract(contract, quantity)
+        console.log('IntermittentStrategy: buyContract response: ', response)
         if (response) {
             this.contract.update(response.token);
             this.contract.setStrategyId(this.id)
@@ -208,7 +211,7 @@ export default class IntermittentStrategy extends Strategy {
     }
 
     updateTrade = async (trade: Trade) => {
-        
+        console.log('IntermittentStrategy: Update Trade action: ', trade.action, ' ', trade.right, ' ', trade.tsym, ' ', trade.token)
 
         if (this.contract?.updateTrade) {
             const tradeClosed = await this.contract.updateTrade(trade)

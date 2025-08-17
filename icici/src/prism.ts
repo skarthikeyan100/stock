@@ -27,7 +27,7 @@ import fs from 'fs';
 import moment from 'moment'
 import ObjectsToCsv from 'objects-to-csv';
 import * as f from './orderList'
-import { Strategy } from 'strategy/strategy';
+import { Strategy } from './strategy/strategy';
 import  strategies from './strategy/strategies';
 import { del } from 'request';
 const round = (num) => Math.round(num * 100) / 100;
@@ -135,7 +135,6 @@ let priceSeries: PriceSeries[] = [];
 let openInterestSeries: OpenInterestSeries[] = [];
 
 function splitQty(qty) {
-    console.log('In splitQty: ', qty);
     const max = 1800;
     const result = [];
     while (qty > 0) {
@@ -179,7 +178,6 @@ export default class Prism {
     finNiftyQuote: NiftyQuote = {} as NiftyQuote
     trades: Trade[] = [];
     subscribedOptions = [];
-    strategy: Strategy = {} as any;
     
 
     sleep = async (milliseconds) => {
@@ -291,16 +289,10 @@ export default class Prism {
 
     
     order = async (data) => {
-        console.log('Prism: update trade')
         const trade = await Monitor.getInstance().updateTrade(data);
         if (trade){
-            console.log('For Strategy: ', this.strategy.getClassName(), ' call updateTrade with trade: ', trade.tsym, ' action: ', trade.action, ' ltp: ', trade.ltp);
-            await this.strategy.updateTrade(trade);
-            this.strategy = null;
+            Strategy.updateTradeWrapper(trade);
         }
-        
-        console.log('Prism: trade is updated, set tradeInProgress to false')
-        //TODO add to trades
     };
 
     getChecksum(timestamp, data): String {
@@ -412,7 +404,6 @@ export default class Prism {
     getStockOptionQuote = async (contract) : Promise<NiftyQuote> => {
         const token = await this.getToken(contract)
         const response = await NorenRestApi.get_quotes('NFO', token);  // Nifty Quotes
-        console.log(contract, ' quote: ', response);
         if (response != null) {
             return NiftyQuote.fromPrism(response)
         }
@@ -794,7 +785,8 @@ export default class Prism {
         return new NiftyQuote();
     }
 
-    sellContract = async(contract, qty, price) : Promise<void> => {
+    sellContract = async( contract, qty, price) : Promise<void> => {
+
         console.log('In Sell Contract contract: ', contract, ' price: ', price)
         if (!price) {
             const quote = await this.getStockOptionQuote(contract);
@@ -824,10 +816,8 @@ export default class Prism {
 
     
 
-    getContractByPriceRange = async(ltp: number, right: string): Promise<string> => {
-        if (right == 'any') {
-            
-        }
+    getContractByPriceRange = async( right: string): Promise<string> => {
+        const ltp = (await this.getNiftyQuote()).ltp
         let result = null;
         const index = 'NIFTY'
         const nseIndex = indexMap.get(index);
@@ -836,10 +826,11 @@ export default class Prism {
         const ceilPrice = Math.ceil(ltp/factor) * factor;
         const floorDiff = Math.abs(floorPrice - ltp)
         const ceilDiff = Math.abs(ceilPrice - ltp)
+        console.log('Prism.getContractByPriceRange: ltp: ', ltp, ' floorPrice: ', floorPrice, ' ceilPrice: ', ceilPrice, ' right: ', right, ' floorDiff: ', floorDiff, ' ceilDiff: ', ceilDiff)
         
-
         for(var depth = 0; depth < 5; depth++) {
             let strikePrice = floorDiff > ceilDiff ? ceilPrice: floorPrice
+            console.log('Strike Price: ', strikePrice, ' depth: ', depth, ' right: ', right)
             if (right == 'call') {
                 strikePrice += (depth * factor)
             } else {
@@ -848,7 +839,7 @@ export default class Prism {
             
             const contract = await nseIndex.findTokenFor(index, right, strikePrice);
             const quote = await this.getOptionQuote(contract);
-            // console.log('************** strikePrice: ', strikePrice, ' ltp: ', quote.ltp)
+            console.log('Prism.getContractByPriceRange: strikePrice: ', strikePrice, ' ltp: ', quote.ltp)
             if (f.isPriceInRange(quote.ltp)) {
                 result = contract;
                 break;
@@ -868,8 +859,7 @@ export default class Prism {
                 
                 const contract = await nseIndex.findTokenFor(index, right, strikePrice);
                 const quote = await this.getOptionQuote(contract);
-                console.log('strikePrice: ', strikePrice, ' ltp: ', quote.ltp)
-                
+                console.log('Prism.getContractByPriceRange: strikePrice: ', strikePrice, ' ltp: ', quote.ltp)
                 if (f.isPriceInRange(quote.ltp)) {
                     result = contract;
                     break;
@@ -933,22 +923,14 @@ export default class Prism {
     }
 
 
-    buyContract = async(strategy: Strategy, contract, qty, price?) => {
+    buyContract = async(contract, qty, price?) => {
 
-        while (this.strategy != null) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            console.log('Waiting for previous trade to complete before starting new trade')
-          }
-        this.strategy = strategy
-
-        console.log('In Buy Contract contract: ', contract, ' price: ', price, ' trade in progress is set to true')
         if (!price) {
             const quote = await this.getStockOptionQuote(contract);
             price = quote.ltp
         }
         const token = await this.getToken(contract);
         const lotSize = await this.findLotSizeByContract(contract);
-        console.log('lotSize: ', lotSize)
         const lotSizeAsInt = parseInt(lotSize);
         qty = qty ? qty: 1 * lotSizeAsInt;
 
@@ -959,7 +941,6 @@ export default class Prism {
         let response= {} as any
 
         const parts = splitQty(qty)
-        console.log('Parts: ', parts)
         for (let i = 0; i < parts.length; i++) {
             const partQty = parts[i];
             const order = {
@@ -973,7 +954,6 @@ export default class Prism {
             }
     
             response = await this._placeOrderWithForce(order)
-            console.log('Response for part order: ', response)
         }
         
 

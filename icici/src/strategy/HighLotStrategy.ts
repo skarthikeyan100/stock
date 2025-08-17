@@ -30,6 +30,7 @@ class Order {
     BUY = 'Buy'
     SELL = 'Sell'    
 
+
     async addOrder(price, right, quantity?: number) {
         const order = await Prism.getInstance().buyIndex(NIFTY, price, right, quantity);
         return {
@@ -67,14 +68,16 @@ class Order {
             const diff = quote.ltp - this.price
             if ( diff >= targetPrice) {
                 console.log('ProcessOptionQuote: Sell as targetPrice is reached, diff: ', diff)
-                await Prism.getInstance().sellContract(this.contract, this.qty, quote.ltp) 
+                // await Prism.getInstance().sellContract(this.strategy, this.contract, this.qty, quote.ltp) 
+                console.log("************************** REVISIT **************")
                 this.clear()
             } else if (diff <= -contraThreshold && diff > stopLossThreshold) {
                 console.log('ProcessOptionQuote: Add Contra Order contra? ', diff <= -contraThreshold, ' stoploss? ', diff > stopLossThreshold)
                 addContraOrder = true;
             } else if (diff <= -stopLossThreshold) {
                 console.log('HighLotStrategy: Selling for stop loss')
-                await Prism.getInstance().sellContract(this.contract, this.qty, quote.ltp) 
+                // await Prism.getInstance().sellContract(this.strategy, this.contract, this.qty, quote.ltp) 
+                console.log("************************** REVISIT **************")
                 this.clear()
             } else {
                 console.log('NOthing happened in processOptionQuote, diff: ', diff)

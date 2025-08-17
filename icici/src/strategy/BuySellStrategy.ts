@@ -28,23 +28,25 @@ const updatePrice = (price) => {
     return updated
 }
 
-
 const round = (num) => Math.round(num * 100) / 100;
+
+class ContraOrder {
+    action: 'buy' | 'sell'
+    contract: string
+    quantity: number
+    price: number
+
+    constructor(action: 'buy' | 'sell', contract: string, quantity: number, price: number) {
+        this.action = action;
+        this.contract = contract;
+        this.quantity = quantity;
+        this.price = price
+    }
+}
 
 
 //Strategy: If support is breached, buy put?. If resistance is breached, buy CALL
 
-class ContraOrder {
-    right: string
-    quantity: number
-    quote: number
-
-    constructor(right: string, quantity: number, quote: number) {
-        this.right = right;
-        this.quantity = quantity;
-        this.quote = quote
-    }
-}
 
 class Contract {
     contract: string;
@@ -121,16 +123,14 @@ class Contract {
             }
             
     
-            //Handle negative directionq
+            //Handle negative direction
             
                 if (this.token && this.token == quote.token
                     && this.lastOrderedPrice > 0
                     && (quote.ltp - this.lastOrderedPrice) < -averageThreshold) {
                         if (!sellOrderPlaced && stopEnabled) {
                             sellOrderPlaced = true;
-                            await Prism.getInstance().sellContract(this.contract, this.qty, quote.ltp)
-                            const right = this.contract.indexOf('C') > -1 ? PUT : CALL
-                            nextOrder = new ContraOrder(right, initialQuantity, quote.ltp);
+                            nextOrder = new ContraOrder('sell', this.contract, this.qty, quote.ltp)
                         } else {
                             if (!buyOrderPlaced) {
                                 this.iterationCount++
@@ -144,14 +144,15 @@ class Contract {
                                     }
                                     
                                     buyOrderPlaced = true;
-                                    await Prism.getInstance().buyContract(this.strategy, this.contract, quantity, quote.ltp)
+                                    console.log('BuySellStrategy: buy contract ', this.contract, ' at ', quote.ltp, ' quantity: ', quantity)
+                                    await this.strategy.buyContract(this.contract, quantity, quote.ltp)
     
         
                                     if (this.iterationCount >= activateIntermittentCount ) {
                                         const right = this.contract.indexOf('C') !== -1 ? PUT : CALL
                                         console.log('BuySellStrategy: Start Intermittent Strategy buy ', ' for the iteration count ', this.iterationCount, ' contract: ', this.contract, ' index: ', this.contract.indexOf('C'))
                                         const intermittentStrategy = new IntermittentStrategy();
-                                        intermittentStrategy.buyIndex(quote.ltp, right)
+                                        await intermittentStrategy.buyIndex(quote.ltp, right)
                                         strategies.addToList(intermittentStrategy)
                                         console.log('Strategies length: ', strategies.getList().length)
                                     }
@@ -169,7 +170,7 @@ class Contract {
                 canSell == true && !sellOrderPlaced) {
                 console.log('BuySellStrategy: sell contract ', this.contract, ' at ', quote.ltp)
                 sellOrderPlaced = true;
-                await Prism.getInstance().sellContract(this.contract, this.qty, quote.ltp)
+                nextOrder = new ContraOrder('sell', this.contract, this.qty, quote.ltp)
             }
     
         }
@@ -211,7 +212,7 @@ class Contract {
                 console.log('After Sell Trade, contract: ', this)
             }
             console.log('this contract: ', this.contract)
-                }
+        }
         return tradeClosed;
     }
 }
@@ -253,22 +254,16 @@ export default class BuySellStrategy extends Strategy {
                 const nextOrder = await this.contract.processOptionQuote(quote);
                 
                 if (nextOrder) {
-                    console.log('Buy next order ', nextOrder)
-                    await this.openTrade(nextOrder)
+                    if (nextOrder.action == 'buy') {
+                        console.log('Buy next order ', nextOrder)
+                        await super.buyContract(nextOrder.contract, nextOrder.quantity, nextOrder.price)
+                    } else if (nextOrder.action == 'sell') {
+                        console.log('Sell next order ', nextOrder)
+                        await super.sellContract(nextOrder.contract, nextOrder.quantity, nextOrder.price)
+                    }
                 }
             }
 
-        }
-    }
-
-    openTrade = async (contraOrder : ContraOrder) => {
-        if (contraOrder) {
-            const response = await Prism.getInstance().buyIndex(NIFTY, null, contraOrder.right, contraOrder.quantity);
-            console.log('openTrade: response: ', response)
-            if (response) {
-                this.contract = new Contract(this, response.contract);
-                this.contract.update(response.token);
-            }
         }
     }
 
@@ -283,11 +278,11 @@ export default class BuySellStrategy extends Strategy {
             console.log('Initiate buy index for NIFTY at ', quote.ltp, ' with initial quantity: ', initialQuantity)
             buyOrderPlaced = true
             const right = await Prism.getInstance().calculateRight(quote.ltp)
-            const contract = await Prism.getInstance().getContractByPriceRange(quote.ltp, right)
+            const contract = await Prism.getInstance().getContractByPriceRange( right)
             this.contract = new Contract(this, contract);
-            const response = await Prism.getInstance().buyContract(this, contract, initialQuantity)
+            console.log('BuySellStrategy: buy contract for the first time', this.contract.contract, ' at ', quote.ltp, ' quantity: ', initialQuantity)
+            const response = await super.buyContract(contract, initialQuantity)
             // const response = await Prism.getInstance().buyIndex(NIFTY, quote.ltp-2, "any", initialQuantity);
-            console.log('BuySellStrategy: buyContract response: ', response)
             if (response) {
                 this.contract.update(response.token);
             }
@@ -298,7 +293,7 @@ export default class BuySellStrategy extends Strategy {
     closeStrategy = async () => {
         console.log('BuySellStrategy: closeStrategy called')
         if (this.contract && this.contract.contract) {
-            await Prism.getInstance().sell(this.contract.contract, this.contract.qty, this.contract.price)
+            super.sellContract(this.contract.contract, this.contract.qty, this.contract.price)
         }
 
 

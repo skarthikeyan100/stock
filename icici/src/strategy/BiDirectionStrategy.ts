@@ -59,11 +59,9 @@ class Contract {
     iterationCount: number = 1;
     buyAt: number = 0;
     sellAt: number = 0;
-    strategy: Strategy = {} as Strategy;
 
     constructor(strategy, contract) {
         this.contract = contract;
-        this.strategy = strategy;
     }
 
     update = (token) => {
@@ -122,7 +120,8 @@ class Contract {
                 contraOrder = new ContraOrder(right, qty);
 
                 if (this.iterationCount < 10) {
-                    await Prism.getInstance().buyContract(this.strategy, this.contract, qty, quote.ltp)
+                    // super.buyContract(this.strategy, this.contract, qty, quote.ltp)
+                    console.log('***************  REVISIT as you have buy orders in both directions ***************')
                 } else {
                     console.log('BiDirectionStrategy: Iteration count exceeded for contract ', this.contract)
                 }
@@ -188,7 +187,7 @@ class Contract {
                 
                 const price = round(trade.price - buyAgainDiff)
                 // Fix: Trade will never be closed, hence needs to monitor
-                await Prism.getInstance().buyContract(this.strategy, this.contract, initialQuantity, price )
+                await Prism.getInstance().buyContract(this.contract, initialQuantity, price )
                 
 
                 console.log('After Sell Trade, contract: ', this)
@@ -307,16 +306,16 @@ export default class BiDirectionStrategy extends Strategy {
             console.log('This is a contra order for PUT with additional quantity: ', additionalQuantity)
         }
         if (!this.isPutActive) {
-            const contract = await Prism.getInstance().getContractByPriceRange(this.stats.low, PUT)
+            const contract = await Prism.getInstance().getContractByPriceRange(PUT)
             this.put = new Contract(this, contract)
-            const putInfo: OrderInfo = await Prism.getInstance().buyContract(this, contract, initialQuantity)
+            const putInfo: OrderInfo = await super.buyContract(contract, initialQuantity)
             console.log('After ordering this.put: ', putInfo)
             if (putInfo) {
                 this.put.update(putInfo.token);
                 this.isPutActive = true
             }
         } else {
-            await Prism.getInstance().buyContract(this, this.put.contract, additionalQuantity)
+            await Prism.getInstance().buyContract(this.put.contract, additionalQuantity)
             
         }
     }
@@ -326,16 +325,16 @@ export default class BiDirectionStrategy extends Strategy {
             console.log('This is a contra order for CALL with additional quantity: ', additionalQuantity)
         }
         if (!this.isCallActive) {
-            const contract = await Prism.getInstance().getContractByPriceRange(this.stats.high, CALL)
+            const contract = await Prism.getInstance().getContractByPriceRange(CALL)
             this.call = new Contract(this, contract)
-            const callInfo: OrderInfo = await Prism.getInstance().buyContract(this, contract, initialQuantity)
+            const callInfo: OrderInfo = await super.buyContract(contract, initialQuantity)
             console.log('After ordering this.call: ', callInfo)
             if (callInfo) {
                 this.call.update(callInfo.token);
                 this.isCallActive = true
             }
         } else {
-            await Prism.getInstance().buyContract(this, this.call.contract, additionalQuantity)
+            await super.buyContract(this.call.contract, additionalQuantity)
             
         }
     }
