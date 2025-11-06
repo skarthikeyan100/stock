@@ -113,7 +113,7 @@ class Contract {
             if (this.token && this.token == quote.token &&
                 canSell == true && !this.orderPlaced) {
                 this.orderPlaced = true
-                console.log('BuySellStrategy: sell contract ', this.contract, ' at ', quote.ltp)
+                console.log('SentimentStrategy: sell contract ', this.contract, ' at ', quote.ltp)
                 await this.strategy.sellContract(this.contract, this.qty, quote.ltp)
             }
     

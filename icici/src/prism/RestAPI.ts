@@ -11,12 +11,12 @@ class NorenRestApi {
 
   //Karthik
   userId = 'FA96552'
-  passwd = 'Api@128'
+  passwd = 'Api@129'
   vendorCode = 'FA96552_U'
   imei = 'abc1234'
   apiKey = 'cac8568d15187897a1a38209da48c1fe'
   twoFA = '78601'
-  otpRequest = {"uid":"FA96552","pan":"3ca672c1a0717120ef3035b90ad6a9f6591783970b361784fbcd91435d666ac4"}
+  otpRequest = {"uid":"FA96552","pan":"282fe979845bd0340ee8bae983c2f580ccbab8ad226034453612627d18b5ce32"}
 
 
   //Raja //AJAPR6032J
@@ -195,7 +195,6 @@ class NorenRestApi {
     values["stext"] = searchtext;
 
     let reply = await this.post_request("searchscrip", values);
-    console.log(reply);
     return reply.data.token;
   };
 
@@ -293,7 +292,8 @@ class NorenRestApi {
     // }
 
     let reply = this.post_request("placeorder", values);
-    return reply;
+    // return 'Order NOT PLACED';
+    return reply
 
   };
 
@@ -510,7 +510,6 @@ class NorenRestApi {
     values['t'] = 't';  //touchline
     // values['t'] = 'd'; //depth 
     values['k'] = instrument
-    console.log('Subscribing to ', JSON.stringify(values))
     await this.websocket.send(JSON.stringify(values));
   }
 
@@ -519,7 +518,6 @@ class NorenRestApi {
     values['t'] = 'u';
     // values['t'] = 'ud';  //depth
     values['k'] = instrument
-    console.log('Unsubscribing ', JSON.stringify(values))
     this.websocket.send(JSON.stringify(values));
   }
 }

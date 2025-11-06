@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 
+const thisDay = 'Friday'
 export class NiftyQuote {
     token
     ltp
@@ -12,7 +13,8 @@ export class NiftyQuote {
     volume
     buyQty
     sellQty
-    change
+    changePercent
+    day = this
 
     constructor(response?) {
         if (response != null && response != undefined) {
@@ -30,17 +32,17 @@ export class NiftyQuote {
 
     static fromPrism(response): NiftyQuote {
         const quote = new NiftyQuote();
-        quote.ltp = response.lp
+        quote.ltp = parseFloat(response.lp)
         quote.ltt = response.lut
-        quote.open = response.o
-        quote.high = response.h
-        quote.low = response.l
-        quote.prevClose = response.c
-        quote.volume = response.v
-        quote.token = response.symname
+        quote.open = parseFloat(response.o)
+        quote.high = parseFloat(response.h)
+        quote.low = parseFloat(response.l)
+        quote.prevClose = parseFloat(response.c)
+        quote.volume = parseInt(response.v)
+        quote.token = response.tsym
         quote.buyQty = parseInt(response.bq1) + parseInt(response.bq2) + parseInt(response.bq3) + parseInt(response.bq4) + parseInt(response.bq5)
         quote.sellQty = parseInt(response.sq1) + parseInt(response.sq2) + parseInt(response.sq3) + parseInt(response.sq4) + parseInt(response.sq5)
-        quote.change = quote.prevClose ? (quote.ltp - quote.prevClose) / quote.prevClose * 100 : 0;
+        quote.changePercent = quote.prevClose ? (quote.ltp - quote.prevClose) / quote.prevClose * 100 : 0;
         return quote;
     }
 }
@@ -221,33 +223,33 @@ export class RealTimeTrend {
 }
 
 const round = (num) => Math.round(num * 100) / 100;
+
 export class PeriodicStats {
 
-    
 
     constructor(open, high, low, close, average, median, stdDeviation, mad, trend, 
         results) {
 
-        // this.open = open;
-        // this.high = high;
-        // this.low = low;
+        this.open = open;
+        this.high = high;
+        this.low = low;
         this.close = close;
-        // this.average = average;
+        this.average = average;
         this.median = median;
         this.stdDeviation = stdDeviation;
         this.mad = round(mad);
-        // this.rateOfChange = this._round( (this.close - this.open)/ this.open * 100)
-        // this.trend = trend;
-        // this.results = results;
-        // this.time = Date.now();
+        this.rateOfChange = round( (this.close - this.open)/ this.open * 100)
+        this.trend = trend;
+        this.results = results;
+        this.time = Date.now();
         this.diff = round(close - open);
         this.range = round(high - low);
-        // if (this.range == 0) {
-        //     this.diffFromHigh = 0;
-        // } else {
-        //     this.diffFromHigh = ((this.high - this.close) / this.range) * 100;
-        //     this.diffFromHigh = round(this.diffFromHigh);
-        // }
+        if (this.range == 0) {
+            this.diffFromHigh = 0;
+        } else {
+            this.diffFromHigh = ((this.high - this.close) / this.range) * 100;
+            this.diffFromHigh = round(this.diffFromHigh);
+        }
     }
     open
     high
@@ -264,6 +266,7 @@ export class PeriodicStats {
     trend
     results: Result
     time
+    day = thisDay
 }
 
 

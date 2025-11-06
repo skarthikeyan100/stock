@@ -63,18 +63,6 @@ export class Index {
         );
     }
 
-    _nextMonday = (date: Date) => {
-        if (date.getDay() == 4) {
-            return date;
-        }
-
-        return new Date(
-            date.setDate(
-                date.getDate() + ((7 - date.getDay() + 4) % 7 || 7),
-            ),
-        );
-    }
-
 
     _toShortFormat = function (date: Date) {
 
@@ -110,7 +98,7 @@ export class Index {
             } else if(this.token === this.bankNiftyToken){
                 date = this._nextWednesday(date);
             } else {
-                date = this._nextMonday(date);
+                date = this._nextTuesday(date);
             }
         }
         return this._toShortFormat(date);
@@ -173,10 +161,9 @@ export class Index {
             if (this.token === this.finNiftyToken) {
                 date = this._nextTuesday(date);
             } else if(this.token === this.bankNiftyToken){
-                console.log("Going here")
                 date = this._nextWednesday(date);
             } else {
-                date = this._nextMonday(date);
+                date = this._nextTuesday(date);
             }
         }
         let monthNames = ["JAN", "FEB", "MAR", "APR",
@@ -188,7 +175,8 @@ export class Index {
         let monthIndex = date.getMonth();
         let monthName = monthNames[monthIndex];
         let year = date.getFullYear().toString().substr(2);
-        return `${prefix}${day}${monthName}${year}`;
+        // return `${prefix}${day}${monthName}${year}`;
+        return '20OCT25';
     }
 
     findStrikePrice = (indexPrice, depth: number, right) => {

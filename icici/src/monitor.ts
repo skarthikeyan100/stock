@@ -341,7 +341,7 @@ export default class Monitor {
     _processTradeEvent = async (tradeEvent: Trade) => {
         const prism = Prism.getInstance();
         if (tradeEvent.action == 'Buy') {
-            console.log('New Trade ', tradeEvent.tsym, ' ', tradeEvent.quantity)
+            // console.log('New Trade ', tradeEvent.tsym, ' ', tradeEvent.quantity)
             const index = this.trades.findIndex(t => t.tsym == tradeEvent.tsym);
             if (index == -1) {
                 this.trades.push(tradeEvent)
@@ -391,6 +391,7 @@ export default class Monitor {
     }
 
     async _processQuote(optionQuote: OptionQuote) {
+        Mongo.getInstance().insert(optionQuote);
         let canHandle = false;
         for (let index = 0; index < strategies.getList().length; index++) {
             const strategy = strategies.getList()[index];
@@ -413,102 +414,102 @@ export default class Monitor {
 
         // Handle each trade for profit, buy again and stop loss
         const messages = []
-        this.trades.forEach(async trade => {
-            // console.log('trade: ', trade)
-            // Only open trades come here meaning, there are no corresponding sell orders
-            if (trade.token == optionQuote.token && !('COMPLETED' === trade.status)) {
-                trade.ltp = optionQuote.ltp;
-                let buyPriceDiff = config.buyAgainPriceDiff
-                let sellPriceDiff = config.targetPriceDiff
-                let stopLossPriceDiff = config.stopLossPriceDiff;
+        // this.trades.forEach(async trade => {
+        //     // console.log('trade: ', trade)
+        //     // Only open trades come here meaning, there are no corresponding sell orders
+        //     if (trade.token == optionQuote.token && !('COMPLETED' === trade.status)) {
+        //         trade.ltp = optionQuote.ltp;
+        //         let buyPriceDiff = config.buyAgainPriceDiff
+        //         let sellPriceDiff = config.targetPriceDiff
+        //         let stopLossPriceDiff = config.stopLossPriceDiff;
 
-                if (config.buyAgainPriceDiff.toString().endsWith('%')) {
-                    buyPriceDiff = this.round((trade.price * (config.buyAgainPriceDiff / 100)));
-                    sellPriceDiff = this.round((trade.price * (config.targetPriceDiff / 100)));
-                    stopLossPriceDiff = this.round((trade.price * (config.stopLossPriceDiff / 100)));
-                }
+        //         if (config.buyAgainPriceDiff.toString().endsWith('%')) {
+        //             buyPriceDiff = this.round((trade.price * (config.buyAgainPriceDiff / 100)));
+        //             sellPriceDiff = this.round((trade.price * (config.targetPriceDiff / 100)));
+        //             stopLossPriceDiff = this.round((trade.price * (config.stopLossPriceDiff / 100)));
+        //         }
 
-                const buyPrice = trade.price - buyPriceDiff
+        //         const buyPrice = trade.price - buyPriceDiff
                 
-                if (!trade.targetPrice) {
-                    const sellPrice = this.round(parseFloat(trade.price.toString()) + parseFloat(sellPriceDiff.toString()))
-                    trade.targetPrice = this.round(sellPrice);
-                }
+        //         if (!trade.targetPrice) {
+        //             const sellPrice = this.round(parseFloat(trade.price.toString()) + parseFloat(sellPriceDiff.toString()))
+        //             trade.targetPrice = this.round(sellPrice);
+        //         }
 
-                if (!trade.stopLossPrice) {
-                    const stopLossPrice = this.round(parseFloat(trade.price.toString()) - parseFloat(stopLossPriceDiff.toString()))
-                    trade.stopLossPrice = this.round(stopLossPrice);
-                }
+        //         if (!trade.stopLossPrice) {
+        //             const stopLossPrice = this.round(parseFloat(trade.price.toString()) - parseFloat(stopLossPriceDiff.toString()))
+        //             trade.stopLossPrice = this.round(stopLossPrice);
+        //         }
 
 
-                if ( optionQuote.ltp <= trade.stopLossPrice) {
-                    console.log('Sell for stoploss ')
-                    if (!trade.isSellPending) {
-                        trade.isSellPending = true;
-                        await prism.sell(trade.tsym, trade.quantity, trade.stopLossPrice);
-                        trade.status = 'COMPLETED'
-                        this.state = State.CLOSED;
-                    }
-                } else if ( optionQuote.ltp >= trade.targetPrice) {
+        //         if ( optionQuote.ltp <= trade.stopLossPrice) {
+        //             console.log('Sell for stoploss ')
+        //             if (!trade.isSellPending) {
+        //                 trade.isSellPending = true;
+        //                 await prism.sell(trade.tsym, trade.quantity, trade.stopLossPrice);
+        //                 trade.status = 'COMPLETED'
+        //                 this.state = State.CLOSED;
+        //             }
+        //         } else if ( optionQuote.ltp >= trade.targetPrice) {
 
-                    // Update stop loss price to the target price and update incremental target price
-                    const stopLossPrice = this.round(parseFloat((optionQuote.ltp - 2).toString()))
-                    trade.stopLossPrice = stopLossPrice
-                    const sellPrice = this.round(parseFloat(optionQuote.ltp.toString()) + parseFloat(sellPriceDiff.toString()))
-                    trade.targetPrice = this.round(sellPrice);
-                    console.log('Update target price to ', trade.targetPrice, ' stop loss price: ', trade.stopLossPrice)
+        //             // Update stop loss price to the target price and update incremental target price
+        //             const stopLossPrice = this.round(parseFloat((optionQuote.ltp - 2).toString()))
+        //             trade.stopLossPrice = stopLossPrice
+        //             const sellPrice = this.round(parseFloat(optionQuote.ltp.toString()) + parseFloat(sellPriceDiff.toString()))
+        //             trade.targetPrice = this.round(sellPrice);
+        //             console.log('Update target price to ', trade.targetPrice, ' stop loss price: ', trade.stopLossPrice)
     
-                    // Never sell for profit if trail stop loss is true
-                    if (!config.trailStop) {
-                        console.log('Sell for profit')
-                        if (!trade.isSellPending) {
-                            trade.isSellPending = true;
-                            await prism.sell(trade.tsym, trade.quantity, trade.targetPrice);
-                            console.log('Sell for Profit order: ', trade.tsym)
-                            trade.status = 'COMPLETED'
-                            this.state = State.CLOSED;
-                        }
-                    }
-                } else if (this.timeout()) {
-                    if (!trade.isSellPending) {
-                        trade.isSellPending = true;
-                        await prism.sell(trade.tsym, trade.quantity, optionQuote.ltp);
-                        trade.status = 'COMPLETED'
-                        console.log('Sell for timeout order: ', trade.tsym)
-                        this.state = State.CLOSED;
-                    }
-                }
+        //             // Never sell for profit if trail stop loss is true
+        //             if (!config.trailStop) {
+        //                 console.log('Sell for profit')
+        //                 if (!trade.isSellPending) {
+        //                     trade.isSellPending = true;
+        //                     await prism.sell(trade.tsym, trade.quantity, trade.targetPrice);
+        //                     console.log('Sell for Profit order: ', trade.tsym)
+        //                     trade.status = 'COMPLETED'
+        //                     this.state = State.CLOSED;
+        //                 }
+        //             }
+        //         } else if (this.timeout()) {
+        //             if (!trade.isSellPending) {
+        //                 trade.isSellPending = true;
+        //                 await prism.sell(trade.tsym, trade.quantity, optionQuote.ltp);
+        //                 trade.status = 'COMPLETED'
+        //                 console.log('Sell for timeout order: ', trade.tsym)
+        //                 this.state = State.CLOSED;
+        //             }
+        //         }
 
-                // if ( !trade.buyOrderNo && optionQuote.ltp <= buyPrice && optionQuote.ltp > stopLossPrice ) {
-                //     console.log('Initiate buy again as price has dipped, isBuyPending: ', this.isBuyPending)
-                //     if (!this.isBuyPending) {
-                //         this.isBuyPending = true;
-                //         const buyOrderNo = await prism.buy(trade.tsym,  buyPrice);
-                //         trade.buyOrderNo = buyOrderNo
-                //         const order = new Order();
-                //         order.orderno = buyOrderNo
-                //         order.price = buyPrice
-                //         order.tsym = trade.tsym
-                //         const tsym = trade.tsym
-                //         const indexObj = tsym.startsWith('BANK') ? indexMap.get('BANKNIFTY') : tsym.startsWith('NIFTY') ? indexMap.get('NIFTY') : indexMap.get('FINNIFTY');
-                //         console.log('indexObj: ' + indexObj);
-                //         const qty = indexObj.getQuantity(order.price);
-                //         order.quantity = qty
+        //         // if ( !trade.buyOrderNo && optionQuote.ltp <= buyPrice && optionQuote.ltp > stopLossPrice ) {
+        //         //     console.log('Initiate buy again as price has dipped, isBuyPending: ', this.isBuyPending)
+        //         //     if (!this.isBuyPending) {
+        //         //         this.isBuyPending = true;
+        //         //         const buyOrderNo = await prism.buy(trade.tsym,  buyPrice);
+        //         //         trade.buyOrderNo = buyOrderNo
+        //         //         const order = new Order();
+        //         //         order.orderno = buyOrderNo
+        //         //         order.price = buyPrice
+        //         //         order.tsym = trade.tsym
+        //         //         const tsym = trade.tsym
+        //         //         const indexObj = tsym.startsWith('BANK') ? indexMap.get('BANKNIFTY') : tsym.startsWith('NIFTY') ? indexMap.get('NIFTY') : indexMap.get('FINNIFTY');
+        //         //         console.log('indexObj: ' + indexObj);
+        //         //         const qty = indexObj.getQuantity(order.price);
+        //         //         order.quantity = qty
 
-                //         const indexName = tsym.startsWith('BANK') ? BANKNIFTY : tsym.startsWith('NIFTY') ? NIFTY : FINNIFTY
-                //         const right = tsym.indexOf('P') ? 'put' : 'call';
-                //         await prism.buyIndex(indexName, right)
-                //         this.pendingOrders.push(order)
-                //         if (Config.takePositionInOtherDirection == true) {
-                //             const indexName = trade.tsym.startsWith('BANK') ? BANKNIFTY : trade.tsym.startsWith('NIFTY') ? NIFTY : FINNIFTY
-                //             const right = trade.tsym.indexOf('P') ? 'put' : 'call';
-                //             await prism.buyIndex(indexName, right)
-                //         }
+        //         //         const indexName = tsym.startsWith('BANK') ? BANKNIFTY : tsym.startsWith('NIFTY') ? NIFTY : FINNIFTY
+        //         //         const right = tsym.indexOf('P') ? 'put' : 'call';
+        //         //         await prism.buyIndex(indexName, right)
+        //         //         this.pendingOrders.push(order)
+        //         //         if (Config.takePositionInOtherDirection == true) {
+        //         //             const indexName = trade.tsym.startsWith('BANK') ? BANKNIFTY : trade.tsym.startsWith('NIFTY') ? NIFTY : FINNIFTY
+        //         //             const right = trade.tsym.indexOf('P') ? 'put' : 'call';
+        //         //             await prism.buyIndex(indexName, right)
+        //         //         }
 
-                //     }
-                // }
-            }
-        });
+        //         //     }
+        //         // }
+        //     }
+        // });
 
         // Handle pending orders
         // this.pendingOrders.forEach(async order => {

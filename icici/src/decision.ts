@@ -39,6 +39,22 @@ const PUT = 'put';
 const BUY = 'Buy';
 const SELL = 'Sell';
 
+class BuyerInterestModel{
+    contract
+    buyQty
+    sellQty
+    diff
+    intrinsic
+    extrinsic
+}
+
+class Candle {
+    open
+    high
+    low
+    close
+}
+
 export default class Decision {
     historyLen = 5;
     profit = 3000;
@@ -91,7 +107,7 @@ export default class Decision {
         
         
         if (!SIMULATION) {
-            this._storeHistory(quote);
+            // this._storeHistory(quote);
             this._addPrice(quote.ltt, quote.ltp)
 
             for (const strategy of strategies.getList()) {
@@ -282,7 +298,8 @@ export default class Decision {
     _emitPrice(price) {
         // console.log("Price: " + price + " Time: " + Date.now());
 
-        const intervals = [10, 15, 30, 45, 60, 120, 300, 600, 900]; // 30s, 1m, 2m, 5m, 10m, 15m, 30m
+        // const intervals = [10, 15, 30, 45, 60, 120, 300, 600, 900]; // 30s, 1m, 2m, 5m, 10m, 15m, 30m
+        const intervals = [60]
         if (this.startTimes.length == 0) {
             const time = Date.now();
             var i = 0;
@@ -311,13 +328,13 @@ export default class Decision {
 
     _registerEventHandlers = () => {
 
-        this.eventEmitter.on('stats', (stats) => {
+        this.eventEmitter.on('stats', async (stats) => {
             for (const strategy of strategies.getList()) {
-                strategy.receive(stats.oldStats, stats.newStats);
+                await strategy.receive(stats.oldStats, stats.newStats);
             }
         });
         // const intervals = [10, 15, 30, 45, 60, 120, 300, 600, 900]; // 30s, 1m, 2m, 5m, 10m, 15m, 30m
-        const intervals = [600]; // 10s
+        const intervals = [60]
 
         intervals.forEach((interval) => {
             const eventName = `priceUpdate_${interval}`;
@@ -343,6 +360,8 @@ export default class Decision {
     _addPrice = (ltt, number) => {
         const time = new Date().setTime(ltt).toLocaleString();
         // console.log('Add Price ', this._getDate(), ' ', number)
+        //TODO **************** Nan123@12
+        // emit price to calculate real time
         this._emitPrice(number);
         // if (number != null) {
         //     this._calculateStatistics(this.prices);
@@ -374,6 +393,13 @@ export default class Decision {
       stats = null;
 
       
+    _calculateCandles = async(chunk) => {
+        const open = chunk[0];
+        const close = chunk[chunk.length - 1];
+        const high = Math.max(...chunk);
+        const low = Math.min(...chunk);
+
+    }
 
     _calculateStatistics = async (eventName, chunk) => {
         const prices = this.priceStorage[eventName];
@@ -490,16 +516,7 @@ export default class Decision {
                 }
             })
 
-            const pivotResults = this._calculateSupportResistance({open, close, high, low});
-            var t = {eventName, open, close, high, low, ...pivotResults, stdDeviation}
-
-            this.supportPrice = t.S1
-            this.resistantPrice = t.R1
-            this.previousWindowTrend = close > open ? 'UP' : 'DOWN'
-
-// madSupportResistance.ts
-
-            const mad = (prices: number[]): number => {
+            const calculateMad = (prices: number[]): number => {
                 const median = (arr: number[]): number => {
                     const sorted = [...arr].sort((a, b) => a - b);
                     const mid = Math.floor(sorted.length / 2);
@@ -511,8 +528,26 @@ export default class Decision {
                 }
                 const med = median(prices);
                 const absoluteDeviations = prices.map(p => Math.abs(p - med));
-                return median(absoluteDeviations);
+                return this._round(median(absoluteDeviations));
             }
+
+
+            const pivotResults = this._calculateSupportResistance({open, close, high, low});
+            const mad = calculateMad(prices)
+            var t = {eventName, open, close, high, low, ...pivotResults, stdDeviation, mad}
+
+            var temp = null;
+            if (eventName == 'priceUpdate_60') {
+                const diff = this._round(close-open);
+                temp = {open, close, high, low, mad, diff}
+            }
+
+            this.supportPrice = t.S1
+            this.resistantPrice = t.R1
+            this.previousWindowTrend = close > open ? 'UP' : 'DOWN'
+
+// madSupportResistance.ts
+
 
             
 
@@ -526,7 +561,7 @@ export default class Decision {
             }
 
             // this.results.push({ open, high, low, close, average, median, stdDeviation, trend, macd, rsi, bollinger });
-            const periodicStats = new PeriodicStats(open, high, low, close, average, median, stdDeviation, mad(prices), trend, 
+            const periodicStats = new PeriodicStats(open, high, low, close, average, median, stdDeviation, mad, trend, 
                 results);
             
 
@@ -534,10 +569,10 @@ export default class Decision {
             this.stats = periodicStats;
             
             Mongo.getInstance().insert(periodicStats);
-            this._appendJsonToFile('temp.json', t);
+            if (temp != null) {
+                this._appendJsonToFile('temp.json', temp);
+            }
 
-
-            // const interest = await this._interest(close)
 
             // const result = {
             //     time: moment().format("HH:mm:ss"),
@@ -558,57 +593,6 @@ export default class Decision {
             // const parser = new Parser(); // This will use all keys from the first object as columns
             // const csv = parser.parse(result);
             // this._appendJsonToFile('result.csv', result);
-
-    }
-
-    _interest = async (ltp: number) => {
-        const nseIndex = indexMap.get('NIFTY' as string);
-        
-        let factor = 50
-
-        const floorPrice = Math.floor(ltp/factor) * factor;
-        const ceilPrice = Math.ceil(ltp/factor) * factor;
-        const floorDiff = Math.abs(floorPrice - ltp)
-        const ceilDiff = Math.abs(ceilPrice - ltp)
-        const strikePrice = floorDiff > ceilDiff ? ceilPrice: floorPrice
-        // console.log('LTP: ', ltp, ' FloorPrice: ', floorPrice, ' CeilPrice: ', ceilPrice)
-        // console.log('floorDiff: ', floorDiff, ' ceilDiff: ', ceilDiff, ' strikePrice: ', strikePrice)
-
-        let callStrikePrice = strikePrice;
-        const direction = (Config.optionDirection) == "OTM" ? 1 : -1
-        callStrikePrice += direction * (Config.depth * factor)
-        const callToken = await nseIndex.findTokenFor('NIFTY' as string, 'call', callStrikePrice);
-        
-        const callDiff = ltp - callStrikePrice
-        
-    
-        let putStrikePrice = strikePrice
-        putStrikePrice += (-direction) * (Config.depth * factor)
-        const putToken = await nseIndex.findTokenFor('NIFTY' as string, 'put', putStrikePrice);
-        
-        const putDiff = putStrikePrice - ltp
-        
-        const callQuote = await Prism.getInstance().getOptionQuote(callToken);
-        const putQuote = await Prism.getInstance().getOptionQuote(putToken);
-
-        const callExtrinsicPrice = callQuote.ltp - callDiff
-        const putExtrinsicPrice = putQuote.ltp - putDiff
-
-        // If the value is more then people are thinking that option will move in that direction
-        console.log('callExtrinsicPrice: ', callExtrinsicPrice, ' putExtrinsicPrice: ', putExtrinsicPrice)
-        console.log('Call, buyQty: ', callQuote.buyQty, ' sellQty: ', callQuote.sellQty, ' change: ', callQuote.change)
-        console.log('Put, buyQty: ', putQuote.buyQty, ' sellQty: ', putQuote.sellQty, ' change: ', putQuote.change)
-
-        return {
-                callToken,
-                callbuyQty: callQuote.buyQty,
-                callsellQty: callQuote.sellQty,
-                callChange: callQuote.change,
-                putToken,
-                putbuyQty: putQuote.buyQty,
-                putsellQty: putQuote.sellQty,
-                putChange: putQuote.change,
-            }
 
     }
 

@@ -25,8 +25,9 @@ HTML:
 7. Timer to get (5) and (6)
 
 
-http://localhost:3000/requestOtp
-http://localhost:3000/login?otp=98078
+wget http://localhost:3000/requestOtp
+wget http://localhost:3000/login?otp=96907
+wget http://localhost:3000/connect
 http://localhost:3000/order?index=NIFTY&right=put&action=buy&strikePrice=21600&price=79
 http://localhost:3000/addTrade?tsym=NIFTY18JAN24P21700&flqty=200&flprc=78.8trantype=B
 
@@ -219,4 +220,24 @@ If waiting for averaging, getting lost in small ups if the price is between purc
 
 If opposite direction, still in loss, buy at last ordered price
 
+Do NOT sell intermediate profit
+Average either iteration * quantity if investment is less or average double quantity
+FOr scalping, buying at a reduced price from the last sale price
 
+2:12 - socket closed
+
+  'NIFTY28AUG25C25150',
+  'NIFTY28AUG25C25200',
+  'NIFTY28AUG25C25250',
+  'NIFTY28AUG25C25300',
+  'NIFTY28AUG25C25350',
+  'NIFTY28AUG25C25100',
+  'NIFTY28AUG25P25100',
+  'NIFTY28AUG25P25050',
+  'NIFTY28AUG25P25000',
+  'NIFTY28AUG25P24950',
+  'NIFTY28AUG25P24900',
+  'NIFTY28AUG25P24850'
+
+
+DL Application Number: 1406199125

@@ -15,7 +15,7 @@ import Browser from './trade/browser';
 import Decision from './decision';
 import Monitor from './monitor';
 
-import { VIRTUAL, NIFTY, FINNIFTY, BANKNIFTY, SIMULATION } from './constants'
+import { VIRTUAL, NIFTY, FINNIFTY, BANKNIFTY, SIMULATION, CALL, PUT } from './constants'
 import Mongo from './tools/mongo'
 import indexMap, {Index} from './nse_index';
 import { parse } from 'csv-parse';
@@ -193,6 +193,7 @@ export default class Prism {
 
     socket_close = (data) => {
         console.log('[Prism] onClose: ', data)
+        this.connect()
     };
 
     socket_error = (data) => {
@@ -206,13 +207,13 @@ export default class Prism {
     }
 
     quote = async (data) => {
+        
         // if (data.tk != 26000 && data.tk != 26009 && data.tk != 26037 ) {
         //     console.log('[Prism] onQuote: ', data.e, '|', data.tk, ' price: ', data.lp | data.updateTradebp1)
             // console.log(data);
         // }
         
         if ('NFO' === data.e) {
-            
             const lp = data.lp | data.bpl;
             if (lp != 0) {
                 const optionQuote = OptionQuote.fromPrism(data)
@@ -223,7 +224,6 @@ export default class Prism {
         } else {
             
             // TODO Required only if monitoring index prices
-            // console.log('NSE Data: ', data);
             if (!this.niftyQuote.ltp) {
                 console.log('************* Get Nifty Quote as it is null during subscribe')
                 this.niftyQuote = await this.getNiftyQuote();
@@ -245,6 +245,7 @@ export default class Prism {
                 this._updateQuote(data, this.niftyQuote);
                 // console.log('Quote: ' + JSON.stringify(this.niftyQuote))
                 await Decision.getInstance().decidePurchase(this.niftyQuote);
+
 
             } else if (data.tk == '26009') {
                 // this.findRate(BANKNIFTY, data);
@@ -452,22 +453,29 @@ export default class Prism {
     subscribeNifty = async () => {
 
         await this._startWebsocket()
+
+        
         if (this.subscribedIndex == false) {
-            console.log('Subscribing to nifty')
             await NorenRestApi.subscribe(`NSE|${indexMap.get(NIFTY).token}`)
             // await NorenRestApi.subscribe(`NSE|${indexMap.get(BANKNIFTY).token}`)
             // await NorenRestApi.subscribe(`NSE|${indexMap.get(FINNIFTY).token}`)
             this.subscribedIndex = true
-            console.log('Subscribed to nifty');
         }
+
+        // const contracts = await this.getContracts();
+        // console.log(contracts);
+        // for (const contract of contracts) {
+        //     const token = await this.getToken(contract);
+        //     await this.subscribeOption(token);
+        //     console.log('Subscribed to option ', contract, ' token ', token);
+        // }
+
     }
 
     subscribeIndex= async (index: string) => {
         await this._startWebsocket()
-        console.log('Subscribing to the index ', index)
         await NorenRestApi.subscribe(`NSE|${indexMap.get(index).token}`)
         this.subscribedIndex = true
-        console.log('Subscribed to the index ', index);
     }
 
 
@@ -476,7 +484,6 @@ export default class Prism {
         if (index == -1) {
             await NorenRestApi.subscribe(`NFO|${token}`)
             this.subscribedOptions.push(token)
-            console.log('Subscribed Option ', token);
         } 
     }
 
@@ -596,6 +603,20 @@ export default class Prism {
 
     }
 
+    lines = [];
+    cacheFile = async () => {
+        if (this.lines.length == 0) {
+            var lineReader = readLine.createInterface({
+                input: fs.createReadStream(Config.NFOSymbolsPath)
+            });
+            for await (const line of lineReader) {
+                this.lines.push(line);
+            }
+            lineReader.close();
+        }
+    }
+
+
 
     search = async (token, index, expiryDate, strikePrice, right) => {
         expiryDate = expiryDate.slice(0, 2) + '-' + expiryDate.slice(2, 5) + '-20' + expiryDate.slice(5);
@@ -622,13 +643,13 @@ export default class Prism {
         // });
 
         //If matches exact requested token, then return it
-        var lineReader = readLine.createInterface({
-            input: fs.createReadStream(Config.NFOSymbolsPath)
-        });
+        // var lineReader = readLine.createInterface({
+        //     input: fs.createReadStream(Config.NFOSymbolsPath)
+        // });
 
         // NIFTY30JAN25P23000
         try {
-            for await (const line of lineReader) {
+            for await (const line of this.lines) {
                 const values = line.split(',');
                 // console.log('check for ', values[4])
                 if (token === values[4]) {
@@ -637,22 +658,16 @@ export default class Prism {
             }
         } catch (e) {
             console.log(e);
-        } finally {
-            lineReader.close();
-        }
+        } 
 
-
-        lineReader = readLine.createInterface({
-            input: fs.createReadStream(Config.NFOSymbolsPath)
-        });
 
         let tempToken;
         let diff = 1000;
         const strikePriceAsInt = parseInt(strikePrice);
-        console.log('strikePriceAsInt: ', strikePriceAsInt, 'right: ', right, 'index: ', index)
+        console.log('strikePriceAsInt1: ', strikePriceAsInt, 'right: ', right, 'index: ', index)
 
         try {
-            for await (const line of lineReader) {
+            for await (const line of this.lines) {
                 
                 const values = line.split(',');
                 if (values[3] == 'NIFTY' && values[7] == right) {
@@ -682,9 +697,7 @@ export default class Prism {
             }
         } catch (e) {
             console.log(e);
-        } finally {
-            lineReader.close();
-        }
+        } 
         return token;
     }
 
@@ -693,7 +706,6 @@ export default class Prism {
         // const token = await NorenRestApi.searchscrip(contract);
         // NorenRestApi.subscribe('NFO|44236')
         // NorenRestApi.unsubscribe(`NFO|${token}`)
-        console.log('Unsubscribed Option ', token);
         const index = this.subscribedOptions.indexOf(token);
         if (index != -1) {
             this.subscribedOptions.splice(index, 1)
@@ -702,7 +714,6 @@ export default class Prism {
 
     getOptionQuote = async (token: string) => {
         const response = await NorenRestApi.get_quotes('NFO', token);  // Nifty Quotes
-        console.log('getOptionQuote for the token ', token)
         // console.log('Response: ', response)
         if (response != null) {
             return NiftyQuote.fromPrism(response)
@@ -814,7 +825,6 @@ export default class Prism {
         }
     }
 
-    
 
     getContractByPriceRange = async( right: string): Promise<string> => {
         const ltp = (await this.getNiftyQuote()).ltp
@@ -924,7 +934,6 @@ export default class Prism {
 
 
     buyContract = async(contract, qty, price?) => {
-
         if (!price) {
             const quote = await this.getStockOptionQuote(contract);
             price = quote.ltp
@@ -1024,8 +1033,8 @@ export default class Prism {
     
                 // If the value is more then people are thinking that option will move in that direction
                 console.log('callExtrinsicPrice: ', callExtrinsicPrice, ' putExtrinsicPrice: ', putExtrinsicPrice)
-                console.log('Call, buyQty: ', callQuote.buyQty, ' sellQty: ', callQuote.sellQty, ' change: ', callQuote.change)
-                console.log('Put, buyQty: ', putQuote.buyQty, ' sellQty: ', putQuote.sellQty, ' change: ', putQuote.change)
+                console.log('Call, buyQty: ', callQuote.buyQty, ' sellQty: ', callQuote.sellQty, ' change: ', callQuote.changePercent)
+                console.log('Put, buyQty: ', putQuote.buyQty, ' sellQty: ', putQuote.sellQty, ' change: ', putQuote.changePercent)
                 
                 if ((callQuote.buyQty > callQuote.sellQty) && (putQuote.buyQty < putQuote.sellQty)) {
                     calculatedRight = 'call'
@@ -1093,8 +1102,8 @@ export default class Prism {
 
         // If the value is more then people are thinking that option will move in that direction
         console.log('callExtrinsicPrice: ', callExtrinsicPrice, ' putExtrinsicPrice: ', putExtrinsicPrice)
-        console.log('Call, buyQty: ', callQuote.buyQty, ' sellQty: ', callQuote.sellQty, ' change: ', callQuote.change)
-        console.log('Put, buyQty: ', putQuote.buyQty, ' sellQty: ', putQuote.sellQty, ' change: ', putQuote.change)
+        console.log('Call, buyQty: ', callQuote.buyQty, ' sellQty: ', callQuote.sellQty, ' change: ', callQuote.changePercent)
+        console.log('Put, buyQty: ', putQuote.buyQty, ' sellQty: ', putQuote.sellQty, ' change: ', putQuote.changePercent)
         
         if ((callQuote.buyQty > callQuote.sellQty) && (putQuote.buyQty < putQuote.sellQty)) {
             calculatedRight = 'call'
@@ -1269,10 +1278,9 @@ export default class Prism {
 
     _placeOrderWithForce = async (order) => {
         try {
-            console.log('Place Order ', order);
+            // console.log('Place Order ', order);
             
             const response = await NorenRestApi.place_order(order) as any;
-            console.log(response)
             const token = await this.getToken(order.tsym);
             if (order.trantype == 'B') { 
                 await this.subscribeOption(token);
@@ -1280,6 +1288,7 @@ export default class Prism {
                 await this.unsubscribeOption(token);
             } 
             await delay(2000)
+            console.log('Returning price ', order.prc, ' for ', order.tsym)
     
             return {
                 "contract": order.tsym,

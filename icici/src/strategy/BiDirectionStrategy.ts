@@ -59,8 +59,10 @@ class Contract {
     iterationCount: number = 1;
     buyAt: number = 0;
     sellAt: number = 0;
+    strategy: Strategy = null
 
     constructor(strategy, contract) {
+        this.strategy = strategy
         this.contract = contract;
     }
 
@@ -120,12 +122,10 @@ class Contract {
                 contraOrder = new ContraOrder(right, qty);
 
                 if (this.iterationCount < 10) {
-                    // super.buyContract(this.strategy, this.contract, qty, quote.ltp)
-                    console.log('***************  REVISIT as you have buy orders in both directions ***************')
+                    this.strategy.buyContract(this.contract, qty, quote.ltp)
                 } else {
                     console.log('BiDirectionStrategy: Iteration count exceeded for contract ', this.contract)
                 }
-
             // }
             return contraOrder
         }
@@ -149,7 +149,7 @@ class Contract {
                 this.sellOrderPlaced = true
                 this.iterationCount = 1;
                 console.log('BiDirectionStrategy: sell call contract ', this.contract, ' at ', quote.ltp)
-                await Prism.getInstance().sellContract(this.contract, this.qty, quote.ltp)
+                await this.strategy.sellContract(this.contract, this.qty, quote.ltp)
             }
         }
 
@@ -187,7 +187,7 @@ class Contract {
                 
                 const price = round(trade.price - buyAgainDiff)
                 // Fix: Trade will never be closed, hence needs to monitor
-                await Prism.getInstance().buyContract(this.contract, initialQuantity, price )
+                await this.strategy.buyContract(this.contract, initialQuantity, price )
                 
 
                 console.log('After Sell Trade, contract: ', this)
@@ -315,7 +315,7 @@ export default class BiDirectionStrategy extends Strategy {
                 this.isPutActive = true
             }
         } else {
-            await Prism.getInstance().buyContract(this.put.contract, additionalQuantity)
+            await super.buyContract(this.put.contract, additionalQuantity)
             
         }
     }

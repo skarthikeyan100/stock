@@ -1,7 +1,7 @@
 // import Icici, { OptionType } from './trade/icici'
-import Option, { Decision } from './trade/option'
 import Google from './tools/google'
 import Prism from './prism'
+import Decision from './decision'
 
 import moment from 'moment'
 import 'moment-timezone'
@@ -98,8 +98,8 @@ export class EMACrossOver {
     getFeature(): string {
         return `EMA_${this.shortPeriod}_${this.longPeriod}`
     };
-
 }
+
 
 export class Pivot {
     S1
@@ -324,7 +324,7 @@ const writeArrayToCsv = (filePath: string, data: Filtered[]): void => {
     fs.writeFileSync(filePath, csvContent, 'utf-8');
     console.log(`CSV file has been saved to ${filePath}`);
   };
-console.log("Start now")
+
 
 
 import csv from 'csv-parser';
@@ -538,55 +538,30 @@ function analyzePriceDataForSupportAndResistance(filePath: string, outputFile: s
 // analyzePriceDataForSupportAndResistance('ohlc_1min.csv', 'output.csv');
 
 import strategies from './strategy/strategies';
+import Minutes5Decision from './strategy/Minutes5Decision'
+import Mongo from './tools/mongo'
 
 
 async function test() {
 
-    const _nextMonday = (date: Date) => {
-        if (date.getDay() == 4) {
-            return date;
-        }
-
-        console.log(date.getDate() )
-        console.log(date.getDay() )
-        console.log((7 - date.getDay() + 4))
-        console.log(((7 - date.getDay() + 4) % 7))
-        return new Date(
-            date.setDate(
-                date.getDate() + ((7 - date.getDay() + 4) % 7 || 7),
-            ),
-        );
-    }
-
-
-    const _findPrismExpiryDate = () => {
-        var now = new Date();
-
-        var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        // console.log("Tuesday date: " + this._nextTuesday(date));
-
-        // var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        // console.log("Webnesday date: " + this._nextWednesday(date));
-
-        // var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        // console.log("Thursday date: " + this._nextThursday(date));
-
-
-        date = _nextMonday(date);
-        let monthNames = ["JAN", "FEB", "MAR", "APR",
-            "MAY", "JUN", "JUL", "AUG",
-            "SEP", "OCT", "NOV", "DEC"];
-
-        let day = date.getDate();
-        let prefix = day < 10 ? 0 : '';
-        let monthIndex = date.getMonth();
-        let monthName = monthNames[monthIndex];
-        let year = date.getFullYear().toString().substr(2);
-        return `${prefix}${day}${monthName}${year}`;
-    }
-
-    console.log(_findPrismExpiryDate())
-
+    await Mongo.init();
+    const mongo = Mongo.getInstance();
+    const stream = mongo.getAll('NiftyQuote');
+    const days = new Set();
+    stream.on('error', function (err) {
+        // console.error(err)
+    })
+    stream.on('data', (quote) => {
+        // stream.pause();
+        // console.log(quote);
+        days.add(quote.day)
+        // stream.resume();
+    })
+    stream.on('end', () => {
+        console.log('Streaming data is complete')
+        console.log(days)
+    })
+    
 }
 
 const updatePrice = (price) => {
@@ -599,8 +574,5 @@ const updatePrice = (price) => {
 
 
 
-test()
-
-
-
-
+console.log("Start now")
+test();

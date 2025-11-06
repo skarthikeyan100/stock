@@ -29,6 +29,7 @@ export abstract class Strategy {
     ordered = false
     enabled = false
     token: string
+    multipleTradesAllowed: true
     static currentStrategy: Strategy = null;
     // process(quote: NiftyQuote, token: String) : Outcome 
     // addTrade(trade: Trade);
@@ -42,8 +43,8 @@ export abstract class Strategy {
    
     isTimeInRange(): boolean {
         const now = moment();
-        const startTime = moment().hour(9).minute(30);
-        const endTime = moment().hour(15).minute(30);
+        const startTime = moment().hour(10).minute(0);
+        const endTime = moment().hour(15).minute(0);
     
         return now.isAfter(startTime) && now.isBefore(endTime);
     }
@@ -69,32 +70,50 @@ export abstract class Strategy {
     async buyContract(contract: string, quantity: number, price?: number ): Promise<OrderInfo> {
         console.log('Buy Contract by ', this.getClassName(), ' for contract: ', contract)
         while (Strategy.currentStrategy != null) {
-            console.log('Waiting for current strategy to complete: ', Strategy.currentStrategy.getClassName(), ' moment: ', moment().format('HH:mm:ss'))
-            sleep(1000)
+            console.log('Waiting for current strategy to complete to buy a contract: ', Strategy.currentStrategy.getClassName(), ' moment: ', moment().format('HH:mm:ss'))
+            await sleep(1000)
         }
 
         Strategy.currentStrategy = this;
-        return await Prism.getInstance().buyContract(contract, quantity, price)
+        const response = await Prism.getInstance().buyContract(contract, quantity, price)
+        return response;
     }
 
     async sellContract(contract: string, quantity: number, price?: number ) {
-        console.log('Buy Contract by ', this.getClassName(), ' for contract: ', contract)
-        Strategy.currentStrategy = this;
-        await Prism.getInstance().sellContract(contract, quantity, price)
+        console.log('Sell Contract by ', this.getClassName(), ' for contract: ', contract + " for the price " + price)
+        
+        while (Strategy.currentStrategy != null) {
+            console.log('Waiting for current strategy to complete to sell a contract: ', Strategy.currentStrategy.getClassName(), ' moment: ', moment().format('HH:mm:ss'))
+            await sleep(1000)
+        }
+        const response = await Prism.getInstance().sellContract(contract, quantity, price)
+
+        return response;
+
     }
 
+    static tradesCount = 0;
+
     static updateTradeWrapper = async (trade: Trade) : Promise<void> => {
+        if (trade.action == 'Buy') { 
+            this.tradesCount++;
+        } else if (trade.action == 'Sell') {
+            this.tradesCount --;
+        }
+        console.log('Active trades count: ', this.tradesCount)
+
         if (Strategy.currentStrategy) {
             await Strategy.currentStrategy.updateTrade(trade)
             console.log('Order by ', Strategy.currentStrategy.getClassName(), ' is closed for contract: ', trade.tsym)
-            Strategy.currentStrategy = null;
+            // Strategy.currentStrategy = null; // Fix this as few strategies need multiple orders like Minutes5Decision
         } else {
             console.log('********************  There is no current strategy which is incorrect ********************')
         }
 
     }
 
+    tradesCount = 0;
     updateTrade = async (trade: Trade) : Promise<void> => {
-        console.log('*******  SHOULD BE OVERRIDDEN *******')
+        console.log('*******  SHOULD BE OVERRIDDEN ******* ', trade)
     }
 }

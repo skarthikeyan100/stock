@@ -3,6 +3,7 @@ import BuySellStrategy from "./BuySellStrategy";
 import DiffStrategy from "./DiffStrategy";
 import HighLotStrategy from "./HighLotStrategy";
 import IntermittentStrategy from "./IntermittentStrategy";
+import Minutes5Decision from "./Minutes5Decision";
 import PivotStrategy from "./PivotStrategy";
 import SentimentStrategy from "./SentimentStrategy";
 import { Strategy } from "./strategy";
@@ -11,10 +12,11 @@ import { Strategy } from "./strategy";
 
 class Strategies {
     private list : Array<Strategy> = [
+        new Minutes5Decision(),
         // new DiffStrategy(),
         // new HighLotStrategy(),
         // new BiDirectionStrategy(),
-        new BuySellStrategy(),
+        // new BuySellStrategy(),
         // new SentimentStrategy()
     ];
 

@@ -59,8 +59,8 @@ export default class Mongo {
 
     //TODO quoteCollection is hard-coded
     insert = async (obj) => {
-        // console.info('Mongo Trade ', obj);
-        // await this.db.collection(obj.constructor.name).insertOne(obj)
+        await this.db.collection(obj.constructor.name).insertOne(obj)
+        // console.log('Insert ', obj)
     }
 
     close = async () => {
@@ -70,7 +70,7 @@ export default class Mongo {
     getAll = (collectionName) => {
         try {
             const collection = this.db.collection(collectionName);
-            return collection.find().stream()
+            return collection.find({'day': 'Thursday'}).stream()
             console.log('No error')
     
         } catch (e) {
