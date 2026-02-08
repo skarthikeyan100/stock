@@ -32,7 +32,6 @@ export class OnTrigger {
     }
 }
 
-console.log('Test OnTrigger')
 const onTrigger = new OnTrigger();
 export default onTrigger;
 

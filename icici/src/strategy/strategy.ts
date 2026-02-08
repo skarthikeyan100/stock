@@ -105,7 +105,7 @@ export abstract class Strategy {
         if (Strategy.currentStrategy) {
             await Strategy.currentStrategy.updateTrade(trade)
             console.log('Order by ', Strategy.currentStrategy.getClassName(), ' is closed for contract: ', trade.tsym)
-            // Strategy.currentStrategy = null; // Fix this as few strategies need multiple orders like Minutes5Decision
+            Strategy.currentStrategy = null; // TODO: Fix this as few strategies need multiple orders like Minutes5Decision
         } else {
             console.log('********************  There is no current strategy which is incorrect ********************')
         }

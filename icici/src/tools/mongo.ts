@@ -30,7 +30,7 @@ export default class Mongo {
     //TODO when to close db
 
     _init = async (collection: string[]) => {
-        this.client = await MongoClient.connect(this.dbUrl, { useUnifiedTopology: true })
+        this.client = await MongoClient.connect(this.dbUrl, { useUnifiedTopology: true, ignoreUndefined: true })
         this.db = this.client.db(this.dbName);
         //Create initial collections
         const start = async () => {
@@ -60,7 +60,6 @@ export default class Mongo {
     //TODO quoteCollection is hard-coded
     insert = async (obj) => {
         await this.db.collection(obj.constructor.name).insertOne(obj)
-        // console.log('Insert ', obj)
     }
 
     close = async () => {
@@ -70,8 +69,8 @@ export default class Mongo {
     getAll = (collectionName) => {
         try {
             const collection = this.db.collection(collectionName);
+            console.log('Collection: ', collection)
             return collection.find({'day': 'Thursday'}).stream()
-            console.log('No error')
     
         } catch (e) {
             console.log(e);

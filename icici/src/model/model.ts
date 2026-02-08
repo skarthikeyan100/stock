@@ -14,7 +14,7 @@ export class NiftyQuote {
     buyQty
     sellQty
     changePercent
-    day = this
+    day = thisDay
 
     constructor(response?) {
         if (response != null && response != undefined) {

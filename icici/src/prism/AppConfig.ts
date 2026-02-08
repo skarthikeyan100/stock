@@ -30,6 +30,7 @@ export class BuySellStrategy {
     incrementFactor = 'iteration'
     incrementQuantity = 75
     logEnabled = true
+    right = 'none'
 }
 
 export class IntermittentStrategy {

@@ -61,79 +61,6 @@ class StrikePrice {
     }       
 }
 
-class PriceSeries {
-    ltt: number
-    lp: number
-
-    constructor(ltt: number, lp: number) {
-        this.ltt = ltt;
-        this.lp = lp;
-    }
-}
-
-class TimeWindow {
-    plusCount: number
-    minusCount: number
-    startPrice: number = 0
-    currentPrice: number = 0
-    change: number
-
-    constructor() {
-        this.plusCount = 0;
-        this.minusCount = 0;
-    }
-
-    addPrice = (price: number) => {
-        if (this.startPrice == 0) {
-            this.startPrice = price
-        }
-        if (this.currentPrice !=0) {
-            if (price > this.currentPrice) {
-                this.plusCount++;
-            } else if (price < this.currentPrice) {
-                this.minusCount++;
-            }
-        }
-
-        this.currentPrice = price
-        this.change = this.currentPrice - this.startPrice;
-        this.change = Math.round(this.change * 10) / 10
-    }
-
-    end = () => {
-        const timeWindow = new TimeWindow();
-        timeWindow.plusCount = this.plusCount;
-        timeWindow.minusCount = this.minusCount;
-        timeWindow.startPrice = this.startPrice;
-        timeWindow.currentPrice = this.currentPrice;
-
-        this.plusCount = 0;
-        this.minusCount = 0;
-        this.startPrice = 0;
-        this.currentPrice= 0;
-        this.change = 0;
-
-        return timeWindow;
-    }
-
-    public toString = () : string => {
-        return `TimeWindow (plusCount: ${this.plusCount}, minusCount: ${this.minusCount}), change: ${this.change}`;
-    }
-}
-
-class OpenInterestSeries {
-    ltt: number
-    oi: number
-
-    constructor(ltt: number, oi: number) {
-        this.ltt = ltt;
-        this.oi = oi;
-    }
-}
-
-let priceSeries: PriceSeries[] = [];
-let openInterestSeries: OpenInterestSeries[] = [];
-
 function splitQty(qty) {
     const max = 1800;
     const result = [];
@@ -193,6 +120,8 @@ export default class Prism {
 
     socket_close = (data) => {
         console.log('[Prism] onClose: ', data)
+        this.started = false
+        this.subscribedIndex = false
         this.connect()
     };
 
@@ -208,11 +137,6 @@ export default class Prism {
 
     quote = async (data) => {
         
-        // if (data.tk != 26000 && data.tk != 26009 && data.tk != 26037 ) {
-        //     console.log('[Prism] onQuote: ', data.e, '|', data.tk, ' price: ', data.lp | data.updateTradebp1)
-            // console.log(data);
-        // }
-        
         if ('NFO' === data.e) {
             const lp = data.lp | data.bpl;
             if (lp != 0) {
@@ -224,10 +148,11 @@ export default class Prism {
         } else {
             
             // TODO Required only if monitoring index prices
-            if (!this.niftyQuote.ltp) {
-                console.log('************* Get Nifty Quote as it is null during subscribe')
-                this.niftyQuote = await this.getNiftyQuote();
-            }
+            // if (!this.niftyQuote.ltp) {
+            //     console.log('************* Get Nifty Quote as it is null during subscribe')
+            //     this.niftyQuote = await this.getNiftyQuote();
+            //     console.log('this.niftyQuote : ', this.niftyQuote )
+            // }
 
             // if (!this.bankNiftyQuote.ltp) {
             //     console.log('************* Get Bank Nifty Quote as it is null during subscribe')
@@ -241,19 +166,16 @@ export default class Prism {
             // // console.log("Token: ", data.tk, " NiftyQuote: ", this.niftyQuote, " BankNiftyQuote: ", this.bankNiftyQuote, ' FinNifty Quote: ', this.finNiftyQuote);
 
             if (data.tk == '26000' && !data.toi) {
-                // this.findRate(NIFTY, data);
                 this._updateQuote(data, this.niftyQuote);
                 // console.log('Quote: ' + JSON.stringify(this.niftyQuote))
                 await Decision.getInstance().decidePurchase(this.niftyQuote);
 
 
             } else if (data.tk == '26009') {
-                // this.findRate(BANKNIFTY, data);
                 // this._updateQuote(data, this.bankNiftyQuote);
                 // Decision.getInstance().decidePurchase(this.bankNiftyQuote);
 
             } else if (data.tk == '26037') {
-                // this.findRate(FINNIFTY, data);
                 // this._updateQuote(data, this.finNiftyQuote);
                 // Decision.getInstance().decidePurchase(this.finNiftyQuote);
             }
@@ -269,6 +191,7 @@ export default class Prism {
     };
 
     _updateQuote = (data, niftyQuote) => {
+
         if (data.lp) {
             niftyQuote.ltp = +data.lp
         } else {
@@ -325,46 +248,6 @@ export default class Prism {
         // await this.refreshTradeList();
     }
 
-    startTime = 0;
-    endTime = 0;
-    transient: TimeWindow = {} as TimeWindow
-    rates: TimeWindow[] = [];
-
-    findRate = (index: string, data: any) => {
-        // console.log("Index: " + index, " Data: ", data);
-        var time = parseInt(data.ft);
-        if (this.startTime == 0) {
-            this.startTime = time;
-            this.transient = new TimeWindow();
-            
-        }
-        if (data.lp) {
-            priceSeries.push(new PriceSeries(time, data.lp));
-            this.transient.addPrice(data.lp)
-            myEmitter.emit('data', this.transient);
-            console.log('Emitted data')
-            // console.log('Transient ', this.transient);
-        }
-
-        const diff = time - this.startTime;
-        console.log('Diff: ' + diff)
-        if (diff > 60) {
-            this.startTime = 0;
-            const timeWindow = this.transient.end()
-            this.rates.push(timeWindow);
-            myEmitter.emit('timewindow', timeWindow);
-            this.transient = new TimeWindow();
-            console.log(this.rates)
-        }
-        
-
-        // var d = moment.unix(num).format("HH:mm:ss")
-
-        // var d = new Date(num * 1000);
-        // console.log(d);
-        
-    }
-
     requestOtp = async () => {
         const response = await NorenRestApi.request_otp();
         console.log(response);
@@ -391,6 +274,7 @@ export default class Prism {
 
     getQuote = async (index: string) => {
         const token = indexMap.get(index).token;
+        console.log('Waiting to get quote')
         const response = await NorenRestApi.get_quotes('NSE', token);  // Nifty Quotes
         // console.log(index.toString(), ' quote: ', response);
         if (response != null) {
@@ -405,6 +289,7 @@ export default class Prism {
     getStockOptionQuote = async (contract) : Promise<NiftyQuote> => {
         const token = await this.getToken(contract)
         const response = await NorenRestApi.get_quotes('NFO', token);  // Nifty Quotes
+        console.log(response)
         if (response != null) {
             return NiftyQuote.fromPrism(response)
         }
@@ -664,7 +549,7 @@ export default class Prism {
         let tempToken;
         let diff = 1000;
         const strikePriceAsInt = parseInt(strikePrice);
-        console.log('strikePriceAsInt1: ', strikePriceAsInt, 'right: ', right, 'index: ', index)
+        
 
         try {
             for await (const line of this.lines) {
@@ -697,7 +582,8 @@ export default class Prism {
             }
         } catch (e) {
             console.log(e);
-        } 
+        }
+        console.log('strikePriceAsInt1: ', strikePriceAsInt, 'right: ', right, 'index: ', index, ' token: ', token) 
         return token;
     }
 

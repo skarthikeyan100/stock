@@ -105,6 +105,7 @@ Lessons:
 1. Do not buy after 3pm
 2. Have stop loss
 3. Dont average after 2 or 3 trades
+3a. Average only when there is a reversal
 4. Buy both directions to recover loss with shorter profits
 Should i sell individual trades ??
 5. If there are too much change in the index, then expect a rebound

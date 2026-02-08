@@ -93,13 +93,7 @@ export class Index {
         var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
         for (var i = 0; i <= this.expiryWeekDiff; i++) {
-            if (this.token === this.finNiftyToken) {
-                date = this._nextTuesday(date);
-            } else if(this.token === this.bankNiftyToken){
-                date = this._nextWednesday(date);
-            } else {
-                date = this._nextTuesday(date);
-            }
+            date = this._nextTuesday(date);
         }
         return this._toShortFormat(date);
     }
@@ -112,7 +106,10 @@ export class Index {
 
         const callput = "call" === right ? 'C' : 'P'
         token = `NIFTY${expiryDate}${callput}${strikePrice}`;
+        console.log('token in findTokenFor: ', token)
+
         token = await prism.search(token, index, expiryDate, strikePrice, right);
+        console.log('Token: ', token)
         return token;
 
     }
@@ -158,13 +155,9 @@ export class Index {
 
 
         for (var i = 0; i <= this.expiryWeekDiff; i++) {
-            if (this.token === this.finNiftyToken) {
-                date = this._nextTuesday(date);
-            } else if(this.token === this.bankNiftyToken){
-                date = this._nextWednesday(date);
-            } else {
-                date = this._nextTuesday(date);
-            }
+            console.log("Today's date: ", date )
+            date = this._nextTuesday(date);
+            console.log('Date for next Tuesday: ', date)
         }
         let monthNames = ["JAN", "FEB", "MAR", "APR",
             "MAY", "JUN", "JUL", "AUG",
@@ -175,8 +168,7 @@ export class Index {
         let monthIndex = date.getMonth();
         let monthName = monthNames[monthIndex];
         let year = date.getFullYear().toString().substr(2);
-        // return `${prefix}${day}${monthName}${year}`;
-        return '20OCT25';
+        return `${prefix}${day}${monthName}${year}`;
     }
 
     findStrikePrice = (indexPrice, depth: number, right) => {

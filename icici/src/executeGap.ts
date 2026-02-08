@@ -60,7 +60,5 @@ export class ExecuteGap {
 
 }
 
-console.log('Test executeGap');
-
 const executeGap = new ExecuteGap();
 export default executeGap;

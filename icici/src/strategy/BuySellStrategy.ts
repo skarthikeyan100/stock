@@ -138,9 +138,11 @@ class Contract {
                                 if (this.iterationCount <= maxIterationCount) {
                                     const incrementFactor = configService.getConfig().buySellStrategy.incrementFactor;
                                     const incrementQuantity = configService.getConfig().buySellStrategy.incrementQuantity;
-                                    let quantity = this.iterationCount * incrementQuantity
+                                    let quantity = incrementQuantity
                                     if ("double" == incrementFactor) {
                                         quantity = this.lastOrderedQuantity * 2;
+                                    } else if ("iteration" == incrementFactor) {
+                                        let quantity = this.iterationCount * incrementQuantity
                                     }
                                     
                                     buyOrderPlaced = true;
@@ -269,6 +271,7 @@ export default class BuySellStrategy extends Strategy {
 
     async processNiftyQuote(quote: NiftyQuote) {
         const enabled = configService.getConfig().buySellStrategy.enabled;
+        let right = configService.getConfig().buySellStrategy.right;
         const targetPrice = configService.getConfig().buySellStrategy.targetPrice;
         const averageThreshold = configService.getConfig().buySellStrategy.averageThreshold;
         const initialQuantity = configService.getConfig().buySellStrategy.initialQuantity;
@@ -277,7 +280,10 @@ export default class BuySellStrategy extends Strategy {
             this.ordered = true;
             console.log('Initiate buy index for NIFTY at ', quote.ltp, ' with initial quantity: ', initialQuantity)
             buyOrderPlaced = true
-            const right = await Prism.getInstance().calculateRight(quote.ltp)
+            if ("none" == right) {
+                right = await Prism.getInstance().calculateRight(quote.ltp)
+            }
+            
             const contract = await Prism.getInstance().getContractByPriceRange( right)
             this.contract = new Contract(this, contract);
             console.log('BuySellStrategy: buy contract for the first time', this.contract.contract, ' at ', quote.ltp, ' quantity: ', initialQuantity)

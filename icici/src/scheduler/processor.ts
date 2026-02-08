@@ -396,6 +396,4 @@ process.on('beforeExit', async function () {
     process.exit(0)
 });
 
-//TODO uncomment to test signal using quotes 
-//test()
 

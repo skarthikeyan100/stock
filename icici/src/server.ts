@@ -132,8 +132,6 @@ app.disable('etag');
 //   });
 import fs, { watchFile } from 'fs'
 import Queue from 'async-await-queue';
-import Breeze from './breeze';
-import Browser from './trade/browser.js';
 import Prism from './prism';
 import Config from './prism/config';
 import { NiftyQuote, OptionQuote } from './model/model';
@@ -191,43 +189,6 @@ app.get('/login', async function (req, res) {
     }
 })
 
-app.post('/redirect', async function (req, res) {
-    try {
-        console.log('Redirected')
-        console.log(req.body);
-        apiSession = req.body.API_Session;
-        const breeze = await Breeze.getInstance();
-        const response = await breeze.getCustomerDetails(apiSession);
-        await breeze.init();
-        res.send(response);
-
-    } catch (e) {
-        console.log(e)
-        res.sendStatus(500)
-    }
-})
-
-app.get('/monitor', async function (req: express.Request, res) {
-    const breeze = await Breeze.getInstance();
-    const resp = await breeze.monitor();
-    res.send(resp);
-
-});
-
-// http://localhost:4000/iciciorder?stockCode=NIFTY&expiryDate=2023-12-06&strikePrice=44900&right=put&action=buy&limitPrice=290
-
-app.get('/iciciorder', async function (req: express.Request, res) {
-    try {
-        const { stockCode, expiryDate, strikePrice, limitPrice, right, action} = req.query;
-        const breeze = Breeze.getInstance();
-        breeze.sendLimitOrder(stockCode, expiryDate, strikePrice, limitPrice, right, action);
-        res.sendStatus(200);
-    } catch (e) {
-        console.log(e)
-        res.sendStatus(500)
-    }
-
-})
 
 app.get('/orderbook', async function (req: express.Request, res) {
     try {
@@ -384,40 +345,6 @@ app.get('/subscribe', async function (req: express.Request, res) {
     }
 })
 
-app.get('/unsubscribe', async function (req: express.Request, res) {
-    const breeze = Breeze.getInstance();
-    try {
-        await breeze.unsubscribeNifty();
-        res.sendStatus(200);
-    } catch (e) {
-        console.log("Error while unsubscribing nifty");
-        res.sendStatus(500);
-    }
-})
-
-app.get('/subscribeOption', async function (req: express.Request, res) {
-    const { expiryDate, strikePrice, right } = req.query;
-    const breeze = Breeze.getInstance();
-    try {
-        await breeze.subscribeOption(expiryDate, strikePrice, right);
-        res.sendStatus(200);
-    } catch (e) {
-        console.log("Error while subscribing option");
-        res.sendStatus(500);
-    }
-})
-
-app.get('/unsubscribeOption', async function (req: express.Request, res) {
-    const { expiryDate, strikePrice, right } = req.query;
-    const breeze = Breeze.getInstance();
-    try {
-        await breeze.unsubscribeOption(expiryDate, strikePrice, right);
-        res.sendStatus(200);
-    } catch (e) {
-        console.log("Error while unsubscribing option");
-        res.sendStatus(500);
-    }
-})
 
 
 const mockTrades = [{ "token": "54033", "orderno": "23041000314509", "stockCode": "NIFTY", "action": "Buy", "cost": "67.25", "quantity": 200, "expiryDate": "20APR23", "right": "call", "strikePrice": "17800" }];
@@ -575,88 +502,6 @@ app.get('/positionstream', async function (req, res) {
     console.log("Position Listener count ", listenerCount);
     myEmitter.on('position', callback);
 })
-
-app.get('/statusstream', async function (req, res) {
-
-    const callback = (t) => {
-        const m = JSON.stringify(t)
-        res.write(`data: ${m}\n\n`);
-        // res.write(`data: Hello\n\n`);
-    };
-
-    req.connection.addListener('close', function () {
-        console.log('Connection is closed, remove status listener')
-        myEmitter.removeListener('status', callback);
-    });
-
-    res.set({
-        'Cache-Control': 'no-cache',
-        'Content-Type': 'text/event-stream',
-        'Connection': 'keep-alive'
-    });
-    res.flushHeaders();
-
-    //Subscribe for FirstEvent
-    myEmitter.on('status', callback);
-    const listenerCount = myEmitter.listenerCount('status');
-    console.log("Status Listener count ", listenerCount);
-})
-
-app.get('/timestream', async function (req, res) {
-
-    const callback = (t) => {
-        const m = JSON.stringify(t)
-        res.write(`data: ${m}\n\n`);
-        // res.write(`data: Hello\n\n`);
-    };
-
-    req.connection.addListener('close', function () {
-        console.log('Connection is closed, remove time stream listener')
-        myEmitter.removeListener('status', callback);
-    });
-
-    res.set({
-        'Cache-Control': 'no-cache',
-        'Content-Type': 'text/event-stream',
-        'Connection': 'keep-alive'
-    });
-    res.flushHeaders();
-
-    //Subscribe for FirstEvent
-    myEmitter.on('timewindow', callback);
-    const listenerCount = myEmitter.listenerCount('status');
-    console.log("Time window Listener count ", listenerCount);
-})
-
-app.get('/datastream', async function (req, res) {
-
-    console.log('/Datastream is invoked')
-    const callback = (t) => {
-        console.log('In callback ', t)
-        const m = JSON.stringify(t)
-        console.log('In Message ', m)
-        res.write(`data: ${m}\n\n`);
-        // res.write(`data: Hello\n\n`);
-    };
-
-    req.connection.addListener('close', function () {
-        console.log('Connection is closed, remove time stream listener')
-        myEmitter.removeListener('status', callback);
-    });
-
-    res.set({
-        'Cache-Control': 'no-cache',
-        'Content-Type': 'text/event-stream',
-        'Connection': 'keep-alive'
-    });
-    res.flushHeaders();
-
-    //Subscribe for FirstEvent
-    myEmitter.on('data', callback);
-    const listenerCount = myEmitter.listenerCount('status');
-    console.log("Time window Listener count ", listenerCount);
-})
-
 
 app.get('/test', async function (req, res) {
     const { index } = req.query;
