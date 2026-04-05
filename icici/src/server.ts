@@ -1,3 +1,4 @@
+import Log from './util/Log';
 // import http from 'http'
 // import url from 'url'
 // import { directionalTrade, balanceTrade, getOpenPositions, getNiftyQuote, squareOff } from './functions'
@@ -9,7 +10,7 @@
 //     try {
 //         var q = url.parse(req.url, true).query;
 //         res.setHeader('Content-Type', 'application/json');
-//         console.log('Command ', q.command)
+//         Log.log('Command ', q.command)
 //         switch (q.command) {
 //             case 'strategy':
 //                 const strategy = q.strategy
@@ -18,7 +19,7 @@
 //                         res.end(JSON.stringify({ executed: 'balanceStrategy' }));
 //                     }).catch((e) => {
 //                         res.statusCode = 500;
-//                         console.log('Error caught in the server ', e)
+//                         Log.log('Error caught in the server ', e)
 //                         res.end(JSON.stringify({ error: e.message }));
 //                     });
 //                 } else if (strategy == 'directional') {
@@ -26,7 +27,7 @@
 //                         res.end(JSON.stringify({ executed: 'directionalStrategy' }));
 //                     }).catch((e) => {
 //                         res.statusCode = 500;
-//                         console.log('Error caught in the server ', e)
+//                         Log.log('Error caught in the server ', e)
 //                         res.end(JSON.stringify({ error: e.message }));
 //                     });
 //                 }
@@ -48,7 +49,7 @@
 //                 squareOff(contract, market).then((result) => {
 //                     res.end(JSON.stringify(result));
 //                 }).catch((e) => {
-//                     console.log('Error caught in the server')
+//                     Log.log('Error caught in the server')
 //                     res.end(e);
 //                 })
 //                 break;
@@ -64,8 +65,8 @@
 //     }
 
 // }).listen(8080);
-// console.log('Server is listening at 8080')
-console.log('Hello')
+// Log.log('Server is listening at 8080')
+Log.log('Hello')
 
 const mockOpenPositions = [
     {
@@ -96,6 +97,7 @@ let prevClose: 0;
 
 import express from 'express';
 import bodyParser from 'body-parser';
+import cookieParser from 'cookie-parser';
 import Util from './util';
 import axios from 'axios';
 import path from 'path'
@@ -108,8 +110,11 @@ import candleManager from './candle';
 import Monitor from './monitor';
 import { CronJob } from 'cron';
 import { Trade, Message } from './model/model';
-import executeGap from './executeGap'
 import configService  from "./prism/ConfigService";
+import { getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole } from './user';
+import multer from 'multer';
+import { GridFSBucket, ObjectId } from 'mongodb';
+import Decision from './decision';
 
 
 
@@ -124,6 +129,7 @@ app.use(express.static('public'))
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 app.use(bodyParser());
+app.use(cookieParser('propfirm-secret'));
 app.disable('etag');
 // expressWs.ws('/echo', function(ws, req) {
 //     ws.on('message', function(msg) {
@@ -146,9 +152,9 @@ let sessionToken = 'U0VTSEExMDA6ODAyMDc4';
 let demoLogger = (req, res, next) => {
 
     18601231122
-    console.log("Request: ", req.method, req.url);
+    Log.log("Request: ", req.method, req.url);
     res.on("finish", () => {
-        console.log("Response: ", res.statusCode);
+        Log.log("Response: ", res.statusCode);
     });
     next();
 };
@@ -164,14 +170,254 @@ const _start = async () => {
     const prism = Prism.getInstance();
     await prism.connect();
     sleep(3000);
-    // await prism.buyIndex('NIFTY')
-    // await prism.buyIndex('BANKNIFTY')
+    // await prism.buyIndex({ user: 'Default', index: 'NIFTY' })
+    // await prism.buyIndex({ user: 'Default', index: 'BANKNIFTY' })
 
 }
 
 
+// Helper: resolve user from session cookie, fallback to X-User-Id header
+function resolveUser(req: express.Request): string {
+    const cookieEmail = req.signedCookies?.session;
+    if (cookieEmail) return cookieEmail;
+    return (req.headers['x-user-id'] as string) || 'Default';
+}
+
+// Auth endpoints
+app.post('/auth/login', async function (req, res) {
+    try {
+        const { email, name, picture } = req.body;
+        if (!email) {
+            res.status(400).json({ error: 'Email is required' });
+            return;
+        }
+        const user = await getOrCreateUser(email, name || '', picture || '');
+        // Cache user settings in Monitor
+        Monitor.getInstance().updateUserSettings(email, { lossLimit: user.lossLimit, lotLimit: user.lotCount, investmentMode: user.investmentMode, investmentAmount: user.investmentAmount });
+        res.cookie('session', email, { signed: true, httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
+        res.json(user);
+    } catch (e) {
+        console.error('Auth login error:', e);
+        res.sendStatus(500);
+    }
+});
+
+app.get('/auth/me', async function (req, res) {
+    const email = req.signedCookies?.session;
+    if (!email) {
+        res.sendStatus(401);
+        return;
+    }
+    try {
+        const user = await getUser(email);
+        if (!user) {
+            res.sendStatus(401);
+            return;
+        }
+        res.json(user);
+    } catch (e) {
+        console.error('Auth me error:', e);
+        res.sendStatus(500);
+    }
+});
+
+app.post('/auth/logout', function (req, res) {
+    res.clearCookie('session');
+    res.sendStatus(200);
+});
+
+app.get('/users', async function (req, res) {
+    try {
+        const users = await getAllUsers();
+        const monitor = Monitor.getInstance();
+        const result = users.map(u => ({
+            ...u,
+            sessionPnL: monitor.userPnL.get(u.email) || 0,
+            hasActiveTrade: monitor.hasActiveTrade(u.email),
+        }));
+        res.json(result);
+    } catch (e) {
+        console.error('Get users error:', e);
+        res.sendStatus(500);
+    }
+});
+
+app.post('/users/:email/settings', async function (req, res) {
+    try {
+        const { email } = req.params;
+        const { lossLimit, lotCount, investmentMode, investmentAmount } = req.body;
+        const user = await updateUserSettings(email, { lossLimit, lotCount, investmentMode, investmentAmount });
+        if (!user) {
+            res.status(404).json({ error: 'User not found' });
+            return;
+        }
+        // Update monitor cache
+        Monitor.getInstance().updateUserSettings(email, { lossLimit: user.lossLimit, lotLimit: user.lotCount, investmentMode: user.investmentMode, investmentAmount: user.investmentAmount });
+        res.json(user);
+    } catch (e) {
+        console.error('Update settings error:', e);
+        res.sendStatus(500);
+    }
+});
+
+app.post('/users', async function (req, res) {
+    try {
+        const { email, name, lossLimit, lotCount, role } = req.body;
+        if (!email || !name) {
+            res.status(400).json({ error: 'Email and name are required' });
+            return;
+        }
+        const user = await createUser(
+            email,
+            name,
+            lossLimit || 15000,
+            lotCount || 10,
+            role || 'user'
+        );
+        // Initialize in Monitor cache
+        Monitor.getInstance().updateUserSettings(email, { lossLimit: user.lossLimit, lotLimit: user.lotCount, investmentMode: user.investmentMode, investmentAmount: user.investmentAmount });
+        res.json(user);
+    } catch (e: any) {
+        console.error('Create user error:', e);
+        if (e.message === 'User already exists') {
+            res.status(409).json({ error: 'User already exists' });
+        } else {
+            res.sendStatus(500);
+        }
+    }
+});
+
+app.delete('/users/:email', async function (req, res) {
+    try {
+        const { email } = req.params;
+        const success = await deleteUser(email);
+        if (!success) {
+            res.status(404).json({ error: 'User not found' });
+            return;
+        }
+        res.sendStatus(200);
+    } catch (e) {
+        console.error('Delete user error:', e);
+        res.sendStatus(500);
+    }
+});
+
+app.patch('/users/:email/role', async function (req, res) {
+    try {
+        const { email } = req.params;
+        const { role } = req.body;
+        if (!role) {
+            res.status(400).json({ error: 'Role is required' });
+            return;
+        }
+        const user = await updateUserRole(email, role);
+        if (!user) {
+            res.status(404).json({ error: 'User not found' });
+            return;
+        }
+        res.json(user);
+    } catch (e: any) {
+        console.error('Update role error:', e);
+        if (e.message.includes('Invalid role')) {
+            res.status(400).json({ error: e.message });
+        } else {
+            res.sendStatus(500);
+        }
+    }
+});
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+app.patch('/users/:email/profile', async function (req, res) {
+    try {
+        const { email } = req.params;
+        const { phone } = req.body;
+        const user = await getUser(email);
+        if (!user) { res.status(404).json({ error: 'User not found' }); return; }
+        await Mongo.getInstance().db.collection('users').updateOne({ email }, { $set: { phone } });
+        res.json({ ...user, phone });
+    } catch (e) {
+        console.error('Profile update error:', e);
+        res.sendStatus(500);
+    }
+});
+
+app.patch('/users/:email/verify', async function (req, res) {
+    try {
+        const { email } = req.params;
+        const { field, verified } = req.body;
+        if (field !== 'email' && field !== 'phone') {
+            res.status(400).json({ error: 'field must be email or phone' }); return;
+        }
+        const update = field === 'email' ? { emailVerified: verified } : { phoneVerified: verified };
+        const user = await getUser(email);
+        if (!user) { res.status(404).json({ error: 'User not found' }); return; }
+        await Mongo.getInstance().db.collection('users').updateOne({ email }, { $set: update });
+        res.json({ ...user, ...update });
+    } catch (e) {
+        console.error('Verify update error:', e);
+        res.sendStatus(500);
+    }
+});
+
+app.post('/users/:email/documents/:docType', upload.single('file'), async function (req, res) {
+    try {
+        const { email, docType } = req.params;
+        if (docType !== 'address' && docType !== 'dob' && docType !== 'pan') {
+            res.status(400).json({ error: 'docType must be address, dob, or pan' }); return;
+        }
+        if (!req.file) { res.status(400).json({ error: 'No file uploaded' }); return; }
+        const user = await getUser(email);
+        if (!user) { res.status(404).json({ error: 'User not found' }); return; }
+
+        const bucket = new GridFSBucket(Mongo.getInstance().db, { bucketName: 'documents' });
+        const filename = `${email}_${docType}_${Date.now()}_${req.file.originalname}`;
+        const uploadStream = bucket.openUploadStream(filename, { contentType: req.file.mimetype });
+        uploadStream.end(req.file.buffer);
+
+        await new Promise<void>((resolve, reject) => {
+            uploadStream.on('finish', resolve);
+            uploadStream.on('error', reject);
+        });
+
+        const fieldMap: Record<string, string> = { address: 'addressProofId', dob: 'dobProofId', pan: 'panCardId' };
+        const field = fieldMap[docType];
+        await Mongo.getInstance().db.collection('users').updateOne({ email }, { $set: { [field]: uploadStream.id.toString() } });
+        res.json({ id: uploadStream.id.toString(), filename });
+    } catch (e) {
+        console.error('Document upload error:', e);
+        res.sendStatus(500);
+    }
+});
+
+app.get('/users/:email/documents/:docType', async function (req, res) {
+    try {
+        const { email, docType } = req.params;
+        if (docType !== 'address' && docType !== 'dob' && docType !== 'pan') {
+            res.status(400).json({ error: 'docType must be address, dob, or pan' }); return;
+        }
+        const user = await getUser(email);
+        if (!user) { res.status(404).json({ error: 'User not found' }); return; }
+
+        const fieldMap2: Record<string, string> = { address: 'addressProofId', dob: 'dobProofId', pan: 'panCardId' };
+        const fileId = (user as any)[fieldMap2[docType]];
+        if (!fileId) { res.status(404).json({ error: 'Document not found' }); return; }
+
+        const bucket = new GridFSBucket(Mongo.getInstance().db, { bucketName: 'documents' });
+        const files = await bucket.find({ _id: new ObjectId(fileId) }).toArray();
+        if (!files.length) { res.status(404).json({ error: 'File not found' }); return; }
+
+        res.setHeader('Content-Type', files[0].contentType || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${files[0].filename}"`);
+        bucket.openDownloadStream(new ObjectId(fileId)).pipe(res);
+    } catch (e) {
+        console.error('Document download error:', e);
+        res.sendStatus(500);
+    }
+});
+
 app.get('/login', async function (req, res) {
-    console.log("Logging in ");
+    Log.log("Logging in ");
     try {
         const { otp } = req.query;
         const prism = Prism.getInstance();
@@ -184,7 +430,7 @@ app.get('/login', async function (req, res) {
         // await updateStatus();
 
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 })
@@ -194,10 +440,10 @@ app.get('/orderbook', async function (req: express.Request, res) {
     try {
         const prism = Prism.getInstance();
         const orders = await prism.getOrders();
-        console.log('Orders: ' + orders)
+        Log.log('Orders: ' + orders)
         res.send(orders);
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 
@@ -206,26 +452,58 @@ app.get('/orderbook', async function (req: express.Request, res) {
 app.get('/start', async function (req: express.Request, res) {
     try {
         const prism = Prism.getInstance();
-        await prism.buyIndex('NIFTY')
-        await prism.buyIndex('BANKNIFTY')
+        await prism.buyIndex({ userContext: Monitor.getInstance().getUserContext('Default'), index: 'NIFTY' })
+        await prism.buyIndex({ userContext: Monitor.getInstance().getUserContext('Default'), index: 'BANKNIFTY' })
         res.sendStatus(200);
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 
 })
 
+app.get('/stats', async function (req: express.Request, res) {
+    const allStats = strategies.getList().map(s => s.getStats());
+
+    const cols = ['Strategy', 'Trades', 'Wins', 'Losses', 'Timeouts', 'Win%', 'P&L'];
+    const rows = allStats.map(s => [
+        s.userId,
+        String(s.totalTrades),
+        String(s.wins),
+        String(s.losses),
+        String(s.timeouts),
+        s.winRate !== null ? `${s.winRate}%` : 'N/A',
+        String(s.totalPnL),
+    ]);
+
+    const widths = cols.map((c, i) =>
+        Math.max(c.length, ...rows.map(r => r[i].length))
+    );
+    const sep = '+' + widths.map(w => '-'.repeat(w + 2)).join('+') + '+';
+    const fmt = (r: string[]) => '|' + r.map((v, i) => ` ${v.padEnd(widths[i])} `).join('|') + '|';
+
+    const lines = [sep, fmt(cols), sep, ...rows.map(fmt), sep];
+    res.type('text/plain').send(lines.join('\n'));
+})
+
 app.get('/strategies', async function (req: express.Request, res) {
     try {
-        const { strategy, enable} = req.query;
-        strategies.getList().forEach((s) => {
-            if (s.getClassName() == strategy) {
-                s.enabled = enable == 'true';
-            }
-        })
+        const { strategy, userId, enable} = req.query;
+        const identifier = (userId || strategy) as string;
+        if (identifier && enable !== undefined) {
+            strategies.getList().forEach((s) => {
+                if (s.userId === identifier || s.getClassName() === identifier) {
+                    s.enabled = enable == 'true';
+                }
+            });
+        }
+        res.json(strategies.getList().map(s => ({
+            type: s.getClassName(),
+            userId: s.userId,
+            enabled: s.enabled
+        })));
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 
@@ -239,7 +517,7 @@ app.get('/addTrade', async function (req: express.Request, res) {
         Monitor.getInstance().updateTrade(data)
         res.sendStatus(200);
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 
@@ -250,7 +528,7 @@ app.get('/openTrades', async function (req: express.Request, res) {
         const trades = Monitor.getInstance().trades
         res.send(trades)
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 
@@ -262,6 +540,18 @@ http://localhost:3000/order?index=NIFTY&right=call&action=buy&strikePrice=20500&
 app.get('/order', async function (req: express.Request, res) {
     try {
         const { right, action, index, strikePrice, price, contract, triggerPrice } = req.query;
+        const user = resolveUser(req);
+        Log.log('Resolved order while placing an order ', user)
+
+        const monitor = Monitor.getInstance();
+        const validation = monitor.canPlaceOrder(user);
+        if (!validation.allowed) {
+            Log.log(`[Order] Rejected for user '${user}': ${validation.reason}`);
+            res.status(403).json({ error: 'ORDER_REJECTED', message: validation.reason });
+            return;
+        }
+        monitor.pendingUsers.add(user);
+
         const prism = Prism.getInstance();
 
         // let niftyQuote;
@@ -281,41 +571,42 @@ app.get('/order', async function (req: express.Request, res) {
         // await breeze.subscribeOption(expiryDate, strikePrice, right);
 
         const nseIndex = indexMap.get(index as string);
-        
-        console.log('strikePrice: ', strikePrice, ' right: ', right)
+        const userContext = monitor.getUserContext(user);
+
+        Log.log('strikePrice: ', strikePrice, ' right: ', right)
         if (contract) {
-            // if (triggerPrice) {
-            //     Prism.getInstance().setOnTrigger(contract as string, triggerPrice as string)
-            // } else {
-            //     console.log('Buy a contract at the current price')
-            //     prism.buyContract(contract as string);
-            // }
-            
+            Log.log('Buy contract: ', contract)
+            await prism.buyContract(contract as string, undefined, undefined, userContext);
         } else {
             if (right && !strikePrice) {
-                prism.buyIndex(index, right)
+                await prism.buyIndex({ userContext, index: index as string, right: right as string })
             } else if (!strikePrice && !right) {
-                prism.buyIndex(index)
+                await prism.buyIndex({ userContext, index: index as string })
             } else {
                 const token = await nseIndex.findTokenFor(index as string, right as string, parseInt(strikePrice as string));
-    
+
                 let optionPrice = parseInt(price as string);
-                if (optionPrice == null || optionPrice == undefined) {
-                    const quote: NiftyQuote = await prism.getOptionQuote(token);
+                if (price == null || price == undefined) {
+                    Log.log('Trying to fetch quote')
+                    const tokenAsInt = await prism.getToken(token)
+                    const quote: NiftyQuote = await prism.getOptionQuote(tokenAsInt);
+                    Log.log('NifyQuote: ', NiftyQuote)
                     optionPrice = quote.ltp;
-            
+
+                } else {
+                    Log.log('OPTION PRICE IS NAN')
                 }
-        
-                await prism.sendLimitOrder(token, optionPrice, right as string, action as string, null);
-        
+
+                await prism.sendLimitOrder(token, optionPrice, right as string, action as string, null, userContext);
+
             }
-    
+
         }
 
         res.sendStatus(200);
 
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 })
@@ -326,7 +617,7 @@ app.get('/connect', async function (req: express.Request, res) {
         await prism.connect();
         res.sendStatus(200);
     } catch (e) {
-        console.log("Error while connecting to prism ", e)
+        Log.log("Error while connecting to prism ", e)
         res.sendStatus(500);
     }
 })
@@ -340,7 +631,7 @@ app.get('/subscribe', async function (req: express.Request, res) {
         prism.subscribeNifty();
         res.sendStatus(200);
     } catch (e) {
-        console.log("Error while subscribing nifty");
+        Log.log("Error while subscribing nifty");
         res.sendStatus(500);
     }
 })
@@ -350,16 +641,26 @@ app.get('/subscribe', async function (req: express.Request, res) {
 const mockTrades = [{ "token": "54033", "orderno": "23041000314509", "stockCode": "NIFTY", "action": "Buy", "cost": "67.25", "quantity": 200, "expiryDate": "20APR23", "right": "call", "strikePrice": "17800" }];
 app.get('/trades', async function (req: express.Request, res) {
     try {
-        // const breeze = Breeze.getInstance();
-        // res.send(await breeze.getTradeList());
-
+        const user = resolveUser(req);
         const prism = Prism.getInstance();
-        res.send(await prism.getTradeList());
-
-        // res.send(mockTrades);
-
+        const allTrades = await prism.getTradeList();
+        const userTrades = allTrades.filter((t: Trade) => t.user === user);
+        res.send(userTrades);
     } catch (e) {
-        console.log(e)
+        Log.log(e)
+        res.sendStatus(500)
+    }
+})
+
+app.get('/closedtrades', async function (req: express.Request, res) {
+    try {
+        const user = resolveUser(req);
+        const monitor = Monitor.getInstance();
+        const allClosedTrades = monitor.getClosedTrades();
+        const userClosedTrades = allClosedTrades.filter((t: Trade) => t.user === user);
+        res.send(userClosedTrades);
+    } catch (e) {
+        Log.log(e)
         res.sendStatus(500)
     }
 })
@@ -379,7 +680,7 @@ app.get('/refreshtrades', async function (req: express.Request, res) {
         // res.send(mockTrades);
 
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 })
@@ -392,7 +693,7 @@ app.get('/subscribetrades', async function (req: express.Request, res) {
         res.send(200);
 
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 })
@@ -404,6 +705,7 @@ app.get('/squareoff', async function (req: express.Request, res) {
     try {
 
         const { token, expiryDate, strikePrice, right, qty } = req.query;
+        const user = resolveUser(req);
 
         // const breeze = await Breeze.getInstance();
         // await breeze.sendMarketOrder(expiryDate, strikePrice, right, 'sell');
@@ -411,12 +713,29 @@ app.get('/squareoff', async function (req: express.Request, res) {
 
         const prism = await Prism.getInstance();
 
-        prism.squareOffOrder(token, qty)
+        prism.squareOffOrder(token, qty, user)
         res.sendStatus(200);
 
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
+    }
+})
+
+app.post('/settarget', express.json(), async function (req: express.Request, res) {
+    try {
+        const { token, targetPoints, stopLossPoints, trailingDistance } = req.body;
+        if (!token || targetPoints == null || stopLossPoints == null) {
+            res.status(400).json({ error: 'Missing token, targetPoints, or stopLossPoints' });
+            return;
+        }
+        const user = resolveUser(req);
+        const monitor = Monitor.getInstance();
+        monitor.setTargetStopLoss(token, targetPoints, stopLossPoints, trailingDistance ?? configService.getConfig().settings.trailingDistance, user);
+        res.sendStatus(200);
+    } catch (e) {
+        Log.log(e);
+        res.sendStatus(500);
     }
 })
 
@@ -427,7 +746,7 @@ app.get('/niftystream', async function (req, res) {
     };
 
     req.connection.addListener('close', function () {
-        console.log('Connection is closed, remove nifty listener')
+        Log.log('Connection is closed, remove nifty listener')
         myEmitter.removeListener('nifty', callback);
     });
     res.set({
@@ -442,8 +761,8 @@ app.get('/niftystream', async function (req, res) {
 
     //Subscribe for FirstEvent
     const listenerCount = myEmitter.listenerCount('nifty');
-    console.log("Nifty Listener count ", listenerCount);
-    console.log(`Host: ${req.host}`);
+    Log.log("Nifty Listener count ", listenerCount);
+    Log.log(`Host: ${req.host}`);
     myEmitter.on('nifty', callback);
 })
 
@@ -454,7 +773,7 @@ app.get('/optionstream', async function (req, res) {
     };
 
     req.connection.addListener('close', function () {
-        console.log('Connection is closed, remove nifty listener')
+        Log.log('Connection is closed, remove nifty listener')
         myEmitter.removeListener('option', callback);
     });
 
@@ -471,19 +790,27 @@ app.get('/optionstream', async function (req, res) {
 
     //Subscribe for FirstEvent
     const listenerCount = myEmitter.listenerCount('option');
-    console.log("Option Listener count ", listenerCount);
+    Log.log("Option Listener count ", listenerCount);
     myEmitter.on('option', callback);
 })
 
 app.get('/positionstream', async function (req, res) {
+    const user = resolveUser(req);
+    const monitor = Monitor.getInstance();
 
-    const callback = (t) => {
-        res.write(`data: ${JSON.stringify(t)}\n\n`);
+    const callback = (allTrades) => {
+        const userActiveTrades = allTrades.filter((t: Trade) => t.user === user);
+        const userClosedTrades = monitor.getClosedTrades().filter((t: Trade) => t.user === user);
+        const allUserTrades = [
+            ...userActiveTrades.map(t => ({ ...t, open: t.open !== false ? true : false })),
+            ...userClosedTrades.map(t => ({ ...t, open: false })),
+        ];
+        res.write(`data: ${JSON.stringify(allUserTrades)}\n\n`);
     };
 
     req.connection.addListener('close', function () {
-        console.log('Connection is closed, remove position listener')
-        myEmitter.removeListener('option', callback);
+        Log.log('Connection is closed, remove position listener for user:', user)
+        myEmitter.removeListener('position', callback);
     });
 
     res.set({
@@ -495,11 +822,9 @@ app.get('/positionstream', async function (req, res) {
 
     // Tell the client to retry every 10 seconds if connectivity is lost
     res.write('retry: 10000\n\n');
-    let count = 0;
 
-    //Subscribe for FirstEvent
     const listenerCount = myEmitter.listenerCount('position');
-    console.log("Position Listener count ", listenerCount);
+    Log.log("Position Listener count ", listenerCount, " user:", user);
     myEmitter.on('position', callback);
 })
 
@@ -525,11 +850,11 @@ app.get('/quotes', async function (req, res) {
         // const breeze = Breeze.getInstance();
         // const response = await breeze.getNiftyQuote();
         // prevClose = response.prevClose;
-        // console.log('Response in server ', response)
+        // Log.log('Response in server ', response)
         res.send(result)
 
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 })
@@ -539,16 +864,16 @@ app.get('/niftyquote', async function (req, res) {
     // res.send(mockRuntimeQuote);
     try {
         const response = await Prism.getInstance().getNiftyQuote();  // Nifty Quotes
-        console.log('Quotes: ', response);
+        Log.log('Quotes: ', response);
 
         // const breeze = Breeze.getInstance();
         // const response = await breeze.getNiftyQuote();
         // prevClose = response.prevClose;
-        // console.log('Response in server ', response)
+        // Log.log('Response in server ', response)
         res.send(response)
 
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 })
@@ -559,33 +884,33 @@ app.get('/quote', async function (req, res) {
     // res.send(mockRuntimeQuote);
     try {
         const response = await Prism.getInstance().getStockQuote(symbol as string);  // Nifty Quotes
-        console.log('Quotes: ', response);
+        Log.log('Quotes: ', response);
 
         // const breeze = Breeze.getInstance();
         // const response = await breeze.getNiftyQuote();
         // prevClose = response.prevClose;
-        // console.log('Response in server ', response)
+        // Log.log('Response in server ', response)
         res.send(response)
 
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 })
 
 app.get('/requestOtp', async function (req, res) {
     try {
-        console.log('Requesting OTP');
+        Log.log('Requesting OTP');
         await Prism.getInstance().requestOtp();
         res.send("Requested OTP");
     } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 })
 
 app.get('/search', async function (req, res) {
-    console.log('Len: ', req.query);
+    Log.log('Len: ', req.query);
     const { depth, right, index } = req.query;
     const nseIndex = indexMap.get(index as string);
     const token = await nseIndex.findToken(index as string, parseInt(depth as string), right as string);
@@ -603,25 +928,13 @@ app.get('/candles', async function (req, res) {
         const candles = candleManager.getCandleData('NIFTY', 15);
         res.send(candles)
     } catch (e) {
-        console.log(e)
-        res.sendStatus(500)
-    }
-})
-
-
-app.get('/executeGap', async function (req, res) {
-
-    try {
-        await executeGap.setPreviousDayQuote();
-        
-    } catch (e) {
-        console.log(e)
+        Log.log(e)
         res.sendStatus(500)
     }
 })
 
 // app.get('/config', async function (req, res) {
-//     console.log('In Config ' + JSON.stringify(req.query));
+//     Log.log('In Config ' + JSON.stringify(req.query));
 //     const targetPrice = parseInt(req.query.targetPrice as string);
 //     if (targetPrice) {
 //         if (targetPrice == 0 ) {
@@ -641,18 +954,18 @@ app.get('/executeGap', async function (req, res) {
 //         Config.lotCount = lotSize;
 //     }
 
-//     console.log(Config.targetPriceDiff)
+//     Log.log(Config.targetPriceDiff)
 // });
 
 app.get('/config', (req, res) => {
-    res.json(configService.getConfig());
-  });
-  
+    res.json(configService.configToFlat());
+});
+
 app.post('/config', (req, res) => {
-    const newConfig = req.body;
-    configService.writeConfig(newConfig);
-    res.send('Config updated!');
-  });
+    const flat = req.body;
+    configService.writeConfig(configService.flatToConfig(flat));
+    res.json(flat);
+});
 
 var route, routes = [];
 
@@ -669,7 +982,7 @@ app._router.stack.forEach(function (middleware) {
 
 
 var BreezeConnect = require('breezeconnect').BreezeConnect;
-console.log(routes)
+Log.log(routes)
 
 // const { RSI } = require('technicalindicators');
 
@@ -683,41 +996,66 @@ console.log(routes)
 // };
 
 // const rsiValues = RSI.calculate(rsiInput);
-// console.log(rsiValues)
+// Log.log(rsiValues)
 
+// Replay historical quotes for a date through the real-time candle-building path.
+// Produces [VERIFY] Candle and Signal logs identical to pipeline:fast --date.
+app.get('/replay', async (req, res) => {
+    const date = req.query.date as string;
+    if (!date) return res.status(400).json({ error: 'date query param required' });
 
-var server = app.listen(3000, async function () {
-    console.log('Icici server started ')
-    Mongo.init();
-    // console.log('What Happens now? ', executeGap)
-    
+    const db = Mongo.getInstance().db;
+    const quotes = await db.collection('Quote').find({ date }).sort({ ltt: 1 }).toArray();
+    if (quotes.length === 0) return res.status(404).json({ error: `no quotes for date ${date}` });
 
-    console.log('********************  Threshold: ', configService.getConfig().buySellStrategy.averageThreshold);
+    const replayDecision = new Decision();
+    replayDecision.replayMode = true;
+    for (const q of quotes) {
+        replayDecision._addPrice(Number(q.ltt), Number(q.ltp));
+    }
+    replayDecision.flushCandles();
+
+    res.json({ date, processed: quotes.length });
+});
+
+// Serve React app for /app and /app/* routes
+app.get('/app*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../public/app/index.html'));
+});
+
+var server = app.listen(Number(process.env.PORT) || 3000, async function () {
+
+    Log.log('Icici server started ')
+    Prism.getInstance();
+    await Mongo.init();
+    await strategies.initialize();
+
+    Log.log('********************  Threshold: ', configService.getStrategyConfig('BuySellStrategy').averageThreshold);
 
     // new CronJob(`0 ${config.startMin} ${config.startHour} * * *`, async function() {
-    //     console.log('Buy Nifty Index')
+    //     Log.log('Buy Nifty Index')
     //     await _start()
     //     console.info(moment())
     // }, null, true);
     // https://api.icicidirect.com/apiuser/login?api_key=01@oF100100H4eV8=109q287N9J8%2552L
     // http://localhost:3000/?apisession=27529479
     // const icici_apiKey = "01@oF100100H4eV8=109q287N9J8%52L";
-    // console.log("https://api.icicidirect.com/apiuser/login?api_key=" + encodeURI(icici_apiKey));
+    // Log.log("https://api.icicidirect.com/apiuser/login?api_key=" + encodeURI(icici_apiKey));
 
     // const appKey = "01@oF100100H4eV8=109q287N9J8%52L";
     // const appSecret = "#=f055136JU8R000wE91B094F5J192`5";
     // const apiSession = '27557733';
 
-    // console.log("Connecting to Breeze")
+    // Log.log("Connecting to Breeze")
     // var breeze = new BreezeConnect({"appKey":appKey});
-    // console.log("Generate Session")
+    // Log.log("Generate Session")
     // await breeze.generateSession(appSecret,apiSession)
-    // console.log("Get funds")
+    // Log.log("Get funds")
     // const fundResponse = breeze.getFunds();
-    // console.log("Funds response: ", fundResponse);
+    // Log.log("Funds response: ", fundResponse);
 
     // breeze.login();
-    // console.log('sessionToken: ', breeze.sessionToken);
+    // Log.log('sessionToken: ', breeze.sessionToken);
     // if (breeze.sessionToken == null || breeze.sessionToken.length == 0) {
     //     breeze.login();
     // }
@@ -733,12 +1071,12 @@ var server = app.listen(3000, async function () {
     //             port: 3000, // port or network address, defaults to 80
     //             subdomain: 'skarthikeyan100'
     //         });
-    //         console.log('URL: ', tunnel.url)
+    //         Log.log('URL: ', tunnel.url)
     //         tunnel.on('close', () => {
-    //             console.log('tunnels are closed');
+    //             Log.log('tunnels are closed');
     //         });
     //     } catch (e) {
-    //         console.log(e)
+    //         Log.log(e)
     //     }
     // })();
 }

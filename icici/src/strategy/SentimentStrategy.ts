@@ -1,3 +1,4 @@
+import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
@@ -28,7 +29,7 @@ const updatePrice = (price) => {
     const round = (num) => Math.round(num * 10) / 10;
     const percent = (price, num) => (price * num/100) 
     const updated = round(percent(price, 10))
-    console.log('Updated Threshold or Target to ', updated);
+    Log.log('Updated Threshold or Target to ', updated);
     return updated
 }
 
@@ -86,16 +87,16 @@ class Contract {
 
 
     processOptionQuote = async (quote: OptionQuote) => {
-        const averageThreshold = configService.getConfig().sentimentStrategy.averageThreshold;
-        const orderQuantity = configService.getConfig().sentimentStrategy.orderQuantity;
-        const targetPrice = configService.getConfig().sentimentStrategy.targetPrice;
+        const averageThreshold = configService.getStrategyConfig('SentimentStrategy').averageThreshold;
+        const orderQuantity = configService.getStrategyConfig('SentimentStrategy').orderQuantity;
+        const targetPrice = configService.getStrategyConfig('SentimentStrategy').targetPrice;
 
-        // console.log('this.token: ', this.token, ' quote.token: ', quote.token, ' contract: ', )
+        // Log.log('this.token: ', this.token, ' quote.token: ', quote.token, ' contract: ', )
         if (this.token == quote.token) {
             this.ltp = quote.ltp;
-            // console.log('Calculate profit ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty)
+            // Log.log('Calculate profit ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty)
             this.profit = round((quote.ltp - this.price) * this.qty)
-            // console.log(this.contract, ' ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty, ' profit: ', this.profit,  ' threshold: ', round(this.lastOrderedPrice - averageThreshold), ' targetPrice: ', round(this.price + targetPrice))
+            // Log.log(this.contract, ' ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty, ' profit: ', this.profit,  ' threshold: ', round(this.lastOrderedPrice - averageThreshold), ' targetPrice: ', round(this.price + targetPrice))
     
             //Handle negative direction
             
@@ -113,7 +114,7 @@ class Contract {
             if (this.token && this.token == quote.token &&
                 canSell == true && !this.orderPlaced) {
                 this.orderPlaced = true
-                console.log('SentimentStrategy: sell contract ', this.contract, ' at ', quote.ltp)
+                Log.log('SentimentStrategy: sell contract ', this.contract, ' at ', quote.ltp)
                 await this.strategy.sellContract(this.contract, this.qty, quote.ltp)
             }
     
@@ -121,8 +122,8 @@ class Contract {
     }
 
     updateTrade = async (trade: Trade) : Promise<boolean> => {
-        const averageThreshold = configService.getConfig().sentimentStrategy.averageThreshold;
-        const targetPrice = configService.getConfig().sentimentStrategy.targetPrice;
+        const averageThreshold = configService.getStrategyConfig('SentimentStrategy').averageThreshold;
+        const targetPrice = configService.getStrategyConfig('SentimentStrategy').targetPrice;
 
         let tradeClosed = false
         if (trade.tsym == this.contract) {
@@ -140,13 +141,13 @@ class Contract {
                 }
                 // averageThreshold = updatePrice(this.price)
                 // targetPrice = updatePrice(this.price)
-                console.log(this.contract, ' price: ', this.price, ' qty: ', this.qty,  ' buyAt: ', round(this.lastOrderedPrice - averageThreshold), ' sellAt: ', round(this.price + targetPrice))
+                Log.log(this.contract, ' price: ', this.price, ' qty: ', this.qty,  ' buyAt: ', round(this.lastOrderedPrice - averageThreshold), ' sellAt: ', round(this.price + targetPrice))
             }
 
             if (trade.action == this.SELL) {
                 this.clear();
                 tradeClosed = true;
-                console.log('After Sell Trade, contract: ', this)
+                Log.log('After Sell Trade, contract: ', this)
             }
         }
         return tradeClosed;
@@ -160,8 +161,8 @@ export default class SentimentStrategy extends Strategy {
     iterationCount = 0;
 
 
-    constructor() {
-        super();
+    constructor(userId?: string) {
+        super(userId);
         this.tradeMap = new Map();
         this.name = 'SentimentStrategy';
         this.enabled = true
@@ -200,19 +201,19 @@ export default class SentimentStrategy extends Strategy {
     }
 
     async processNiftyQuote(quote: NiftyQuote) {
-        const orderQuantity = configService.getConfig().sentimentStrategy.orderQuantity;
-        const sentiment = configService.getConfig().sentimentStrategy.sentiment;
-        const enabled = configService.getConfig().sentimentStrategy.enabled;
-        const loopCount = configService.getConfig().sentimentStrategy.loopCount;
-
+        const orderQuantity = configService.getStrategyConfig('SentimentStrategy').orderQuantity;
+        const sentiment = configService.getStrategyConfig('SentimentStrategy').sentiment;
+        const enabled = configService.getStrategyConfig('SentimentStrategy').enabled;
+        const loopCount = configService.getStrategyConfig('SentimentStrategy').loopCount;
         if (enabled) {
-            if (this.iterationCount <= loopCount && this.isTimeInRange() && !this.ordered) {
+            if (this.iterationCount <= loopCount && this.isTimeInRange() && !this.ordered && this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) {
                 this.ordered = true;
-                console.log('Initiate buy index for NIFTY at ', quote.ltp, ' with initial quantity: ', orderQuantity, ' iterationCount: ', this.iterationCount);
-                const response = await Prism.getInstance().buyIndex(NIFTY, quote.ltp-2, sentiment, orderQuantity);
+                Log.log('Initiate buy index for NIFTY at ', quote.ltp, ' with initial quantity: ', orderQuantity, ' iterationCount: ', this.iterationCount);
+                const response = await Prism.getInstance().buyIndex({ userContext: this.getUserContext(), index: NIFTY, ltp: quote.ltp-2, right: sentiment, qty: orderQuantity });
                 this.iterationCount++;
+                this.recordTriggerTime();
                 if (response) {
-                    console.log('Response: ', response)
+                    Log.log('Response: ', response)
                     this.contract = new Contract(this, response.contract);
                     this.contract.update(response.token);
                 }
@@ -222,13 +223,13 @@ export default class SentimentStrategy extends Strategy {
 
 
     updateTrade = async (trade: Trade) => {
-        // console.log('Sentiment Strategy: Update Trade action: ', trade.action, ' ', trade.right, ' ', trade.tsym, ' ', trade.token)
+        // Log.log('Sentiment Strategy: Update Trade action: ', trade.action, ' ', trade.right, ' ', trade.tsym, ' ', trade.token)
 
         if (this.contract?.updateTrade) {
             const tradeClosed = await this.contract.updateTrade(trade)
             if (tradeClosed) {
                 this.ordered = false;
-                // await Prism.getInstance().buyIndex(NIFTY, trade.ltp, "any", initialQuantity);
+                // await Prism.getInstance().buyIndex({ user: this.userId, index: NIFTY, ltp: trade.ltp, right: "any", qty: initialQuantity });
             }
         }
     }

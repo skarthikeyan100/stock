@@ -1,3 +1,4 @@
+import Log from './util/Log';
 // Strategy:
 // If direction is sure, go for option else go for option plus
 
@@ -24,12 +25,13 @@ import { Strategy, Outcome } from './strategy/strategy';
 import { ORBPrevious } from './strategy/ORBPrevious';
 import stats from 'stats-lite';
 import regression from 'regression';
-import { EMA, RSI, SD } from 'technicalindicators'; 
+import { buildCandle } from './lib/candle-builder';
+import { calcRSI, calcEMACrossover, calcMACD, calcBollinger, calcADX, calcStochastic } from './lib/indicators';
+import { INTERVALS, RSI_PARAMS, MACD_PARAMS, EMA_PARAMS, BOLLINGER_PARAMS, ADX_PARAMS, STOCHASTIC_PARAMS } from './lib/indicator-config';
 import EventEmitter from 'events';
-import executeGap from './executeGap'
 import { OnTrigger } from './onTrigger';
 import moment from 'moment';
-import Monitor from 'monitor';
+import Monitor from './monitor';
 import * as f from './orderList'
 import strategies from './strategy/strategies';
 import { Parser } from 'json2csv'
@@ -85,6 +87,7 @@ export default class Decision {
     static instance: Decision;
     depth = 2;
     onTrigger: OnTrigger;
+    replayMode = false;
  
 
     static getInstance() {
@@ -110,7 +113,7 @@ export default class Decision {
       }
 
     setOnTrigger = (contract, triggerPrice) => {
-        console.log("setOnTrigger is called")
+        Log.log("setOnTrigger is called")
         this.onTrigger = new OnTrigger();
         this.onTrigger.setTrigger(contract, triggerPrice)
     }
@@ -120,16 +123,13 @@ export default class Decision {
             this.onTrigger.process(quote);
         }
         for (const strategy of strategies.getList()) {
-            // console.log('Process strategy ', strategy.getClassName())
+            // Log.log('Process strategy ', strategy.getClassName())
             await strategy.processOptionQuote(quote);
         }
     }
 
     decidePurchase = async (quote: NiftyQuote) => {
-        executeGap.process(quote);
-        
         if (!SIMULATION) {
-            this._storeHistory(quote);
             this._addPrice(parseInt(quote.ltt), quote.ltp)
 
             for (const strategy of strategies.getList()) {
@@ -142,17 +142,17 @@ export default class Decision {
         }
 
         // this.quotes.push(niftyQuote);
-        // console.log('Pushing ', niftyQuote);
-        // console.log('this.quotes before shift ', this.quotes.length);
+        // Log.log('Pushing ', niftyQuote);
+        // Log.log('this.quotes before shift ', this.quotes.length);
         // if (this.quotes.length == this.historyLen + 1) {
         //     this.quotes.shift();
-        //     console.log('After shift ', this.quotes.length);
+        //     Log.log('After shift ', this.quotes.length);
         // }
 
         // this._formCandle(quote);
         // for (const strategy of this.strategies) {
         //     const outcome = strategy.process(quote, quote.token);
-        //     console.log('Outcome: ', outcome.toString())
+        //     Log.log('Outcome: ', outcome.toString())
         //     let trade: Trade;
         //     switch (outcome) {
         //         case Outcome.CALL:
@@ -210,9 +210,9 @@ export default class Decision {
         for (const strategy of strategies.getList()) {
             const trade = strategy.tradeMap.get(optionQuote.token) as Trade;
             if (trade) {
-                console.log('Trade: ', trade.right, ' qty: ', trade.quantity, ' profit: ', trade.getProfit());
+                Log.log('Trade: ', trade.right, ' qty: ', trade.quantity, ' profit: ', trade.getProfit());
                 if (trade.getProfit() > this.profit) {
-                    console.log('[Auto] Sell ', trade);
+                    Log.log('[Auto] Sell ', trade);
                     trade.action = SELL;
                     prism.squareOffOrder(trade.token, trade.quantity);
                     Mongo.getInstance().insert(trade);
@@ -222,18 +222,13 @@ export default class Decision {
         }
     };
 
-    _storeHistory = async (quoteParam: NiftyQuote) => {
-        const quote = new NiftyQuote(quoteParam);
-        Mongo.getInstance().insert(quote);
-    }
-
     _processOrder = async (quote: NiftyQuote, right: string, strategy: string) => {
 
         const prism = Prism.getInstance();
         const niftyPrice = quote.ltp;
         // var expiryDate = Util.findExpiryDate();
         var expiryDate = Util.findExpiryDate();
-        // console.log('niftyPrice: ', niftyPrice, 'this.depth: ', this.depth, 'right: ', right);
+        // Log.log('niftyPrice: ', niftyPrice, 'this.depth: ', this.depth, 'right: ', right);
         //TODO only nifty is considered for now
         const index = indexMap.get(NIFTY);
         const token = await index.findToken(NIFTY, this.depth, right, quote.ltp);
@@ -241,26 +236,27 @@ export default class Decision {
         // let quote: NiftyQuote;
         // quote = await prism.getOptionQuote(token);
 
-        const trade = await prism.sendLimitOrder(token, quote.ltp, right as string, BUY, 75, strategy);
+        //FixMe: Quantity is hard-coded for 65, this will not work for other stocks
+        const trade = await prism.sendLimitOrder(token, quote.ltp, right as string, BUY, 65, Monitor.getInstance().getUserContext(strategy));
         Mongo.getInstance().insert(trade);
         return trade;
     }
 
     _decideBasedOnCurrentState = (niftyQuote: NiftyQuote): String | void => {
         //TODO  time should be greater than 10
-        // console.log(niftyQuote);
+        // Log.log(niftyQuote);
         const isOpenGreaterThanPrevious = true; //niftyQuote.open > niftyQuote.prevClose;
         const isCurrentPriceGreaterThanOpenPrice = niftyQuote.ltp > niftyQuote.open;
         const isTrendHigh = niftyQuote.ltp > this.quotes[0].ltp;
         let decision;
 
-        // console.log('Quotes: ', this.quotes);
+        // Log.log('Quotes: ', this.quotes);
 
-        console.log('niftyQuote.prevClose: ', niftyQuote.prevClose);
-        console.log('Quotes Length: ', this.quotes.length);
-        console.log('isOpenGreaterThanPrevious: ', isOpenGreaterThanPrevious);
-        console.log('isCurrentPriceGreaterThanOpenPrice: ', isCurrentPriceGreaterThanOpenPrice);
-        console.log('isTrendHigh: ', isTrendHigh);
+        Log.log('niftyQuote.prevClose: ', niftyQuote.prevClose);
+        Log.log('Quotes Length: ', this.quotes.length);
+        Log.log('isOpenGreaterThanPrevious: ', isOpenGreaterThanPrevious);
+        Log.log('isCurrentPriceGreaterThanOpenPrice: ', isCurrentPriceGreaterThanOpenPrice);
+        Log.log('isTrendHigh: ', isTrendHigh);
 
         // Find trend on following too
         // changeFromLow
@@ -281,18 +277,18 @@ export default class Decision {
         // }
 
         if (decision === CALL || decision === PUT) {
-            console.log('[Auto] Buy ', decision);
+            Log.log('[Auto] Buy ', decision);
             this._processOrder(niftyQuote, decision, "decideBasedOnCurrentState");
         }
 
     }
 
     _readQuotesAsStream = async () => {
-        // console.log('Hello')
+        // Log.log('Hello')
         // const x = new Date(1689654092 * 1000);
 
-        // console.log(x.toString());
-        // console.log(x.getDate());
+        // Log.log(x.toString());
+        // Log.log(x.getDate());
 
         const stream = Mongo.getInstance().getAll('NiftyQuote');
         stream.on('error', function (err) {
@@ -315,39 +311,75 @@ export default class Decision {
     _round = (num) => Math.round(num * 100) / 100;
 
     eventEmitter = new EventEmitter();
-    intervals = [1800]
-    // intervals = [10, 15, 30, 45, 60, 120, 300, 600, 900]; // 30s, 1m, 2m, 5m, 10m, 15m, 30m
+    intervals = [300];  // 5-min only — matches pipeline --interval 300
     startTimes = [];
     priceStorage = {};
     pricePoints = []
     candlesMap = new Map<String, Candle[]>();
     enrichedCandlesMap = new Map<String, Candle[]>();
 
+    startCounts = [];
+
+    _mockEmitPrice(price, time) {
+        const pricePoint = new PricePoint(time, price)
+        this.pricePoints.push(pricePoint)
+
+        if (this.startCounts.length == 0) {
+            var i = 0;
+            this.intervals.forEach(interval => {
+                this.startCounts[i++] = 0;
+                const eventName = `priceUpdate_${interval}`;
+                this.priceStorage[eventName] = [];
+            })
+            this._registerEventHandlers();
+        }
+
+        var i = 0;
+        this.intervals.forEach((interval) => {
+            const eventName = `priceUpdate_${interval}`;
+            this.priceStorage[eventName].push(price)
+            this.startCounts[i]++;
+            if (this.startCounts[i] >= interval * 2) {
+                this.eventEmitter.emit(eventName, pricePoint);
+                this.startCounts[i] = 0;
+            }
+            i++;
+        });
+    }
+
     _emitPrice(price, time) {
+        if (SIMULATION) {
+            this._mockEmitPrice(price, time);
+            return;
+        }
+
         const pricePoint = new PricePoint(time, price)
         this.pricePoints.push(pricePoint)
 
         // const intervals = [10, 15, 30, 45, 60, 120, 300, 600, 900]; // 30s, 1m, 2m, 5m, 10m, 15m, 30m
         
         if (this.startTimes.length == 0) {
-            // const time = Date.now();
             var i = 0;
             this.intervals.forEach(interval => {
+                // Start at first tick's actual time (matches Python CandleBuilder: start_time = ltt[0])
                 this.startTimes[i++] = time;
                 const eventName = `priceUpdate_${interval}`;
                 this.priceStorage[eventName] = [];
             })
             this._registerEventHandlers();
         }
-        
+
         var i = 0;
         this.intervals.forEach((interval) => {
             const diff = time - this.startTimes[i];
             const eventName = `priceUpdate_${interval}`;
+            // Push FIRST (matches Python: bucket_prices.append(ltp[i]) before boundary check)
             this.priceStorage[eventName].push(price)
-            if (diff >= interval) {
+            // Require >= 2 prices (matches Python: len(bucket_prices) >= 2)
+            if (diff >= interval && this.priceStorage[eventName].length >= 2) {
                 this.eventEmitter.emit(eventName, pricePoint);
-                this.startTimes[i] = time
+                // Advance to current tick (matches Python: start_time = ltt[i])
+                this.startTimes[i] = time;
             }
             i++;
         });    
@@ -357,6 +389,7 @@ export default class Decision {
     _registerEventHandlers = () => {
 
         this.eventEmitter.on('stats', async (stats) => {
+            if (this.replayMode) return;
             for (const strategy of strategies.getList()) {
                 await strategy.receive(stats.oldStats, stats.newStats);
             }
@@ -365,47 +398,52 @@ export default class Decision {
 
         this.intervals.forEach((interval) => {
             const eventName = `priceUpdate_${interval}`;
-            console.log('Register eventName ', eventName)
+            Log.log('Register eventName ', eventName)
             this.candlesMap.set(eventName, [])
             this.enrichedCandlesMap.set(eventName, [])
             this.eventEmitter.on(eventName, (pricePoint) => {
-                console.log('Handle ', eventName)
-                // console.log(`Process event ${eventName} with price ${price} at ${moment().format("HH:mm:ss")}`);
-                // console.log(`Stored: ${this.priceStorage[eventName]}`);
-                const candle = this._calculateCandle(eventName, this.priceStorage[eventName]) as Candle;
-                candle.time = pricePoint.time
-                
-                const candles = this.candlesMap.get(eventName)
+                Log.log('Handle ', eventName)
+                const chunk = this.priceStorage[eventName];
+
+                // Build candle using shared lib (matches Python CandleBuilder._build_interval)
+                const candleData = buildCandle(chunk, pricePoint.time);
+                const candle: Candle = {
+                    eventName,
+                    time: pricePoint.time,
+                    open: candleData.open,
+                    close: candleData.close,
+                    high: candleData.high,
+                    low: candleData.low,
+                    average: candleData.average,
+                    median: candleData.median,
+                    stdDeviation: candleData.stddev,
+                    mad: candleData.mad,
+                    S1: candleData.S1,
+                    R1: candleData.R1,
+                    S2: candleData.S2,
+                    R2: candleData.R2,
+                };
+
+                const candles = this.candlesMap.get(eventName);
                 candles.push(candle);
 
-                const indicators = this._useCandles(eventName)
-                if (indicators.length > 0) {
 
-                    const enrichedCandle = indicators.map(indicator => (
-                        {
+                // Compute indicators and emit PeriodicStats for strategies
+                this._computeAndEmitStats(eventName, chunk);
+
+                // Build enriched candles for legacy consumers
+                const indicators = this._buildIndicatorResults(eventName);
+                if (indicators.length > 0) {
+                    const enrichedCandle = indicators.map(indicator => ({
                         ...indicator,
                         ...candle,
                         'eventName': `${candle.eventName}_${indicator.method}`
-                      }));
-    
-                    const enrichedCandles = this.enrichedCandlesMap.get(eventName)
+                    }));
+                    const enrichedCandles = this.enrichedCandlesMap.get(eventName);
                     enrichedCandles.push(...enrichedCandle);
-                    // console.log('Candle: ', enrichedCandle)
-                    // console.log('Candles: ', enrichedCandles)
-                        // console.log('Candle: ', candle)
-                        // console.log('candleAnalysis: ', candleAnalysis)
-                        // console.log('analyzedCandle: ', analyzedCandle)
-                        // console.log('candlesMap: ', this.candlesMap)
-                        // console.log('enrichedCandledMap: ', this.enrichedCandlesMap)
-                        // process.exit()
-    
-                } 
-
-                // const data = {...candle, ...candleAnalysis}
-
+                }
 
                 this.priceStorage[eventName] = [];
-                
             });
         });
     }
@@ -430,7 +468,7 @@ export default class Decision {
     }
 
     _addPrice = (ltt, number) => {
-        // console.log('Add Price ', this._getDate(), ' ', number)
+        // Log.log('Add Price ', this._getDate(), ' ', number)
         //TODO **************** Nan123@12
         // emit price to calculate real time\c
         this._emitPrice(number, ltt);
@@ -451,7 +489,7 @@ export default class Decision {
         //     var period = 20, numDeviations = 2
         //     const bollinger = this._calculateBollingerBandsTrend(this.prices, period, numDeviations);
         //     const realtimeTrend = new RealTimeTrend(ltt, number, trend, macd, rsi, bollinger);
-        //     console.log("Realtime Trend: ", JSON.stringify(realtimeTrend));
+        //     Log.log("Realtime Trend: ", JSON.stringify(realtimeTrend));
     
         // }
 
@@ -464,552 +502,99 @@ export default class Decision {
       stats = null;
 
       
-    _calculateCandle = (eventName: string, chunk) : Candle => {
-        if (eventName.endsWith('1')) {
-            const price = this.pricePoints[this.pricePoints.length-1]
-            return {eventName,  open: price, close:price, high:price, low:price, average:price, median:price, stdDeviation:price, mad:price, S1: price, R1: price, S2:price, R2:price}
-        }
-        const prices = this.priceStorage[eventName];
-        const open = chunk[0];
-        const close = chunk[chunk.length - 1];
-        const high = Math.max(...chunk);
-        const low = Math.min(...chunk);
-        const average = this._round(stats.mean(chunk));
-        const median = this._round(stats.median(chunk));
+    /** Compute all indicators and emit PeriodicStats for strategies. Replaces _calculateStatistics. */
+    _computeAndEmitStats = (eventName: string, chunk: number[]) => {
+        const candles = this.candlesMap.get(eventName) || [];
+        const prices  = candles.map(c => c.close);
+
+        const open         = chunk[0];
+        const close        = chunk[chunk.length - 1];
+        const high         = Math.max(...chunk);
+        const low          = Math.min(...chunk);
+        const average      = this._round(stats.mean(chunk));
+        const median       = this._round(stats.median(chunk));
         const stdDeviation = this._round(stats.stdev(chunk));
-        
-        const calculateMad = (prices: number[]): number => {
-            const median = (arr: number[]): number => {
-                const sorted = [...arr].sort((a, b) => a - b);
-                const mid = Math.floor(sorted.length / 2);
-            
-                return sorted.length % 2 === 0
-                ? (sorted[mid - 1] + sorted[mid]) / 2
-                : sorted[mid];
-            
-            }
-            const med = median(prices);
-            const absoluteDeviations = prices.map(p => Math.abs(p - med));
-            return this._round(median(absoluteDeviations));
+        const mad          = candles.length > 0 ? candles[candles.length - 1].mad : 0;
+        const trend        = this._determineTrend(prices);
+
+        const highs  = candles.map(c => c.high);
+        const lows   = candles.map(c => c.low);
+
+        const rsiResults       = RSI_PARAMS.map(p => calcRSI(prices, p.period, p.overbought, p.oversold)).filter(Boolean);
+        const intervalSec = eventName.replace('priceUpdate_', '');
+        const rsi_5_90_10 = rsiResults.find(r => r.header === 'RSI_5_90_10');
+        if (rsi_5_90_10) {
+            Log.log(`[Signal] ${intervalSec}s close=${close} RSI_5_90_10=${rsi_5_90_10.trend}`);
         }
 
+        const macdResults      = MACD_PARAMS.map(p => calcMACD(prices, p.shortPeriod, p.longPeriod, p.signalPeriod)).filter(Boolean);
+        const bollingerResults = BOLLINGER_PARAMS.map(p => calcBollinger(prices, p.period, p.numDeviations)).filter(Boolean);
+        const emaResults       = EMA_PARAMS.map(p => calcEMACrossover(prices, p.shortPeriod, p.longPeriod)).filter(Boolean);
+        const adxResults       = ADX_PARAMS.map(p => calcADX(highs, lows, prices, p.period)).filter(Boolean);
+        const stochasticResults = STOCHASTIC_PARAMS.map(p => calcStochastic(highs, lows, prices, p.kPeriod, p.dPeriod)).filter(Boolean);
 
-        const pivotResults = this._calculateSupportResistance({open, close, high, low});
-        const mad = calculateMad(prices)
+        const pivotResults = { S1: candles.length > 0 ? candles[candles.length - 1].S1 : 0,
+                               R1: candles.length > 0 ? candles[candles.length - 1].R1 : 0,
+                               S2: candles.length > 0 ? candles[candles.length - 1].S2 : 0,
+                               R2: candles.length > 0 ? candles[candles.length - 1].R2 : 0 };
 
-        return {eventName,  open, close, high, low, average, median, stdDeviation, mad, ...pivotResults}
+        this.supportPrice = pivotResults.S1;
+        this.resistantPrice = pivotResults.R1;
+        this.previousWindowTrend = close > open ? 'UP' : 'DOWN';
+
+        const results = { eventName, macd: macdResults, rsi: rsiResults, bollinger: bollingerResults, ema: emaResults, adx: adxResults, stochastic: stochasticResults, pivot: pivotResults };
+        const periodicStats = new PeriodicStats(open, high, low, close, average, median, stdDeviation, mad, trend, results);
+
+        this.eventEmitter.emit('stats', { oldStats: this.stats, newStats: periodicStats });
+        this.stats = periodicStats;
     }
 
-    _useCandles = (eventName) => {
-        const candles = this.candlesMap.get(eventName);
-        const closingPrices = candles.map( c => c.close)
+    /** Build {method, trend} array for enriched candles. Replaces _useCandles. */
+    _buildIndicatorResults = (eventName: string): Array<{ method: string; trend: string }> => {
+        const candles = this.candlesMap.get(eventName) || [];
+        const closes  = candles.map(c => c.close);
+        const results: Array<{ method: string; trend: string }> = [];
 
-        const rsiVariables = [
-            { period: 5, overbought: 70, oversold: 30 },
-            { period: 5, overbought: 80, oversold: 20 },
-            { period: 5, overbought: 90, oversold: 10 },
-            { period: 10, overbought: 70, oversold: 30 },
-            { period: 10, overbought: 80, oversold: 20 },
-            { period: 10, overbought: 90, oversold: 10 },
-            { period: 15, overbought: 70, oversold: 30 },
-            { period: 15, overbought: 80, oversold: 20 },
-            { period: 15, overbought: 90, oversold: 10 },
-            { period: 20, overbought: 70, oversold: 30 },
-            { period: 20, overbought: 80, oversold: 20 },
-            { period: 20, overbought: 90, oversold: 10 },
-            { period: 25, overbought: 70, oversold: 30 },
-            { period: 25, overbought: 80, oversold: 20 },
-            { period: 25, overbought: 90, oversold: 10 },
-            { period: 30, overbought: 70, oversold: 30 },
-            { period: 30, overbought: 80, oversold: 20 },
-            { period: 30, overbought: 90, oversold: 10 },
+        RSI_PARAMS.forEach(p => { const r = calcRSI(closes, p.period, p.overbought, p.oversold); if (r) results.push({ method: r.header, trend: r.trend }); });
+        MACD_PARAMS.forEach(p => { const r = calcMACD(closes, p.shortPeriod, p.longPeriod, p.signalPeriod); if (r) results.push({ method: r.header, trend: r.trend }); });
+        BOLLINGER_PARAMS.forEach(p => { const r = calcBollinger(closes, p.period, p.numDeviations); if (r) results.push({ method: r.header, trend: r.trend }); });
+        EMA_PARAMS.forEach(p => { const r = calcEMACrossover(closes, p.shortPeriod, p.longPeriod); if (r) results.push({ method: r.header, trend: r.trend }); });
 
-        ]
-
-        const results = [];
-        rsiVariables.forEach (rsi => {
-            var result = this._calculateRSITrend(closingPrices, rsi.period, rsi.overbought, rsi.oversold)
-            if (result?.latestRSI) {
-                results.push(
-                    {
-                        'method': result.header,
-                        'trend': result.trend
-                    }
-                )
-            }
-        })
-
-
-        const macdPeriods = [
-            { shortPeriod: 4, longPeriod: 8, signalPeriod: 3 },
-            { shortPeriod: 8, longPeriod: 16, signalPeriod: 6 },
-            { shortPeriod: 12, longPeriod: 24, signalPeriod: 9 },
-            { shortPeriod: 16, longPeriod: 32, signalPeriod: 12 },
-            { shortPeriod: 20, longPeriod: 40, signalPeriod: 15 },
-            { shortPeriod: 24, longPeriod: 48, signalPeriod: 18 }
-        ]
-
-        macdPeriods.forEach (macd => {
-            var result = this._calculateMACDTrend(closingPrices, macd.shortPeriod, macd.longPeriod, macd.signalPeriod)
-            if (result != null) {
-                results.push(
-                    {
-                        'method': result.header,
-                        'trend': result.trend
-                    }
-                )
-            }
-            
-        })
-
-
-        const bollingerVariables = [
-            { period: 5, numDeviations: 2},
-            { period: 5, numDeviations: 1.5},
-            { period: 5, numDeviations: 1},
-            { period: 10, numDeviations: 2},
-            { period: 10, numDeviations: 1.5},
-            { period: 10, numDeviations: 1},
-            { period: 15, numDeviations: 2},
-            { period: 15, numDeviations: 1.5},
-            { period: 15, numDeviations: 1},
-            { period: 20, numDeviations: 2},
-            { period: 20, numDeviations: 1.5},
-            { period: 20, numDeviations: 1},
-            { period: 25, numDeviations: 2},
-            { period: 25, numDeviations: 1.5},
-            { period: 25, numDeviations: 1},
-            { period: 30, numDeviations: 2},
-            { period: 30, numDeviations: 1.5},
-            { period: 30, numDeviations: 1},
-
-        ]
-
-        const bollingerResults = [];
-        bollingerVariables.forEach (bollinger => {
-            var result = this._calculateBollingerBandsTrend(closingPrices, bollinger.period, bollinger.numDeviations)
-            if (result != null) {
-                results.push(
-                    {
-                        'method': result.header,
-                        'trend': result.trend
-                    }
-                )
-            }
-        })
-
-        const emaCrossoverVariables = [
-            { shortPeriod: 9, longPeriod: 21},
-            { shortPeriod: 12, longPeriod: 28},
-            { shortPeriod: 15, longPeriod: 35},
-            { shortPeriod: 18, longPeriod: 42},
-            { shortPeriod: 21, longPeriod: 49},
-            { shortPeriod: 24, longPeriod: 56},
-            { shortPeriod: 27, longPeriod: 63},
-            { shortPeriod: 30, longPeriod: 70},
-
-        ]
-
-        const emaCrossoverResults = [];
-        emaCrossoverVariables.forEach (ema => {
-            var result = this._detectEMATrend(closingPrices, ema.shortPeriod, ema.longPeriod) 
-            if (result != null) {
-                results.push(
-                    {
-                        'method': result.header,
-                        'trend': result.trend
-                    }
-                )
-            }
-        })
-
-
-
-        return results
-
-        
+        return results;
     }
 
-    _calculateStatistics = async (eventName, chunk) => {
-        const prices = this.priceStorage[eventName];
-
-            const open = chunk[0];
-            const close = chunk[chunk.length - 1];
-            const high = Math.max(...chunk);
-            const low = Math.min(...chunk);
-            const average = this._round(stats.mean(chunk));
-            const median = this._round(stats.median(chunk));
-            const stdDeviation = this._round(stats.stdev(chunk));
-            const trend = this._determineTrend(prices)
-
-            const macdPeriods = [
-                { shortPeriod: 4, longPeriod: 8, signalPeriod: 3 },
-                { shortPeriod: 8, longPeriod: 16, signalPeriod: 6 },
-                { shortPeriod: 12, longPeriod: 24, signalPeriod: 9 },
-                { shortPeriod: 16, longPeriod: 32, signalPeriod: 12 },
-                { shortPeriod: 20, longPeriod: 40, signalPeriod: 15 },
-                { shortPeriod: 24, longPeriod: 48, signalPeriod: 18 }
-            ]
-
-            const macdResults = [];
-            macdPeriods.forEach (macd => {
-                var result = this._calculateMACDTrend(prices, macd.shortPeriod, macd.longPeriod, macd.signalPeriod)
-                if (result != null) {
-                    macdResults.push(result);
-                }
-                
-            })
-
-            const rsiVariables = [
-                { period: 5, overbought: 70, oversold: 30 },
-                { period: 5, overbought: 80, oversold: 20 },
-                { period: 5, overbought: 90, oversold: 10 },
-                { period: 10, overbought: 70, oversold: 30 },
-                { period: 10, overbought: 80, oversold: 20 },
-                { period: 10, overbought: 90, oversold: 10 },
-                { period: 15, overbought: 70, oversold: 30 },
-                { period: 15, overbought: 80, oversold: 20 },
-                { period: 15, overbought: 90, oversold: 10 },
-                { period: 20, overbought: 70, oversold: 30 },
-                { period: 20, overbought: 80, oversold: 20 },
-                { period: 20, overbought: 90, oversold: 10 },
-                { period: 25, overbought: 70, oversold: 30 },
-                { period: 25, overbought: 80, oversold: 20 },
-                { period: 25, overbought: 90, oversold: 10 },
-                { period: 30, overbought: 70, oversold: 30 },
-                { period: 30, overbought: 80, oversold: 20 },
-                { period: 30, overbought: 90, oversold: 10 },
-
-            ]
-
-            const rsiResults = [];
-            rsiVariables.forEach (rsi => {
-                var result = this._calculateRSITrend(prices, rsi.period, rsi.overbought, rsi.oversold)
-                if (result != null) {
-                    rsiResults.push(result);
-                }
-            })
-            
-            const bollingerVariables = [
-                { period: 5, numDeviations: 2},
-                { period: 5, numDeviations: 1.5},
-                { period: 5, numDeviations: 1},
-                { period: 10, numDeviations: 2},
-                { period: 10, numDeviations: 1.5},
-                { period: 10, numDeviations: 1},
-                { period: 15, numDeviations: 2},
-                { period: 15, numDeviations: 1.5},
-                { period: 15, numDeviations: 1},
-                { period: 20, numDeviations: 2},
-                { period: 20, numDeviations: 1.5},
-                { period: 20, numDeviations: 1},
-                { period: 25, numDeviations: 2},
-                { period: 25, numDeviations: 1.5},
-                { period: 25, numDeviations: 1},
-                { period: 30, numDeviations: 2},
-                { period: 30, numDeviations: 1.5},
-                { period: 30, numDeviations: 1},
-
-            ]
-
-            const bollingerResults = [];
-            bollingerVariables.forEach (bollinger => {
-                var result = this._calculateBollingerBandsTrend(prices, bollinger.period, bollinger.numDeviations)
-                if (result != null) {
-                    bollingerResults.push(result);
-                }
-            })
-
-            const emaCrossoverVariables = [
-                { shortPeriod: 9, longPeriod: 21},
-                { shortPeriod: 12, longPeriod: 28},
-                { shortPeriod: 15, longPeriod: 35},
-                { shortPeriod: 18, longPeriod: 42},
-                { shortPeriod: 21, longPeriod: 49},
-                { shortPeriod: 24, longPeriod: 56},
-                { shortPeriod: 27, longPeriod: 63},
-                { shortPeriod: 30, longPeriod: 70},
-
-            ]
-
-            const emaCrossoverResults = [];
-            emaCrossoverVariables.forEach (ema => {
-                var trend = this._detectEMATrend(prices, ema.shortPeriod, ema.longPeriod) 
-                if (trend != null) {
-                    var result = { 
-                        shortPeriod: ema.shortPeriod, 
-                        longPeriod: ema.longPeriod,
-                        trend 
-                    } 
-                    emaCrossoverResults.push(result);
-                }
-            })
-
-            const calculateMad = (prices: number[]): number => {
-                const median = (arr: number[]): number => {
-                    const sorted = [...arr].sort((a, b) => a - b);
-                    const mid = Math.floor(sorted.length / 2);
-                
-                    return sorted.length % 2 === 0
-                    ? (sorted[mid - 1] + sorted[mid]) / 2
-                    : sorted[mid];
-                
-                }
-                const med = median(prices);
-                const absoluteDeviations = prices.map(p => Math.abs(p - med));
-                return this._round(median(absoluteDeviations));
+    /** Force-emit remaining price buckets as trailing candles (matches buildCandles line 119-121). */
+    flushCandles = () => {
+        if (this.pricePoints.length === 0) return;
+        const lastPoint = this.pricePoints[this.pricePoints.length - 1];
+        this.intervals.forEach((interval) => {
+            const eventName = `priceUpdate_${interval}`;
+            const remaining = this.priceStorage[eventName];
+            if (remaining && remaining.length > 0) {
+                this.eventEmitter.emit(eventName, lastPoint);
             }
-
-
-            const pivotResults = this._calculateSupportResistance({open, close, high, low});
-            const mad = calculateMad(prices)
-            var t = {eventName, open, close, high, low, ...pivotResults, stdDeviation, mad}
-
-            var temp = null;
-            if (eventName == 'priceUpdate_60') {
-                const diff = this._round(close-open);
-                temp = {open, close, high, low, mad, diff}
-            }
-
-            this.supportPrice = t.S1
-            this.resistantPrice = t.R1
-            this.previousWindowTrend = close > open ? 'UP' : 'DOWN'
-
-// madSupportResistance.ts
-            
-
-            var results = {
-                eventName,
-                macd: macdResults,
-                rsi: rsiResults,
-                bollinger: bollingerResults,
-                ema: emaCrossoverResults,
-                pivot: pivotResults
-            }
-
-            // this.results.push({ open, high, low, close, average, median, stdDeviation, trend, macd, rsi, bollinger });
-            const periodicStats = new PeriodicStats(open, high, low, close, average, median, stdDeviation, mad, trend, 
-                results);
-            
-
-            this.eventEmitter.emit('stats', { oldStats: this.stats, newStats: periodicStats});
-            this.stats = periodicStats;
-            
-            //Uncomment: Add stats to Mongo for analysis and add to temp.json to monitor during trading time
-            // Mongo.getInstance().insert(periodicStats);
-            // if (temp != null) {
-            //     this._appendJsonToFile('temp.json', temp);
-            // }
-
-
-            // const result = {
-            //     time: moment().format("HH:mm:ss"),
-            //     open, high, low, close, median, 
-            //     callToken: interest.callToken,
-            //     callbuyQty: interest.callbuyQty, 
-            //     callsellQty: interest.callsellQty,
-            //     callChange: this._round(interest.callChange), 
-            //     putToken: interest.putToken,
-            //     putbuyQty: interest.putbuyQty, 
-            //     putsellQty: interest.putsellQty,
-            //     putChange: this._round(interest.putChange),
-            //     mad: this._round(mad(prices))
-            
-            // }
-
-            // console.log(result)
-            // const parser = new Parser(); // This will use all keys from the first object as columns
-            // const csv = parser.parse(result);
-            // this._appendJsonToFile('result.csv', result);
-
+        });
     }
 
     _appendJsonToFile = (filePath: string, jsonData: object): void => {
         const values = Object.values(jsonData);
         const csvLine = values.join(',') + '\n';
-    
         fs.appendFile(filePath, csvLine, (err) => {
-            if (err) {
-                console.error('Error appending to file:', err);
-            } else {
-                // console.log('Data appended successfully!');
-            }
+            if (err) console.error('Error appending to file:', err);
         });
     }
 
-    
     _determineTrend(prices) {
-      
         const data = prices.map((price, index) => [index, price]);
         const result = regression.linear(data);
         const slope = result.equation[0];
-      
-        if (slope > 0) {
-          return 'Up';
-        } else if (slope < 0) {
-          return 'Down';
-        } else {
-          return 'Sideways';
-        }
-      }
-
-    _detectEMATrend(prices1: number[], shortPeriod: number, longPeriod: number) {
-        if (prices1.length < longPeriod) {
-            return;
-        }
-        const prices = prices1.slice(-longPeriod);
-
-        const shortEMA = EMA.calculate({ period: shortPeriod, values: prices });
-        const longEMA = EMA.calculate({ period: longPeriod, values: prices });
-    
-        let trend = "NEUTRAL";
-    
-        for (let i = 1; i < prices.length; i++) {
-            if (shortEMA[i - 1] <= longEMA[i - 1] && shortEMA[i] > longEMA[i]) {
-                trend = "UP";
-                break;
-            } else if (shortEMA[i - 1] >= longEMA[i - 1] && shortEMA[i] < longEMA[i]) {
-                trend = "DOWN";
-                break;
-            }
-        }
-    
-        const header = `EMA_${shortPeriod}_${longPeriod}`
-        return {
-            header,
-            shortPeriod,
-            longPeriod,
-            trend
-        }
-    }
-
-      _calculateMACDTrend = (prices1, shortPeriod, longPeriod, signalPeriod) => {
-        var totalLength = signalPeriod + longPeriod;
-        if (prices1.length < totalLength) {
-            return;
-        }
-        try {
-            const prices = prices1.slice(-totalLength);
-      
-            const shortEMA = EMA.calculate({ period: shortPeriod, values: prices });
-    
-            const longEMA = EMA.calculate({ period: longPeriod, values: prices });
-          
-            const macdLine = shortEMA.slice(longPeriod - shortPeriod).map((value, index) => value - longEMA[index]);
-            const signalLine = EMA.calculate({ period: signalPeriod, values: macdLine });
-          
-            const latestShortEMA = this._round(shortEMA[shortEMA.length-1]);
-            const latestLongEMA = this._round(shortEMA[longEMA.length-1]);
-            const latestMACD = this._round(macdLine[macdLine.length - 1]);
-            const latestSignal = this._round(signalLine[signalLine.length - 1]);
-            const trend = latestMACD > latestSignal ? 'UP' : 'DOWN'
-
-            const header = `MACD_${shortPeriod}_${longPeriod}_${signalPeriod}`
-          
-            return {
-                header,
-                shortPeriod,
-                longPeriod,
-                signalPeriod,
-                latestShortEMA,
-                latestLongEMA,
-                latestMACD,
-                latestSignal,
-                trend
-            }
-    
-        } catch (e) {
-            console.log("ERROR: ", e)
-        }
-      }
-
-      _calculateRSITrend = (prices1, period, overbought, oversold) => {
-        if (prices1.length < period) {
-            return;
-        }
-        const prices = prices1.slice(-prices1);
-        const rsiValues = RSI.calculate({ period, values: prices });
-        // console.log('Prices: ', prices)
-        // console.log('rsiValues: ', rsiValues)
-        
-        const latestRSI = rsiValues[rsiValues.length - 1];
-        
-        var trend = 'NEUTRAL';
-        if (latestRSI > overbought) {
-            trend = 'DOWN'; // Overbought
-        } else if (latestRSI < oversold) {
-            trend = 'UP'; // Oversold
-        }
-        const header = `RSI_${period}_${overbought}_${oversold}`
-
-        return {
-            header,
-            period,
-            overbought,
-            oversold,
-            latestRSI,
-            trend
-        }
-      }
-
-      _calculateBollingerBandsTrend(prices1, period, numDeviations) {
-    
-        if (prices1.length < period) {
-            return;
-        }
-        
-        const prices = prices1.slice(-period);
-
-        // Calculate Simple Moving Average (SMA)
-        const sma = prices.reduce((sum, price) => sum + price, 0) / period;
-    
-        // Calculate Standard Deviation
-        const variance = prices.reduce((sum, price) => sum + Math.pow(price - sma, 2), 0) / period;
-        const stdDev = this._round(Math.sqrt(variance));
-    
-        // Calculate Bollinger Bands
-        const middleBand = this._round(sma);
-        const upperBand = this._round(sma + (stdDev * numDeviations));
-        const lowerBand = this._round(sma - (stdDev * numDeviations));
-    
-        // Calculate trend
-        const trend = prices[prices.length - 1] > upperBand ? 'UP' : (prices[prices.length - 1] < lowerBand ? 'DOWN' : 'NEUTRAL');
-        const header = `Bollingger_${period}_${numDeviations}`
-    
-        return {
-            header,
-            period,
-            numDeviations,
-            stdDev,
-            upperBand,
-            middleBand,
-            lowerBand,
-            trend
-        }
-    }
-
-    _calculateSupportResistance = (ohlc) => {
-        const { open, high, low, close } = ohlc;
-    
-        // Pivot Point (P)
-        const P = (high + low + close) / 3;
-    
-        // Support and Resistance Levels
-        const S1 = (2 * P) - high;
-        const R1 = (2 * P) - low;
-        const S2 = P - (high - low);
-        const R2 = P + (high - low);
-    
-        return {
-            S1: parseFloat(S1.toFixed(2)),
-            R1: parseFloat(R1.toFixed(2)),
-            S2: parseFloat(S2.toFixed(2)),
-            R2: parseFloat(R2.toFixed(2))
-        };  
+        if (slope > 0) return 'Up';
+        if (slope < 0) return 'Down';
+        return 'Sideways';
     }
 
 // (async () => {
-//     console.log("Immediately invoked function - calling init ")
+//     Log.log("Immediately invoked function - calling init ")
 //     await Mongo.init();
 //     Decision.getInstance();
 // })();

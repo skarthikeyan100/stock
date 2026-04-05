@@ -1,0 +1,6 @@
+model,cv_mean,cv_std,test_accuracy
+RandomForest,0.6956,0.0859,0.7238
+GradientBoosting,0.6834,0.0758,0.7333
+SVM,0.6642,0.019,0.6667
+LogisticRegression,0.6453,0.0471,0.7429
+DecisionTree,0.6404,0.1008,0.6381

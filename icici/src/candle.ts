@@ -1,3 +1,4 @@
+import Log from './util/Log';
 // Strategy:
 // If direction is sure, go for option else go for option plus
 
@@ -57,14 +58,14 @@ export class Candle {
     update(quote: NiftyQuote) {
 
         const diffTime = (quote.ltt - this.startTime);
-        // console.log('diffTime: ', diffTime, ' diff: ', this.diff)
+        // Log.log('diffTime: ', diffTime, ' diff: ', this.diff)
         if (this.startTime == null) {
             this.startTime = quote.ltt;
             this.start = new Date(quote.ltt * 1000).toString()
         } else if (diffTime >= this.diff) {
             this.endTime = quote.ltt;
             this.end = new Date(quote.ltt * 1000).toString()
-            // console.log('Returning false; diff: ', this.diff, ' Actual: ', diffTime, " condition: ", (diffTime >= this.diff))
+            // Log.log('Returning false; diff: ', this.diff, ' Actual: ', diffTime, " condition: ", (diffTime >= this.diff))
             return false;
         }
         if (this.open == null) {
@@ -103,15 +104,15 @@ class CandleHolder {
 
     constructor(candle) {
         this.candle = candle;
-        // console.log('Constructing holder ', this.candle.index, ' - ', this.candle.diff)
+        // Log.log('Constructing holder ', this.candle.index, ' - ', this.candle.diff)
         this.candles = [];
     }
 
     update(quote: NiftyQuote) {
         if (quote.token == 'NIFTY') {
             if (quote.ltt) {
-                // console.log('Update: ', quote);
-                // console.log('diff: ', this.candle.diff);
+                // Log.log('Update: ', quote);
+                // Log.log('diff: ', this.candle.diff);
                 const updated = this.candle.update(quote);
                 if (updated == false) {
                     this.candle.seqNumber = this.candles.length + 1;
@@ -156,11 +157,11 @@ export class CandleManager {
 
 
     print() {
-        console.log('Printing now')
+        Log.log('Printing now')
         for (const candleHolder of this.candles) {
-            console.log(candleHolder.candle.index, ' : ', candleHolder.candle.diff, ' - ', candleHolder.candles.length);
+            Log.log(candleHolder.candle.index, ' : ', candleHolder.candle.diff, ' - ', candleHolder.candles.length);
             for (const candle of candleHolder.candles) {
-                // console.log(candle)
+                // Log.log(candle)
             }
         }
     }
@@ -184,7 +185,7 @@ export class CandleManager {
                     volume: 10
                 };
             });
-        console.log(response);
+        Log.log(response);
         return response;
     }
 

@@ -1,0 +1,7 @@
+interval,best_model,best_cv_accuracy,top_3_features
+1min,SVM,0.9462,"EMA_5_13__AND__RSI_10_70_30_REV, R2, Bollinger_5_1.5__AND__EMA_5_13"
+5min,DecisionTree,0.9649,"RSI_20_70_30__AND__Bollinger_5_1.5, Bollinger_20_1__AND__EMA_27_63, RSI_20_70_30__AND__RSI_5_70_30_REV"
+10min,DecisionTree,0.9259,"mad, RSI_10_70_30__AND__MACD_4_8_3, Bollinger_10_2__AND__EMA_9_21"
+15min,DecisionTree,0.875,"range, S2, EMA_9_21__AND__EMA_12_28"
+20min,N/A,0.0,insufficient data
+30min,N/A,0.0,insufficient data

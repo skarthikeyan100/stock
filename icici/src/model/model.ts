@@ -1,6 +1,6 @@
+import Log from '../util/Log';
 import { EventEmitter } from 'events';
 
-const thisDay = 'Friday'
 export class NiftyQuote {
     token
     ltp
@@ -14,7 +14,6 @@ export class NiftyQuote {
     buyQty
     sellQty
     changePercent
-    day = thisDay
 
     constructor(response?) {
         if (response != null && response != undefined) {
@@ -67,7 +66,13 @@ export class Trade {
     status: string
     targetPrice: number
     stopLossPrice: number
-    
+    targetPoints: number       // raw target gap (for trailing recalc)
+    trailingDistance: number   // gap kept between HWM and SL during trailing
+    highWaterMark: number      // highest LTP seen since trailing started
+    trailingActive: boolean    // false until first target is hit
+    user: string = 'Default'
+    open: boolean = true
+    realizedPnL: number
 
 
     static getTradeFromResponse(response) {
@@ -80,7 +85,7 @@ export class Trade {
             trade.right = response.right,
             trade.strikePrice = response.strike_price,
             trade.ltp = response.ltp
-            console.log("Trade:(fromResponse) ", trade)
+            Log.log("Trade:(fromResponse) ", trade)
         return trade;
     }
 
@@ -144,7 +149,7 @@ export class Order {
     token: string;
 
     static fromPrism(response) {
-        console.log('Constructing order from prism: ', response);
+        Log.log('Constructing order from prism: ', response);
         const orderno = response.norenordno
         const tsym = response.tsym
         const trantype = response.trantype;
@@ -266,7 +271,6 @@ export class PeriodicStats {
     trend
     results: Result
     time
-    day = thisDay
 }
 
 
@@ -293,6 +297,8 @@ export class Result {
     rsi: RSI[]
     bollinger: Bollinger[]
     ema: EMACrossOver[]
+    adx: any[] = []
+    stochastic: any[] = []
     pivot: Pivot
 } 
 
@@ -326,7 +332,7 @@ export class Bollinger {
 
     getFeature(): string {
         const r = `${this.period}_${this.numDeviations}_${this.trend}`
-        console.log(this.period, ',', this.numDeviations, ',', r)
+        Log.log(this.period, ',', this.numDeviations, ',', r)
         return r;
     };
 }

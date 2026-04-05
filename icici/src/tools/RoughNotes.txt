@@ -1,0 +1,287 @@
+1. Put userToken in a file - Done
+2. PUt buyAgainDiff, profitsell and stoploss based on percentage - Test
+3. Find number of lots using the amount - Done
+4. Have a constant for the amount to invest - Done
+5. Buy only using index - Done
+6. cancel order if the price goes in opposite direction
+   - If buyagain triggered, cancel pending sell order - Test
+   - if sellForProfit triggered, cancel pending buy order
+   - have buyorderflag and sellorderflag in the Trade itself
+7. Support 6 type of trades (all 3 indices with PE and CE) 
+8. Automatic buy for the initial order
+9. Multiple trades - Test
+
+FIxes:
+3. Stop loss based on investment - Test
+
+
+HTML:
+1. Request OTP
+2. Login using OTP
+3. Buy Form
+4. Buttons to buy default
+5. Open orders
+6. Open Positions
+7. Timer to get (5) and (6)
+
+
+wget http://localhost:3000/requestOtp
+wget http://localhost:3000/login?otp=96907
+wget http://localhost:3000/connect
+http://localhost:3000/order?index=NIFTY&right=put&action=buy&strikePrice=21600&price=79
+http://localhost:3000/addTrade?tsym=NIFTY18JAN24P21700&flqty=200&flprc=78.8trantype=B
+
+http://localhost:3000/order?index=NIFTY&right=call&action=buy&strikePrice=22050&price=83
+
+http://localhost:3000/order?index=NIFTY&right=call
+
+http://localhost:3000/order?index=NIFTY&right=put&action=buy&strikePrice=21700&price=37
+
+
+http://localhost:3000/order?index=BANKNIFTY
+
+Strategy 1: Buy and Hold - Test
+Strategy 2: Buy Low, Multiple Sell Order and Repeat - Test
+Strategy 2a: Buy Low, Single Sell Order and Repeat - Test
+
+Find if trade is actually complete
+
+
+Trail Buy, Trail Sell ? Stoploss??
+Buy fixed quantity, not calculated
+
+
+
+Reason for Loss:
+In Buy/Sell, profit percentage did not reach (10%), so many orders are purchased  - Ideal candidate is Buy/Resell - Fix this as cancel not working
+Fix why option not subscribed on purchase
+
+Always use birectional for Buy/Hold, sell only for a good percentage, Buy at a difference in price
+
+Always use birectional for Buy/Sell
+
+If a buy order is placed, but share price rose to more than profit percentage, cancel buy order
+If a sell order is placed, but share price goes down to more than threshold percentage, cancel sell order and place another one - This will be a loss making trade
+
+One more strategy: Scalp. 
+Buy at a current price - a diff and Sell for a short rise. Quantity should be highest possible. In case of loss buyAgain will be triggered anyway  
+
+
+
+
+Add SequenceNo.
+Based on SequenceNo, determine, profit, buyagain, stoploss price
+Externalize Config
+
+When loss happens, buy in opposite direction with lesser gainprice
+
+Both PE and CE are not showing in monitor
+
+Why 2 trades happened immediately ?
+
+
+Not working:
+Keeps on averaging without stop loss
+Bidirection does not work as one side gets smaller profit and other side gets bigger loss
+        - Should close loss side faster with smaller loss?
+        - Buy opposite direction only when averaging
+Make a trade at 9:15 and stick to it ? Should exit immediately ??
+Find when price can go up by 2 Rs and take a bigger trade
+Use rate of change and number of steps in a direcion, find the direction
+Use ATM, 1 OTM and 2 OTM to find the direction
+Compare price difference and see how it changes
+After 2pm get ITM and play with larger numbers on the expiry date
+1800 for Nifty
+
+
+Tradesmart user Id: 9503046
+
+
+TPIN for Alice Blue: 541232
+TPIN for Shoonya: 572332
+TPIN for Raja: 020172
+
+Lessons:
+1. Do not buy after 3pm
+2. Have stop loss
+3. Dont average after 2 or 3 trades
+3a. Average only when there is a reversal
+4. Buy both directions to recover loss with shorter profits
+Should i sell individual trades ??
+5. If there are too much change in the index, then expect a rebound
+6. Do not trade if last 2 trades are profitable in the same contract
+7. Do not trade if there are no movements in both call and put - example on hedging. Wait for an indicative direction
+Find why both Call and Put are in loss ? time factor ??
+
+1. Square Off should work
+2. Positions should be cleared on closing trade
+3. Set Target Price or no target price
+4. After login, connect, navigate to home page and refresh positions
+
+1 minute candle for OHLC + Standard deviation
+
+
+Get minute data
+
+Apply price on 
+
+These are feeds. Processor will get only one data at a time.
+0.5 min
+1 minute
+2 minutes
+5 
+10
+15
+20
+30  (Max. period is 12)
+
+Processor
+
+{"ltp":"3231.50","ltt":"1744373991","open":"3289.55","high":"3298.95","low":"3206.00","prevClose":"3246.60","volume":"7108961","token":"TCS"}
+{"ltp":"22828.55","ltt":"1744372024","open":"22695.40","high":"22923.90","low":"22695.40","prevClose":"22399.15","token":"NIFTY"}
+
+1. Find Gap up or Gap down and execute trade immediately (before 9:15:30)
+2. Enable TrailStop
+3. Server buy stock option
+3. In Flutter buy any option including stock option
+    a. Provide text which searches symbol pe or ce or price
+
+
+    BHARTIARTL29MAY25C1920
+
+    Test
+    1. Buy Contract with trigger price
+    2. Monitor Contract Options
+    
+    http://localhost:3000/order?contract=BHARTIARTL29MAY25C1920
+
+    RELIANCE29MAY25C1420
+
+    Do BiDirection only if trend is sideways,Do not use stoploss if trend is sideways. Use SD to find it or close - open to be less than threshold
+
+    Find the velocity/momentum 
+      - Price changes are faster
+      - Price changes are slower
+
+   
+   Strategy 2
+   Subtract from low and buy PUT
+   Add from high and buy Call
+
+   Strategy 3
+   if (diff > 5) buy call
+   if (diff < -5) buy put
+
+   NA-17476521642LO
+
+DL Application Number: 1406199125
+
+In Panic mode, there will be loss at either PE or CE
+
+If there is a loss above certain value, 
+   If loss is decreasing by certain amount
+   or if loss is increasing by certain amount
+
+   buy a bigger quantity and trade in certain profit. (may be 2 or 5 based on magnitude of loss)
+
+
+Based on the price, determine average quantity
+
+https://money.usnews.com/investing/articles/top-stocks-to-buy-in-different-sectors - 11 stocks from each sector
+
+
+Add Gold, Silver, 
+Add Natural Gas, Crude Oil
+
+Freeze Quantity - Done
+Fine tune parameters - Done
+Only one contract at a time, only if required go bidirectional - Done
+Find contract based on the price - Done
+
+3. Separate instances for Raja and Karthik
+When buying again, buy in opposite direction too for the same amount
+Every iteration, multiply base number
+
+1. Use all strategies
+2. Have a strategy to buy and sell with profit or stoploss
+3. Strategy specific parameters in yml file
+4. Run multiple strategies at once
+5. Use MongoStream to use same data, added advantage is that data will be stored in Mongo
+6. Finetune parameters at runtime
+7. Refresh open trades for specific strategy
+8. Save Data for analysis - use Mongo Stream
+9. Find support and resistance for various time periods, MACD, RSA - use ML
+10. Set target and average threshold based on standard deviation
+
+Have in 1 direction, only if there is considerable loss, start in another direction - this is for day 1
+
+11. Save trades to find strategy and average price
+
+If waiting for averaging, getting lost in small ups if the price is between purchase price and threshold
+
+If opposite direction, still in loss, buy at last ordered price
+
+Do NOT sell intermediate profit
+Average either iteration * quantity if investment is less or average double quantity
+FOr scalping, buying at a reduced price from the last sale price
+
+2:12 - socket closed
+
+  'NIFTY28AUG25C25150',
+  'NIFTY28AUG25C25200',
+  'NIFTY28AUG25C25250',
+  'NIFTY28AUG25C25300',
+  'NIFTY28AUG25C25350',
+  'NIFTY28AUG25C25100',
+  'NIFTY28AUG25P25100',
+  'NIFTY28AUG25P25050',
+  'NIFTY28AUG25P25000',
+  'NIFTY28AUG25P24950',
+  'NIFTY28AUG25P24900',
+  'NIFTY28AUG25P24850'
+
+
+DL Application Number: 1406199125
+
+
+
+Test:
+Have users collection
+1. Login
+2. Enter a trade through UI
+  only one should be allowed
+  should stop at 15K loss
+
+  check Monitor.ts - It is confusing for claude, it shoulb for each strategy and add one for manual strategy
+
+  Test Check LotSize, it is considered as quantity instead of lotSize.
+
+
+python3 main.py --thresholds 2,4,6,8,10,12,14,16,18,20 --reverse-rsi --include-combinations --parallel
+
+cd /home/karthikeyan/work/icici/analysis
+
+# Generate full analysis
+python3 main.py --thresholds 2,4,6,8,10,12,14,16,18,20 --reverse-rsi --include-combinations --skip-ml --parallel
+
+# Result: threshold_comparison.csv with 32,401 rows
+
+    
+# Top 10 indicators for each threshold
+awk -F, '$2 <= 10 {print}' output/threshold_comparison.csv | column -t -s,
+
+# Indicators with 100% success rate
+awk -F, '$6 == 100.0 && $4 > 10 {print}' output/threshold_comparison.csv
+
+# Compare specific indicator across thresholds
+grep "RSI_14_80_20__AND__EMA_12_28" output/threshold_comparison.csv
+
+# Best performers (success rate > 70%, total > 20)
+awk -F, '$6 > 70 && ($4 + $5) > 20 {print}' output/threshold_comparison.csv | \
+  sort -t, -k6 -rn | head -20
+
+# Indicators with low oscillating (from individual files)
+for t in 2 4 6 8 10; do
+  awk -F, -v t=$t 'NR>1 && $3 < 2 && $5 > 70 {print t","$0}' \
+    output/threshold_$t/indicator_success_rates.csv
+done

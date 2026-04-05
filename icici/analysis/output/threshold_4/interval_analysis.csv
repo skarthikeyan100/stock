@@ -1,0 +1,7 @@
+interval,best_model,best_cv_accuracy,top_3_features
+1min,RandomForest,0.8244,"Bollinger_5_1__AND__ADX_20, MACD_4_8_3__AND__ADX_14, Bollinger_5_1__AND__ADX_14"
+5min,GradientBoosting,0.9652,"S2, RSI_20_70_30__AND__RSI_5_70_30_REV, range"
+10min,RandomForest,0.8929,"mad, range, RSI_10_70_30__AND__MACD_4_8_3"
+15min,RandomForest,0.8778,"MACD_4_8_3__AND__Bollinger_20_2, Bollinger_20_2__AND__RSI_10_70_30_REV, Bollinger_15_1__AND__Bollinger_20_2"
+20min,N/A,0.0,insufficient data
+30min,N/A,0.0,insufficient data

@@ -1,3 +1,4 @@
+import Log from '../util/Log';
 let web_socket = require("ws");
 
 let triggers = {
@@ -24,7 +25,7 @@ class WebSocketClient {
     }
 
     connect = (params, callbacks) => {
-        console.log('WS Connect is called')
+        Log.log('WS Connect is called')
         return new Promise((resolve, reject) => {
             if (this.apikey === null || this.url === null) return "apikey or url is missing";
 
@@ -51,7 +52,7 @@ class WebSocketClient {
             };
             this.ws.onmessage = (evt) => {
                 var result = JSON.parse(evt.data);
-                // console.log('Result from socket: ', result);
+                // Log.log('Result from socket: ', result);
 
                 if (result.t == 'ck') {
                     trigger("open", [result]);
@@ -68,13 +69,13 @@ class WebSocketClient {
 
             };
             this.ws.onerror = (evt) => {
-                console.log("error::", evt)
+                Log.log("error::", evt)
                 trigger("error", [JSON.stringify(evt.data)]);
                 this.ws.connect();
                 reject(evt)
             };
             this.ws.onclose =  (evt) => {
-                console.log("Socket closed")
+                Log.log("Socket closed")
                 trigger("close", [JSON.stringify(evt.data)]);
             };
         })

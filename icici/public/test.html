@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Display JSON as Table</title>
+  <style>
+    table {
+      border-collapse: collapse;
+      margin: 10px 0;
+      border: 1px solid #ccc;
+    }
+    th, td {
+      padding: 8px 12px;
+      border: 1px solid #aaa;
+    }
+    th {
+      background-color: #f2f2f2;
+      text-align: left;
+    }
+  </style>
+</head>
+<body>
+
+<div id="json-container"></div>
+
+<script>
+
+
+const data = {"call":{"price":95.5,"qty":75,"buyAt":85.5,"sellAt":108.83,"ltp":95.5,"profit":0}}
+
+  const data1 = {
+    "name": "Alice",
+    "age": 30,
+    "contact": {
+      "email": "alice@example.com",
+      "phone": "123-456-7890"
+    },
+    "skills": [
+      "JavaScript",
+      "Python",
+      {
+        "name": "HTML",
+        "level": "Advanced"
+      }
+    ]
+  };
+
+  function createTable(obj) {
+    const table = document.createElement("table");
+    for (const key in obj) {
+      const row = table.insertRow();
+      const cellKey = row.insertCell();
+      const cellValue = row.insertCell();
+      cellKey.textContent = key;
+
+      if (typeof obj[key] === "object" && obj[key] !== null) {
+        if (Array.isArray(obj[key])) {
+          const list = document.createElement("ul");
+          obj[key].forEach(item => {
+            const listItem = document.createElement("li");
+            if (typeof item === "object") {
+              listItem.appendChild(createTable(item));
+            } else {
+              listItem.textContent = item;
+            }
+            list.appendChild(listItem);
+          });
+          cellValue.appendChild(list);
+        } else {
+          cellValue.appendChild(createTable(obj[key]));
+        }
+      } else {
+        cellValue.textContent = obj[key];
+      }
+    }
+    return table;
+  }
+
+  document.getElementById("json-container").appendChild(createTable(data));
+</script>
+
+</body>
+</html>

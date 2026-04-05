@@ -1,10 +1,10 @@
-// configService.ts
+import Log from '../util/Log';
 import fs, { readFileSync, writeFileSync } from 'fs';
 import { load, dump } from 'js-yaml';
-import AppConfig from './AppConfig';
+import AppConfig, { StrategyInstanceConfig } from './AppConfig';
 
 class ConfigService {
-  private configPath = './config.yml';
+  private configPath = process.env.CONFIG_PATH || './config.yml';
   public config: AppConfig;
   private static instance: ConfigService;
 
@@ -28,17 +28,37 @@ class ConfigService {
     return this.config;
   }
 
+  public configToFlat(): Record<string, any> {
+    const flat: Record<string, any> = { settings: this.config.settings };
+    for (const strategy of this.config.strategies || []) {
+      const { type, ...rest } = strategy;
+      const key = type.charAt(0).toLowerCase() + type.slice(1);
+      flat[key] = { type, ...rest };
+    }
+    return flat;
+  }
+
+  public flatToConfig(flat: Record<string, any>): AppConfig {
+    const { settings, ...rest } = flat;
+    const strategies = Object.values(rest).filter((v): v is StrategyInstanceConfig => !!v && typeof v.type === 'string');
+    return { settings, strategies } as AppConfig;
+  }
+
+  public getStrategyConfig(type: string): StrategyInstanceConfig {
+    const strategies = this.config.strategies || [];
+    return strategies.find(s => s.type === type) || { type, enabled: false };
+  }
+
   private loadConfig() {
     const fileContents = readFileSync(this.configPath, 'utf8');
     const parsed: any = load(fileContents);
     this.config = parsed as AppConfig;
-    console.log('Config Updated:', this.config);
+    Log.log('Config Updated:', this.config);
   } 
 
   private watchConfig() {
-    // Watch for changes
-      fs.watchFile(this.configPath, () => {
-        console.log('Config file changed. Reloading...');
+    fs.watchFile(this.configPath, () => {
+        Log.log('Config file changed. Reloading...');
         this.loadConfig();
       });
   }

@@ -1,3 +1,4 @@
+import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
@@ -54,46 +55,35 @@ export default class Minutes5Decision extends Strategy {
     }
 
     updateTrade = async (trade: Trade) : Promise<void> => {
-        console.log('[K] Trade in Minutes5Decision: ', trade)
+        Log.log(`[Minutes5] Trade update: ${trade.tsym} qty=${trade.quantity} ltp=${trade.lastTradePrice} pnl=${trade.realizedPnL}`)
         if (trade.action == 'Sell') {
             this.contracts = this.contracts.filter ( c => {
                 return !(c.contract == trade.tsym && trade.price == c.sellPrice)
             })
-            console.log('After sell contracts: ', this.contracts)
+            Log.log('After sell contracts: ', this.contracts)
         }
-    }
-
-    async buyContract(contract: string, quantity: number, price?: number ): Promise<OrderInfo> {
-        // console.log('Buy Contract by ', this.getClassName(), ' for contract: ', contract)
-        return await Prism.getInstance().buyContract(contract, quantity, price)
-    }
-
-    async sellContract(contract: string, quantity: number, price?: number ) {
-        // console.log('Sell Contract by ', this.getClassName(), ' for contract: ', contract + " for the price " + price)
-        await Prism.getInstance().sellContract(contract, quantity, price)
     }
 
     eventName = 'priceUpdate_60'
 
-    constructor() {
-        super();
+    constructor(userId?: string) {
+        super(userId);
         this.tradeMap = new Map();
         this.name = 'Minutes15Decision';
         this.enabled = true
-        Strategy.currentStrategy = this
     }
 
     _executeTrade = async (selected) => {
-        console.log('Place buy order for ', selected)
+        Log.log('Place buy order for ', selected)
         const orderResponse = await this.buyContract(selected, orderQuantity)
         const buyPrice = parseFloat(orderResponse.price as unknown as string);
         const sellPrice = round(buyPrice + targetPrice, 1)
         await sleep(2000); // Assuming buy is executed at buyPrice
-        console.log('Place sell order for ', selected)
+        Log.log('Place sell order for ', selected)
         await this.sellContract(selected, orderQuantity, sellPrice)
         const contract = new Contract(selected, buyPrice, sellPrice)
         this.contracts.push(contract)
-        console.log('Adding to the list ', contract)
+        Log.log('Adding to the list ', contract)
 
     }
 
@@ -104,13 +94,13 @@ export default class Minutes5Decision extends Strategy {
         if (oldStats != null) {
             const now = moment().tz('Asia/Kolkata').format('HH:mm');
             if (this.eventName == oldStats.results.eventName) {
-                if (this.tradesCount <= tradesCount) {
+                if (this.contracts.length <= tradesCount) {
                     const selectedContract = await this.getTradersDirection();
                     if (selectedContract) {
                         const selected = selectedContract.contract
 
                         var recommendation = selected.substring(12, 13) == 'C' ? 'CALL' : 'PUT'
-                        console.log(now, ' Recommend to Buy ' +  recommendation)
+                        Log.log(now, ' Recommend to Buy ' +  recommendation)
 
                         this.contracts.sort()
 
@@ -124,33 +114,33 @@ export default class Minutes5Decision extends Strategy {
                         const availableContract = this.contracts.find (c => {
                             return c.contract == selected
                         })
-                        console.log("Available Contract: ", availableContract)
+                        Log.log("Available Contract: ", availableContract)
                         if (availableContract) {
                             const optionQuote = await Prism.getInstance().getStockOptionQuote(availableContract.contract)
                             const differenceInPrice = round(availableContract.price - optionQuote.ltp);
-                            console.log('availableContract.price: ', availableContract.price, ' optionQuote.ltp: ', optionQuote.ltp, ' Difference: ', differenceInPrice)
+                            Log.log('availableContract.price: ', availableContract.price, ' optionQuote.ltp: ', optionQuote.ltp, ' Difference: ', differenceInPrice)
                             if ( differenceInPrice >= differenceThreshold) {
                                 await this._executeTrade(selected)
                             } else {
-                                console.log('No trade as the difference is ', (availableContract.price - optionQuote.ltp))
+                                Log.log('No trade as the difference is ', (availableContract.price - optionQuote.ltp))
                             }
                         } else {
-                            console.log('Execute New Trade')
+                            Log.log('Execute New Trade')
                             await this._executeTrade(selected)
                         }
                         
                     } else {
-                        console.log(now, ' No Trade')
+                        Log.log(now, ' No Trade')
                     }
                 } else {
-                    console.log('Maximum active trades have reached')
+                    Log.log('Maximum active trades have reached')
                 }
             }
         }
     }    
 
     getTradersDirection = async () => {
-        console.log('[K} Verify ', (Strategy.currentStrategy as Minutes5Decision).contracts)
+        Log.log('[K} Verify ', this.contracts)
         const ltp = (await Prism.getInstance().getNiftyQuote()).ltp
         await Prism.getInstance().cacheFile();
         const nseIndex = indexMap.get('NIFTY' as string);
@@ -204,7 +194,7 @@ export default class Minutes5Decision extends Strategy {
     }
 
         getContracts = async (ltp) => {
-            const contracts = new Set<string>;
+            const contracts = new Set<string>();
             
             let result = null;
             const index = 'NIFTY'
@@ -219,7 +209,7 @@ export default class Minutes5Decision extends Strategy {
             const fn = async (right) => {
                 // for(var depth = 1; depth < 2; depth++) {
                 //     let strikePrice = floorDiff > ceilDiff ? ceilPrice: floorPrice        
-                //     // console.log('Strike Price: ', strikePrice, ' depth: ', depth, ' right: ', right)
+                //     // Log.log('Strike Price: ', strikePrice, ' depth: ', depth, ' right: ', right)
                 //     if (right == 'call') {
                 //         strikePrice += (depth * factor)
                 //     } else {
@@ -227,7 +217,7 @@ export default class Minutes5Decision extends Strategy {
                 //     }
                     
                 //     const contract = await nseIndex.findTokenFor(index, right, strikePrice);
-                //     console.log('Adding contract ', contract)
+                //     Log.log('Adding contract ', contract)
                 //     contracts.add(contract)
                 // }
     

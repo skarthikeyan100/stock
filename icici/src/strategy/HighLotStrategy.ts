@@ -1,3 +1,4 @@
+import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, Trade } from "../model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
@@ -32,7 +33,7 @@ class Order {
 
 
     async addOrder(price, right, quantity?: number) {
-        const order = await Prism.getInstance().buyIndex(NIFTY, price, right, quantity);
+        const order = await Prism.getInstance().buyIndex({ index: NIFTY, ltp: price, right, qty: quantity });
         return {
             contract: order.contract,
             price: order.price,
@@ -64,23 +65,23 @@ class Order {
     processOptionQuote = async (quote: OptionQuote): Promise<boolean> => {
         let addContraOrder = false;
         if (this.active && quote.token == this.token) {
-            console.log('HighLotStrategy: diff: ', (quote.ltp - this.price))
+            Log.log('HighLotStrategy: diff: ', (quote.ltp - this.price))
             const diff = quote.ltp - this.price
             if ( diff >= targetPrice) {
-                console.log('ProcessOptionQuote: Sell as targetPrice is reached, diff: ', diff)
+                Log.log('ProcessOptionQuote: Sell as targetPrice is reached, diff: ', diff)
                 // await Prism.getInstance().sellContract(this.strategy, this.contract, this.qty, quote.ltp) 
-                console.log("************************** REVISIT **************")
+                Log.log("************************** REVISIT **************")
                 this.clear()
             } else if (diff <= -contraThreshold && diff > stopLossThreshold) {
-                console.log('ProcessOptionQuote: Add Contra Order contra? ', diff <= -contraThreshold, ' stoploss? ', diff > stopLossThreshold)
+                Log.log('ProcessOptionQuote: Add Contra Order contra? ', diff <= -contraThreshold, ' stoploss? ', diff > stopLossThreshold)
                 addContraOrder = true;
             } else if (diff <= -stopLossThreshold) {
-                console.log('HighLotStrategy: Selling for stop loss')
+                Log.log('HighLotStrategy: Selling for stop loss')
                 // await Prism.getInstance().sellContract(this.strategy, this.contract, this.qty, quote.ltp) 
-                console.log("************************** REVISIT **************")
+                Log.log("************************** REVISIT **************")
                 this.clear()
             } else {
-                console.log('NOthing happened in processOptionQuote, diff: ', diff)
+                Log.log('NOthing happened in processOptionQuote, diff: ', diff)
             }
 
         }
@@ -88,7 +89,7 @@ class Order {
     }
 
     updateTrade = async (trade: Trade) => {
-        console.log('HighLotStrategy: Update Trade action: ', trade.action, ' ', trade.right, ' ', trade.tsym, ' ', trade.token)
+        Log.log('HighLotStrategy: Update Trade action: ', trade.action, ' ', trade.right, ' ', trade.tsym, ' ', trade.token)
         if (trade.tsym == this.contract) {
             if (trade.action == this.BUY) {
                 const totalAmount = (this.qty * this.price) + (trade.quantity * trade.price)
@@ -112,15 +113,15 @@ export default class HighLotStrategy extends Strategy{
     putOrder: Order
     
 
-    constructor() {
-        super()
+    constructor(userId?: string) {
+        super(userId)
         this.tradeMap = new Map();
         this.name = 'HighLotStrategy';
     }
 
     receive = (oldStats, newStats) =>  {
         if (newStats != null) {
-            console.log(newStats.results.eventName, ': stddev: ', newStats.stdDeviation)
+            Log.log(newStats.results.eventName, ': stddev: ', newStats.stdDeviation)
         }
         this.stats = newStats;
     }
@@ -134,12 +135,12 @@ export default class HighLotStrategy extends Strategy{
     processOptionQuote = async (quote: OptionQuote) => {
         if (this.ordered == true) {
             if (this.putOrder) {
-                console.log('Put Order is available')
+                Log.log('Put Order is available')
                 const addCallOrder = await this.putOrder.processOptionQuote(quote);
                 if (addCallOrder) {
-                    console.log('Call Order: ', this.putOrder)
+                    Log.log('Call Order: ', this.putOrder)
                     if (!this.callOrder || !this.callOrder.active) {
-                        console.log('HighLotStrategy: Buying CALL as PUT price has reduced')
+                        Log.log('HighLotStrategy: Buying CALL as PUT price has reduced')
                         const order = await this.addOrder(quote.ltp, CALL, buyQuantity);
                         this.callOrder = new Order();
                         this.callOrder.initialize(order);
@@ -149,14 +150,14 @@ export default class HighLotStrategy extends Strategy{
             }
 
             if (this.callOrder) {
-                console.log('Call Order is available')
+                Log.log('Call Order is available')
                 const addPutOrder = await this.callOrder.processOptionQuote(quote);
 
                 if (addPutOrder) {
-                    console.log('Put Order: ', this.putOrder)
+                    Log.log('Put Order: ', this.putOrder)
                     if (!this.putOrder || !this.putOrder.active) {
-                        console.log('HighLotStrategy: Buying PUT as CALL price has reduced')
-                        console.log('Quote is ', quote )
+                        Log.log('HighLotStrategy: Buying PUT as CALL price has reduced')
+                        Log.log('Quote is ', quote )
                         const order = await this.addOrder(quote.ltp, PUT, buyQuantity);
                         this.putOrder = new Order();
                         this.putOrder.initialize(order);
@@ -174,9 +175,9 @@ export default class HighLotStrategy extends Strategy{
         if (this.stats ) {
             for (let i = 0; i < intervals.length; i++) {
                 trigger = this.stats.results.eventName == `priceUpdate_${intervals[i]}` && this.stats.stdDeviation < stdDev[i];
-                console.log(`HighLotStrategy: Checking Std Deviation for ${intervals[i]} seconds: `, this.stats.stdDeviation, ' < ', stdDev[i]);
+                Log.log(`HighLotStrategy: Checking Std Deviation for ${intervals[i]} seconds: `, this.stats.stdDeviation, ' < ', stdDev[i]);
                 if (this.stats.results.eventName == `priceUpdate_${intervals[i]}` && this.stats.stdDeviation < stdDev[i]) {
-                    console.log(`HighLotStrategy: Std Deviation is within range for ${intervals[i]} seconds: `, this.stats.stdDeviation, ' < ', stdDev[i]);
+                    Log.log(`HighLotStrategy: Std Deviation is within range for ${intervals[i]} seconds: `, this.stats.stdDeviation, ' < ', stdDev[i]);
                     return true;
                 }
             }
@@ -186,7 +187,7 @@ export default class HighLotStrategy extends Strategy{
 
     processNiftyQuote = async (quote) => {
         if (this.isTimeInRange() && !this.ordered && this.isStdDeviationInRange()) {
-            console.log('HighLotStrategy: Buy CALL as standard deviation is low')
+            Log.log('HighLotStrategy: Buy CALL as standard deviation is low')
             const order = await this.addOrder(quote.ltp, CALL, buyQuantity);
             this.callOrder = new Order();
             this.callOrder.initialize(order);
@@ -203,13 +204,13 @@ export default class HighLotStrategy extends Strategy{
 
         // This goes in a loop, so monitor and close manually
         if (this.callOrder && this.callOrder.active && this.putOrder && !this.putOrder.active) {
-            console.log('CALL is active, but PUT is not active. Buying PUT again');
+            Log.log('CALL is active, but PUT is not active. Buying PUT again');
             const order = await this.addOrder(round(trade.ltp - buyAgainDiff), PUT, buyQuantity);
             this.putOrder.initialize(order);
         }
  
         if (this.callOrder && !this.callOrder.active && this.putOrder && this.putOrder.active) {
-            console.log('CALL is not active, but PUT is active. Buying CALL again');
+            Log.log('CALL is not active, but PUT is active. Buying CALL again');
             const order = await this.addOrder(round(trade.ltp - buyAgainDiff), CALL, buyQuantity);
             this.putOrder.initialize(order);
 

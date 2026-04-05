@@ -1,0 +1,130 @@
+import axios from "axios";
+import { Parser } from 'json2csv'
+
+// const url = "https://www.nsws.gov.in/gateway-sec/form-builder-sec/marketplace/license-summary-list";
+const url = "https://www.nsws.gov.in/gateway-sec/form-builder-sec/marketplace/state-license-summary-list"
+
+
+const allTitles: string[] = [];
+
+
+const totalItems = 671;
+const pageSize = 12;
+
+const fetchStates = async () => {
+
+    const states = 
+        [
+            "Andaman and Nicobar Islands",
+            "Andhra Pradesh",
+            "Arunachal Pradesh",
+            "Assam",
+            "Bihar",
+            "Chandigarh",
+            "Chhattisgarh",
+            "Dadra and Nagar Haveli and Daman and Diu",
+            "Delhi",
+            "Goa",
+            "Gujarat",
+            "Haryana",
+            "Himachal Pradesh",
+            "Jammu and Kashmir",
+            "Jharkhand",
+            "Karnataka",
+            "Kerala",
+            "Madhya Pradesh",
+            "Maharashtra",
+            "Mizoram",
+            "Nagaland",
+            "Odisha",
+            "Puducherry",
+            "Punjab",
+            "Rajasthan",
+            "Sikkim",
+            "Tamil Nadu",
+            "Telangana",
+            "Tripura",
+            "Uttar Pradesh",
+            "Uttarakhand",
+            "West Bengal"
+          ]
+    
+
+    const stateIds = []
+
+    for (let index = 0; index < states.length; index++) {
+        const stateName = states[index];
+        const url = "https://www.nsws.gov.in/gateway-sec/form-builder-sec/state/fetch-by-name"
+        const payload = {
+            name:stateName
+        }
+        console.log(payload)
+        const response = await axios.post(url, payload);
+        const data = response.data;
+        stateIds.push(data.id)
+    }
+
+    for (let index = 0; index < stateIds.length; index++) {
+        const stateId = stateIds[index];
+        console.log(`Fetching data for state ID: ${stateId}`);
+        await fetchData(stateId, states[index]);
+    }
+
+}
+
+const fetchData = async (stateId?, stateName?) => {
+    const items = [];
+    let lastPage = false
+    for (let start = 0; start < totalItems && !lastPage; start += pageSize) {
+        let payload;
+        if (stateId) {
+            payload = {
+                start,
+                length: pageSize,
+                searchTag:"",
+                filters:{
+                    state_id:[stateId],
+                    authority_id:[]}}
+        } else {
+            payload = {
+                start,
+                length: pageSize,
+                sortBy: "name",
+                filters: {
+                ministry_id: [],
+                department_id: [],
+                },
+            };
+        }
+
+        try {
+            const response = await axios.post(url, payload);
+            const data = response.data;
+            if (data.length < pageSize) {
+                lastPage = true; // If the number of items returned is less than pageSize, it's the last page
+            }
+
+            for (const item of data || []) {
+                let rawTitle;
+                if (stateId) {
+                    rawTitle = item["stateUrlTitle"] || "";
+                } else {
+                    rawTitle = item["urlTitle"] || "";
+                }
+                const cleanTitle = rawTitle.replace(/-/g, " ");
+                allTitles.push(cleanTitle);
+                items.push(item); // Add full item to items array
+            }
+        } catch (error) {
+            console.error(`Error fetching data from ${start} to ${start + pageSize}:`, error);
+        }
+    }
+
+    // Write items to a JSON file
+    const parser = new Parser(); // This will use all keys from the first object as columns
+    const csv = parser.parse(items);
+    let fileName = stateId ? `State-${stateName}-items.json` : 'Central-items.json';
+    fs.writeFileSync(fileName, csv, 'utf8');
+    
+    console.log("Saved items to ", fileName);
+};

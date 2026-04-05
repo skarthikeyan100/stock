@@ -1,0 +1,16 @@
+{
+  "name": "icici-tools",
+  "version": "1.0.0",
+  "description": "Standalone tools for stock analysis",
+  "scripts": {
+    "returns": "tsc && node ./dist/stockReturns.js",
+    "sr": "tsc && node ./dist/supportResistance.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.6.3"
+  }
+}

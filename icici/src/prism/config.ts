@@ -1,11 +1,7 @@
+import Log from '../util/Log';
 import fs from 'fs';
 import readLine from 'readline';
 
-export enum Strategies {
-  BUY_AND_HOLD,
-  BUY_AND_SELL,
-  BUY_AND_RESELL,
-}
 
 class Config {
     // "endpoint ="http=//rama.kambala.co.in=6002/NorenWClient/",    
@@ -17,8 +13,6 @@ class Config {
     heartbeat = 3000
     
     NFOSymbolsPath = '/home/karthikeyan/Downloads/NFO_symbols.txt'
-    NFOLotSize = '/home/karthikeyan/Downloads/lotSize.txt'
-    NSESymbolsPath = '/home/karthikeyan/Downloads/NSE_symbols.txt'
     stocksPath = 'stocks.csv'
 
     startHour = 10
@@ -34,9 +28,6 @@ class Config {
     auto = false
     takePositionInOtherDirection = true
     
-    targetPriceDiff = 1 // TODO= Should be smaller closer to expiry. Bigger difference for bidirection
-    stopLossPriceDiff = 20
-    
     buyAgainPriceDiff = 20
     buyTrail = 40 // Ideally should be 2x of buyAgainPrice
 
@@ -47,16 +38,11 @@ class Config {
     selectedOption = "none" // if "call" buy call, if "put" buy put, otherwise calculate. applicable only if bidirection is false
     //TODO= Buy only when price is low when compared to index value
 
-    // Strategies are 
-    NIFTY_STRATEGY = Strategies.BUY_AND_SELL
-    BANKNIFTY_STRATEGY = Strategies.BUY_AND_SELL
-    FINNIFTY_STRATEGY = Strategies.BUY_AND_HOLD
-
 
     file = __dirname + '/../../config/config.properties'
     _processFile = async () => {
-      console.log("Dir Name: " + __dirname);
-      console.log("File Name: " + __filename);
+      Log.log("Dir Name: " + __dirname);
+      Log.log("File Name: " + __filename);
         //If matches exact requested token, then return it
         var lineReader = readLine.createInterface({
           input: fs.createReadStream(this.file)
@@ -74,14 +60,13 @@ class Config {
             }
           }
       } catch (e) {
-          console.log(e);
+          Log.log(e);
       } finally {
           lineReader.close();
       }
-      console.log("lot count: " + this.lotCount);
-      console.log("Auto Trade: " + this.auto);
-      console.log("Profit Diff: " + this.targetPriceDiff);
-      console.log("Stoploss Diff: " + this.stopLossPriceDiff);
+      Log.log("lot count: " + this.lotCount);
+      Log.log("Auto Trade: " + this.auto);
+
 
     }
     watch = async () => {
@@ -104,7 +89,7 @@ class Config {
         }, 
         async (curr, prev) => { 
           // Show the time when the file was modified 
-          console.log("Updated configuration at ", curr.mtime); 
+          Log.log("Updated configuration at ", curr.mtime); 
           await this._processFile();
         } 
       ); 

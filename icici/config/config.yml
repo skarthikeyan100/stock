@@ -1,0 +1,14 @@
+
+app:
+  SentimentStrategy:
+    enabled: false
+    averageThreshold: 5
+    targetPrice: 2
+    orderQuantity: 300;
+    sentiment: 'any'
+  BuySellStrategy:
+    enabled: false
+    averageThreshold: 10
+    targetPrice: 6
+    initialQuantity: 75;
+    stopEnabled: false;

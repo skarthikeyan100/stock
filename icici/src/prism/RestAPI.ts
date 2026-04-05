@@ -1,3 +1,4 @@
+import Log from '../util/Log';
 "use strict";
 
 import axios from 'axios';
@@ -5,18 +6,20 @@ import sha256 from 'crypto-js';
 
 import Config from './config';
 import WS from './WebSocket'
+import MockAPI from './MockAPI';
+import { MOCK_BROKER, MOCK_QUOTES } from '../constants';
 
 class NorenRestApi {
 
 
   //Karthik
   userId = 'FA96552'
-  passwd = 'Api@129'
+  passwd = 'Api@1235'
   vendorCode = 'FA96552_U'
   imei = 'abc1234'
   apiKey = 'cac8568d15187897a1a38209da48c1fe'
   twoFA = '78601'
-  otpRequest = {"uid":"FA96552","pan":"282fe979845bd0340ee8bae983c2f580ccbab8ad226034453612627d18b5ce32"}
+  otpRequest = {"uid":"FA96552","pan":"25b74cbf27ba090811308c23b3f8b02b9c33e2b2f7ecf8f0a2b73016fa5e3cd3"}
 
 
   //Raja //AJAPR6032J
@@ -62,7 +65,7 @@ class NorenRestApi {
     this.endpoint = Config.endpoint;
 
     axios.interceptors.request.use(req => {
-      // console.log("use::", `${req.method} ${req.url} ${req.data}`);
+      // Log.log("use::", `${req.method} ${req.url} ${req.data}`);
       // Important: request interceptors **must** return the request.
       return req;
     });
@@ -70,7 +73,7 @@ class NorenRestApi {
     // Add a response interceptor
     axios.interceptors.response.use(response => {
       if (Config.debug == true) {
-        console.log("response::", response)
+        Log.log("response::", response)
       }
       if (response.status === 200) {
         if (response.data.success || response.data.status) {
@@ -80,7 +83,7 @@ class NorenRestApi {
         }
       }
     }, error => {
-      console.log(error)
+      Log.log(error)
       let errorObj = {} as any;
 
       if (error.response) {
@@ -104,7 +107,7 @@ class NorenRestApi {
 
   setUserToken = async (token) => {
     const { writeFile } = require('fs/promises')
-    console.log('Writing token ', token)
+    Log.log('Writing token ', token)
     await writeFile("userToken.txt", token);
   }
 
@@ -120,9 +123,13 @@ class NorenRestApi {
   }
 
   request_otp = () => {
+    if (MOCK_BROKER) {
+      Log.log('[RestAPI] Mock request_otp (no-op)');
+      return Promise.resolve({ stat: 'Ok' });
+    }
     let url = 'https://trade.shoonya.com/NorenWClientWeb/FgtPwdOTP';
 
-    
+
     let payload = 'jData=' + JSON.stringify(this.otpRequest);
     return axios.post(url, payload);
   }
@@ -135,8 +142,12 @@ class NorenRestApi {
   };
 
   logout = async () => {
+    if (MOCK_BROKER) {
+      Log.log('[RestAPI] Mock logout (no-op)');
+      return;
+    }
     await this.post_request('logout', this.userId);
-    console.log('Logged out')
+    Log.log('Logged out')
   }
   /**
     * Description
@@ -150,6 +161,10 @@ class NorenRestApi {
     */
 
   login = async (twoFA) => {
+    if (MOCK_BROKER) {
+      Log.log('[RestAPI] Mock login (no-op)');
+      return 'mock-token';
+    }
 
     let pwd = sha256.SHA256(this.passwd).toString();
     let u_app_key = `${this.userId}|${this.apiKey}`
@@ -168,11 +183,11 @@ class NorenRestApi {
 
     try {
       let auth_data = await this.post_request("authorize", authparams);
-      console.log("Auth Data: ", auth_data);
+      Log.log("Auth Data: ", auth_data);
       this.setSessionDetails(auth_data);
       return this.userToken;
     } catch (e) {
-      console.log('Error: ', e);
+      Log.log('Error: ', e);
       throw e;
     }
   };
@@ -188,7 +203,7 @@ class NorenRestApi {
 
   searchscrip = async (searchtext) => {
 
-    console.log('searchtext: ', searchtext);
+    Log.log('searchtext: ', searchtext);
     let values = {};
     values["uid"] = this.userId;
     values["exch"] = 'NFO';
@@ -206,6 +221,9 @@ class NorenRestApi {
        */
 
   get_quotes = (exchange, token) => {
+    if (MOCK_BROKER && MOCK_QUOTES) {
+      return MockAPI.get_quotes(exchange, token);
+    }
 
     let values = {}
     values["uid"] = this.userId
@@ -249,6 +267,9 @@ class NorenRestApi {
        * @param {string} product_type
        */
   place_order = async (order) => {
+    if (MOCK_BROKER) {
+      return MockAPI.place_order(order);
+    }
     let values = { 'ordersource': 'API' };
     values["uid"] = this.userId;
     values["actid"] = this.userId;
@@ -306,7 +327,7 @@ class NorenRestApi {
     values["cnt"] = "1";
 
     let reply = this.post_request("optionchain", values);
-    console.log('Reply: ', reply)
+    Log.log('Reply: ', reply)
     return reply;
 
   };
@@ -328,6 +349,10 @@ class NorenRestApi {
        */
 
   modify_order = function (modifyparams) {
+    if (MOCK_BROKER) {
+      Log.log('[RestAPI] Mock modify_order (no-op)');
+      return Promise.resolve({ stat: 'Ok' });
+    }
 
     let values = { 'ordersource': 'API' };
     values["uid"] = this.userId;
@@ -367,6 +392,10 @@ class NorenRestApi {
        */
 
   cancel_order = function (orderno) {
+    if (MOCK_BROKER) {
+      Log.log(`[RestAPI] Mock cancel_order ${orderno} (no-op)`);
+      return Promise.resolve({ stat: 'Ok' });
+    }
 
     let values = { 'ordersource': 'API' };
     values["uid"] = this.userId;
@@ -399,6 +428,9 @@ class NorenRestApi {
        */
 
   get_orderbook = async function () {
+    if (MOCK_BROKER) {
+      return [];
+    }
 
     let values = {};
     values["uid"] = this.userId;
@@ -413,6 +445,9 @@ class NorenRestApi {
        */
 
   get_tradebook = async () => {
+    if (MOCK_BROKER) {
+      return [];
+    }
 
     let values = {};
     values["uid"] = this.userId;
@@ -444,6 +479,9 @@ class NorenRestApi {
        */
 
   get_positions = () => {
+    if (MOCK_BROKER) {
+      return Promise.resolve([]);
+    }
 
     let values = {};
     values["uid"] = this.userId;
@@ -485,35 +523,57 @@ class NorenRestApi {
        * @param no params
        */
   start_websocket = async (callbacks) => {
+    // Always give MockAPI the callbacks so place_order can fire order fills
+    if (MOCK_BROKER) {
+      MockAPI.setCallbacks(callbacks);
+      if (MOCK_QUOTES) {
+        Log.log('[RestAPI] Mock WebSocket — starting mock streams');
+        await MockAPI.startMockStreams();
+        setTimeout(() => callbacks.socket_open({ msg: 'mock connection open' }), 100);
+        return;
+      }
+      // Option A: real WS continues below but mock callbacks are stored
+    }
+
     if (!this.websocket) {
       const userToken = await this.getUserToken();
 
       this.websocket = new WS({ 'url': Config.websocket, 'apikey': userToken});
-  
+
       let params = {
         'uid': this.userId,
         'actid': this.userId,
         'apikey': userToken,
       }
-  
+
       this.websocket.connect(params, callbacks)
         .then(() => {
-          console.log('ws is connected');
+          Log.log('ws is connected');
         });
-  
+
     }
 
   };
 
-  subscribe = async (instrument) => {
+  subscribe = async (instrument, right?: string) => {
+    if (MOCK_BROKER && MOCK_QUOTES) {
+      MockAPI.subscribe(instrument, right);
+      return;
+    }
     let values = {};
     values['t'] = 't';  //touchline
-    // values['t'] = 'd'; //depth 
+    // values['t'] = 'd'; //depth
     values['k'] = instrument
     await this.websocket.send(JSON.stringify(values));
   }
 
   unsubscribe = (instrument) => {
+    if (MOCK_BROKER && MOCK_QUOTES) {
+      // instrument is passed as 'NFO|token' — extract token part
+      const token = instrument.split('|')[1] || instrument;
+      MockAPI.unsubscribe(token);
+      return;
+    }
     let values = {};
     values['t'] = 'u';
     // values['t'] = 'ud';  //depth

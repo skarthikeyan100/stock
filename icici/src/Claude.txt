@@ -1,1 +1,56 @@
 curl -fsSL https://claude.ai/install.sh | bash
+
+npm install -g firebase-tools
+npm install -g http-server
+npm install -g firebase-admin
+
+firebase login
+
+https://console.firebase.google.com/project/chat-ee173/firestore
+https://console.firebase.google.com/project/chat-ee173/authentication
+
+https://console.firebase.google.com/u/0/project/chat-ee173/settings/serviceaccounts/adminsdk  => Service account to generate key
+
+
+
+Prompt 1:
+Rename main.dart to original.dart.
+Create new functionalities as below:
+Create a chat app similar to Whatsapp with following features. This will contain only minimal features.
+
+There are only two type of personas. Seeker and Helper.
+
+Seeker: 
+1. They can send a request in text or audio message.
+2. Seeker can send a message, do not have to select a recipient.
+3. They wait for a conversation to be started by a Helper.
+4. Once Helper accepts the request and start conversing, they will communicate similar to a Whatapp chat.
+
+Helper:
+
+1. Helper will get notification in their app
+2. Helper can view list of requests. They can open a request to accept it and it will start a new conversation with Seeker
+3. Helper can reply in an audio message or chat message.
+4. Once the converation is completed, Helper can archive the message.
+
+Common Functionality:
+User can update name in their profile page.
+
+Suggest server side technologies and do not create app immediately, Just give me the plan
+
+
+Prompt 2:
+Authentication:
+1. Instead of asking for email and address, use the phone number as the userId.
+2. The code need not support linux and windows, it is only a mobile app
+3. In the backend, a list of phone numbers should be designated as Helper. If the userId matches with a number in the list, then the user is helper or the user is seeker. This means intermediate screen to select helper and seeker is not needed.
+
+Service:
+1. Remove mockdata and use Firebase. In the service layer, have a flag for mock and return data either from firebase or from mock data.
+2. Helper will have two tabs, one is for on-going conversations and another for non-accepted requests
+3. If one helper has accepted the request, then other helper will not see those in non-accepted requests
+
+Provide a plan before implementation
+
+
+https://console.firebase.google.com/project/chat-ee173/overview

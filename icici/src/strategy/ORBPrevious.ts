@@ -1,3 +1,4 @@
+import Log from '../util/Log';
 import { Strategy, Outcome } from "./strategy";
 import { NiftyQuote, OptionQuote, Trade } from "model/model";
 import { throwStatement } from "@babel/types";
@@ -28,8 +29,8 @@ export class ORBPrevious extends Strategy {
     process(quote: NiftyQuote) {
         // const v = this.variablesMap.get(token);
         // if (v) {
-        //     console.log('Token: ', token, ' v: ', v, ' variablesMap ', this.variablesMap);
-        //     console.log('High: ',  v.high, ' Low: ', v.low, ' quote: ', quote.ltp, 'startTime: ', v.startTime, ' endTime: ', v.endTime)
+        //     Log.log('Token: ', token, ' v: ', v, ' variablesMap ', this.variablesMap);
+        //     Log.log('High: ',  v.high, ' Low: ', v.low, ' quote: ', quote.ltp, 'startTime: ', v.startTime, ' endTime: ', v.endTime)
     
         // }
 
@@ -37,7 +38,7 @@ export class ORBPrevious extends Strategy {
         //     return Outcome.PENDING_CLOSURE;
         // }
         // if (v.startTime) {
-        //     console.log('Set StartTime')
+        //     Log.log('Set StartTime')
         //     v.startTime = quote.ltt;
         // }
         // if (!v.endTime) {

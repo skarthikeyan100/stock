@@ -1,0 +1,7 @@
+indicator,good,bad,oscillating,total,success_rate,interval_label
+RSI_5_90_10,19,12,0,31,61.29,1min
+RSI_5_90_10,9,1,0,10,90,5min
+RSI_5_90_10,11,1,0,12,91.67,10min
+RSI_5_90_10,3,1,0,4,75,15min
+RSI_5_90_10,1,0,0,1,100,20min
+RSI_5_90_10,1,0,0,1,100,30min

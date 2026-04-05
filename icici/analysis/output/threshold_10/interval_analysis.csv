@@ -1,0 +1,7 @@
+interval,best_model,best_cv_accuracy,top_3_features
+1min,RandomForest,0.6146,"Bollinger_10_1__AND__EMA_21_49, Bollinger_5_1.5__AND__EMA_9_21, EMA_15_35__AND__RSI_5_70_30_REV"
+5min,LogisticRegression,0.9233,"ADX_14, stddev, S2"
+10min,SVM,0.8167,"R1, range, Bollinger_5_1"
+15min,DecisionTree,0.8125,"range, Bollinger_5_1.5__AND__RSI_10_80_20_REV, rate_of_change"
+20min,N/A,0.0,insufficient data
+30min,N/A,0.0,insufficient data

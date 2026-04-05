@@ -1,6 +1,8 @@
+import Log from './util/Log';
 import StackUtils = require("stack-utils");
 import { NIFTY, FINNIFTY, BANKNIFTY } from "./constants";
 import Prism from "./prism";
+import { UserContext } from "./user";
 let config = require("./prism/config").default;
 
 
@@ -77,15 +79,15 @@ export class Index {
         return `${day}-${monthName}-${year}`;
     }
 
-    getQuantity(pricePerquantity: number) {
-        const lotCount = config.lotCount
-        const investmentAmount = config.investmentAmount
-        if (lotCount != -1) {
-            return lotCount * this.lotSize;
+    getQuantity(pricePerquantity: number, userContext?: UserContext) {
+        if (userContext?.investmentMode === 'investmentAmount') {
+            const available = userContext.availableAmount;
+            if (available <= 0) return 0;
+            const amountPerLot = pricePerquantity * this.lotSize;
+            return Math.floor(available / amountPerLot) * this.lotSize;
         }
-        let amountPerLot = pricePerquantity * this.lotSize;
-        let calculatedLotCount = Math.floor(investmentAmount / amountPerLot)
-        return calculatedLotCount * this.lotSize;
+        const lotCount = userContext?.lotCount ?? config.lotCount;
+        return lotCount * this.lotSize;
     }
 
     findExpiryDate = () => {
@@ -106,10 +108,10 @@ export class Index {
 
         const callput = "call" === right ? 'C' : 'P'
         token = `NIFTY${expiryDate}${callput}${strikePrice}`;
-        console.log('token in findTokenFor: ', token)
+        Log.log('token in findTokenFor: ', token)
 
         token = await prism.search(token, index, expiryDate, strikePrice, right);
-        console.log('Token: ', token)
+        Log.log('Token: ', token)
         return token;
 
     }
@@ -145,19 +147,19 @@ export class Index {
         var now = new Date();
 
         var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        // console.log("Tuesday date: " + this._nextTuesday(date));
+        // Log.log("Tuesday date: " + this._nextTuesday(date));
 
         // var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        // console.log("Webnesday date: " + this._nextWednesday(date));
+        // Log.log("Webnesday date: " + this._nextWednesday(date));
 
         // var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        // console.log("Thursday date: " + this._nextThursday(date));
+        // Log.log("Thursday date: " + this._nextThursday(date));
 
 
         for (var i = 0; i <= this.expiryWeekDiff; i++) {
-            console.log("Today's date: ", date )
+            Log.log("Today's date: ", date )
             date = this._nextTuesday(date);
-            console.log('Date for next Tuesday: ', date)
+            Log.log('Date for next Tuesday: ', date)
         }
         let monthNames = ["JAN", "FEB", "MAR", "APR",
             "MAY", "JUN", "JUL", "AUG",
@@ -196,7 +198,5 @@ export class Index {
 
 
 export default new Map<string, Index>([
-    [NIFTY, new Index("26000", 75, 50)],
-    [FINNIFTY, new Index("26037", 25, 50)],
-    [BANKNIFTY, new Index("26009", 15, 100)] 
+    [NIFTY, new Index("26000", 65, 50)],
 ]);

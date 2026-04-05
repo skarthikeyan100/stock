@@ -1,0 +1,64 @@
+settings:
+  minPrice: 20
+  maxPrice: 30000
+  targetPriceDiff: 2
+  stopLossPriceDiff: 11
+  trailingDistance: 4
+  cooldownSeconds: 0
+strategies:
+  - type: SentimentStrategy
+    enabled: false
+    averageThreshold: 20
+    targetPrice: 2
+    orderQuantity: 7200
+    sentiment: put
+    loopCount: 1
+  - type: BuySellStrategy
+    enabled: false
+    initialQuantity: 150
+    incrementFactor: single
+    incrementQuantity: 150
+    averageThreshold: 10
+    targetPrice: 5
+    stopEnabled: false
+    activateIntermittentCount: 100
+    maxIterationCount: 10
+    logEnabled: false
+    right: none
+  - type: IntermittentStrategy
+    enabled: false
+    loopCount: 3
+    targetPrice: 2
+    quantity: 75
+    threshold: 10
+    logEnabled: false
+  - type: RateOfChangeStrategy
+    enabled: false
+    pointsThreshold: 30
+    accelerationThreshold: 5
+    numberOfDatapointsReceived: 50
+    quantity: 65
+    targetPrice: 2
+    stopLossPrice: 11
+    maxHoldTimeMinutes: 30
+    logEnabled: true
+  - type: GapStrategy
+    enabled: false
+    pointsThreshold: 20
+    numberOfDatapointsReceived: 50
+    quantity: 65
+    targetPrice: 10
+    stopLossPrice: 5
+    maxHoldTimeMinutes: 600
+    gapReversalMode: false
+    gapReversalThreshold: 100
+    logEnabled: true
+  - type: RuleBasedStrategy
+    enabled: true
+    indicators:
+      - RSI_5_70_30
+    quantity: 65
+    target: 10
+    stopLoss: 20
+    maxHoldTimeMinutes: 30
+    logEnabled: true

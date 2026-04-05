@@ -1,0 +1,7 @@
+interval,best_model,best_cv_accuracy,top_3_features
+1min,GradientBoosting,0.6345,"MACD_12_26_9, Bollinger_10_1, RSI_5_70_30"
+5min,RandomForest,0.84,"ADX_14, RSI_10_80_20, Bollinger_10_2"
+10min,RandomForest,0.8083,"S2, Bollinger_5_1, RSI_5_80_20"
+15min,SVM,0.75,"Bollinger_5_1, diff, Bollinger_10_1"
+20min,N/A,0.0,insufficient data
+30min,N/A,0.0,insufficient data

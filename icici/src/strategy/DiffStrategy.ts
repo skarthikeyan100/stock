@@ -1,3 +1,4 @@
+import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, Trade } from "model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
@@ -33,15 +34,15 @@ export default class DiffStrategy extends Strategy {
     qty: number
     orderPlaced: boolean = false;
 
-    constructor() {
-        super();
+    constructor(userId?: string) {
+        super(userId);
         this.tradeMap = new Map();
         this.name = 'DiffStrategy';
         this.diff = null;
     }
 
     receive(oldStats, newStats) {
-        console.log('Received stats: ?', newStats ? newStats.results.eventName : 'new stats null')
+        Log.log('Received stats: ?', newStats ? newStats.results.eventName : 'new stats null')
         this.stats = newStats;
         this.diff = newStats.close - newStats.open
     }
@@ -55,9 +56,9 @@ export default class DiffStrategy extends Strategy {
     }
     
     buyIndex = async (right) => {
-        console.log('IntermittentStrategy: buyIndex called with right: ', right);
-        const quantity = configService.getConfig().intermittentStrategy.quantity;
-        const response = await Prism.getInstance().buyIndex(NIFTY, null, right, quantity);
+        Log.log('IntermittentStrategy: buyIndex called with right: ', right);
+        const quantity = configService.getStrategyConfig('IntermittentStrategy').quantity;
+        const response = await Prism.getInstance().buyIndex({ userContext: this.getUserContext(), index: NIFTY, right, qty: quantity });
         if (response) {
             this.contract = response.contract;
             this.token = response.token;
@@ -69,23 +70,10 @@ export default class DiffStrategy extends Strategy {
     }
 
     processOptionQuote = async (quote: OptionQuote) : Promise<void> => {
-        const enabled = configService.getConfig().intermittentStrategy.enabled;
-        const targetPrice = configService.getConfig().intermittentStrategy.targetPrice;
+        const enabled = configService.getStrategyConfig('IntermittentStrategy').enabled;
         if (enabled && this.token == quote.token) {
             const profit = round((quote.ltp - this.price) * this.qty);
-            console.log('DiffStrategy: ', this.contract, ' ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty, ' profit: ', profit)
-    
-           
-            //Handle positive direction
-            const canSell = (quote.ltp - this.price) >= targetPrice
-    
-            if (this.token && this.token == quote.token &&
-                canSell == true && !this.orderPlaced) {
-                this.orderPlaced = true
-                console.log('DiffStrategy: sell contract ', this.contract, ' at ', quote.ltp)
-                super.sellContract(this.contract, this.qty, quote.ltp)
-            }
-    
+            Log.log('DiffStrategy: ', this.contract, ' ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty, ' profit: ', profit)
         }
     }
 
@@ -114,7 +102,7 @@ export default class DiffStrategy extends Strategy {
             if (trade.action == this.SELL) {
                 this.clear();
                 tradeClosed = true;
-                console.log('After Sell Trade, contract: ', this)
+                Log.log('After Sell Trade, contract: ', this)
             }
         }
     }
@@ -123,12 +111,12 @@ export default class DiffStrategy extends Strategy {
     async processNiftyQuote(quote) {
         if (this.stats != null && this.stats.results.eventName == eventName) {
             if (this.isTimeInRange() && this.diff != null && this.ordered == false) {
-                console.log('DiffStrategy: Diff between close and open: ', this.diff, ' expected diff: ', this.expectedDiff)
+                Log.log('DiffStrategy: Diff between close and open: ', this.diff, ' expected diff: ', this.expectedDiff)
                 if (this.diff > this.expectedDiff ) {
-                    console.log('DiffStrategy: Buy CALL as diff is ', this.diff)
+                    Log.log('DiffStrategy: Buy CALL as diff is ', this.diff)
                     await this.buyIndex(CALL)
                 } else if (this.diff < -this.expectedDiff) {
-                    console.log('DiffStrategy: Buy PUT as diff is ', this.diff)                
+                    Log.log('DiffStrategy: Buy PUT as diff is ', this.diff)                
                     await this.buyIndex(PUT)
                 }
             }

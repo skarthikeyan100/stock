@@ -1,0 +1,25 @@
+# NYSE stock symbols — one per line
+# Lines starting with # are ignored
+CIFR
+HUT
+IREN
+WULF
+APLD
+RIOT
+CLSK
+CORZ
+COIN
+BITF
+GLXY
+BTDR
+MARA
+HIVE
+HOOD
+BTBT
+PYPL
+CAN
+EXOD
+BKKT
+
+
+# NSE

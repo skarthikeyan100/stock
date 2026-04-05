@@ -1,3 +1,4 @@
+import Log from '../util/Log';
 import MongoClient, { Db, Collection } from 'mongodb'
 
 
@@ -15,11 +16,11 @@ export default class Mongo {
     }
 
     static async init() {
-        console.log("Mongo is initialized")
+        Log.log("Mongo is initialized")
         if (!Mongo.instance) {
             Mongo.instance = new Mongo();
         }
-        await Mongo.getInstance()._init(['trade', 'quote', 'NiftyQuote']);
+        await Mongo.getInstance()._init(['trade', 'quote', 'NiftyQuote', 'users']);
     }
 
     static getInstance() {
@@ -38,18 +39,18 @@ export default class Mongo {
                 await this.createCollection(element)
             });
         }
-        console.log('Mongo is initialized')
+        Log.log('Mongo is initialized')
         return this;
     }
 
     listCollections = async () => {
 
         const docs = await this.db.listCollections().toArray()
-        console.log(docs)
+        Log.log(docs)
         docs.forEach((doc, idx, array) => {
-            console.log(doc.name);
-            console.log(idx)
-            console.log(array)
+            Log.log(doc.name);
+            Log.log(idx)
+            Log.log(array)
         })
     }
 
@@ -69,11 +70,11 @@ export default class Mongo {
     getAll = (collectionName) => {
         try {
             const collection = this.db.collection(collectionName);
-            console.log('Collection: ', collection)
+            Log.log('Collection: ', collection)
             return collection.find({'day': 'Thursday'}).stream()
     
         } catch (e) {
-            console.log(e);
+            Log.log(e);
         }
         
         

@@ -1,0 +1,5 @@
+openai>=1.0.0
+moviepy==1.0.3
+Pillow>=9.0.0
+numpy<2.0
+pydub>=0.25.1

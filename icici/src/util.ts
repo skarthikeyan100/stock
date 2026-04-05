@@ -1,3 +1,4 @@
+import Log from './util/Log';
 import StackUtils = require("stack-utils");
 
 class Util {
@@ -114,7 +115,7 @@ class Util {
 
 
     findStrikePrice = (niftyPrice, depth: number, right) => {
-        console.log(niftyPrice)
+        Log.log(niftyPrice)
         if (typeof niftyPrice === "string") {
             niftyPrice = niftyPrice.replace(/\,/g, '');
         }

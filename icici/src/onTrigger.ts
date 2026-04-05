@@ -1,3 +1,4 @@
+import Log from './util/Log';
 import Prism from './prism';
 import { NiftyQuote, OptionQuote, Trade, Order } from './model/model';
 import moment from 'moment'
@@ -23,7 +24,7 @@ export class OnTrigger {
     }
 
     process = async(optionQuote: OptionQuote) => {
-        console.log('Trigger Option Quote: ', this.contract, ' trigger: ', this.triggerPrice, ' ltp: ', optionQuote.ltp);
+        Log.log('Trigger Option Quote: ', this.contract, ' trigger: ', this.triggerPrice, ' ltp: ', optionQuote.ltp);
         if (!this.processed && optionQuote.token === this.token && optionQuote.ltp >= this.triggerPrice) {
             const prism = Prism.getInstance()
             // prism.buyContract(this.contract, orderQuantity, this.triggerPrice)

@@ -1,0 +1,7 @@
+interval,best_model,best_cv_accuracy,top_3_features
+1min,GradientBoosting,0.6648,"Bollinger_5_1__AND__ADX_20, Bollinger_5_1__AND__EMA_9_21, EMA_24_56__AND__ADX_20"
+5min,GradientBoosting,0.7767,"S2, mad, Bollinger_5_1.5__AND__RSI_5_90_10_REV"
+10min,SVM,0.7812,"RSI_5_70_30_REV, R1, Bollinger_5_1"
+15min,GradientBoosting,0.8,"range, Bollinger_10_2__AND__RSI_15_90_10_REV, S2"
+20min,N/A,0.0,insufficient data
+30min,N/A,0.0,insufficient data
