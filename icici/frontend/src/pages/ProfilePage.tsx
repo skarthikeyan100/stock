@@ -3,10 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { Container, Card, Form, Button, Badge, Alert, Spinner, Row, Col } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
 
-function VerifiedBadge({ verified }: { verified: boolean }) {
-  return verified
-    ? <Badge bg="success" className="ms-2">Verified</Badge>
-    : <Badge bg="secondary" className="ms-2">Pending</Badge>;
+function VerifiedBadge({ verified, hasValue }: { verified: boolean; hasValue: boolean }) {
+  if (verified) return <Badge bg="success" className="ms-2">Verified</Badge>;
+  if (hasValue) return <Badge bg="warning" text="dark" className="ms-2">Under Verification</Badge>;
+  return <Badge bg="secondary" className="ms-2">Pending</Badge>;
 }
 
 type DocType = 'address' | 'dob' | 'pan';
@@ -20,6 +20,11 @@ export default function ProfilePage() {
   const [phoneSaved, setPhoneSaved] = useState(false);
   const [phoneSaving, setPhoneSaving] = useState(false);
 
+  const [investmentMode, setInvestmentMode] = useState<'lotCount' | 'investmentAmount'>(user?.investmentMode ?? 'investmentAmount');
+  const [modeSaved, setModeSaved] = useState(false);
+  const [modeSaving, setModeSaving] = useState(false);
+  const [modeError, setModeError] = useState<string | null>(null);
+
   const [uploadStatus, setUploadStatus] = useState<Record<DocType, 'idle' | 'uploading' | 'done' | 'error'>>({
     address: 'idle', dob: 'idle', pan: 'idle',
   });
@@ -28,6 +33,17 @@ export default function ProfilePage() {
     dob: user?.dobProofId,
     pan: user?.panCardId,
   });
+
+  const docVerified: Record<DocType, boolean> = {
+    address: user?.addressVerified ?? false,
+    dob: user?.dobVerified ?? false,
+    pan: user?.panVerified ?? false,
+  };
+
+  const kycComplete =
+    !!uploadedIds.address && docVerified.address &&
+    !!uploadedIds.dob && docVerified.dob &&
+    !!uploadedIds.pan && docVerified.pan;
 
   const addressRef = useRef<HTMLInputElement>(null);
   const dobRef = useRef<HTMLInputElement>(null);
@@ -62,6 +78,27 @@ export default function ProfilePage() {
     }
   };
 
+  const saveInvestmentMode = async () => {
+    setModeError(null);
+    setModeSaved(false);
+    setModeSaving(true);
+    try {
+      const res = await fetch(`/users/${encodeURIComponent(user!.email)}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ investmentMode }),
+      });
+      if (!res.ok) throw new Error('Failed to save');
+      setModeSaved(true);
+      const t = setTimeout(() => setModeSaved(false), 3000);
+      return () => clearTimeout(t);
+    } catch {
+      setModeError('Failed to save investment mode');
+    } finally {
+      setModeSaving(false);
+    }
+  };
+
   const uploadDocument = async (docType: DocType, file: File) => {
     if (file.size > 5 * 1024 * 1024) {
       setUploadStatus(prev => ({ ...prev, [docType]: 'error' }));
@@ -88,7 +125,7 @@ export default function ProfilePage() {
     <div className={`d-flex align-items-center justify-content-between py-2 ${isLast ? '' : 'border-bottom'}`}>
       <div>
         <span className="fw-semibold">{label}</span>
-        <VerifiedBadge verified={verified} />
+        <VerifiedBadge verified={verified} hasValue={!!uploadedIds[docType]} />
         {uploadedIds[docType] && <span className="ms-2 text-muted small">Uploaded</span>}
         {uploadStatus[docType] === 'error' && (
           <span className="ms-2 text-danger small">Failed (max 5MB, PDF/JPG/PNG)</span>
@@ -148,7 +185,7 @@ export default function ProfilePage() {
               <Form.Label>Email</Form.Label>
               <div className="d-flex align-items-center gap-2">
                 <Form.Control type="email" value={user?.email ?? ''} readOnly className="bg-light" />
-                <VerifiedBadge verified={user?.emailVerified ?? false} />
+                <VerifiedBadge verified={user?.emailVerified ?? false} hasValue={!!user?.email} />
               </div>
             </Form.Group>
             <Form.Group>
@@ -163,7 +200,7 @@ export default function ProfilePage() {
                       onChange={e => setPhone(e.target.value)}
                       isInvalid={!!phoneError}
                     />
-                    <VerifiedBadge verified={user?.phoneVerified ?? false} />
+                    <VerifiedBadge verified={user?.phoneVerified ?? false} hasValue={!!phone} />
                   </div>
                   {phoneError && <div className="text-danger small mt-1">{phoneError}</div>}
                 </Col>
@@ -178,16 +215,65 @@ export default function ProfilePage() {
           </Card.Body>
         </Card>
 
+        {/* Investment Mode */}
+        <Card className="mb-3">
+          <Card.Header className="fw-bold">Trading Mode</Card.Header>
+          <Card.Body>
+            <Form.Group className="mb-2">
+              <Form.Label className="fw-semibold">Investment Mode</Form.Label>
+              <Form.Select
+                value={investmentMode}
+                onChange={e => setInvestmentMode(e.target.value as 'lotCount' | 'investmentAmount')}
+              >
+                <option value="investmentAmount">Investment Amount</option>
+                <option value="lotCount">Lot Count</option>
+              </Form.Select>
+            </Form.Group>
+
+            {investmentMode === 'investmentAmount' ? (
+              <Alert variant="info" className="small py-2 mb-3">
+                <strong>Investment Amount mode:</strong> Each trade uses your entire allocated capital (&#8377;{(user?.investmentAmount ?? 100000).toLocaleString()}) to buy the maximum possible quantity. Only one trade runs at a time — the system finds the best-priced contract that fits within your capital.
+              </Alert>
+            ) : (
+              <Alert variant="info" className="small py-2 mb-3">
+                <strong>Lot Count mode:</strong> Each trade buys a fixed number of lots regardless of price. Multiple simultaneous positions are possible, and the system will average down if the price moves against you up to your configured lot limit.
+              </Alert>
+            )}
+
+            <div className="d-flex align-items-center gap-3">
+              <Button variant="primary" size="sm" onClick={saveInvestmentMode} disabled={modeSaving}>
+                {modeSaving ? <Spinner animation="border" size="sm" /> : 'Save Mode'}
+              </Button>
+              {modeSaved && <span className="text-success small">Investment mode saved</span>}
+              {modeError && <span className="text-danger small">{modeError}</span>}
+            </div>
+          </Card.Body>
+        </Card>
+
         {/* KYC Documents */}
         <Card>
-          <Card.Header className="fw-bold">KYC Documents</Card.Header>
+          <Card.Header className="fw-bold">
+            KYC Documents
+            {kycComplete
+              ? <Badge bg="success" className="ms-2">Complete</Badge>
+              : (uploadedIds.address || uploadedIds.dob || uploadedIds.pan)
+                ? <Badge bg="warning" text="dark" className="ms-2">Under Verification</Badge>
+                : <Badge bg="secondary" className="ms-2">Pending</Badge>
+            }
+          </Card.Header>
           <Card.Body>
-            <Alert variant="info" className="small py-2 mb-3">
-              Upload PDF, JPG, or PNG files (max 5MB each). Documents are reviewed and verified by admin.
-            </Alert>
-            <DocRow docType="address" label="Address Proof" verified={false} />
-            <DocRow docType="dob" label="Date of Birth Proof" verified={false} />
-            <DocRow docType="pan" label="PAN Card" verified={false} isLast />
+            {kycComplete ? (
+              <Alert variant="success" className="small py-2 mb-3">
+                Your KYC is complete. All documents have been uploaded and verified.
+              </Alert>
+            ) : (
+              <Alert variant="info" className="small py-2 mb-3">
+                Upload PDF, JPG, or PNG files (max 5MB each). Documents are reviewed and verified by admin.
+              </Alert>
+            )}
+            <DocRow docType="address" label="Address Proof" verified={docVerified.address} />
+            <DocRow docType="dob" label="Date of Birth Proof" verified={docVerified.dob} />
+            <DocRow docType="pan" label="PAN Card" verified={docVerified.pan} isLast />
           </Card.Body>
         </Card>
       </Container>

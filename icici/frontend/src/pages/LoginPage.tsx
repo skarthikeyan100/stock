@@ -63,8 +63,8 @@ export default function LoginPage() {
             <div className="stat-label">Your Profit Share</div>
           </div>
           <div className="stat-card stat-card-2">
-            <div className="stat-value">2×</div>
-            <div className="stat-label">Monthly Payouts</div>
+            <div className="stat-value">Twice a Month</div>
+            <div className="stat-label">Payout Schedule</div>
           </div>
           <div className="stat-card stat-card-3">
             <div className="stat-value text-warning">₹0</div>
@@ -94,7 +94,35 @@ export default function LoginPage() {
             <div className="step-card">
               <div className="step-number">03</div>
               <h4>Earn Your Share</h4>
-              <p>25% of all profits you generate are yours — paid out on the 15th and last day of each month.</p>
+              <p>25% of all profits you generate are yours — paid out every other Wednesday, fortnightly.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Profit Scenarios */}
+      <section className="landing-section">
+        <div className="landing-section-inner">
+          <h2 className="landing-section-title">How Profits & Losses Work</h2>
+          <p className="landing-section-sub">Two scenarios — choose which side you want to be on</p>
+          <div className="rules-grid">
+            <div className="rule-card rule-card-success">
+              <div className="rule-icon rule-icon-green">✓</div>
+              <h4>Scenario A — You Profit</h4>
+              <p>
+                You trade carefully and close the month with <strong>₹40,000 in net profits</strong>.
+                Your 25% share is <strong>₹10,000 paid directly to you</strong> on the next payout date.
+                The firm keeps the rest and your account continues with full capital for next month.
+              </p>
+            </div>
+            <div className="rule-card rule-card-danger">
+              <div className="rule-icon rule-icon-red">✗</div>
+              <h4>Scenario B — Profits Forfeited</h4>
+              <p>
+                You had ₹30,000 in accumulated profits, but a single bad session hits the loss limit.
+                <strong> All accumulated profits are forfeited</strong> — you receive nothing for that period
+                and the account resets. <strong>Protect your gains. Never let a bad day erase a good week.</strong>
+              </p>
             </div>
           </div>
         </div>
@@ -126,8 +154,8 @@ export default function LoginPage() {
               <div className="rule-icon rule-icon-blue">📅</div>
               <h4>Payout Schedule</h4>
               <p>
-                Profit payouts are processed <strong>twice a month</strong> — on the <strong>15th</strong> and on
-                the <strong>last day</strong> of each month. Earnings are calculated from confirmed closed trades.
+                Payouts are processed <strong>every other Wednesday</strong> — once a fortnight, on alternate weeks.
+                Earnings are calculated from all confirmed closed trades since the previous payout.
               </p>
             </div>
           </div>

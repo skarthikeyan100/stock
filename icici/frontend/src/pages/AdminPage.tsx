@@ -8,7 +8,7 @@ interface UserRow extends AuthUser {
   hasActiveTrade: boolean;
 }
 
-async function patchVerify(email: string, field: 'email' | 'phone', verified: boolean) {
+async function patchVerify(email: string, field: 'email' | 'phone' | 'address' | 'dob' | 'pan', verified: boolean) {
   await fetch(`/users/${encodeURIComponent(email)}/verify`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -314,6 +314,7 @@ export default function AdminPage() {
                   <th>Active</th>
                   <th>Email</th>
                   <th>Phone</th>
+                  <th>KYC</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -435,6 +436,32 @@ export default function AdminPage() {
                         )}
                       </td>
                       <td>
+                        {(['address', 'dob', 'pan'] as const).map(doc => {
+                          const verifiedKey = `${doc}Verified` as 'addressVerified' | 'dobVerified' | 'panVerified';
+                          const label = doc === 'address' ? 'Addr' : doc === 'dob' ? 'DOB' : 'PAN';
+                          const isVerified = u[verifiedKey] ?? false;
+                          return (
+                            <div key={doc} className="d-flex align-items-center gap-1 mb-1">
+                              <small className="text-muted" style={{ width: 32 }}>{label}</small>
+                              <span className={`badge ${isVerified ? 'bg-success' : 'bg-secondary'}`}>
+                                {isVerified ? '✓' : '–'}
+                              </span>
+                              {isEditing && (
+                                <Button
+                                  size="sm"
+                                  variant={isVerified ? 'outline-danger' : 'outline-success'}
+                                  className="py-0 px-1"
+                                  style={{ fontSize: '0.7rem' }}
+                                  onClick={async () => { await patchVerify(u.email, doc, !isVerified); fetchUsers(); }}
+                                >
+                                  {isVerified ? 'Unverify' : 'Verify'}
+                                </Button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </td>
+                      <td>
                         <div className="d-flex gap-1">
                           {isEditing ? (
                             <>
@@ -494,6 +521,7 @@ export default function AdminPage() {
                         {renderConfigField('Trailing Distance', ['settings', 'trailingDistance'], config.settings?.trailingDistance)}
                       </Col>
                     </Row>
+                    {renderConfigField('Log Option Quotes to DB', ['settings', 'logQuotes'], config.settings?.logQuotes ?? false, 'boolean')}
                   </Card.Body>
                 </Card>
 

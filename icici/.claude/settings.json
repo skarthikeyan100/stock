@@ -10,5 +10,19 @@
         ".jsx": "javascriptreact"
       }
     }
+  },
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "agent",
+            "prompt": "This Claude Code session on the ICICI trading platform project (/home/karthikeyan/work/icici) is ending. Hook input JSON is in $ARGUMENTS - it includes a transcript_path. Read that transcript to determine whether this session left any pending or in-progress work: an approved plan not fully executed, a TodoWrite list with incomplete items, an explicit next-step the user and Claude agreed on, or a question left unanswered. Then update /home/karthikeyan/work/icici/ToDo.md to reflect the CURRENT state of pending work - this file should always be a fresh snapshot, not a growing log: remove items that are now done, add new ones you found, leave unrelated still-pending items alone. Each entry should be one short line with enough context (file paths, what's left, why) for a future session to resume without re-reading this transcript. If there is truly nothing pending, leave the file as just a one-line 'No pending tasks.' If the file does not exist yet, create it. Do not touch any other files.",
+            "timeout": 120,
+            "statusMessage": "Checking for pending tasks to record in ToDo.md..."
+          }
+        ]
+      }
+    ]
   }
 }

@@ -5,6 +5,7 @@ settings:
   stopLossPriceDiff: 11
   trailingDistance: 4
   cooldownSeconds: 0
+  logQuotes: false
 strategies:
   - type: SentimentStrategy
     enabled: false
@@ -54,11 +55,39 @@ strategies:
     gapReversalThreshold: 100
     logEnabled: true
   - type: RuleBasedStrategy
-    enabled: true
+    enabled: false
     indicators:
       - RSI_5_70_30
     quantity: 65
     target: 10
     stopLoss: 20
     maxHoldTimeMinutes: 30
+    logEnabled: true
+  - type: GoodMorningStrategy
+    enabled: true
+    quantity: 650
+    targetPoints: 10
+    stopLossPoints: 10
+    logEnabled: true
+    snapshotTime: '13:05'
+    confirmTime: '13:10'
+    previousClose: 24289
+  - type: SupportResistanceStrategy
+    enabled: false
+    supportPrice: 0
+    resistancePrice: 0
+    quantity: 1755
+    targetPoints: 10
+    stopLossPoints: 15
+    logEnabled: true
+  - type: TargetReachStrategy
+    enabled: false
+    symbol: NIFTY
+    strike: 0
+    expiry: '2026-01-01'
+    optionType: CE
+    targetPrice: 0
+    quantity: 1755
+    targetPoints: 10
+    stopLossPoints: 15
     logEnabled: true

@@ -1,3 +1,9 @@
+import dns from 'dns';
+// This machine is dual-stack; Node prefers IPv6 by default for outbound requests,
+// which bypasses Zerodha/Kite's IPv4-only IP allowlist. Force IPv4 first so calls
+// to api.kite.trade (and everything else) go out on the whitelisted IPv4 address.
+dns.setDefaultResultOrder('ipv4first');
+
 import Log from './util/Log';
 // import http from 'http'
 // import url from 'url'
@@ -145,6 +151,9 @@ import Mongo from './tools/mongo';
 import { NIFTY, BANKNIFTY } from './constants';
 import strategies from './strategy/strategies';
 import DiffStrategy from 'strategy/DiffStrategy';
+import ANT from './ant/ANT';
+import AntStream from './ant/AntStream';
+import Zerodha from './zerodha/Zerodha';
 
 let apiSession = '1644073';
 let sessionToken = 'U0VTSEExMDA6ODAyMDc4';
@@ -346,10 +355,14 @@ app.patch('/users/:email/verify', async function (req, res) {
     try {
         const { email } = req.params;
         const { field, verified } = req.body;
-        if (field !== 'email' && field !== 'phone') {
-            res.status(400).json({ error: 'field must be email or phone' }); return;
+        const validFields: Record<string, string> = {
+            email: 'emailVerified', phone: 'phoneVerified',
+            address: 'addressVerified', dob: 'dobVerified', pan: 'panVerified',
+        };
+        if (!validFields[field]) {
+            res.status(400).json({ error: 'field must be email, phone, address, dob, or pan' }); return;
         }
-        const update = field === 'email' ? { emailVerified: verified } : { phoneVerified: verified };
+        const update = { [validFields[field]]: verified };
         const user = await getUser(email);
         if (!user) { res.status(404).json({ error: 'User not found' }); return; }
         await Mongo.getInstance().db.collection('users').updateOne({ email }, { $set: update });
@@ -416,8 +429,56 @@ app.get('/users/:email/documents/:docType', async function (req, res) {
     }
 });
 
-app.get('/login', async function (req, res) {
-    Log.log("Logging in ");
+let authorizationCode = '';
+let antAccessToken: string | null = null;
+let zerodhaAccessToken: string | null = null;
+
+app.get('/prism/oauthurl', function (_req, res) {
+    const url = Prism.getInstance().getOAuthURL();
+    res.json({ url });
+})
+
+app.get('/prism/login', async function (req, res) {
+    try {
+        const url = Prism.getInstance().getOAuthURL();
+        Log.log('Redirecting to Shoonya authorization:', url);
+        res.redirect(302, url);
+    } catch (e: any) {
+        Log.log('Shoonya login error:', e);
+        res.status(500).json({ error: 'Failed to initiate Shoonya login' });
+    }
+});
+
+app.get('/prism/callback', async function (req, res) {
+    const code = req.query.code as string;
+
+    if (!code) {
+        res.status(400).json({ error: 'No authorization code received' });
+        return;
+    }
+
+    try {
+        authorizationCode = code;
+        Log.log('Authorization code received, exchanging for token');
+        await Prism.getInstance().loginWithGenAcsTok(code);
+        Log.log('Shoonya authentication successful.');
+        res.redirect(302, '/app');
+    } catch (e: any) {
+        Log.log('Shoonya callback error:', e);
+        res.status(500).json({ error: 'Authentication failed', details: e.message });
+    }
+})
+
+app.get('/prism/authcode', function (_req, res) {
+    if (!authorizationCode) {
+        res.status(404).json({ error: 'No authorization code stored' });
+        return;
+    }
+    res.json({ code: authorizationCode });
+})
+
+app.get('/prism/quick-login', async function (req, res) {
+    Log.log("Logging in with QuickAuth");
     try {
         const { otp } = req.query;
         const prism = Prism.getInstance();
@@ -435,8 +496,231 @@ app.get('/login', async function (req, res) {
     }
 })
 
+app.get('/prism/token', async function (req, res) {
+    Log.log("Logging in with GenAcsTok");
+    try {
+        const { code } = req.query;
+        if (!code) {
+            res.status(400).json({ error: 'code parameter required' });
+            return;
+        }
+        const prism = Prism.getInstance();
+        await prism.loginWithGenAcsTok(req.query.code as string);
+        res.sendStatus(200)
+    } catch (e) {
+        Log.log('GenAcsTok login error:', e)
+        res.sendStatus(500)
+    }
+})
 
-app.get('/orderbook', async function (req: express.Request, res) {
+// ANT (Alice Blue) OAuth Endpoints
+app.get('/ant/login', async function (req, res) {
+    try {
+        const ant = ANT.getInstance();
+        const authUrl = ant.getAuthorizationUrl();
+        Log.log('Redirecting to ANT authorization:', authUrl);
+        res.redirect(302, authUrl);
+    } catch (e: any) {
+        Log.log('ANT login error:', e);
+        res.status(500).json({ error: 'Failed to initiate ANT login' });
+    }
+});
+
+app.get('/ant/callback', async function (req, res) {
+    try {
+        const authCode = req.query.authCode as string;
+        const userId = req.query.userId as string;
+
+        if (!authCode || !userId) {
+            Log.log('Missing authCode or userId in callback');
+            res.status(400).json({ error: 'Missing authCode or userId from Alice Blue' });
+            return;
+        }
+
+        Log.log('ANT Callback received - exchanging authCode for token');
+        const ant = ANT.getInstance();
+        const result = await ant.exchangeAuthCodeForToken(userId, authCode);
+
+        // Store token in memory for retrieval
+        antAccessToken = result.userSession;
+
+        // Store token in session cookie
+        res.cookie('ant_session', result.userSession, { signed: true, httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
+
+        Log.log('ANT Authentication successful. Token stored.');
+
+        // Redirect to app dashboard (transparent to user)
+        res.redirect(302, '/app');
+    } catch (e: any) {
+        Log.log('ANT callback error:', e);
+        res.status(500).json({ error: 'Authentication failed', details: e.message });
+    }
+});
+
+// Get stored ANT access token (for frontend)
+app.get('/ant/token', async function (req, res) {
+    if (!antAccessToken) {
+        res.status(401).json({ error: 'No ANT access token available. Please login first.' });
+        return;
+    }
+    res.json({ access_token: antAccessToken });
+});
+
+// Get ANT open positions
+app.get('/ant/positions', async function (req, res) {
+    try {
+        const ant = ANT.getInstance();
+        const positions = await ant.getPositions();
+        res.json({ success: true, positions, count: Array.isArray(positions) ? positions.length : 0 });
+    } catch (e: any) {
+        Log.log('Error fetching ANT positions:', e.message);
+        res.status(500).json({ error: 'Failed to fetch positions', details: e.message });
+    }
+});
+
+// Get ANT trade list
+app.get('/ant/trades', async function (req, res) {
+    try {
+        const ant = ANT.getInstance();
+        const trades = await ant.getTrades();
+        res.json({ success: true, trades, count: Array.isArray(trades) ? trades.length : 0 });
+    } catch (e: any) {
+        Log.log('Error fetching ANT trades:', e.message);
+        res.status(500).json({ error: 'Failed to fetch trades', details: e.message });
+    }
+});
+
+// Zerodha OAuth Endpoints
+app.get('/kite/login', async function (req, res) {
+    try {
+        const zerodha = Zerodha.getInstance();
+        const loginUrl = zerodha.getLoginURL();
+        Log.log('Redirecting to Zerodha login:', loginUrl);
+        res.redirect(302, loginUrl);
+    } catch (e: any) {
+        Log.log('Zerodha login error:', e);
+        res.status(500).json({ error: 'Failed to initiate Zerodha login' });
+    }
+});
+
+app.get('/kite/callback', async function (req, res) {
+    try {
+        const requestToken = req.query.request_token as string;
+
+        if (!requestToken) {
+            Log.log('Missing request_token in Zerodha callback');
+            res.status(400).json({ error: 'Missing request_token from Zerodha' });
+            return;
+        }
+
+        Log.log('Zerodha Callback received - exchanging request_token for access_token');
+        const zerodha = Zerodha.getInstance();
+        const result = await zerodha.exchangeRequestTokenForSession(requestToken);
+
+        // Store token in memory for retrieval
+        zerodhaAccessToken = result.access_token;
+
+        // Store token in session cookie
+        res.cookie('zerodha_session', result.access_token, { signed: true, httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
+
+        Log.log('Zerodha Authentication successful. Token stored.');
+
+        // Redirect to app dashboard (transparent to user)
+        res.redirect(302, '/app');
+    } catch (e: any) {
+        Log.log('Zerodha callback error:', e);
+        res.status(500).json({ error: 'Authentication failed', details: e.message });
+    }
+});
+
+// Get stored Zerodha access token (for frontend)
+app.get('/kite/token', async function (req, res) {
+    if (!zerodhaAccessToken) {
+        res.status(401).json({ error: 'No Zerodha access token available. Please login first.' });
+        return;
+    }
+    res.json({ access_token: zerodhaAccessToken });
+});
+
+// Zerodha Trading Endpoints
+app.get('/kite/trades', async function (req, res) {
+    try {
+        const zerodha = Zerodha.getInstance();
+        const trades = await zerodha.getTrades();
+        res.json({ trades });
+    } catch (e: any) {
+        Log.log('Zerodha trades error:', e);
+        res.status(500).json({ error: 'Failed to fetch trades', details: e.message });
+    }
+});
+
+app.get('/kite/positions', async function (req, res) {
+    try {
+        const zerodha = Zerodha.getInstance();
+        const positions = await zerodha.getPositions();
+        res.json({ positions });
+    } catch (e: any) {
+        Log.log('Zerodha positions error:', e);
+        res.status(500).json({ error: 'Failed to fetch positions', details: e.message });
+    }
+});
+
+// ANT Trading Endpoints
+app.get('/ant/trades', async function (req, res) {
+    try {
+        const ant = ANT.getInstance();
+        const trades = await ant.getTrades();
+        res.json({ trades });
+    } catch (e: any) {
+        Log.log('ANT trades error:', e);
+        res.status(500).json({ error: 'Failed to fetch trades', details: e.message });
+    }
+});
+
+app.get('/ant/positions', async function (req, res) {
+    try {
+        const ant = ANT.getInstance();
+        const positions = await ant.getPositions();
+        res.json({ positions });
+    } catch (e: any) {
+        Log.log('ANT positions error:', e);
+        res.status(500).json({ error: 'Failed to fetch positions', details: e.message });
+    }
+});
+
+app.get('/ant/connect', async function (req, res) {
+    try {
+        const stream = AntStream.getInstance();
+        await stream.connect();
+        res.json({ status: 'connected' });
+    } catch (e: any) {
+        Log.log('ANT connect error:', e);
+        res.status(500).json({ error: 'Failed to connect to ANT streaming', details: e.message });
+    }
+});
+
+app.get('/ant/stream', function (req, res) {
+    try {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+
+        const sendData = (data: any) => {
+            res.write(`data: ${JSON.stringify(data)}\n\n`);
+        };
+
+        myEmitter.on('ant-quote', sendData);
+
+        req.on('close', () => {
+            myEmitter.off('ant-quote', sendData);
+        });
+    } catch (e: any) {
+        Log.log('ANT stream error:', e);
+        res.status(500).json({ error: 'Failed to start ANT stream', details: e.message });
+    }
+});
+
+app.get('/prism/orderbook', async function (req: express.Request, res) {
     try {
         const prism = Prism.getInstance();
         const orders = await prism.getOrders();
@@ -535,11 +819,12 @@ app.get('/openTrades', async function (req: express.Request, res) {
 })
 
 
-// http://localhost:3000/order?depth=2&right=call&action=buy
-http://localhost:3000/order?index=NIFTY&right=call&action=buy&strikePrice=20500&price=42.5
-app.get('/order', async function (req: express.Request, res) {
+// http://localhost:3000/prism/order/buy?index=NIFTY&right=call&strikePrice=20500&price=42.5
+// NOTE: this only ever places a buy order — buyContract/buyIndex/sendLimitOrder all hardcode
+// trantype 'B' at the broker level, so there is currently no sell-to-open endpoint.
+app.get('/prism/order/buy', async function (req: express.Request, res) {
     try {
-        const { right, action, index, strikePrice, price, contract, triggerPrice } = req.query;
+        const { right, index, strikePrice, price, contract, triggerPrice } = req.query;
         const user = resolveUser(req);
         Log.log('Resolved order while placing an order ', user)
 
@@ -597,7 +882,7 @@ app.get('/order', async function (req: express.Request, res) {
                     Log.log('OPTION PRICE IS NAN')
                 }
 
-                await prism.sendLimitOrder(token, optionPrice, right as string, action as string, null, userContext);
+                await prism.sendLimitOrder(token, optionPrice, right as string, 'buy', null, userContext);
 
             }
 
@@ -624,16 +909,9 @@ app.get('/connect', async function (req: express.Request, res) {
 
 
 app.get('/subscribe', async function (req: express.Request, res) {
-    // const breeze = Breeze.getInstance();
-    const prism = Prism.getInstance();
-    try {
-        // await breeze.subscribeNifty();
-        prism.subscribeNifty();
-        res.sendStatus(200);
-    } catch (e) {
-        Log.log("Error while subscribing nifty");
-        res.sendStatus(500);
-    }
+    // Touchline quote subscription has moved to ANT (see /ant/connect) -
+    // Prism's socket now stays connected solely for order-fill notifications.
+    res.sendStatus(200);
 })
 
 
@@ -699,9 +977,9 @@ app.get('/subscribetrades', async function (req: express.Request, res) {
 })
 
 
-// http://localhost:3000/squareoff?expiryDate=27-Oct-2022&right=call&strikePrice=17600
+// http://localhost:3000/prism/squareoff?expiryDate=27-Oct-2022&right=call&strikePrice=17600
 
-app.get('/squareoff', async function (req: express.Request, res) {
+app.get('/prism/squareoff', async function (req: express.Request, res) {
     try {
 
         const { token, expiryDate, strikePrice, right, qty } = req.query;
@@ -722,7 +1000,7 @@ app.get('/squareoff', async function (req: express.Request, res) {
     }
 })
 
-app.post('/settarget', express.json(), async function (req: express.Request, res) {
+app.post('/prism/settarget', express.json(), async function (req: express.Request, res) {
     try {
         const { token, targetPoints, stopLossPoints, trailingDistance } = req.body;
         if (!token || targetPoints == null || stopLossPoints == null) {

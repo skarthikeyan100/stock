@@ -1,5 +1,6 @@
 import Log from './util/Log';
 import Prism from './prism';
+import AntStream from './ant/AntStream';
 import { NiftyQuote, OptionQuote, Trade, Order } from './model/model';
 import moment from 'moment'
 import * as fs from 'fs';
@@ -19,7 +20,7 @@ export class OnTrigger {
         this.triggerPrice = triggerPrice;
         const prism = Prism.getInstance()
         this.token = await prism.getToken(contract)
-        await prism.subscribeOption(this.token);
+        await AntStream.getInstance().subscribeOption(this.token);
         delay(2000)
     }
 

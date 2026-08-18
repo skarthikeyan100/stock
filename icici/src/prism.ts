@@ -8,13 +8,13 @@ import NorenRestApi from './prism/RestAPI'
 import _, { forIn } from 'lodash'
 import crypto from 'crypto'
 import delay from 'delay';
-import { NiftyQuote, OptionQuote, Trade, Order, OrderInfo, OrderStatus } from './model/model';
+import { NiftyQuote, Trade, Order, OrderInfo, OrderStatus } from './model/model';
 import util from 'util';
 const spawn = require('child_process').spawn;
-import myEmitter from './tools/emitter';
 import Browser from './trade/browser';
 import Decision from './decision';
 import Monitor from './monitor';
+import AntStream from './ant/AntStream';
 import strategies from './strategy/strategies';
 
 import { VIRTUAL, NIFTY, FINNIFTY, BANKNIFTY, SIMULATION, CALL, PUT, MOCK_BROKER } from './constants'
@@ -106,8 +106,7 @@ export default class Prism {
     bankNiftyQuote: NiftyQuote = {} as NiftyQuote
     finNiftyQuote: NiftyQuote = {} as NiftyQuote
     trades: Trade[] = [];
-    subscribedOptions = [];
-    
+
 
     sleep = async (milliseconds) => {
         await new Promise(resolve => {
@@ -123,7 +122,6 @@ export default class Prism {
     socket_close = (data) => {
         Log.log('[Prism] onClose: ', data)
         this.started = false
-        this.subscribedIndex = false
         this.connect()
     };
 
@@ -184,67 +182,9 @@ export default class Prism {
         this.connect();
     }
 
-    quote = async (data) => {
-        
-        if ('NFO' === data.e) {
-            const lp = data.lp | data.bpl;
-            if (lp != 0) {
-                const optionQuote = OptionQuote.fromPrism(data)
-                await Monitor.getInstance().updateQuote(optionQuote);
-                // Decision.getInstance().decidePurchaseStockOption(optionQuote);
-                // Decision.getInstance().decideSell(optionQuote);
-            }
-        } else {
-            
-            // TODO Required only if monitoring index prices
-            // if (!this.niftyQuote.ltp) {
-            //     Log.log('************* Get Nifty Quote as it is null during subscribe')
-            //     this.niftyQuote = await this.getNiftyQuote();
-            //     Log.log('this.niftyQuote : ', this.niftyQuote )
-            // }
-
-            // if (!this.bankNiftyQuote.ltp) {
-            //     Log.log('************* Get Bank Nifty Quote as it is null during subscribe')
-            //     this.bankNiftyQuote = await this.getBankNiftyQuote();
-            // }
-
-            // if (!this.finNiftyQuote.ltp) {
-            //     Log.log('************* Get Fin Nifty Quote as it is null during subscribe')
-            //     this.finNiftyQuote = await this.getFinNiftyQuote();
-            // }
-            // // Log.log("Token: ", data.tk, " NiftyQuote: ", this.niftyQuote, " BankNiftyQuote: ", this.bankNiftyQuote, ' FinNifty Quote: ', this.finNiftyQuote);
-
-            if (data.tk == '26000' && !data.toi) {
-                this._updateQuote(data, this.niftyQuote);
-                // Fetch REST quote once if prevClose is still missing (e.g. server started without login)
-                if (!this.niftyQuote.prevClose) {
-                    this.getQuote(NIFTY).then(q => {
-                        if (q.prevClose) this.niftyQuote.prevClose = q.prevClose;
-                    }).catch(() => {});
-                }
-                await Monitor.getInstance().onNiftyQuote(this.niftyQuote);
-                Decision.getInstance().decidePurchase(this.niftyQuote);
-
-
-            } else if (data.tk == '26009') {
-                // this._updateQuote(data, this.bankNiftyQuote);
-                // Decision.getInstance().decidePurchase(this.bankNiftyQuote);
-
-            } else if (data.tk == '26037') {
-                // this._updateQuote(data, this.finNiftyQuote);
-                // Decision.getInstance().decidePurchase(this.finNiftyQuote);
-            }
-            var quotes = {
-                'nifty': this.niftyQuote,
-                'bankNifty': this.bankNiftyQuote,
-                'finNifty': this.finNiftyQuote,
-            }
-            myEmitter.emit('nifty', quotes);
-
-            // this._emitEvent('/niftydata', this.niftyQuote)
-        }
-    };
-
+    // Quote streaming (touchline data + Monitor/Decision broadcast) has moved to
+    // ANT (see AntStream.broadcastQuote) - Prism's WebSocket stays connected
+    // solely for order-fill notifications via `order` below.
     _updateQuote = (data, niftyQuote) => {
 
         if (data.lp) {
@@ -303,10 +243,13 @@ export default class Prism {
         delay(500)
 
         await this._startWebsocket();
-
-        // TODO Required only if monitoring index prices
-        await this.subscribeNifty();
+        // Socket stays open for order-fill notifications only - touchline
+        // quote subscription has moved to ANT (see AntStream).
         // await this.refreshTradeList();
+    }
+
+    getOAuthURL = () => {
+        return NorenRestApi.getOAuthURL();
     }
 
     requestOtp = async () => {
@@ -318,11 +261,16 @@ export default class Prism {
         await NorenRestApi.logout();
     }
 
+    loginWithGenAcsTok = async (code: string) => {
+        await NorenRestApi.loginWithGenAcsTok(code);
+        this.niftyQuote = await this.getQuote(NIFTY);
+        Log.log('Logged in with GenAcsTok')
+        this.connect();
+    }
+
     login = async (otp: string) => {
         await NorenRestApi.login(otp);
         this.niftyQuote = await this.getQuote(NIFTY);
-        // this.bankNiftyQuote = await this.getQuote(BANKNIFTY);
-        // this.finNiftyQuote = await this.getQuote(FINNIFTY);
         Log.log('Logged in')
         this.connect();
     }
@@ -391,44 +339,6 @@ export default class Prism {
             if ( i == 5) {
                 throw new Error('Websocket is not opened successfully after 5 attempts. Please check the connection and try again.')
             }
-        }
-    }
-
-    subscribedIndex = false
-    subscribeNifty = async () => {
-
-        await this._startWebsocket()
-
-        
-        if (this.subscribedIndex == false) {
-            await NorenRestApi.subscribe(`NSE|${indexMap.get(NIFTY).token}`)
-            // await NorenRestApi.subscribe(`NSE|${indexMap.get(BANKNIFTY).token}`)
-            // await NorenRestApi.subscribe(`NSE|${indexMap.get(FINNIFTY).token}`)
-            this.subscribedIndex = true
-        }
-
-        // const contracts = await this.getContracts();
-        // Log.log(contracts);
-        // for (const contract of contracts) {
-        //     const token = await this.getToken(contract);
-        //     await this.subscribeOption(token);
-        //     Log.log('Subscribed to option ', contract, ' token ', token);
-        // }
-
-    }
-
-    subscribeIndex= async (index: string) => {
-        await this._startWebsocket()
-        await NorenRestApi.subscribe(`NSE|${indexMap.get(index).token}`)
-        this.subscribedIndex = true
-    }
-
-
-    subscribeOption = async (token, right?: string) => {
-        const index = this.subscribedOptions.indexOf(token);
-        if (index == -1) {
-            await NorenRestApi.subscribe(`NFO|${token}`, right)
-            this.subscribedOptions.push(token)
         }
     }
 
@@ -639,14 +549,6 @@ export default class Prism {
         }
         Log.log('strikePriceAsInt1: ', strikePriceAsInt, 'right: ', right, 'index: ', index, ' token: ', token)
         return token;
-    }
-
-    unsubscribeOption = async (token) => {
-        const index = this.subscribedOptions.indexOf(token);
-        if (index != -1) {
-            this.subscribedOptions.splice(index, 1);
-            await NorenRestApi.unsubscribe(`NFO|${token}`);
-        }
     }
 
     getOptionQuote = async (token: string) => {
@@ -1163,7 +1065,7 @@ export default class Prism {
 
         Log.log('Place Order in sell ', order);
         await NorenRestApi.place_order(order) as any;
-        await this.unsubscribeOption(tsym);
+        await AntStream.getInstance().unsubscribeOption(tsym);
     }
 
     cancel = async (orderno) => {
@@ -1239,13 +1141,6 @@ export default class Prism {
                 Monitor.getInstance().clearPendingOrder(order.tsym, user);
             }
             const token = await this.getToken(order.tsym);
-            if (order.trantype == 'B') {
-                Log.log('Subscribing option ', token)
-                await this.subscribeOption(token);
-            } else if (order.trantype == 'S') {
-                Log.log('Unsubscribing option ', token)
-                await this.unsubscribeOption(token);
-            }
             if (!MOCK_BROKER) {
                 await delay(2000)
             }
@@ -1295,7 +1190,6 @@ export default class Prism {
                 Monitor.getInstance().trackOrder(orderReply.data.norenordno, user);
                 Monitor.getInstance().clearPendingOrder(tsym, user);
             }
-            await this.unsubscribeOption(token);
         } catch (e) {
             Log.log(`[Prism] squareOffOrder failed for token ${token}:`, e?.message ?? e);
         }

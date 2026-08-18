@@ -76,7 +76,7 @@
 .landing-subtitle {
   font-size: 1.1rem;
   line-height: 1.7;
-  color: #94a3b8;
+  color: #cbd5e1;
   margin-bottom: 36px;
   max-width: 480px;
 }
@@ -101,6 +101,7 @@
 }
 .stat-card-1 { transform: translateX(0); }
 .stat-card-2 { transform: translateX(24px); }
+.stat-card-2 .stat-value { font-size: 1.15rem; letter-spacing: -0.3px; }
 .stat-card-3 { transform: translateX(8px); }
 .stat-value {
   font-size: 1.9rem;
@@ -110,7 +111,7 @@
 }
 .stat-label {
   font-size: 0.78rem;
-  color: #64748b;
+  color: #94a3b8;
   margin-top: 4px;
   font-weight: 500;
   text-transform: uppercase;
@@ -139,7 +140,7 @@
 }
 .landing-section-sub {
   text-align: center;
-  color: #64748b;
+  color: #94a3b8;
   margin-bottom: 52px;
   font-size: 1rem;
 }
@@ -165,7 +166,7 @@
 }
 .step-card p {
   font-size: 0.9rem;
-  color: #64748b;
+  color: #94a3b8;
   line-height: 1.6;
   margin: 0;
 }
@@ -205,12 +206,12 @@
 }
 .rule-card p {
   font-size: 0.88rem;
-  color: #64748b;
+  color: #94a3b8;
   line-height: 1.65;
   margin: 0;
 }
 .rule-card strong {
-  color: #cbd5e1;
+  color: #e2e8f0;
 }
 .rule-icon {
   width: 42px;
@@ -226,6 +227,14 @@
 .rule-icon-green { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16,185,129,0.25); }
 .rule-icon-red   { background: rgba(239, 68, 68, 0.15);  color: #ef4444; border: 1px solid rgba(239,68,68,0.25); }
 .rule-icon-blue  { background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59,130,246,0.25); font-size: 1.1rem; }
+.rule-card-success { border-color: rgba(16,185,129,0.4) !important; background: rgba(16,185,129,0.07) !important; }
+.rule-card-success h4 { color: #6ee7b7; }
+.rule-card-success p { color: #94a3b8; }
+.rule-card-success strong { color: #d1fae5; }
+.rule-card-danger  { border-color: rgba(239,68,68,0.4) !important; background: rgba(239,68,68,0.07) !important; }
+.rule-card-danger h4 { color: #fca5a5; }
+.rule-card-danger p { color: #94a3b8; }
+.rule-card-danger strong { color: #fee2e2; }
 
 /* CTA section */
 .landing-cta-section {
@@ -239,7 +248,7 @@
   margin-bottom: 10px;
 }
 .landing-cta-section p {
-  color: #64748b;
+  color: #94a3b8;
   margin-bottom: 32px;
 }
 .landing-cta-btn {
@@ -253,7 +262,7 @@
   padding: 24px 40px;
   text-align: center;
   font-size: 0.8rem;
-  color: #334155;
+  color: #64748b;
 }
 
 /* Responsive */

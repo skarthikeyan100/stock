@@ -1,0 +1,15 @@
+Step 1: I ran npm run server
+Step 2: I ran ./login.sh in scripts folder. Received OTP, when the OTP is given as input, got an error in the serve as Invalid Vendor Code
+
+Shoonya API DOcumentation: https://shoonya.com/api-documentation
+Python code is available in https://github.com/Shoonya-API-OAuth-Python/Shoonya_API_OAuth
+
+There seems to be a new end point /GenAcsTok
+
+Add this new endpoint and redirect login flow here. Do not remove existing QuickAuth
+
+
+ http://183.83.189.115:3000/oauth/callback
+
+https://trade.shoonya/OAuthlogin:wq
+

@@ -49,7 +49,7 @@ class MockRestAPI {
         try {
             const db = Mongo.getInstance().db;
             const query = MOCK_DATE ? { date: MOCK_DATE } : {};
-            const latest = await db.collection('Quote').findOne(query, { sort: { ltt: -1 } } as any);
+            const latest = await db.collection('Quote').findOne(query, { sort: { ltt: -1 } }) as any;
             if (latest) {
                 return { stat: 'Ok', lp: latest.ltp.toString(), ft: latest.ltt };
             }

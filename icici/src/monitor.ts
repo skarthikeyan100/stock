@@ -4,7 +4,9 @@ import { UserContext } from './user';
 import myEmitter from './tools/emitter';
 import Mongo from './tools/mongo'
 import Prism from './prism';
+import AntStream from './ant/AntStream';
 import Config from './prism/config';
+import configService from './prism/ConfigService';
 import {  PUT, CALL, USER_LOSS_LIMIT,  DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT} from './constants'
 import strategies from './strategy/strategies';
 import { Strategy } from './strategy/strategy';
@@ -30,6 +32,7 @@ export default class Monitor {
     pendingUsers: Set<string> = new Set();
     userSettingsCache: Map<string, { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number }> = new Map();
     private strategyMap: Map<string, Strategy> = new Map();
+    private watchTokens: Map<string, Set<Strategy>> = new Map();
     private niftyQuoteHistory: NiftyQuote[] = [];
     static QUOTE_HISTORY_MAX_SIZE = 100;
 
@@ -43,6 +46,21 @@ export default class Monitor {
     unregisterStrategy(userId: string) {
         this.strategyMap.delete(userId);
         Log.log(`[Monitor] Unregistered strategy: ${userId}`);
+    }
+
+    watchToken(token: string, strategy: Strategy) {
+        if (!this.watchTokens.has(token)) this.watchTokens.set(token, new Set());
+        this.watchTokens.get(token)!.add(strategy);
+        Log.log(`[Monitor] Watching token ${token} for strategy ${strategy.userId}`);
+        try { AntStream.getInstance()?.subscribeOption(token); } catch (e) { /* AntStream not available */ }
+    }
+
+    unwatchToken(token: string, strategy: Strategy) {
+        const watchers = this.watchTokens.get(token);
+        if (!watchers) return;
+        watchers.delete(strategy);
+        if (watchers.size === 0) this.watchTokens.delete(token);
+        Log.log(`[Monitor] Unwatched token ${token} for strategy ${strategy.userId}`);
     }
 
     // --- Order Gateway (strategies call these instead of Prism directly) ---
@@ -229,25 +247,25 @@ export default class Monitor {
 
     refreshTrades(trades: Trade[]) {
         this.trades = trades
-        const prism = Prism.getInstance();
+        const antStream = AntStream.getInstance();
         this.trades.forEach(async trade => {
             trade.lastTradePrice = trade.price
             Log.log('In refresh trades, subscribe to ', trade.tsym, ' token: ', trade.token)
-            await prism.subscribeOption(trade.token);
+            await antStream.subscribeOption(trade.token);
         });
     }
 
     refreshPendingOrders(orders: Order[]) {
-        const prism = Prism.getInstance();
+        const antStream = AntStream.getInstance();
         orders.forEach(async order => {
-            await prism.subscribeOption(order.token);
+            await antStream.subscribeOption(order.token);
         });
     }
 
     subscribeTrades = (trades: Trade[]) => {
-        const prism = Prism.getInstance();
+        const antStream = AntStream.getInstance();
         this.trades.forEach(trade => {
-            prism.subscribeOption(trade.token);
+            antStream.subscribeOption(trade.token);
         });
     }
 
@@ -353,9 +371,9 @@ export default class Monitor {
                     }
                 }
             }
-        } else {
+        } else if (!this.watchTokens.has(optionQuote.token)) {
             Log.log(`[MOCK] No active trade for token ${optionQuote.token}, unsubscribing`);
-            try { Prism.getInstance()?.unsubscribeOption(optionQuote.token) } catch (e) { /* Prism not available */ }
+            try { await AntStream.getInstance()?.unsubscribeOption(optionQuote.token) } catch (e) { /* AntStream not available */ }
         }
 
         this._processQuoteForStrategies(optionQuote)
@@ -377,7 +395,7 @@ export default class Monitor {
                 // Subscribe to live price updates for this new position
                 Log.log(`[MOCK] New trade added: user=${tradeEvent.user} tsym=${tradeEvent.tsym} token=${tradeEvent.token} right=${tradeEvent.right}`);
                 Log.log('[Monitor] Subscribing to option for live prices:', tradeEvent.token);
-                try { await Prism.getInstance()?.subscribeOption(tradeEvent.token, tradeEvent.right); } catch (e) { /* Prism not available */ }
+                try { await AntStream.getInstance()?.subscribeOption(tradeEvent.token); } catch (e) { /* AntStream not available */ }
                 // Auto-set target/SL if strategy provides monitor config
                 const strategy = this.strategyMap.get(tradeEvent.user);
                 if (strategy) {
@@ -430,7 +448,7 @@ export default class Monitor {
                 const stillHeld = this.trades.some(t => t.token === tradeEvent.token);
                 if (!stillHeld) {
                     Log.log(`[MOCK] Unsubscribing token ${tradeEvent.token} (no more holders)`);
-                    try { await Prism.getInstance()?.unsubscribeOption(tradeEvent.token); } catch (e) { /* Prism not available */ }
+                    try { await AntStream.getInstance()?.unsubscribeOption(tradeEvent.token); } catch (e) { /* AntStream not available */ }
                 } else {
                     Log.log(`[MOCK] Keeping subscription for token ${tradeEvent.token} (other strategies still hold it)`);
                 }
@@ -441,13 +459,29 @@ export default class Monitor {
     }
 
     async _processQuoteForStrategies(optionQuote: OptionQuote) {
-        try { Mongo.getInstance()?.insert(optionQuote); } catch (e) { /* Mongo not available */ }
+        if (configService.getConfig().settings?.logQuotes) {
+            try { Mongo.getInstance()?.insert(optionQuote); } catch (e) { /* Mongo not available */ }
+        }
+        const dispatched = new Set<Strategy>();
+
         // Find ALL trades for this token (multiple users can hold the same contract)
         const matchingTrades = this.trades.filter(t => t.token === optionQuote.token);
         for (const trade of matchingTrades) {
             const strategy = this.strategyMap.get(trade.user);
-            if (strategy && strategy.canHandleOptionQuote(optionQuote)) {
+            if (strategy && !dispatched.has(strategy) && strategy.canHandleOptionQuote(optionQuote)) {
+                dispatched.add(strategy);
                 await strategy.processOptionQuote(optionQuote);
+            }
+        }
+
+        // Also dispatch to strategies watching this token pre-trade (see watchToken)
+        const watchers = this.watchTokens.get(optionQuote.token);
+        if (watchers) {
+            for (const strategy of watchers) {
+                if (!dispatched.has(strategy) && strategy.canHandleOptionQuote(optionQuote)) {
+                    dispatched.add(strategy);
+                    await strategy.processOptionQuote(optionQuote);
+                }
             }
         }
     }

@@ -7,9 +7,9 @@
     "start1": "nodemon -r esm index.js",
     "start": "tsc-watch --onSuccess \"node ./dist/index.js\"",
     "adhoc": "tsc-watch --onSuccess \"node ./dist/decision.js\"",
-    "server": "tsc-watch --onSuccess \"sh -c 'node ./dist/server.js 2>&1 | tee server_logs.txt'\"",
-    "server:mock": "PORT=3001 MOCK_DATE=2026-02-24 MOCK_BROKER=true MOCK_QUOTES=true CONFIG_PATH=./config.mock.yml node ./dist/server.js 2>&1 | tee server_logs.txt",
-    "server:mock:run": "PORT=3001 MOCK_BROKER=true MOCK_QUOTES=true CONFIG_PATH=./config.mock.yml node ./dist/server.js 2>&1 | tee server_logs.txt",
+    "server": "tsc-watch --onSuccess \"sh -c 'node ./dist/server.js 2>&1 | tee server.log'\"",
+    "server:mock": "PORT=3001 MOCK_DATE=2026-02-24 MOCK_BROKER=true MOCK_QUOTES=true CONFIG_PATH=./config.mock.yml node ./dist/server.js 2>&1 | tee server.log",
+    "server:mock:run": "PORT=3001 MOCK_BROKER=true MOCK_QUOTES=true CONFIG_PATH=./config.mock.yml node ./dist/server.js 2>&1 | tee server.log",
     "test": "jest",
     "test:watch": "jest --watchAll",
     "test:strategy": "tsc && node ./dist/test/strategyTest.js",
@@ -25,9 +25,12 @@
     "momentum:fetch": "tsc && node ./dist/momentum/fetchDaily.js",
     "momentum:rank": "tsc && node ./dist/momentum/weeklyMomentum.js",
     "migrate:actualDay": "tsc && node ./dist/tools/migrate_actualDay.js",
+    "sr:hypothesis": "tsc && node ./dist/tools/SupportResistanceHypothesisTest.js",
     "migrate-data": "ts-node ./scripts/migrateData.ts",
     "sentiment": "tsc && node ./dist/tools/sentiment.js",
-    "sentiment:slow": "tsc && node ./dist/tools/sentiment.js --concurrency 2 --delay 2500"
+    "sentiment:slow": "tsc && node ./dist/tools/sentiment.js --concurrency 2 --delay 2500",
+    "logs": "tail -f server.log",
+    "logs:errors": "tail -f server.log | grep -i error"
   },
   "author": "",
   "license": "ISC",
@@ -61,6 +64,7 @@
     "js-yaml": "^4.1.0",
     "json-socket": "^0.3.0",
     "json2csv": "^4.5.4",
+    "kiteconnect": "^4.1.0",
     "localtunnel": "^2.0.2",
     "moment": "^2.29.4",
     "moment-timezone": "^0.5.37",
@@ -86,7 +90,8 @@
     "underscore": "^1.13.6",
     "vader-sentiment": "^1.1.3",
     "winston": "^3.3.3",
-    "workerpool": "^10.0.1"
+    "workerpool": "^10.0.1",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/cheerio": "^0.22.13",

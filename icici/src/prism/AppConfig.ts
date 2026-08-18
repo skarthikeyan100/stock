@@ -20,4 +20,5 @@ export class Settings {
     stopLossPriceDiff = 10
     trailingDistance = 3
     cooldownSeconds = 60
+    logQuotes = false
 }

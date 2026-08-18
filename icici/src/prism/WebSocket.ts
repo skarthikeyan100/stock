@@ -41,10 +41,12 @@ class WebSocketClient {
                 }, this.timeout);
 
                 //prepare the data
-                let values = { "t": "c" };
+                // OAuth sessions authenticate via "t":"a" + accesstoken (server replies "ak"),
+                // not the legacy "t":"c" + susertoken handshake (QuickAuth is deprecated for this account).
+                let values = { "t": "a" };
                 values["uid"] = params.uid;
                 values["actid"] = params.actid;
-                values["susertoken"] = params.apikey;
+                values["accesstoken"] = params.apikey;
                 values["source"] = "API";
                 this.ws.send(JSON.stringify(values));
                 // resolve()
@@ -54,7 +56,7 @@ class WebSocketClient {
                 var result = JSON.parse(evt.data);
                 // Log.log('Result from socket: ', result);
 
-                if (result.t == 'ck') {
+                if (result.t == 'ck' || result.t == 'ak') {
                     trigger("open", [result]);
                 }
                 if (result.t == 'tk' || result.t == 'tf') {

@@ -16,6 +16,17 @@
 | `npm run dev:mock` | Vite dev server, proxies to `localhost:4000` (mock backend) |
 | `npm run mock` | Standalone Express mock backend on port 4000 |
 | `npm run build` | Build to `../public/app/`, served by Express at `/app/` |
+| `npm run symbols -- <MONTH>` | Regenerate `public/symbols.txt` for the given expiry month (e.g. `APR`, `MAY`) |
+
+### Updating symbols.txt
+
+`public/symbols.txt` contains NFO contract symbols used by the typeahead search in OrderEntry. It must be refreshed each month when the new expiry series becomes active.
+
+```bash
+npm run symbols -- APR   # replace with the new month before expiry
+```
+
+The script (`update-symbols.sh`) filters column 5 (TradingSymbol) from `/home/karthikeyan/Downloads/NFO_symbols.txt/NFO_symbols.txt` for the given month. The month name is case-insensitive (`apr`, `Apr`, `APR` all work). Defaults to `APR` if no argument is provided.
 
 ---
 

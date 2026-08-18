@@ -12,6 +12,9 @@ import TestStrategy from './TestStrategy';
 import RateOfChangeStrategy from './RateOfChangeStrategy';
 import GapStrategy from './GapStrategy';
 import RuleBasedStrategy from './RuleBasedStrategy';
+import GoodMorningStrategy from './GoodMorningStrategy';
+import SupportResistanceStrategy from './SupportResistanceStrategy';
+import TargetReachStrategy from './TargetReachStrategy';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 
 const STRATEGY_REGISTRY = new Map<string, new (userId?: string) => Strategy>();
@@ -27,6 +30,9 @@ STRATEGY_REGISTRY.set('TestStrategy', TestStrategy);
 STRATEGY_REGISTRY.set('RateOfChangeStrategy', RateOfChangeStrategy);
 STRATEGY_REGISTRY.set('GapStrategy', GapStrategy);
 STRATEGY_REGISTRY.set('RuleBasedStrategy', RuleBasedStrategy);
+STRATEGY_REGISTRY.set('GoodMorningStrategy', GoodMorningStrategy);
+STRATEGY_REGISTRY.set('SupportResistanceStrategy', SupportResistanceStrategy);
+STRATEGY_REGISTRY.set('TargetReachStrategy', TargetReachStrategy);
 
 export function createStrategy(config: StrategyInstanceConfig): Strategy | null {
     const StrategyClass = STRATEGY_REGISTRY.get(config.type);

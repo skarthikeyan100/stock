@@ -5,14 +5,14 @@ import readLine from 'readline';
 
 class Config {
     // "endpoint ="http=//rama.kambala.co.in=6002/NorenWClient/",    
-    endpoint = "https://api.shoonya.com/NorenWClientTP"
-    websocket = "wss://api.shoonya.com/NorenWSTP/"
+    endpoint = "https://api.shoonya.com/NorenWClientAPI/"
+    websocket = "wss://api.shoonya.com/NorenWSAPI/"
     eodhost = "http=//kurma.kambala.co.in/chartApi/getdata/"
-    debug = false
+    debug = true
     timeout = 7000
     heartbeat = 3000
     
-    NFOSymbolsPath = '/home/karthikeyan/Downloads/NFO_symbols.txt'
+    NFOSymbolsPath = '/home/karthikeyan/work/icici/NFO_symbols.txt'
     stocksPath = 'stocks.csv'
 
     startHour = 10

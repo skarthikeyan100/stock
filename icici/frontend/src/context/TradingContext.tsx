@@ -131,7 +131,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     setOrderError(null);
     try {
       const response = await fetch(
-        `/order?index=NIFTY&right=${right}&action=Buy`,
+        `/prism/order/buy?index=NIFTY&right=${right}`,
         { headers: { 'X-User-Id': user?.email || 'Default' } }
       );
       if (!response.ok) {
@@ -151,7 +151,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     setOrderError(null);
     try {
       const response = await fetch(
-        `/order?contract=${encodeURIComponent(contract)}&action=Buy`,
+        `/prism/order/buy?contract=${encodeURIComponent(contract)}`,
         { headers: { 'X-User-Id': user?.email || 'Default' } }
       );
       if (!response.ok) {
@@ -169,7 +169,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const squareOff = useCallback(async (token: string, qty: number) => {
     try {
       await fetch(
-        `/squareoff?token=${encodeURIComponent(token)}&qty=${qty}`,
+        `/prism/squareoff?token=${encodeURIComponent(token)}&qty=${qty}`,
         { headers: { 'X-User-Id': user?.email || 'Default' } }
       );
     } catch (err) {
@@ -179,7 +179,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
   const setTargetStopLoss = useCallback(async (token: string, targetPoints: number, stopLossPoints: number) => {
     try {
-      await fetch('/settarget', {
+      await fetch('/prism/settarget', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, targetPoints, stopLossPoints }),

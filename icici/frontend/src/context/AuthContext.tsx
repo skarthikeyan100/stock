@@ -16,6 +16,9 @@ export interface AuthUser {
   addressProofId?: string;
   dobProofId?: string;
   panCardId?: string;
+  addressVerified: boolean;
+  dobVerified: boolean;
+  panVerified: boolean;
 }
 
 interface AuthState {

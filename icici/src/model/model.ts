@@ -44,6 +44,17 @@ export class NiftyQuote {
         quote.changePercent = quote.prevClose ? (quote.ltp - quote.prevClose) / quote.prevClose * 100 : 0;
         return quote;
     }
+
+    // ANT's touchline ticks are often partial updates (no OHLC/volume/depth,
+    // just lp/pc/ft/tk) - only map what's actually present, no fabricated values.
+    static fromAnt(response): NiftyQuote {
+        const quote = new NiftyQuote();
+        quote.ltp = parseFloat(response.lp)
+        quote.ltt = response.ft
+        quote.token = response.tk
+        quote.changePercent = response.pc !== undefined ? parseFloat(response.pc) : undefined
+        return quote;
+    }
 }
 
 export class Trade {
@@ -193,7 +204,15 @@ export class OptionQuote {
         } else {
             quote.ltp =  parseFloat(response.bpl)
         }
-        
+
+        quote.ltt = response.ft
+        quote.token = response.tk
+        return quote;
+    }
+
+    static fromAnt(response): OptionQuote {
+        const quote = new OptionQuote();
+        quote.ltp = parseFloat(response.lp)
         quote.ltt = response.ft
         quote.token = response.tk
         return quote;

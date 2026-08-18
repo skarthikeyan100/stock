@@ -3,6 +3,7 @@ import Log from '../util/Log';
 
 import axios from 'axios';
 import sha256 from 'crypto-js';
+import fs from 'fs';
 
 import Config from './config';
 import WS from './WebSocket'
@@ -14,30 +15,22 @@ class NorenRestApi {
 
   //Karthik
   userId = 'FA96552'
-  passwd = 'Api@1235'
+  passwd = 'Api@1237'
   vendorCode = 'FA96552_U'
   imei = 'abc1234'
-  apiKey = 'cac8568d15187897a1a38209da48c1fe'
-  twoFA = '78601'
-  otpRequest = {"uid":"FA96552","pan":"25b74cbf27ba090811308c23b3f8b02b9c33e2b2f7ecf8f0a2b73016fa5e3cd3"}
-
-
-  //Raja //AJAPR6032J
-  // userId = 'FA396690'
-  // passwd = 'SRaja@72'
-  // vendorCode = 'FA396690_U'
-  // imei = 'abc1234'
-  // apiKey = 'b29b6326ad9282d0b2aa80e49843d26c'
-  // twoFA = '78601'
-  // otpRequest = {"uid":"FA396690","pan":"344e0e2df4e870bfc2a28403817fa32e88981fb2dfcd1116c35406d088c91566"}
+  clientId = 'FA96552_U'
+  secretCode = 'jdp7x50aI14alydpaGIiC1am0xxxbrnfRq1nRE361iRarAr5359jmdMxxdaomga5'
+  otpRequest = {"uid":"FA96552","pan":"d6fca95415e3d0091d8bb888648246e4cf3b17f65e66405f0e20612736182679"}
 
   endpoint = 'test';
-  userToken = '9d388557d894a8137d4c1663f8b41dd32801b36e68ecebef177c24f082f0bcd1';
+  userToken = '';   // susertoken — used as Bearer token for REST and WebSocket auth
+  accessToken = ''; // alias kept for clarity; same value as userToken after login
   websocket: WS;
 
 
   private routes = {
-    'authorize': '/QuickAuth',
+    'authorize': 'QuickAuth',
+    'gen_acs_tok': 'GenAcsTok',
     'logout': '/Logout',
     'forgot_password': '/ForgotPassword',
     'watchlist_names': '/MWList',
@@ -64,17 +57,25 @@ class NorenRestApi {
   constructor() {
     this.endpoint = Config.endpoint;
 
+    // Restore a still-valid (~24h) access token across restarts, matching
+    // the ANT/Zerodha session-loading pattern — otherwise REST calls go out
+    // unauthenticated until a fresh login, even though userToken.txt is fine.
+    if (fs.existsSync('userToken.txt')) {
+      const savedToken = fs.readFileSync('userToken.txt', 'utf8').trim();
+      if (savedToken) {
+        this.userToken = savedToken;
+        this.accessToken = savedToken;
+        Log.log('Restored Shoonya access token from userToken.txt');
+      }
+    }
+
     axios.interceptors.request.use(req => {
-      // Log.log("use::", `${req.method} ${req.url} ${req.data}`);
-      // Important: request interceptors **must** return the request.
+      console.log(`[REQ] ${req.method?.toUpperCase()} ${req.url}`, req.data);
       return req;
     });
-
-    // Add a response interceptor
+    
     axios.interceptors.response.use(response => {
-      if (Config.debug == true) {
-        Log.log("response::", response)
-      }
+      console.log(`[RES] ${response.status} ${response.config.url}`, response.data);
       if (response.status === 200) {
         if (response.data.success || response.data.status) {
           return response.data;
@@ -83,19 +84,12 @@ class NorenRestApi {
         }
       }
     }, error => {
+      console.log(`[ERR] ${error.config?.url}`, error.response?.data ?? error.message);
       Log.log(error)
-      let errorObj = {} as any;
-
-      if (error.response) {
-        //    errorObj.status = error.response.status;
-        //    errorObj.message = error.response.statusText;
-      } else {
-        errorObj.status = 500;
-        errorObj.message = "Error";
-      }
-
-      return Promise.reject(errorObj);
+      // ... rest of error handling
     });
+    
+
 
   }
 
@@ -112,14 +106,16 @@ class NorenRestApi {
   }
 
   post_request = async (route, params) => {
-    let url = this.endpoint + this.routes[route];
-    let payload = 'jData=' + JSON.stringify(params);
-    //if(usertoken.isEmpty == false)
-    const userToken = await this.getUserToken();
-    payload = payload + `&jKey=${userToken}`;
-    return axios.post(url, payload);
-
-    //return requestInstance.request(options);
+    const url = this.endpoint + this.routes[route];
+    const payload = 'jData=' + JSON.stringify(params);
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json; charset=utf-8'
+    };
+    const noAuthRoutes = ['authorize', 'gen_acs_tok'];
+    if (!noAuthRoutes.includes(route) && this.accessToken) {
+      headers['Authorization'] = `Bearer ${this.accessToken}`;
+    }
+    return axios.post(url, payload, { headers });
   }
 
   request_otp = () => {
@@ -127,19 +123,10 @@ class NorenRestApi {
       Log.log('[RestAPI] Mock request_otp (no-op)');
       return Promise.resolve({ stat: 'Ok' });
     }
-    let url = 'https://trade.shoonya.com/NorenWClientWeb/FgtPwdOTP';
-
-
-    let payload = 'jData=' + JSON.stringify(this.otpRequest);
+    const url = 'https://trade.shoonya.com/NorenWClientWeb/FgtPwdOTP';
+    const payload = 'jData=' + JSON.stringify(this.otpRequest);
     return axios.post(url, payload);
   }
-
-  setSessionDetails = (response) => {
-    this.userToken = response.susertoken;
-    this.userId = response.actid
-    this.setUserToken(this.userToken);
-
-  };
 
   logout = async () => {
     if (MOCK_BROKER) {
@@ -149,43 +136,71 @@ class NorenRestApi {
     await this.post_request('logout', this.userId);
     Log.log('Logged out')
   }
-  /**
-    * Description
-    * @method login
-    * @param {string} userid
-    * @param {string} password
-    * @param {string} twoFA
-    * @param {string} vendor_code
-    * @param {string} api_secret
-    * @param {string} imei
-    */
+  getOAuthURL = () => {
+    return `https://api.shoonya.com/OAuthlogin/authorize/oauth?client_id=${this.clientId}`;
+  }
 
-  login = async (twoFA) => {
+  loginWithGenAcsTok = async (code: string) => {
     if (MOCK_BROKER) {
-      Log.log('[RestAPI] Mock login (no-op)');
-      return 'mock-token';
+      Log.log('[RestAPI] Mock login with GenAcsTok (no-op)');
+      this.accessToken = 'mock-token';
+      return this.accessToken;
     }
 
-    let pwd = sha256.SHA256(this.passwd).toString();
-    let u_app_key = `${this.userId}|${this.apiKey}`
-    let app_key = sha256.SHA256(u_app_key).toString();
+    // checksum = sha256(client_id + secret_code + auth_code), per Shoonya's
+    // NorenRestApiOAuth reference client — no appkey/client_secret in the payload.
+    const checksum = sha256.SHA256(`${this.clientId}${this.secretCode}${code}`).toString();
 
-    let authparams = {
-      "source": "API",
-      "apkversion": "js:1.0.0",
-      "uid": this.userId,
-      "pwd": pwd,
-      "factor2": twoFA,
-      "vc": this.vendorCode,
-      "appkey": app_key,
-      "imei": this.imei
+    const authparams = {
+      code: code,
+      checksum: checksum,
+      uid: this.userId
     };
 
     try {
-      let auth_data = await this.post_request("authorize", authparams);
-      Log.log("Auth Data: ", auth_data);
-      this.setSessionDetails(auth_data);
-      return this.userToken;
+      const auth_data: any = await this.post_request('gen_acs_tok', authparams);
+      Log.log('GenAcsTok Auth Data: ', auth_data);
+      this.userToken = auth_data.susertoken;
+      this.accessToken = auth_data.access_token || this.userToken;
+      this.userId = auth_data.actid || auth_data.USERID || this.userId;
+      await this.setUserToken(this.accessToken);
+      return this.accessToken;
+    } catch (e) {
+      Log.log('GenAcsTok login error: ', e);
+      throw e;
+    }
+  };
+
+  login = async (otp: string) => {
+    if (MOCK_BROKER) {
+      Log.log('[RestAPI] Mock login (no-op)');
+      this.accessToken = 'mock-token';
+      return this.accessToken;
+    }
+
+    const pwd = sha256.SHA256(this.passwd).toString();
+    // New appkey format: SHA256(clientId + secretCode) replacing old SHA256(userId|apiKey)
+    const appkey = sha256.SHA256(`${this.clientId}${this.secretCode}`).toString();
+
+    const authparams = {
+      source: 'API',
+      apkversion: 'js:1.0.0',
+      uid: this.userId,
+      pwd: pwd,
+      factor2: otp,
+      vc: this.vendorCode,
+      appkey: appkey,
+      imei: this.imei
+    };
+
+    try {
+      const auth_data: any = await this.post_request('authorize', authparams);
+      Log.log('Auth Data: ', auth_data);
+      this.userToken = auth_data.susertoken;
+      this.accessToken = this.userToken;
+      this.userId = auth_data.actid || this.userId;
+      await this.setUserToken(this.userToken);
+      return this.accessToken;
     } catch (e) {
       Log.log('Error: ', e);
       throw e;
@@ -555,31 +570,6 @@ class NorenRestApi {
 
   };
 
-  subscribe = async (instrument, right?: string) => {
-    if (MOCK_BROKER && MOCK_QUOTES) {
-      MockAPI.subscribe(instrument, right);
-      return;
-    }
-    let values = {};
-    values['t'] = 't';  //touchline
-    // values['t'] = 'd'; //depth
-    values['k'] = instrument
-    await this.websocket.send(JSON.stringify(values));
-  }
-
-  unsubscribe = (instrument) => {
-    if (MOCK_BROKER && MOCK_QUOTES) {
-      // instrument is passed as 'NFO|token' — extract token part
-      const token = instrument.split('|')[1] || instrument;
-      MockAPI.unsubscribe(token);
-      return;
-    }
-    let values = {};
-    values['t'] = 'u';
-    // values['t'] = 'ud';  //depth
-    values['k'] = instrument
-    this.websocket.send(JSON.stringify(values));
-  }
 }
 
 export default new NorenRestApi();

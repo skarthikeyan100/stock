@@ -2,9 +2,10 @@ import { useNavigate } from 'react-router-dom';
 import { Container, Card, Button, ListGroup } from 'react-bootstrap';
 
 const rules = [
-  'Multiple trades are permitted up to your configured quantity limit. Manage your positions within this threshold.',
+  'The number of simultaneous trades depends on how your account is configured. If your account trades by fixed lot size, multiple positions can run at the same time. If it trades by total investment amount, your entire allocated capital is committed to one trade at a time.',
   'The maximum permissible loss per session is \u20B915,000. All trades must be managed within this risk threshold.',
   'If losses reach \u20B915,000, your active positions may be automatically squared off and further order placement will be restricted until the next session.',
+  'Breaching the \u20B915,000 loss limit forfeits all profits accumulated since the last payout. No profit share will be paid for the current period, and your account balance resets. Protect your gains — a single bad session can erase an entire month of good trading.',
 ];
 
 export default function RulesPage() {

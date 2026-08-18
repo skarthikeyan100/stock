@@ -186,9 +186,10 @@ app.patch('/users/:email/profile', async (req, res) => {
 app.patch('/users/:email/verify', async (req, res) => {
   const { email } = req.params;
   const { field, verified } = req.body;
-  if (field !== 'email' && field !== 'phone') return res.status(400).json({ error: 'field must be email or phone' });
+  const validFields = { email: 'emailVerified', phone: 'phoneVerified', address: 'addressVerified', dob: 'dobVerified', pan: 'panVerified' };
+  if (!validFields[field]) return res.status(400).json({ error: 'Invalid field' });
   try {
-    const update = field === 'email' ? { emailVerified: verified } : { phoneVerified: verified };
+    const update = { [validFields[field]]: verified };
     await usersCol().updateOne({ email }, { $set: update });
     const user = await usersCol().findOne({ email });
     if (!user) return res.status(404).json({ error: 'User not found' });

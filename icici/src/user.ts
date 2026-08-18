@@ -18,6 +18,9 @@ export interface User {
     addressProofId?: string;
     dobProofId?: string;
     panCardId?: string;
+    addressVerified: boolean;
+    dobVerified: boolean;
+    panVerified: boolean;
 }
 
 // Runtime context passed through the order placement chain.
@@ -78,6 +81,9 @@ export async function getOrCreateUser(email: string, name: string, picture: stri
         enabled: true,
         emailVerified: false,
         phoneVerified: false,
+        addressVerified: false,
+        dobVerified: false,
+        panVerified: false,
     };
     await col.insertOne(user);
     Log.log(`[User] Created new user: ${email} with role: ${role}`);
@@ -123,6 +129,9 @@ export async function createUser(email: string, name: string, lossLimit: number,
         createdAt: new Date(),
         emailVerified: false,
         phoneVerified: false,
+        addressVerified: false,
+        dobVerified: false,
+        panVerified: false,
     };
     await collection().insertOne(user);
     return user;
