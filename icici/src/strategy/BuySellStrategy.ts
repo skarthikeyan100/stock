@@ -3,7 +3,7 @@ import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model
 import { Strategy } from "./strategy";
 import IntermittentStrategy from "./IntermittentStrategy";
 import * as f from '../orderList'
-import Prism from '../prism'
+import OrderClient from '../processes/strategies/OrderClient'
 import { NIFTY, CALL, PUT, BOUGHT } from '../constants'
 import myEmitter from '../tools/emitter';
 import { TouchSequence } from "selenium-webdriver";
@@ -271,7 +271,7 @@ export default class BuySellStrategy extends Strategy {
             Log.log('Initiate buy index for NIFTY at ', quote.ltp, ' with initial quantity: ', initialQuantity)
             buyOrderPlaced = true
             if ("none" == right) {
-                right = await Prism.getInstance().calculateRight(quote.ltp)
+                right = await OrderClient.getInstance().calculateRight(this.userId, quote.ltp)
             }
 
             if (!this.isSentimentAligned(quote, right)) {
@@ -280,7 +280,7 @@ export default class BuySellStrategy extends Strategy {
                 return;
             }
 
-            const contract = await Prism.getInstance().getContractByPriceRange( right)
+            const contract = await OrderClient.getInstance().getContractByPriceRange(this.userId, right)
             this.contract = new Contract(this, contract);
             Log.log('BuySellStrategy: buy contract for the first time', this.contract.contract, ' at ', quote.ltp, ' quantity: ', initialQuantity)
             const response = await super.buyContract(contract, initialQuantity)
@@ -292,6 +292,12 @@ export default class BuySellStrategy extends Strategy {
         }
     }
 
+
+    reset(): void {
+        super.reset();
+        this.contract.clear();
+        this.ordered = false;
+    }
 
     closeStrategy = async () => {
         Log.log('BuySellStrategy: closeStrategy called')

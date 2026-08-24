@@ -1,3 +1,23 @@
+srHypothesis:
+  confirmWindowMin: 2
+  maxJump: 15
+  maxRangeWidth: 30
+  buffer: 10
+  target: 10
+  stopLoss: 10
+  breachBuffer: 0
+  breachConfirmSec: 0
+  heldMinSec: 407
+  heldMaxSec: 651
+  csvOutput: false
+rocHypothesis:
+  target: 10
+  stopLoss: 10
+  cooldownSec: 60
+  minWins: 2
+  windowGridMin: [1, 2, 3, 4, 5, 7, 10, 15]
+  thresholdGrid: [5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 100]
+  csvOutput: false
 settings:
   minPrice: 20
   maxPrice: 30000
@@ -6,6 +26,8 @@ settings:
   trailingDistance: 4
   cooldownSeconds: 0
   logQuotes: false
+  safetyBufferAmount: 5000
+  consistencyLimitPercent: 40
 strategies:
   - type: SentimentStrategy
     enabled: false
@@ -65,13 +87,23 @@ strategies:
     logEnabled: true
   - type: GoodMorningStrategy
     enabled: true
-    quantity: 650
+    quantity: 65
     targetPoints: 10
     stopLossPoints: 10
     logEnabled: true
-    snapshotTime: '13:05'
-    confirmTime: '13:10'
-    previousClose: 24289
+    snapshotTime: '09:15'
+    confirmTime: '09:20'
+    previousClose: 24252
+    minMovementPoints: 10
+  - type: GoodMorningSensexStrategy
+    enabled: false
+    quantity: 200
+    targetPoints: 30
+    stopLossPoints: 30
+    logEnabled: true
+    snapshotTime: '09:40'
+    confirmTime: '09:45'
+    minMovementPoints: 30
   - type: SupportResistanceStrategy
     enabled: false
     supportPrice: 0

@@ -8,6 +8,7 @@ export interface AuthUser {
   lotCount: number;
   investmentAmount: number;
   investmentMode: 'lotCount' | 'investmentAmount';
+  useGTT: boolean;
   role: string;
   enabled: boolean;
   phone?: string;
@@ -19,6 +20,25 @@ export interface AuthUser {
   addressVerified: boolean;
   dobVerified: boolean;
   panVerified: boolean;
+  perOrderCap?: number;
+  legalName?: string;
+  aadharDocId?: string;
+  aadharVerified: boolean;
+  // Server never echoes raw KYC numbers/bank account numbers back - only
+  // masked variants, computed by user.ts's toClientUser.
+  aadharNumberMasked?: string;
+  panNumberMasked?: string;
+  profitSplitPercent: number;
+  bankAccountHolderName?: string;
+  bankAccountNumberMasked?: string;
+  bankIFSC?: string;
+  upiId?: string;
+  entityType: 'individual' | 'company';
+  gstin?: string;
+  gstDocId?: string;
+  gstVerified: boolean;
+  companyRegisteredName?: string;
+  companyRegisteredAddress?: string;
 }
 
 interface AuthState {

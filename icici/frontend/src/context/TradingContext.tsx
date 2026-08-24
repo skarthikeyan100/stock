@@ -126,6 +126,18 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     };
   }, [user]);
 
+  const describeOrderError = (body: any): string => {
+    // Backend sends { error: string }, not { message: string } - read the
+    // field it actually sends. Zerodha's raw insufficient-funds message
+    // ("ageing debit balance ... collateral margin ...") is accurate but not
+    // user-friendly, so it's mapped to a plain-language equivalent.
+    const message: string = body?.error || body?.message || '';
+    if (/debit balance|collateral margin/i.test(message)) {
+      return 'Order rejected as funds are not available';
+    }
+    return message || 'Order rejected';
+  };
+
   const placeOrder = useCallback(async (right: string) => {
     setPlacingOrder(true);
     setOrderError(null);
@@ -136,7 +148,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       );
       if (!response.ok) {
         const body = await response.json();
-        setOrderError(body.message || 'Order rejected');
+        setOrderError(describeOrderError(body));
       }
     } catch (err) {
       console.error('[Order] Order failed:', err);
@@ -156,7 +168,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       );
       if (!response.ok) {
         const body = await response.json();
-        setOrderError(body.message || 'Order rejected');
+        setOrderError(describeOrderError(body));
       }
     } catch (err) {
       console.error('[Order] Contract order failed:', err);

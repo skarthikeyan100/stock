@@ -2,7 +2,7 @@ import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
-import Prism from '../prism'
+import OrderClient from '../processes/strategies/OrderClient'
 import { NIFTY, CALL, PUT, BOUGHT } from '../constants'
 import myEmitter from '../tools/emitter';
 import { TouchSequence } from "selenium-webdriver";
@@ -178,7 +178,14 @@ export default class SentimentStrategy extends Strategy {
     }
 
     receive(oldStats, newStats) {
-    }    
+    }
+
+    reset(): void {
+        super.reset();
+        this.contract?.clear?.();
+        this.ordered = false;
+        this.iterationCount = 0;
+    }
 
     canHandleOptionQuote = (quote: OptionQuote): boolean => {
         let handled = false;
@@ -209,12 +216,12 @@ export default class SentimentStrategy extends Strategy {
             if (this.iterationCount <= loopCount && this.isTimeInRange() && !this.ordered && this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) {
                 this.ordered = true;
                 Log.log('Initiate buy index for NIFTY at ', quote.ltp, ' with initial quantity: ', orderQuantity, ' iterationCount: ', this.iterationCount);
-                const response = await Prism.getInstance().buyIndex({ userContext: this.getUserContext(), index: NIFTY, ltp: quote.ltp-2, right: sentiment, qty: orderQuantity });
+                const response = await OrderClient.getInstance().buyIndex(this.userId, { niftyLtp: quote.ltp - 2, right: sentiment, quantity: orderQuantity });
                 this.iterationCount++;
                 this.recordTriggerTime();
                 if (response) {
                     Log.log('Response: ', response)
-                    this.contract = new Contract(this, response.contract);
+                    this.contract = new Contract(this, response.tsym);
                     this.contract.update(response.token);
                 }
             }

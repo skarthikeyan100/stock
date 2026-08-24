@@ -8,6 +8,8 @@
     "start": "tsc-watch --onSuccess \"node ./dist/index.js\"",
     "adhoc": "tsc-watch --onSuccess \"node ./dist/decision.js\"",
     "server": "tsc-watch --onSuccess \"sh -c 'node ./dist/server.js 2>&1 | tee server.log'\"",
+    "processes": "tsc && concurrently -n tsc,orchestrator \"tsc -w --preserveWatchOutput\" \"node ./dist/orchestrator.js\"",
+    "processes:once": "tsc && node ./dist/orchestrator.js",
     "server:mock": "PORT=3001 MOCK_DATE=2026-02-24 MOCK_BROKER=true MOCK_QUOTES=true CONFIG_PATH=./config.mock.yml node ./dist/server.js 2>&1 | tee server.log",
     "server:mock:run": "PORT=3001 MOCK_BROKER=true MOCK_QUOTES=true CONFIG_PATH=./config.mock.yml node ./dist/server.js 2>&1 | tee server.log",
     "test": "jest",
@@ -25,7 +27,6 @@
     "momentum:fetch": "tsc && node ./dist/momentum/fetchDaily.js",
     "momentum:rank": "tsc && node ./dist/momentum/weeklyMomentum.js",
     "migrate:actualDay": "tsc && node ./dist/tools/migrate_actualDay.js",
-    "sr:hypothesis": "tsc && node ./dist/tools/SupportResistanceHypothesisTest.js",
     "migrate-data": "ts-node ./scripts/migrateData.ts",
     "sentiment": "tsc && node ./dist/tools/sentiment.js",
     "sentiment:slow": "tsc && node ./dist/tools/sentiment.js --concurrency 2 --delay 2500",
@@ -100,6 +101,7 @@
     "@types/puppeteer-core": "^5.4.0",
     "@types/selenium-webdriver": "^4.0.5",
     "@types/stats-lite": "^2.2.2",
+    "concurrently": "^8.2.2",
     "jest": "^24.9.0",
     "supertest": "^4.0.2"
   }

@@ -1,10 +1,10 @@
 import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, Trade } from "../model/model";
 import { Strategy } from "./strategy";
-import Prism from '../prism';
+import OrderClient from '../processes/strategies/OrderClient';
+import * as niftyQuoteHistory from '../processes/strategies/niftyQuoteHistory';
 import { CALL, PUT } from '../constants';
 import configService from '../prism/ConfigService';
-import Monitor from '../monitor';
 
 const round = (num: number) => Math.round(num * 100) / 100;
 
@@ -119,6 +119,11 @@ export default class RateOfChangeStrategy extends Strategy {
         return this.contract !== null && this.contract.token === quote.token;
     }
 
+    reset(): void {
+        super.reset();
+        this.contract = null;
+    }
+
     async processNiftyQuote(quote: NiftyQuote) {
         const config = configService.getStrategyConfig('RateOfChangeStrategy');
 
@@ -183,16 +188,16 @@ export default class RateOfChangeStrategy extends Strategy {
 
     private async executeTrade(quote: NiftyQuote, right: string, pointsChange: number) {
         const config = configService.getStrategyConfig('RateOfChangeStrategy');
-        const prism = Prism.getInstance();
+        const orderClient = OrderClient.getInstance();
 
-        const contract = await prism.getContractByPriceRange(right);
+        const contract = await orderClient.getContractByPriceRange(this.userId, right);
         if (!contract) {
             Log.log('[RoC] No contract found in price range');
             this.contract = null;
             return;
         }
 
-        const token = await prism.getToken(contract);
+        const token = await orderClient.getToken(this.userId, contract);
         Log.log('Token for contract ', contract, ': ', token)
 
         Log.log(`[RoC] TRIGGERED: ${right} at NIFTY=${quote.ltp} PointsChange=${round(pointsChange)}`);
@@ -208,13 +213,13 @@ export default class RateOfChangeStrategy extends Strategy {
     }
 
     private calculatePointsChange(numberOfDatapoints: number): number {
-        const recentQuotes = Monitor.getInstance().getRecentNiftyQuotes(numberOfDatapoints);
+        const recentQuotes = niftyQuoteHistory.getRecent(numberOfDatapoints);
         if (recentQuotes.length < numberOfDatapoints) return 0;
         return recentQuotes[0].ltp - recentQuotes[recentQuotes.length - 1].ltp;
     }
 
     private calculateAcceleration(N: number): number {
-        const quotes = Monitor.getInstance().getRecentNiftyQuotes(2 * N);
+        const quotes = niftyQuoteHistory.getRecent(2 * N);
         if (quotes.length < 2 * N) return 0;
         const velocityCurrent  = quotes[0].ltp     - quotes[N - 1].ltp;
         const velocityPrevious = quotes[N].ltp     - quotes[2 * N - 1].ltp;

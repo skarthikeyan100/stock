@@ -7,6 +7,7 @@ import RulesPage from './pages/RulesPage';
 import TradingPage from './pages/TradingPage';
 import AdminPage from './pages/AdminPage';
 import ProfilePage from './pages/ProfilePage';
+import PayoutsPage from './pages/PayoutsPage';
 import { Spinner } from 'react-bootstrap';
 import './App.css';
 
@@ -45,6 +46,7 @@ export default function App() {
               }
             />
             <Route path="/app/profile" element={<RequireAuth><ProfilePage /></RequireAuth>} />
+            <Route path="/app/payouts" element={<RequireAuth><PayoutsPage /></RequireAuth>} />
             <Route
               path="/app/admin"
               element={

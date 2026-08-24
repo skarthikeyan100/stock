@@ -5,6 +5,8 @@ settings:
   stopLossPriceDiff: 11
   trailingDistance: 4
   cooldownSeconds: 0
+  safetyBufferAmount: 5000
+  consistencyLimitPercent: 40
 strategies:
   - type: SentimentStrategy
     enabled: false

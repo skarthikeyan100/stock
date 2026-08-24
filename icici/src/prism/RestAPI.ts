@@ -4,11 +4,18 @@ import Log from '../util/Log';
 import axios from 'axios';
 import sha256 from 'crypto-js';
 import fs from 'fs';
+import path from 'path';
 
 import Config from './config';
 import WS from './WebSocket'
 import MockAPI from './MockAPI';
 import { MOCK_BROKER, MOCK_QUOTES } from '../constants';
+
+// __dirname-relative (repo root), matching ANT's/Zerodha's session file
+// resolution - previously a bare 'userToken.txt' resolved against
+// process.cwd(), which silently broke if any two processes launched from
+// different working directories (see src/orchestrator.ts's explicit cwd fix).
+const TOKEN_FILE = path.join(__dirname, '../../userToken.txt');
 
 class NorenRestApi {
 
@@ -57,17 +64,7 @@ class NorenRestApi {
   constructor() {
     this.endpoint = Config.endpoint;
 
-    // Restore a still-valid (~24h) access token across restarts, matching
-    // the ANT/Zerodha session-loading pattern — otherwise REST calls go out
-    // unauthenticated until a fresh login, even though userToken.txt is fine.
-    if (fs.existsSync('userToken.txt')) {
-      const savedToken = fs.readFileSync('userToken.txt', 'utf8').trim();
-      if (savedToken) {
-        this.userToken = savedToken;
-        this.accessToken = savedToken;
-        Log.log('Restored Shoonya access token from userToken.txt');
-      }
-    }
+    this.reloadToken();
 
     axios.interceptors.request.use(req => {
       console.log(`[REQ] ${req.method?.toUpperCase()} ${req.url}`, req.data);
@@ -93,16 +90,30 @@ class NorenRestApi {
 
   }
 
+  // Public re-read hook: `order` calls this after `frontend` completes a fresh
+  // OAuth login in a different process, so this already-running singleton picks
+  // up the new token without a restart (see reloadSession in orderProcess.ts).
+  reloadToken = () => {
+    if (fs.existsSync(TOKEN_FILE)) {
+      const savedToken = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+      if (savedToken) {
+        this.userToken = savedToken;
+        this.accessToken = savedToken;
+        Log.log('Restored Shoonya access token from userToken.txt');
+      }
+    }
+  }
+
   getUserToken = async () => {
     const { readFile } = require('fs/promises')
-    const userToken = readFile('userToken.txt', 'utf8')
+    const userToken = readFile(TOKEN_FILE, 'utf8')
     return userToken;
   }
 
   setUserToken = async (token) => {
     const { writeFile } = require('fs/promises')
     Log.log('Writing token ', token)
-    await writeFile("userToken.txt", token);
+    await writeFile(TOKEN_FILE, token);
   }
 
   post_request = async (route, params) => {

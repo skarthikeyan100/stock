@@ -1,9 +1,9 @@
 import Log from '../util/Log';
 import { NIFTY, MOCK_BROKER, CALL, PUT } from "../constants";
 import configService from '../prism/ConfigService';
-import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
+import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, SensexQuote, Trade } from "../model/model";
 import moment from "moment";
-import Monitor from "../monitor";
+import OrderClient from "../processes/strategies/OrderClient";
 
 export enum Outcome {
     WAIT = "WAIT",
@@ -68,6 +68,11 @@ export abstract class Strategy {
         Log.log(`[${this.userId}] Outcome=${outcome} PnL=${Math.round(pnl)} | W=${this.wins} L=${this.losses} T=${this.timeouts} WinRate=${winRate}% TotalPnL=${Math.round(this.totalPnL)}`);
     }
 
+    reset(): void {
+        this.lastTriggerTime = 0;
+        Log.log(`[${this.userId}] Reset via admin request`);
+    }
+
     getStats() {
         const total = this.wins + this.losses;
         return {
@@ -87,10 +92,6 @@ export abstract class Strategy {
         this.userId = userId || this.constructor.name;
     }
 
-    getUserContext() {
-        return Monitor.getInstance().getUserContext(this.userId);
-    }
-
     abstract receive(oldStats, newStats);
     abstract processNiftyQuote(quote: NiftyQuote);
     abstract processOptionQuote(quote: OptionQuote);
@@ -98,6 +99,8 @@ export abstract class Strategy {
     canHandleOptionQuote(quote: OptionQuote): boolean {
         return false;
     }
+
+    async processSensexQuote(quote: SensexQuote): Promise<void> {}
 
     isTimeInRange(): boolean {
         if (MOCK_BROKER) return true;  // bypass time check in mock/test mode
@@ -113,29 +116,44 @@ export abstract class Strategy {
     }
 
     async addOrder(price, right, quantity?: number) {
-        const order = await Monitor.getInstance().requestBuyIndex(this.userId, NIFTY, price, right, quantity);
-        if (!order) return null;
-        Log.log(this.userId, ' In add order ', order)
-        this.orderMap.set(order.contract, order);
-        this.ordered = true;
-        return {
-            contract: order.contract,
-            price: order.price,
-            qty: order.qty,
-            token: order.token
+        try {
+            const monitorConfig = this.getMonitorConfig();
+            const trade = await OrderClient.getInstance().buyIndex(this.userId, {
+                niftyLtp: price,
+                right,
+                quantity,
+                targetPoints: monitorConfig?.targetPoints,
+                stopLossPoints: monitorConfig?.stopLossPoints,
+            });
+            Log.log(this.userId, ' In add order ', trade)
+            const order = { contract: trade.tsym, price: trade.price, qty: trade.quantity, token: trade.token };
+            this.orderMap.set(order.contract, order as any);
+            this.ordered = true;
+            return order;
+        } catch (e) {
+            Log.log(this.userId, ' addOrder failed: ', e);
+            return null;
         }
     }
 
+    // buyContract/sellContract take an already-resolved broker contract symbol -
+    // the Prism/Shoonya path (src/processes/order/prismExecutor.ts), used by
+    // strategies that pick their own contract (e.g. via getContractByPriceRange)
+    // rather than an ATM-by-LTP lookup.
     async buyContract(contract: string, quantity: number, price?: number ): Promise<OrderInfo | null> {
         Log.log('Buy Contract by ', this.userId, ' for contract: ', contract)
-        const response = await Monitor.getInstance().requestBuy(this.userId, contract, quantity, price);
-        return response;
+        try {
+            const response = await OrderClient.getInstance().buyContract(this.userId, contract, quantity, price);
+            return { contract: response.contract, price: response.price, qty: response.qty, token: response.token } as any;
+        } catch (e) {
+            Log.log(this.userId, ' buyContract failed: ', e);
+            return null;
+        }
     }
 
     async sellContract(contract: string, quantity: number, price?: number ) {
         Log.log('Sell Contract by ', this.userId, ' for contract: ', contract, ' for the price ', price)
-        const response = await Monitor.getInstance().requestSell(this.userId, contract, quantity, price);
-        return response;
+        return await OrderClient.getInstance().sellContract(this.userId, contract, quantity, price);
     }
 
     updateTrade = async (trade: Trade) : Promise<void> => {

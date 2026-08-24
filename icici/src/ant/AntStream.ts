@@ -5,7 +5,7 @@ import ANT from './ANT';
 import myEmitter from '../tools/emitter';
 import Mongo from '../tools/mongo';
 import configService from '../prism/ConfigService';
-import { NiftyQuote, OptionQuote } from '../model/model';
+import { NiftyQuote, OptionQuote, SensexQuote } from '../model/model';
 import Monitor from '../monitor';
 import Decision from '../decision';
 
@@ -16,18 +16,16 @@ class AntStream {
 
   private TARGET_INSTRUMENTS = [
     { exch: 'NSE', token: '26000' }, // NIFTY index
-    { exch: 'NFO', token: '45105' }, // NIFTY 24350 PE 18-Aug-26
-    { exch: 'BFO', token: '855410' }, // SENSEX 77400 PE 20-Aug-26
+    { exch: 'BSE', token: '1' }, // SENSEX index
   ];
 
   private INDEX_TOKEN = '26000';
-  private OPTION_TOKENS = new Set(
-    this.TARGET_INSTRUMENTS.filter((i) => i.token !== this.INDEX_TOKEN).map((i) => i.token)
-  );
+  private SENSEX_TOKEN = '1';
 
   // Per-position option tokens added/removed dynamically as trades open/close
   // (mirrors what Prism.subscribeOption/unsubscribeOption used to do over its
-  // own WS) - kept separate from the fixed demo/test OPTION_TOKENS above.
+  // own WS) - the only option tokens AntStream ever subscribes to; the fixed
+  // TARGET_INSTRUMENTS above are indices only.
   private dynamicOptionTokens: Set<string> = new Set();
 
   static getInstance(): AntStream {
@@ -79,7 +77,6 @@ class AntStream {
       });
 
       this.ws.on('quote', (_event, data) => {
-        Log.log('[AntStream] Quote:', data);
         myEmitter.emit('ant-quote', data);
         this.persistQuote(data);
         this.broadcastQuote(data);
@@ -114,7 +111,11 @@ class AntStream {
         await Monitor.getInstance().onNiftyQuote(quote);
         Decision.getInstance().decidePurchase(quote);
         myEmitter.emit('nifty', { nifty: quote });
-      } else if (this.OPTION_TOKENS.has(data.tk) || this.dynamicOptionTokens.has(data.tk)) {
+      } else if (data.tk === this.SENSEX_TOKEN) {
+        const quote = SensexQuote.fromAnt(data);
+        await Monitor.getInstance().onSensexQuote(quote);
+        myEmitter.emit('sensex', { sensex: quote });
+      } else if (this.dynamicOptionTokens.has(data.tk)) {
         await Monitor.getInstance().updateQuote(OptionQuote.fromAnt(data));
       }
     } catch (e) {
@@ -135,7 +136,9 @@ class AntStream {
     try {
       if (data.tk === this.INDEX_TOKEN) {
         Mongo.getInstance()?.insert(NiftyQuote.fromAnt(data));
-      } else if (this.OPTION_TOKENS.has(data.tk) || this.dynamicOptionTokens.has(data.tk)) {
+      } else if (data.tk === this.SENSEX_TOKEN) {
+        Mongo.getInstance()?.insert(SensexQuote.fromAnt(data));
+      } else if (this.dynamicOptionTokens.has(data.tk)) {
         Mongo.getInstance()?.insert(OptionQuote.fromAnt(data));
       }
     } catch (e) {

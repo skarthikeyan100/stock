@@ -2,7 +2,7 @@ import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
-import Prism from '../prism'
+import OrderClient from '../processes/strategies/OrderClient'
 import { NIFTY, CALL, PUT, BOUGHT } from '../constants'
 import myEmitter from '../tools/emitter';
 import { TouchSequence } from "selenium-webdriver";
@@ -170,7 +170,7 @@ export default class IntermittentStrategy extends Strategy {
         Log.log(this.id, 'buyIndex called with right: ', right, ' and ltp is ', ltp);
         const quantity = configService.getStrategyConfig('IntermittentStrategy').quantity;
 
-        const contract = await Prism.getInstance().getContractByPriceRange(right)
+        const contract = await OrderClient.getInstance().getContractByPriceRange(this.userId, right)
         this.contract = new Contract(this, contract);
         const response = await super.buyContract(contract, quantity)
         Log.log('IntermittentStrategy: buyContract response: ', response)
@@ -185,11 +185,17 @@ export default class IntermittentStrategy extends Strategy {
     canHandleOptionQuote = (quote: OptionQuote): boolean => {
         let handled = false;
         const token = quote.token
-        
+
         if (this.contract?.canHandleOptionQuote) {
             handled = this.contract.canHandleOptionQuote(token)
         }
         return handled;
+    }
+
+    reset(): void {
+        super.reset();
+        this.contract?.clear?.();
+        this.ordered = false;
     }
 
     processOptionQuote = async (quote: OptionQuote) => {

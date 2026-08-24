@@ -6,6 +6,9 @@ This project operates with full permissions in accept edits mode. No permission 
 - Reading any files in the project or referenced directories
 - Editing project files
 
+## Pending Work
+**Always check [ToDo.md](./ToDo.md) at the start of a session** — it's a live, hook-maintained snapshot of pending/in-progress work (not a historical log), and may contain follow-ups from a prior session that are directly relevant to whatever you're about to do (e.g. a live-verification step blocked on market hours). Once an item in `ToDo.md` is completed/resolved, remove it from the file rather than leaving it marked done — the file should only ever list what's still pending.
+
 ## Overview
 This is a Node.js/TypeScript-based options trading platform built for automated trading strategies using ICICI Direct APIs. The system supports multiple users, real-time market data streaming, and automated trade execution with risk management.
 

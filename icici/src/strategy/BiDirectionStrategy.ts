@@ -2,7 +2,7 @@ import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
-import Prism from '../prism'
+import OrderClient from '../processes/strategies/OrderClient'
 import { NIFTY, CALL, PUT, BOUGHT } from '../constants'
 import myEmitter from '../tools/emitter';
 import { TouchSequence } from "selenium-webdriver";
@@ -307,7 +307,7 @@ export default class BiDirectionStrategy extends Strategy {
             Log.log('This is a contra order for PUT with additional quantity: ', additionalQuantity)
         }
         if (!this.isPutActive) {
-            const contract = await Prism.getInstance().getContractByPriceRange(PUT)
+            const contract = await OrderClient.getInstance().getContractByPriceRange(this.userId, PUT)
             this.put = new Contract(this, contract)
             const putInfo: OrderInfo = await super.buyContract(contract, initialQuantity)
             Log.log('After ordering this.put: ', putInfo)
@@ -317,7 +317,6 @@ export default class BiDirectionStrategy extends Strategy {
             }
         } else {
             await super.buyContract(this.put.contract, additionalQuantity)
-            
         }
     }
 
@@ -326,7 +325,7 @@ export default class BiDirectionStrategy extends Strategy {
             Log.log('This is a contra order for CALL with additional quantity: ', additionalQuantity)
         }
         if (!this.isCallActive) {
-            const contract = await Prism.getInstance().getContractByPriceRange(CALL)
+            const contract = await OrderClient.getInstance().getContractByPriceRange(this.userId, CALL)
             this.call = new Contract(this, contract)
             const callInfo: OrderInfo = await super.buyContract(contract, initialQuantity)
             Log.log('After ordering this.call: ', callInfo)
@@ -336,7 +335,6 @@ export default class BiDirectionStrategy extends Strategy {
             }
         } else {
             await super.buyContract(this.call.contract, additionalQuantity)
-            
         }
     }
 
@@ -375,13 +373,12 @@ export default class BiDirectionStrategy extends Strategy {
     closeStrategy = async () => {
         Log.log('BiDirectionStrategy: closeStrategy called')
         if (this.call && this.call.contract) {
-            await Prism.getInstance().sell(this.call.contract, this.call.qty, this.call.price)
+            await OrderClient.getInstance().sellContract(this.userId, this.call.contract, this.call.qty, this.call.price)
         }
 
         if (this.put && this.put.contract) {
-            await Prism.getInstance().sell(this.put.contract, this.put.qty, this.put.price)
+            await OrderClient.getInstance().sellContract(this.userId, this.put.contract, this.put.qty, this.put.price)
         }
-
 
         this.call.clear()
         this.put.clear()

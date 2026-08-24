@@ -2,7 +2,7 @@ import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
-import Prism from '../prism'
+import OrderClient from '../processes/strategies/OrderClient'
 import indexMap from '../nse_index';
 import { NIFTY, CALL, PUT, BOUGHT } from '../constants'
 import myEmitter from '../tools/emitter';
@@ -116,7 +116,7 @@ export default class Minutes5Decision extends Strategy {
                         })
                         Log.log("Available Contract: ", availableContract)
                         if (availableContract) {
-                            const optionQuote = await Prism.getInstance().getStockOptionQuote(availableContract.contract)
+                            const optionQuote = await OrderClient.getInstance().getStockOptionQuote(this.userId, availableContract.contract)
                             const differenceInPrice = round(availableContract.price - optionQuote.ltp);
                             Log.log('availableContract.price: ', availableContract.price, ' optionQuote.ltp: ', optionQuote.ltp, ' Difference: ', differenceInPrice)
                             if ( differenceInPrice >= differenceThreshold) {
@@ -141,8 +141,7 @@ export default class Minutes5Decision extends Strategy {
 
     getTradersDirection = async () => {
         Log.log('[K} Verify ', this.contracts)
-        const ltp = (await Prism.getInstance().getNiftyQuote()).ltp
-        await Prism.getInstance().cacheFile();
+        const ltp = (await OrderClient.getInstance().getNiftyQuote(this.userId)).ltp
         const nseIndex = indexMap.get('NIFTY' as string);
         const contracts = await this.getContracts(ltp);
        
@@ -151,7 +150,7 @@ export default class Minutes5Decision extends Strategy {
 
 
         for(var contract of contracts) {
-            const optionQuote = await Prism.getInstance().getOptionQuote(contract);
+            const optionQuote = await OrderClient.getInstance().getOptionQuote(this.userId, contract);
             var strikePrice = contract.substring(13)
             var callorput = contract.substring(12, 13)
             var premium = optionQuote.ltp

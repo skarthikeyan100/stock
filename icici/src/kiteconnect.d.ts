@@ -84,5 +84,7 @@ declare module 'kiteconnect' {
     getHoldings(): Promise<any[]>;
 
     placeGTT(params: any): Promise<{ trigger_id: number }>;
+    modifyGTT(triggerId: number, params: any): Promise<{ trigger_id: number }>;
+    getGTTs(): Promise<any[]>;
   }
 }

@@ -13,7 +13,7 @@ import util from 'util';
 const spawn = require('child_process').spawn;
 import Browser from './trade/browser';
 import Decision from './decision';
-import Monitor from './monitor';
+import bookkeeping from './processes/order/bookkeeping';
 import AntStream from './ant/AntStream';
 import strategies from './strategy/strategies';
 
@@ -130,10 +130,8 @@ export default class Prism {
     };
 
     exhausted = () => {
-        const monitor = Monitor.getInstance();
-
         // Any trade still open when data runs out is a timeout
-        for (const trade of monitor.trades) {
+        for (const trade of bookkeeping.trades) {
             const strategy = strategies.getList().find(s => s.userId === trade.user);
             if (strategy) {
                 const pnl = (trade.lastTradePrice - trade.price) * trade.quantity;
@@ -155,8 +153,8 @@ export default class Prism {
             s.timeouts > 0 ? String(s.timeoutPnL) : '-',
         ]);
 
-        // Also add a Monitor cumulative row per user
-        monitor.userPnL.forEach((pnl, user) => {
+        // Also add a cumulative row per user
+        bookkeeping.userPnL.forEach((pnl, user) => {
             if (!allStats.find(s => s.userId === user)) {
                 rows.push([user, '-', '-', '-', '-', '-', String(Math.round(pnl)), '-']);
             }
@@ -216,7 +214,7 @@ export default class Prism {
 
     
     order = async (data) => {
-        await Monitor.getInstance().updateTrade(data);
+        await bookkeeping.updateTradeFromPrismMessage(data);
     };
 
     getChecksum(timestamp, data): String {
@@ -265,14 +263,14 @@ export default class Prism {
         await NorenRestApi.loginWithGenAcsTok(code);
         this.niftyQuote = await this.getQuote(NIFTY);
         Log.log('Logged in with GenAcsTok')
-        this.connect();
+        this.connect().catch((e) => Log.log('[Prism] connect after loginWithGenAcsTok failed:', e));
     }
 
     login = async (otp: string) => {
         await NorenRestApi.login(otp);
         this.niftyQuote = await this.getQuote(NIFTY);
         Log.log('Logged in')
-        this.connect();
+        this.connect().catch((e) => Log.log('[Prism] connect after login failed:', e));
     }
 
     getOtp = async () => {
@@ -1132,13 +1130,13 @@ export default class Prism {
             Log.log('Place Order ', order);
 
             if (user) {
-                Monitor.getInstance().trackPendingOrder(order.tsym, user);
+                bookkeeping.trackPendingOrder(order.tsym, user);
             }
             const response = await NorenRestApi.place_order(order) as any;
             Log.log('User: ', user, 'Response from place_order: ', response)
             if (user && response?.norenordno) {
-                Monitor.getInstance().trackOrder(response.norenordno, user);
-                Monitor.getInstance().clearPendingOrder(order.tsym, user);
+                bookkeeping.trackOrder(response.norenordno, user);
+                bookkeeping.clearPendingOrder(order.tsym, user);
             }
             const token = await this.getToken(order.tsym);
             if (!MOCK_BROKER) {
@@ -1183,12 +1181,12 @@ export default class Prism {
 
             Log.log('Square off Order ', order);
             if (user) {
-                Monitor.getInstance().trackPendingOrder(tsym, user);
+                bookkeeping.trackPendingOrder(tsym, user);
             }
             const orderReply = await NorenRestApi.place_order(order) as any;
             if (user && orderReply?.data?.norenordno) {
-                Monitor.getInstance().trackOrder(orderReply.data.norenordno, user);
-                Monitor.getInstance().clearPendingOrder(tsym, user);
+                bookkeeping.trackOrder(orderReply.data.norenordno, user);
+                bookkeeping.clearPendingOrder(tsym, user);
             }
         } catch (e) {
             Log.log(`[Prism] squareOffOrder failed for token ${token}:`, e?.message ?? e);
@@ -1217,7 +1215,7 @@ export default class Prism {
     }
 
     getTradeList = () => {
-        return Monitor.getInstance().trades;
+        return bookkeeping.trades;
     }
 
 
@@ -1239,8 +1237,8 @@ export default class Prism {
                     trades.push(trade)
                 }
         });
-        Monitor.getInstance().refreshTrades(trades);
-        return Monitor.getInstance().trades;
+        bookkeeping.refreshTrades(trades);
+        return bookkeeping.trades;
     }
 }
 

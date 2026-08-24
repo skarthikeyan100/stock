@@ -30,6 +30,12 @@ class AntContractMaster {
     NIFTY: { exch: 'NSE', token: '26000' },
   };
 
+  // Matches ZerodhaContractMaster's strike-rounding table.
+  static readonly STRIKE_STEP: Record<string, number> = {
+    NIFTY: 50,
+    SENSEX: 100,
+  };
+
   static getInstance(): AntContractMaster {
     if (!AntContractMaster.instance) {
       AntContractMaster.instance = new AntContractMaster();
@@ -83,6 +89,71 @@ class AntContractMaster {
       token: record.Token,
       exch: record.Exch,
       tradingSymbol,
+      lotSize: record['Lot Size'],
+    };
+  }
+
+  // ATM-by-LTP resolution: rounds to the nearest strike step for the given
+  // symbol, then delegates to findNearestExpiryOption. Mirrors
+  // ZerodhaContractMaster.findATMOption.
+  findATMOption(underlyingLtp: number, optionType: string, symbol: string = 'NIFTY'): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
+    const step = AntContractMaster.STRIKE_STEP[symbol] ?? 50;
+    const atmStrike = Math.round(underlyingLtp / step) * step;
+    const exch = symbol === 'SENSEX' ? 'BFO' : 'NFO';
+    return this.findNearestExpiryOption({ symbol, exch, strike: atmStrike, optionType, expiryOffset: 0 });
+  }
+
+  // Exact (symbol, strike, expiry, optionType) resolution, expiry given as a
+  // date string (not epoch-ms) - mirrors ZerodhaContractMaster.findExactOption's
+  // caller contract. Converts internally to findOption's epoch-ms comparison.
+  findExactOption(params: { symbol: string; strike: number; expiry: string; optionType: string }): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
+    const exch = params.symbol === 'SENSEX' ? 'BFO' : 'NFO';
+    const expiryEpochMs = new Date(params.expiry).getTime();
+    return this.findOption({
+      symbol: params.symbol,
+      exch,
+      strike: String(params.strike),
+      optionType: params.optionType,
+      expiryEpochMs,
+    });
+  }
+
+  // Canonical-symbol resolution: exact (symbol, strike, optionType), no
+  // expiry given - resolves to the nearest expiry (expiryOffset=0) or the
+  // Nth-nearest (expiryOffset=1 => "next", etc), same shape as
+  // ZerodhaContractMaster.findNearestExpiryOption. Now wired to the ANT order
+  // path (see src/processes/order/antExecutor.ts).
+  findNearestExpiryOption(params: {
+    symbol: string;
+    exch: string;
+    strike: number;
+    optionType: string;
+    expiryOffset?: number;
+  }): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
+    const { symbol, exch, strike, optionType, expiryOffset = 0 } = params;
+    const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
+    const now = Date.now();
+
+    const candidates = cache
+      .filter(
+        (r) =>
+          r.Symbol === symbol &&
+          r.Exch === exch &&
+          Number(r['Strike Price']) === strike &&
+          r['Option Type'] === optionType &&
+          parseInt(r['Expiry Date']) >= now
+      )
+      .sort((a, b) => parseInt(a['Expiry Date']) - parseInt(b['Expiry Date']));
+
+    const record = candidates[expiryOffset];
+    if (!record) {
+      throw new Error(`No ${symbol} ${exch} ${optionType} contract found for strike ${strike} (expiryOffset=${expiryOffset})`);
+    }
+
+    return {
+      token: record.Token,
+      exch: record.Exch,
+      tradingSymbol: record['Trading Symbol'] || record.Trading || '',
       lotSize: record['Lot Size'],
     };
   }

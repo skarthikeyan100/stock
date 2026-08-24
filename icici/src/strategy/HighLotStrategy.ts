@@ -2,7 +2,6 @@ import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, Trade } from "../model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
-import Prism from '../prism'
 import { NIFTY, CALL, PUT } from '../constants'
 
 export enum Outcome {
@@ -29,18 +28,10 @@ class Order {
     active: boolean = false
 
     BUY = 'Buy'
-    SELL = 'Sell'    
+    SELL = 'Sell'
 
-
-    async addOrder(price, right, quantity?: number) {
-        const order = await Prism.getInstance().buyIndex({ index: NIFTY, ltp: price, right, qty: quantity });
-        return {
-            contract: order.contract,
-            price: order.price,
-            qty: order.qty,
-            token: order.token
-        }
-    }
+    // (this class's own addOrder was dead code - callers use Strategy.addOrder
+    // via `this.addOrder(...)` on HighLotStrategy itself, not on this helper.)
 
     initialize(order: any) {
         this.contract = order.contract;

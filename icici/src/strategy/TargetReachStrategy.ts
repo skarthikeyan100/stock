@@ -2,10 +2,10 @@ import Log from '../util/Log';
 import { Strategy } from './strategy';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import configService from '../prism/ConfigService';
-import Zerodha from '../zerodha/Zerodha';
-import ZerodhaContractMaster from '../zerodha/ZerodhaContractMaster';
+import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
-import Monitor from '../monitor';
+import { watchToken, unwatchToken } from '../processes/strategies/tokenRouter';
+import { CALL, PUT } from '../constants';
 
 const round = (num: number) => Math.round(num * 100) / 100;
 
@@ -18,7 +18,7 @@ const round = (num: number) => Math.round(num * 100) / 100;
 // for that token (see Monitor.watchToken) so it receives live ticks before it
 // holds any position - normal quote routing only fires for tokens with an
 // open trade. Reuses GoodMorningStrategy's Zerodha entry+GTT exit; fires at
-// most once (the server restarts daily, so no reset logic is needed).
+// most once per arming, until reset() re-arms the watch (see GET /strategies/:type/reset).
 export default class TargetReachStrategy extends Strategy {
     private fired = false;
     private symbol: string;
@@ -45,7 +45,7 @@ export default class TargetReachStrategy extends Strategy {
                     expiryEpochMs: new Date(this.expiry).getTime(),
                 });
                 this.token = contract.token;
-                Monitor.getInstance().watchToken(this.token, this);
+                watchToken(this.token, this);
                 Log.log(`[TargetReach] Watching ${this.symbol} ${this.strike} ${this.optionType} exp ${this.expiry} token=${this.token}`);
             } catch (e) {
                 Log.log('[TargetReach] Failed to resolve contract - disabling:', e);
@@ -62,51 +62,39 @@ export default class TargetReachStrategy extends Strategy {
         return !this.fired && quote.token === this.token;
     }
 
+    reset(): void {
+        super.reset();
+        if (this.fired && this.token) {
+            watchToken(this.token, this); // re-arm the watch that fired() unregistered
+        }
+        this.fired = false;
+    }
+
     async processOptionQuote(quote: OptionQuote) {
         if (!this.enabled || this.fired || !quote?.ltp) return;
 
         const config = configService.getStrategyConfig('TargetReachStrategy');
         if (quote.ltp >= config.targetPrice) {
             this.fired = true;
-            Monitor.getInstance().unwatchToken(this.token, this);
+            unwatchToken(this.token, this);
             Log.log(`[TargetReach] Target reached: ${quote.ltp} >= ${config.targetPrice} - buying`);
             await this.executeTrade(config);
         }
     }
 
     private async executeTrade(config: any) {
-        const zerodha = Zerodha.getInstance();
-
-        if (!(await zerodha.hasValidSession())) {
-            Log.log('[TargetReach] Zerodha session not active - complete /kite/login first. Skipping trade.');
-            return;
-        }
-
         try {
-            const contract = await ZerodhaContractMaster.getInstance().findExactOption(this.strike, this.expiry, this.optionType);
-
-            Log.log(`[TargetReach] Buying ${contract.tradingSymbol} qty=${config.quantity}`);
-            const { orderId } = await zerodha.buyOption(contract.tradingSymbol, config.quantity);
-
-            const entryPrice = await zerodha.getFillPrice(orderId);
-            Log.log(`[TargetReach] Filled ${contract.tradingSymbol} at ${entryPrice}`);
-
-            const triggerId = await zerodha.placeTargetStopLossGTT(
-                contract.tradingSymbol,
-                'NFO',
-                config.quantity,
-                entryPrice,
-                config.targetPoints,
-                config.stopLossPoints,
-                entryPrice
-            );
-
+            const trade = await OrderClient.getInstance().buyIndex(this.userId, {
+                niftyLtp: 0, // unused when strike/expiry are set (exact-contract path)
+                right: this.optionType === 'CE' ? CALL : PUT,
+                quantity: config.quantity,
+                targetPoints: config.targetPoints,
+                stopLossPoints: config.stopLossPoints,
+                strike: this.strike,
+                expiry: this.expiry,
+            });
             if (config.logEnabled) {
-                Log.log(
-                    `[TargetReach] GTT placed (id=${triggerId}) target=${round(entryPrice + config.targetPoints)} stopLoss=${round(
-                        entryPrice - config.stopLossPoints
-                    )}`
-                );
+                Log.log(`[TargetReach] Bought ${trade.tsym} qty=${config.quantity} at ${trade.price} (GTT placed by order process)`);
             }
         } catch (e) {
             Log.log('[TargetReach] executeTrade failed:', e);

@@ -1,8 +1,8 @@
-[08:53:33] [Object.<anonymous>] Hello
-[08:53:33] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
-[08:53:33] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
-[08:53:33] [new NorenRestApi] Restored Shoonya access token from userToken.txt
-[08:53:33] [ConfigService.loadConfig] Config Updated: {
+[11:54:15] [Object.<anonymous>] Hello
+[11:54:15] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
+[11:54:15] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
+[11:54:15] [new NorenRestApi] Restored Shoonya access token from userToken.txt
+[11:54:15] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -10,7 +10,7 @@
     "stopLossPriceDiff": 11,
     "trailingDistance": 4,
     "cooldownSeconds": 0,
-    "logQuotes": true
+    "logQuotes": false
   },
   "strategies": [
     {
@@ -84,11 +84,15 @@
     },
     {
       "type": "GoodMorningStrategy",
-      "enabled": false,
-      "quantity": 1755,
+      "enabled": true,
+      "quantity": 650,
       "targetPoints": 10,
-      "stopLossPoints": 15,
-      "logEnabled": true
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "previousClose": 24078,
+      "minMovementPoints": 10
     },
     {
       "type": "SupportResistanceStrategy",
@@ -115,9 +119,9 @@
     }
   ]
 }
-Tue, 18 Aug 2026 03:23:33 GMT body-parser deprecated bodyParser: use individual json/urlencoded middlewares at dist/server.js:114:35
-Tue, 18 Aug 2026 03:23:33 GMT body-parser deprecated undefined extended: provide extended option at node_modules/body-parser/index.js:104:29
-[08:53:33] [Object.<anonymous>] [
+Thu, 20 Aug 2026 06:24:15 GMT body-parser deprecated bodyParser: use individual json/urlencoded middlewares at dist/server.js:119:35
+Thu, 20 Aug 2026 06:24:15 GMT body-parser deprecated undefined extended: provide extended option at node_modules/body-parser/index.js:104:29
+[11:54:15] [Object.<anonymous>] [
   "/auth/login",
   "/auth/me",
   "/auth/logout",
@@ -154,6 +158,7 @@ Tue, 18 Aug 2026 03:23:33 GMT body-parser deprecated undefined extended: provide
   "/start",
   "/stats",
   "/strategies",
+  "/strategies/:type/reset",
   "/addTrade",
   "/openTrades",
   "/prism/order/buy",
@@ -179,13 +184,13 @@ Tue, 18 Aug 2026 03:23:33 GMT body-parser deprecated undefined extended: provide
   "/config",
   "/config"
 ]
-[08:53:33] [Server.<anonymous>] Icici server started 
-[08:53:33] [Mongo.init] Mongo is initialized
-[08:53:33] [Config._processFile] lot count: 1
-[08:53:33] [Config._processFile] Auto Trade: false
-[08:53:33] [Mongo._init] Mongo is initialized
-[08:53:33] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
-[08:53:33] [Strategies.initialize] [] expandedConfigArray:  [
+[11:54:15] [Server.<anonymous>] Icici server started 
+[11:54:15] [Mongo.init] Mongo is initialized
+[11:54:15] [Config._processFile] lot count: 1
+[11:54:15] [Config._processFile] Auto Trade: false
+[11:54:15] [Mongo._init] Mongo is initialized
+[11:54:15] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
+[11:54:15] [Strategies.initialize] [] expandedConfigArray:  [
   {
     "type": "SentimentStrategy",
     "enabled": false,
@@ -258,11 +263,15 @@ Tue, 18 Aug 2026 03:23:33 GMT body-parser deprecated undefined extended: provide
   },
   {
     "type": "GoodMorningStrategy",
-    "enabled": false,
-    "quantity": 1755,
+    "enabled": true,
+    "quantity": 650,
     "targetPoints": 10,
-    "stopLossPoints": 15,
-    "logEnabled": true
+    "stopLossPoints": 10,
+    "logEnabled": true,
+    "snapshotTime": "09:40",
+    "confirmTime": "09:45",
+    "previousClose": 24078,
+    "minMovementPoints": 10
   },
   {
     "type": "SupportResistanceStrategy",
@@ -288,251 +297,156 @@ Tue, 18 Aug 2026 03:23:33 GMT body-parser deprecated undefined extended: provide
     "logEnabled": true
   }
 ]
-[08:53:33] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
-[08:53:33] [new RuleBasedStrategy] [RuleBased:Rule-RSI_5_70_30] Initialized with indicators: RSI_5_70_30
-[08:53:33] [Monitor.registerStrategy] [Monitor] Registered strategy: SentimentStrategy
-[08:53:33] [Monitor.registerStrategy] [Monitor] Registered strategy: BuySellStrategy
-[08:53:33] [Monitor.registerStrategy] [Monitor] Registered strategy: IntermittentStrategy
-[08:53:33] [Monitor.registerStrategy] [Monitor] Registered strategy: RateOfChangeStrategy
-[08:53:33] [Monitor.registerStrategy] [Monitor] Registered strategy: GapStrategy
-[08:53:33] [Monitor.registerStrategy] [Monitor] Registered strategy: Rule-RSI_5_70_30
-[08:53:33] [Monitor.registerStrategy] [Monitor] Registered strategy: GoodMorningStrategy
-[08:53:33] [Monitor.registerStrategy] [Monitor] Registered strategy: SupportResistanceStrategy
-[08:53:33] [Monitor.registerStrategy] [Monitor] Registered strategy: TargetReachStrategy
-[08:53:33] [Strategies.initialize] [Strategies] Initialized 9 strategies: [
+[11:54:15] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
+[11:54:15] [new RuleBasedStrategy] [RuleBased:Rule-RSI_5_70_30] Initialized with indicators: RSI_5_70_30
+[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: SentimentStrategy
+[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: BuySellStrategy
+[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: IntermittentStrategy
+[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: RateOfChangeStrategy
+[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: GapStrategy
+[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: Rule-RSI_5_70_30
+[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: GoodMorningStrategy
+[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: SupportResistanceStrategy
+[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: TargetReachStrategy
+[11:54:15] [Strategies.initialize] [Strategies] Initialized 9 strategies: [
   "SentimentStrategy(SentimentStrategy, enabled=false)",
   "BuySellStrategy(BuySellStrategy, enabled=false)",
   "IntermittentStrategy(IntermittentStrategy, enabled=false)",
   "RateOfChangeStrategy(RateOfChangeStrategy, enabled=false)",
   "GapStrategy(GapStrategy, enabled=false)",
   "RuleBasedStrategy(Rule-RSI_5_70_30, enabled=false)",
-  "GoodMorningStrategy(GoodMorningStrategy, enabled=false)",
+  "GoodMorningStrategy(GoodMorningStrategy, enabled=true)",
   "SupportResistanceStrategy(SupportResistanceStrategy, enabled=false)",
   "TargetReachStrategy(TargetReachStrategy, enabled=false)"
 ]
-[08:53:33] [Server.<anonymous>] ********************  Threshold:  10
-[08:53:33] [Prism.cacheFile] [Symbols] Loaded 88811 NFO symbols
-[08:54:22] [ANT.loadSession] ANT session loaded from file
-[08:54:22] [ANT.getAuthorizationUrl] Generated ANT Authorization URL: https://ant.aliceblueonline.com/?appcode=voMvjS7seC
-[08:54:22] [/home/karthikeyan/work/icici/dist/server.js:486:23] Redirecting to ANT authorization: https://ant.aliceblueonline.com/?appcode=voMvjS7seC
-[08:54:22] [/home/karthikeyan/work/icici/dist/server.js:415:23] Redirecting to Shoonya authorization: https://api.shoonya.com/OAuthlogin/authorize/oauth?client_id=FA96552_U
-[08:54:22] [Zerodha.loadSession] Zerodha session loaded from file
-[08:54:22] [Zerodha.getLoginURL] Generated Zerodha login URL: https://kite.zerodha.com/connect/login?api_key=8ugdwlq4fz81o218&v=3
-[08:54:22] [/home/karthikeyan/work/icici/dist/server.js:556:23] Redirecting to Zerodha login: https://kite.zerodha.com/connect/login?api_key=8ugdwlq4fz81o218&v=3
-[08:54:25] [/home/karthikeyan/work/icici/dist/server.js:503:23] ANT Callback received - exchanging authCode for token
-[08:54:25] [ANT.exchangeAuthCodeForToken] === ANT Token Exchange Starting ===
-[08:54:25] [ANT.exchangeAuthCodeForToken] userId: 924118
-[08:54:25] [ANT.exchangeAuthCodeForToken] authCode: MUS2VC9PNLGB3EJ1UL4D...
-[08:54:25] [ANT.exchangeAuthCodeForToken] 
---- Step 1: Computing checksum ---
-[08:54:25] [ANT.exchangeAuthCodeForToken] ✓ Checksum computed: 3f1b67a45432e1f5af59...
-[08:54:25] [ANT.exchangeAuthCodeForToken] 
---- Step 2: Exchanging authCode for userSession ---
-[08:54:25] [ANT.exchangeAuthCodeForToken] POST: https://a3.aliceblueonline.com/open-api/od/v1/vendor/getUserDetails
-(node:15985) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
-(Use `node --trace-warnings ...` to show where the warning was created)
-[08:54:25] [ANT.exchangeAuthCodeForToken] Response status: 200
-[08:54:25] [ANT.exchangeAuthCodeForToken] Response data: {
-  "stat": "Ok",
-  "clientId": "924118",
-  "userSession": "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICIyam9lOFVScGxZU3FTcDB3RDNVemVBQkgxYkpmOE4wSDRDMGVVSWhXUVAwIn0.eyJleHAiOjE3OTIyMDQ5NzgsImlhdCI6MTc4NzAyMzQ2NSwianRpIjoib25ydHJ0OmRiYjJiYWU3LWI2OTgtMWM4YS01OWFjLThmNjRjMmU0MWExZiIsImlzcyI6Imh0dHBzOi8vaWRhYXMuYWxpY2VibHVlb25saW5lLmNvbS9pZGFhcy9yZWFsbXMvQWxpY2VCbHVlIiwiYXVkIjoiYWNjb3VudCIsInN1YiI6ImVjN2IxMGI3LTY1Y2UtNDk4Mi05MzBkLTUyMjM0NDdiYzQyMCIsInR5cCI6IkJlYXJlciIsImF6cCI6ImFsaWNlLWtiIiwic2lkIjoiYWZhNWFjZDQtZWQwMS1iZmI3LTczNGMtMTQ5MGU5NTVjM2VlIiwiYWxsb3dlZC1vcmlnaW5zIjpbImh0dHA6Ly9sb2NhbGhvc3Q6MzAwMiIsImh0dHA6Ly9sb2NhbGhvc3Q6NTA1MCIsImh0dHA6Ly9sb2NhbGhvc3Q6OTk0MyIsImh0dHA6Ly9sb2NhbGhvc3Q6OTAwMCJdLCJyZWFsbV9hY2Nlc3MiOnsicm9sZXMiOlsib2ZmbGluZV9hY2Nlc3MiLCJkZWZhdWx0LXJvbGVzLWFsaWNlYmx1ZWtiIiwidW1hX2F1dGhvcml6YXRpb24iXX0sInJlc291cmNlX2FjY2VzcyI6eyJhbGljZS1rYiI6eyJyb2xlcyI6WyJHVUVTVF9VU0VSIiwiQUNUSVZFX1VTRVIiXX0sImFjY291bnQiOnsicm9sZXMiOlsibWFuYWdlLWFjY291bnQiLCJtYW5hZ2UtYWNjb3VudC1saW5rcyIsInZpZXctcHJvZmlsZSJdfX0sInNjb3BlIjoiZW1haWwgcHJvZmlsZSBvcGVuaWQiLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwidWNjIjoiOTI0MTE4IiwiY2xpZW50Um9sZSI6WyJHVUVTVF9VU0VSIiwiQUNUSVZFX1VTRVIiXSwibmFtZSI6IjAgS0FSVEhJS0VZQU4iLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiI5MjQxMTgiLCJnaXZlbl9uYW1lIjoiMCIsImZhbWlseV9uYW1lIjoiS0FSVEhJS0VZQU4ifQ.GaEzswvcWNAMzvvieWUjUrO327xteKAVYJynSTVR6-t_M2ZZjVf3z0Y1PpPeqNoFsO29lObL36Uu9RiQ4hAIQG5jz-OQkUUObePJySz0fTVLbtmC6VSyQ8zjD998gDK8Vv6AOBefmLxdE5rpKjsfK_AsKxeC1QZ0Wae97rDE4PFFnc_AWvbUjdTxuHG7__WeZxexk7U5XOKrNG3jlr-XoVhK1tBeNbg8cG7j3GpYufbWa-F9SYIJkjL-Mu0pqQO_YDz29I2Pn0lAy3NS9ya-2yUHg__5l3UHwA3u8UZAL8own4GBFOihRtIbjHLQezIT0ibpUc9ZZhEexL1ph5KheQ"
-}
-[08:54:25] [ANT.saveSession] ANT session saved
-[08:54:25] [ANT.exchangeAuthCodeForToken] ✓ Step 2 Success: userSession obtained
-[08:54:25] [ANT.exchangeAuthCodeForToken] 
-=== ANT Token Exchange Successful! ===
-
-[08:54:25] [/home/karthikeyan/work/icici/dist/server.js:510:23] ANT Authentication successful. Token stored.
-[08:55:11] [/home/karthikeyan/work/icici/dist/server.js:572:23] Zerodha Callback received - exchanging request_token for access_token
-[08:55:11] [Zerodha.exchangeRequestTokenForSession] === Zerodha Token Exchange Starting ===
-[08:55:11] [Zerodha.exchangeRequestTokenForSession] Request token: bjRUuDpTbXZdcG22g8CH...
-[08:55:11] [Zerodha.exchangeRequestTokenForSession] Session generated: {
-  "user_type": "individual/res_no_nn",
-  "email": "karthikeyan@nivedhatech.com",
-  "user_name": "Karthikeyan .",
-  "user_shortname": "Karthikeyan",
-  "broker": "ZERODHA",
-  "exchanges": [
-    "NCO",
-    "MCX",
-    "BSE",
-    "NSE",
-    "BFO",
-    "MF",
-    "NFO"
-  ],
-  "products": [
-    "CNC",
-    "NRML",
-    "MIS",
-    "BO",
-    "CO"
-  ],
-  "order_types": [
-    "MARKET",
-    "LIMIT",
-    "SL",
-    "SL-M"
-  ],
-  "avatar_url": null,
-  "user_id": "ZV3536",
-  "api_key": "8ugdwlq4fz81o218",
-  "access_token": "JU4O1fwOsgY6TVnnwa9E872Qs4Zdzu1X",
-  "public_token": "xW4gOXm4dEbznGQLcII16jR1sCNRQcec",
-  "refresh_token": "",
-  "enctoken": "EOJOCMGvoasZZT3LhnBfTta4LRtefOC643omwIcT7QZDHCeC9J+//tNligr5DVO9wBZoJOiBWmm1sHCdtu6scx3W52iE8/5M04QJ/6Qimb7WWL9ilzSbQFKd5M98LjE=",
-  "login_time": "2026-08-18T03:25:11.000Z",
-  "meta": {
-    "demat_consent": "physical"
-  }
-}
-[08:55:11] [Zerodha.saveSession] Zerodha session saved
-[08:55:11] [Zerodha.exchangeRequestTokenForSession] ✓ Access token obtained and saved
-[08:55:11] [Zerodha.exchangeRequestTokenForSession] === Zerodha Token Exchange Successful! ===
-[08:55:11] [/home/karthikeyan/work/icici/dist/server.js:579:23] Zerodha Authentication successful. Token stored.
-[08:56:15] [ANT.getPositions] Fetching ANT positions...
-[08:56:15] [ANT.getPositions] ANT Positions response: Ok
-[08:56:15] [Zerodha.getTrades] Fetching Zerodha trades...
-[08:56:16] [Zerodha.getTrades] Trades fetched: 0
-[08:56:57] [/home/karthikeyan/work/icici/dist/server.js:465:19] Logging in with GenAcsTok
-[REQ] POST https://api.shoonya.com/NorenWClientAPI/GenAcsTok jData={"code":"43346446-74a4-4ff0-9287-38153f3fa4de","checksum":"63f6ba3b49b5224a7beef2a9a8bf863e3dab75614e8a194e949511aadfb3f4a8","uid":"FA96552"}
-[RES] 200 https://api.shoonya.com/NorenWClientAPI/GenAcsTok {
-  USERID: 'FA96552',
-  access_token: 'ba6b10290b9fc2aba459a26d4509bc59f268c8a79dcec620ecdb1544412e1a3b',
-  expires_in: '1794799617',
-  refresh_token: 'b5217cdac8860ed5b1a1af872cbf90e03c2d6e3e10da1fefe154db4621276a31',
-  scope: '0',
-  actid: 'FA96552',
-  uname: 'KARTHIKEYAN',
-  prarr: [],
-  exch_prd: [
-    { exch: 'NSE', prds: [] },
-    { exch: 'NIPO', prds: [] },
-    { exch: 'BSE', prds: [] },
-    { exch: 'BSTAR', prds: [] },
-    { exch: 'NFO', prds: [] },
-    { exch: 'BFO', prds: [] },
-    { exch: 'BIPO', prds: [] }
-  ],
-  stat: 'Ok',
-  susertoken: 'ba6b10290b9fc2aba459a26d4509bc59f268c8a79dcec620ecdb1544412e1a3b',
-  uid: 'FA96552',
-  brnchid: 'HO',
-  totp_set: '1',
-  orarr: [],
-  exarr: [
-    'NSE',  'NIPO',
-    'BSE',  'BSTAR',
-    'NFO',  'BFO',
-    'BIPO'
-  ],
-  values: [],
-  mws: {},
-  brkname: 'FINV',
-  lastaccesstime: '1787018495',
-  lastpwdtime: '0'
-}
-[08:56:57] [NorenRestApi.loginWithGenAcsTok] GenAcsTok Auth Data:  {
-  "USERID": "FA96552",
-  "access_token": "ba6b10290b9fc2aba459a26d4509bc59f268c8a79dcec620ecdb1544412e1a3b",
-  "expires_in": "1794799617",
-  "refresh_token": "b5217cdac8860ed5b1a1af872cbf90e03c2d6e3e10da1fefe154db4621276a31",
-  "scope": "0",
-  "actid": "FA96552",
-  "uname": "KARTHIKEYAN",
-  "prarr": [],
-  "exch_prd": [
+[11:54:15] [Server.<anonymous>] ********************  Threshold:  10
+[11:54:15] [Prism.cacheFile] [Symbols] Loaded 79341 NFO symbols
+[11:54:35] [StatWatcher.<anonymous>] Config file changed. Reloading...
+[11:54:35] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false
+  },
+  "strategies": [
     {
-      "exch": "NSE",
-      "prds": []
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
     },
     {
-      "exch": "NIPO",
-      "prds": []
+      "type": "BuySellStrategy",
+      "enabled": false,
+      "initialQuantity": 150,
+      "incrementFactor": "single",
+      "incrementQuantity": 150,
+      "averageThreshold": 10,
+      "targetPrice": 5,
+      "stopEnabled": false,
+      "activateIntermittentCount": 100,
+      "maxIterationCount": 10,
+      "logEnabled": false,
+      "right": "none"
     },
     {
-      "exch": "BSE",
-      "prds": []
+      "type": "IntermittentStrategy",
+      "enabled": false,
+      "loopCount": 3,
+      "targetPrice": 2,
+      "quantity": 75,
+      "threshold": 10,
+      "logEnabled": false
     },
     {
-      "exch": "BSTAR",
-      "prds": []
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
     },
     {
-      "exch": "NFO",
-      "prds": []
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
     },
     {
-      "exch": "BFO",
-      "prds": []
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
     },
     {
-      "exch": "BIPO",
-      "prds": []
+      "type": "GoodMorningStrategy",
+      "enabled": true,
+      "quantity": 650,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "previousClose": 24078,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "supportPrice": 0,
+      "resistancePrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
     }
-  ],
-  "stat": "Ok",
-  "susertoken": "ba6b10290b9fc2aba459a26d4509bc59f268c8a79dcec620ecdb1544412e1a3b",
-  "uid": "FA96552",
-  "brnchid": "HO",
-  "totp_set": "1",
-  "orarr": [],
-  "exarr": [
-    "NSE",
-    "NIPO",
-    "BSE",
-    "BSTAR",
-    "NFO",
-    "BFO",
-    "BIPO"
-  ],
-  "values": [],
-  "mws": {},
-  "brkname": "FINV",
-  "lastaccesstime": "1787018495",
-  "lastpwdtime": "0"
+  ]
 }
-[08:56:57] [NorenRestApi.setUserToken] Writing token  ba6b10290b9fc2aba459a26d4509bc59f268c8a79dcec620ecdb1544412e1a3b
-[REQ] POST https://api.shoonya.com/NorenWClientAPI//GetQuotes jData={"uid":"FA96552","exch":"NSE","token":"26000"}
-[RES] 200 https://api.shoonya.com/NorenWClientAPI//GetQuotes {
-  request_time: '08:56:57 18-08-2026',
-  stat: 'Ok',
-  exch: 'NSE',
-  tsym: 'Nifty 50',
-  cname: 'NIFTY INDEX',
-  symname: 'NIFTY',
-  seg: 'EQT',
-  instname: 'UNDIND',
-  pp: '2',
-  ls: '1',
-  ti: '0.05',
-  mult: '1',
-  lut: '1787023577',
-  wk52_h: '26373.20',
-  wk52_l: '22182.55',
-  toi: '78943950',
-  cutof_all: 'false',
-  prcftr_d: '(1 / 1 ) * (1 / 1)',
-  token: '26000',
-  lp: '24287.65',
-  c: '24287.65',
-  h: '0.00',
-  l: '0.00',
-  o: '0.00'
-}
-[08:56:57] [Prism.loginWithGenAcsTok] Logged in with GenAcsTok
-[08:56:57] [WebSocketClient.connect] WS Connect is called
-[08:56:57] [Prism._startWebsocket] Waiting for socket to open successfully
-[08:56:57] [Prism.socket_open] [Prism] onOpen:  {
-  "t": "ak",
-  "s": "OK",
-  "uid": "FA96552"
-}
-[REQ] POST https://api.shoonya.com/NorenWClientAPI//OrderBook jData={"uid":"FA96552"}
-[RES] 200 https://api.shoonya.com/NorenWClientAPI//OrderBook {
-  stat: 'Not_Ok',
-  request_time: '08:57:01 18-08-2026',
-  emsg: 'Error Occurred : 5 "no data"'
-}
-[08:57:01] [Prism.getOrders] Orders size:  []
-[08:57:01] [/home/karthikeyan/work/icici/dist/server.js:675:23] Orders: 

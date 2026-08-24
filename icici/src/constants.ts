@@ -10,6 +10,8 @@ export const CLOSED = 'CLOSED';
 export const USER_LOSS_LIMIT = 150000000;
 export const DEFAULT_LOT_LIMIT = 10;
 export const DEFAULT_MAX_INVESTMENT = 100000;
+export const DEFAULT_PROFIT_SPLIT_PERCENT = 80;
+export const TDS_RATE_PERCENT = 10;
 
 // Mock broker flags — set MOCK_BROKER=false for live trading
 export const MOCK_BROKER = process.env.MOCK_BROKER === 'true';   // true = use MockAPI instead of real Shoonya broker

@@ -53,6 +53,28 @@ export class NiftyQuote {
         quote.ltt = response.ft
         quote.token = response.tk
         quote.changePercent = response.pc !== undefined ? parseFloat(response.pc) : undefined
+        // ANT sends the previous close as a percent change (pc), not an
+        // absolute price - derive it algebraically rather than leaving
+        // prevClose unset, since GapStrategy needs an absolute point gap.
+        quote.prevClose = quote.changePercent !== undefined ? quote.ltp / (1 + quote.changePercent / 100) : undefined
+        return quote;
+    }
+}
+
+// SENSEX touchline ticks from ANT - Prism never carries SENSEX, so this only
+// needs the fromAnt() partial-update shape (see NiftyQuote.fromAnt).
+export class SensexQuote {
+    token
+    ltp
+    ltt
+    changePercent
+
+    static fromAnt(response): SensexQuote {
+        const quote = new SensexQuote();
+        quote.ltp = parseFloat(response.lp)
+        quote.ltt = response.ft
+        quote.token = response.tk
+        quote.changePercent = response.pc !== undefined ? parseFloat(response.pc) : undefined
         return quote;
     }
 }
@@ -84,6 +106,10 @@ export class Trade {
     user: string = 'Default'
     open: boolean = true
     realizedPnL: number
+    gttTriggerId: number // Zerodha GTT trigger id, if a bracket was placed at entry (setTargetStopLoss modifies it later)
+    antOrderNo?: string // AliceBlue BO order number, if a bracket was placed at entry
+    entryTime?: Date // set once, at the first fill that opens the position
+    exitTime?: Date // set when the position is closed
 
 
     static getTradeFromResponse(response) {

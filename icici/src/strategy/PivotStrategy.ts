@@ -2,7 +2,6 @@ import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, Trade } from "../model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
-import Prism from '../prism'
 import { NIFTY, CALL, PUT } from '../constants'
 
 export enum Outcome {

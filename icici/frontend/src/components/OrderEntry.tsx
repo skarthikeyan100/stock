@@ -14,27 +14,17 @@ export default function OrderEntry() {
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Load symbols list once, filtering out expired contracts
+  // Load symbols list once. Expiry filtering happens server-side now, at
+  // generation time (see update-symbols.sh, which filters Zerodha's real
+  // `expiry` date column) - a client-side regex can't reliably parse
+  // Zerodha's trading symbols the way it could Shoonya's, since Zerodha uses
+  // two different encodings depending on expiry type (e.g. monthly
+  // NIFTY26AUG24100CE vs weekly NIFTY2690124100CE).
   useEffect(() => {
     fetch(import.meta.env.BASE_URL + 'symbols.txt')
       .then(res => res.text())
       .then(text => {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const months: Record<string, number> = {
-          JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
-          JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11,
-        };
-        const lines = text.split('\n').filter(l => {
-          if (!l.trim()) return false;
-          const match = l.match(/(\d{2})([A-Z]{3})(\d{2})[CP]/);
-          if (!match) return true;
-          const [, dd, mon, yy] = match;
-          const monthIdx = months[mon];
-          if (monthIdx === undefined) return true;
-          const expiry = new Date(2000 + parseInt(yy), monthIdx, parseInt(dd));
-          return expiry >= today;
-        });
+        const lines = text.split('\n').filter(l => l.trim());
         lines.sort();
         setSymbols(lines);
       })
@@ -118,7 +108,7 @@ export default function OrderEntry() {
           <InputGroup>
             <Form.Control
               type="text"
-              placeholder="e.g. NIFTY10FEB26P21000"
+              placeholder="e.g. NIFTY_24100_CE"
               value={input}
               onChange={(e) => handleInputChange(e.target.value)}
               disabled={isOrderDisabled}

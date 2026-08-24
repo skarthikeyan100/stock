@@ -1,10 +1,9 @@
 import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, Trade } from "../model/model";
 import { Strategy } from "./strategy";
-import Prism from '../prism';
+import OrderClient from '../processes/strategies/OrderClient';
 import { CALL, PUT } from '../constants';
 import configService from '../prism/ConfigService';
-import Monitor from '../monitor';
 import moment from 'moment';
 
 const round = (num: number) => Math.round(num * 100) / 100;
@@ -16,7 +15,6 @@ class GapContract {
     quantity: number = 0;
     right: string = '';
     entryTime: number = 0;
-    buyOrderPlaced: boolean = false;
     sellOrderPlaced: boolean = false;
     ltp: number = 0;
 
@@ -27,7 +25,6 @@ class GapContract {
         this.quantity = 0;
         this.right = '';
         this.entryTime = 0;
-        this.buyOrderPlaced = false;
         this.sellOrderPlaced = false;
         this.ltp = 0;
     }
@@ -48,14 +45,14 @@ class GapContract {
             Log.log(`[Gap] ${this.contract} points=${round(pointsGain)} P&L=${round(profit)}`);
         }
 
-        // Monitor handles target/SL exits; strategy only handles timeout
+        // Broker (GTT/exitMonitor) handles target/SL exits; strategy only handles timeout
         const timeout = config.maxHoldTimeMinutes > 0 && timeElapsed >= config.maxHoldTimeMinutes * 60 * 1000;
 
         if (timeout && !this.sellOrderPlaced) {
             Log.log(`[Gap] Selling ${this.contract}: TIMEOUT P&L=${round(profit)}`);
             this.sellOrderPlaced = true;
             strategy.recordOutcome('timeout', profit);
-            await strategy.sellContract(this.contract, this.quantity, quote.ltp);
+            await OrderClient.getInstance().squareOff(strategy.userId, { tsym: this.contract, quantity: this.quantity, exchange: 'NFO' });
         }
 
         return false;
@@ -67,17 +64,6 @@ class GapContract {
         }
 
         const config = configService.getStrategyConfig('GapStrategy');
-
-        if (this.buyOrderPlaced && trade.action === 'Buy') {
-            this.buyOrderPlaced = false;
-            this.price = trade.price;
-            this.quantity = trade.quantity;
-            this.entryTime = Date.now();
-            if (config.logEnabled) {
-                Log.log(`[Gap] Buy confirmed: ${this.contract} qty=${this.quantity} price=${this.price}`);
-            }
-            return false;
-        }
 
         if (trade.action === 'Sell') {
             if (this.sellOrderPlaced) {
@@ -111,13 +97,22 @@ export default class GapStrategy extends Strategy {
 
     receive(oldStats: any, newStats: any) {}
 
-    getMonitorConfig() {
-        const config = configService.getStrategyConfig('GapStrategy');
-        return { targetPoints: config.targetPrice, stopLossPoints: config.stopLossPrice, trailingDistance: configService.getConfig().settings.trailingDistance };
+    // Only active during the opening gap window (9:10-9:25) - the window is a
+    // grace period around the 9:15 open in case the first tick is delayed, not
+    // an invitation to trade at 9:20/9:24 under different conditions; the
+    // contract !== null gate below already limits this to one trade per day.
+    isTimeInRange(): boolean {
+        const now = moment();
+        return now.isAfter(moment().hour(9).minute(10)) && now.isBefore(moment().hour(9).minute(25));
     }
 
     canHandleOptionQuote(quote: OptionQuote): boolean {
         return this.contract !== null && this.contract.token === quote.token;
+    }
+
+    reset(): void {
+        super.reset();
+        this.contract = null;
     }
 
     async processNiftyQuote(quote: NiftyQuote) {
@@ -125,36 +120,35 @@ export default class GapStrategy extends Strategy {
 
         if (!this.enabled || !this.isTimeInRange()) return;
 
-        // Only active during the opening gap window (9:10–9:25)
-        if (!this.isGapWindow()) return;
-
         if (this.contract !== null) return;
 
         if (!this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) return;
 
-        const pointsChange = this.calculatePointsChange(config.numberOfDatapointsReceived);
+        // Single-point read against the broker's own live prevClose - no
+        // rolling window. This is the strategy's one decision for the day:
+        // deregister (this.enabled = false) once made, whatever the outcome.
+        const gapPoints = quote.ltp - quote.prevClose;
 
         if (config.logEnabled) {
-            Log.log(`[Gap] NIFTY=${quote.ltp} PointsChange=${round(pointsChange)} Threshold=±${config.pointsThreshold}`);
+            Log.log(`[Gap] NIFTY=${quote.ltp} prevClose=${quote.prevClose} Gap=${round(gapPoints)} Threshold=±${config.pointsThreshold}`);
         }
 
         let direction: string | null = null;
 
         if (config.gapReversalMode) {
             // Fade small gaps, follow large gaps
-            const gapPoints = Math.abs(quote.ltp - quote.prevClose);
-            const isGapUp = quote.ltp > quote.prevClose;
-            const isGapDown = quote.ltp < quote.prevClose;
-
-            if (Math.abs(pointsChange) >= config.pointsThreshold) {
-                if (isGapUp) direction = gapPoints > config.gapReversalThreshold ? CALL : PUT;
-                else if (isGapDown) direction = gapPoints > config.gapReversalThreshold ? PUT : CALL;
+            const absGap = Math.abs(gapPoints);
+            if (absGap >= config.pointsThreshold) {
+                direction = gapPoints > 0
+                    ? (absGap > config.gapReversalThreshold ? CALL : PUT)
+                    : (absGap > config.gapReversalThreshold ? PUT : CALL);
             }
         } else {
-            // Standard momentum in gap window
-            if (pointsChange >= config.pointsThreshold) direction = CALL;
-            else if (pointsChange <= -config.pointsThreshold) direction = PUT;
+            if (gapPoints >= config.pointsThreshold) direction = CALL;
+            else if (gapPoints <= -config.pointsThreshold) direction = PUT;
         }
+
+        this.enabled = false; // deregister - one decision per day, trade or not
 
         if (direction) {
             if (!this.isSentimentAligned(quote, direction)) {
@@ -162,7 +156,7 @@ export default class GapStrategy extends Strategy {
                 return;
             }
             this.contract = new GapContract();
-            await this.executeTrade(quote, direction, pointsChange);
+            await this.executeTrade(quote, direction, gapPoints);
         }
     }
 
@@ -186,40 +180,32 @@ export default class GapStrategy extends Strategy {
         }
     }
 
-    private async executeTrade(quote: NiftyQuote, right: string, pointsChange: number) {
+    private async executeTrade(quote: NiftyQuote, right: string, gapPoints: number) {
         const config = configService.getStrategyConfig('GapStrategy');
-        const prism = Prism.getInstance();
 
-        const contract = await prism.getContractByPriceRange(right);
-        if (!contract) {
-            Log.log('[Gap] No contract found in price range');
-            this.contract = null;
-            return;
-        }
-
-        const token = await prism.getToken(contract);
-
-        Log.log(`[Gap] TRIGGERED: ${right} at NIFTY=${quote.ltp} PointsChange=${round(pointsChange)}`);
-        Log.log(`[Gap] Buying ${contract} qty=${config.quantity}`);
-
-        this.contract.contract = contract;
-        this.contract.token = token;
-        this.contract.right = right;
-        this.contract.buyOrderPlaced = true;
+        Log.log(`[Gap] TRIGGERED: ${right} at NIFTY=${quote.ltp} Gap=${round(gapPoints)}`);
         this.recordTriggerTime();
 
-        await this.buyContract(contract, config.quantity);
-    }
-
-    private calculatePointsChange(numberOfDatapoints: number): number {
-        const recentQuotes = Monitor.getInstance().getRecentNiftyQuotes(numberOfDatapoints);
-        if (recentQuotes.length < 2) return 0;
-        return recentQuotes[0].ltp - recentQuotes[recentQuotes.length - 1].ltp;
-    }
-
-    private isGapWindow(): boolean {
-        const now = moment();
-        return now.isAfter(moment().hour(9).minute(10)) &&
-               now.isBefore(moment().hour(9).minute(25));
+        try {
+            const trade = await OrderClient.getInstance().buyIndex(this.userId, {
+                niftyLtp: quote.ltp,
+                right,
+                quantity: config.quantity,
+                targetPoints: config.targetPrice,
+                stopLossPoints: config.stopLossPrice,
+            });
+            this.contract!.contract = trade.tsym;
+            this.contract!.token = trade.token;
+            this.contract!.right = right;
+            this.contract!.price = trade.price;
+            this.contract!.quantity = trade.quantity;
+            this.contract!.entryTime = Date.now();
+            if (config.logEnabled) {
+                Log.log(`[Gap] Bought ${trade.tsym} qty=${trade.quantity} at ${trade.price}`);
+            }
+        } catch (e) {
+            Log.log('[Gap] executeTrade failed:', e);
+            this.contract = null;
+        }
     }
 }

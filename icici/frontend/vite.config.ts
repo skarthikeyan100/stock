@@ -51,6 +51,7 @@ export default defineConfig({
       '/config': backendUrl,
       '/documents': backendUrl,
       '/settarget': backendUrl,
+      '/ant': backendUrl,
     }
   }
 })

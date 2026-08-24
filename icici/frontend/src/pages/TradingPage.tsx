@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import OrderEntry from '../components/OrderEntry';
 import NiftyTicker from '../components/NiftyTicker';
 import PositionCard from '../components/PositionCard';
+import NotificationBell from '../components/NotificationBell';
 
 export default function TradingPage() {
   const { trades, closedTrades, openPnL, totalPnL, usedAmount } = useTrading();
@@ -28,7 +29,9 @@ export default function TradingPage() {
           <div className="d-flex align-items-center gap-2">
             {user?.picture && <img src={user.picture} alt="" width={28} height={28} className="rounded-circle" />}
             <span className="fw-bold">{user?.name || 'PropFirm Trading'}</span>
+            <NotificationBell />
             <Button variant="outline-secondary" size="sm" onClick={() => navigate('/app/profile')}>Profile</Button>
+            <Button variant="outline-secondary" size="sm" onClick={() => navigate('/app/payouts')}>Payouts</Button>
             {isAdmin && (
               <Button variant="outline-primary" size="sm" onClick={() => navigate('/app/admin')}>Admin</Button>
             )}

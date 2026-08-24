@@ -3,9 +3,6 @@ import { Strategy } from "./strategy";
 import configService from '../prism/ConfigService';
 import { createStrategiesFromConfig, expandRuleBasedConfig } from './StrategyFactory';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
-import Monitor from '../monitor';
-import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from "../constants";
-import { getUser } from '../user';
 
 
 class Strategies {
@@ -14,12 +11,10 @@ class Strategies {
 
     addToList(strategy: Strategy) {
         this.list.push(strategy);
-        Monitor.getInstance().registerStrategy(strategy);
     }
 
     removeFromList(userId: string) {
         this.list = this.list.filter(s => s.userId !== userId);
-        Monitor.getInstance().unregisterStrategy(userId);
     }
 
     getList() { return this.list; }
@@ -47,21 +42,9 @@ class Strategies {
         }
 
         this.list = createStrategiesFromConfig(config.strategies || []);
-
-        // Register each strategy with Monitor + set per-user limits
-        for (const strategy of this.list) {
-            Monitor.getInstance().registerStrategy(strategy);
-
-            const strategyConfig = this.expandedConfigs.get(strategy.userId);
-            if (strategyConfig) {
-                const mongoUser = await getUser(strategy.userId);
-                Monitor.getInstance().updateUserSettings(strategy.userId, {
-                    lossLimit: mongoUser?.lossLimit ?? USER_LOSS_LIMIT,
-                    lotLimit: mongoUser?.lotCount ?? DEFAULT_LOT_LIMIT,
-                    maxInvestment: strategyConfig.maxInvestment || DEFAULT_MAX_INVESTMENT,
-                });
-            }
-        }
+        // Per-user risk limits (loss/lot/investment) now live in the order
+        // process (it's the only one that gates/executes orders) - see
+        // orderProcess.ts's loadUserLimits().
 
         Log.log(`[Strategies] Initialized ${this.list.length} strategies:`,
             this.list.map(s => `${s.getClassName()}(${s.userId}, enabled=${s.enabled})`));

@@ -2,7 +2,7 @@ import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, Trade } from "model/model";
 import { Strategy } from "./strategy";
 import * as f from '../orderList'
-import Prism from '../prism'
+import OrderClient from '../processes/strategies/OrderClient'
 import { NIFTY, CALL, PUT } from '../constants'
 import moment from "moment";
 import configService from '../prism/ConfigService'
@@ -58,9 +58,10 @@ export default class DiffStrategy extends Strategy {
     buyIndex = async (right) => {
         Log.log('IntermittentStrategy: buyIndex called with right: ', right);
         const quantity = configService.getStrategyConfig('IntermittentStrategy').quantity;
-        const response = await Prism.getInstance().buyIndex({ userContext: this.getUserContext(), index: NIFTY, right, qty: quantity });
+        const niftyLtp = this.stats?.close ?? 0;
+        const response = await OrderClient.getInstance().buyIndex(this.userId, { niftyLtp, right, quantity });
         if (response) {
-            this.contract = response.contract;
+            this.contract = response.tsym;
             this.token = response.token;
         }
     }

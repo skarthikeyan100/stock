@@ -32,7 +32,7 @@ class WebSocketClient {
             //callbacks to the app are set here
             this.set_callbacks(callbacks);
 
-            this.ws = new web_socket(this.url, null, { rejectUnauthorized: false });
+            this.ws = new web_socket(this.url, undefined, { rejectUnauthorized: false });
 
             this.ws.onopen = (evt) => {
                 setInterval(() =>  {

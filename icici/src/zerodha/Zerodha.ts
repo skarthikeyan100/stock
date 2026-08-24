@@ -26,6 +26,13 @@ class Zerodha {
         return Zerodha.instance;
     }
 
+    // Public re-read hook: `order` calls this after `frontend` completes a fresh
+    // OAuth login in a different process, so this already-running singleton picks
+    // up the new token without a restart (see reloadSession in orderProcess.ts).
+    reloadSession(): void {
+        this.loadSession();
+    }
+
     private loadSession(): void {
         try {
             if (fs.existsSync(this.sessionFile)) {
@@ -137,6 +144,18 @@ class Zerodha {
         }
     }
 
+    async getGTTs(): Promise<any[]> {
+        try {
+            if (!this.accessToken) {
+                throw new Error('No active session. Please login first.');
+            }
+            return await this.kc.getGTTs();
+        } catch (e: any) {
+            Log.log('Error fetching GTTs:', e.message);
+            throw new Error(`Failed to fetch GTTs: ${e.message}`);
+        }
+    }
+
     async getPositions(): Promise<any> {
         try {
             if (!this.accessToken) {
@@ -160,13 +179,13 @@ class Zerodha {
     // Connect subscription doesn't have access to anyway (getLTP returns 403 Insufficient
     // permission). Not in the kiteconnect SDK's typed params, but placeOrder() forwards
     // the whole params object through to the REST call untouched, so it's honored.
-    async buyOption(tradingSymbol: string, quantity: number): Promise<{ orderId: string }> {
+    async buyOption(tradingSymbol: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
         }
-        Log.log(`[Zerodha] Placing NRML market buy: ${tradingSymbol} qty=${quantity}`);
+        Log.log(`[Zerodha] Placing NRML market buy: ${tradingSymbol} qty=${quantity} exchange=${exchange}`);
         const response = await this.kc.placeOrder('regular', {
-            exchange: 'NFO',
+            exchange,
             tradingsymbol: tradingSymbol,
             transaction_type: 'BUY',
             quantity,
@@ -229,6 +248,33 @@ class Zerodha {
 
         Log.log(`[Zerodha] GTT placed: trigger_id=${response.trigger_id}`);
         return response.trigger_id;
+    }
+
+    // Replaces an existing GTT's target/stop-loss (POST /prism/settarget's Zerodha
+    // path) - modifyGTT requires the full trigger definition, not just the changed
+    // fields, so this re-sends the same two-leg OCO shape placeTargetStopLossGTT
+    // uses, with new trigger_values.
+    async modifyTargetStopLossGTT(
+        triggerId: number,
+        tradingSymbol: string,
+        exchange: string,
+        quantity: number,
+        targetPrice: number,
+        stopLossPrice: number,
+        lastPrice: number
+    ): Promise<void> {
+        Log.log(`[Zerodha] Modifying GTT ${triggerId} for ${tradingSymbol}: stopLoss=${stopLossPrice} target=${targetPrice}`);
+        await this.kc.modifyGTT(triggerId, {
+            trigger_type: 'two-leg',
+            tradingsymbol: tradingSymbol,
+            exchange,
+            last_price: lastPrice,
+            trigger_values: [stopLossPrice, targetPrice],
+            orders: [
+                { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: stopLossPrice },
+                { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: targetPrice },
+            ],
+        });
     }
 }
 

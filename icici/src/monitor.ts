@@ -1,5 +1,5 @@
 import Log from './util/Log';
-import { NiftyQuote, OptionQuote, OrderInfo, Trade, Order } from './model/model';
+import { NiftyQuote, OptionQuote, OrderInfo, SensexQuote, Trade, Order } from './model/model';
 import { UserContext } from './user';
 import myEmitter from './tools/emitter';
 import Mongo from './tools/mongo'
@@ -106,6 +106,15 @@ export default class Monitor {
         for (const strategy of strategies.getList()) {
             if (strategy.enabled) {
                 await strategy.processNiftyQuote(quote);
+            }
+        }
+    }
+
+    async onSensexQuote(quote: SensexQuote) {
+        // Broadcast to strategies
+        for (const strategy of strategies.getList()) {
+            if (strategy.enabled) {
+                await strategy.processSensexQuote(quote);
             }
         }
     }

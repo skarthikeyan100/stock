@@ -33,6 +33,11 @@ class ANT {
         try {
             if (fs.existsSync(this.sessionFile)) {
                 const data = JSON.parse(fs.readFileSync(this.sessionFile, 'utf-8'));
+                if (data.userSession && this.isSessionStale(data.userSession)) {
+                    Log.log('ANT session was issued on an earlier date - discarding, re-login required (/ant/login)');
+                    fs.unlinkSync(this.sessionFile);
+                    return;
+                }
                 if (data.userSession) {
                     this.userSession = data.userSession;
                 }
@@ -43,6 +48,23 @@ class ANT {
             }
         } catch (e) {
             Log.log('Failed to load ANT session:', e);
+        }
+    }
+
+    // AliceBlue invalidates the session server-side once the calendar day it
+    // was issued on has passed, regardless of the JWT's own (much later) exp
+    // claim - confirmed live: a session issued Fri got a 401 from createWsSess
+    // the following Mon despite exp claiming validity into the next month. So
+    // staleness is judged by the JWT's iat date vs today, not by exp.
+    private isSessionStale(token: string): boolean {
+        try {
+            const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf-8'));
+            if (!payload.iat) return false;
+            const issuedDate = new Date(payload.iat * 1000);
+            return issuedDate.toDateString() !== new Date().toDateString();
+        } catch (e) {
+            Log.log('Failed to check ANT session staleness:', e);
+            return false;
         }
     }
 
@@ -201,6 +223,188 @@ class ANT {
             Log.log('Error fetching ANT positions:', e.message);
             return [];
         }
+    }
+
+    private authHeader() {
+        if (!this.userSession) {
+            throw new Error('No active session. Please login first.');
+        }
+        return { Authorization: `Bearer ${this.userSession}` };
+    }
+
+    // Live LTP for a specific instrument - needed because ANT rejects MARKET
+    // orders for Bracket Orders (confirmed live: "Market orders are not
+    // allowed"), so a BO entry needs a LIMIT price computed from the current
+    // quote.
+    async getQuote(exchange: string, token: string): Promise<number> {
+        const resp = await axios.post(
+            'https://a3.aliceblueonline.com/open-api/od/ChartAPIService/chart/get/multi/ohlc',
+            [{ exchange, token }],
+            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+        );
+        const ltp = resp.data?.result?.[0]?.ltp;
+        if (ltp == null) {
+            throw new Error(`ANT getQuote failed for ${exchange}|${token}: ${JSON.stringify(resp.data)}`);
+        }
+        return Number(ltp);
+    }
+
+    // ORDER PLACEMENT — AliceBlue's own documentation disagrees with itself on
+    // field names for these endpoints (productdocumentation/orders%20Management
+    // shows a single-object body with target/stopLoss/trailingStopLoss; the
+    // downloadable Postman collection shows an array-wrapped body with
+    // targetLegPrice/slLegPrice). The shape below follows the Postman
+    // collection (more likely to reflect what's actually accepted, since it's
+    // meant to be run as-is) but has NOT been verified against a live
+    // response. Log the raw request/response on the first real call and
+    // correct field names here if the broker rejects the shape.
+
+    async placeOrder(params: {
+        exchange: 'NFO' | 'BFO';
+        instrumentId: string;
+        tradingSymbol: string;
+        quantity: number;
+        transactionType: 'BUY' | 'SELL';
+        price?: number; // omitted/0 => MARKET
+    }): Promise<{ orderNo: string }> {
+        const body = [{
+            exchange: params.exchange,
+            instrumentId: params.instrumentId,
+            tradingSymbol: params.tradingSymbol,
+            transactionType: params.transactionType,
+            quantity: params.quantity,
+            product: 'INTRADAY',
+            orderType: params.price ? 'LIMIT' : 'MARKET',
+            price: params.price ?? 0,
+            orderComplexity: 'REGULAR',
+            validity: 'DAY',
+        }];
+        Log.log('[ANT] placeOrder request:', JSON.stringify(body));
+        const resp = await axios.post(
+            'https://a3.aliceblueonline.com/open-api/od/v1/orders/placeorder',
+            body,
+            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+        );
+        Log.log('[ANT] placeOrder response:', JSON.stringify(resp.data));
+        // Confirmed live: the field is brokerOrderId, not orderNo (AliceBlue's
+        // own doc pages disagreed here too).
+        const orderNo = resp.data?.result?.[0]?.brokerOrderId;
+        if (!orderNo) {
+            throw new Error(`ANT placeOrder failed: ${JSON.stringify(resp.data)}`);
+        }
+        return { orderNo };
+    }
+
+    // NOTE ON targetLegPrice/slLegPrice: unlike Zerodha's GTT (placed AFTER
+    // entry, once the fill price is known, with absolute trigger prices), a
+    // Bracket Order on ANT IS the entry order itself - the fill price isn't
+    // known yet when this is called, so absolute leg prices can't be computed
+    // up front. These are passed through as POINT OFFSETS from the eventual
+    // fill (matching this codebase's existing targetPoints/stopLossPoints
+    // convention, and Zerodha's old pre-2021 Kite BO API, which used the same
+    // point-offset convention for its squareoff/stoploss fields) - NOT
+    // verified against a live AliceBlue response yet. Confirm on first real
+    // use; if AliceBlue actually expects absolute prices here, this will
+    // reject or silently mis-bracket the position.
+    async placeBracketOrder(params: {
+        exchange: 'NFO' | 'BFO';
+        instrumentId: string;
+        tradingSymbol: string;
+        quantity: number;
+        transactionType: 'BUY' | 'SELL';
+        price?: number; // omitted/0 => MARKET entry
+        targetPoints: number;
+        stopLossPoints: number;
+    }): Promise<{ orderNo: string }> {
+        const body = [{
+            exchange: params.exchange,
+            instrumentId: params.instrumentId,
+            tradingSymbol: params.tradingSymbol,
+            transactionType: params.transactionType,
+            quantity: params.quantity,
+            product: 'INTRADAY',
+            orderType: params.price ? 'LIMIT' : 'MARKET',
+            price: params.price ?? 0,
+            orderComplexity: 'BO',
+            validity: 'DAY',
+            targetLegPrice: params.targetPoints,
+            slLegPrice: params.stopLossPoints,
+        }];
+        Log.log('[ANT] placeBracketOrder request:', JSON.stringify(body));
+        const resp = await axios.post(
+            'https://a3.aliceblueonline.com/open-api/od/v1/orders/placeorder',
+            body,
+            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+        );
+        Log.log('[ANT] placeBracketOrder response:', JSON.stringify(resp.data));
+        // Confirmed live: the field is brokerOrderId, not orderNo (AliceBlue's
+        // own doc pages disagreed here too).
+        const orderNo = resp.data?.result?.[0]?.brokerOrderId;
+        if (!orderNo) {
+            throw new Error(`ANT placeBracketOrder failed: ${JSON.stringify(resp.data)}`);
+        }
+        return { orderNo };
+    }
+
+    // Closes BOTH legs of a live BO/CO position - distinct from cancelOrder,
+    // which only cancels a pending/unfilled order.
+    async exitBracketOrder(orderNo: string, orderComplexity: 'BO' | 'CO' = 'BO'): Promise<void> {
+        const body = [{ orderNo, orderComplexity }];
+        Log.log('[ANT] exitBracketOrder request:', JSON.stringify(body));
+        const resp = await axios.post(
+            'https://a3.aliceblueonline.com/open-api/od/v1/orders/exit/sno',
+            body,
+            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+        );
+        Log.log('[ANT] exitBracketOrder response:', JSON.stringify(resp.data));
+        if (resp.data?.status !== 'Ok') {
+            throw new Error(`ANT exitBracketOrder failed: ${JSON.stringify(resp.data)}`);
+        }
+    }
+
+    async cancelOrder(orderNo: string): Promise<void> {
+        const body = { brokerOrderId: orderNo };
+        const resp = await axios.post(
+            'https://a3.aliceblueonline.com/open-api/od/v1/orders/cancel',
+            body,
+            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+        );
+        if (resp.data?.status !== 'Ok') {
+            throw new Error(`ANT cancelOrder failed: ${JSON.stringify(resp.data)}`);
+        }
+    }
+
+    // Polls order history until the order is COMPLETE (or REJECTED/CANCELLED),
+    // mirroring Zerodha.getFillPrice's poll/timeout shape. Confirmed live:
+    // `result` is an array of order-state-transition records (PENDING/OPEN/
+    // COMPLETE/...), NOT chronologically ordered (COMPLETE was observed first
+    // in one response) - so every record must be scanned for a terminal
+    // status rather than trusting array position. Fill price field is
+    // `averageTradedPrice` (confirmed live), populated only on the COMPLETE
+    // record.
+    async getFillPrice(orderNo: string, maxAttempts = 12, intervalMs = 5000): Promise<number> {
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            const resp = await axios.post(
+                'https://a3.aliceblueonline.com/open-api/od/v1/orders/history',
+                { brokerOrderId: orderNo },
+                { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+            );
+            const records: any[] = resp.data?.result ?? [];
+            const completed = records.find((r) => r.orderStatus === 'COMPLETE');
+            if (completed) {
+                const fillPrice = completed.averageTradedPrice ?? completed.averagePrice ?? completed.avgPrice;
+                if (!fillPrice) {
+                    throw new Error(`ANT order ${orderNo} COMPLETE but no recognizable fill-price field: ${JSON.stringify(completed)}`);
+                }
+                return Number(fillPrice);
+            }
+            const rejected = records.find((r) => r.orderStatus === 'REJECTED' || r.orderStatus === 'CANCELLED');
+            if (rejected) {
+                throw new Error(`ANT order ${orderNo} ${rejected.orderStatus}: ${JSON.stringify(rejected)}`);
+            }
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
+        throw new Error(`ANT order ${orderNo} did not complete within ${maxAttempts * intervalMs}ms`);
     }
 }
 

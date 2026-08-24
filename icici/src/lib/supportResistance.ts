@@ -11,9 +11,15 @@
  *     range LOCKS: support = min - buffer, resistance = max + buffer.
  *
  *   LOCKED - support/resistance are frozen. New local highs/lows inside the
- *     band do not move the levels - only a tick that actually crosses
- *     support or resistance counts as a BREACH, which re-seeds a fresh
- *     SEEKING buffer starting from the breaching tick.
+ *     band do not move the levels. A tick crossing support/resistance by more
+ *     than `breachBuffer` starts a *pending* breach rather than firing
+ *     immediately - if price stays beyond that buffered line for at least
+ *     `breachConfirmMs`, the breach is confirmed (using the confirming tick's
+ *     price/time) and re-seeds a fresh SEEKING buffer. If price returns
+ *     inside the buffered line before the delay elapses, the pending breach
+ *     is cancelled as a false alarm and the range stays LOCKED. With
+ *     `breachBuffer = 0` and `breachConfirmMs = 0` this degenerates to the
+ *     original behavior: any crossing tick is an immediate breach.
  */
 
 export type SRPhase = 'SEEKING' | 'LOCKED';
@@ -23,11 +29,18 @@ export interface SRConfig {
     maxJump: number;
     maxRangeWidth: number;
     buffer: number;
+    breachBuffer: number;
+    breachConfirmMs: number;
 }
 
 export interface SRTick {
     ltp: number;
     ltt: number; // epoch ms
+}
+
+export interface PendingBreach {
+    direction: 'support' | 'resistance';
+    startedAt: number; // ltt of the first tick that crossed the buffered line
 }
 
 export interface SRState {
@@ -36,6 +49,7 @@ export interface SRState {
     support: number | null;
     resistance: number | null;
     lockedAt: number | null;
+    pendingBreach: PendingBreach | null;
 }
 
 export type SREvent =
@@ -53,42 +67,46 @@ export type SREvent =
     | { type: 'NONE' };
 
 export function initSRState(): SRState {
-    return { phase: 'SEEKING', buffer: [], support: null, resistance: null, lockedAt: null };
+    return { phase: 'SEEKING', buffer: [], support: null, resistance: null, lockedAt: null, pendingBreach: null };
 }
 
 export function processTick(state: SRState, tick: SRTick, config: SRConfig): { state: SRState; event: SREvent } {
     if (state.phase === 'LOCKED') {
-        if (tick.ltp < state.support!) {
+        const support = state.support!;
+        const resistance = state.resistance!;
+        const belowSupport = tick.ltp < support - config.breachBuffer;
+        const aboveResistance = tick.ltp > resistance + config.breachBuffer;
+        const crossing = belowSupport || aboveResistance;
+
+        if (!crossing) {
+            if (state.pendingBreach) {
+                // Price came back inside the buffered line - false alarm, cancel the pending breach.
+                return { state: { ...state, pendingBreach: null }, event: { type: 'NONE' } };
+            }
+            return { state, event: { type: 'NONE' } };
+        }
+
+        const direction: 'support' | 'resistance' = belowSupport ? 'support' : 'resistance';
+        const alreadyPending = state.pendingBreach && state.pendingBreach.direction === direction;
+        const startedAt = alreadyPending ? state.pendingBreach!.startedAt : tick.ltt;
+
+        if (tick.ltt - startedAt >= config.breachConfirmMs) {
             return {
                 state: seedSeeking(tick),
                 event: {
                     type: 'BREACH',
-                    direction: 'support',
+                    direction,
                     ltp: tick.ltp,
                     ltt: tick.ltt,
-                    support: state.support!,
-                    resistance: state.resistance!,
+                    support,
+                    resistance,
                     lockedAt: state.lockedAt!,
                     heldMs: tick.ltt - state.lockedAt!,
                 },
             };
         }
-        if (tick.ltp > state.resistance!) {
-            return {
-                state: seedSeeking(tick),
-                event: {
-                    type: 'BREACH',
-                    direction: 'resistance',
-                    ltp: tick.ltp,
-                    ltt: tick.ltt,
-                    support: state.support!,
-                    resistance: state.resistance!,
-                    lockedAt: state.lockedAt!,
-                    heldMs: tick.ltt - state.lockedAt!,
-                },
-            };
-        }
-        return { state, event: { type: 'NONE' } };
+
+        return { state: { ...state, pendingBreach: { direction, startedAt } }, event: { type: 'NONE' } };
     }
 
     const last = state.buffer[state.buffer.length - 1];
@@ -106,15 +124,15 @@ export function processTick(state: SRState, tick: SRTick, config: SRConfig): { s
             const support = min - config.buffer;
             const resistance = max + config.buffer;
             return {
-                state: { phase: 'LOCKED', buffer: [], support, resistance, lockedAt: tick.ltt },
+                state: { phase: 'LOCKED', buffer: [], support, resistance, lockedAt: tick.ltt, pendingBreach: null },
                 event: { type: 'LOCKED', support, resistance, lockedAt: tick.ltt },
             };
         }
     }
 
-    return { state: { phase: 'SEEKING', buffer, support: null, resistance: null, lockedAt: null }, event: { type: 'NONE' } };
+    return { state: { phase: 'SEEKING', buffer, support: null, resistance: null, lockedAt: null, pendingBreach: null }, event: { type: 'NONE' } };
 }
 
 function seedSeeking(tick: SRTick): SRState {
-    return { phase: 'SEEKING', buffer: [tick], support: null, resistance: null, lockedAt: null };
+    return { phase: 'SEEKING', buffer: [tick], support: null, resistance: null, lockedAt: null, pendingBreach: null };
 }

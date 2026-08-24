@@ -1,8 +1,8 @@
 import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, Trade, PeriodicStats, RSI, MACD, Bollinger, EMACrossOver } from "../model/model";
 import { Strategy } from "./strategy";
-import Prism from '../prism';
-import Monitor from '../monitor';
+import OrderClient from '../processes/strategies/OrderClient';
+import * as niftyQuoteHistory from '../processes/strategies/niftyQuoteHistory';
 import { CALL, PUT } from '../constants';
 import configService from '../prism/ConfigService';
 
@@ -162,7 +162,7 @@ export default class RuleBasedStrategy extends Strategy {
         const direction = this.consensus(signals);
         if (!direction) return;
 
-        const latestQuote = Monitor.getInstance().getRecentNiftyQuotes(1)[0];
+        const latestQuote = niftyQuoteHistory.getRecent(1)[0];
         if (latestQuote && !this.isSentimentAligned(latestQuote, direction)) {
             Log.log(`[Rule:${this.userId}] Sentiment not aligned for ${direction} — skipping`);
             return;
@@ -266,6 +266,11 @@ export default class RuleBasedStrategy extends Strategy {
         return this.contract !== null && this.contract.token === quote.token;
     }
 
+    reset(): void {
+        super.reset();
+        this.contract = null;
+    }
+
     updateTrade = async (trade: Trade): Promise<void> => {
         if (this.contract) {
             const closed = await this.contract.updateTrade(trade, this);
@@ -282,16 +287,16 @@ export default class RuleBasedStrategy extends Strategy {
         this.contract.right = right;
 
         const config = this.getConfig();
-        const prism = Prism.getInstance();
+        const orderClient = OrderClient.getInstance();
 
-        const contract = await prism.getContractByPriceRange(right);
+        const contract = await orderClient.getContractByPriceRange(this.userId, right);
         if (!contract) {
             Log.log(`[Rule:${this.userId}] No contract found in price range`);
             this.contract = null;
             return;
         }
 
-        const token = await prism.getToken(contract);
+        const token = await orderClient.getToken(this.userId, contract);
         if (!token) {
             Log.log(`[Rule:${this.userId}] Token not found for contract ${contract}`);
             this.contract = null;

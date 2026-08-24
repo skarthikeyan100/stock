@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Container, Table, Form, Button, Spinner, Tabs, Tab, Card, Row, Col, Alert } from 'react-bootstrap';
 import { useAuth, AuthUser } from '../context/AuthContext';
@@ -7,6 +7,16 @@ interface UserRow extends AuthUser {
   sessionPnL: number;
   hasActiveTrade: boolean;
 }
+
+// Pins the Actions column to the right edge of the horizontally-scrollable
+// users table so Save/Cancel stay reachable without scrolling, regardless of
+// how many columns precede it.
+const stickyActionsStyle: CSSProperties = {
+  position: 'sticky',
+  right: 0,
+  background: '#fff',
+  boxShadow: '-2px 0 4px rgba(0, 0, 0, 0.1)',
+};
 
 async function patchVerify(email: string, field: 'email' | 'phone' | 'address' | 'dob' | 'pan', verified: boolean) {
   await fetch(`/users/${encodeURIComponent(email)}/verify`, {
@@ -21,15 +31,102 @@ export default function AdminPage() {
   const navigate = useNavigate();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [editing, setEditing] = useState<Record<string, { lossLimit: string; lotCount: string; role: string; enabled: boolean }>>({});
+  const [editing, setEditing] = useState<Record<string, { lossLimit: string; lotCount: string; role: string; enabled: boolean; useGTT: boolean; profitSplitPercent: string; perOrderCap: string }>>({});
   const [config, setConfig] = useState<any>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
   const [configSuccess, setConfigSuccess] = useState(false);
+  const [indicatorsJsonError, setIndicatorsJsonError] = useState<string | null>(null);
+  const [antConnecting, setAntConnecting] = useState(false);
+  const [antResult, setAntResult] = useState<{ success: boolean; message: string } | null>(null);
   const [activeTab, setActiveTab] = useState('users');
   const [showAddUser, setShowAddUser] = useState(false);
   const [newUser, setNewUser] = useState({ email: '', name: '', lossLimit: '15000', lotCount: '10', role: 'user' });
   const [userError, setUserError] = useState<string | null>(null);
+
+  // Payments tab
+  const [payoutUser, setPayoutUser] = useState('');
+  const [periodStart, setPeriodStart] = useState('');
+  const [periodEnd, setPeriodEnd] = useState('');
+  const [computing, setComputing] = useState(false);
+  const [computeError, setComputeError] = useState<string | null>(null);
+  const [computed, setComputed] = useState<any>(null);
+  const [decidingId, setDecidingId] = useState<string | null>(null);
+  const [payoutNote, setPayoutNote] = useState('');
+  const [adminPayouts, setAdminPayouts] = useState<any[]>([]);
+  const [payoutsFilter, setPayoutsFilter] = useState('');
+  const [payoutsLoading, setPayoutsLoading] = useState(true);
+
+  const fetchAdminPayouts = () => {
+    setPayoutsLoading(true);
+    const qs = payoutsFilter ? `?status=${encodeURIComponent(payoutsFilter)}` : '';
+    fetch(`/admin/payouts${qs}`)
+      .then(res => res.json())
+      .then(data => { if (Array.isArray(data)) setAdminPayouts(data); })
+      .catch(() => {})
+      .finally(() => setPayoutsLoading(false));
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'payments') return;
+    fetchAdminPayouts();
+  }, [activeTab, payoutsFilter]);
+
+  const computePayout = async () => {
+    setComputeError(null);
+    setComputed(null);
+    if (!payoutUser || !periodStart || !periodEnd) {
+      setComputeError('Select a user and both dates');
+      return;
+    }
+    setComputing(true);
+    try {
+      const res = await fetch('/admin/payouts/compute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: payoutUser, periodStart, periodEnd }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to compute payout');
+      setComputed(data);
+    } catch (e: any) {
+      setComputeError(e.message);
+    } finally {
+      setComputing(false);
+    }
+  };
+
+  const createPayout = async () => {
+    setComputeError(null);
+    try {
+      const res = await fetch('/admin/payouts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: payoutUser, periodStart, periodEnd }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to create payout');
+      setComputed(null);
+      fetchAdminPayouts();
+    } catch (e: any) {
+      setComputeError(e.message);
+    }
+  };
+
+  const decidePayout = async (id: string, status: 'paid' | 'rejected') => {
+    setDecidingId(id);
+    try {
+      await fetch(`/admin/payouts/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, note: payoutNote }),
+      });
+      setPayoutNote('');
+      fetchAdminPayouts();
+    } finally {
+      setDecidingId(null);
+    }
+  };
 
   const fetchUsers = () => {
     fetch('/users')
@@ -68,7 +165,10 @@ export default function AdminPage() {
   const startEdit = (u: UserRow) => {
     setEditing(prev => ({
       ...prev,
-      [u.email]: { lossLimit: String(u.lossLimit), lotCount: String(u.lotCount), role: u.role, enabled: u.enabled ?? true },
+      [u.email]: {
+        lossLimit: String(u.lossLimit), lotCount: String(u.lotCount), role: u.role, enabled: u.enabled ?? true, useGTT: u.useGTT ?? true,
+        profitSplitPercent: String(u.profitSplitPercent ?? 80), perOrderCap: u.perOrderCap !== undefined ? String(u.perOrderCap) : '',
+      },
     }));
   };
 
@@ -91,6 +191,9 @@ export default function AdminPage() {
           lossLimit: Number(vals.lossLimit),
           lotCount: Number(vals.lotCount),
           enabled: vals.enabled,
+          useGTT: vals.useGTT,
+          profitSplitPercent: Number(vals.profitSplitPercent),
+          perOrderCap: vals.perOrderCap === '' ? undefined : Number(vals.perOrderCap),
         }),
       });
       // Update role if changed
@@ -125,6 +228,23 @@ export default function AdminPage() {
     } catch (err) {
       console.error('Config save failed:', err);
       setConfigError('Failed to save configuration');
+    }
+  };
+
+  const connectAnt = async () => {
+    setAntConnecting(true);
+    setAntResult(null);
+    try {
+      const res = await fetch('/ant/connect');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.details || data.error || 'Failed to connect');
+      }
+      setAntResult({ success: true, message: 'Connected to ANT streaming.' });
+    } catch (err: any) {
+      setAntResult({ success: false, message: err.message || 'Failed to connect to ANT streaming' });
+    } finally {
+      setAntConnecting(false);
     }
   };
 
@@ -310,12 +430,15 @@ export default function AdminPage() {
                   <th>Status</th>
                   <th>Loss Limit</th>
                   <th>Lot Count</th>
+                  <th>Profit Split %</th>
+                  <th>Per-Order Cap</th>
+                  <th>Use GTT</th>
                   <th>Session P&amp;L</th>
                   <th>Active</th>
                   <th>Email</th>
                   <th>Phone</th>
                   <th>KYC</th>
-                  <th>Actions</th>
+                  <th style={stickyActionsStyle}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -401,6 +524,57 @@ export default function AdminPage() {
                           u.lotCount
                         )}
                       </td>
+                      <td>
+                        {isEditing ? (
+                          <Form.Control
+                            size="sm"
+                            type="number"
+                            value={editing[u.email].profitSplitPercent}
+                            onChange={e => setEditing(prev => ({
+                              ...prev,
+                              [u.email]: { ...prev[u.email], profitSplitPercent: e.target.value },
+                            }))}
+                            style={{ width: 80 }}
+                          />
+                        ) : (
+                          `${u.profitSplitPercent ?? 80}%`
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <Form.Control
+                            size="sm"
+                            type="number"
+                            placeholder="none"
+                            value={editing[u.email].perOrderCap}
+                            onChange={e => setEditing(prev => ({
+                              ...prev,
+                              [u.email]: { ...prev[u.email], perOrderCap: e.target.value },
+                            }))}
+                            style={{ width: 100 }}
+                          />
+                        ) : (
+                          u.perOrderCap !== undefined ? <>&#8377;{u.perOrderCap.toLocaleString()}</> : '—'
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <Form.Check
+                            type="switch"
+                            id={`useGTT-${u.email}`}
+                            title="Broker GTT bracket at entry vs. in-app target/SL monitoring"
+                            checked={editing[u.email].useGTT}
+                            onChange={e => setEditing(prev => ({
+                              ...prev,
+                              [u.email]: { ...prev[u.email], useGTT: e.target.checked },
+                            }))}
+                          />
+                        ) : (
+                          <span className={`badge ${(u.useGTT ?? true) ? 'bg-secondary' : 'bg-info'}`}>
+                            {(u.useGTT ?? true) ? 'GTT' : 'In-app'}
+                          </span>
+                        )}
+                      </td>
                       <td className={pnlColor}>
                         {u.sessionPnL >= 0 ? '+' : ''}&#8377;{u.sessionPnL.toFixed(2)}
                       </td>
@@ -461,7 +635,7 @@ export default function AdminPage() {
                           );
                         })}
                       </td>
-                      <td>
+                      <td style={stickyActionsStyle}>
                         <div className="d-flex gap-1">
                           {isEditing ? (
                             <>
@@ -503,6 +677,34 @@ export default function AdminPage() {
             ) : config ? (
               <>
                 {configSuccess && <Alert variant="success">Configuration saved successfully!</Alert>}
+
+                <Card className="mb-3">
+                  <Card.Header className="fw-bold">ANT Streaming</Card.Header>
+                  <Card.Body>
+                    <div className="d-flex justify-content-between align-items-center flex-wrap gap-3">
+                      <div>
+                        <div className="fw-semibold">Alice Blue live market data</div>
+                        <div className="text-muted small">
+                          Starts the ANT websocket feed for this server process. Run this again after every server
+                          restart — the connection does not persist across restarts.
+                        </div>
+                      </div>
+                      <Button variant="primary" onClick={connectAnt} disabled={antConnecting}>
+                        {antConnecting ? 'Connecting…' : 'Connect'}
+                      </Button>
+                    </div>
+                    {antResult && (
+                      <Alert
+                        className="mt-3 mb-0"
+                        variant={antResult.success ? 'success' : 'danger'}
+                        dismissible
+                        onClose={() => setAntResult(null)}
+                      >
+                        {antResult.message}
+                      </Alert>
+                    )}
+                  </Card.Body>
+                </Card>
 
                 <Card className="mb-3">
                   <Card.Header className="fw-bold">Global Settings</Card.Header>
@@ -631,6 +833,200 @@ export default function AdminPage() {
                   </Card.Body>
                 </Card>
 
+                <Card className="mb-3">
+                  <Card.Header className="fw-bold">Gap Strategy</Card.Header>
+                  <Card.Body>
+                    {renderConfigField('Enabled', ['gapStrategy', 'enabled'], config.gapStrategy?.enabled, 'boolean')}
+                    <Row>
+                      <Col md={6}>
+                        {renderConfigField('Points Threshold', ['gapStrategy', 'pointsThreshold'], config.gapStrategy?.pointsThreshold)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Data Points Window', ['gapStrategy', 'numberOfDatapointsReceived'], config.gapStrategy?.numberOfDatapointsReceived)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Quantity', ['gapStrategy', 'quantity'], config.gapStrategy?.quantity)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Target Price', ['gapStrategy', 'targetPrice'], config.gapStrategy?.targetPrice)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Stop Loss Price', ['gapStrategy', 'stopLossPrice'], config.gapStrategy?.stopLossPrice)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Max Hold Time (min)', ['gapStrategy', 'maxHoldTimeMinutes'], config.gapStrategy?.maxHoldTimeMinutes)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Gap Reversal Threshold', ['gapStrategy', 'gapReversalThreshold'], config.gapStrategy?.gapReversalThreshold)}
+                      </Col>
+                    </Row>
+                    {renderConfigField('Gap Reversal Mode', ['gapStrategy', 'gapReversalMode'], config.gapStrategy?.gapReversalMode, 'boolean')}
+                    {renderConfigField('Log Enabled', ['gapStrategy', 'logEnabled'], config.gapStrategy?.logEnabled, 'boolean')}
+                  </Card.Body>
+                </Card>
+
+                <Card className="mb-3">
+                  <Card.Header className="fw-bold">Good Morning Strategy</Card.Header>
+                  <Card.Body>
+                    {renderConfigField('Enabled', ['goodMorningStrategy', 'enabled'], config.goodMorningStrategy?.enabled, 'boolean')}
+                    <Row>
+                      <Col md={6}>
+                        {renderConfigField('Quantity', ['goodMorningStrategy', 'quantity'], config.goodMorningStrategy?.quantity)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Target Points', ['goodMorningStrategy', 'targetPoints'], config.goodMorningStrategy?.targetPoints)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Stop Loss Points', ['goodMorningStrategy', 'stopLossPoints'], config.goodMorningStrategy?.stopLossPoints)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Previous Close', ['goodMorningStrategy', 'previousClose'], config.goodMorningStrategy?.previousClose)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Snapshot Time', ['goodMorningStrategy', 'snapshotTime'], config.goodMorningStrategy?.snapshotTime, 'text')}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Confirm Time', ['goodMorningStrategy', 'confirmTime'], config.goodMorningStrategy?.confirmTime, 'text')}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Min Movement Points', ['goodMorningStrategy', 'minMovementPoints'], config.goodMorningStrategy?.minMovementPoints)}
+                      </Col>
+                    </Row>
+                    {renderConfigField('Log Enabled', ['goodMorningStrategy', 'logEnabled'], config.goodMorningStrategy?.logEnabled, 'boolean')}
+                  </Card.Body>
+                </Card>
+
+                <Card className="mb-3">
+                  <Card.Header className="fw-bold">Good Morning Sensex Strategy</Card.Header>
+                  <Card.Body>
+                    {renderConfigField('Enabled', ['goodMorningSensexStrategy', 'enabled'], config.goodMorningSensexStrategy?.enabled, 'boolean')}
+                    <Row>
+                      <Col md={6}>
+                        {renderConfigField('Quantity', ['goodMorningSensexStrategy', 'quantity'], config.goodMorningSensexStrategy?.quantity)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Target Points', ['goodMorningSensexStrategy', 'targetPoints'], config.goodMorningSensexStrategy?.targetPoints)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Stop Loss Points', ['goodMorningSensexStrategy', 'stopLossPoints'], config.goodMorningSensexStrategy?.stopLossPoints)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Previous Close', ['goodMorningSensexStrategy', 'previousClose'], config.goodMorningSensexStrategy?.previousClose)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Snapshot Time', ['goodMorningSensexStrategy', 'snapshotTime'], config.goodMorningSensexStrategy?.snapshotTime, 'text')}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Confirm Time', ['goodMorningSensexStrategy', 'confirmTime'], config.goodMorningSensexStrategy?.confirmTime, 'text')}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Min Movement Points', ['goodMorningSensexStrategy', 'minMovementPoints'], config.goodMorningSensexStrategy?.minMovementPoints)}
+                      </Col>
+                    </Row>
+                    {renderConfigField('Log Enabled', ['goodMorningSensexStrategy', 'logEnabled'], config.goodMorningSensexStrategy?.logEnabled, 'boolean')}
+                  </Card.Body>
+                </Card>
+
+                <Card className="mb-3">
+                  <Card.Header className="fw-bold">Support/Resistance Strategy</Card.Header>
+                  <Card.Body>
+                    {renderConfigField('Enabled', ['supportResistanceStrategy', 'enabled'], config.supportResistanceStrategy?.enabled, 'boolean')}
+                    <Row>
+                      <Col md={6}>
+                        {renderConfigField('Support Price', ['supportResistanceStrategy', 'supportPrice'], config.supportResistanceStrategy?.supportPrice)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Resistance Price', ['supportResistanceStrategy', 'resistancePrice'], config.supportResistanceStrategy?.resistancePrice)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Quantity', ['supportResistanceStrategy', 'quantity'], config.supportResistanceStrategy?.quantity)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Target Points', ['supportResistanceStrategy', 'targetPoints'], config.supportResistanceStrategy?.targetPoints)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Stop Loss Points', ['supportResistanceStrategy', 'stopLossPoints'], config.supportResistanceStrategy?.stopLossPoints)}
+                      </Col>
+                    </Row>
+                    {renderConfigField('Log Enabled', ['supportResistanceStrategy', 'logEnabled'], config.supportResistanceStrategy?.logEnabled, 'boolean')}
+                  </Card.Body>
+                </Card>
+
+                <Card className="mb-3">
+                  <Card.Header className="fw-bold">Target Reach Strategy</Card.Header>
+                  <Card.Body>
+                    {renderConfigField('Enabled', ['targetReachStrategy', 'enabled'], config.targetReachStrategy?.enabled, 'boolean')}
+                    <Row>
+                      <Col md={6}>
+                        {renderConfigField('Symbol', ['targetReachStrategy', 'symbol'], config.targetReachStrategy?.symbol, 'text')}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Strike', ['targetReachStrategy', 'strike'], config.targetReachStrategy?.strike)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Expiry', ['targetReachStrategy', 'expiry'], config.targetReachStrategy?.expiry, 'text')}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Option Type', ['targetReachStrategy', 'optionType'], config.targetReachStrategy?.optionType, 'text')}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Target Price', ['targetReachStrategy', 'targetPrice'], config.targetReachStrategy?.targetPrice)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Quantity', ['targetReachStrategy', 'quantity'], config.targetReachStrategy?.quantity)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Target Points', ['targetReachStrategy', 'targetPoints'], config.targetReachStrategy?.targetPoints)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Stop Loss Points', ['targetReachStrategy', 'stopLossPoints'], config.targetReachStrategy?.stopLossPoints)}
+                      </Col>
+                    </Row>
+                    {renderConfigField('Log Enabled', ['targetReachStrategy', 'logEnabled'], config.targetReachStrategy?.logEnabled, 'boolean')}
+                  </Card.Body>
+                </Card>
+
+                <Card className="mb-3">
+                  <Card.Header className="fw-bold">Rule Based Strategy</Card.Header>
+                  <Card.Body>
+                    {renderConfigField('Enabled', ['ruleBasedStrategy', 'enabled'], config.ruleBasedStrategy?.enabled, 'boolean')}
+                    <Row>
+                      <Col md={6}>
+                        {renderConfigField('Quantity', ['ruleBasedStrategy', 'quantity'], config.ruleBasedStrategy?.quantity)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Target', ['ruleBasedStrategy', 'target'], config.ruleBasedStrategy?.target)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Stop Loss', ['ruleBasedStrategy', 'stopLoss'], config.ruleBasedStrategy?.stopLoss)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Max Hold Time (min)', ['ruleBasedStrategy', 'maxHoldTimeMinutes'], config.ruleBasedStrategy?.maxHoldTimeMinutes)}
+                      </Col>
+                    </Row>
+                    <Form.Group className="mb-3">
+                      <Form.Label>Indicators (JSON)</Form.Label>
+                      <Form.Control
+                        as="textarea"
+                        rows={6}
+                        className="font-monospace"
+                        value={JSON.stringify(config.ruleBasedStrategy?.indicators ?? [], null, 2)}
+                        onChange={e => {
+                          try {
+                            const parsed = JSON.parse(e.target.value);
+                            setIndicatorsJsonError(null);
+                            updateConfigValue(['ruleBasedStrategy', 'indicators'], parsed);
+                          } catch {
+                            setIndicatorsJsonError('Invalid JSON — edits will not be saved until this is fixed.');
+                          }
+                        }}
+                      />
+                      {indicatorsJsonError && <div className="text-danger small mt-1">{indicatorsJsonError}</div>}
+                    </Form.Group>
+                    {renderConfigField('Log Enabled', ['ruleBasedStrategy', 'logEnabled'], config.ruleBasedStrategy?.logEnabled, 'boolean')}
+                  </Card.Body>
+                </Card>
+
                 <div className="d-flex gap-2">
                   <Button variant="primary" onClick={saveConfig}>Save Configuration</Button>
                   <Button variant="secondary" onClick={fetchConfig}>Reset</Button>
@@ -639,6 +1035,128 @@ export default function AdminPage() {
             ) : (
               <p className="text-center text-muted py-5">No configuration data available</p>
             )}
+          </Tab>
+
+          <Tab eventKey="payments" title="Payments">
+            <Card className="mb-3">
+              <Card.Header className="fw-bold">Compute Payout</Card.Header>
+              <Card.Body>
+                <Row className="g-2 align-items-end mb-3">
+                  <Col md={4}>
+                    <Form.Group>
+                      <Form.Label className="small">User</Form.Label>
+                      <Form.Select size="sm" value={payoutUser} onChange={e => setPayoutUser(e.target.value)}>
+                        <option value="">Select user…</option>
+                        {users.map(u => <option key={u.email} value={u.email}>{u.name} ({u.email})</option>)}
+                      </Form.Select>
+                    </Form.Group>
+                  </Col>
+                  <Col md={3}>
+                    <Form.Group>
+                      <Form.Label className="small">Period From</Form.Label>
+                      <Form.Control size="sm" type="date" value={periodStart} onChange={e => setPeriodStart(e.target.value)} />
+                    </Form.Group>
+                  </Col>
+                  <Col md={3}>
+                    <Form.Group>
+                      <Form.Label className="small">Period To</Form.Label>
+                      <Form.Control size="sm" type="date" value={periodEnd} onChange={e => setPeriodEnd(e.target.value)} />
+                    </Form.Group>
+                  </Col>
+                  <Col md={2}>
+                    <Button size="sm" variant="primary" onClick={computePayout} disabled={computing}>
+                      {computing ? <Spinner animation="border" size="sm" /> : 'Compute'}
+                    </Button>
+                  </Col>
+                </Row>
+
+                {computeError && <Alert variant="danger" dismissible onClose={() => setComputeError(null)}>{computeError}</Alert>}
+
+                {computed && (
+                  <div className="border rounded p-3 bg-light">
+                    <div className="d-flex justify-content-between"><span>Gross Profit</span><span>&#8377;{computed.grossProfit.toFixed(2)}</span></div>
+                    <div className="d-flex justify-content-between">
+                      <span>Profit Split ({computed.profitSplitPercent}%)</span><span>&#8377;{computed.splitAmount.toFixed(2)}</span>
+                    </div>
+                    <div className="d-flex justify-content-between">
+                      <span>{computed.entityType === 'company' ? 'GST Registered — No TDS' : 'Individual TDS (10%)'}</span>
+                      <span>&#8377;{computed.tdsAmount.toFixed(2)}</span>
+                    </div>
+                    <div className="d-flex justify-content-between fw-bold border-top pt-1 mt-1">
+                      <span>Net Payable</span><span>&#8377;{computed.netAmount.toFixed(2)}</span>
+                    </div>
+                    {computed.blocked && (
+                      <Alert variant="warning" className="small mt-3 mb-0">
+                        ⚠ {computed.blockReason}
+                      </Alert>
+                    )}
+                    <div className="mt-3">
+                      <Form.Control
+                        size="sm"
+                        placeholder="Note (optional)"
+                        value={payoutNote}
+                        onChange={e => setPayoutNote(e.target.value)}
+                        className="mb-2"
+                      />
+                      <Button size="sm" variant="success" onClick={createPayout}>
+                        {computed.blocked ? 'Record as Rejected' : 'Create Pending Payout'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </Card.Body>
+            </Card>
+
+            <Card>
+              <Card.Header className="fw-bold d-flex justify-content-between align-items-center">
+                All Payouts
+                <Form.Select size="sm" style={{ width: 160 }} value={payoutsFilter} onChange={e => setPayoutsFilter(e.target.value)}>
+                  <option value="">All statuses</option>
+                  <option value="pending">Pending</option>
+                  <option value="paid">Paid</option>
+                  <option value="rejected">Rejected</option>
+                </Form.Select>
+              </Card.Header>
+              <Card.Body className="p-0">
+                {payoutsLoading ? (
+                  <div className="text-center py-4"><Spinner animation="border" /></div>
+                ) : adminPayouts.length === 0 ? (
+                  <p className="text-center text-muted py-4 mb-0">No payouts found.</p>
+                ) : (
+                  <Table striped hover responsive className="mb-0">
+                    <thead>
+                      <tr>
+                        <th>User</th><th>Period</th><th>Gross</th><th>Net</th><th>Status</th><th>Note</th><th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminPayouts.map(p => (
+                        <tr key={p._id}>
+                          <td>{p.user}</td>
+                          <td>{new Date(p.periodStart).toLocaleDateString()} – {new Date(p.periodEnd).toLocaleDateString()}</td>
+                          <td>&#8377;{p.grossProfit.toFixed(2)}</td>
+                          <td>&#8377;{p.netAmount.toFixed(2)}</td>
+                          <td>
+                            <span className={`badge ${p.status === 'paid' ? 'bg-success' : p.status === 'rejected' ? 'bg-danger' : 'bg-warning text-dark'}`}>
+                              {p.status}
+                            </span>
+                          </td>
+                          <td className="small text-muted">{p.adminNote || '—'}</td>
+                          <td>
+                            {p.status === 'pending' && (
+                              <div className="d-flex gap-1">
+                                <Button size="sm" variant="success" disabled={decidingId === p._id} onClick={() => decidePayout(p._id, 'paid')}>Mark Paid</Button>
+                                <Button size="sm" variant="outline-danger" disabled={decidingId === p._id} onClick={() => decidePayout(p._id, 'rejected')}>Reject</Button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </Table>
+                )}
+              </Card.Body>
+            </Card>
           </Tab>
         </Tabs>
       </Container>
