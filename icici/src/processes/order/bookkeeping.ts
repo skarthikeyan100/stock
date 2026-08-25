@@ -4,6 +4,7 @@ import { Trade } from '../../model/model';
 import { UserContext } from '../../user';
 import { PUT, CALL, USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../../constants';
 import * as exitMonitor from './exitMonitor';
+import configService from '../../prism/ConfigService';
 
 // Order-process-local replacement for Monitor's bookkeeping (trades/closedTrades,
 // risk limits, order<->user attribution, P&L). Ported from src/monitor.ts, with
@@ -16,6 +17,7 @@ import * as exitMonitor from './exitMonitor';
 
 type FillListener = (userId: string, trade: Trade) => void;
 type PositionsChangedListener = () => void;
+type DrawdownBreachListener = (userId: string) => void;
 
 interface UserSettings {
     lossLimit: number;
@@ -41,9 +43,20 @@ class OrderBookkeeping {
     userSettingsCache: Map<string, UserSettings> = new Map();
     private fillListeners: FillListener[] = [];
     private positionsChangedListeners: PositionsChangedListener[] = [];
+    private drawdownBreachListeners: DrawdownBreachListener[] = [];
 
     onFill(listener: FillListener) {
         this.fillListeners.push(listener);
+    }
+
+    // Registered from orderProcess.ts (which has access to both broker
+    // executors - bookkeeping.ts can't import them, they already import it,
+    // same problem exitMonitor.ts's onExit(broker, handler) solves). Fired
+    // from _processTradeEvent when a closing trade pushes the user past the
+    // daily or monthly drawdown limit, so the listener can square off their
+    // remaining open positions.
+    onDrawdownBreach(listener: DrawdownBreachListener) {
+        this.drawdownBreachListeners.push(listener);
     }
 
     // Broader than onFill - fires on every trades/closedTrades mutation
@@ -104,6 +117,22 @@ class OrderBookkeeping {
         return 65;
     }
 
+    // Broker-agnostic manual-buy sizing: an explicit quantity always wins;
+    // otherwise a user on investmentMode='investmentAmount' gets as many
+    // lots as their remaining capital covers at the given price (at least
+    // one lot if they have any headroom at all), and everyone else falls
+    // back to a single lot - unchanged from the prior default behavior.
+    resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number): number {
+        if (explicitQuantity !== undefined) return explicitQuantity;
+        const lotSize = this.getInstrumentLotSize(tsym);
+        const ctx = this.getUserContext(userId);
+        if (ctx.investmentMode === 'investmentAmount' && ctx.availableAmount > 0 && price > 0) {
+            const lots = Math.max(1, Math.floor(ctx.availableAmount / (price * lotSize)));
+            return lots * lotSize;
+        }
+        return lotSize;
+    }
+
     getTradedLots(user: string): number {
         return this.trades
             .filter((t) => t.user === user)
@@ -114,10 +143,6 @@ class OrderBookkeeping {
         return this.trades.some((t) => t.user === user) || this.pendingUsers.has(user);
     }
 
-    isLossLimitReached(user: string): boolean {
-        return (this.userPnL.get(user) || 0) <= -this.getUserLossLimit(user);
-    }
-
     getCurrentInvestment(user: string): number {
         return this.trades.filter((t) => t.user === user).reduce((sum, t) => sum + t.price * t.quantity, 0);
     }
@@ -126,19 +151,86 @@ class OrderBookkeeping {
         return this.getCurrentInvestment(user) >= this.getUserMaxInvestment(user);
     }
 
+    private static startOfDay(): Date {
+        const d = new Date();
+        d.setHours(0, 0, 0, 0);
+        return d;
+    }
+
+    private static startOfMonth(): Date {
+        const d = new Date();
+        d.setDate(1);
+        d.setHours(0, 0, 0, 0);
+        return d;
+    }
+
+    // Realized P&L only (not unrealized/open-position exposure), summed from
+    // the closedTrades collection (see persistClosedTrade) rather than the
+    // in-memory, never-resetting userPnL map, so the daily/monthly window is
+    // correct across process restarts. Returns 0 (never blocks) on a Mongo
+    // hiccup - matches this file's existing "don't let Mongo block live
+    // trading" convention (see persistClosedTrade's comment).
+    private async getRealizedPnLSince(user: string, since: Date): Promise<number> {
+        try {
+            const db = Mongo.getInstance()?.db;
+            if (!db) return 0;
+            const rows = await db.collection('closedTrades').find({ user, exitTime: { $gte: since } }).toArray();
+            return rows.reduce((sum, r) => sum + (r.realizedPnL || 0), 0);
+        } catch (e) {
+            Log.log('[order] getRealizedPnLSince failed (not blocking on this):', e);
+            return 0;
+        }
+    }
+
+    // Only users with an investmentAmount configured are subject to these -
+    // strategy pseudo-users (see orderProcess.ts loadUserLimits) never get
+    // investmentAmount populated, and 25%/50% of an unset (0) amount would
+    // instantly block every automated strategy.
+    async isDailyDrawdownBreached(user: string): Promise<boolean> {
+        const investmentAmount = this.userSettingsCache.get(user)?.investmentAmount;
+        if (!investmentAmount) return false;
+        const settings = configService.getConfig().settings as any;
+        const limitPercent = settings.maxDailyDrawdownPercent ?? 25;
+        const pnl = await this.getRealizedPnLSince(user, OrderBookkeeping.startOfDay());
+        return pnl <= -(investmentAmount * limitPercent) / 100;
+    }
+
+    async isMonthlyDrawdownBreached(user: string): Promise<boolean> {
+        const investmentAmount = this.userSettingsCache.get(user)?.investmentAmount;
+        if (!investmentAmount) return false;
+        const settings = configService.getConfig().settings as any;
+        const limitPercent = settings.maxMonthlyDrawdownPercent ?? 50;
+        const pnl = await this.getRealizedPnLSince(user, OrderBookkeeping.startOfMonth());
+        return pnl <= -(investmentAmount * limitPercent) / 100;
+    }
+
+    // Counts trades opened today: closed trades (from Mongo, by entryTime)
+    // plus currently-open trades (from in-memory state, also by entryTime) -
+    // a trade opened today counts toward the cap whether or not it's closed
+    // yet.
+    async hasReachedDailyTradeLimit(user: string): Promise<boolean> {
+        const settings = configService.getConfig().settings as any;
+        const maxTradesPerDay = settings.maxTradesPerDay ?? 10;
+        const since = OrderBookkeeping.startOfDay();
+        let closedToday = 0;
+        try {
+            const db = Mongo.getInstance()?.db;
+            if (db) closedToday = await db.collection('closedTrades').countDocuments({ user, entryTime: { $gte: since } });
+        } catch (e) {
+            Log.log('[order] hasReachedDailyTradeLimit count failed (not blocking on this):', e);
+        }
+        const openToday = this.trades.filter((t) => t.user === user && t.entryTime && t.entryTime >= since).length;
+        return closedToday + openToday >= maxTradesPerDay;
+    }
+
     // estimatedOrderValue is necessarily approximate for index-based buys
     // (niftyLtp * quantity - the real option premium isn't known until
     // contract selection) but exact for buyContract's price * quantity.
-    canPlaceOrder(user: string, estimatedOrderValue?: number): { allowed: boolean; reason?: string } {
+    async canPlaceOrder(user: string, estimatedOrderValue?: number): Promise<{ allowed: boolean; reason?: string }> {
         const tradedLots = this.getTradedLots(user);
         const lotLimit = this.getUserLotLimit(user);
         if (tradedLots >= lotLimit) {
             return { allowed: false, reason: `User '${user}' has reached the lot limit (${tradedLots}/${lotLimit} lots).` };
-        }
-        if (this.isLossLimitReached(user)) {
-            const reason = `User '${user}' has reached the session loss limit. P&L: ${this.userPnL.get(user) || 0}, Limit: ${this.getUserLossLimit(user)}`;
-            this.logOrderRejection(user, reason);
-            return { allowed: false, reason };
         }
         if (this.isInvestmentLimitReached(user)) {
             return { allowed: false, reason: `User '${user}' has reached max investment (${this.getCurrentInvestment(user)}/${this.getUserMaxInvestment(user)}).` };
@@ -146,6 +238,19 @@ class OrderBookkeeping {
         const perOrderCap = this.getUserPerOrderCap(user);
         if (estimatedOrderValue !== undefined && perOrderCap !== undefined && estimatedOrderValue > perOrderCap) {
             return { allowed: false, reason: `Order value ₹${estimatedOrderValue.toFixed(2)} exceeds per-order cap ₹${perOrderCap}.` };
+        }
+        if (await this.isDailyDrawdownBreached(user)) {
+            const reason = `User '${user}' has reached the maximum daily drawdown.`;
+            this.logOrderRejection(user, reason);
+            return { allowed: false, reason };
+        }
+        if (await this.isMonthlyDrawdownBreached(user)) {
+            const reason = `User '${user}' has reached the maximum monthly drawdown.`;
+            this.logOrderRejection(user, reason);
+            return { allowed: false, reason };
+        }
+        if (await this.hasReachedDailyTradeLimit(user)) {
+            return { allowed: false, reason: `User '${user}' has reached the maximum number of trades for today.` };
         }
         return { allowed: true };
     }
@@ -289,18 +394,54 @@ class OrderBookkeeping {
             if (index != -1) {
                 const buyTrade = this.trades[index];
                 const user = buyTrade.user || 'Default';
-                const realizedPnL = (tradeEvent.price - buyTrade.price) * buyTrade.quantity;
-                buyTrade.open = false;
-                buyTrade.realizedPnL = realizedPnL;
-                buyTrade.exitTime = new Date();
+
+                // A single tsym+user entry here is an aggregate over every buy
+                // seen for that contract (see the Buy branch above) - a strategy
+                // that stacks multiple concurrent legs on the same contract
+                // (e.g. ContinuousStrategy's spawn levels) can sell less than
+                // the full aggregate in one fill. Reduce by the sold quantity
+                // instead of closing the whole aggregate, so the remainder
+                // stays tracked as open (was previously deleted outright on any
+                // sell, silently orphaning the rest of the position from
+                // bookkeeping - and therefore from capitalCheck/getCurrentInvestment
+                // - even though it was still open at the broker).
+                let sellQty = tradeEvent.quantity;
+                if (sellQty > buyTrade.quantity) {
+                    Log.log(`[order] WARNING: sell qty ${sellQty} for ${tradeEvent.tsym} (${user}) exceeds tracked open qty ${buyTrade.quantity} - clamping; bookkeeping may be desynced from the broker`);
+                    sellQty = buyTrade.quantity;
+                }
+
+                const realizedPnL = (tradeEvent.price - buyTrade.price) * sellQty;
                 const cumulative = (this.userPnL.get(user) || 0) + realizedPnL;
                 this.userPnL.set(user, cumulative);
                 Log.log(`[order] User '${user}' closed. P&L: ${realizedPnL.toFixed(2)}, Cumulative: ${cumulative.toFixed(2)}`);
                 this.checkDrawdownNotification(user, cumulative);
-                this.closedTrades.push(buyTrade);
-                this.persistClosedTrade(buyTrade, user, tradeEvent.price);
-                this.trades.splice(index, 1);
-                if (buyTrade.token) exitMonitor.unregisterTrade(buyTrade.token);
+
+                const closedPortion = new Trade();
+                closedPortion.tsym = buyTrade.tsym;
+                closedPortion.token = buyTrade.token;
+                closedPortion.right = buyTrade.right;
+                closedPortion.quantity = sellQty;
+                closedPortion.price = buyTrade.price;
+                closedPortion.action = 'Sell';
+                closedPortion.user = user;
+                closedPortion.open = false;
+                closedPortion.realizedPnL = realizedPnL;
+                closedPortion.entryTime = buyTrade.entryTime;
+                closedPortion.exitTime = new Date();
+                closedPortion.strategy = buyTrade.strategy;
+                this.closedTrades.push(closedPortion);
+                this.persistClosedTrade(closedPortion, user, tradeEvent.price);
+
+                buyTrade.quantity -= sellQty;
+                if (buyTrade.quantity <= 0) {
+                    this.trades.splice(index, 1);
+                    if (buyTrade.token) exitMonitor.unregisterTrade(buyTrade.token);
+                }
+
+                if ((await this.isDailyDrawdownBreached(user)) || (await this.isMonthlyDrawdownBreached(user))) {
+                    for (const l of this.drawdownBreachListeners) l(user);
+                }
             }
         }
         this.notifyPositionsChanged();

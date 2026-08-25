@@ -27,7 +27,7 @@ interface TradingState {
   isOrderDisabled: boolean;
   orderError: string | null;
   placeOrder: (right: string) => Promise<void>;
-  placeContractOrder: (contract: string) => Promise<void>;
+  placeContractOrder: (contract: string, targetPoints?: number, stopLossPoints?: number) => Promise<void>;
   squareOff: (token: string, qty: number) => Promise<void>;
   setTargetStopLoss: (token: string, targetPoints: number, stopLossPoints: number) => Promise<void>;
   clearError: () => void;
@@ -158,12 +158,15 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     }
   }, [user?.email]);
 
-  const placeContractOrder = useCallback(async (contract: string) => {
+  const placeContractOrder = useCallback(async (contract: string, targetPoints?: number, stopLossPoints?: number) => {
     setPlacingOrder(true);
     setOrderError(null);
     try {
+      const params = new URLSearchParams({ contract });
+      if (targetPoints !== undefined) params.set('targetPoints', String(targetPoints));
+      if (stopLossPoints !== undefined) params.set('stopLossPoints', String(stopLossPoints));
       const response = await fetch(
-        `/prism/order/buy?contract=${encodeURIComponent(contract)}`,
+        `/prism/order/buy?${params.toString()}`,
         { headers: { 'X-User-Id': user?.email || 'Default' } }
       );
       if (!response.ok) {

@@ -132,7 +132,14 @@ class AntContractMaster {
   }): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
     const { symbol, exch, strike, optionType, expiryOffset = 0 } = params;
     const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
-    const now = Date.now();
+    // 'Expiry Date' is stored as midnight UTC of the expiry date (confirmed:
+    // today's contract carries exactly 00:00:00 UTC = 5:30am IST) - comparing
+    // against the raw current instant excluded a contract expiring LATER
+    // TODAY for the rest of the trading day, every single week, since market
+    // hours are entirely after 5:30am IST. Compare against the start of
+    // today (UTC) instead, mirroring ZerodhaContractMaster's day-truncated
+    // comparison (`today.setHours(0,0,0,0)`) so a same-day expiry still counts.
+    const todayStartUtc = Math.floor(Date.now() / 86400000) * 86400000;
 
     const candidates = cache
       .filter(
@@ -141,7 +148,7 @@ class AntContractMaster {
           r.Exch === exch &&
           Number(r['Strike Price']) === strike &&
           r['Option Type'] === optionType &&
-          parseInt(r['Expiry Date']) >= now
+          parseInt(r['Expiry Date']) >= todayStartUtc
       )
       .sort((a, b) => parseInt(a['Expiry Date']) - parseInt(b['Expiry Date']));
 

@@ -147,6 +147,13 @@ class ANT {
         }
     }
 
+    // Public re-read hook: called after a fresh OAuth login completes in a different
+    // process (frontend), so this already-running singleton (e.g. in `data`) picks
+    // up the new token without a restart. Mirrors Zerodha.ts's reloadSession.
+    reloadSession(): void {
+        this.loadSession();
+    }
+
     getUserSession(): string | null {
         return this.userSession;
     }
@@ -247,6 +254,62 @@ class ANT {
             throw new Error(`ANT getQuote failed for ${exchange}|${token}: ${JSON.stringify(resp.data)}`);
         }
         return Number(ltp);
+    }
+
+    // Batched sibling of getQuote - same endpoint, but sends every requested
+    // (exchange, token) pair in one call instead of one call each. AliceBlue's
+    // OHLC endpoint rate-limits (429) after just 1-2 rapid sequential single
+    // calls (confirmed live) - a strike-range walk that checks several
+    // candidates' premiums must batch them into one request instead of
+    // looping getQuote(), or most candidates silently read as "no data".
+    // Matched by the response's own `tk` field - order isn't guaranteed.
+    async getQuotes(requests: { exchange: string; token: string }[]): Promise<Map<string, number>> {
+        if (requests.length === 0) return new Map();
+        const resp = await axios.post(
+            'https://a3.aliceblueonline.com/open-api/od/ChartAPIService/chart/get/multi/ohlc',
+            requests.map((r) => ({ exchange: r.exchange, token: r.token })),
+            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+        );
+        const map = new Map<string, number>();
+        for (const row of resp.data?.result ?? []) {
+            if (row?.tk != null && row?.ltp != null) map.set(String(row.tk), Number(row.ltp));
+        }
+        return map;
+    }
+
+    // Put-Call Ratio from AliceBlue's Option Chain API (v2, obrest/optionChain) -
+    // nearest expiry only, summed over strikes within `window` points of `spot`.
+    // Field shape confirmed live: getUnderlyingExp -> result[0].underlying_expiry[]
+    // (nearest-first); getOptionChain -> result[0].data[] of {strikeprice, CE:{oi,...}, PE:{oi,...}}.
+    async getOptionChainPCR(underlying: string, spot: number, window: number): Promise<number> {
+        const expResp = await axios.post(
+            'https://a3.aliceblueonline.com/obrest/optionChain/getUnderlyingExp',
+            { underlying },
+            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+        );
+        const expiry = expResp.data?.result?.[0]?.underlying_expiry?.[0];
+        if (!expiry) {
+            throw new Error(`ANT getOptionChainPCR: no expiry for ${underlying}: ${JSON.stringify(expResp.data)}`);
+        }
+
+        const chainResp = await axios.post(
+            'https://a3.aliceblueonline.com/obrest/optionChain/getOptionChain',
+            { underlying, expiry, interval: 5, exch: 'nse_fo' },
+            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+        );
+        const rows = chainResp.data?.result?.[0]?.data ?? [];
+        let ceOi = 0;
+        let peOi = 0;
+        for (const row of rows) {
+            const strike = Number(row.strikeprice);
+            if (Math.abs(strike - spot) > window) continue;
+            ceOi += Number(row.CE?.oi ?? 0);
+            peOi += Number(row.PE?.oi ?? 0);
+        }
+        if (ceOi === 0) {
+            throw new Error(`ANT getOptionChainPCR: no CE OI in +/-${window} window around ${spot}`);
+        }
+        return peOi / ceOi;
     }
 
     // ORDER PLACEMENT — AliceBlue's own documentation disagrees with itself on

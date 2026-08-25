@@ -27,11 +27,18 @@ export default function TradingPage() {
       <div className={`pnl-bar bg-${totalColor} bg-opacity-10 border-bottom`}>
         <Container className="py-2 d-flex justify-content-between align-items-center" style={{ position: 'relative' }}>
           <div className="d-flex align-items-center gap-2">
-            {user?.picture && <img src={user.picture} alt="" width={28} height={28} className="rounded-circle" />}
-            <span className="fw-bold">{user?.name || 'PropFirm Trading'}</span>
+            <div
+              className="d-flex align-items-center gap-2"
+              role="button"
+              style={{ cursor: 'pointer' }}
+              onClick={() => navigate('/app/profile')}
+              title="View profile"
+            >
+              {user?.picture && <img src={user.picture} alt="" width={28} height={28} className="rounded-circle" />}
+              <span className="fw-bold">{user?.name || 'PropFirm Trading'}</span>
+            </div>
             <NotificationBell />
             <Button variant="outline-secondary" size="sm" onClick={() => navigate('/app/profile')}>Profile</Button>
-            <Button variant="outline-secondary" size="sm" onClick={() => navigate('/app/payouts')}>Payouts</Button>
             {isAdmin && (
               <Button variant="outline-primary" size="sm" onClick={() => navigate('/app/admin')}>Admin</Button>
             )}

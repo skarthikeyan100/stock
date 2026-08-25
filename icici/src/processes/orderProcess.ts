@@ -18,12 +18,14 @@ import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
-import { buyIndexOnZerodha, squareOffOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills } from './order/zerodhaExecutor';
+import { buyIndexOnZerodha, squareOffOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, getContractByPriceRangeOnZerodha } from './order/zerodhaExecutor';
+import { pollPendingLimitOrders } from './order/pendingLimitOrders';
 import * as antExecutor from './order/antExecutor';
 import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
 import * as prismExecutor from './order/prismExecutor';
 import Zerodha from '../zerodha/Zerodha';
+import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
 import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../constants';
 import { getUser } from '../user';
@@ -56,10 +58,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     try {
         switch (req.type) {
             case 'canPlaceOrder':
-                return { kind: 'response', id: req.id, ok: true, result: bookkeeping.canPlaceOrder(req.userId) };
+                return { kind: 'response', id: req.id, ok: true, result: await bookkeeping.canPlaceOrder(req.userId) };
 
             case 'buyIndex': {
-                const validation = bookkeeping.canPlaceOrder(req.userId);
+                const validation = await bookkeeping.canPlaceOrder(req.userId);
                 if (!validation.allowed) {
                     return { kind: 'response', id: req.id, ok: false, error: validation.reason };
                 }
@@ -93,7 +95,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'antBuyIndex': {
-                const validation = bookkeeping.canPlaceOrder(req.userId);
+                const validation = await bookkeeping.canPlaceOrder(req.userId);
                 if (!validation.allowed) {
                     return { kind: 'response', id: req.id, ok: false, error: validation.reason };
                 }
@@ -104,7 +106,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'antManualBuy': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                const validation = bookkeeping.canPlaceOrder(req.userId, estimatedValue);
+                const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedValue);
                 if (!validation.allowed) {
                     return { kind: 'response', id: req.id, ok: false, error: validation.reason };
                 }
@@ -132,7 +134,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'buyContract': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                const validation = bookkeeping.canPlaceOrder(req.userId, estimatedValue);
+                const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedValue);
                 if (!validation.allowed) {
                     return { kind: 'response', id: req.id, ok: false, error: validation.reason };
                 }
@@ -190,12 +192,15 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'manualBuy': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                const validation = bookkeeping.canPlaceOrder(req.userId, estimatedValue);
+                const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedValue);
                 if (!validation.allowed) {
                     return { kind: 'response', id: req.id, ok: false, error: validation.reason };
                 }
                 bookkeeping.pendingUsers.add(req.userId);
-                const result = await manualBuyOnZerodha({ userId: req.userId, ...req.payload });
+                const manualBuyBroker = bookkeeping.getUserBroker(req.userId);
+                const result = manualBuyBroker === 'ant'
+                    ? await antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload })
+                    : await manualBuyOnZerodha({ userId: req.userId, ...req.payload });
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -255,6 +260,45 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
+            // ContinuousStrategy's bare Zerodha execution path - see zerodhaExecutor.ts.
+            case 'buyContractZerodhaBare': {
+                const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
+                const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedValue);
+                if (!validation.allowed) {
+                    return { kind: 'response', id: req.id, ok: false, error: validation.reason };
+                }
+                bookkeeping.pendingUsers.add(req.userId);
+                const result = await marketBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'sellContractZerodhaBare': {
+                const result = await marketSellBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'placeLimitBuyZerodhaBare': {
+                const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
+                const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedValue);
+                if (!validation.allowed) {
+                    return { kind: 'response', id: req.id, ok: false, error: validation.reason };
+                }
+                bookkeeping.pendingUsers.add(req.userId);
+                const result = await placeLimitBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'getContractByPriceRangeZerodha': {
+                const excludeStrikes = new Set<number>(req.payload.excludeStrikes || []);
+                const result = await getContractByPriceRangeOnZerodha(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'getPCR': {
+                const result = await ANT.getInstance().getOptionChainPCR(req.payload.underlying, req.payload.spot, req.payload.window);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
             default:
                 return { kind: 'response', id: req.id, ok: false, error: `Unknown request type: ${(req as any).type}` };
         }
@@ -293,9 +337,28 @@ async function main() {
     await Mongo.init().catch((e) => Log.log('[order] Mongo.init failed (continuing without persistence):', e));
     await loadUserLimits();
 
+    // Auto-squareoff on daily/monthly drawdown breach (see bookkeeping.ts's
+    // isDailyDrawdownBreached/isMonthlyDrawdownBreached, checked after every
+    // closing trade) - closes a snapshot of the user's remaining open
+    // positions through their configured broker. Each squareoff's own Sell
+    // fill re-enters this same check, which is safe: it only ever acts on
+    // trades still open at that moment, so it converges once none are left.
+    bookkeeping.onDrawdownBreach(async (user) => {
+        const broker = bookkeeping.getUserBroker(user);
+        for (const trade of bookkeeping.trades.filter((t) => t.user === user)) {
+            try {
+                if (broker === 'ant') await antExecutor.squareOffOnAnt(user, trade.tsym, trade.quantity);
+                else await squareOffOnZerodha(user, trade.tsym, trade.quantity);
+            } catch (e) {
+                Log.log('[order] Auto-squareoff on drawdown breach failed for', trade.tsym, e);
+            }
+        }
+    });
+
     AntOrderNotifyStream.getInstance().connect().catch((e) => Log.log('[order] AntOrderNotifyStream connect failed (ANT fills will not resolve until this connects):', e));
 
     setInterval(() => pollGttFills().catch((e) => Log.log('[order] pollGttFills failed:', e)), 60_000);
+    setInterval(() => pollPendingLimitOrders().catch((e) => Log.log('[order] pollPendingLimitOrders failed:', e)), 15_000);
 
     readJsonLines(
         process.stdin,

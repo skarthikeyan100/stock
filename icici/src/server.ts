@@ -23,6 +23,8 @@ import { getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, 
 import { computePayout, createPayoutRecord, markPayoutDecision, generateInvoiceHtml, getPayoutDecisionLog } from './payout';
 import multer from 'multer';
 import { GridFSBucket, ObjectId } from 'mongodb';
+import Tesseract from 'tesseract.js';
+import sharp from 'sharp';
 import Decision from './decision';
 import Mongo from './tools/mongo';
 import myEmitter from './tools/emitter';
@@ -291,8 +293,8 @@ app.patch('/users/:email/entity-type', async function (req, res) {
 app.patch('/users/:email/company-profile', async function (req, res) {
     try {
         const { email } = req.params;
-        const { gstin, companyRegisteredName, companyRegisteredAddress } = req.body;
-        const user = await updateCompanyProfile(email, { gstin, companyRegisteredName, companyRegisteredAddress });
+        const { gstin, companyRegisteredName } = req.body;
+        const user = await updateCompanyProfile(email, { gstin, companyRegisteredName });
         if (!user) { res.status(404).json({ error: 'User not found' }); return; }
         res.json(toClientUser(user));
     } catch (e: any) {
@@ -326,6 +328,55 @@ app.patch('/users/:email/verify', async function (req, res) {
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
+// Extracts the PAN/Aadhaar number directly from the uploaded document via
+// OCR, rather than trusting a self-typed number that might not match the
+// proof actually on file. PDFs are rasterized to a PNG (first page) before
+// OCR - tesseract can't read a PDF's text layer/vector content directly, and
+// scanned KYC documents usually have no text layer to read anyway.
+//
+// A raw full-page/full-photo render defeats Tesseract outright (confirmed
+// live: a card occupying a fraction of an A4 page yields 0 confidence, even
+// at high scale) - it needs to be trimmed down to just the card first. And a
+// phone photo or scan is routinely landscape/upside-down relative to the
+// page, which plain OCR also can't handle. So: auto-trim the whitespace
+// border (sharp's default trim threshold is too strict for the light
+// background texture typical of these cards - 50 was verified live against
+// real PAN/Aadhaar documents), then try each rotation in turn, applying
+// grayscale+normalize before each attempt (also verified necessary live -
+// the guilloche watermark pattern on these cards otherwise confuses
+// Tesseract's text detection), stopping at the first rotation that yields a
+// valid-looking match.
+const PAN_NUMBER_PATTERN = /[A-Z]{5}[0-9]{4}[A-Z]/;
+const AADHAR_NUMBER_PATTERN = /\d{4}[\s-]?\d{4}[\s-]?\d{4}/;
+const OCR_TRIM_THRESHOLD = 50;
+const OCR_ROTATIONS = [0, 90, 180, 270] as const;
+
+async function extractIdNumber(docType: 'pan' | 'aadhar', buffer: Buffer, mimetype: string): Promise<string | null> {
+    let imageBuffer: Buffer = buffer;
+    if (mimetype === 'application/pdf') {
+        // pdf-to-img is ESM-only; this project compiles to CommonJS, so it
+        // must be dynamically imported rather than statically at the top of
+        // the file.
+        const { pdf } = await import('pdf-to-img');
+        const doc = await pdf(buffer, { scale: 5 });
+        imageBuffer = await doc.getPage(1);
+        await doc.destroy();
+    }
+
+    const trimmed = await sharp(imageBuffer).trim({ threshold: OCR_TRIM_THRESHOLD }).toBuffer().catch(() => imageBuffer);
+    const pattern = docType === 'pan' ? PAN_NUMBER_PATTERN : AADHAR_NUMBER_PATTERN;
+
+    for (const angle of OCR_ROTATIONS) {
+        const attempt = await sharp(trimmed).rotate(angle).grayscale().normalize().png().toBuffer();
+        // tesseract.js's type defs don't list Buffer under ImageLike, but its
+        // Node runtime accepts one directly (documented usage) - safe cast.
+        const { data: { text } } = await Tesseract.recognize(attempt as any, 'eng');
+        const match = text.toUpperCase().match(pattern);
+        if (match) return match[0].replace(/[\s-]/g, '');
+    }
+    return null;
+}
+
 app.post('/users/:email/documents/:docType', upload.single('file'), async function (req, res) {
     try {
         const { email, docType } = req.params;
@@ -349,7 +400,21 @@ app.post('/users/:email/documents/:docType', upload.single('file'), async functi
         const fieldMap: Record<string, string> = { address: 'addressProofId', dob: 'dobProofId', pan: 'panCardId', aadhar: 'aadharDocId', gst: 'gstDocId' };
         const field = fieldMap[docType];
         await Mongo.getInstance().db.collection('users').updateOne({ email }, { $set: { [field]: uploadStream.id.toString() } });
-        res.json({ id: uploadStream.id.toString(), filename });
+
+        let numberExtracted = false;
+        if ((docType === 'pan' || docType === 'aadhar') && (req.file.mimetype.startsWith('image/') || req.file.mimetype === 'application/pdf')) {
+            try {
+                const extracted = await extractIdNumber(docType, req.file.buffer, req.file.mimetype);
+                if (extracted) {
+                    await updateSensitiveField(email, docType === 'pan' ? 'panNumber' : 'aadharNumber', extracted);
+                    numberExtracted = true;
+                }
+            } catch (e) {
+                console.error(`OCR extraction failed for ${docType}:`, e);
+            }
+        }
+
+        res.json({ id: uploadStream.id.toString(), filename, numberExtracted });
     } catch (e) {
         console.error('Document upload error:', e);
         res.sendStatus(500);
@@ -592,6 +657,10 @@ app.get('/ant/callback', async function (req, res) {
         const result = await ant.exchangeAuthCodeForToken(userId, authCode);
         antAccessToken = result.userSession;
         res.cookie('ant_session', result.userSession, { signed: true, httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
+        // Tell `data` to (re)connect now that a session exists - same mechanism
+        // /ant/connect uses (see below), needed here since `data` typically
+        // started before this login flow completed and may not be connected yet.
+        writeJsonLine(process.stdout, { cmd: 'reconnect' });
         Log.log('ANT Authentication successful. Token stored.');
         res.redirect(302, '/app');
     } catch (e: any) {
@@ -731,7 +800,7 @@ app.get('/prism/orderbook', async function (req: express.Request, res) {
 
 app.get('/prism/order/buy', async function (req: express.Request, res) {
     try {
-        const { right, index, strikePrice, price, contract } = req.query;
+        const { right, index, strikePrice, price, contract, targetPoints, stopLossPoints } = req.query;
         const user = resolveUser(req);
         Log.log('Resolved order while placing an order ', user);
         const result = await orderClient.manualBuy(user, {
@@ -740,6 +809,8 @@ app.get('/prism/order/buy', async function (req: express.Request, res) {
             contract: contract as string,
             strikePrice: strikePrice ? parseInt(strikePrice as string) : undefined,
             price: price ? parseFloat(price as string) : undefined,
+            targetPoints: targetPoints ? parseFloat(targetPoints as string) : undefined,
+            stopLossPoints: stopLossPoints ? parseFloat(stopLossPoints as string) : undefined,
         });
         res.json(result);
     } catch (e: any) {
@@ -939,6 +1010,22 @@ app.get('/admin/trades/closed', async function (req, res) {
         res.json(trades);
     } catch (e) {
         Log.log('Admin get closed trade history error:', e);
+        res.sendStatus(500);
+    }
+});
+
+// Admin, all-users (or one user via ?user=) view of currently open trades -
+// mirrors /admin/trades/closed's optional-user-filter shape, but reads the
+// same in-memory order-process bookkeeping /openTrades does (open trades
+// aren't in Mongo until they close).
+app.get('/admin/trades/open', async function (req, res) {
+    try {
+        const { user } = req.query as { user?: string };
+        const stats = await orderClient.stats();
+        const trades = user ? stats.trades.filter((t: Trade) => t.user === user) : stats.trades;
+        res.json(trades);
+    } catch (e) {
+        Log.log('Admin get open trades error:', e);
         res.sendStatus(500);
     }
 });

@@ -20,7 +20,7 @@ if (user && response?.norenordno)
 
 **Fix:** Change `orderReply?.data?.norenordno` to `orderReply?.norenordno` in `squareOffOrder`.
 
-## investmentAmount has no effect on manual-buy order sizing
+## investmentAmount has no effect on manual-buy order sizing [RESOLVED]
 
 The live Zerodha manual-buy path never reads `investmentAmount`/`investmentMode` at all.
 Quantity always defaults to one lot (`bookkeeping.getInstrumentLotSize`, e.g. 65 for NIFTY)
@@ -37,13 +37,17 @@ Zerodha/ANT flow:
 - `src/nse_index.ts` `getQuantity(pricePerquantity, userContext)` (~line 82-91)
 - `src/prism.ts` `buyContract()` (~line 773-790), `sendLimitOrder()` (~line 1083-1091)
 
-**Fix:** Port equivalent sizing logic into the active path so it's reachable from BOTH
-`manualBuyOnZerodha` (`src/processes/order/zerodhaExecutor.ts`) and `manualBuyOnAnt`
-(`src/processes/order/antExecutor.ts`) — broker-agnostic, backend-only; the frontend should
-keep expressing intent only (e.g. "size this using my investment mode"), never compute or
-send a broker-specific quantity itself.
+**Fix (implemented):** Added `bookkeeping.resolveManualBuyQuantity(userId, tsym, price, explicitQuantity?)`
+— sizes to as many lots as `investmentMode='investmentAmount'` users' remaining capital covers
+at the given price, falling back to 1 lot otherwise (unchanged default). Since Zerodha's own
+quote/LTP endpoints return 403 for this account (see `Zerodha.ts` `buyOption`'s comment), the
+pre-trade price estimate is sourced from ANT instead (`antExecutor.ts`'s new
+`estimateOptionPrice()`/`safeAntQuote()`, never throws — falls back to 1-lot sizing on any
+quote failure) and reused by both `manualBuyOnZerodha` and `manualBuyOnAnt`'s `contract`/
+`strikePrice` branches. The `right`-only (Flash Trade / ATM-by-index) branch is unchanged,
+still 1 lot by default — no pre-resolved contract to price there without added complexity.
 
-## investmentAmount is not editable anywhere in the frontend
+## investmentAmount is not editable anywhere in the frontend [RESOLVED]
 
 `frontend/src/pages/ProfilePage.tsx` has an editable `investmentMode` selector (~line 218-231,
 `Form.Select` + "Save Mode" button posting to `/users/:email/settings`), but `investmentAmount`
@@ -56,9 +60,20 @@ Backend already supports setting it (`POST /users/:email/settings` accepts `inve
 stuck at the Mongo-seeded default (₹100,000, `src/user.ts` ~line 59/81) unless set via a raw
 API call.
 
-**Fix:** Add an editable `investmentAmount` input to `ProfilePage.tsx`.
+**Fix (implemented):** `investmentAmount` is admin-only by design (per user direction) — added
+an editable ₹ column to `AdminPage.tsx`'s users table (mirroring the existing `perOrderCap`
+column) instead of `ProfilePage.tsx`, which now shows it read-only with a note to contact an
+admin. Backend already persisted `investmentAmount` from `POST /users/:email/settings`.
 
-## Every manual buy uses a hardcoded global 2pt/11pt target/stop-loss regardless of user or broker
+**Note:** `POST /users/:email/settings` itself has no role/admin check at all — it's the same
+shared endpoint `ProfilePage.tsx` (self-service, `investmentMode` only) and `AdminPage.tsx`
+(any user's `lossLimit`/`lotCount`/`useGTT`/`perOrderCap`/`investmentAmount`/etc.) both call, so
+a non-admin could still set their own `investmentAmount` via a raw API call — the UI restriction
+alone doesn't enforce this server-side. This is pre-existing and applies equally to every field
+on that endpoint, not just `investmentAmount` — flagging as a separate, broader follow-up rather
+than a partial fix for one field.
+
+## Every manual buy uses a hardcoded global 2pt/11pt target/stop-loss regardless of user or broker [PARTIALLY RESOLVED]
 
 `src/processes/order/zerodhaExecutor.ts` `buyContractOnZerodha()` (~line 186-187):
 `finalizeEntry(trade, userId, exchange, settings.targetPriceDiff, settings.stopLossPriceDiff)`
@@ -76,5 +91,16 @@ since `finalizeEntry` sets both synchronously before the trade first reaches the
 SSE, `hasTargetSet` is already true on first render — so the editable T/SL inputs are hidden and
 only the (already-defaulted) read-only text is ever shown, before or after the buy.
 
-**Fix:** Should stay broker-agnostic (both `zerodhaExecutor.ts` and `antExecutor.ts` currently
-hardcode the same global settings for manual buys) and backend-driven.
+**Fix (implemented):** `ManualBuyRequest` (both executors) now carries optional `targetPoints`/
+`stopLossPoints`; when set, they override `settings.targetPriceDiff`/`stopLossPriceDiff` for
+that order (unset still falls back to the global default - fully backward compatible).
+`OrderEntry.tsx`'s Symbol Search form now has optional "Target pts" / "Stop-loss pts" inputs,
+threaded through `TradingContext.tsx` → `GET /prism/order/buy` → `manualBuyOnZerodha`/
+`manualBuyOnAnt`. Also fixed `orderProcess.ts`'s `manualBuy` IPC case, which was hardcoded to
+always call `manualBuyOnZerodha` regardless of the placing user's broker setting - now routed
+per-user via `bookkeeping.getUserBroker()`, consistent with `buyIndex`/`squareOff`.
+
+**Still open:** Flash Trade (`placeOrder`/`right`-only buys) has no target/SL inputs - still
+always uses the global default. `PositionCard.tsx`'s post-entry edit UI is still unreachable
+(`hasTargetSet` is already `true` on first render since `finalizeEntry` sets both synchronously
+at fill time) - not fixed here, since order-time inputs now cover the reported case.

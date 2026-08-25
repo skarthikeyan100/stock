@@ -16,6 +16,7 @@ import GoodMorningStrategy from './GoodMorningStrategy';
 import GoodMorningSensexStrategy from './GoodMorningSensexStrategy';
 import SupportResistanceStrategy from './SupportResistanceStrategy';
 import TargetReachStrategy from './TargetReachStrategy';
+import ContinuousStrategy from './ContinuousStrategy';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 
 const STRATEGY_REGISTRY = new Map<string, new (userId?: string) => Strategy>();
@@ -35,6 +36,7 @@ STRATEGY_REGISTRY.set('GoodMorningStrategy', GoodMorningStrategy);
 STRATEGY_REGISTRY.set('GoodMorningSensexStrategy', GoodMorningSensexStrategy);
 STRATEGY_REGISTRY.set('SupportResistanceStrategy', SupportResistanceStrategy);
 STRATEGY_REGISTRY.set('TargetReachStrategy', TargetReachStrategy);
+STRATEGY_REGISTRY.set('ContinuousStrategy', ContinuousStrategy);
 
 export function createStrategy(config: StrategyInstanceConfig): Strategy | null {
     const StrategyClass = STRATEGY_REGISTRY.get(config.type);

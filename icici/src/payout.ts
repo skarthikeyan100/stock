@@ -118,6 +118,35 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
         }
     }
 
+    // Drawdown forfeiture: a single day (or the whole period) losing more
+    // than the live daily/monthly drawdown limit forfeits the period's
+    // payout entirely - the payout-time consequence of the same breach that
+    // bookkeeping.ts's isDailyDrawdownBreached/isMonthlyDrawdownBreached
+    // already block new orders and trigger auto-squareoff for live, using
+    // the same config values.
+    if (!blocked && userDoc.investmentAmount > 0) {
+        const maxDailyDrawdownPercent: number = settings.maxDailyDrawdownPercent ?? 25;
+        const maxMonthlyDrawdownPercent: number = settings.maxMonthlyDrawdownPercent ?? 50;
+        const dailyLimit = (userDoc.investmentAmount * maxDailyDrawdownPercent) / 100;
+        const monthlyLimit = (userDoc.investmentAmount * maxMonthlyDrawdownPercent) / 100;
+
+        const byDayForDrawdown = groupByDay(periodTrades);
+        for (const [day, entry] of byDayForDrawdown) {
+            if (entry.pnl <= -dailyLimit) {
+                blocked = true;
+                blockReason = `${day} lost ₹${Math.abs(entry.pnl).toFixed(2)} - exceeds the daily drawdown limit of ${maxDailyDrawdownPercent}% (₹${dailyLimit.toFixed(2)}) of your investment amount. All profit since the last payout is forfeited.`;
+                blockDetail = { day, dayPnL: entry.pnl, tradeIds: entry.tradeIds };
+                break;
+            }
+        }
+
+        if (!blocked && grossProfit <= -monthlyLimit) {
+            blocked = true;
+            blockReason = `This period lost ₹${Math.abs(grossProfit).toFixed(2)} - exceeds the monthly loss limit of ${maxMonthlyDrawdownPercent}% (₹${monthlyLimit.toFixed(2)}) of your investment amount. All profit since the last payout is forfeited.`;
+            blockDetail = { cumulativePnL: grossProfit };
+        }
+    }
+
     const tax = blocked
         ? { tdsAmount: 0, gstAmount: 0, netAmount: 0 }
         : computeTax(splitAmount, userDoc.entityType, userDoc.gstVerified);

@@ -38,7 +38,6 @@ export interface AuthUser {
   gstDocId?: string;
   gstVerified: boolean;
   companyRegisteredName?: string;
-  companyRegisteredAddress?: string;
 }
 
 interface AuthState {
@@ -48,6 +47,7 @@ interface AuthState {
   isAdmin: boolean;
   login: (credential: string) => Promise<void>;
   logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -88,11 +88,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
+  // Re-fetches the session user - used after a background update (e.g. OCR
+  // extracting a PAN/Aadhaar number from an uploaded document) so the UI
+  // reflects it without requiring a full re-login.
+  const refreshUser = useCallback(async () => {
+    const res = await fetch('/auth/me');
+    if (res.ok) setUser(await res.json());
+  }, []);
+
   const isLoggedIn = !!user;
   const isAdmin = user?.role === 'admin';
 
   return (
-    <AuthContext.Provider value={{ user, loading, isLoggedIn, isAdmin, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, isLoggedIn, isAdmin, login, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

@@ -197,6 +197,27 @@ class Zerodha {
         return { orderId: response.order_id };
     }
 
+    // Standalone LIMIT buy - no market_protection (that's a MARKET/SL-M-only param; a plain
+    // `price` is what Kite expects for LIMIT). Used by ContinuousStrategy's target-hit
+    // re-entries, which need to sit at a specific price rather than fill immediately.
+    async placeLimitBuyOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+        if (!this.accessToken) {
+            throw new Error('No active session. Please login first.');
+        }
+        Log.log(`[Zerodha] Placing NRML limit buy: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
+        const response = await this.kc.placeOrder('regular', {
+            exchange,
+            tradingsymbol: tradingSymbol,
+            transaction_type: 'BUY',
+            quantity,
+            product: 'NRML',
+            order_type: 'LIMIT',
+            price,
+        });
+        Log.log(`[Zerodha] Limit buy order placed: ${response.order_id}`);
+        return { orderId: response.order_id };
+    }
+
     // Polls order history until the fill (average_price) is known - Kite has no
     // bracket-order support anymore (SEBI discontinued BO/CO in 2021), so callers
     // need the real fill price before they can attach a GTT target/stop-loss.

@@ -152,6 +152,84 @@ export interface ManualBuyRequest {
     stopLossPoints?: number;
 }
 
+// Quote fetch for sizing purposes only - never throws, returns 0 (which
+// bookkeeping.resolveManualBuyQuantity treats as "no price available, use
+// 1 lot") on any failure, so a temporary ANT hiccup never blocks a manual
+// buy that doesn't otherwise depend on ANT (e.g. Zerodha-executed orders).
+async function safeAntQuote(exch: 'NFO' | 'BFO', token: string): Promise<number> {
+    try {
+        return await ANT.getInstance().getQuote(exch, token);
+    } catch (e) {
+        Log.log('[order] ANT quote fetch failed (falling back to 1-lot sizing):', e);
+        return 0;
+    }
+}
+
+// Live price estimate for investment-amount-based manual-buy sizing,
+// resolved via ANT regardless of execution broker - Zerodha's own
+// quote/LTP endpoints return 403 for this account's Kite Connect
+// subscription (see Zerodha.ts buyOption's comment), so ANT (already the
+// app's sole live tick source) is the pricing reference for both executors.
+export async function estimateOptionPrice(symbol: string, strike: number, optionType: string): Promise<number> {
+    try {
+        const exch = symbol === 'SENSEX' ? 'BFO' : 'NFO';
+        const resolved = AntContractMaster.getInstance().findNearestExpiryOption({ symbol, exch, strike, optionType });
+        return await safeAntQuote(resolved.exch as 'NFO' | 'BFO', resolved.token);
+    } catch (e) {
+        Log.log('[order] Contract resolution for price estimate failed (falling back to 1-lot sizing):', e);
+        return 0;
+    }
+}
+
+// Batched sibling of estimateOptionPrice - resolves every candidate's token
+// locally (no network) then fetches all their premiums in one ANT.getQuotes
+// call, instead of one estimateOptionPrice (and thus one HTTP request) per
+// candidate. Needed by any caller that checks several strikes' premiums in a
+// single decision (e.g. a strike-range walk) - see ANT.getQuotes for why.
+// Missing/failed candidates are simply absent from the returned map (same
+// effect as estimateOptionPrice's 0-on-failure, without polluting the map
+// with a misleading zero premium).
+//
+// Also surfaces the resolved ANT token per candidate (not just its premium) -
+// Zerodha and ANT number the same contract completely differently (confirmed
+// live: the same NIFTY 24300 PE is Zerodha instrumentToken 15795970 but ANT
+// token 61703), and it's the ANT token that live option ticks are keyed by
+// (OptionQuote.fromAnt sets quote.token = response.tk). A caller that resolves
+// a contract here for a leg it will self-monitor via live ANT ticks (e.g.
+// ContinuousStrategy) needs this ANT token, not Zerodha's, wired into
+// whatever it later registers for tick subscription/matching - passing
+// Zerodha's token there means the subscription and every incoming tick land
+// in a token space the leg's own map can never match.
+export async function estimateOptionPricesBatch(
+    symbol: string,
+    candidates: { strike: number; optionType: string }[]
+): Promise<Map<string, { premium: number; antToken: string }>> {
+    const exch = symbol === 'SENSEX' ? 'BFO' : 'NFO';
+    const resolved: { key: string; token: string; exch: string }[] = [];
+    for (const c of candidates) {
+        try {
+            const r = AntContractMaster.getInstance().findNearestExpiryOption({ symbol, exch, strike: c.strike, optionType: c.optionType });
+            resolved.push({ key: `${c.strike}_${c.optionType}`, token: r.token, exch: r.exch });
+        } catch (e) {
+            Log.log('[order] Contract resolution for batch price estimate failed:', c.strike, c.optionType, e);
+        }
+    }
+    if (resolved.length === 0) return new Map();
+
+    try {
+        const byToken = await ANT.getInstance().getQuotes(resolved.map((r) => ({ exchange: r.exch, token: r.token })));
+        const byKey = new Map<string, { premium: number; antToken: string }>();
+        for (const r of resolved) {
+            const ltp = byToken.get(r.token);
+            if (ltp != null) byKey.set(r.key, { premium: ltp, antToken: r.token });
+        }
+        return byKey;
+    } catch (e) {
+        Log.log('[order] Batch ANT quote fetch failed:', e);
+        return new Map();
+    }
+}
+
 export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
     const settings = configService.getConfig().settings;
     const targetPoints = req.targetPoints ?? settings.targetPriceDiff;
@@ -159,26 +237,30 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
 
     if (req.contract) {
         const canonical = parseCanonicalSymbol(req.contract);
-        const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(canonical.symbol);
         const resolved = AntContractMaster.getInstance().findNearestExpiryOption({
             symbol: canonical.symbol,
             exch: canonical.symbol === 'SENSEX' ? 'BFO' : 'NFO',
             strike: canonical.strike,
             optionType: canonical.optionType,
         });
+        const price = await safeAntQuote(resolved.exch as 'NFO' | 'BFO', resolved.token);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity);
         return enterPosition(req.userId, resolved.tradingSymbol, resolved.token, quantity, resolved.exch as 'NFO' | 'BFO', targetPoints, stopLossPoints);
     }
 
     if (!req.right) throw new Error('manualBuy requires either contract or right');
 
     const index = req.index ?? 'NIFTY';
-    const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
 
     if (req.strikePrice) {
         const optionType = req.right === CALL ? 'CE' : 'PE';
         const contract = AntContractMaster.getInstance().findATMOption(req.strikePrice, optionType, index);
+        const price = await safeAntQuote(contract.exch as 'NFO' | 'BFO', contract.token);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity);
         return enterPosition(req.userId, contract.tradingSymbol, contract.token, quantity, contract.exch as 'NFO' | 'BFO', targetPoints, stopLossPoints);
     }
+
+    const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
 
     return buyIndexOnAnt({ userId: req.userId, index: req.index, niftyLtp: 0, right: req.right, quantity, targetPoints, stopLossPoints });
 }

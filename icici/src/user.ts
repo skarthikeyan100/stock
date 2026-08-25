@@ -46,7 +46,6 @@ export interface User {
     gstDocId?: string;
     gstVerified: boolean;
     companyRegisteredName?: string;
-    companyRegisteredAddress?: string;
 }
 
 // Fields that must never be echoed back to the browser in full once submitted -
@@ -222,7 +221,7 @@ export async function updateEntityType(email: string, entityType: 'individual' |
     return getUser(email);
 }
 
-export async function updateCompanyProfile(email: string, profile: { gstin?: string; companyRegisteredName?: string; companyRegisteredAddress?: string }): Promise<User | null> {
+export async function updateCompanyProfile(email: string, profile: { gstin?: string; companyRegisteredName?: string }): Promise<User | null> {
     const user = await getUser(email);
     if (!user) return null;
     if (user.entityType !== 'company') {
@@ -231,7 +230,6 @@ export async function updateCompanyProfile(email: string, profile: { gstin?: str
     const update: any = {};
     if (profile.gstin !== undefined) update.gstin = profile.gstin;
     if (profile.companyRegisteredName !== undefined) update.companyRegisteredName = profile.companyRegisteredName;
-    if (profile.companyRegisteredAddress !== undefined) update.companyRegisteredAddress = profile.companyRegisteredAddress;
     await collection().updateOne({ email }, { $set: update });
     return getUser(email);
 }

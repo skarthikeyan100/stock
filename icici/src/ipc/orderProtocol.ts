@@ -33,7 +33,12 @@ export type OrderRequestType =
     | 'injectTrade'
     | 'connectPrism'
     | 'getIndexQuote'
-    | 'getStockQuote';
+    | 'getStockQuote'
+    | 'buyContractZerodhaBare'
+    | 'sellContractZerodhaBare'
+    | 'placeLimitBuyZerodhaBare'
+    | 'getContractByPriceRangeZerodha'
+    | 'getPCR';
 
 export interface OrderRequest {
     kind: 'request';

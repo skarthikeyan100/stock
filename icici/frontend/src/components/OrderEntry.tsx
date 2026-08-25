@@ -12,6 +12,8 @@ export default function OrderEntry() {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
+  const [targetPoints, setTargetPoints] = useState('');
+  const [stopLossPoints, setStopLossPoints] = useState('');
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Load symbols list once. Expiry filtering happens server-side now, at
@@ -67,7 +69,11 @@ export default function OrderEntry() {
   const handleContractBuy = async (e: FormEvent) => {
     e.preventDefault();
     if (!selectedSymbol) return;
-    await placeContractOrder(selectedSymbol);
+    await placeContractOrder(
+      selectedSymbol,
+      targetPoints ? Number(targetPoints) : undefined,
+      stopLossPoints ? Number(stopLossPoints) : undefined
+    );
     setInput('');
     setSelectedSymbol('');
   };
@@ -121,6 +127,24 @@ export default function OrderEntry() {
               {placingOrder ? <Spinner animation="border" size="sm" /> : 'Buy'}
             </Button>
           </InputGroup>
+          <div className="d-flex gap-2 mt-2">
+            <Form.Control
+              type="number"
+              size="sm"
+              placeholder="Target pts (default)"
+              value={targetPoints}
+              onChange={(e) => setTargetPoints(e.target.value)}
+              disabled={isOrderDisabled}
+            />
+            <Form.Control
+              type="number"
+              size="sm"
+              placeholder="Stop-loss pts (default)"
+              value={stopLossPoints}
+              onChange={(e) => setStopLossPoints(e.target.value)}
+              disabled={isOrderDisabled}
+            />
+          </div>
         </form>
 
         {showDropdown && (

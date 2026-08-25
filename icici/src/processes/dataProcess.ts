@@ -6,6 +6,7 @@ console.log = console.error;
 import Log from '../util/Log';
 import Mongo from '../tools/mongo';
 import AntDataStream from './data/AntDataStream';
+import ANT from '../ant/ANT';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 
 // Entry point for the `data` process. Owns the one broker connection actually
@@ -29,6 +30,10 @@ async function main() {
             } else if (cmd.cmd === 'unsubscribe' && cmd.token) {
                 stream.unsubscribeOption(cmd.token);
             } else if (cmd.cmd === 'reconnect') {
+                // Re-read .ant_session.json first - this singleton's in-memory session
+                // may be stale (e.g. empty, from a startup attempt before login) since
+                // a fresh OAuth login writes the file from the frontend process instead.
+                ANT.getInstance().reloadSession();
                 stream.reconnect().catch((e) => Log.log('[data] Manual reconnect failed:', e));
             } else {
                 Log.log('[data] Unknown stdin command:', cmd);
@@ -37,8 +42,18 @@ async function main() {
         (line, err) => Log.log('[data] Failed to parse stdin command:', line, err)
     );
 
-    await stream.connect();
-    Log.log('[data] Ready - NIFTY/SENSEX always subscribed, streaming to stdout.');
+    // Not fatal if this fails (e.g. no ANT session yet - `data` typically starts
+    // before login.sh's OAuth flow completes): the stdin command listener above
+    // is already registered, so a later 'reconnect' (from /ant/callback or
+    // /ant/connect once authorized) still reaches a live process instead of one
+    // that already exited. A same-day session already on disk connects here
+    // immediately, same as before.
+    try {
+        await stream.connect();
+        Log.log('[data] Ready - NIFTY/SENSEX always subscribed, streaming to stdout.');
+    } catch (e) {
+        Log.log('[data] Initial ANT connect failed (will connect once authorized via /ant/callback or /ant/connect):', e);
+    }
 }
 
 main().catch((e) => {

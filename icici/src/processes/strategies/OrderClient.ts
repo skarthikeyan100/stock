@@ -16,6 +16,7 @@ type PositionsChangedHandler = () => void;
 class OrderClient {
     private static instance: OrderClient;
     private socket: net.Socket | null = null;
+    private connected = false;
     private pending: Map<string, { resolve: (r: OrderResponse) => void; reject: (e: Error) => void }> = new Map();
     private fillHandlers: FillHandler[] = [];
     private positionsChangedHandlers: PositionsChangedHandler[] = [];
@@ -37,7 +38,10 @@ class OrderClient {
     connect(): void {
         this.socket = net.createConnection(ORDER_SOCKET_PATH);
 
-        this.socket.on('connect', () => Log.log('[strategies] Connected to order process'));
+        this.socket.on('connect', () => {
+            this.connected = true;
+            Log.log('[strategies] Connected to order process');
+        });
 
         readJsonLines(
             this.socket,
@@ -59,7 +63,16 @@ class OrderClient {
         );
 
         this.socket.on('close', () => {
+            this.connected = false;
             Log.log('[strategies] Disconnected from order process, retrying in 2s...');
+            // Reject anything already in flight on this now-dead socket - it will
+            // never get a response (confirmed live: a request written right as a
+            // startup/reconnect race closed the old socket just sat in `pending`
+            // forever, with no timeout, permanently wedging the caller - e.g.
+            // ContinuousStrategy's `this.ordered` never resetting after a T1
+            // attempt landed in this window).
+            for (const waiter of this.pending.values()) waiter.reject(new Error('Order process connection closed'));
+            this.pending.clear();
             setTimeout(() => this.connect(), 2000);
         });
         this.socket.on('error', (e) => Log.log('[strategies] Order socket error:', e));
@@ -67,7 +80,7 @@ class OrderClient {
 
     private request(type: OrderRequestType, userId: string, payload: any): Promise<OrderResponse> {
         return new Promise((resolve, reject) => {
-            if (!this.socket) return reject(new Error('Not connected to order process'));
+            if (!this.socket || !this.connected) return reject(new Error('Not connected to order process'));
             const id = String(this.nextId++);
             this.pending.set(id, { resolve, reject });
             const req: OrderRequest = { kind: 'request', id, type, userId, payload };
@@ -150,7 +163,7 @@ class OrderClient {
         return res.result;
     }
 
-    async manualBuy(userId: string, payload: { index?: 'NIFTY' | 'SENSEX'; right?: string; contract?: string; strikePrice?: number; price?: number; quantity?: number }): Promise<any> {
+    async manualBuy(userId: string, payload: { index?: 'NIFTY' | 'SENSEX'; right?: string; contract?: string; strikePrice?: number; price?: number; quantity?: number; targetPoints?: number; stopLossPoints?: number }): Promise<any> {
         const res = await this.request('manualBuy', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
@@ -238,6 +251,42 @@ class OrderClient {
 
     async getStockQuote(userId: string, symbol: string): Promise<any> {
         const res = await this.request('getStockQuote', userId, { symbol });
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    // ContinuousStrategy's bare Zerodha execution path - see
+    // src/processes/order/zerodhaExecutor.ts. Bypasses the GTT/exitMonitor
+    // bracket the other Zerodha entry points (buyIndex, manualBuy) go through -
+    // ContinuousStrategy self-monitors every leg from live option ticks instead.
+    async buyContractZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number): Promise<any> {
+        const res = await this.request('buyContractZerodhaBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price });
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async sellContractZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<any> {
+        const res = await this.request('sellContractZerodhaBare', userId, { tradingSymbol, instrumentToken, quantity, exchange });
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    // Returns immediately with {orderId} - the fill arrives later as a normal
+    // fill notification once pendingLimitOrders.ts's poller sees it complete.
+    async placeLimitBuyZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO'): Promise<{ orderId: string }> {
+        const res = await this.request('placeLimitBuyZerodhaBare', userId, { tradingSymbol, instrumentToken, quantity, price, exchange });
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async getContractByPriceRangeZerodha(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, index: 'NIFTY' | 'SENSEX' = 'NIFTY', excludeStrikes: number[] = []): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
+        const res = await this.request('getContractByPriceRangeZerodha', userId, { underlyingLtp, optionType, minPremium, index, excludeStrikes });
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async getPCR(userId: string, underlying: string, spot: number, window: number): Promise<number> {
+        const res = await this.request('getPCR', userId, { underlying, spot, window });
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }

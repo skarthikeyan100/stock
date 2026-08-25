@@ -7,6 +7,8 @@ import { CALL } from '../../constants';
 import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
+import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
+import { trackPendingLimitOrder } from './pendingLimitOrders';
 
 // Zerodha is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -137,20 +139,22 @@ export interface ManualBuyRequest {
     strikePrice?: number;
     price?: number;
     quantity?: number;
+    targetPoints?: number;
+    stopLossPoints?: number;
 }
 
 export async function manualBuyOnZerodha(req: ManualBuyRequest): Promise<Trade> {
     if (req.contract) {
         const canonical = parseCanonicalSymbol(req.contract);
-        const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(canonical.symbol);
         const resolved = await ZerodhaContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
-        return buyContractOnZerodha(req.userId, resolved.tradingSymbol, String(resolved.instrumentToken), quantity, resolved.exchange, req.price);
+        const price = await estimateOptionPrice(canonical.symbol, canonical.strike, canonical.optionType);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity);
+        return buyContractOnZerodha(req.userId, resolved.tradingSymbol, String(resolved.instrumentToken), quantity, resolved.exchange, req.price, req.targetPoints, req.stopLossPoints);
     }
 
     if (!req.right) throw new Error('manualBuy requires either contract or right');
 
     const index = req.index ?? 'NIFTY';
-    const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
 
     if (req.strikePrice) {
         const optionType = req.right === CALL ? 'CE' : 'PE';
@@ -158,13 +162,16 @@ export async function manualBuyOnZerodha(req: ManualBuyRequest): Promise<Trade> 
         // strike prices are already multiples of that step, so feeding it the
         // strike directly lands exactly on it without needing a live NIFTY quote.
         const contract = await ZerodhaContractMaster.getInstance().findATMOption(req.strikePrice, optionType, index);
-        return buyContractOnZerodha(req.userId, contract.tradingSymbol, String(contract.instrumentToken), quantity, contract.exchange, req.price);
+        const price = await estimateOptionPrice(index, req.strikePrice, optionType);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity);
+        return buyContractOnZerodha(req.userId, contract.tradingSymbol, String(contract.instrumentToken), quantity, contract.exchange, req.price, req.targetPoints, req.stopLossPoints);
     }
 
-    return buyIndexOnZerodha({ userId: req.userId, index: req.index, niftyLtp: 0, right: req.right, quantity });
+    const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
+    return buyIndexOnZerodha({ userId: req.userId, index: req.index, niftyLtp: 0, right: req.right, quantity, targetPoints: req.targetPoints, stopLossPoints: req.stopLossPoints });
 }
 
-async function buyContractOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number): Promise<Trade> {
+async function buyContractOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number, targetPoints?: number, stopLossPoints?: number): Promise<Trade> {
     const zerodha = Zerodha.getInstance();
     if (!(await zerodha.hasValidSession())) {
         throw new Error('Zerodha session not active - complete /kite/login first.');
@@ -184,7 +191,9 @@ async function buyContractOnZerodha(userId: string, tradingSymbol: string, instr
     trade.user = userId;
 
     const settings = configService.getConfig().settings;
-    await finalizeEntry(trade, userId, exchange, settings.targetPriceDiff, settings.stopLossPriceDiff);
+    const finalTargetPoints = targetPoints ?? settings.targetPriceDiff;
+    const finalStopLossPoints = stopLossPoints ?? settings.stopLossPriceDiff;
+    await finalizeEntry(trade, userId, exchange, finalTargetPoints, finalStopLossPoints);
     return trade;
 }
 
@@ -238,6 +247,130 @@ export async function squareOffOnZerodha(userId: string, tsym: string, quantity:
 
     await bookkeeping.recordFill(trade);
     return trade;
+}
+
+// --- ContinuousStrategy bare execution primitives ---
+// Deliberately bypass finalizeEntry (no GTT, no exitMonitor registration) -
+// ContinuousStrategy self-monitors every leg's target/1x-5x thresholds from
+// live option ticks instead. "Bare" = just buy/sell + record the fill.
+
+export async function marketBuyBareOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const zerodha = Zerodha.getInstance();
+    if (!(await zerodha.hasValidSession())) {
+        throw new Error('Zerodha session not active - complete /kite/login first.');
+    }
+    Log.log(`[order] Bare market buy ${tradingSymbol} qty=${quantity} for ${userId}`);
+    const { orderId } = await zerodha.buyOption(tradingSymbol, quantity, exchange);
+    const entryPrice = await zerodha.getFillPrice(orderId);
+
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.token = instrumentToken;
+    trade.quantity = quantity;
+    trade.price = entryPrice;
+    trade.lastTradePrice = entryPrice;
+    trade.action = 'Buy';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+
+    await bookkeeping.recordFill(trade);
+    return trade;
+}
+
+// Unlike squareOffOnZerodha, this sets trade.token - needed so tokenRouter's
+// unregisterTrade (called from strategiesProcess.ts's onFill on every Sell
+// fill) actually finds the right token to unsubscribe.
+export async function marketSellBareOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const zerodha = Zerodha.getInstance();
+    Log.log(`[order] Bare market sell ${tradingSymbol} qty=${quantity} for ${userId}`);
+    const response = await zerodha.getKiteConnect().placeOrder('regular', {
+        exchange,
+        tradingsymbol: tradingSymbol,
+        transaction_type: 'SELL',
+        quantity,
+        product: 'NRML',
+        order_type: 'MARKET',
+        market_protection: -1,
+    } as any);
+    const fillPrice = await zerodha.getFillPrice(response.order_id);
+
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.token = instrumentToken;
+    trade.quantity = quantity;
+    trade.price = fillPrice;
+    trade.action = 'Sell';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+
+    await bookkeeping.recordFill(trade);
+    return trade;
+}
+
+// Places the limit order and returns immediately - does not wait for a fill
+// (unlike the market-order primitives above). The fill arrives later via
+// pollPendingLimitOrders -> bookkeeping.recordFill -> the normal fill-listener
+// chain (IPC broadcast -> OrderClient.onFill -> strategy.updateTrade).
+export async function placeLimitBuyBareOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+    const zerodha = Zerodha.getInstance();
+    if (!(await zerodha.hasValidSession())) {
+        throw new Error('Zerodha session not active - complete /kite/login first.');
+    }
+    Log.log(`[order] Bare limit buy ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
+    const { orderId } = await zerodha.placeLimitBuyOption(tradingSymbol, quantity, price, exchange);
+    trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity, exchange });
+    return { orderId };
+}
+
+// Zerodha-side premium-range strike lookup (mirrors Prism.getContractByPriceRange's
+// OTM-then-ITM strike-walk shape - src/prism.ts:666-721), but sources the
+// tradable contract from ZerodhaContractMaster (CSV-backed, no live premium
+// data) and the live premium from the ANT cross-reference (estimateOptionPrice)
+// since this account's Zerodha quote API 403s. Floor-only check (no upper
+// bound) - unlike Prism's min/max range, a ContinuousStrategy leg can move up
+// to 5x its SL distance further from its own entry, so headroom above the
+// floor is wanted, not capped.
+//
+// Premiums for every candidate strike are fetched in ONE batched ANT call
+// (estimateOptionPricesBatch) rather than one estimateOptionPrice call per
+// candidate in the walk loop - AliceBlue's OHLC endpoint rate-limits (429)
+// after just 1-2 rapid sequential calls (confirmed live), which silently
+// starved out real, qualifying candidates when this walked one-at-a-time.
+export async function getContractByPriceRangeOnZerodha(
+    underlyingLtp: number,
+    optionType: 'CE' | 'PE',
+    index: 'NIFTY' | 'SENSEX' = 'NIFTY',
+    minPremium = 100,
+    excludeStrikes: Set<number> = new Set()
+): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
+    const strikeStep = index === 'SENSEX' ? 100 : 50;
+    const atmStrike = Math.round(underlyingLtp / strikeStep) * strikeStep;
+
+    // OTM depth 0-4, then ITM depth 1-4 - same priority order as before.
+    const candidateStrikes: number[] = [];
+    for (let depth = 0; depth < 5; depth++) {
+        const strike = optionType === 'CE' ? atmStrike + depth * strikeStep : atmStrike - depth * strikeStep;
+        if (!excludeStrikes.has(strike)) candidateStrikes.push(strike);
+    }
+    for (let depth = 1; depth < 5; depth++) {
+        const strike = optionType === 'CE' ? atmStrike - depth * strikeStep : atmStrike + depth * strikeStep;
+        if (!excludeStrikes.has(strike)) candidateStrikes.push(strike);
+    }
+
+    const premiumData = await estimateOptionPricesBatch(index, candidateStrikes.map((strike) => ({ strike, optionType })));
+
+    for (const strike of candidateStrikes) {
+        const data = premiumData.get(`${strike}_${optionType}`);
+        if (data == null || data.premium < minPremium) continue;
+        try {
+            const contract = await ZerodhaContractMaster.getInstance().findNearestExpiryOption(strike, optionType, index);
+            return { ...contract, strike, premium: data.premium, antToken: data.antToken };
+        } catch (e) {
+            Log.log('[order] Zerodha contract resolution failed for a priced-in strike:', strike, optionType, e);
+        }
+    }
+
+    throw new Error(`No ${index} ${optionType} contract found with premium >= ${minPremium} (underlyingLtp=${underlyingLtp})`);
 }
 
 // exitMonitor calls this when a useGTT=false trade crosses target/SL. Wired

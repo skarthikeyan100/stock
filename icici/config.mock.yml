@@ -27,6 +27,16 @@ strategies:
     maxIterationCount: 10
     logEnabled: true
     right: none
+  - type: ContinuousStrategy
+    enabled: false
+    initialQuantity: 75
+    slDistance: 10
+    minPremium: 100
+    allottedCapital: 500000
+    spawnQuantityMode: multiplied
+    right: none
+    cooldownSeconds: 60
+    logEnabled: true
   - type: IntermittentStrategy
     enabled: false
     loopCount: 3

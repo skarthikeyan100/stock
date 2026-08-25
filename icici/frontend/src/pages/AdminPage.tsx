@@ -31,7 +31,7 @@ export default function AdminPage() {
   const navigate = useNavigate();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [editing, setEditing] = useState<Record<string, { lossLimit: string; lotCount: string; role: string; enabled: boolean; useGTT: boolean; profitSplitPercent: string; perOrderCap: string }>>({});
+  const [editing, setEditing] = useState<Record<string, { lossLimit: string; lotCount: string; role: string; enabled: boolean; useGTT: boolean; profitSplitPercent: string; perOrderCap: string; investmentAmount: string }>>({});
   const [config, setConfig] = useState<any>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -57,6 +57,16 @@ export default function AdminPage() {
   const [payoutsFilter, setPayoutsFilter] = useState('');
   const [payoutsLoading, setPayoutsLoading] = useState(true);
 
+  // Trades tab
+  const [strategies, setStrategies] = useState<{ type: string; userId: string; enabled: boolean }[]>([]);
+  const [tradeUser, setTradeUser] = useState('');
+  const [tradesFrom, setTradesFrom] = useState('');
+  const [tradesTo, setTradesTo] = useState('');
+  const [openTradesList, setOpenTradesList] = useState<any[]>([]);
+  const [closedTradesList, setClosedTradesList] = useState<any[]>([]);
+  const [tradesLoading, setTradesLoading] = useState(false);
+  const [tradesError, setTradesError] = useState<string | null>(null);
+
   const fetchAdminPayouts = () => {
     setPayoutsLoading(true);
     const qs = payoutsFilter ? `?status=${encodeURIComponent(payoutsFilter)}` : '';
@@ -71,6 +81,39 @@ export default function AdminPage() {
     if (activeTab !== 'payments') return;
     fetchAdminPayouts();
   }, [activeTab, payoutsFilter]);
+
+  useEffect(() => {
+    if (activeTab !== 'trades') return;
+    fetch('/strategies')
+      .then(res => res.json())
+      .then(data => { if (Array.isArray(data)) setStrategies(data); })
+      .catch(() => {});
+  }, [activeTab]);
+
+  const loadTrades = async () => {
+    if (!tradeUser) {
+      setTradesError('Select a user');
+      return;
+    }
+    setTradesError(null);
+    setTradesLoading(true);
+    try {
+      const closedQs = new URLSearchParams({ user: tradeUser });
+      if (tradesFrom) closedQs.set('from', tradesFrom);
+      if (tradesTo) closedQs.set('to', tradesTo);
+      const [openRes, closedRes] = await Promise.all([
+        fetch(`/admin/trades/open?user=${encodeURIComponent(tradeUser)}`),
+        fetch(`/admin/trades/closed?${closedQs.toString()}`),
+      ]);
+      const [openData, closedData] = await Promise.all([openRes.json(), closedRes.json()]);
+      setOpenTradesList(Array.isArray(openData) ? openData : []);
+      setClosedTradesList(Array.isArray(closedData) ? closedData : []);
+    } catch (e: any) {
+      setTradesError(e.message || 'Failed to load trades');
+    } finally {
+      setTradesLoading(false);
+    }
+  };
 
   const computePayout = async () => {
     setComputeError(null);
@@ -168,6 +211,7 @@ export default function AdminPage() {
       [u.email]: {
         lossLimit: String(u.lossLimit), lotCount: String(u.lotCount), role: u.role, enabled: u.enabled ?? true, useGTT: u.useGTT ?? true,
         profitSplitPercent: String(u.profitSplitPercent ?? 80), perOrderCap: u.perOrderCap !== undefined ? String(u.perOrderCap) : '',
+        investmentAmount: String(u.investmentAmount ?? 100000),
       },
     }));
   };
@@ -194,6 +238,7 @@ export default function AdminPage() {
           useGTT: vals.useGTT,
           profitSplitPercent: Number(vals.profitSplitPercent),
           perOrderCap: vals.perOrderCap === '' ? undefined : Number(vals.perOrderCap),
+          investmentAmount: Number(vals.investmentAmount),
         }),
       });
       // Update role if changed
@@ -430,6 +475,7 @@ export default function AdminPage() {
                   <th>Status</th>
                   <th>Loss Limit</th>
                   <th>Lot Count</th>
+                  <th>Investment Amount</th>
                   <th>Profit Split %</th>
                   <th>Per-Order Cap</th>
                   <th>Use GTT</th>
@@ -522,6 +568,22 @@ export default function AdminPage() {
                           />
                         ) : (
                           u.lotCount
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <Form.Control
+                            size="sm"
+                            type="number"
+                            value={editing[u.email].investmentAmount}
+                            onChange={e => setEditing(prev => ({
+                              ...prev,
+                              [u.email]: { ...prev[u.email], investmentAmount: e.target.value },
+                            }))}
+                            style={{ width: 110 }}
+                          />
+                        ) : (
+                          <>&#8377;{(u.investmentAmount ?? 100000).toLocaleString()}</>
                         )}
                       </td>
                       <td>
@@ -753,6 +815,37 @@ export default function AdminPage() {
                     </Row>
                     {renderConfigField('Stop Enabled', ['buySellStrategy', 'stopEnabled'], config.buySellStrategy?.stopEnabled, 'boolean')}
                     {renderConfigField('Log Enabled', ['buySellStrategy', 'logEnabled'], config.buySellStrategy?.logEnabled, 'boolean')}
+                  </Card.Body>
+                </Card>
+
+                <Card className="mb-3">
+                  <Card.Header className="fw-bold">Continuous Strategy</Card.Header>
+                  <Card.Body>
+                    {renderConfigField('Enabled', ['continuousStrategy', 'enabled'], config.continuousStrategy?.enabled, 'boolean')}
+                    <Row>
+                      <Col md={6}>
+                        {renderConfigField('Initial Quantity', ['continuousStrategy', 'initialQuantity'], config.continuousStrategy?.initialQuantity)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('SL Distance', ['continuousStrategy', 'slDistance'], config.continuousStrategy?.slDistance)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Minimum Premium', ['continuousStrategy', 'minPremium'], config.continuousStrategy?.minPremium)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Allotted Capital', ['continuousStrategy', 'allottedCapital'], config.continuousStrategy?.allottedCapital)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Spawn Quantity Mode', ['continuousStrategy', 'spawnQuantityMode'], config.continuousStrategy?.spawnQuantityMode, 'text')}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Right', ['continuousStrategy', 'right'], config.continuousStrategy?.right, 'text')}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Cooldown (sec)', ['continuousStrategy', 'cooldownSeconds'], config.continuousStrategy?.cooldownSeconds)}
+                      </Col>
+                    </Row>
+                    {renderConfigField('Log Enabled', ['continuousStrategy', 'logEnabled'], config.continuousStrategy?.logEnabled, 'boolean')}
                   </Card.Body>
                 </Card>
 
@@ -1152,6 +1245,107 @@ export default function AdminPage() {
                           </td>
                         </tr>
                       ))}
+                    </tbody>
+                  </Table>
+                )}
+              </Card.Body>
+            </Card>
+          </Tab>
+
+          <Tab eventKey="trades" title="Trades">
+            <Card className="mb-3">
+              <Card.Header className="fw-bold">Select User</Card.Header>
+              <Card.Body>
+                <Row className="g-2 align-items-end mb-3">
+                  <Col md={4}>
+                    <Form.Group>
+                      <Form.Label className="small">User</Form.Label>
+                      <Form.Select size="sm" value={tradeUser} onChange={e => setTradeUser(e.target.value)}>
+                        <option value="">Select user…</option>
+                        <optgroup label="Users">
+                          {users.map(u => <option key={u.email} value={u.email}>{u.name} ({u.email})</option>)}
+                        </optgroup>
+                        <optgroup label="Strategies">
+                          {strategies.map(s => <option key={s.userId} value={s.userId}>{s.type}</option>)}
+                        </optgroup>
+                      </Form.Select>
+                    </Form.Group>
+                  </Col>
+                  <Col md={3}>
+                    <Form.Group>
+                      <Form.Label className="small">Closed From</Form.Label>
+                      <Form.Control size="sm" type="date" value={tradesFrom} onChange={e => setTradesFrom(e.target.value)} />
+                    </Form.Group>
+                  </Col>
+                  <Col md={3}>
+                    <Form.Group>
+                      <Form.Label className="small">Closed To</Form.Label>
+                      <Form.Control size="sm" type="date" value={tradesTo} onChange={e => setTradesTo(e.target.value)} />
+                    </Form.Group>
+                  </Col>
+                  <Col md={2}>
+                    <Button size="sm" variant="primary" onClick={loadTrades} disabled={tradesLoading}>
+                      {tradesLoading ? <Spinner animation="border" size="sm" /> : 'Load'}
+                    </Button>
+                  </Col>
+                </Row>
+                {tradesError && <Alert variant="danger" dismissible onClose={() => setTradesError(null)}>{tradesError}</Alert>}
+              </Card.Body>
+            </Card>
+
+            <Card className="mb-3">
+              <Card.Header className="fw-bold">Open Positions</Card.Header>
+              <Card.Body className="p-0">
+                {openTradesList.length === 0 ? (
+                  <p className="text-center text-muted py-4 mb-0">No open positions.</p>
+                ) : (
+                  <Table striped hover responsive className="mb-0">
+                    <thead>
+                      <tr><th>Symbol</th><th>Right</th><th>Qty</th><th>Entry Price</th><th>Entry Time</th></tr>
+                    </thead>
+                    <tbody>
+                      {openTradesList.map((t, i) => (
+                        <tr key={t._id || i}>
+                          <td>{t.tsym}</td>
+                          <td>{t.right || '—'}</td>
+                          <td>{t.quantity}</td>
+                          <td>&#8377;{Number(t.price).toFixed(2)}</td>
+                          <td>{t.entryTime ? new Date(t.entryTime).toLocaleString() : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </Table>
+                )}
+              </Card.Body>
+            </Card>
+
+            <Card>
+              <Card.Header className="fw-bold">Closed Trades</Card.Header>
+              <Card.Body className="p-0">
+                {closedTradesList.length === 0 ? (
+                  <p className="text-center text-muted py-4 mb-0">No closed trades.</p>
+                ) : (
+                  <Table striped hover responsive className="mb-0">
+                    <thead>
+                      <tr><th>Symbol</th><th>Right</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Entry Time</th><th>Exit Time</th></tr>
+                    </thead>
+                    <tbody>
+                      {closedTradesList.map((t, i) => {
+                        const pnl = t.realizedPnL || 0;
+                        const pnlColor = pnl >= 0 ? 'text-success' : 'text-danger';
+                        return (
+                          <tr key={t._id || i}>
+                            <td>{t.tsym}</td>
+                            <td>{t.right || '—'}</td>
+                            <td>{t.quantity}</td>
+                            <td>&#8377;{Number(t.entryPrice).toFixed(2)}</td>
+                            <td>&#8377;{Number(t.exitPrice).toFixed(2)}</td>
+                            <td className={`fw-bold ${pnlColor}`}>{pnl >= 0 ? '+' : ''}&#8377;{pnl.toFixed(2)}</td>
+                            <td>{t.entryTime ? new Date(t.entryTime).toLocaleString() : '—'}</td>
+                            <td>{t.exitTime ? new Date(t.exitTime).toLocaleString() : '—'}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </Table>
                 )}
