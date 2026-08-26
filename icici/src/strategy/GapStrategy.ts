@@ -89,10 +89,26 @@ class GapContract {
 
 export default class GapStrategy extends Strategy {
     private contract: GapContract | null = null;
+    // Tracks "already made today's one decision" separately from this.enabled -
+    // strategiesProcess.ts's dispatch loop gates calling processNiftyQuote at
+    // all on `if (strategy.enabled)`, so a fix that self-disabled via
+    // this.enabled would never get a chance to run resetIfNewDay again and
+    // re-arm itself. Mirrors GoodMorningStrategy's tradingDay/traded pattern,
+    // which keeps this.enabled reflecting config-level enablement only.
+    private tradingDay: string | null = null;
+    private decidedToday: boolean = false;
 
     constructor(userId?: string) {
         super(userId);
         this.enabled = configService.getStrategyConfig('GapStrategy').enabled;
+    }
+
+    private resetIfNewDay(): void {
+        const today = moment().format('YYYY-MM-DD');
+        if (this.tradingDay !== today) {
+            this.tradingDay = today;
+            this.decidedToday = false;
+        }
     }
 
     receive(oldStats: any, newStats: any) {}
@@ -116,9 +132,12 @@ export default class GapStrategy extends Strategy {
     }
 
     async processNiftyQuote(quote: NiftyQuote) {
+        this.resetIfNewDay();
         const config = configService.getStrategyConfig('GapStrategy');
 
         if (!this.enabled || !this.isTimeInRange()) return;
+
+        if (this.decidedToday) return;
 
         if (this.contract !== null) return;
 
@@ -126,7 +145,8 @@ export default class GapStrategy extends Strategy {
 
         // Single-point read against the broker's own live prevClose - no
         // rolling window. This is the strategy's one decision for the day:
-        // deregister (this.enabled = false) once made, whatever the outcome.
+        // decidedToday is set once made, whatever the outcome, and re-armed
+        // by resetIfNewDay() on the next trading day.
         const gapPoints = quote.ltp - quote.prevClose;
 
         if (config.logEnabled) {
@@ -148,7 +168,7 @@ export default class GapStrategy extends Strategy {
             else if (gapPoints <= -config.pointsThreshold) direction = PUT;
         }
 
-        this.enabled = false; // deregister - one decision per day, trade or not
+        this.decidedToday = true; // one decision per day, trade or not - re-armed by resetIfNewDay() on a new trading day
 
         if (direction) {
             if (!this.isSentimentAligned(quote, direction)) {
