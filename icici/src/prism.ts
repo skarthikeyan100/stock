@@ -633,7 +633,7 @@ export default class Prism {
         return new NiftyQuote();
     }
 
-    sellContract = async( contract, qty, price, user?: string) : Promise<void> => {
+    sellContract = async( contract, qty, price, user?: string) : Promise<{ filledQty: number }> => {
 
         Log.log('In Sell Contract contract: ', contract, ' price: ', price)
         if (!price) {
@@ -646,6 +646,8 @@ export default class Prism {
         const nse = "NFO"
         const normal = "M" //for fno
 
+        let filledQty = 0;
+        let lastError: any = null;
         const parts = splitQty(qty)
         for (let i = 0; i < parts.length; i++) {
             const order = {
@@ -658,8 +660,23 @@ export default class Prism {
                 "prc": price
             }
 
-            await this._placeOrderWithForce(order, user)
+            try {
+                await this._placeOrderWithForce(order, user)
+                filledQty += parts[i];
+            } catch (e) {
+                lastError = e;
+                Log.log(`[Order] sellContract leg ${i + 1}/${parts.length} FAILED for ${contract} (qty ${parts[i]}) - stopping, ${filledQty} already sold:`, e);
+                break;
+            }
         }
+
+        if (filledQty === 0) {
+            throw lastError ?? new Error(`sellContract: no leg filled for ${contract} (requested qty ${qty})`);
+        }
+        if (lastError) {
+            Log.log(`[Order] sellContract PARTIAL FILL for ${contract}: ${filledQty}/${qty}`);
+        }
+        return { filledQty };
     }
 
 
@@ -794,7 +811,9 @@ export default class Prism {
         const limit = "LMT"
         const nse = "NFO"
         const normal = "M" //for fno
-        let response= {} as any
+        let response: any = {};
+        let filledQty = 0;
+        let lastError: any = null;
 
         const parts = splitQty(qty)
         for (let i = 0; i < parts.length; i++) {
@@ -809,12 +828,24 @@ export default class Prism {
                 "prc": price
             }
 
-    
-            response = await this._placeOrderWithForce(order, user)
-            Log.log(`[Order] Placed ${response?.tsym} orderId=${response?.norenordno} qty=${response?.qty} price=${response?.prc}`)
+            try {
+                response = await this._placeOrderWithForce(order, user)
+                Log.log(`[Order] Placed ${response?.tsym} orderId=${response?.norenordno} qty=${response?.qty} price=${response?.prc}`)
+                filledQty += partQty;
+            } catch (e) {
+                lastError = e;
+                Log.log(`[Order] Leg ${i + 1}/${parts.length} FAILED for ${contract} (qty ${partQty}) - stopping, ${filledQty} already filled:`, e);
+                break;
+            }
         }
 
-        response.qty = qty
+        if (filledQty === 0) {
+            throw lastError ?? new Error(`buyContract: no leg filled for ${contract} (requested qty ${qty})`);
+        }
+        if (lastError) {
+            Log.log(`[Order] buyContract PARTIAL FILL for ${contract}: ${filledQty}/${qty} - recording the real filled quantity, not the requested one`);
+        }
+        response.qty = filledQty
         return response
 
     }
@@ -1126,24 +1157,22 @@ export default class Prism {
     }
 
     _placeOrderWithForce = async (order, user?: string) => {
+        Log.log('Place Order ', order);
+        if (user) {
+            bookkeeping.trackPendingOrder(order.tsym, user);
+        }
         try {
-            Log.log('Place Order ', order);
-
-            if (user) {
-                bookkeeping.trackPendingOrder(order.tsym, user);
-            }
             const response = await NorenRestApi.place_order(order) as any;
             Log.log('User: ', user, 'Response from place_order: ', response)
             if (user && response?.norenordno) {
                 bookkeeping.trackOrder(response.norenordno, user);
-                bookkeeping.clearPendingOrder(order.tsym, user);
             }
             const token = await this.getToken(order.tsym);
             if (!MOCK_BROKER) {
                 await delay(2000)
             }
             Log.log('Returning price ', order.prc, ' for ', order.tsym)
-    
+
             return {
                 "contract": order.tsym,
                 "qty": order.qty,
@@ -1153,9 +1182,8 @@ export default class Prism {
                 "profit": 0,
                 "status": OrderStatus.ORDERED
             }
-    
-        } catch (e) {
-            Log.log('Exception caught in _placeOrderWithForce', e)
+        } finally {
+            if (user) bookkeeping.clearPendingOrder(order.tsym, user);
         }
     }
 

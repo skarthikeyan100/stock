@@ -95,12 +95,12 @@ export async function sellContract(userId: string, contract: string, quantity: n
     // fallback, which doesn't return it) so bookkeeping's P&L calc has a real
     // sell price to work with.
     const resolvedPrice = price ?? (await Prism.getInstance().getStockOptionQuote(contract)).ltp;
-    await Prism.getInstance().sellContract(contract, quantity, resolvedPrice, userId);
+    const { filledQty } = await Prism.getInstance().sellContract(contract, quantity, resolvedPrice, userId);
 
     const trade = new Trade();
     trade.tsym = contract;
     trade.token = await Prism.getInstance().getToken(contract);
-    trade.quantity = quantity;
+    trade.quantity = filledQty;
     trade.price = resolvedPrice;
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
