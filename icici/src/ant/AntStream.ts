@@ -13,6 +13,10 @@ class AntStream {
   private static instance: AntStream;
   private ws: AntWebSocket | null = null;
   private connected = false;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private reconnectDelayMs = 2000;
+  private readonly MAX_RECONNECT_DELAY_MS = 30000;
+  private manualDisconnect = false;
 
   private TARGET_INSTRUMENTS = [
     { exch: 'NSE', token: '26000' }, // NIFTY index
@@ -40,6 +44,7 @@ class AntStream {
       Log.log('[AntStream] Already connected');
       return;
     }
+    this.manualDisconnect = false;
 
     try {
       Log.log('[AntStream] Connecting to ANT streaming...');
@@ -89,14 +94,44 @@ class AntStream {
       this.ws.on('close', () => {
         Log.log('[AntStream] WebSocket closed');
         this.connected = false;
+        if (!this.manualDisconnect) this.scheduleReconnect();
       });
 
       this.connected = true;
+      this.reconnectDelayMs = 2000; // reset backoff on a successful connect
       Log.log('[AntStream] Connected and streaming');
     } catch (e) {
       Log.log('[AntStream] Connection failed:', e);
       throw e;
     }
+  }
+
+  // Auto-reconnect with exponential backoff - previously a dropped websocket
+  // just sat there until someone manually hit /ant/connect (see AntDataStream.ts,
+  // which already has this same pattern for the `data` process's own connection).
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return;
+    Log.log(`[AntStream] Reconnecting in ${this.reconnectDelayMs}ms...`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect().catch((e) => {
+        Log.log('[AntStream] Reconnect attempt failed:', e);
+        this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.MAX_RECONNECT_DELAY_MS);
+        this.scheduleReconnect();
+      });
+    }, this.reconnectDelayMs);
+  }
+
+  // Mirrors AntDataStream.reconnect()'s semantics (manual /ant/connect-parity trigger).
+  async reconnect(): Promise<void> {
+    this.manualDisconnect = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.disconnect();
+    this.manualDisconnect = false;
+    await this.connect();
   }
 
   // Broadcasts ticks the same way Prism.quote() used to for Shoonya - ANT is now
@@ -161,6 +196,11 @@ class AntStream {
   }
 
   disconnect(): void {
+    this.manualDisconnect = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
