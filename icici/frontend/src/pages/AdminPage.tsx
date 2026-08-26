@@ -1,7 +1,8 @@
 import { useState, useEffect, CSSProperties } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Container, Table, Form, Button, Spinner, Tabs, Tab, Card, Row, Col, Alert } from 'react-bootstrap';
 import { useAuth, AuthUser } from '../context/AuthContext';
+import DateRangeFilter, { DateRange, resolveDateRange, formatRangeLabel } from '../components/DateRangeFilter';
 
 interface UserRow extends AuthUser {
   sessionPnL: number;
@@ -29,6 +30,7 @@ async function patchVerify(email: string, field: 'email' | 'phone' | 'address' |
 export default function AdminPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Record<string, { lossLimit: string; lotCount: string; role: string; enabled: boolean; useGTT: boolean; profitSplitPercent: string; perOrderCap: string; investmentAmount: string }>>({});
@@ -46,8 +48,7 @@ export default function AdminPage() {
 
   // Payments tab
   const [payoutUser, setPayoutUser] = useState('');
-  const [periodStart, setPeriodStart] = useState('');
-  const [periodEnd, setPeriodEnd] = useState('');
+  const [payoutPeriod, setPayoutPeriod] = useState<DateRange>(() => resolveDateRange('month', '', ''));
   const [computing, setComputing] = useState(false);
   const [computeError, setComputeError] = useState<string | null>(null);
   const [computed, setComputed] = useState<any>(null);
@@ -59,9 +60,11 @@ export default function AdminPage() {
 
   // Trades tab
   const [strategies, setStrategies] = useState<{ type: string; userId: string; enabled: boolean }[]>([]);
-  const [tradeUser, setTradeUser] = useState('');
-  const [tradesFrom, setTradesFrom] = useState('');
-  const [tradesTo, setTradesTo] = useState('');
+  const [tradeUser, setTradeUser] = useState(() => searchParams.get('tradeUser') || '__all__');
+  const [tradeDateRange, setTradeDateRange] = useState<DateRange>(() => {
+    const mode = (searchParams.get('tradeMode') as DateRange['mode']) || 'day';
+    return resolveDateRange(mode, searchParams.get('tradeFrom') || '', searchParams.get('tradeTo') || '');
+  });
   const [openTradesList, setOpenTradesList] = useState<any[]>([]);
   const [closedTradesList, setClosedTradesList] = useState<any[]>([]);
   const [tradesLoading, setTradesLoading] = useState(false);
@@ -91,18 +94,16 @@ export default function AdminPage() {
   }, [activeTab]);
 
   const loadTrades = async () => {
-    if (!tradeUser) {
-      setTradesError('Select a user');
-      return;
-    }
     setTradesError(null);
     setTradesLoading(true);
     try {
-      const closedQs = new URLSearchParams({ user: tradeUser });
-      if (tradesFrom) closedQs.set('from', tradesFrom);
-      if (tradesTo) closedQs.set('to', tradesTo);
+      const userQs = tradeUser === '__all__' ? '' : `user=${encodeURIComponent(tradeUser)}`;
+      const closedQs = new URLSearchParams();
+      if (tradeUser !== '__all__') closedQs.set('user', tradeUser);
+      if (tradeDateRange.from) closedQs.set('from', tradeDateRange.from);
+      if (tradeDateRange.to) closedQs.set('to', tradeDateRange.to);
       const [openRes, closedRes] = await Promise.all([
-        fetch(`/admin/trades/open?user=${encodeURIComponent(tradeUser)}`),
+        fetch(`/admin/trades/open${userQs ? `?${userQs}` : ''}`),
         fetch(`/admin/trades/closed?${closedQs.toString()}`),
       ]);
       const [openData, closedData] = await Promise.all([openRes.json(), closedRes.json()]);
@@ -115,10 +116,28 @@ export default function AdminPage() {
     }
   };
 
+  // Auto-fetch (debounced) on user/date-range change instead of a manual Load
+  // click - see Analysis.md's admin-trade-filtering finding.
+  useEffect(() => {
+    if (activeTab !== 'trades') return;
+    const timer = setTimeout(loadTrades, 300);
+    return () => clearTimeout(timer);
+  }, [activeTab, tradeUser, tradeDateRange.from, tradeDateRange.to]);
+
+  useEffect(() => {
+    if (activeTab !== 'trades') return;
+    const next = new URLSearchParams(searchParams);
+    next.set('tradeUser', tradeUser);
+    next.set('tradeMode', tradeDateRange.mode);
+    next.set('tradeFrom', tradeDateRange.from);
+    next.set('tradeTo', tradeDateRange.to);
+    setSearchParams(next, { replace: true });
+  }, [activeTab, tradeUser, tradeDateRange]);
+
   const computePayout = async () => {
     setComputeError(null);
     setComputed(null);
-    if (!payoutUser || !periodStart || !periodEnd) {
+    if (!payoutUser || !payoutPeriod.from || !payoutPeriod.to) {
       setComputeError('Select a user and both dates');
       return;
     }
@@ -127,7 +146,7 @@ export default function AdminPage() {
       const res = await fetch('/admin/payouts/compute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: payoutUser, periodStart, periodEnd }),
+        body: JSON.stringify({ user: payoutUser, periodStart: payoutPeriod.from, periodEnd: payoutPeriod.to }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to compute payout');
@@ -145,7 +164,7 @@ export default function AdminPage() {
       const res = await fetch('/admin/payouts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: payoutUser, periodStart, periodEnd }),
+        body: JSON.stringify({ user: payoutUser, periodStart: payoutPeriod.from, periodEnd: payoutPeriod.to }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to create payout');
@@ -1144,17 +1163,8 @@ export default function AdminPage() {
                       </Form.Select>
                     </Form.Group>
                   </Col>
-                  <Col md={3}>
-                    <Form.Group>
-                      <Form.Label className="small">Period From</Form.Label>
-                      <Form.Control size="sm" type="date" value={periodStart} onChange={e => setPeriodStart(e.target.value)} />
-                    </Form.Group>
-                  </Col>
-                  <Col md={3}>
-                    <Form.Group>
-                      <Form.Label className="small">Period To</Form.Label>
-                      <Form.Control size="sm" type="date" value={periodEnd} onChange={e => setPeriodEnd(e.target.value)} />
-                    </Form.Group>
+                  <Col md={6}>
+                    <DateRangeFilter value={payoutPeriod} onChange={setPayoutPeriod} size="sm" />
                   </Col>
                   <Col md={2}>
                     <Button size="sm" variant="primary" onClick={computePayout} disabled={computing}>
@@ -1254,14 +1264,14 @@ export default function AdminPage() {
 
           <Tab eventKey="trades" title="Trades">
             <Card className="mb-3">
-              <Card.Header className="fw-bold">Select User</Card.Header>
+              <Card.Header className="fw-bold">Filter</Card.Header>
               <Card.Body>
                 <Row className="g-2 align-items-end mb-3">
                   <Col md={4}>
                     <Form.Group>
                       <Form.Label className="small">User</Form.Label>
                       <Form.Select size="sm" value={tradeUser} onChange={e => setTradeUser(e.target.value)}>
-                        <option value="">Select user…</option>
+                        <option value="__all__">All Users</option>
                         <optgroup label="Users">
                           {users.map(u => <option key={u.email} value={u.email}>{u.name} ({u.email})</option>)}
                         </optgroup>
@@ -1271,30 +1281,23 @@ export default function AdminPage() {
                       </Form.Select>
                     </Form.Group>
                   </Col>
-                  <Col md={3}>
-                    <Form.Group>
-                      <Form.Label className="small">Closed From</Form.Label>
-                      <Form.Control size="sm" type="date" value={tradesFrom} onChange={e => setTradesFrom(e.target.value)} />
-                    </Form.Group>
-                  </Col>
-                  <Col md={3}>
-                    <Form.Group>
-                      <Form.Label className="small">Closed To</Form.Label>
-                      <Form.Control size="sm" type="date" value={tradesTo} onChange={e => setTradesTo(e.target.value)} />
-                    </Form.Group>
-                  </Col>
-                  <Col md={2}>
-                    <Button size="sm" variant="primary" onClick={loadTrades} disabled={tradesLoading}>
-                      {tradesLoading ? <Spinner animation="border" size="sm" /> : 'Load'}
-                    </Button>
+                  <Col md={8}>
+                    <DateRangeFilter value={tradeDateRange} onChange={setTradeDateRange} size="sm" />
                   </Col>
                 </Row>
-                {tradesError && <Alert variant="danger" dismissible onClose={() => setTradesError(null)}>{tradesError}</Alert>}
+                <div className="d-flex align-items-center gap-2">
+                  <small className="text-muted">{formatRangeLabel(tradeDateRange)}</small>
+                  {tradesLoading && <Spinner animation="border" size="sm" />}
+                </div>
+                {tradesError && <Alert variant="danger" dismissible onClose={() => setTradesError(null)} className="mt-2">{tradesError}</Alert>}
               </Card.Body>
             </Card>
 
             <Card className="mb-3">
-              <Card.Header className="fw-bold">Open Positions</Card.Header>
+              <Card.Header className="fw-bold d-flex justify-content-between align-items-center">
+                <span>Open Positions</span>
+                <small className="text-muted fw-normal">(always live - not date-filtered)</small>
+              </Card.Header>
               <Card.Body className="p-0">
                 {openTradesList.length === 0 ? (
                   <p className="text-center text-muted py-4 mb-0">No open positions.</p>
