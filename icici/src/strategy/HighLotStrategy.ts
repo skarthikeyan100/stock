@@ -63,8 +63,8 @@ class Order {
                 // await Prism.getInstance().sellContract(this.strategy, this.contract, this.qty, quote.ltp) 
                 Log.log("************************** REVISIT **************")
                 this.clear()
-            } else if (diff <= -contraThreshold && diff > stopLossThreshold) {
-                Log.log('ProcessOptionQuote: Add Contra Order contra? ', diff <= -contraThreshold, ' stoploss? ', diff > stopLossThreshold)
+            } else if (diff <= -contraThreshold && diff > -stopLossThreshold) {
+                Log.log('ProcessOptionQuote: Add Contra Order contra? ', diff <= -contraThreshold, ' stoploss? ', diff > -stopLossThreshold)
                 addContraOrder = true;
             } else if (diff <= -stopLossThreshold) {
                 Log.log('HighLotStrategy: Selling for stop loss')
@@ -162,7 +162,7 @@ export default class HighLotStrategy extends Strategy{
     isStdDeviationInRange = () => {
         const intervals = [10, 15, 30, 45, 60, 120, 300];
         const stdDev = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
-        let trigger = true
+        let trigger = false
         if (this.stats ) {
             for (let i = 0; i < intervals.length; i++) {
                 trigger = this.stats.results.eventName == `priceUpdate_${intervals[i]}` && this.stats.stdDeviation < stdDev[i];
@@ -203,7 +203,7 @@ export default class HighLotStrategy extends Strategy{
         if (this.callOrder && !this.callOrder.active && this.putOrder && this.putOrder.active) {
             Log.log('CALL is not active, but PUT is active. Buying CALL again');
             const order = await this.addOrder(round(trade.ltp - buyAgainDiff), CALL, buyQuantity);
-            this.putOrder.initialize(order);
+            this.callOrder.initialize(order);
 
         }
     }
