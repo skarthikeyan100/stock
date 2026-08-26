@@ -340,7 +340,7 @@ export default class Monitor {
         if (matchingTrades.length > 0) {
             for (const matchingTrade of matchingTrades) {
                 matchingTrade.lastTradePrice = optionQuote.ltp;
-                matchingTrade.realizedPnL = (matchingTrade.lastTradePrice - matchingTrade.price) * matchingTrade.quantity;
+                matchingTrade.unrealizedPnL = (matchingTrade.lastTradePrice - matchingTrade.price) * matchingTrade.quantity;
 
                 // Phase 1: activate trailing when first target is hit (only if trailingDistance > 0)
                 if (!matchingTrade.trailingActive && matchingTrade.targetPrice && matchingTrade.targetPoints && matchingTrade.trailingDistance) {
@@ -442,24 +442,37 @@ export default class Monitor {
                 const buyTrade = this.trades[index];
                 Log.log('buyTrade: ', buyTrade)
                 const user = buyTrade.user || 'Default';
-                const realizedPnL = (tradeEvent.price - buyTrade.price) * buyTrade.quantity;
-                buyTrade.open = false;
+
+                // Reduce by the sold quantity instead of closing the whole
+                // position - a sell can be partial (matches bookkeeping.ts's
+                // already-correct handling, src/processes/order/bookkeeping.ts:408-440).
+                let sellQty = tradeEvent.quantity;
+                if (sellQty > buyTrade.quantity) {
+                    Log.log(`[Monitor] WARNING: sell qty ${sellQty} for ${tradeEvent.tsym} (${user}) exceeds tracked open qty ${buyTrade.quantity} - clamping`);
+                    sellQty = buyTrade.quantity;
+                }
+
+                const realizedPnL = (tradeEvent.price - buyTrade.price) * sellQty;
                 buyTrade.realizedPnL = realizedPnL
                 const cumulative = (this.userPnL.get(user) || 0) + realizedPnL;
                 this.userPnL.set(user, cumulative);
                 Log.log(`[Monitor] User '${user}' closed. P&L: ${realizedPnL.toFixed(2)}, Cumulative: ${cumulative.toFixed(2)}`);
 
                 Log.log('Trade is closed ', tradeEvent.tsym, ' ', tradeEvent.quantity, ' Enabled auto trade: ', Config.auto)
-                // Move to closedTrades before removing from active trades
-                this.closedTrades.push(buyTrade);
-                this.trades.splice(index, 1)
-                // Only unsubscribe if no other strategy still holds this token
-                const stillHeld = this.trades.some(t => t.token === tradeEvent.token);
-                if (!stillHeld) {
-                    Log.log(`[MOCK] Unsubscribing token ${tradeEvent.token} (no more holders)`);
-                    try { await AntStream.getInstance()?.unsubscribeOption(tradeEvent.token); } catch (e) { /* AntStream not available */ }
-                } else {
-                    Log.log(`[MOCK] Keeping subscription for token ${tradeEvent.token} (other strategies still hold it)`);
+
+                buyTrade.quantity -= sellQty;
+                if (buyTrade.quantity <= 0) {
+                    buyTrade.open = false;
+                    this.closedTrades.push(buyTrade);
+                    this.trades.splice(index, 1)
+                    // Only unsubscribe if no other strategy still holds this token
+                    const stillHeld = this.trades.some(t => t.token === tradeEvent.token);
+                    if (!stillHeld) {
+                        Log.log(`[MOCK] Unsubscribing token ${tradeEvent.token} (no more holders)`);
+                        try { await AntStream.getInstance()?.unsubscribeOption(tradeEvent.token); } catch (e) { /* AntStream not available */ }
+                    } else {
+                        Log.log(`[MOCK] Keeping subscription for token ${tradeEvent.token} (other strategies still hold it)`);
+                    }
                 }
             }
         }
