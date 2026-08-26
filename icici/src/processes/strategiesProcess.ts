@@ -14,6 +14,7 @@ import OrderClient from './strategies/OrderClient';
 import { registerTrade, unregisterTrade, routeOptionTick } from './strategies/tokenRouter';
 import * as niftyQuoteHistory from './strategies/niftyQuoteHistory';
 import * as niftyCandleBuilder from './strategies/niftyCandleBuilder';
+import * as niftyStatsBuilder from './strategies/niftyStatsBuilder';
 import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 
 // Entry point for the `strategies` process. No Prism/Zerodha dependency at all -
@@ -42,6 +43,12 @@ async function onTick(tick: any) {
         const quote = Object.assign(new NiftyQuote(), tick.quote) as NiftyQuote;
         niftyQuoteHistory.record(quote);
         niftyCandleBuilder.record(quote);
+        const statsUpdate = niftyStatsBuilder.record(quote.ltp, parseInt(quote.ltt as any));
+        if (statsUpdate) {
+            for (const strategy of strategies.getList()) {
+                await strategy.receive(statsUpdate.oldStats, statsUpdate.newStats);
+            }
+        }
         for (const strategy of strategies.getList()) {
             if (strategy.enabled) await strategy.processNiftyQuote(quote);
         }
