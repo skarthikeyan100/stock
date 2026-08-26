@@ -34,12 +34,12 @@ export default class SupportResistanceStrategy extends Strategy {
         const ltp = quote.ltp;
         const config = configService.getStrategyConfig('SupportResistanceStrategy');
 
-        if (ltp < config.supportPrice) {
+        if (config.supportPrice > 0 && ltp < config.supportPrice) {
             Log.log(`[SupportResistance] Support crossed: NIFTY=${ltp} support=${config.supportPrice} - buying PUT`);
             await this.executeTrade(PUT, ltp, config);
         }
 
-        if (ltp > config.resistancePrice) {
+        if (config.resistancePrice > 0 && ltp > config.resistancePrice) {
             Log.log(`[SupportResistance] Resistance crossed: NIFTY=${ltp} resistance=${config.resistancePrice} - buying CALL`);
             await this.executeTrade(CALL, ltp, config);
         }
