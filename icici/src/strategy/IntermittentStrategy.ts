@@ -102,7 +102,7 @@ class Contract {
         const enabled = configService.getStrategyConfig('IntermittentStrategy').enabled;
         const quantity = configService.getStrategyConfig('IntermittentStrategy').quantity;
         const loopCount = configService.getStrategyConfig('IntermittentStrategy').loopCount;
-        const targetPrice = configService.getStrategyConfig('IntermittentStrategy').loopCount;
+        const targetPrice = configService.getStrategyConfig('IntermittentStrategy').targetPrice;
         let tradeClosed = false
         Log.log('Enabled: ', enabled, ' Contract: ', this.contract, 'trade.tsym: ', trade.tsym, ' buyOrderPlaced: ', this.buyOrderPlaced, ' action: ', trade.action, ' quantity: ', this.quantity);
         if (enabled && trade.tsym == this.contract) {
