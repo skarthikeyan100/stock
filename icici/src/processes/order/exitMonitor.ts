@@ -40,6 +40,31 @@ export function unregisterTrade(token: string): void {
     writeJsonLine(process.stdout, { cmd: 'unsubscribe', token });
 }
 
+// Called once at order-process startup: exitMonitor's in-memory `monitored`
+// map doesn't survive a restart, but bookkeeping.trades is the live source
+// of truth for open positions. Any open trade with a target/SL set that
+// isn't already being watched gets re-registered here, closing the
+// "restart silently drops SL/target monitoring for useGTT=false users" gap.
+export function reconcileFromTrades(trades: Trade[]): void {
+    let reconciled = 0;
+    for (const trade of trades) {
+        if (!trade.token) continue;
+        if (monitored.has(trade.token)) continue;
+        if (trade.targetPrice == null && trade.stopLossPrice == null) continue;
+        // Exchange/broker aren't stored on Trade - infer exchange the same
+        // way setTargetStopLoss does (tsym prefix), and broker from
+        // whichever executor's Trade shape this is (antOrderNo present -> ant,
+        // otherwise zerodha - matches this file's existing Broker union).
+        const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('BSE') ? 'BFO' : 'NFO';
+        const broker: Broker = trade.antOrderNo ? 'ant' : 'zerodha';
+        registerTrade(trade, exchange, broker);
+        reconciled++;
+    }
+    if (reconciled > 0) {
+        Log.log(`[order] exitMonitor: reconciled ${reconciled} open trade(s) with target/SL back onto the watch list after restart`);
+    }
+}
+
 export async function handleOptionTick(quote: OptionQuote): Promise<void> {
     const entry = monitored.get(String(quote.token));
     if (!entry) return;

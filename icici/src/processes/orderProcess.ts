@@ -54,6 +54,19 @@ bookkeeping.onPositionsChanged(() => {
     broadcast({ kind: 'positionsChanged' });
 });
 
+// AntOrderNotifyStream.connect() throws (rather than retrying) when the ANT
+// session isn't there yet or was issued on an earlier day (ANT.loadSession
+// already discards those) - getUserSession() is null in exactly that case, so
+// gate on it instead of letting connect() fail every time this process starts
+// before the day's ANT login has happened.
+function connectAntOrderNotifyIfSessionValid(context: string): void {
+    if (!ANT.getInstance().getUserSession()) {
+        Log.log(`[order] ANT session not valid for today (${context}) - skipping AntOrderNotifyStream connect until next ANT login`);
+        return;
+    }
+    AntOrderNotifyStream.getInstance().connect().catch((e) => Log.log('[order] AntOrderNotifyStream connect failed (ANT fills will not resolve until this connects):', e));
+}
+
 async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     try {
         switch (req.type) {
@@ -212,6 +225,8 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'reloadSession': {
                 Zerodha.getInstance().reloadSession();
                 NorenRestApi.reloadToken();
+                ANT.getInstance().reloadSession();
+                connectAntOrderNotifyIfSessionValid('reloadSession');
                 return { kind: 'response', id: req.id, ok: true };
             }
 
@@ -336,6 +351,13 @@ async function onTick(tick: any) {
 async function main() {
     await Mongo.init().catch((e) => Log.log('[order] Mongo.init failed (continuing without persistence):', e));
     await loadUserLimits();
+    // bookkeeping.trades is only ever populated live (via fills) today - there
+    // is no startup refresh from Mongo/broker - so this reconciles 0 trades on
+    // a fresh restart until the first fill arrives. Still worth calling here:
+    // it's a no-op today and becomes effective the moment a startup trade
+    // refresh is added (see Analysis.md's exitMonitor/pendingLimitOrders
+    // restart-reconciliation gap).
+    exitMonitor.reconcileFromTrades(bookkeeping.trades);
 
     // Auto-squareoff on daily/monthly drawdown breach (see bookkeeping.ts's
     // isDailyDrawdownBreached/isMonthlyDrawdownBreached, checked after every
@@ -355,7 +377,7 @@ async function main() {
         }
     });
 
-    AntOrderNotifyStream.getInstance().connect().catch((e) => Log.log('[order] AntOrderNotifyStream connect failed (ANT fills will not resolve until this connects):', e));
+    connectAntOrderNotifyIfSessionValid('startup');
 
     setInterval(() => pollGttFills().catch((e) => Log.log('[order] pollGttFills failed:', e)), 60_000);
     setInterval(() => pollPendingLimitOrders().catch((e) => Log.log('[order] pollPendingLimitOrders failed:', e)), 15_000);
