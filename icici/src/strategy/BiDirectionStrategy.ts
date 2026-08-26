@@ -183,16 +183,9 @@ class Contract {
 
             if (trade.action == this.SELL) {
                 this.sellOrderPlaced = false;
-                
+                tradeClosed = true;
                 this.clear();
-                
-                const price = round(trade.price - buyAgainDiff)
-                // Fix: Trade will never be closed, hence needs to monitor
-                await this.strategy.buyContract(this.contract, initialQuantity, price )
-                
-
                 Log.log('After Sell Trade, contract: ', this)
-                
             }
         }
         return tradeClosed;
@@ -232,18 +225,14 @@ export default class BiDirectionStrategy extends Strategy {
     }    
 
     canHandleOptionQuote = (quote: OptionQuote): boolean => {
-        let handled = false;
         const token = quote.token
-        if (this.call.canHandleOptionQuote) {
-            handled = this.call.canHandleOptionQuote(token)
+        if (this.call.canHandleOptionQuote && this.call.canHandleOptionQuote(token)) {
+            return true;
         }
-        if (!handled && this.put.canHandleOptionQuote) {
-            handled = this.put.canHandleOptionQuote(token)
-        } else {
-            Log.log('Shouldnot come here for the token ', token)
-            handled = false;
+        if (this.put.canHandleOptionQuote && this.put.canHandleOptionQuote(token)) {
+            return true;
         }
-        return handled;
+        return false;
     }
 
     processOptionQuote = async (quote: OptionQuote) => {
