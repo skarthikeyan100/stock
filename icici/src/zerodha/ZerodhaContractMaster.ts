@@ -29,6 +29,23 @@ class ZerodhaContractMaster {
     private readonly INDEX_EXCHANGE: Record<Index, Exchange> = { NIFTY: 'NFO', SENSEX: 'BFO' };
     private readonly STRIKE_STEP: Record<Index, number> = { NIFTY: 50, SENSEX: 100 };
 
+    private readonly STALE_THRESHOLD_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+    private warnedStale = new Set<string>();
+
+    private checkStaleness(filePath: string): void {
+        if (this.warnedStale.has(filePath)) return;
+        try {
+            const ageMs = Date.now() - fs.statSync(filePath).mtimeMs;
+            if (ageMs > this.STALE_THRESHOLD_MS) {
+                const days = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+                console.warn(`[ZerodhaContractMaster] WARNING: ${filePath} is ${days} days old - run scripts/download-zerodha-master.sh to refresh`);
+            }
+            this.warnedStale.add(filePath);
+        } catch (e) {
+            // Non-fatal - staleness detection is a courtesy warning, not a load-blocking check.
+        }
+    }
+
     static getInstance(): ZerodhaContractMaster {
         if (!ZerodhaContractMaster.instance) {
             ZerodhaContractMaster.instance = new ZerodhaContractMaster();
@@ -44,6 +61,7 @@ class ZerodhaContractMaster {
         if (!fs.existsSync(filePath)) {
             throw new Error(`${filePath} not found - run scripts/download-zerodha-master.sh first`);
         }
+        this.checkStaleness(filePath);
         const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
         const header = lines[0].split(',');
         const idx = (col: string) => header.indexOf(col);

@@ -26,6 +26,23 @@ class AntContractMaster {
   private readonly NFO_PATH = path.join(__dirname, '../../data/ant/NFO_contract.json');
   private readonly BFO_PATH = path.join(__dirname, '../../data/ant/BFO_contract.json');
 
+  private readonly STALE_THRESHOLD_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+  private warnedStale = new Set<string>();
+
+  private checkStaleness(filePath: string): void {
+    if (this.warnedStale.has(filePath)) return;
+    try {
+      const ageMs = Date.now() - fs.statSync(filePath).mtimeMs;
+      if (ageMs > this.STALE_THRESHOLD_MS) {
+        const days = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+        console.warn(`[AntContractMaster] WARNING: ${filePath} is ${days} days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)`);
+      }
+      this.warnedStale.add(filePath);
+    } catch (e) {
+      // Non-fatal - staleness detection is a courtesy warning, not a load-blocking check.
+    }
+  }
+
   static readonly INDEX_TOKENS: Record<string, IndexToken> = {
     NIFTY: { exch: 'NSE', token: '26000' },
   };
@@ -45,6 +62,7 @@ class AntContractMaster {
 
   private loadNFO(): ContractRecord[] {
     if (!this.nfoCache) {
+      this.checkStaleness(this.NFO_PATH);
       const data = JSON.parse(fs.readFileSync(this.NFO_PATH, 'utf-8'));
       this.nfoCache = data.NFO || [];
     }
@@ -53,6 +71,7 @@ class AntContractMaster {
 
   private loadBFO(): ContractRecord[] {
     if (!this.bfoCache) {
+      this.checkStaleness(this.BFO_PATH);
       const data = JSON.parse(fs.readFileSync(this.BFO_PATH, 'utf-8'));
       this.bfoCache = data.BFO || [];
     }
