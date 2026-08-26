@@ -11,6 +11,7 @@ export interface User {
     investmentMode: 'lotCount' | 'investmentAmount';
     investmentAmount: number;
     useGTT: boolean;
+    broker?: 'zerodha' | 'ant';
     role: string;
     enabled: boolean;
     createdAt: Date;
@@ -167,13 +168,14 @@ export async function getAllUsers(): Promise<User[]> {
     return docs as User[];
 }
 
-export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotCount?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; enabled?: boolean; perOrderCap?: number; profitSplitPercent?: number }): Promise<User | null> {
+export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotCount?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'zerodha' | 'ant'; enabled?: boolean; perOrderCap?: number; profitSplitPercent?: number }): Promise<User | null> {
     const update: any = {};
     if (settings.lossLimit !== undefined) update.lossLimit = settings.lossLimit;
     if (settings.lotCount !== undefined) update.lotCount = settings.lotCount;
     if (settings.investmentMode !== undefined) update.investmentMode = settings.investmentMode;
     if (settings.investmentAmount !== undefined) update.investmentAmount = settings.investmentAmount;
     if (settings.useGTT !== undefined) update.useGTT = settings.useGTT;
+    if (settings.broker !== undefined) update.broker = settings.broker;
     if (settings.enabled !== undefined) update.enabled = settings.enabled;
     if (settings.perOrderCap !== undefined) update.perOrderCap = settings.perOrderCap;
     if (settings.profitSplitPercent !== undefined) update.profitSplitPercent = settings.profitSplitPercent;

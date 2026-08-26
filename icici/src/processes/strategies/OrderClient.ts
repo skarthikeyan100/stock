@@ -215,7 +215,7 @@ class OrderClient {
         return res.result;
     }
 
-    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; perOrderCap?: number }): Promise<void> {
+    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'zerodha' | 'ant'; perOrderCap?: number }): Promise<void> {
         const res = await this.request('updateUserSettings', userId, settings);
         if (!res.ok) throw new Error(res.error);
     }

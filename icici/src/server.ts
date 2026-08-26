@@ -205,8 +205,8 @@ app.patch('/users/:email/role', async function (req, res) {
 app.post('/users/:email/settings', async function (req, res) {
     try {
         const { email } = req.params;
-        const { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, perOrderCap, profitSplitPercent, enabled } = req.body;
-        const user = await updateUserSettings(email, { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, perOrderCap, profitSplitPercent, enabled });
+        const { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, profitSplitPercent, enabled } = req.body;
+        const user = await updateUserSettings(email, { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, profitSplitPercent, enabled });
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;
@@ -217,6 +217,7 @@ app.post('/users/:email/settings', async function (req, res) {
             investmentMode: user.investmentMode,
             investmentAmount: user.investmentAmount,
             useGTT: user.useGTT,
+            broker: user.broker,
             perOrderCap: user.perOrderCap,
         }).catch((e) => Log.log('[frontend] updateUserSettings push failed:', e));
         res.json(toClientUser(user));
@@ -661,6 +662,12 @@ app.get('/ant/callback', async function (req, res) {
         // /ant/connect uses (see below), needed here since `data` typically
         // started before this login flow completed and may not be connected yet.
         writeJsonLine(process.stdout, { cmd: 'reconnect' });
+        // Same problem exists in `order`: its own ANT singleton loaded whatever
+        // (possibly stale/absent) session was on disk when it started, and
+        // AntOrderNotifyStream.connect() only ever ran once at that startup -
+        // so it never picks up today's login without this. reloadSession()
+        // re-reads .ant_session.json and (re)connects the order-notify stream.
+        await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
         Log.log('ANT Authentication successful. Token stored.');
         res.redirect(302, '/app');
     } catch (e: any) {
