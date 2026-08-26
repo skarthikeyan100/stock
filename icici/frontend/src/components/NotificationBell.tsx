@@ -25,14 +25,31 @@ export default function NotificationBell() {
       .then(data => { if (Array.isArray(data)) setNotifications(data); })
       .catch(() => {});
 
-    const source = new EventSource('/notificationstream');
-    source.onmessage = (e) => {
-      try {
-        const notification = JSON.parse(e.data) as Notification;
-        setNotifications(prev => [notification, ...prev]);
-      } catch { /* ignore malformed event */ }
+    let failCount = 0;
+    let source: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      source = new EventSource('/notificationstream');
+      source.onopen = () => { failCount = 0; };
+      source.onmessage = (e) => {
+        try {
+          const notification = JSON.parse(e.data) as Notification;
+          setNotifications(prev => [notification, ...prev]);
+        } catch { /* ignore malformed event */ }
+      };
+      source.onerror = () => {
+        source?.close();
+        failCount++;
+        if (failCount < 3) retryTimer = setTimeout(connect, 3000);
+      };
     };
-    return () => source.close();
+    connect();
+
+    return () => {
+      if (retryTimer) clearTimeout(retryTimer);
+      source?.close();
+    };
   }, [user?.email]);
 
   useEffect(() => {
