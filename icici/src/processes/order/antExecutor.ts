@@ -289,19 +289,21 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
     const ant = ANT.getInstance();
     const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
 
+    let squareOffOrderNo: string | undefined;
     if (existing?.antOrderNo) {
         Log.log(`[order] Square-off ${tsym} qty=${quantity} for ${userId} via ANT exitBracketOrder (${existing.antOrderNo})`);
         await ant.exitBracketOrder(existing.antOrderNo, 'BO');
     } else {
         Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId} via ANT regular order`);
         const instrumentId = existing?.token ?? '';
-        await ant.placeOrder({
+        const { orderNo } = await ant.placeOrder({
             exchange,
             instrumentId,
             tradingSymbol: tsym,
             quantity,
             transactionType: 'SELL',
         });
+        squareOffOrderNo = orderNo;
     }
 
     const trade = new Trade();
@@ -310,11 +312,17 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
     trade.user = userId;
-    // exitBracketOrder closes the position directly (no separate orderNo to
-    // poll a fill price for); for the plain-order path a real fill-price poll
-    // would need the returned orderNo threaded through - left as the entry
-    // price for now, consistent with this being a best-effort first pass.
-    trade.price = existing?.lastTradePrice ?? existing?.price ?? 0;
+    if (squareOffOrderNo) {
+        try {
+            trade.price = await AntOrderNotifyStream.getInstance().waitForFill(squareOffOrderNo);
+        } catch (e) {
+            Log.log('[order] squareOffOnAnt: waitForFill failed, falling back to last-seen price:', e);
+            trade.price = existing?.lastTradePrice ?? existing?.price ?? 0;
+        }
+    } else {
+        // exitBracketOrder path (existing?.antOrderNo) - no separate orderNo to poll a fill price for.
+        trade.price = existing?.lastTradePrice ?? existing?.price ?? 0;
+    }
 
     await bookkeeping.recordFill(trade);
     return trade;
