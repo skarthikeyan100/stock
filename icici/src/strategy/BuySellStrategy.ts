@@ -11,10 +11,6 @@ import configService from '../prism/ConfigService'
 import  strategies from './strategies';
 
 
-let buyOrderPlaced = false
-let sellOrderPlaced = false
-
-
 // Consider volatility or standard deviation too
 // let averageThreshold = 5
 // let targetPrice = 5
@@ -65,6 +61,8 @@ class Contract {
     lastOrderedPrice: number = 0;
     lastOrderedQuantity: number = 0;
     strategy: Strategy = {} as Strategy;
+    buyOrderPlaced: boolean = false;
+    sellOrderPlaced: boolean = false;
 
     constructor(strategy, contract) {
         this.contract = contract;
@@ -90,8 +88,8 @@ class Contract {
         this.buyAt = 0;
         this.sellAt = 0;
         this.iterationCount = 0;
-        buyOrderPlaced = false;
-        sellOrderPlaced = false;
+        this.buyOrderPlaced = false;
+        this.sellOrderPlaced = false;
     }
 
     canHandleOptionQuote = (token) => {
@@ -119,7 +117,7 @@ class Contract {
             const sellAt = round(this.lastOrderedPrice + targetPrice)
             if (logEnabled) {
                 Log.log('BuySellStrategy: ', this.contract, ' ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty, ' profit: ', this.profit, ' buyAt: ', buyAt, ' sellAt: ', sellAt)
-                Log.log('BuySellStrategy: lastOrderedPrice: ', this.lastOrderedPrice, ' buyOrderPlaced: ', buyOrderPlaced, ' sellOrderPlaced: ', sellOrderPlaced)
+                Log.log('BuySellStrategy: lastOrderedPrice: ', this.lastOrderedPrice, ' buyOrderPlaced: ', this.buyOrderPlaced, ' sellOrderPlaced: ', this.sellOrderPlaced)
     
             }
             
@@ -129,11 +127,11 @@ class Contract {
                 if (this.token && this.token == quote.token
                     && this.lastOrderedPrice > 0
                     && (quote.ltp - this.lastOrderedPrice) < -averageThreshold) {
-                        if (!sellOrderPlaced && stopEnabled) {
-                            sellOrderPlaced = true;
+                        if (!this.sellOrderPlaced && stopEnabled) {
+                            this.sellOrderPlaced = true;
                             nextOrder = new ContraOrder('sell', this.contract, this.qty, quote.ltp)
                         } else {
-                            if (!buyOrderPlaced) {
+                            if (!this.buyOrderPlaced) {
                                 this.iterationCount++
                                 Log.log('this.iterationCount: ', this.iterationCount, ' maxIterationCount: ', maxIterationCount)
                                 if (this.iterationCount <= maxIterationCount) {
@@ -143,10 +141,10 @@ class Contract {
                                     if ("double" == incrementFactor) {
                                         quantity = this.lastOrderedQuantity * 2;
                                     } else if ("iteration" == incrementFactor) {
-                                        let quantity = this.iterationCount * incrementQuantity
+                                        quantity = this.iterationCount * incrementQuantity
                                     }
-                                    
-                                    buyOrderPlaced = true;
+
+                                    this.buyOrderPlaced = true;
                                     Log.log('BuySellStrategy: buy contract ', this.contract, ' at ', quote.ltp, ' quantity: ', quantity)
                                     await this.strategy.buyContract(this.contract, quantity, quote.ltp)
     
@@ -173,9 +171,9 @@ class Contract {
         Log.log('BuySellStrategy: Update Trade called: ', trade.action, ' ', trade.quantity, ' ', this.contract)
         let tradeClosed = false
         if (trade.tsym == this.contract) {
-            Log.log('BuySellStrategy: buyOrderPlaced: ', buyOrderPlaced, ' trade action: ', trade.action)
-            if (buyOrderPlaced && trade.action == this.BUY) {
-                buyOrderPlaced = false;
+            Log.log('BuySellStrategy: buyOrderPlaced: ', this.buyOrderPlaced, ' trade action: ', trade.action)
+            if (this.buyOrderPlaced && trade.action == this.BUY) {
+                this.buyOrderPlaced = false;
                 this.lastOrderedPrice = trade.price
                 this.lastOrderedQuantity = trade.quantity
                 if (this.qty == 0) {
@@ -197,7 +195,7 @@ class Contract {
                 // targetPrice = updatePrice(this.price)
             }
 
-            if (sellOrderPlaced && trade.action == this.SELL) {
+            if (this.sellOrderPlaced && trade.action == this.SELL) {
                 this.clear();
                 tradeClosed = true;
                 Log.log('After Sell Trade, contract: ', this)
@@ -269,7 +267,6 @@ export default class BuySellStrategy extends Strategy {
         if (enabled && this.isTimeInRange() && !this.ordered && this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) {
             this.ordered = true;
             Log.log('Initiate buy index for NIFTY at ', quote.ltp, ' with initial quantity: ', initialQuantity)
-            buyOrderPlaced = true
             if ("none" == right) {
                 right = await OrderClient.getInstance().calculateRight(this.userId, quote.ltp)
             }
@@ -282,6 +279,7 @@ export default class BuySellStrategy extends Strategy {
 
             const contract = await OrderClient.getInstance().getContractByPriceRange(this.userId, right)
             this.contract = new Contract(this, contract);
+            this.contract.buyOrderPlaced = true;
             Log.log('BuySellStrategy: buy contract for the first time', this.contract.contract, ' at ', quote.ltp, ' quantity: ', initialQuantity)
             const response = await super.buyContract(contract, initialQuantity)
             // const response = await Prism.getInstance().buyIndex({ user: this.userId, index: NIFTY, ltp: quote.ltp-2, right: "any", qty: initialQuantity });
