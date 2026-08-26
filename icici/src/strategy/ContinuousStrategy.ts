@@ -83,7 +83,6 @@ export default class ContinuousStrategy extends Strategy {
 
     constructor(userId?: string) {
         super(userId);
-        this.enabled = true;
     }
 
     receive(oldStats, newStats) {}
@@ -203,7 +202,7 @@ export default class ContinuousStrategy extends Strategy {
     async processNiftyQuote(quote: NiftyQuote): Promise<void> {
         this.lastNiftyLtp = quote.ltp;
         const cfg = this.cfg();
-        if (!cfg.enabled) { this.logGateOnce('disabled'); return; }
+        if (!this.enabled) { this.logGateOnce('disabled'); return; }
         if (!this.isTimeInRange()) { this.logGateOnce('outside time window'); return; }
         if (this.ordered) { this.logGateOnce('already ordered / T1 in flight'); return; }
         if (!this.isCooldownElapsed(cfg.cooldownSeconds ?? 60)) { this.logGateOnce('cooldown not elapsed'); return; }
