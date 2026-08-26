@@ -67,7 +67,11 @@ export default function PositionCard({ trade, closed }: { trade: Trade; closed?:
             <Col xs="auto">
               <Button
                 variant="outline-danger"
-                onClick={() => squareOff(trade.tsym, trade.quantity)}
+                onClick={() => {
+                  if (window.confirm(`Square off ${trade.tsym} (qty ${trade.quantity})? This cannot be undone.`)) {
+                    squareOff(trade.tsym, trade.quantity);
+                  }
+                }}
               >
                 Square Off
               </Button>

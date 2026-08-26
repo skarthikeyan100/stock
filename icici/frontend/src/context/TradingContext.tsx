@@ -182,13 +182,19 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   }, [user?.email]);
 
   const squareOff = useCallback(async (token: string, qty: number) => {
+    setOrderError(null);
     try {
-      await fetch(
+      const response = await fetch(
         `/prism/squareoff?token=${encodeURIComponent(token)}&qty=${qty}`,
         { headers: { 'X-User-Id': user?.email || 'Default' } }
       );
+      if (!response.ok) {
+        const body = await response.json();
+        setOrderError(describeOrderError(body));
+      }
     } catch (err) {
       console.error('[SquareOff] Square off failed:', err);
+      setOrderError('Network error');
     }
   }, [user?.email]);
 
