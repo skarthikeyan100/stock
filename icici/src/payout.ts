@@ -31,6 +31,37 @@ export interface PayoutComputation {
     blockDetail?: PayoutDecisionDetail;
 }
 
+// A period with zero or negative net profit has nothing to pay out - block
+// unconditionally, independent of the drawdown-forfeiture check below (which
+// only fires once investmentAmount > 0 and the loss breaches 25%/50%).
+export function isNonPositiveProfitBlocked(grossProfit: number): boolean {
+    return grossProfit <= 0;
+}
+
+// Measures a period's worst-day concentration against gross winnings (sum of
+// positive days only), not net profit - net profit can be deflated below any
+// single winning day's own total by an unrelated loss elsewhere in the
+// period, which previously let worstPercent exceed 100% and over-block
+// legitimate payouts. Gross-winnings-based percent is mathematically capped
+// at 100% (a day can be at most the sum of all winning days).
+export function computeConsistencyBreach(
+    periodTrades: Array<{ exitTime: any; realizedPnL?: number }>,
+    grossProfit: number,
+    consistencyLimitPercent: number
+): { worstDay?: string; worstPnL: number; worstPercent: number; tradeIds: any[]; breached: boolean } {
+    const byDay = groupByDay(periodTrades);
+    let worstDay: string | undefined;
+    let worstPnL = -Infinity;
+    let grossWinnings = 0;
+    for (const [day, entry] of byDay) {
+        if (entry.pnl > worstPnL) { worstPnL = entry.pnl; worstDay = day; }
+        if (entry.pnl > 0) grossWinnings += entry.pnl;
+    }
+    const worstPercent = worstDay && grossWinnings > 0 ? (worstPnL / grossWinnings) * 100 : 0;
+    const breached = !!worstDay && worstPercent > consistencyLimitPercent;
+    return { worstDay, worstPnL, worstPercent, tradeIds: worstDay ? byDay.get(worstDay)!.tradeIds : [], breached };
+}
+
 function payoutsCollection() {
     return Mongo.getInstance().db.collection('payouts');
 }
@@ -95,25 +126,25 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
         }
     }
 
+    if (!blocked && isNonPositiveProfitBlocked(grossProfit)) {
+        blocked = true;
+        blockReason = `This period has no profit to pay out (gross ₹${grossProfit.toFixed(2)}).`;
+        blockDetail = { cumulativePnL: grossProfit };
+    }
+
     // Consistency rule: no single day may contribute more than
-    // consistencyLimitPercent of the period's total profit.
-    if (!blocked && grossProfit > 0) {
-        const byDay = groupByDay(periodTrades);
-        let worstDay: string | undefined;
-        let worstPnL = -Infinity;
-        for (const [day, entry] of byDay) {
-            if (entry.pnl > worstPnL) { worstPnL = entry.pnl; worstDay = day; }
-        }
-        const worstPercent = worstDay ? (worstPnL / grossProfit) * 100 : 0;
-        if (worstDay && worstPercent > consistencyLimitPercent) {
+    // consistencyLimitPercent of the period's gross winnings.
+    if (!blocked) {
+        const consistency = computeConsistencyBreach(periodTrades, grossProfit, consistencyLimitPercent);
+        if (consistency.breached) {
             blocked = true;
-            blockReason = `${worstDay} contributed ${worstPercent.toFixed(0)}% of this period's profit (limit ${consistencyLimitPercent}%).`;
+            blockReason = `${consistency.worstDay} contributed ${consistency.worstPercent.toFixed(0)}% of this period's winning days (limit ${consistencyLimitPercent}%).`;
             blockDetail = {
-                day: worstDay,
-                dayPnL: worstPnL,
-                consistencyPercent: worstPercent,
+                day: consistency.worstDay,
+                dayPnL: consistency.worstPnL,
+                consistencyPercent: consistency.worstPercent,
                 consistencyLimit: consistencyLimitPercent,
-                tradeIds: byDay.get(worstDay)!.tradeIds,
+                tradeIds: consistency.tradeIds,
             };
         }
     }
