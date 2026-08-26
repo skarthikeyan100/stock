@@ -50,6 +50,7 @@ export async function pollPendingLimitOrders(): Promise<void> {
                 trade.action = 'Buy';
                 trade.status = 'COMPLETE';
                 trade.user = order.userId;
+                trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
                 Log.log(`[order] Pending limit order filled: ${order.tradingSymbol} (${order.userId}) at ${trade.price}`);
             } else if (latest.status === 'REJECTED' || latest.status === 'CANCELLED') {

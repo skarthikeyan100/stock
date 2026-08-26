@@ -106,8 +106,10 @@ export class Trade {
     user: string = 'Default'
     open: boolean = true
     realizedPnL: number
+    unrealizedPnL: number // live mark-to-market on an open position - distinct from realizedPnL, which is only ever set once, at close
     gttTriggerId: number // Zerodha GTT trigger id, if a bracket was placed at entry (setTargetStopLoss modifies it later)
     antOrderNo?: string // AliceBlue BO order number, if a bracket was placed at entry
+    brokerOrderId?: string // broker's own order id for this specific fill, when the caller has one - used by bookkeeping.recordFill to dedup a redelivered fill event (reconnect replay, webhook retry)
     entryTime?: Date // set once, at the first fill that opens the position
     exitTime?: Date // set when the position is closed
 

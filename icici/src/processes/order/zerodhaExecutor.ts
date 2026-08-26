@@ -117,6 +117,7 @@ export async function buyIndexOnZerodha(req: BuyIndexRequest): Promise<Trade> {
     trade.status = 'COMPLETE';
     trade.right = req.right;
     trade.user = req.userId;
+    trade.brokerOrderId = orderId;
 
     await finalizeEntry(trade, req.userId, contract.exchange, targetPoints, stopLossPoints);
     return trade;
@@ -189,6 +190,7 @@ async function buyContractOnZerodha(userId: string, tradingSymbol: string, instr
     trade.action = 'Buy';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.brokerOrderId = orderId;
 
     const settings = configService.getConfig().settings;
     const finalTargetPoints = targetPoints ?? settings.targetPriceDiff;
@@ -242,6 +244,7 @@ export async function squareOffOnZerodha(userId: string, tsym: string, quantity:
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.brokerOrderId = response.order_id;
     const fillPrice = await zerodha.getFillPrice(response.order_id);
     trade.price = fillPrice;
 
@@ -272,6 +275,7 @@ export async function marketBuyBareOnZerodha(userId: string, tradingSymbol: stri
     trade.action = 'Buy';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.brokerOrderId = orderId;
 
     await bookkeeping.recordFill(trade);
     return trade;
@@ -302,6 +306,7 @@ export async function marketSellBareOnZerodha(userId: string, tradingSymbol: str
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.brokerOrderId = response.order_id;
 
     await bookkeeping.recordFill(trade);
     return trade;

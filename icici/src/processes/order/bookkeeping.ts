@@ -37,6 +37,11 @@ class OrderBookkeeping {
     private pendingOrdersByTsym: Map<string, string[]> = new Map();
     userPnL: Map<string, number> = new Map();
     pendingUsers: Set<string> = new Set();
+    // brokerOrderId values already processed by recordFill, so a redelivered
+    // fill event (reconnect replay, webhook retry) doesn't double-book P&L.
+    // In-memory/per-process-lifetime only - matches this file's existing
+    // in-memory-state conventions (see CLAUDE.md).
+    private processedFillIds: Set<string> = new Set();
     // Per-session, per-user set of drawdown-warning thresholds (80, 100) already
     // notified, so a losing streak doesn't spam a fresh notification per trade.
     private notifiedThresholds: Map<string, Set<number>> = new Map();
@@ -341,6 +346,13 @@ class OrderBookkeeping {
     // Records a fill directly (used by the Zerodha buy/GTT-trigger path, which
     // doesn't go through Prism's websocket 'om' message shape at all).
     async recordFill(tradeEvent: Trade): Promise<void> {
+        if (tradeEvent.brokerOrderId) {
+            if (this.processedFillIds.has(tradeEvent.brokerOrderId)) {
+                Log.log(`[order] Ignoring redelivered fill for broker order ${tradeEvent.brokerOrderId} (${tradeEvent.tsym}) - already processed`);
+                return;
+            }
+            this.processedFillIds.add(tradeEvent.brokerOrderId);
+        }
         await this._processTradeEvent(tradeEvent);
         for (const l of this.fillListeners) l(tradeEvent.user || 'Default', tradeEvent);
     }
@@ -358,6 +370,7 @@ class OrderBookkeeping {
         tradeEvent.status = data.status;
         tradeEvent.right = tradeEvent.tsym.indexOf('P') !== -1 ? PUT : CALL;
         tradeEvent.user = user;
+        tradeEvent.brokerOrderId = data.norenordno;
         if (tradeEvent.action == 'Buy') tradeEvent.lastTradePrice = tradeEvent.price;
 
         const isCompleted = data.fillshares == data.qty && data.status == 'COMPLETE';

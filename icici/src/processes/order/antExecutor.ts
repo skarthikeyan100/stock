@@ -84,6 +84,7 @@ async function enterPosition(
     trade.action = 'Buy';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.brokerOrderId = orderNo;
 
     if (targetPoints > 0 && stopLossPoints > 0) {
         trade.targetPoints = targetPoints;
