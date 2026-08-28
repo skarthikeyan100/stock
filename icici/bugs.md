@@ -1,5 +1,180 @@
 # Known Bugs
 
+## Codebase-wide audit findings (2026-08-28)
+
+5-agent parallel audit covering streaming pipeline, order execution/risk management,
+strategies/decision engine, auth/session/multi-user isolation, and persistence/config/
+frontend. Investigation only — nothing below is fixed yet. Organized by priority; auth-
+related items are deliberately marked Low per user direction (not urgent to fix), except
+that order-to-user traceability itself must stay intact — see note at the end of the Low
+section.
+
+### High priority
+
+**Loss limit / lot constraint race.** `canPlaceOrder()` (`src/processes/order/bookkeeping.ts:262-289`)
+checks confirmed trades only, never `pendingUsers` (which exists specifically to cover
+in-flight orders but has zero live callers — `hasActiveTrade()`, which does check it, is
+unused). Two quick order requests for the same user (double-click, retry, two strategies
+signaling at once) can both pass the check before either fill lands, exceeding the user's
+configured lot/investment limit.
+
+**Orphaned broker position on fill-notify failure.** `enterPosition` (`src/processes/order/antExecutor.ts:32-119`)
+waits up to 60s for `AntOrderNotifyStream.waitForFill` *before* recording the trade in
+bookkeeping or setting target/SL. If the order fills at the broker but the notify event is
+missed (a documented unverified assumption in `AntOrderNotifyStream.ts:40-46`), the timeout
+throws and the position is left completely untracked — unprotected, uncounted against
+limits, invisible on `/positionstream`. No reconciliation job compares live broker positions
+against internal state; `ANT.getPositions()` is only used by a read-only display route.
+
+**Cross-user protection loss on shared contracts.** `exitMonitor`'s `monitored` map
+(`src/processes/order/exitMonitor.ts:31`) is keyed by `token` only, not `(user, token)`. If
+two users hold a position in the same option contract concurrently, the second user's
+`registerTrade` silently overwrites the first's — the first user's target/SL never fires
+again, with no error and no self-healing (even `reconcileFromTrades` on restart re-clobbers
+the same token).
+
+**Exit monitoring can be permanently disabled by any transient failure.** `handleOptionTick`
+(`exitMonitor.ts:111-129`) unregisters a trade from monitoring *before* attempting the exit
+(to prevent double-firing), but never re-registers on failure (`catch` at line 127-128 just
+logs). One network hiccup during an automated target/SL exit silently ends all further
+protection on that position for the rest of the day.
+
+**Strategy state isn't persisted across restarts.** `BuySellStrategy`'s "position already
+open" flag (`this.ordered`) and cooldown timer live only in memory (`src/strategy/strategy.ts:22,37-40`).
+A `strategies` process restart (observed happening repeatedly today via `tsc-watch` in normal
+dev) resets both, and if entry conditions still hold on the next tick, it can fire a
+duplicate entry order against a position the `order` process still holds — no cross-process
+reconciliation exists (`OrderClient.stats()` could supply this but is never called on boot).
+
+**Live-path Mongo writes can crash the `order` process.** `bookkeeping.ts:415` wraps an
+un-awaited async `Mongo.insert()` call in `try/catch`, which cannot catch the eventual
+rejection. No `process.on('unhandledRejection', ...)` exists anywhere in the repo — a
+transient Mongo error during a trade-event write crashes the whole `order` process, losing
+in-flight risk state. Same un-awaited pattern also present in `src/monitor.ts:397,485`
+(dead code, lower urgency) and un-guarded entirely in `src/decision.ts`, `src/trade/option.ts`,
+`src/trade/option-plus.ts`, `src/trade/icici.ts`.
+
+**Zombie WebSocket connections are undetectable.** `AntWebSocket.ts:29-35`'s heartbeat sends
+a ping every 3s but never checks for a reply, and there's no "time since last message"
+watchdog. A half-open connection can report `readyState: OPEN` indefinitely with `close`/
+`error` never firing, so reconnect logic never triggers. Matches this session's own
+observation: `data`'s WS reported connected for 12+ minutes with zero ticks reaching the
+frontend, with no way to tell from logs whether that was a quiet auction or a dead socket.
+
+**Square-off race.** `squareOffOnAnt` (`antExecutor.ts:299-340`) has no "in flight" guard.
+The trade isn't removed from `bookkeeping.trades` until after the broker call and fill
+confirm. A manual squareoff and an `exitMonitor` auto-triggered exit calling the same
+function can both fire close together and both issue a live exit order concurrently.
+
+**No timeout on broker HTTP calls or the strategy→order IPC call.** `ANT.ts`'s `placeOrder`/
+`placeBracketOrder`/`exitBracketOrder` never pass an axios `timeout`; `OrderClient.request()`
+(`src/processes/strategies/OrderClient.ts:81-89`) has no timeout on its IPC promise either. A
+hung connection to AliceBlue during order placement can silently and permanently stall the
+calling strategy (it never returns from its `await`), with no error surfaced anywhere short
+of a manual process restart.
+
+**`pendingUsers` leak.** `pendingUsers.add(userId)` (`orderProcess.ts:91` etc.) happens before
+the broker call and is only cleared inside a successful `recordFill`. Any exception between
+those two points (broker rejection, network error, `waitForFill` timeout) permanently marks
+the user "active" until process restart, silently blocking their further orders.
+
+**Quote collection name drift.** Live ticks write to Mongo collection `NiftyQuote` via
+`NiftyQuote.fromAnt()`, but `GET /replay` (`server.ts:1365`), `src/tools/pipeline.ts:329`, and
+`src/prism/MockAPI.ts:52,71` all read from collection `Quote` (populated only by the legacy,
+unused ICICI-direct path in `src/trade/icici.ts:83`). `/replay?date=<today>` silently 404s
+even though today's data was actually recorded — same class of bug as the streaming
+`prevClose`/`changePercent` fix already applied this session, just at the persistence layer.
+
+**No server-side `/config` validation.** `POST /config` (`server.ts:1352-1356`,
+`ConfigService.ts:41-45`) only checks `typeof v.type === 'string'` before writing straight to
+disk — a negative `lossLimit`, negative `quantity`, or `stopLossPoints >= targetPoints` is all
+accepted via a direct API call, bypassing whatever validation exists only in the frontend form.
+
+### Medium priority
+
+**GridFS KYC documents: re-upload should be blocked after submission, not just cleaned up.**
+`POST /users/:email/documents/:docType` (`server.ts:401-443`) currently lets a document be
+re-uploaded an unlimited number of times after the user has already submitted it, silently
+overwriting the `<field>ProofId` pointer — with no `bucket.delete()` of the previous GridFS
+file, so every re-upload also leaves the prior version permanently orphaned. **Required
+behavior:** once a document type has been submitted (and especially once KYC has been
+verified/approved), the upload endpoint should reject further uploads for that `docType`
+for that user rather than silently accepting a replacement — re-submission should go through
+an explicit "resubmit"/admin-reset flow, not the same unrestricted POST. Orphan cleanup
+(`bucket.delete()` on replacement) is a secondary fix if resubmission is ever legitimately
+allowed.
+
+**Square Off has no duplicate-submit guard on the frontend.** `squareOff()` in
+`TradingContext.tsx:187-202` never sets an in-flight flag, and the button has no `disabled`
+prop — only a `window.confirm()` dialog stands between clicks. Confirming, then clicking
+again while the first request is in flight, fires a second square-off call for the same
+position.
+
+**No global 401/session-expiry handling on the frontend.** Session is checked via `/auth/me`
+only once, on mount (`AuthContext.tsx:63-72`). If the cookie expires mid-session, `user`/
+`isLoggedIn` state stays stale, and every subsequent action fails with a generic "Order
+rejected" error with no indication that re-login would fix it.
+
+**Strategy dispatch loop has no per-strategy error isolation.** Both the `receive()` loop and
+the `processNiftyQuote()` loop in `strategiesProcess.ts:47-54` iterate with plain
+`for...of` + `await`, no try/catch per strategy. If any single strategy throws, every
+strategy *later* in `strategies.getList()` is silently skipped for that tick — only a log
+line, no alert.
+
+**`Minutes5Decision` bypasses its own `enabled` flag.** Its constructor hardcodes
+`this.enabled = true` (`Minutes5Decision.ts:73`) regardless of config, and the `receive()`
+dispatch loop (`strategiesProcess.ts:47-51`) doesn't gate on `enabled` at all for that call
+path. Currently dormant only because it isn't in the live strategy list — if ever added,
+disabling it via config would not actually stop it from trading.
+
+**`GoodMorningStrategy`'s "already traded today" flag isn't persisted.** `resetIfNewDay()`
+resets `traded = false` on every restart (since `tradingDay` starts `null`). If a restart
+lands inside the ~2-minute `LATE_WINDOW_MINUTES` grace period after a trade already executed,
+the strategy can fire a second trade that day. Narrow window, but same bug class as the
+`BuySellStrategy` restart issue above; note this strategy is otherwise well-hardened against
+restarts (persists snapshot/confirm times to `config.yml` specifically for this).
+
+**`/optionstream` has the same no-replay-on-connect gap `/niftystream` had**
+(`server.ts:1103-1109`) — no snapshot pushed to a newly-connecting client. Currently no live
+impact since nothing in `frontend/src` consumes `/optionstream` today, but will silently
+misbehave the moment something does.
+
+### Low priority
+
+**`ORBPrevious` strategy is fully implemented but unreachable.** Never registered in
+`StrategyFactory.ts`'s `STRATEGY_REGISTRY`, so it can never be instantiated from config.
+Dead code; its `receive()` also unconditionally throws "Method not implemented," which is
+moot only because it's unreachable.
+
+**Hardcoded broker API key in source.** `src/zerodha/Zerodha.ts:27` — real Zerodha API key
+committed directly to source instead of an env var.
+
+**Auth bypass via unverified `X-User-Id` header.** `resolveUser()` (`server.ts:67-71`) trusts
+the raw `X-User-Id` request header with no verification when no signed session cookie is
+present.
+
+**Hardcoded, source-committed cookie-signing secret.** `server.ts:60` — the literal
+`'propfirm-secret'`; forgeable by anyone with source access even for the cookie-based path.
+
+**IDOR across every `/users/:email/...` route.** No check anywhere that `req.params.email`
+matches the authenticated caller — KYC documents (`server.ts:401,445`), payout records
+(`server.ts:477+`), risk settings (`server.ts:222`), closed trades and notifications are all
+readable/writable by email alone, and `GET /users` (`server.ts:136`) hands out the full user
+list (and thus every email) to any caller.
+
+**No CSRF `state` parameter on the ANT OAuth callback.** `/ant/login` / `/ant/callback`
+(`server.ts:655,667`) — standard OAuth CSRF gap. Lower severity today since the broker
+session (`antAccessToken`) is a single shared process-level token, not bound per end-user;
+would become a real account-binding risk if broker OAuth is ever made per-user.
+
+**Note on scope:** despite deprioritizing the above, order-to-user attribution itself is
+*not* one of these gaps — the order/risk audit confirmed everything in `bookkeeping.ts`
+(trade records, P&L, lot/investment tracking) is correctly `.user`-scoped today. Keep that
+property intact when eventually working through the items above (e.g. any auth-model
+rework must not weaken how orders are attributed to users) — see also the existing
+`norenordno` bug below, which is a *different*, already-tracked gap in that same guarantee
+(square-off orders not going through `Monitor.trackOrder()`).
+
 ## `norenordno` response access inconsistency (`prism.ts`)
 
 **Location:** `_placeOrderWithForce` (~line 1176) vs `squareOffOrder` (~line 1231)

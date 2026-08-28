@@ -1,5 +1,6 @@
 import Log from '../../util/Log';
 import ANT from '../../ant/ANT';
+import { roundToTick } from '../../zerodha/Zerodha';
 import AntOrderNotifyStream from '../../ant/AntOrderNotifyStream';
 import AntContractMaster from '../../ant/AntContractMaster';
 import configService from '../../prism/ConfigService';
@@ -28,7 +29,7 @@ import * as exitMonitor from './exitMonitor';
 // documentation, which disagrees with itself in places - NOT yet verified
 // against a live response. See the plan's verification section.
 
-async function enterPosition(
+export async function enterPosition(
     userId: string,
     tradingSymbol: string,
     instrumentId: string,
@@ -72,8 +73,31 @@ async function enterPosition(
 
     // Push-based, not polled - resolves as soon as the order-notify websocket
     // delivers a COMPLETE status for this order (see AntOrderNotifyStream.ts).
-    const entryPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo);
-    Log.log(`[order] Filled ${tradingSymbol} at ${entryPrice} for ${userId}`);
+    //
+    // BUG FIX (orphaned broker position on fill-notify failure): the
+    // order-notify WS push can be missed even though the order actually
+    // filled at the broker (see AntOrderNotifyStream.ts:40-46's documented,
+    // unverified norenordno-vs-brokerOrderId assumption - if wrong,
+    // waitForFill NEVER sees a match and always times out). Previously, any
+    // waitForFill failure aborted this function before the trade was ever
+    // recorded in bookkeeping or protected with target/SL, silently
+    // orphaning a real, live, filled broker position (uncounted against
+    // limits, unprotected, invisible on /positionstream). So on ANY
+    // waitForFill failure (timeout, REJECTED, CANCELLED), fall back to a
+    // direct REST check - ANT.getFillPrice, a confirmed-live poll of
+    // AliceBlue's orders/history endpoint keyed by this exact orderNo (see
+    // ANT.ts) - before giving up. Only if the REST fallback ALSO fails to
+    // find a COMPLETE fill do we treat the order as genuinely not filled and
+    // let the error propagate, exactly as before.
+    let entryPrice: number;
+    try {
+        entryPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo);
+        Log.log(`[order] Filled ${tradingSymbol} at ${entryPrice} for ${userId}`);
+    } catch (waitErr) {
+        Log.log(`[order] waitForFill failed for ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
+        entryPrice = await ant.getFillPrice(orderNo);
+        Log.log(`[order] REST fallback confirmed fill for ${tradingSymbol} at ${entryPrice} for ${userId} (order-notify push was missed)`);
+    }
 
     const trade = new Trade();
     trade.tsym = tradingSymbol;
@@ -88,13 +112,24 @@ async function enterPosition(
 
     if (targetPoints > 0 && stopLossPoints > 0) {
         trade.targetPoints = targetPoints;
-        trade.stopLossPrice = entryPrice - stopLossPoints;
-        trade.targetPrice = entryPrice + targetPoints;
+        // Tick-rounded for consistency with the Zerodha path and with
+        // whatever exitMonitor/frontend display expects - AliceBlue itself
+        // computes the actual bracket trigger prices server-side from
+        // targetLegPrice/slLegPrice point offsets (see placeBracketOrder),
+        // not from an absolute price we send, so there's no equivalent
+        // broker-rejection risk here today; this is purely local-field hygiene.
+        trade.stopLossPrice = roundToTick(entryPrice - stopLossPoints);
+        trade.targetPrice = roundToTick(entryPrice + targetPoints);
 
         if (useBracket) {
             // The broker (not this process) watches price after this - kept
             // on the trade so squareOffOnAnt knows to exit via exitBracketOrder.
             trade.antOrderNo = orderNo;
+            // Nothing else keeps trade.lastTradePrice fresh after entry - register
+            // watch-only so the frontend's live P&L still moves with the market
+            // instead of freezing at the fill price (the bracket order itself
+            // still owns the actual exit).
+            if (trade.token) exitMonitor.registerTrade(trade, exchange, 'ant', true);
         } else if (trade.token) {
             exitMonitor.registerTrade(trade, exchange, 'ant');
         } else {
@@ -120,8 +155,8 @@ export interface BuyIndexRequest {
 
 export async function buyIndexOnAnt(req: BuyIndexRequest): Promise<Trade> {
     const settings = configService.getConfig().settings;
-    const targetPoints = req.targetPoints ?? settings.targetPriceDiff;
-    const stopLossPoints = req.stopLossPoints ?? settings.stopLossPriceDiff;
+    const targetPoints = req.targetPoints ?? bookkeeping.getUserTargetPoints(req.userId) ?? settings.targetPriceDiff;
+    const stopLossPoints = req.stopLossPoints ?? bookkeeping.getUserStopLossPoints(req.userId) ?? settings.stopLossPriceDiff;
     const optionType = req.right === CALL ? 'CE' : 'PE';
     const index = req.index ?? 'NIFTY';
 
@@ -182,19 +217,28 @@ export async function estimateOptionPrice(symbol: string, strike: number, option
     }
 }
 
-// Batched sibling of estimateOptionPrice - resolves every candidate's token
-// locally (no network) then fetches all their premiums in one ANT.getQuotes
-// call, instead of one estimateOptionPrice (and thus one HTTP request) per
+// Batched sibling of estimateOptionPrice - sources every candidate's token
+// and live premium from a single option-chain fetch (ANT.getOptionChain),
+// instead of one estimateOptionPrice (and thus one HTTP request) per
 // candidate. Needed by any caller that checks several strikes' premiums in a
-// single decision (e.g. a strike-range walk) - see ANT.getQuotes for why.
-// Missing/failed candidates are simply absent from the returned map (same
-// effect as estimateOptionPrice's 0-on-failure, without polluting the map
-// with a misleading zero premium).
+// single decision (e.g. a strike-range walk).
 //
-// Also surfaces the resolved ANT token per candidate (not just its premium) -
-// Zerodha and ANT number the same contract completely differently (confirmed
-// live: the same NIFTY 24300 PE is Zerodha instrumentToken 15795970 but ANT
-// token 61703), and it's the ANT token that live option ticks are keyed by
+// Uses the option chain rather than the OHLC endpoint (ANT.getQuotes)
+// deliberately: the OHLC endpoint rate-limits (429) after just 1-2 rapid
+// calls (see ANT.ts), and this is the highest-frequency live consumer of
+// whichever endpoint it uses (ContinuousStrategy's T1/spawn/root-refill
+// contract selection) - the option chain endpoint is on a separate,
+// confirmed-not-rate-limited bucket, and already returns token+tradingsymbol+
+// ltp per strike, so no separate local contract-master resolution step is
+// needed either. Missing candidates (outside the chain's returned strike
+// window) are simply absent from the returned map (same effect as
+// estimateOptionPrice's 0-on-failure, without polluting the map with a
+// misleading zero premium).
+//
+// Surfaces the ANT token per candidate (not just its premium) - Zerodha and
+// ANT number the same contract completely differently (confirmed live: the
+// same NIFTY 24300 PE is Zerodha instrumentToken 15795970 but ANT token
+// 61703), and it's the ANT token that live option ticks are keyed by
 // (OptionQuote.fromAnt sets quote.token = response.tk). A caller that resolves
 // a contract here for a leg it will self-monitor via live ANT ticks (e.g.
 // ContinuousStrategy) needs this ANT token, not Zerodha's, wired into
@@ -205,36 +249,26 @@ export async function estimateOptionPricesBatch(
     symbol: string,
     candidates: { strike: number; optionType: string }[]
 ): Promise<Map<string, { premium: number; antToken: string }>> {
-    const exch = symbol === 'SENSEX' ? 'BFO' : 'NFO';
-    const resolved: { key: string; token: string; exch: string }[] = [];
-    for (const c of candidates) {
-        try {
-            const r = AntContractMaster.getInstance().findNearestExpiryOption({ symbol, exch, strike: c.strike, optionType: c.optionType });
-            resolved.push({ key: `${c.strike}_${c.optionType}`, token: r.token, exch: r.exch });
-        } catch (e) {
-            Log.log('[order] Contract resolution for batch price estimate failed:', c.strike, c.optionType, e);
-        }
-    }
-    if (resolved.length === 0) return new Map();
-
+    const byKey = new Map<string, { premium: number; antToken: string }>();
     try {
-        const byToken = await ANT.getInstance().getQuotes(resolved.map((r) => ({ exchange: r.exch, token: r.token })));
-        const byKey = new Map<string, { premium: number; antToken: string }>();
-        for (const r of resolved) {
-            const ltp = byToken.get(r.token);
-            if (ltp != null) byKey.set(r.key, { premium: ltp, antToken: r.token });
+        const chain = await ANT.getInstance().getOptionChain(symbol);
+        const byStrike = new Map(chain.map((row) => [row.strike, row]));
+        for (const c of candidates) {
+            const row = byStrike.get(c.strike);
+            if (!row) continue;
+            const side = c.optionType === 'CE' ? row.ce : row.pe;
+            byKey.set(`${c.strike}_${c.optionType}`, { premium: side.ltp, antToken: side.token });
         }
-        return byKey;
     } catch (e) {
-        Log.log('[order] Batch ANT quote fetch failed:', e);
-        return new Map();
+        Log.log('[order] Option chain fetch for batch price estimate failed:', e);
     }
+    return byKey;
 }
 
 export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
     const settings = configService.getConfig().settings;
-    const targetPoints = req.targetPoints ?? settings.targetPriceDiff;
-    const stopLossPoints = req.stopLossPoints ?? settings.stopLossPriceDiff;
+    const targetPoints = req.targetPoints ?? bookkeeping.getUserTargetPoints(req.userId) ?? settings.targetPriceDiff;
+    const stopLossPoints = req.stopLossPoints ?? bookkeeping.getUserStopLossPoints(req.userId) ?? settings.stopLossPriceDiff;
 
     if (req.contract) {
         const canonical = parseCanonicalSymbol(req.contract);
@@ -286,46 +320,67 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
 }
 
 export async function squareOffOnAnt(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
-    const ant = ANT.getInstance();
-    const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
-
-    let squareOffOrderNo: string | undefined;
-    if (existing?.antOrderNo) {
-        Log.log(`[order] Square-off ${tsym} qty=${quantity} for ${userId} via ANT exitBracketOrder (${existing.antOrderNo})`);
-        await ant.exitBracketOrder(existing.antOrderNo, 'BO');
-    } else {
-        Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId} via ANT regular order`);
-        const instrumentId = existing?.token ?? '';
-        const { orderNo } = await ant.placeOrder({
-            exchange,
-            instrumentId,
-            tradingSymbol: tsym,
-            quantity,
-            transactionType: 'SELL',
-        });
-        squareOffOrderNo = orderNo;
+    // In-flight guard: set synchronously (no await between the check and the
+    // add) so two near-simultaneous callers - e.g. a manual /prism/squareoff
+    // request and exitMonitor's auto-triggered exit for the same trade - can
+    // never both pass this check. Node is single-threaded, so whichever call
+    // reaches this line first sets the key and only then yields to the event
+    // loop (at the first await below); the other call runs this same
+    // synchronous check afterward and sees the key already present.
+    const pendingKey = `${userId}:${tsym}`;
+    if (bookkeeping.pendingSquareOffs.has(pendingKey)) {
+        Log.log(`[order] squareOffOnAnt: square-off for ${tsym} (${userId}) already in flight - ignoring duplicate call`);
+        throw new Error(`Square-off for ${tsym} is already in progress for ${userId}`);
     }
+    bookkeeping.pendingSquareOffs.add(pendingKey);
 
-    const trade = new Trade();
-    trade.tsym = tsym;
-    trade.quantity = quantity;
-    trade.action = 'Sell';
-    trade.status = 'COMPLETE';
-    trade.user = userId;
-    if (squareOffOrderNo) {
-        try {
-            trade.price = await AntOrderNotifyStream.getInstance().waitForFill(squareOffOrderNo);
-        } catch (e) {
-            Log.log('[order] squareOffOnAnt: waitForFill failed, falling back to last-seen price:', e);
+    try {
+        const ant = ANT.getInstance();
+        const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
+
+        let squareOffOrderNo: string | undefined;
+        if (existing?.antOrderNo) {
+            Log.log(`[order] Square-off ${tsym} qty=${quantity} for ${userId} via ANT exitBracketOrder (${existing.antOrderNo})`);
+            await ant.exitBracketOrder(existing.antOrderNo, 'BO');
+        } else {
+            Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId} via ANT regular order`);
+            const instrumentId = existing?.token ?? '';
+            const { orderNo } = await ant.placeOrder({
+                exchange,
+                instrumentId,
+                tradingSymbol: tsym,
+                quantity,
+                transactionType: 'SELL',
+            });
+            squareOffOrderNo = orderNo;
+        }
+
+        const trade = new Trade();
+        trade.tsym = tsym;
+        trade.quantity = quantity;
+        trade.action = 'Sell';
+        trade.status = 'COMPLETE';
+        trade.user = userId;
+        if (squareOffOrderNo) {
+            try {
+                trade.price = await AntOrderNotifyStream.getInstance().waitForFill(squareOffOrderNo);
+            } catch (e) {
+                Log.log('[order] squareOffOnAnt: waitForFill failed, falling back to last-seen price:', e);
+                trade.price = existing?.lastTradePrice ?? existing?.price ?? 0;
+            }
+        } else {
+            // exitBracketOrder path (existing?.antOrderNo) - no separate orderNo to poll a fill price for.
             trade.price = existing?.lastTradePrice ?? existing?.price ?? 0;
         }
-    } else {
-        // exitBracketOrder path (existing?.antOrderNo) - no separate orderNo to poll a fill price for.
-        trade.price = existing?.lastTradePrice ?? existing?.price ?? 0;
-    }
 
-    await bookkeeping.recordFill(trade);
-    return trade;
+        await bookkeeping.recordFill(trade);
+        return trade;
+    } finally {
+        // Always release, on success or failure, so a legitimately-retriable
+        // square-off (e.g. after a transient broker error) is never
+        // permanently blocked.
+        bookkeeping.pendingSquareOffs.delete(pendingKey);
+    }
 }
 
 // exitMonitor calls this when a useGTT=false ANT trade crosses target/SL.

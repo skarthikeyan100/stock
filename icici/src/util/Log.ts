@@ -3,6 +3,7 @@ import moment from 'moment';
 export default class Log {
   static log(...args: any[]) {
     const message = args.map(a => {
+      if (a instanceof Error) return a.stack || `${a.name}: ${a.message}`;
       if (typeof a === 'object' && a !== null) {
         try { return JSON.stringify(a, null, 2); } catch { return String(a); }
       }

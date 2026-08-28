@@ -37,8 +37,10 @@ export type OrderRequestType =
     | 'buyContractZerodhaBare'
     | 'sellContractZerodhaBare'
     | 'placeLimitBuyZerodhaBare'
+    | 'cancelOrderZerodha'
     | 'getContractByPriceRangeZerodha'
-    | 'getPCR';
+    | 'getPCR'
+    | 'getUserAllottedCapital';
 
 export interface OrderRequest {
     kind: 'request';

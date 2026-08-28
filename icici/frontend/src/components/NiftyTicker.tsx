@@ -28,7 +28,9 @@ export default function NiftyTicker() {
       es.onerror = () => {
         es.close();
         failCount++;
-        if (failCount < 3) setTimeout(connect, 3000);
+        // Retry indefinitely with a capped backoff - never give up (see
+        // TradingContext.tsx's positionstream fix for why).
+        setTimeout(connect, Math.min(3000 * 2 ** (failCount - 1), 30000));
       };
     };
     connect();

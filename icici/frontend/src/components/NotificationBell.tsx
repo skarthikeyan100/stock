@@ -41,7 +41,9 @@ export default function NotificationBell() {
       source.onerror = () => {
         source?.close();
         failCount++;
-        if (failCount < 3) retryTimer = setTimeout(connect, 3000);
+        // Retry indefinitely with a capped backoff - never give up (see
+        // TradingContext.tsx's positionstream fix for why).
+        retryTimer = setTimeout(connect, Math.min(3000 * 2 ** (failCount - 1), 30000));
       };
     };
     connect();

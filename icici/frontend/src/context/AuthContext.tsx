@@ -21,6 +21,9 @@ export interface AuthUser {
   dobVerified: boolean;
   panVerified: boolean;
   perOrderCap?: number;
+  allottedCapital?: number;
+  targetPoints?: number;
+  stopLossPoints?: number;
   legalName?: string;
   aadharDocId?: string;
   aadharVerified: boolean;

@@ -28,6 +28,25 @@ interface UserSettings {
     useGTT?: boolean;
     broker?: 'zerodha' | 'ant';
     perOrderCap?: number;
+    allottedCapital?: number;
+    targetPoints?: number;
+    stopLossPoints?: number;
+}
+
+// One reservation per in-flight, not-yet-resolved buy request. A Set<string>
+// can't represent two concurrent pending orders for the same user (a second
+// add() is a no-op, and a single delete() would wipe out both) - that's
+// exactly the gap this whole fix closes, so this must be a per-user list.
+interface PendingOrder {
+    estimatedLots: number;  // always 1: a conservative reservation - real
+                             // quantity isn't always known yet (see buyIndex/
+                             // antBuyIndex, which resolve it inside the
+                             // broker executor)
+    estimatedValue: number; // mirrors canPlaceOrder's estimatedOrderValue
+                             // param; 0 when the caller didn't have one
+                             // (buyIndex/antBuyIndex) - those get lot-limit
+                             // protection while pending but not investment-
+                             // limit protection
 }
 
 class OrderBookkeeping {
@@ -36,7 +55,16 @@ class OrderBookkeeping {
     private orderUserMap: Map<string, string> = new Map();
     private pendingOrdersByTsym: Map<string, string[]> = new Map();
     userPnL: Map<string, number> = new Map();
-    pendingUsers: Set<string> = new Set();
+    pendingOrders: Map<string, PendingOrder[]> = new Map();
+    // Square-off (exit/sell) in-flight guard, keyed by `${userId}:${tsym}` -
+    // set synchronously at the very top of squareOffOnAnt (antExecutor.ts),
+    // before any await, and released in a finally block there. Prevents a
+    // manual square-off and exitMonitor's (or the drawdown-breach handler's)
+    // auto-triggered exit from both issuing a live SELL order for the same
+    // trade when they fire close together. Entirely separate from
+    // pendingUsers/pendingOrders (the BUY-side reservation, unrelated - square-off
+    // never goes through canPlaceOrder) - do not merge the two.
+    pendingSquareOffs: Set<string> = new Set();
     // brokerOrderId values already processed by recordFill, so a redelivered
     // fill event (reconnect replay, webhook retry) doesn't double-book P&L.
     // In-memory/per-process-lifetime only - matches this file's existing
@@ -75,6 +103,14 @@ class OrderBookkeeping {
         for (const l of this.positionsChangedListeners) l();
     }
 
+    // Public entry point for callers outside this class that can't call
+    // notifyPositionsChanged() directly (see exitMonitor.ts's onPriceUpdate,
+    // wired up in orderProcess.ts - exitMonitor.ts can't import this module
+    // directly, since this module already imports exitMonitor.ts).
+    triggerPositionsChanged(): void {
+        this.notifyPositionsChanged();
+    }
+
     updateUserSettings(user: string, settings: UserSettings) {
         this.userSettingsCache.set(user, settings);
     }
@@ -101,6 +137,23 @@ class OrderBookkeeping {
 
     getUserPerOrderCap(user: string): number | undefined {
         return this.userSettingsCache.get(user)?.perOrderCap;
+    }
+
+    // undefined signals "no per-user override" - callers fall back to their
+    // own strategy-level config.yml value (see ContinuousStrategy.capitalCheck).
+    getUserAllottedCapital(user: string): number | undefined {
+        return this.userSettingsCache.get(user)?.allottedCapital;
+    }
+
+    // undefined signals "no per-user override" - callers fall back to
+    // config.yml's global settings.targetPriceDiff/stopLossPriceDiff (see
+    // zerodhaExecutor.ts/antExecutor.ts's target/stopLoss point resolution).
+    getUserTargetPoints(user: string): number | undefined {
+        return this.userSettingsCache.get(user)?.targetPoints;
+    }
+
+    getUserStopLossPoints(user: string): number | undefined {
+        return this.userSettingsCache.get(user)?.stopLossPoints;
     }
 
     getUserContext(email: string): UserContext {
@@ -145,7 +198,7 @@ class OrderBookkeeping {
     }
 
     hasActiveTrade(user: string): boolean {
-        return this.trades.some((t) => t.user === user) || this.pendingUsers.has(user);
+        return this.trades.some((t) => t.user === user) || (this.pendingOrders.get(user)?.length ?? 0) > 0;
     }
 
     getCurrentInvestment(user: string): number {
@@ -154,6 +207,41 @@ class OrderBookkeeping {
 
     isInvestmentLimitReached(user: string): boolean {
         return this.getCurrentInvestment(user) >= this.getUserMaxInvestment(user);
+    }
+
+    // Called by orderProcess.ts immediately after canPlaceOrder() returns
+    // allowed:true and before the broker call, so a concurrent canPlaceOrder()
+    // call for the same user sees this reservation for the duration of the
+    // broker round trip - this is what closes the race where two concurrent
+    // requests both read only confirmed trades and both pass. Every
+    // markPending() must be paired with exactly one releasePending() call -
+    // either from the fill path (_processTradeEvent, already wired) or from
+    // orderProcess.ts's failure path (placeOrderWithPendingGuard) - or the
+    // reservation leaks and this user is blocked until the next fill.
+    markPending(user: string, estimatedOrderValue?: number): void {
+        const list = this.pendingOrders.get(user) ?? [];
+        list.push({ estimatedLots: 1, estimatedValue: estimatedOrderValue ?? 0 });
+        this.pendingOrders.set(user, list);
+    }
+
+    // Releases exactly one pending reservation for `user` (oldest first) -
+    // never all of them - so releasing/resolving one in-flight order can't
+    // silently drop a different, still-in-flight order's reservation for the
+    // same user. Safe to call when nothing is pending (no-op), so both the
+    // fill path and orderProcess's failure path can call it unconditionally.
+    releasePending(user: string): void {
+        const list = this.pendingOrders.get(user);
+        if (!list || list.length === 0) return;
+        list.shift();
+        if (list.length === 0) this.pendingOrders.delete(user);
+    }
+
+    private pendingLots(user: string): number {
+        return (this.pendingOrders.get(user) ?? []).reduce((sum, p) => sum + p.estimatedLots, 0);
+    }
+
+    private pendingValue(user: string): number {
+        return (this.pendingOrders.get(user) ?? []).reduce((sum, p) => sum + p.estimatedValue, 0);
     }
 
     private static startOfDay(): Date {
@@ -232,13 +320,15 @@ class OrderBookkeeping {
     // (niftyLtp * quantity - the real option premium isn't known until
     // contract selection) but exact for buyContract's price * quantity.
     async canPlaceOrder(user: string, estimatedOrderValue?: number): Promise<{ allowed: boolean; reason?: string }> {
-        const tradedLots = this.getTradedLots(user);
+        const tradedLots = this.getTradedLots(user) + this.pendingLots(user);
         const lotLimit = this.getUserLotLimit(user);
         if (tradedLots >= lotLimit) {
             return { allowed: false, reason: `User '${user}' has reached the lot limit (${tradedLots}/${lotLimit} lots).` };
         }
-        if (this.isInvestmentLimitReached(user)) {
-            return { allowed: false, reason: `User '${user}' has reached max investment (${this.getCurrentInvestment(user)}/${this.getUserMaxInvestment(user)}).` };
+        const currentInvestment = this.getCurrentInvestment(user) + this.pendingValue(user);
+        const maxInvestment = this.getUserMaxInvestment(user);
+        if (currentInvestment >= maxInvestment) {
+            return { allowed: false, reason: `User '${user}' has reached max investment (${currentInvestment}/${maxInvestment}).` };
         }
         const perOrderCap = this.getUserPerOrderCap(user);
         if (estimatedOrderValue !== undefined && perOrderCap !== undefined && estimatedOrderValue > perOrderCap) {
@@ -383,14 +473,18 @@ class OrderBookkeeping {
 
     private async _processTradeEvent(tradeEvent: Trade) {
         Log.log(`[order] ${tradeEvent.action} ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} status=${tradeEvent.status}`);
-        try {
-            Mongo.getInstance()?.insert(tradeEvent);
-        } catch (e) {
-            /* Mongo not available */
-        }
+        // Fire-and-forget, same convention as checkDrawdownNotification/
+        // persistClosedTrade elsewhere in this class - never let a Mongo
+        // hiccup block live bookkeeping. The .catch() (not a try/catch,
+        // which cannot catch a rejection from a promise that isn't awaited)
+        // is what actually prevents an unhandled promise rejection from
+        // crashing the `order` process on a transient Mongo error.
+        Mongo.getInstance()?.insert(tradeEvent).catch((e) => {
+            Log.log('[order] Mongo insert failed for trade event (continuing without persistence):', tradeEvent.tsym, e);
+        });
 
         if (tradeEvent.action == 'Buy') {
-            this.pendingUsers.delete(tradeEvent.user || 'Default');
+            this.releasePending(tradeEvent.user || 'Default');
             const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user);
             if (index == -1) {
                 tradeEvent.entryTime = new Date();
@@ -449,7 +543,7 @@ class OrderBookkeeping {
                 buyTrade.quantity -= sellQty;
                 if (buyTrade.quantity <= 0) {
                     this.trades.splice(index, 1);
-                    if (buyTrade.token) exitMonitor.unregisterTrade(buyTrade.token);
+                    if (buyTrade.token) exitMonitor.unregisterTrade(user, buyTrade.token);
                 }
 
                 if ((await this.isDailyDrawdownBreached(user)) || (await this.isMonthlyDrawdownBreached(user))) {
@@ -458,6 +552,46 @@ class OrderBookkeeping {
             }
         }
         this.notifyPositionsChanged();
+    }
+
+    // Called once at order-process startup: this.closedTrades is in-memory
+    // only and doesn't survive a restart, but the 'closedTrades' Mongo
+    // collection (see persistClosedTrade) is the durable record of every
+    // realized trade. Reloads today's closed trades back into memory so
+    // /closedtrades and /positionstream (both served from this.closedTrades,
+    // not Mongo) don't go blank on every restart even though the trades were
+    // never actually lost. Scoped to today (not all-time) to match the
+    // existing "today" convention used elsewhere in this file (drawdown
+    // checks, daily trade limit) and to keep the reload bounded.
+    async loadClosedTradesFromMongo(): Promise<void> {
+        try {
+            const db = Mongo.getInstance()?.db;
+            if (!db) return;
+            const rows = await db.collection('closedTrades').find({ exitTime: { $gte: OrderBookkeeping.startOfDay() } }).toArray();
+            for (const row of rows) {
+                const trade = new Trade();
+                trade.tsym = row.tsym;
+                trade.token = row.token;
+                trade.right = row.right;
+                trade.quantity = row.quantity;
+                trade.price = row.entryPrice;
+                trade.lastTradePrice = row.exitPrice;
+                trade.action = 'Sell';
+                trade.status = 'COMPLETE';
+                trade.user = row.user;
+                trade.open = false;
+                trade.realizedPnL = row.realizedPnL;
+                trade.entryTime = row.entryTime;
+                trade.exitTime = row.exitTime;
+                trade.strategy = row.strategy;
+                this.closedTrades.push(trade);
+            }
+            if (rows.length > 0) {
+                Log.log(`[order] Reloaded ${rows.length} closed trade(s) from Mongo for today`);
+            }
+        } catch (e) {
+            Log.log('[order] loadClosedTradesFromMongo failed (not blocking startup):', e);
+        }
     }
 
     // Additive, purpose-built realized-P&L ledger - distinct from the raw

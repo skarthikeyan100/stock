@@ -19,6 +19,7 @@ import cookieParser from 'cookie-parser';
 import path from 'path';
 import { Trade } from './model/model';
 import configService from './prism/ConfigService';
+import { validateFlatConfig } from './prism/configValidation';
 import { getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile } from './user';
 import { computePayout, createPayoutRecord, markPayoutDecision, generateInvoiceHtml, getPayoutDecisionLog } from './payout';
 import multer from 'multer';
@@ -27,6 +28,7 @@ import Tesseract from 'tesseract.js';
 import sharp from 'sharp';
 import Decision from './decision';
 import Mongo from './tools/mongo';
+import { dateRangeQuery } from './tools/quoteDateRange';
 import myEmitter from './tools/emitter';
 import Prism from './prism';
 import ANT from './ant/ANT';
@@ -106,6 +108,23 @@ app.get('/auth/me', async function (req, res) {
         res.status(401).json({ error: 'Unknown user' });
         return;
     }
+    // A resumed session (cookie only, no fresh POST /auth/login) would
+    // otherwise never re-sync this user's settings into the order process's
+    // in-memory cache after a restart - refresh it here too, on every session
+    // check, so a stale/empty cache entry doesn't silently fall back to
+    // hardcoded defaults (e.g. investmentAmount=0) for manual order sizing.
+    await orderClient.updateUserSettings(email, {
+        lossLimit: user.lossLimit,
+        lotLimit: user.lotCount,
+        investmentMode: user.investmentMode,
+        investmentAmount: user.investmentAmount,
+        useGTT: user.useGTT,
+        broker: user.broker,
+        perOrderCap: user.perOrderCap,
+        allottedCapital: user.allottedCapital,
+        targetPoints: user.targetPoints,
+        stopLossPoints: user.stopLossPoints,
+    }).catch((e) => Log.log('[frontend] updateUserSettings on session check failed:', e));
     res.json(toClientUser(user));
 });
 
@@ -205,8 +224,8 @@ app.patch('/users/:email/role', async function (req, res) {
 app.post('/users/:email/settings', async function (req, res) {
     try {
         const { email } = req.params;
-        const { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, profitSplitPercent, enabled } = req.body;
-        const user = await updateUserSettings(email, { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, profitSplitPercent, enabled });
+        const { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled } = req.body;
+        const user = await updateUserSettings(email, { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled });
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;
@@ -219,6 +238,9 @@ app.post('/users/:email/settings', async function (req, res) {
             useGTT: user.useGTT,
             broker: user.broker,
             perOrderCap: user.perOrderCap,
+            allottedCapital: user.allottedCapital,
+            targetPoints: user.targetPoints,
+            stopLossPoints: user.stopLossPoints,
         }).catch((e) => Log.log('[frontend] updateUserSettings push failed:', e));
         res.json(toClientUser(user));
     } catch (e) {
@@ -1066,10 +1088,16 @@ const niftyStreamClients = new Set<express.Response>();
 const optionStreamClients = new Set<express.Response>();
 const positionStreamClients = new Map<express.Response, string>(); // res -> user
 
+// Last tick seen, replayed to a client connecting between ticks (e.g. after
+// market close, or a page refresh) so the ticker isn't blank until the next
+// live update - which may not arrive until the next session.
+let lastNiftyQuote: any = null;
+
 app.get('/niftystream', async function (req, res) {
     res.set({ 'Cache-Control': 'no-cache', 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
     res.flushHeaders();
     res.write('retry: 10000\n\n');
+    if (lastNiftyQuote) res.write(`data: ${JSON.stringify({ nifty: lastNiftyQuote })}\n\n`);
     niftyStreamClients.add(res);
     req.on('close', () => niftyStreamClients.delete(res));
 });
@@ -1325,6 +1353,11 @@ app.get('/config', (req, res) => {
 
 app.post('/config', (req, res) => {
     const flat = req.body;
+    const current = configService.configToFlat();
+    const errors = validateFlatConfig(flat, current);
+    if (errors.length > 0) {
+        return res.status(400).json({ error: errors.join('; ') });
+    }
     configService.writeConfig(configService.flatToConfig(flat));
     res.json(flat);
 });
@@ -1336,7 +1369,12 @@ app.get('/replay', async (req, res) => {
     if (!date) return res.status(400).json({ error: 'date query param required' });
 
     const db = Mongo.getInstance().db;
-    const quotes = await db.collection('Quote').find({ date }).sort({ ltt: 1 }).toArray();
+    // Live ticks are persisted to the 'NiftyQuote' collection (NiftyQuote.fromAnt(),
+    // see src/model/model.ts + src/ant/AntStream.ts / src/processes/data/AntDataStream.ts)
+    // - 'Quote' is not written by any active path. NiftyQuote documents have no `date`
+    // field, only `ltt` (epoch seconds), so filter by a day-bounds range instead of an
+    // equality match - see src/tools/quoteDateRange.ts.
+    const quotes = await db.collection('NiftyQuote').find(dateRangeQuery(date)).sort({ ltt: 1 }).toArray();
     if (quotes.length === 0) return res.status(404).json({ error: `no quotes for date ${date}` });
 
     const replayDecision = new Decision();
@@ -1369,6 +1407,8 @@ async function main() {
         process.stdin,
         (tick) => {
             if (tick.type === 'nifty') {
+                lastNiftyQuote = tick.quote;
+                Log.log('[frontend] nifty tick:', JSON.stringify(tick.quote), `clients=${niftyStreamClients.size}`);
                 const payload = `data: ${JSON.stringify({ nifty: tick.quote })}\n\n`;
                 for (const res of niftyStreamClients) res.write(payload);
             } else if (tick.type === 'option') {

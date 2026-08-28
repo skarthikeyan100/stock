@@ -17,27 +17,93 @@ interface MonitoredTrade {
     trade: Trade;
     exchange: 'NFO' | 'BFO';
     broker: Broker;
+    // True for trades whose actual exit is owned by a broker-side bracket
+    // (Zerodha GTT / ANT bracket order, useGTT=true) - handleOptionTick still
+    // refreshes trade.lastTradePrice for these (so the frontend's live P&L
+    // keeps moving) but must never itself trigger a square-off, since the
+    // broker already will.
+    watchOnly: boolean;
 }
 
 type ExitHandler = (trade: Trade, exchange: 'NFO' | 'BFO') => Promise<void>;
+type PriceUpdateListener = () => void;
 
-const monitored = new Map<string, MonitoredTrade>(); // keyed by trade.token
+// Composite key so two users holding a position in the *same* option
+// contract (same token) are tracked independently - see bugs.md
+// "Cross-user protection loss on shared contracts". Previously this map was
+// keyed by trade.token alone, so a second user's registerTrade() for a
+// token already held by a different user silently overwrote the first
+// user's entry, permanently dropping that first user's target/SL
+// monitoring with no error and no self-healing (even reconcileFromTrades on
+// restart re-clobbered the same token).
+const monitored = new Map<string, MonitoredTrade>(); // keyed by monitorKey(user, token)
+
+function monitorKey(user: string, token: string): string {
+    return `${user || 'Default'}:${token}`;
+}
+
+// True if any entry in `monitored` (for any user) is currently watching this
+// token. Used to decide whether a subscribe/unsubscribe IPC command actually
+// needs to go out: with the composite key above, two users can both hold
+// entries for the same token, and the token-level websocket subscription
+// (owned by `data`'s AntDataStream, a plain non-ref-counted Set - see
+// dataProcess.ts / AntDataStream.ts) must only be dropped once the *last*
+// watcher for that token is gone. Otherwise unregistering one user's trade
+// would silently kill live ticks (and therefore target/SL monitoring) for
+// another user's still-open trade on the same token.
+function isTokenWatched(token: string): boolean {
+    for (const entry of monitored.values()) {
+        if (entry.trade.token === token) return true;
+    }
+    return false;
+}
+
 const exitHandlers = new Map<Broker, ExitHandler>();
+// Same "register a callback instead of importing directly" pattern as onExit
+// above, for the same reason: bookkeeping.ts already imports this module, so
+// this module can't import bookkeeping.ts back without a circular dependency.
+// orderProcess.ts (which imports both) wires this to
+// bookkeeping.triggerPositionsChanged() so /positionstream actually pushes a
+// fresh snapshot when a monitored trade's live price moves - previously
+// nothing did this between trade events (fill/close/target-SL edit), so a
+// position's displayed LTP/P&L only ever changed when a *different* trade
+// action happened to also refresh the stream, not on the price tick itself.
+const priceUpdateListeners: PriceUpdateListener[] = [];
+let lastPriceNotifyAt = 0;
+const PRICE_NOTIFY_THROTTLE_MS = 500; // caps SSE broadcast rate regardless of tick frequency
 
 export function onExit(broker: Broker, handler: ExitHandler): void {
     exitHandlers.set(broker, handler);
 }
 
-export function registerTrade(trade: Trade, exchange: 'NFO' | 'BFO', broker: Broker): void {
-    monitored.set(trade.token, { trade, exchange, broker });
-    writeJsonLine(process.stdout, { cmd: 'subscribe', token: trade.token });
-    Log.log(`[order] exitMonitor watching ${trade.tsym} (token ${trade.token}, ${broker}) for ${trade.user}: target=${trade.targetPrice} stopLoss=${trade.stopLossPrice}`);
+export function onPriceUpdate(listener: PriceUpdateListener): void {
+    priceUpdateListeners.push(listener);
 }
 
-export function unregisterTrade(token: string): void {
-    if (!monitored.has(token)) return;
-    monitored.delete(token);
-    writeJsonLine(process.stdout, { cmd: 'unsubscribe', token });
+export function registerTrade(trade: Trade, exchange: 'NFO' | 'BFO', broker: Broker, watchOnly = false): void {
+    const key = monitorKey(trade.user, trade.token);
+    // Check BEFORE inserting this entry - if some other entry (e.g. another
+    // user's trade) already watches this token, the underlying token
+    // subscription is already live and must not be requested again.
+    const alreadySubscribed = isTokenWatched(trade.token);
+    monitored.set(key, { trade, exchange, broker, watchOnly });
+    if (!alreadySubscribed) {
+        writeJsonLine(process.stdout, { cmd: 'subscribe', token: trade.token });
+    }
+    Log.log(`[order] exitMonitor watching ${trade.tsym} (token ${trade.token}, ${broker}) for ${trade.user}: target=${trade.targetPrice} stopLoss=${trade.stopLossPrice}${watchOnly ? ' (watch-only, broker owns exit)' : ''}`);
+}
+
+export function unregisterTrade(user: string, token: string): void {
+    const key = monitorKey(user, token);
+    if (!monitored.has(key)) return;
+    monitored.delete(key);
+    // Only unsubscribe at the token level once nobody else is still
+    // watching it (see isTokenWatched above) - otherwise this would
+    // silently cut off live ticks for another user still holding a
+    // position in the same contract.
+    if (!isTokenWatched(token)) {
+        writeJsonLine(process.stdout, { cmd: 'unsubscribe', token });
+    }
 }
 
 // Called once at order-process startup: exitMonitor's in-memory `monitored`
@@ -49,7 +115,7 @@ export function reconcileFromTrades(trades: Trade[]): void {
     let reconciled = 0;
     for (const trade of trades) {
         if (!trade.token) continue;
-        if (monitored.has(trade.token)) continue;
+        if (monitored.has(monitorKey(trade.user, trade.token))) continue;
         if (trade.targetPrice == null && trade.stopLossPrice == null) continue;
         // Exchange/broker aren't stored on Trade - infer exchange the same
         // way setTargetStopLoss does (tsym prefix), and broker from
@@ -57,7 +123,11 @@ export function reconcileFromTrades(trades: Trade[]): void {
         // otherwise zerodha - matches this file's existing Broker union).
         const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('BSE') ? 'BFO' : 'NFO';
         const broker: Broker = trade.antOrderNo ? 'ant' : 'zerodha';
-        registerTrade(trade, exchange, broker);
+        // A GTT/bracket trade (gttTriggerId set) already has its exit owned by
+        // the broker - reconcile it watch-only (mark-to-market only) so a
+        // restart doesn't also arm an in-app square-off that would race the
+        // broker's own bracket.
+        registerTrade(trade, exchange, broker, trade.gttTriggerId != null);
         reconciled++;
     }
     if (reconciled > 0) {
@@ -66,28 +136,66 @@ export function reconcileFromTrades(trades: Trade[]): void {
 }
 
 export async function handleOptionTick(quote: OptionQuote): Promise<void> {
-    const entry = monitored.get(String(quote.token));
-    if (!entry) return;
-    const { trade, exchange, broker } = entry;
-    trade.lastTradePrice = quote.ltp;
-
-    const hitTarget = trade.targetPrice != null && quote.ltp >= trade.targetPrice;
-    const hitStopLoss = trade.stopLossPrice != null && quote.ltp <= trade.stopLossPrice;
-    if (!hitTarget && !hitStopLoss) return;
-
-    // Unregister before awaiting the exit so a second tick arriving while the
-    // squareoff is in flight can't trigger it twice.
-    unregisterTrade(trade.token);
-    Log.log(`[order] exitMonitor triggering squareoff for ${trade.tsym} (${trade.user}, ${broker}): ltp=${quote.ltp} hit=${hitTarget ? 'target' : 'stopLoss'}`);
-
-    const exitHandler = exitHandlers.get(broker);
-    if (!exitHandler) {
-        Log.log(`[order] exitMonitor has no exit handler registered for broker '${broker}' - cannot square off`, trade.tsym);
-        return;
+    const tokenStr = String(quote.token);
+    // A token can now have more than one monitored entry (one per user
+    // holding a position in that contract - see monitorKey above), so
+    // collect every matching entry first rather than a single
+    // monitored.get(token) lookup. Snapshotting into an array up front also
+    // means later mutations of `monitored` (e.g. the unregisterTrade call
+    // below, for an earlier match in this same loop) can't disturb
+    // iteration of the remaining matches.
+    const matches: MonitoredTrade[] = [];
+    for (const entry of monitored.values()) {
+        if (entry.trade.token === tokenStr) matches.push(entry);
     }
-    try {
-        await exitHandler(trade, exchange);
-    } catch (e) {
-        Log.log('[order] exitMonitor squareoff failed:', trade.tsym, e);
+    if (matches.length === 0) return;
+
+    const now = Date.now();
+    let notifiedListeners = false;
+
+    for (const entry of matches) {
+        const { trade, exchange, broker, watchOnly } = entry;
+        trade.lastTradePrice = quote.ltp;
+
+        if (!notifiedListeners && now - lastPriceNotifyAt >= PRICE_NOTIFY_THROTTLE_MS) {
+            lastPriceNotifyAt = now;
+            for (const listener of priceUpdateListeners) listener();
+            notifiedListeners = true;
+        }
+
+        // Watch-only: keep lastTradePrice fresh for the frontend's live P&L, but
+        // the broker's own GTT/bracket owns the actual exit - never square off here.
+        if (watchOnly) continue;
+
+        const hitTarget = trade.targetPrice != null && quote.ltp >= trade.targetPrice;
+        const hitStopLoss = trade.stopLossPrice != null && quote.ltp <= trade.stopLossPrice;
+        if (!hitTarget && !hitStopLoss) continue;
+
+        // Unregister before awaiting the exit so a second tick arriving while the
+        // squareoff is in flight can't trigger it twice. If the exit attempt
+        // fails below, this entry is re-registered in the catch block so a
+        // future tick can retry it - see the comment there (bug-04).
+        unregisterTrade(trade.user, trade.token);
+        Log.log(`[order] exitMonitor triggering squareoff for ${trade.tsym} (${trade.user}, ${broker}): ltp=${quote.ltp} hit=${hitTarget ? 'target' : 'stopLoss'}`);
+
+        const exitHandler = exitHandlers.get(broker);
+        if (!exitHandler) {
+            Log.log(`[order] exitMonitor has no exit handler registered for broker '${broker}' - cannot square off`, trade.tsym);
+            continue;
+        }
+        try {
+            await exitHandler(trade, exchange);
+        } catch (e) {
+            // A transient failure here (network hiccup, broker rate limit, etc.)
+            // must not silently end target/SL protection on this position for
+            // the rest of the day. Re-register with the same trade/exchange/
+            // broker/watchOnly this entry was unregistered with above, so the
+            // next tick retries the exit. Deliberately unconditional (no retry
+            // cap/backoff) - worst case this keeps trying to protect the
+            // position, which is the desired behavior; see bug-04 plan for
+            // rationale.
+            Log.log('[order] exitMonitor squareoff failed - re-registering for retry:', trade.tsym, e);
+            registerTrade(trade, exchange, broker, watchOnly);
+        }
     }
 }

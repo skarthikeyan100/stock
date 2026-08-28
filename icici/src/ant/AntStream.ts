@@ -1,4 +1,5 @@
 import Log from '../util/Log';
+import { isPastMarketClose } from '../util/marketHours';
 import AntSession from './AntSession';
 import AntWebSocket from './AntWebSocket';
 import ANT from './ANT';
@@ -94,7 +95,12 @@ class AntStream {
       this.ws.on('close', () => {
         Log.log('[AntStream] WebSocket closed');
         this.connected = false;
-        if (!this.manualDisconnect) this.scheduleReconnect();
+        if (this.manualDisconnect) return;
+        if (isPastMarketClose()) {
+          Log.log('[AntStream] Past market close - not reconnecting');
+          return;
+        }
+        this.scheduleReconnect();
       });
 
       this.connected = true;
@@ -116,6 +122,10 @@ class AntStream {
       this.reconnectTimer = null;
       this.connect().catch((e) => {
         Log.log('[AntStream] Reconnect attempt failed:', e);
+        if (isPastMarketClose()) {
+          Log.log('[AntStream] Past market close - not retrying');
+          return;
+        }
         this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.MAX_RECONNECT_DELAY_MS);
         this.scheduleReconnect();
       });

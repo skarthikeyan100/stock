@@ -183,6 +183,30 @@ class AntContractMaster {
       lotSize: record['Lot Size'],
     };
   }
+
+  // The ANT-native token is the common/canonical token used everywhere
+  // outside of a broker-specific API call (trade.token, exitMonitor's
+  // live-tick subscription via dataProcess.ts) - ANT is the sole live-tick
+  // source and only understands its own token scheme. A Zerodha
+  // instrument_token must never be stored as trade.token: see
+  // ToDo.md 2026-08-27, where a manual PE buy did exactly that, subscribed a
+  // nonexistent instrument on ANT's feed, and the live price froze at the
+  // fill price forever even though the position was actively trading.
+  //
+  // Every Zerodha-side contract lookup (findATMOption/findExactOption/
+  // findNearestExpiryOption) has a same-shaped counterpart here - call this
+  // alongside whichever one was used, with the same selector, to get the
+  // common token to store instead of that call's instrument_token.
+  resolveCommonToken(
+    symbol: string,
+    optionType: 'CE' | 'PE',
+    selector: { atmLtp: number } | { strike: number; expiry: string } | { strike: number }
+  ): string {
+    if ('atmLtp' in selector) return this.findATMOption(selector.atmLtp, optionType, symbol).token;
+    if ('expiry' in selector) return this.findExactOption({ symbol, strike: selector.strike, expiry: selector.expiry, optionType }).token;
+    const exch = symbol === 'SENSEX' ? 'BFO' : 'NFO';
+    return this.findNearestExpiryOption({ symbol, exch, strike: selector.strike, optionType }).token;
+  }
 }
 
 export default AntContractMaster;

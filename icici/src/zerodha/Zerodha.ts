@@ -3,6 +3,23 @@ import Log from '../util/Log';
 import fs from 'fs';
 import path from 'path';
 
+// NFO/BFO options tick size - Zerodha rejects GTT trigger/order prices that
+// aren't an exact multiple of this (confirmed live: "Stoploss trigger price
+// should be a multiple of tick size 0.05" - a plain 2-decimal round isn't
+// enough, e.g. a multi-fill average entry price like 133.61363636363637
+// rounds to 122.61 after subtracting stopLossPoints, which is NOT a multiple
+// of 0.05). Exported so callers (e.g. zerodhaExecutor.ts) can pre-round
+// values that end up in bookkeeping/exitMonitor comparisons too, so they stay
+// consistent with whatever the broker actually enforces.
+export const NFO_TICK_SIZE = 0.05;
+
+export function roundToTick(price: number, tick: number = NFO_TICK_SIZE): number {
+    // Round to the nearest tick, then fix up floating-point representation
+    // drift (e.g. 0.05*3 = 0.15000000000000002) by rounding to 2 decimals -
+    // safe since a 0.05 tick never needs more than 2 decimal places.
+    return Math.round(Math.round(price / tick) * tick * 100) / 100;
+}
+
 class Zerodha {
     private static instance: Zerodha;
 
@@ -250,8 +267,8 @@ class Zerodha {
         stopLossPoints: number,
         lastPrice: number
     ): Promise<number> {
-        const targetPrice = Math.round((entryPrice + targetPoints) * 100) / 100;
-        const stopLossPrice = Math.round((entryPrice - stopLossPoints) * 100) / 100;
+        const targetPrice = roundToTick(entryPrice + targetPoints);
+        const stopLossPrice = roundToTick(entryPrice - stopLossPoints);
 
         Log.log(`[Zerodha] Placing GTT OCO for ${tradingSymbol}: stopLoss=${stopLossPrice} target=${targetPrice}`);
 
@@ -284,6 +301,12 @@ class Zerodha {
         stopLossPrice: number,
         lastPrice: number
     ): Promise<void> {
+        // Round here too (not just in placeTargetStopLossGTT) - callers (e.g.
+        // setTargetStopLoss) compute these from trade.price +/- points
+        // without rounding, so a non-tick entry price hits the same rejection
+        // on modify as on initial placement.
+        targetPrice = roundToTick(targetPrice);
+        stopLossPrice = roundToTick(stopLossPrice);
         Log.log(`[Zerodha] Modifying GTT ${triggerId} for ${tradingSymbol}: stopLoss=${stopLossPrice} target=${targetPrice}`);
         await this.kc.modifyGTT(triggerId, {
             trigger_type: 'two-leg',
@@ -296,6 +319,17 @@ class Zerodha {
                 { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: targetPrice },
             ],
         });
+    }
+
+    // Cancels a plain (non-GTT) order, e.g. a resting root-refill LIMIT buy
+    // (see ContinuousStrategy's checkRootRefillDrift) - same 'regular' variety
+    // used by every other order this class places.
+    async cancelOrder(orderId: string): Promise<void> {
+        if (!this.accessToken) {
+            throw new Error('No active session. Please login first.');
+        }
+        Log.log(`[Zerodha] Cancelling order ${orderId}`);
+        await this.kc.cancelOrder(orderId, 'regular');
     }
 }
 

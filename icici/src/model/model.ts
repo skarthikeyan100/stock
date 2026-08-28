@@ -47,16 +47,24 @@ export class NiftyQuote {
 
     // ANT's touchline ticks are often partial updates (no OHLC/volume/depth,
     // just lp/pc/ft/tk) - only map what's actually present, no fabricated values.
+    // prevClose is cached across ticks since it's constant for the trading day.
+    private static lastPrevClose = new Map<string, number>();
+
     static fromAnt(response): NiftyQuote {
         const quote = new NiftyQuote();
         quote.ltp = parseFloat(response.lp)
         quote.ltt = response.ft
         quote.token = response.tk
-        quote.changePercent = response.pc !== undefined ? parseFloat(response.pc) : undefined
-        // ANT sends the previous close as a percent change (pc), not an
-        // absolute price - derive it algebraically rather than leaving
-        // prevClose unset, since GapStrategy needs an absolute point gap.
-        quote.prevClose = quote.changePercent !== undefined ? quote.ltp / (1 + quote.changePercent / 100) : undefined
+
+        if (response.pc !== undefined) {
+            quote.changePercent = parseFloat(response.pc)
+            quote.prevClose = quote.ltp / (1 + quote.changePercent / 100)
+            NiftyQuote.lastPrevClose.set(quote.token, quote.prevClose)
+        } else {
+            quote.prevClose = NiftyQuote.lastPrevClose.get(quote.token)
+            quote.changePercent = quote.prevClose ? (quote.ltp - quote.prevClose) / quote.prevClose * 100 : undefined
+        }
+
         return quote;
     }
 }
@@ -69,12 +77,21 @@ export class SensexQuote {
     ltt
     changePercent
 
+    private static lastChangePercent = new Map<string, number>();
+
     static fromAnt(response): SensexQuote {
         const quote = new SensexQuote();
         quote.ltp = parseFloat(response.lp)
         quote.ltt = response.ft
         quote.token = response.tk
-        quote.changePercent = response.pc !== undefined ? parseFloat(response.pc) : undefined
+
+        if (response.pc !== undefined) {
+            quote.changePercent = parseFloat(response.pc)
+            SensexQuote.lastChangePercent.set(quote.token, quote.changePercent)
+        } else {
+            quote.changePercent = SensexQuote.lastChangePercent.get(quote.token)
+        }
+
         return quote;
     }
 }
@@ -396,3 +413,4 @@ export class Pivot {
     S2
     R2
 }
+

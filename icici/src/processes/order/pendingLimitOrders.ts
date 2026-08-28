@@ -5,11 +5,12 @@ import bookkeeping from './bookkeeping';
 
 // In-memory tracker for limit orders placed via placeLimitBuyBareOnZerodha
 // (zerodhaExecutor.ts) - ContinuousStrategy's target-hit re-entries. No
-// timeout/cancellation (confirmed decision: poll indefinitely) - state is
-// in-memory only, so a process restart loses tracking of it, but the
-// broker-side order is unaffected and will still fill/show up in Kite's own
-// order book. Same limitation as exitMonitor/AntStream's in-memory-only
-// patterns (see CLAUDE.md).
+// automatic timeout - a resting order polls indefinitely unless explicitly
+// cancelled (see untrackPendingLimitOrder, used by ContinuousStrategy's
+// root-refill drift-cancel check). State is in-memory only, so a process
+// restart loses tracking of it, but the broker-side order is unaffected and
+// will still fill/show up in Kite's own order book. Same limitation as
+// exitMonitor/AntStream's in-memory-only patterns (see CLAUDE.md).
 
 interface PendingLimitOrder {
     orderId: string;
@@ -24,6 +25,12 @@ const pending = new Map<string, PendingLimitOrder>();
 
 export function trackPendingLimitOrder(order: PendingLimitOrder): void {
     pending.set(order.orderId, order);
+}
+
+// Called after an explicit cancel (cancelOrderOnZerodha) so pollPendingLimitOrders
+// doesn't keep polling an order we just told the broker to drop.
+export function untrackPendingLimitOrder(orderId: string): void {
+    pending.delete(orderId);
 }
 
 // Called on an interval from orderProcess.ts (shorter than pollGttFills' 60s -

@@ -18,6 +18,7 @@ class MockOrderClient {
     buyContractCalls: any[] = [];
     sellContractCalls: any[] = [];
     limitBuyCalls: any[] = [];
+    cancelOrderCalls: any[] = [];
     contractLookupCalls: any[] = [];
 
     right = 'call';
@@ -86,9 +87,17 @@ class MockOrderClient {
         return { orderId: 'ORDER_' + this.limitBuyCalls.length };
     }
 
+    async cancelOrderZerodha(userId: string, orderId: string): Promise<void> {
+        this.cancelOrderCalls.push({ userId, orderId });
+    }
+
     async getPCR(userId: string, underlying: string, spot: number, window: number): Promise<number> {
         this.pcrCalls.push({ userId, underlying, spot, window });
         return this.nextPCR;
+    }
+
+    async getUserAllottedCapital(_userId: string): Promise<number | undefined> {
+        return undefined; // no per-user override in tests - capitalCheck falls back to cfg().allottedCapital
     }
 }
 
@@ -157,7 +166,11 @@ function assert(condition: boolean, message: string) {
 }
 
 function newStrategy(): any {
-    return new ContinuousStrategy('TestContinuous') as any;
+    const s = new ContinuousStrategy('TestContinuous') as any;
+    s.enabled = true; // ContinuousStrategy.processNiftyQuote's "disabled" gate (added as a
+    // diagnostic, keyed off this instance field rather than cfg().enabled) is normally
+    // synced by StrategyFactory in production; tests bypass that, so set it directly.
+    return s;
 }
 
 function legs(strategy: any): Map<string, any> {
@@ -293,8 +306,8 @@ async function testSlotReArmsAfterChildCloses() {
     assert(secondChildLegId !== firstChildLegId, 'new spawn has a new legId');
 }
 
-async function testNestedLegNeverRefills() {
-    console.log('\n--- Test 8: Nested leg hitting target never creates a refill ---');
+async function testNestedLegRefillsWhenParentAlive() {
+    console.log('\n--- Test 8: Nested leg hitting target refills while its parent is still alive ---');
     setConfig();
     installMock();
     const s = newStrategy();
@@ -306,8 +319,52 @@ async function testNestedLegNeverRefills() {
 
     await s.processOptionQuote(mockOptionQuote(child.token, 91)); // child target hit (entry 80 + D 10 = 90)
 
-    assert(s.pendingReEntries.size === 0, 'no pending re-entry from a nested leg target hit');
-    assert(s.deferredRootRefill === null, 'no deferred refill from a nested leg target hit');
+    assert(s.pendingReEntries.size === 1, 'nested leg refill placed while its parent (root) is still alive');
+    assert(mock.limitBuyCalls.length === 1 && mock.limitBuyCalls[0].price === 80, 'limit re-entry at the nested leg\'s original entry price');
+    const pending = s.pendingReEntries.get(child.token);
+    assert(pending.isRoot === false, 'pending refill records nested identity');
+    assert(pending.parentLegId === root.legId && pending.parentLevel === 1, 'pending refill records its parent leg/level');
+    assert(!root.childByLevel.has(1), 'level 1 slot freed immediately on the child\'s close');
+}
+
+async function testNestedLegBlockedWhenParentClosed() {
+    console.log('\n--- Test 8b: Nested leg does NOT refill once its parent has closed ---');
+    setConfig();
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150); // entry=150, D=10
+    mock.nextPremium = 80;
+    mock.nextEntryPrice = 80;
+    await s.processOptionQuote(mockOptionQuote(root.token, 140)); // level 1 spawn; child now open
+    const child = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
+
+    await s.processOptionQuote(mockOptionQuote(root.token, 100)); // root 5x's (adverseMove=50, level 5) - gone for good
+    assert(!legs(s).has(root.token), 'root closed via 5x');
+    assert(legs(s).has(child.token), 'nested child still open after its parent closed');
+
+    await s.processOptionQuote(mockOptionQuote(child.token, 91)); // child's own target hit (entry 80 + D 10 = 90)
+
+    assert(s.pendingReEntries.size === 0, 'no refill placed - parent (root) is no longer alive');
+}
+
+async function testNestedCapitalBlockedRefillSkippedOutright() {
+    console.log('\n--- Test 8c: Nested refill skipped outright (no retry) when capital-blocked ---');
+    setConfig();
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150);
+    mock.nextPremium = 80;
+    mock.nextEntryPrice = 80;
+    await s.processOptionQuote(mockOptionQuote(root.token, 140)); // level 1 spawn; child now open
+    const child = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
+
+    setConfig({ allottedCapital: 1 }); // tighten the cap so any nonzero refill is blocked
+
+    await s.processOptionQuote(mockOptionQuote(child.token, 91)); // child target hit -> refill capital-blocked
+
+    assert(s.pendingReEntries.size === 0, 'nested refill skipped outright - not placed');
+    assert(s.deferredRootRefill === null, 'no defer/retry state created for a nested refill');
+    assert(mock.limitBuyCalls.length === 0, 'placeLimitBuyZerodhaBare never called for the blocked nested refill');
 }
 
 async function testDeferredRootRefillPromotesWhenNestedClears() {
@@ -427,7 +484,8 @@ async function testUpdateTradeResolvesPendingRootRefill() {
     const s = newStrategy();
     s.pendingReEntries.set('TOKEN_X', {
         token: 'TOKEN_X', tsym: 'NIFTY-CE-24500', exchange: 'NFO', strike: 24500,
-        right: 'call', quantity: 65, limitPrice: 150,
+        right: 'call', quantity: 65, limitPrice: 150, orderId: 'ORDER_X',
+        isRoot: true, parentLegId: null, parentLevel: null,
     });
 
     await s.updateTrade(buyTrade('NIFTY-CE-24500', 'TOKEN_X', 152, 65));
@@ -437,6 +495,31 @@ async function testUpdateTradeResolvesPendingRootRefill() {
     const leg = legs(s).get('TOKEN_X');
     assert(leg.isRoot === true, 'resolved leg is root');
     assert(leg.entryPrice === 152, 'resolved leg uses the fill price');
+}
+
+async function testUpdateTradeReoccupiesParentSlotForNestedRefill() {
+    console.log('\n--- Test 15b: updateTrade reoccupies the parent slot when a nested refill fills ---');
+    setConfig();
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150);
+    mock.nextPremium = 130;
+    mock.nextEntryPrice = 130;
+    await s.processOptionQuote(mockOptionQuote(root.token, 140)); // level 1 spawn; child now open
+    const child = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
+
+    await s.processOptionQuote(mockOptionQuote(child.token, 141)); // child target hit (entry 130 + D 10 = 140) -> refill pending
+    assert(s.pendingReEntries.size === 1, 'nested refill pending');
+    assert(!root.childByLevel.has(1), 'level 1 slot freed on the child\'s close');
+
+    await s.updateTrade(buyTrade(child.tsym, child.token, 132, 65)); // fill echo for the pending refill
+
+    assert(s.pendingReEntries.size === 0, 'pending refill resolved');
+    const newLeg = legs(s).get(child.token);
+    assert(newLeg !== undefined, 'new leg opened for the filled nested refill');
+    assert(newLeg.isRoot === false, 'new leg keeps nested identity');
+    assert(newLeg.parentLegId === root.legId && newLeg.parentLevel === 1, 'new leg references the correct parent leg/level');
+    assert(root.childByLevel.get(1) === newLeg.legId, 'parent slot reoccupied by the new leg');
 }
 
 async function testPcrMismatchBlocksT1ThenRealignsAfterWindow() {
@@ -480,6 +563,173 @@ async function testPcrFetchFailureBlocksT1() {
     assert(legs(s).size === 0, 'no leg opened when PCR fetch errors');
 }
 
+async function testAutoResolveRightFromPcr() {
+    console.log('\n--- Test 18: right: none auto-resolves direction from PCR alone ---');
+
+    setConfig({ right: 'none' });
+    installMock();
+    mock.nextPCR = 0.5; // < 1 favors CALL
+    let s = newStrategy();
+    const quote = mockNiftyQuote(24500);
+    assert(quote.prevClose == null, 'prevClose left unset - direction must not depend on it');
+    await s.processNiftyQuote(quote);
+    assert(s.ordered === true, 'T1 fires on auto-resolve (PCR < 1)');
+    assert(mock.contractLookupCalls[0]?.optionType === 'CE', 'PCR < 1 auto-resolves to CALL');
+
+    setConfig({ right: 'none' });
+    installMock();
+    mock.nextPCR = 2; // > 1 favors PUT
+    s = newStrategy();
+    await s.processNiftyQuote(mockNiftyQuote(24500));
+    assert(s.ordered === true, 'T1 fires on auto-resolve (PCR > 1)');
+    assert(mock.contractLookupCalls[0]?.optionType === 'PE', 'PCR > 1 auto-resolves to PUT');
+}
+
+async function testAveragingLowersTargetAndExitsEarly() {
+    console.log('\n--- Test 19: averaging (in addition to hedge spawn) lowers target to avg+1 ---');
+    setConfig();
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150); // entry=150, qty=65, D=10 -> original target=160
+
+    mock.nextEntryPrice = 130; // fill price for both the hedge spawn's buy and the average-add
+    mock.nextPremium = 130;
+    await s.processOptionQuote(mockOptionQuote(root.token, 140)); // adverseMove=10, level=1
+
+    assert(root.averagedLevels.has(1), 'level 1 average recorded on the root leg');
+    assert(root.totalQuantity === 130, 'totalQuantity grew by the averaged-in qty (65+65)');
+    assert(Math.abs(root.avgPrice - 140) < 1e-9, 'avgPrice is the weighted average of 150 and 130');
+    assert(legs(s).size === 2, 'hedge spawn still happened alongside averaging (root + 1 nested child)');
+    assert(root.quantity === 65 && root.entryPrice === 150, 'quantity/entryPrice stay original - unaffected by averaging (hedge sizing must be unchanged)');
+
+    // New target is avg+1=141 - well below the original entry+D=160 target, and still
+    // below the original entry price of 150.
+    await s.processOptionQuote(mockOptionQuote(root.token, 141));
+    assert(!legs(s).has(root.token), 'root exits at avg+1, without ever reaching the original entry+D target');
+    const lastSell = mock.sellContractCalls[mock.sellContractCalls.length - 1];
+    assert(lastSell.quantity === 130, 'sells the full averaged quantity (130), not just the original 65');
+}
+
+async function testRootRefillDriftCancelsPastThreshold() {
+    console.log('\n--- Test 20: Root refill cancelled once LTP drifts past refillCancelDistance ---');
+    setConfig();
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150);
+    await s.processOptionQuote(mockOptionQuote(root.token, 161)); // target hit -> refill placed at 150
+    assert(s.pendingReEntries.size === 1, 'root refill pending');
+
+    await s.processOptionQuote(mockOptionQuote(root.token, 150 + 51)); // 51 > default 50-pt cancelDistance
+
+    assert(mock.cancelOrderCalls.length === 1 && mock.cancelOrderCalls[0].orderId === 'ORDER_1', 'cancelOrderZerodha called for the pending order');
+    assert(s.pendingReEntries.size === 0, 'pending re-entry dropped, no re-place at a new price');
+}
+
+async function testRootRefillNoCancelAtBoundary() {
+    console.log('\n--- Test 21: Root refill NOT cancelled at exactly the boundary distance ---');
+    setConfig();
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150);
+    await s.processOptionQuote(mockOptionQuote(root.token, 161)); // target hit -> refill placed at 150
+
+    await s.processOptionQuote(mockOptionQuote(root.token, 150 + 50)); // exactly the default cancelDistance
+
+    assert(mock.cancelOrderCalls.length === 0, 'no cancel call at the boundary');
+    assert(s.pendingReEntries.size === 1, 'order still resting');
+}
+
+async function testLateFillEchoAfterCancelIsNoOp() {
+    console.log('\n--- Test 22: A late fill echo after cancellation does not resurrect a leg ---');
+    setConfig();
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150);
+    const cancelledToken = root.token;
+    await s.processOptionQuote(mockOptionQuote(cancelledToken, 161)); // target hit -> refill placed at 150
+    await s.processOptionQuote(mockOptionQuote(cancelledToken, 150 + 51)); // drift-cancel
+    assert(s.pendingReEntries.size === 0, 'pending re-entry dropped by the cancel');
+
+    await s.updateTrade(buyTrade('NIFTY-CE-24500', cancelledToken, 150, 65)); // late echo of the now-cancelled order
+
+    assert(legs(s).size === 0, 'no leg resurrected from the post-cancel fill echo');
+}
+
+async function testDeeperLevelCancelsShallowerPendingRefills() {
+    console.log('\n--- Test 23: A deeper level spawn cancels a shallower pending refill under the same leg ---');
+    setConfig();
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150); // entry=150, D=10
+    mock.nextPremium = 130;
+    mock.nextEntryPrice = 130;
+    await s.processOptionQuote(mockOptionQuote(root.token, 140)); // level 1: spawn L1 (entry=130) + average (root target -> 141)
+    const l1 = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
+
+    await s.processOptionQuote(mockOptionQuote(l1.token, 141)); // L1 target hit (entry 130 + D 10 = 140) -> refill pending
+    assert(s.pendingReEntries.size === 1, 'L1 refill pending');
+    const cancelsBefore = mock.cancelOrderCalls.length;
+
+    mock.nextPremium = 110;
+    mock.nextEntryPrice = 110;
+    await s.processOptionQuote(mockOptionQuote(root.token, 125)); // adverseMove=25 -> level 2 (125 < root's target 141, no premature target-hit)
+
+    assert(mock.cancelOrderCalls.length === cancelsBefore + 1, 'L1\'s pending refill cancelled once level 2 fires');
+    assert(s.pendingReEntries.size === 0, 'no pending refills remain after cancellation');
+    assert(root.childByLevel.has(2), 'level 2 spawned');
+    assert(legs(s).size === 2, 'root + new level-2 child open (L1 already closed, not live)');
+}
+
+async function testSameLevelRecrossCancelsAndRespawns() {
+    console.log('\n--- Test 24: Re-crossing the same level cancels a stale pending refill and respawns ---');
+    setConfig();
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150);
+    mock.nextPremium = 130;
+    mock.nextEntryPrice = 130;
+    await s.processOptionQuote(mockOptionQuote(root.token, 140)); // level 1 spawn + average; L1 open
+    const l1 = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
+    const firstL1LegId = l1.legId;
+
+    await s.processOptionQuote(mockOptionQuote(l1.token, 141)); // L1 target hit -> refill pending, slot 1 freed
+    assert(s.pendingReEntries.size === 1, 'L1 refill pending');
+    assert(!root.childByLevel.has(1), 'level 1 slot freed on L1\'s close');
+
+    // Root ticks at level 1's range again - slot is free, already averaged at level 1
+    // (so only the spawn path runs, not another average-add) - target stays at 141.
+    mock.nextPremium = 132;
+    mock.nextEntryPrice = 132;
+    await s.processOptionQuote(mockOptionQuote(root.token, 140)); // level 1 again
+
+    assert(mock.cancelOrderCalls.length === 1, 'stale L1 pending refill cancelled on re-crossing level 1');
+    assert(s.pendingReEntries.size === 0, 'no pending refills remain');
+    assert(root.childByLevel.has(1), 'level 1 respawned');
+    const newL1LegId = root.childByLevel.get(1);
+    assert(newL1LegId !== firstL1LegId, 'fresh spawn has a new legId, not the old L1');
+}
+
+async function test5xCancelsChildPendingRefills() {
+    console.log('\n--- Test 25: A leg\'s 5x square-off cancels its own children\'s pending refills ---');
+    setConfig();
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150); // entry=150, D=10
+    mock.nextPremium = 130;
+    mock.nextEntryPrice = 130;
+    await s.processOptionQuote(mockOptionQuote(root.token, 140)); // level 1 spawn + average; L1 open
+    const l1 = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
+
+    await s.processOptionQuote(mockOptionQuote(l1.token, 141)); // L1 target hit -> refill pending
+    assert(s.pendingReEntries.size === 1, 'L1 refill pending');
+
+    await s.processOptionQuote(mockOptionQuote(root.token, 100)); // root 5x's (adverseMove=50, level 5) - gone for good
+
+    assert(!legs(s).has(root.token), 'root closed via 5x');
+    assert(s.pendingReEntries.size === 0, 'L1\'s pending refill cancelled when root 5x\'d');
+    assert(mock.cancelOrderCalls.length === 1, 'cancelOrderZerodha called for L1\'s pending refill');
+}
+
 // --- Run All Tests ---
 
 async function runAllTests() {
@@ -493,7 +743,9 @@ async function runAllTests() {
         ['Gapped tick, deepest free level only', testGappedTickFiresDeepestFreeLevelOnly],
         ['Occupied level does not re-fire', testOccupiedLevelDoesNotRefire],
         ['Slot re-arms after child closes', testSlotReArmsAfterChildCloses],
-        ['Nested leg never refills', testNestedLegNeverRefills],
+        ['Nested leg refills when parent alive', testNestedLegRefillsWhenParentAlive],
+        ['Nested leg blocked when parent closed', testNestedLegBlockedWhenParentClosed],
+        ['Nested capital-blocked refill skipped outright', testNestedCapitalBlockedRefillSkippedOutright],
         ['Deferred root refill promotes', testDeferredRootRefillPromotesWhenNestedClears],
         ['Capital cap blocks then frees', testCapitalCapBlocksSpawnUntilFreed],
         ['spawnQuantityMode same', testQuantityModeSame],
@@ -501,8 +753,17 @@ async function runAllTests() {
         ['Concurrent ticks spawn once', testConcurrentTicksSpawnOnce],
         ['updateTrade ignores unmatched fill', testUpdateTradeIgnoresUnmatchedFill],
         ['updateTrade resolves pending root refill', testUpdateTradeResolvesPendingRootRefill],
+        ['updateTrade reoccupies parent slot for nested refill', testUpdateTradeReoccupiesParentSlotForNestedRefill],
         ['PCR mismatch blocks T1, realigns after window', testPcrMismatchBlocksT1ThenRealignsAfterWindow],
         ['PCR fetch failure fails closed', testPcrFetchFailureBlocksT1],
+        ['right: none auto-resolves from PCR', testAutoResolveRightFromPcr],
+        ['Averaging lowers target and exits early', testAveragingLowersTargetAndExitsEarly],
+        ['Root refill drift-cancels past threshold', testRootRefillDriftCancelsPastThreshold],
+        ['Root refill does not cancel at boundary', testRootRefillNoCancelAtBoundary],
+        ['Late fill echo after cancel is a no-op', testLateFillEchoAfterCancelIsNoOp],
+        ['Deeper level cancels shallower pending refills', testDeeperLevelCancelsShallowerPendingRefills],
+        ['Same-level re-cross cancels and respawns', testSameLevelRecrossCancelsAndRespawns],
+        ['5x cancels child pending refills', test5xCancelsChildPendingRefills],
     ];
 
     for (const [name, fn] of tests) {

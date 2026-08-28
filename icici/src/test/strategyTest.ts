@@ -57,7 +57,7 @@ class MockMonitor extends Monitor {
         return orderInfo;
     }
 
-    async requestSell(userId: string, contract: string, qty: number, price?: number): Promise<void> {
+    async requestSell(userId: string, contract: string, qty: number, price?: number): Promise<{ filledQty: number }> {
         this.sellOrders.push({ userId, contract, qty, price: price || 100 });
         console.log(`  [MockMonitor] SELL placed for ${userId}: ${contract} qty=${qty} price=${price}`);
 
@@ -76,6 +76,8 @@ class MockMonitor extends Monitor {
         if (strategy) {
             await strategy.updateTrade(tradeEvent);
         }
+
+        return { filledQty: qty };
     }
 
     async requestBuyIndex(userId: string, index: string, ltp?: number, right?: string, qty?: number) {

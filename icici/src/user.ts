@@ -27,6 +27,19 @@ export interface User {
     // Per-order investment cap - distinct from investmentMode/investmentAmount,
     // an optional ceiling on any single order regardless of mode.
     perOrderCap?: number;
+    // Per-user override of ContinuousStrategy's config.yml-level allottedCapital
+    // (aggregate cap across all of that strategy's open legs) - unset means
+    // "use the strategy's own config.yml value" (see ContinuousStrategy.capitalCheck).
+    allottedCapital?: number;
+    // Per-user override of config.yml's global settings.targetPriceDiff/
+    // stopLossPriceDiff, used by every Zerodha/ANT entry path
+    // (buyIndexOnZerodha/On Ant, manualBuyOnZerodha/OnAnt, buyContractOnZerodha)
+    // when the individual request doesn't specify explicit target/stopLoss
+    // points. Resolution order is: request-level points > this per-user
+    // override > the global config.yml default. Unset means "use the global
+    // default" - see zerodhaExecutor.ts/antExecutor.ts.
+    targetPoints?: number;
+    stopLossPoints?: number;
     // KYC identity numbers - the *documents* above (panCardId etc.) only ever
     // stored an upload + verified flag; these are the actual numbers, new.
     // Never echoed back to the client raw - see toClientUser's masked fields.
@@ -168,7 +181,7 @@ export async function getAllUsers(): Promise<User[]> {
     return docs as User[];
 }
 
-export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotCount?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'zerodha' | 'ant'; enabled?: boolean; perOrderCap?: number; profitSplitPercent?: number }): Promise<User | null> {
+export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotCount?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'zerodha' | 'ant'; enabled?: boolean; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number; profitSplitPercent?: number }): Promise<User | null> {
     const update: any = {};
     if (settings.lossLimit !== undefined) update.lossLimit = settings.lossLimit;
     if (settings.lotCount !== undefined) update.lotCount = settings.lotCount;
@@ -178,6 +191,9 @@ export async function updateUserSettings(email: string, settings: { lossLimit?: 
     if (settings.broker !== undefined) update.broker = settings.broker;
     if (settings.enabled !== undefined) update.enabled = settings.enabled;
     if (settings.perOrderCap !== undefined) update.perOrderCap = settings.perOrderCap;
+    if (settings.allottedCapital !== undefined) update.allottedCapital = settings.allottedCapital;
+    if (settings.targetPoints !== undefined) update.targetPoints = settings.targetPoints;
+    if (settings.stopLossPoints !== undefined) update.stopLossPoints = settings.stopLossPoints;
     if (settings.profitSplitPercent !== undefined) update.profitSplitPercent = settings.profitSplitPercent;
     await collection().updateOne({ email }, { $set: update });
     return getUser(email);

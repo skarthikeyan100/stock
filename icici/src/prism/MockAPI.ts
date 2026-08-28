@@ -1,6 +1,7 @@
 import Log from '../util/Log';
 import Mongo from '../tools/mongo';
 import { MOCK_DATE } from '../constants';
+import { dateRangeQuery } from '../tools/quoteDateRange';
 
 class MockRestAPI {
     private _callbacks: any = null;
@@ -45,11 +46,16 @@ class MockRestAPI {
             // Option LTP = NIFTY LTP (same price series, matches pipeline threshold scans)
             return { stat: 'Ok', lp: (this._niftyLtp || 0).toString(), ft };
         }
-        // NSE: return latest NIFTY LTP from Quote collection for MOCK_DATE
+        // NSE: return latest NIFTY LTP from NiftyQuote collection for MOCK_DATE
+        // (NiftyQuote is the collection live ticks actually land in - see
+        // src/model/model.ts NiftyQuote.fromAnt(). 'Quote' is not written by any
+        // active path. NiftyQuote documents have no `date` field, only `ltt`
+        // (epoch seconds), so MOCK_DATE is matched via a day-bounds range - see
+        // src/tools/quoteDateRange.ts.)
         try {
             const db = Mongo.getInstance().db;
-            const query = MOCK_DATE ? { date: MOCK_DATE } : {};
-            const latest = await db.collection('Quote').findOne(query, { sort: { ltt: -1 } }) as any;
+            const query = MOCK_DATE ? dateRangeQuery(MOCK_DATE) : {};
+            const latest = await db.collection('NiftyQuote').findOne(query, { sort: { ltt: -1 } }) as any;
             if (latest) {
                 return { stat: 'Ok', lp: latest.ltp.toString(), ft: latest.ltt };
             }
@@ -61,18 +67,18 @@ class MockRestAPI {
 
     async startMockStreams(): Promise<void> {
         const dateLabel = MOCK_DATE || 'all dates';
-        Log.log(`[MockAPI] Starting mock NIFTY stream from Quote collection (date=${dateLabel})`);
+        Log.log(`[MockAPI] Starting mock NIFTY stream from NiftyQuote collection (date=${dateLabel})`);
         let quotes: any[] = [];
         let idx = 0;
 
         try {
             const db = Mongo.getInstance().db;
-            const query = MOCK_DATE ? { date: MOCK_DATE } : {};
-            quotes = await db.collection('Quote')
+            const query = MOCK_DATE ? dateRangeQuery(MOCK_DATE) : {};
+            quotes = await db.collection('NiftyQuote')
                 .find(query)
                 .sort({ ltt: 1 })
                 .toArray();
-            Log.log(`[MockAPI] Loaded ${quotes.length} Quote records from MongoDB (date=${dateLabel})`);
+            Log.log(`[MockAPI] Loaded ${quotes.length} NiftyQuote records from MongoDB (date=${dateLabel})`);
         } catch (e) {
             Log.log('[MockAPI] MongoDB fetch error, using fallback LTP 23500:', e);
             for (let i = 0; i < 500; i++) {

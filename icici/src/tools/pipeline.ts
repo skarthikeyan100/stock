@@ -22,6 +22,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import Mongo from './mongo';
+import { dateRangeQuery } from './quoteDateRange';
 import { buildCandles } from '../lib/candle-builder';
 import {
     calcRSI, calcRSIReversed,
@@ -324,9 +325,12 @@ async function main() {
 
     // ── Phase 1: Load data ─────────────────────────────────────────────────
     console.error('=== Phase 1: Loading data ===');
-    const query = DATE_FILTER ? { date: DATE_FILTER } : {};
+    const query = DATE_FILTER ? dateRangeQuery(DATE_FILTER) : {};
     if (DATE_FILTER) console.error(`  Filtering by date: ${DATE_FILTER}`);
-    const rawQuotes = await db.collection('Quote').find(query).sort({ ltt: 1 }).toArray();
+    // Live ticks are persisted to 'NiftyQuote' (NiftyQuote.fromAnt(), see
+    // src/model/model.ts + src/ant/AntStream.ts / src/processes/data/AntDataStream.ts)
+    // - 'Quote' is not written by any active path.
+    const rawQuotes = await db.collection('NiftyQuote').find(query).sort({ ltt: 1 }).toArray();
     console.error(`Loaded ${rawQuotes.length} raw quotes`);
 
     const rawLtt = rawQuotes.map(q => Number(q.ltt));

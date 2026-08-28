@@ -210,6 +210,10 @@ export default class BuySellStrategy extends Strategy {
     contract: Contract = {} as Contract
     name: string;
     ordered = false
+    // True until reconcileOrderState() (kicked off from the constructor) has
+    // resolved at least once. Informational only - `ordered` is what actually
+    // gates entries (see the fail-safe default set in the constructor below).
+    reconciling = true
 
 
     constructor(userId?: string) {
@@ -217,6 +221,66 @@ export default class BuySellStrategy extends Strategy {
         this.tradeMap = new Map();
         this.name = 'BuySellStrategy';
         this.enabled = true
+        // Fail-safe against duplicate entry orders across a `strategies` process
+        // restart (e.g. tsc-watch in dev): default to "already ordered" until
+        // reconcileOrderState() confirms - via the `order` process, the source of
+        // truth for open positions - whether a position for this userId is
+        // actually still open. Without this, a fresh instance would start with
+        // ordered=false and could fire a duplicate entry order the moment a
+        // qualifying tick arrives, even though `order` still holds a position
+        // from before the restart. See reconcileOrderState() below.
+        this.ordered = true;
+        this.reconcileOrderState().catch((e) => {
+            Log.log(this.userId, ' BuySellStrategy: reconcileOrderState failed permanently: ', e);
+        });
+    }
+
+    // Reconciles in-memory `ordered`/`contract` state against the order
+    // process's live trade list on startup. OrderClient.stats() is a network
+    // round trip over the strategies<->order Unix socket, and that socket is
+    // frequently not yet connected this early in `strategies` process startup
+    // (see strategiesProcess.ts's main(): OrderClient.getInstance().connect()
+    // is fired, then strategies.initialize() constructs strategies immediately
+    // after, without waiting for the 'connect' event) - so this retries with a
+    // fixed delay instead of giving up on the first failure.
+    //
+    // Cooldown state (lastTriggerTime) cannot be recovered exactly - the order
+    // process does not record when the entry order was originally placed, only
+    // that a trade is currently open. When a matching open trade is found, we
+    // conservatively start a FRESH cooldown (recordTriggerTime()) rather than
+    // leaving lastTriggerTime at 0, so this strategy instance does not
+    // immediately re-fire the moment the reconciled position later closes.
+    private async reconcileOrderState(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                const stats = await OrderClient.getInstance().stats(this.userId);
+                const openTrade = (stats.trades || []).find((t) => t.user === this.userId);
+                if (openTrade) {
+                    this.ordered = true;
+                    this.contract = new Contract(this, openTrade.tsym);
+                    this.contract.update(openTrade.token);
+                    this.contract.price = openTrade.price;
+                    this.contract.qty = openTrade.quantity;
+                    this.contract.lastOrderedPrice = openTrade.price;
+                    this.contract.lastOrderedQuantity = openTrade.quantity;
+                    this.recordTriggerTime();
+                    Log.log(this.userId, ' BuySellStrategy: reconciled - existing open trade found (', openTrade.tsym, '), ordered=true, cooldown restarted');
+                } else {
+                    this.ordered = false;
+                    Log.log(this.userId, ' BuySellStrategy: reconciled - no existing open trade, ordered=false');
+                }
+                this.reconciling = false;
+                return;
+            } catch (e: any) {
+                Log.log(this.userId, ` BuySellStrategy: reconcileOrderState attempt ${attempt}/${maxAttempts} failed: `, e?.message ?? e);
+                if (attempt === maxAttempts) {
+                    Log.log(this.userId, ' BuySellStrategy: reconcileOrderState exhausted retries - staying ordered=true (fail-safe) until a manual /strategies/reset');
+                    this.reconciling = false;
+                    return;
+                }
+                await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+            }
+        }
     }
 
     getMonitorConfig() {

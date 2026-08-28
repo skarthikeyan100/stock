@@ -15,6 +15,23 @@ type PositionsChangedHandler = () => void;
 
 class OrderClient {
     private static instance: OrderClient;
+    // Default timeout for a single request()/response round trip over the
+    // IPC socket to the `order` process. Must comfortably exceed the
+    // slowest legitimate round trip: an order-placing request can
+    // internally wait for a broker fill confirmation with its own budget of
+    // up to ~60s (see AntOrderNotifyStream.waitForFill's 60000ms default in
+    // src/ant/AntOrderNotifyStream.ts and Zerodha.getFillPrice's 12
+    // attempts * 5000ms poll in src/zerodha/Zerodha.ts), stacked on top of
+    // the ANT HTTP call itself (capped at 15s - see ANT_HTTP_TIMEOUT_MS in
+    // src/ant/ANT.ts). 90s gives headroom above that combined ~75s worst
+    // case without leaving a wedged `order` process able to block a
+    // strategy indefinitely. Overridable via ORDER_IPC_TIMEOUT_MS (mirrors
+    // ORDER_SOCKET_PATH's env-override convention in
+    // src/ipc/orderProtocol.ts). Deliberately not `readonly` - TypeScript's
+    // `private`/`static` are compile-time-only and don't survive an `as
+    // any` cast, so a test can override this directly instead of waiting
+    // out the real production value (see src/test/orderClientTimeout.test.ts).
+    private static REQUEST_TIMEOUT_MS = Number(process.env.ORDER_IPC_TIMEOUT_MS) || 90000;
     private socket: net.Socket | null = null;
     private connected = false;
     private pending: Map<string, { resolve: (r: OrderResponse) => void; reject: (e: Error) => void }> = new Map();
@@ -82,7 +99,22 @@ class OrderClient {
         return new Promise((resolve, reject) => {
             if (!this.socket || !this.connected) return reject(new Error('Not connected to order process'));
             const id = String(this.nextId++);
-            this.pending.set(id, { resolve, reject });
+            // If `order` never replies (hung broker call inside it, a
+            // dropped/malformed response, a wedged process that's still
+            // technically connected), this used to leave the caller awaiting
+            // forever - the socket 'close' handler above only covers the
+            // socket actually dropping, not "still open but silent". See
+            // plans/bug-09-no-timeout-broker-http-ipc.md.
+            const timer = setTimeout(() => {
+                if (this.pending.delete(id)) {
+                    Log.log(`[strategies] Order request '${type}' (id=${id}) timed out after ${OrderClient.REQUEST_TIMEOUT_MS}ms - order process may be stuck`);
+                    reject(new Error(`Order process request '${type}' timed out after ${OrderClient.REQUEST_TIMEOUT_MS}ms`));
+                }
+            }, OrderClient.REQUEST_TIMEOUT_MS);
+            this.pending.set(id, {
+                resolve: (r: OrderResponse) => { clearTimeout(timer); resolve(r); },
+                reject: (e: Error) => { clearTimeout(timer); reject(e); },
+            });
             const req: OrderRequest = { kind: 'request', id, type, userId, payload };
             writeJsonLine(this.socket, req);
         });
@@ -215,9 +247,17 @@ class OrderClient {
         return res.result;
     }
 
-    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'zerodha' | 'ant'; perOrderCap?: number }): Promise<void> {
+    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'zerodha' | 'ant'; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number }): Promise<void> {
         const res = await this.request('updateUserSettings', userId, settings);
         if (!res.ok) throw new Error(res.error);
+    }
+
+    // undefined result means "no per-user override" - caller falls back to
+    // its own config default (see ContinuousStrategy.capitalCheck).
+    async getUserAllottedCapital(userId: string): Promise<number | undefined> {
+        const res = await this.request('getUserAllottedCapital', userId, {});
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
     }
 
     async hasActiveTrade(userId: string): Promise<boolean> {
@@ -277,6 +317,11 @@ class OrderClient {
         const res = await this.request('placeLimitBuyZerodhaBare', userId, { tradingSymbol, instrumentToken, quantity, price, exchange });
         if (!res.ok) throw new Error(res.error);
         return res.result;
+    }
+
+    async cancelOrderZerodha(userId: string, orderId: string): Promise<void> {
+        const res = await this.request('cancelOrderZerodha', userId, { orderId });
+        if (!res.ok) throw new Error(res.error);
     }
 
     async getContractByPriceRangeZerodha(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, index: 'NIFTY' | 'SENSEX' = 'NIFTY', excludeStrikes: number[] = []): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {

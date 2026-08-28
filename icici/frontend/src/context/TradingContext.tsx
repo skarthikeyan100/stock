@@ -65,7 +65,12 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const tradedLots = trades.reduce((sum, t) => sum + Math.ceil(t.quantity / getInstrumentLotSize(t.tsym)), 0);
   const isOrderDisabled = tradedLots >= lotLimit || totalPnL <= -maxLoss || placingOrder;
 
-  // SSE: Position stream — connects only after user is authenticated, stops after 3 failures
+  // SSE: Position stream — connects only after user is authenticated, retries
+  // indefinitely with a capped exponential backoff (never gives up: a live
+  // trading dashboard must keep trying to reconnect, since giving up leaves
+  // P&L/positions frozen with no indication anything is wrong until a manual
+  // page refresh - confirmed live on 2026-08-26 after a burst of backend
+  // restarts tripped the old "give up after 3 failures" limit).
   useEffect(() => {
     if (!user) return;
     let failCount = 0;
@@ -103,11 +108,9 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         es.close();
         esRef.current = null;
         failCount++;
-        if (failCount >= 3) {
-          console.error('[SSE] Position stream failed 3 times, giving up. Refresh the page to retry.');
-          return;
-        }
-        reconnectTimerRef.current = setTimeout(connectSSE, 3000);
+        const delay = Math.min(3000 * 2 ** (failCount - 1), 30000);
+        console.warn(`[SSE] Position stream reconnecting in ${delay}ms (attempt ${failCount})`);
+        reconnectTimerRef.current = setTimeout(connectSSE, delay);
       };
     };
 

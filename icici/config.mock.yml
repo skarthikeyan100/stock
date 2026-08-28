@@ -34,6 +34,7 @@ strategies:
     minPremium: 100
     allottedCapital: 500000
     spawnQuantityMode: multiplied
+    averageQuantityMode: same
     right: none
     cooldownSeconds: 60
     logEnabled: true

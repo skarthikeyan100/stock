@@ -27,13 +27,14 @@
  * Usage:
  *   tsc && MOCK_BROKER=true node ./dist/tools/ContinuousStrategyBacktest.js \
  *     --niftyFile /path/to/Quote.csv --optionFile /path/to/OptionQuote.csv \
- *     [--spawnQuantityMode same|multiplied]
+ *     [--spawnQuantityMode same|multiplied] [--averageQuantityMode same|multiplied]
  *
  * Every field in config.yml's `continuousStrategy` block is used as-is except
  * `right` (always forced, see above) and `enabled` (always forced true - a
- * disabled strategy trivially produces zero trades). `--spawnQuantityMode`
- * optionally overrides that one field for a single run, to compare "same
- * quantity every level" against "multiplied by level" without editing
+ * disabled strategy trivially produces zero trades). `--spawnQuantityMode`/
+ * `--averageQuantityMode` optionally override those two fields for a single
+ * run, to compare "same quantity every level" against "multiplied by level"
+ * (for hedge spawns and/or loss-averaging respectively) without editing
  * config.yml.
  */
 import * as fs from 'fs';
@@ -52,6 +53,7 @@ function getArg(name: string, defaultValue: string): string {
 }
 
 const SPAWN_QUANTITY_MODE_OVERRIDE = getArg('spawnQuantityMode', '');
+const AVERAGE_QUANTITY_MODE_OVERRIDE = getArg('averageQuantityMode', '');
 
 const NIFTY_FILE = getArg('niftyFile', '');
 const OPTION_FILE = getArg('optionFile', '');
@@ -268,18 +270,29 @@ async function main() {
     // was passed; every other field is left exactly as config.yml has it.
     configService.config.strategies = (configService.config.strategies || []).map((s) =>
         s.type === 'ContinuousStrategy'
-            ? { ...s, right: FORCED_RIGHT, enabled: true, ...(SPAWN_QUANTITY_MODE_OVERRIDE ? { spawnQuantityMode: SPAWN_QUANTITY_MODE_OVERRIDE } : {}) }
+            ? {
+                ...s, right: FORCED_RIGHT, enabled: true,
+                ...(SPAWN_QUANTITY_MODE_OVERRIDE ? { spawnQuantityMode: SPAWN_QUANTITY_MODE_OVERRIDE } : {}),
+                ...(AVERAGE_QUANTITY_MODE_OVERRIDE ? { averageQuantityMode: AVERAGE_QUANTITY_MODE_OVERRIDE } : {}),
+            }
             : s
     );
     const resolvedCfg = configService.getStrategyConfig('ContinuousStrategy');
     console.error(
-        `Config (right/enabled forced${SPAWN_QUANTITY_MODE_OVERRIDE ? ', spawnQuantityMode overridden' : ''} for this run, everything else from config.yml as-is): ` +
+        `Config (right/enabled forced${SPAWN_QUANTITY_MODE_OVERRIDE ? ', spawnQuantityMode overridden' : ''}` +
+        `${AVERAGE_QUANTITY_MODE_OVERRIDE ? ', averageQuantityMode overridden' : ''} for this run, everything else from config.yml as-is): ` +
         `initialQuantity=${resolvedCfg.initialQuantity} slDistance=${resolvedCfg.slDistance} ` +
         `minPremium=${resolvedCfg.minPremium} allottedCapital=${resolvedCfg.allottedCapital} ` +
-        `spawnQuantityMode=${resolvedCfg.spawnQuantityMode} right=${resolvedCfg.right} enabled=${resolvedCfg.enabled}`
+        `spawnQuantityMode=${resolvedCfg.spawnQuantityMode} averageQuantityMode=${resolvedCfg.averageQuantityMode} ` +
+        `right=${resolvedCfg.right} enabled=${resolvedCfg.enabled}`
     );
 
     const strategy: any = new ContinuousStrategy('Backtest');
+    // Strategy.enabled (src/strategy/strategy.ts) defaults to false and is normally
+    // synced by StrategyFactory in production (see continuousStrategyTest.ts's
+    // newStrategy() helper, which bypasses it the same way) - without this the T1
+    // gate silently blocks every tick and the backtest produces zero trades.
+    strategy.enabled = true;
 
     let i = 0;
     let j = 0;
@@ -368,8 +381,10 @@ async function main() {
         openLegs.forEach((leg) => {
             const key = contractKey(leg.strike, leg.right === CALL ? 'CE' : 'PE');
             const markPrice = mock.latestPrice.get(key);
-            const unrealized = markPrice != null ? (markPrice - leg.entryPrice) * leg.quantity : null;
-            console.log(`  ${leg.tsym} qty=${leg.quantity} entry=${round2(leg.entryPrice)} mark=${markPrice != null ? round2(markPrice) : 'n/a'} unrealized=${unrealized != null ? round2(unrealized) : 'n/a'} (${leg.isRoot ? 'root' : 'nested'})`);
+            // totalQuantity/avgPrice - not quantity/entryPrice - reflect this leg's true
+            // held size/cost basis if it has been averaged (see ContinuousStrategy.ts).
+            const unrealized = markPrice != null ? (markPrice - leg.avgPrice) * leg.totalQuantity : null;
+            console.log(`  ${leg.tsym} qty=${leg.totalQuantity} avg=${round2(leg.avgPrice)} mark=${markPrice != null ? round2(markPrice) : 'n/a'} unrealized=${unrealized != null ? round2(unrealized) : 'n/a'} (${leg.isRoot ? 'root' : 'nested'}${leg.averagedLevels.size > 0 ? `, averaged x${leg.averagedLevels.size}` : ''})`);
         });
     }
     if (mock.pendingLimitOrders.size > 0) {

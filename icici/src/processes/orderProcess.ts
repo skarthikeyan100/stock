@@ -18,7 +18,7 @@ import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
-import { buyIndexOnZerodha, squareOffOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, getContractByPriceRangeOnZerodha } from './order/zerodhaExecutor';
+import { buyIndexOnZerodha, squareOffOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, cancelOrderOnZerodha, getContractByPriceRangeOnZerodha } from './order/zerodhaExecutor';
 import { pollPendingLimitOrders } from './order/pendingLimitOrders';
 import * as antExecutor from './order/antExecutor';
 import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
@@ -28,8 +28,19 @@ import Zerodha from '../zerodha/Zerodha';
 import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
 import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../constants';
-import { getUser } from '../user';
+import { getUser, getAllUsers } from '../user';
 import { OptionQuote } from '../model/model';
+
+// Defense-in-depth: an unhandled promise rejection anywhere in this process
+// (e.g. a fire-and-forget Mongo write - see bookkeeping.ts's
+// _processTradeEvent/checkDrawdownNotification/persistClosedTrade) would
+// otherwise crash the whole `order` process on Node's default
+// unhandledRejection behavior, losing all in-flight risk state
+// (bookkeeping.trades, pending order attribution, GTT tracking, P&L). Log
+// and keep running instead - deliberately no process.exit() here.
+process.on('unhandledRejection', (reason) => {
+    Log.log('[order] Unhandled promise rejection (process kept alive):', reason);
+});
 
 // Entry point for the `order` process - the IPC server. `strategies` and
 // `frontend` connect to it as clients over a Unix domain socket (siblings can't
@@ -54,6 +65,16 @@ bookkeeping.onPositionsChanged(() => {
     broadcast({ kind: 'positionsChanged' });
 });
 
+// exitMonitor watches live ticks for every monitored trade (both in-app
+// target/SL monitoring and the watch-only mode used for GTT/bracket trades'
+// live P&L) but has no way to call bookkeeping directly (circular import -
+// see exitMonitor.ts's onPriceUpdate comment). Without this, a monitored
+// trade's lastTradePrice kept updating in memory but nothing ever told
+// /positionstream's already-connected clients to re-fetch and push it - the
+// displayed price only changed on the next unrelated trade event (fill/close/
+// target-SL edit), not on the price tick itself.
+exitMonitor.onPriceUpdate(() => bookkeeping.triggerPositionsChanged());
+
 // AntOrderNotifyStream.connect() throws (rather than retrying) when the ANT
 // session isn't there yet or was issued on an earlier day (ANT.loadSession
 // already discards those) - getUserSession() is null in exactly that case, so
@@ -67,6 +88,41 @@ function connectAntOrderNotifyIfSessionValid(context: string): void {
     AntOrderNotifyStream.getInstance().connect().catch((e) => Log.log('[order] AntOrderNotifyStream connect failed (ANT fills will not resolve until this connects):', e));
 }
 
+// Shared guard for every buy-style request type: check canPlaceOrder, reserve
+// the slot via bookkeeping.markPending() (so a concurrent request for the same
+// user sees the reservation - see bookkeeping.markPending's doc comment), then
+// run the actual broker call.
+//
+// On success, the broker call itself is responsible for releasing the
+// reservation - synchronously, via bookkeeping.recordFill, for every market
+// order here; asynchronously, later, via pollPendingLimitOrders's recordFill,
+// for placeLimitBuyZerodhaBare specifically. Either way this function must
+// NOT release on success, or it would double-release / release too early for
+// the limit-order case.
+//
+// On a thrown/rejected broker call, release it here - this is the leak fix:
+// previously pendingUsers was never cleared on this path, so a single failed
+// order (broker rejection, network error, waitForFill timeout) permanently
+// blocked that user's future orders until process restart.
+async function placeOrderWithPendingGuard(
+    req: OrderRequest,
+    estimatedOrderValue: number | undefined,
+    place: () => Promise<any>,
+): Promise<OrderResponse> {
+    const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedOrderValue);
+    if (!validation.allowed) {
+        return { kind: 'response', id: req.id, ok: false, error: validation.reason };
+    }
+    bookkeeping.markPending(req.userId, estimatedOrderValue);
+    try {
+        const result = await place();
+        return { kind: 'response', id: req.id, ok: true, result };
+    } catch (e) {
+        bookkeeping.releasePending(req.userId);
+        throw e;
+    }
+}
+
 async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     try {
         switch (req.type) {
@@ -74,16 +130,12 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result: await bookkeeping.canPlaceOrder(req.userId) };
 
             case 'buyIndex': {
-                const validation = await bookkeeping.canPlaceOrder(req.userId);
-                if (!validation.allowed) {
-                    return { kind: 'response', id: req.id, ok: false, error: validation.reason };
-                }
-                bookkeeping.pendingUsers.add(req.userId);
-                const broker = bookkeeping.getUserBroker(req.userId);
-                const trade = broker === 'ant'
-                    ? await antExecutor.buyIndexOnAnt({ userId: req.userId, ...req.payload })
-                    : await buyIndexOnZerodha({ userId: req.userId, ...req.payload });
-                return { kind: 'response', id: req.id, ok: true, result: trade };
+                return placeOrderWithPendingGuard(req, undefined, () => {
+                    const broker = bookkeeping.getUserBroker(req.userId);
+                    return broker === 'ant'
+                        ? antExecutor.buyIndexOnAnt({ userId: req.userId, ...req.payload })
+                        : buyIndexOnZerodha({ userId: req.userId, ...req.payload });
+                });
             }
 
             case 'squareOff': {
@@ -108,24 +160,16 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'antBuyIndex': {
-                const validation = await bookkeeping.canPlaceOrder(req.userId);
-                if (!validation.allowed) {
-                    return { kind: 'response', id: req.id, ok: false, error: validation.reason };
-                }
-                bookkeeping.pendingUsers.add(req.userId);
-                const trade = await antExecutor.buyIndexOnAnt({ userId: req.userId, ...req.payload });
-                return { kind: 'response', id: req.id, ok: true, result: trade };
+                return placeOrderWithPendingGuard(req, undefined, () =>
+                    antExecutor.buyIndexOnAnt({ userId: req.userId, ...req.payload }),
+                );
             }
 
             case 'antManualBuy': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedValue);
-                if (!validation.allowed) {
-                    return { kind: 'response', id: req.id, ok: false, error: validation.reason };
-                }
-                bookkeeping.pendingUsers.add(req.userId);
-                const trade = await antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload });
-                return { kind: 'response', id: req.id, ok: true, result: trade };
+                return placeOrderWithPendingGuard(req, estimatedValue, () =>
+                    antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload }),
+                );
             }
 
             case 'antSquareOff': {
@@ -147,13 +191,9 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'buyContract': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedValue);
-                if (!validation.allowed) {
-                    return { kind: 'response', id: req.id, ok: false, error: validation.reason };
-                }
-                bookkeeping.pendingUsers.add(req.userId);
-                const result = await prismExecutor.buyContract(req.userId, req.payload.contract, req.payload.quantity, req.payload.price);
-                return { kind: 'response', id: req.id, ok: true, result };
+                return placeOrderWithPendingGuard(req, estimatedValue, () =>
+                    prismExecutor.buyContract(req.userId, req.payload.contract, req.payload.quantity, req.payload.price),
+                );
             }
 
             case 'sellContract': {
@@ -205,16 +245,12 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'manualBuy': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedValue);
-                if (!validation.allowed) {
-                    return { kind: 'response', id: req.id, ok: false, error: validation.reason };
-                }
-                bookkeeping.pendingUsers.add(req.userId);
-                const manualBuyBroker = bookkeeping.getUserBroker(req.userId);
-                const result = manualBuyBroker === 'ant'
-                    ? await antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload })
-                    : await manualBuyOnZerodha({ userId: req.userId, ...req.payload });
-                return { kind: 'response', id: req.id, ok: true, result };
+                return placeOrderWithPendingGuard(req, estimatedValue, () => {
+                    const manualBuyBroker = bookkeeping.getUserBroker(req.userId);
+                    return manualBuyBroker === 'ant'
+                        ? antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload })
+                        : manualBuyOnZerodha({ userId: req.userId, ...req.payload });
+                });
             }
 
             case 'setTargetStopLoss': {
@@ -278,13 +314,9 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // ContinuousStrategy's bare Zerodha execution path - see zerodhaExecutor.ts.
             case 'buyContractZerodhaBare': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedValue);
-                if (!validation.allowed) {
-                    return { kind: 'response', id: req.id, ok: false, error: validation.reason };
-                }
-                bookkeeping.pendingUsers.add(req.userId);
-                const result = await marketBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
-                return { kind: 'response', id: req.id, ok: true, result };
+                return placeOrderWithPendingGuard(req, estimatedValue, () =>
+                    marketBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange),
+                );
             }
 
             case 'sellContractZerodhaBare': {
@@ -294,13 +326,14 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'placeLimitBuyZerodhaBare': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedValue);
-                if (!validation.allowed) {
-                    return { kind: 'response', id: req.id, ok: false, error: validation.reason };
-                }
-                bookkeeping.pendingUsers.add(req.userId);
-                const result = await placeLimitBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange);
-                return { kind: 'response', id: req.id, ok: true, result };
+                return placeOrderWithPendingGuard(req, estimatedValue, () =>
+                    placeLimitBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange),
+                );
+            }
+
+            case 'cancelOrderZerodha': {
+                await cancelOrderOnZerodha(req.payload.orderId);
+                return { kind: 'response', id: req.id, ok: true, result: undefined };
             }
 
             case 'getContractByPriceRangeZerodha': {
@@ -311,6 +344,11 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'getPCR': {
                 const result = await ANT.getInstance().getOptionChainPCR(req.payload.underlying, req.payload.spot, req.payload.window);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'getUserAllottedCapital': {
+                const result = bookkeeping.getUserAllottedCapital(req.userId);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -336,6 +374,27 @@ async function loadUserLimits() {
             broker: (cfg as any).broker ?? (mongoUser as any)?.broker ?? 'zerodha',
         });
     }
+
+    // Real Mongo users are otherwise only synced into this cache reactively
+    // (login/create/settings-save - see server.ts) - never at order-process
+    // startup. Preload everyone here too, so a restart doesn't silently drop
+    // an already-logged-in user back to hardcoded defaults (e.g.
+    // investmentAmount=0) until they take one of those actions again.
+    const users = await getAllUsers().catch(() => []);
+    for (const user of users) {
+        bookkeeping.updateUserSettings(user.email, {
+            lossLimit: user.lossLimit,
+            lotLimit: user.lotCount,
+            investmentMode: user.investmentMode,
+            investmentAmount: user.investmentAmount,
+            useGTT: user.useGTT,
+            broker: user.broker,
+            perOrderCap: user.perOrderCap,
+            allottedCapital: user.allottedCapital,
+            targetPoints: user.targetPoints,
+            stopLossPoints: user.stopLossPoints,
+        });
+    }
 }
 
 // Only useGTT=false trades ever end up in exitMonitor's watch list (see
@@ -351,6 +410,11 @@ async function onTick(tick: any) {
 async function main() {
     await Mongo.init().catch((e) => Log.log('[order] Mongo.init failed (continuing without persistence):', e));
     await loadUserLimits();
+    // bookkeeping.closedTrades is in-memory only - reload today's realized
+    // trades from Mongo so /closedtrades and /positionstream don't go blank
+    // on every restart even though nothing was actually lost (see
+    // loadClosedTradesFromMongo's comment).
+    await bookkeeping.loadClosedTradesFromMongo();
     // bookkeeping.trades is only ever populated live (via fills) today - there
     // is no startup refresh from Mongo/broker - so this reconciles 0 trades on
     // a fresh restart until the first fill arrives. Still worth calling here:

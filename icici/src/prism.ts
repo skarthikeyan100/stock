@@ -1,4 +1,5 @@
 import Log from './util/Log';
+import { isPastMarketClose } from './util/marketHours';
 // Strategy:
 // If direction is sure, go for option else go for option plus
 
@@ -122,6 +123,10 @@ export default class Prism {
     socket_close = (data) => {
         Log.log('[Prism] onClose: ', data)
         this.started = false
+        if (isPastMarketClose()) {
+            Log.log('[Prism] Past market close - not reconnecting');
+            return;
+        }
         this.connect()
     };
 

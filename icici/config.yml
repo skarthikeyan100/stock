@@ -57,9 +57,11 @@ strategies:
     slDistance: 10
     minPremium: 100
     allottedCapital: 200000
-    spawnQuantityMode: multiplied
+    spawnQuantityMode: same
+    averageQuantityMode: same
     right: none
     cooldownSeconds: 60
+    refillCancelDistance: 50
     logEnabled: true
   - type: IntermittentStrategy
     enabled: false

@@ -17,6 +17,7 @@
     "test:strategy": "tsc && node ./dist/test/strategyTest.js",
     "test:continuousStrategy": "tsc && MOCK_BROKER=true node ./dist/test/continuousStrategyTest.js",
     "backtest:continuousStrategy": "tsc && MOCK_BROKER=true node ./dist/tools/ContinuousStrategyBacktest.js",
+    "orderTree": "tsc && node ./dist/tools/StrategyOrderTree.js",
     "analysis": "cd analysis && python3 main.py",
     "analyze": "tsc && node ./dist/tools/analyze.js",
     "analyze:check": "tsc && node ./dist/tools/check_indicators.js",

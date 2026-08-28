@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import axiosModule from 'axios';
 import Log from '../util/Log';
+import { isPastMarketClose } from '../util/marketHours';
 import ANT from './ANT';
 
 const axios = axiosModule.create();
@@ -125,7 +126,12 @@ class AntOrderNotifyStream {
             Log.log('[AntOrderNotify] WebSocket closed');
             this.connected = false;
             if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-            if (!this.manualDisconnect) this.scheduleReconnect();
+            if (this.manualDisconnect) return;
+            if (isPastMarketClose()) {
+                Log.log('[AntOrderNotify] Past market close - not reconnecting');
+                return;
+            }
+            this.scheduleReconnect();
         };
     }
 
@@ -136,6 +142,10 @@ class AntOrderNotifyStream {
             this.reconnectTimer = null;
             this.connect().catch((e) => {
                 Log.log('[AntOrderNotify] Reconnect attempt failed:', e);
+                if (isPastMarketClose()) {
+                    Log.log('[AntOrderNotify] Past market close - not retrying');
+                    return;
+                }
                 this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.MAX_RECONNECT_DELAY_MS);
                 this.scheduleReconnect();
             });

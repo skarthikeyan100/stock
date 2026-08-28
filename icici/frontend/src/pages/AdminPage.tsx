@@ -1,4 +1,4 @@
-import { useState, useEffect, CSSProperties } from 'react';
+import { useState, useEffect, useRef, CSSProperties } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Container, Table, Form, Button, Spinner, Tabs, Tab, Card, Row, Col, Alert } from 'react-bootstrap';
 import { useAuth, AuthUser } from '../context/AuthContext';
@@ -27,13 +27,19 @@ async function patchVerify(email: string, field: 'email' | 'phone' | 'address' |
   });
 }
 
+interface UserEditRow {
+  lossLimit: string; lotCount: string; role: string; enabled: boolean; useGTT: boolean;
+  profitSplitPercent: string; perOrderCap: string; allottedCapital: string; targetPoints: string;
+  stopLossPoints: string; investmentAmount: string;
+}
+
 export default function AdminPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [editing, setEditing] = useState<Record<string, { lossLimit: string; lotCount: string; role: string; enabled: boolean; useGTT: boolean; profitSplitPercent: string; perOrderCap: string; investmentAmount: string }>>({});
+  const [editing, setEditing] = useState<Record<string, UserEditRow>>({});
   const [config, setConfig] = useState<any>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -200,6 +206,13 @@ export default function AdminPage() {
       .finally(() => setLoading(false));
   };
 
+  // Per-row debounce timers for the Users table's autosave.
+  const editAutoSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  // Skips the config-autosave effect when `config` changes because we just
+  // fetched it (initial load / Reset), not because the admin edited a field.
+  const skipNextConfigAutoSaveRef = useRef(true);
+
   useEffect(() => {
     fetchUsers();
     if (activeTab !== 'users') return;
@@ -210,6 +223,7 @@ export default function AdminPage() {
   const fetchConfig = () => {
     setConfigLoading(true);
     setConfigError(null);
+    skipNextConfigAutoSaveRef.current = true; // this setConfig call is a load, not an edit - don't autosave it back
     fetch('/config')
       .then(res => res.json())
       .then(data => setConfig(data))
@@ -224,18 +238,37 @@ export default function AdminPage() {
     fetchConfig();
   }, []);
 
+  // Resolved (actual, in-effect) values for the per-user override fields -
+  // what the user gets right now when they have no explicit override.
+  const userDefaults = {
+    allottedCapital: config?.continuousStrategy?.allottedCapital,
+    targetPoints: config?.settings?.targetPriceDiff,
+    stopLossPoints: config?.settings?.stopLossPriceDiff,
+  };
+
   const startEdit = (u: UserRow) => {
     setEditing(prev => ({
       ...prev,
       [u.email]: {
         lossLimit: String(u.lossLimit), lotCount: String(u.lotCount), role: u.role, enabled: u.enabled ?? true, useGTT: u.useGTT ?? true,
         profitSplitPercent: String(u.profitSplitPercent ?? 80), perOrderCap: u.perOrderCap !== undefined ? String(u.perOrderCap) : '',
+        // Show the actual value in effect (override, else the resolved
+        // default) rather than a blank field with a "default" placeholder.
+        allottedCapital: String(u.allottedCapital ?? userDefaults.allottedCapital ?? ''),
+        targetPoints: String(u.targetPoints ?? userDefaults.targetPoints ?? ''),
+        stopLossPoints: String(u.stopLossPoints ?? userDefaults.stopLossPoints ?? ''),
         investmentAmount: String(u.investmentAmount ?? 100000),
       },
     }));
   };
 
+  // Flushes any pending autosave for this row, then locks it back to read-only.
   const cancelEdit = (email: string) => {
+    if (editAutoSaveTimers.current[email]) {
+      clearTimeout(editAutoSaveTimers.current[email]);
+      delete editAutoSaveTimers.current[email];
+      saveEdit(email);
+    }
     setEditing(prev => {
       const next = { ...prev };
       delete next[email];
@@ -243,10 +276,22 @@ export default function AdminPage() {
     });
   };
 
-  const saveEdit = async (email: string) => {
-    const vals = editing[email];
+  // `valsOverride` lets a caller pass an exact snapshot instead of reading
+  // `editing[email]` - needed by the autosave debounce, since by the time its
+  // timer fires the `editing` state closure it would otherwise read from can
+  // be one keystroke stale relative to what was just typed.
+  const saveEdit = async (email: string, valsOverride?: UserEditRow) => {
+    const vals = valsOverride ?? editing[email];
     if (!vals) return;
     try {
+      // A field left equal to its resolved default stays "no override" so it
+      // keeps tracking the global/strategy default if that changes later.
+      const allottedCapital = vals.allottedCapital === '' || Number(vals.allottedCapital) === userDefaults.allottedCapital
+        ? undefined : Number(vals.allottedCapital);
+      const targetPoints = vals.targetPoints === '' || Number(vals.targetPoints) === userDefaults.targetPoints
+        ? undefined : Number(vals.targetPoints);
+      const stopLossPoints = vals.stopLossPoints === '' || Number(vals.stopLossPoints) === userDefaults.stopLossPoints
+        ? undefined : Number(vals.stopLossPoints);
       await fetch(`/users/${encodeURIComponent(email)}/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -257,6 +302,9 @@ export default function AdminPage() {
           useGTT: vals.useGTT,
           profitSplitPercent: Number(vals.profitSplitPercent),
           perOrderCap: vals.perOrderCap === '' ? undefined : Number(vals.perOrderCap),
+          allottedCapital,
+          targetPoints,
+          stopLossPoints,
           investmentAmount: Number(vals.investmentAmount),
         }),
       });
@@ -269,11 +317,24 @@ export default function AdminPage() {
           body: JSON.stringify({ role: vals.role }),
         });
       }
-      cancelEdit(email);
       fetchUsers();
     } catch (err) {
       console.error('Save failed:', err);
     }
+  };
+
+  // Updates one field of a row's edit buffer and (re)schedules its debounced
+  // autosave - no explicit "Save" click needed. The merged row is captured
+  // now and handed to saveEdit directly (see its comment) rather than left
+  // for the timer to re-read from state later.
+  const updateEditingField = (email: string, patch: Partial<UserEditRow>) => {
+    const merged = { ...editing[email], ...patch };
+    setEditing(prev => ({ ...prev, [email]: merged }));
+    if (editAutoSaveTimers.current[email]) clearTimeout(editAutoSaveTimers.current[email]);
+    editAutoSaveTimers.current[email] = setTimeout(() => {
+      delete editAutoSaveTimers.current[email];
+      saveEdit(email, merged);
+    }, 800);
   };
 
   const saveConfig = async () => {
@@ -294,6 +355,20 @@ export default function AdminPage() {
       setConfigError('Failed to save configuration');
     }
   };
+
+  // Autosaves the Strategy Configuration form (debounced) whenever `config`
+  // changes from an edit - skipped for the setConfig calls fetchConfig makes
+  // (initial load / Reset), which aren't edits.
+  useEffect(() => {
+    if (!config) return;
+    if (skipNextConfigAutoSaveRef.current) {
+      skipNextConfigAutoSaveRef.current = false;
+      return;
+    }
+    const t = setTimeout(() => { saveConfig(); }, 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config]);
 
   const connectAnt = async () => {
     setAntConnecting(true);
@@ -497,6 +572,9 @@ export default function AdminPage() {
                   <th>Investment Amount</th>
                   <th>Profit Split %</th>
                   <th>Per-Order Cap</th>
+                  <th>Allotted Capital</th>
+                  <th>Target Pts</th>
+                  <th>Stop-Loss Pts</th>
                   <th>Use GTT</th>
                   <th>Session P&amp;L</th>
                   <th>Active</th>
@@ -524,10 +602,7 @@ export default function AdminPage() {
                           <Form.Select
                             size="sm"
                             value={editing[u.email].role}
-                            onChange={e => setEditing(prev => ({
-                              ...prev,
-                              [u.email]: { ...prev[u.email], role: e.target.value },
-                            }))}
+                            onChange={e => updateEditingField(u.email, { role: e.target.value })}
                             style={{ width: 100 }}
                           >
                             <option value="user">User</option>
@@ -546,10 +621,7 @@ export default function AdminPage() {
                             id={`enabled-${u.email}`}
                             label={editing[u.email].enabled ? 'Enabled' : 'Disabled'}
                             checked={editing[u.email].enabled}
-                            onChange={e => setEditing(prev => ({
-                              ...prev,
-                              [u.email]: { ...prev[u.email], enabled: e.target.checked },
-                            }))}
+                            onChange={e => updateEditingField(u.email, { enabled: e.target.checked })}
                           />
                         ) : (
                           <span className={`badge ${(u.enabled ?? true) ? 'bg-success' : 'bg-danger'}`}>
@@ -563,10 +635,7 @@ export default function AdminPage() {
                             size="sm"
                             type="number"
                             value={editing[u.email].lossLimit}
-                            onChange={e => setEditing(prev => ({
-                              ...prev,
-                              [u.email]: { ...prev[u.email], lossLimit: e.target.value },
-                            }))}
+                            onChange={e => updateEditingField(u.email, { lossLimit: e.target.value })}
                             style={{ width: 100 }}
                           />
                         ) : (
@@ -579,10 +648,7 @@ export default function AdminPage() {
                             size="sm"
                             type="number"
                             value={editing[u.email].lotCount}
-                            onChange={e => setEditing(prev => ({
-                              ...prev,
-                              [u.email]: { ...prev[u.email], lotCount: e.target.value },
-                            }))}
+                            onChange={e => updateEditingField(u.email, { lotCount: e.target.value })}
                             style={{ width: 80 }}
                           />
                         ) : (
@@ -595,10 +661,7 @@ export default function AdminPage() {
                             size="sm"
                             type="number"
                             value={editing[u.email].investmentAmount}
-                            onChange={e => setEditing(prev => ({
-                              ...prev,
-                              [u.email]: { ...prev[u.email], investmentAmount: e.target.value },
-                            }))}
+                            onChange={e => updateEditingField(u.email, { investmentAmount: e.target.value })}
                             style={{ width: 110 }}
                           />
                         ) : (
@@ -611,10 +674,7 @@ export default function AdminPage() {
                             size="sm"
                             type="number"
                             value={editing[u.email].profitSplitPercent}
-                            onChange={e => setEditing(prev => ({
-                              ...prev,
-                              [u.email]: { ...prev[u.email], profitSplitPercent: e.target.value },
-                            }))}
+                            onChange={e => updateEditingField(u.email, { profitSplitPercent: e.target.value })}
                             style={{ width: 80 }}
                           />
                         ) : (
@@ -628,14 +688,56 @@ export default function AdminPage() {
                             type="number"
                             placeholder="none"
                             value={editing[u.email].perOrderCap}
-                            onChange={e => setEditing(prev => ({
-                              ...prev,
-                              [u.email]: { ...prev[u.email], perOrderCap: e.target.value },
-                            }))}
+                            onChange={e => updateEditingField(u.email, { perOrderCap: e.target.value })}
                             style={{ width: 100 }}
                           />
                         ) : (
-                          u.perOrderCap !== undefined ? <>&#8377;{u.perOrderCap.toLocaleString()}</> : '—'
+                          u.perOrderCap != null ? <>&#8377;{u.perOrderCap.toLocaleString()}</> : '—'
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <Form.Control
+                            size="sm"
+                            type="number"
+                            value={editing[u.email].allottedCapital}
+                            onChange={e => updateEditingField(u.email, { allottedCapital: e.target.value })}
+                            style={{ width: 120 }}
+                          />
+                        ) : (
+                          (u.allottedCapital ?? userDefaults.allottedCapital) != null
+                            ? <span title={u.allottedCapital == null ? 'strategy default' : undefined}>&#8377;{(u.allottedCapital ?? userDefaults.allottedCapital)!.toLocaleString()}</span>
+                            : '—'
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <Form.Control
+                            size="sm"
+                            type="number"
+                            value={editing[u.email].targetPoints}
+                            onChange={e => updateEditingField(u.email, { targetPoints: e.target.value })}
+                            style={{ width: 100 }}
+                          />
+                        ) : (
+                          (u.targetPoints ?? userDefaults.targetPoints) != null
+                            ? <span title={u.targetPoints == null ? 'global default' : undefined}>{u.targetPoints ?? userDefaults.targetPoints}</span>
+                            : '—'
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <Form.Control
+                            size="sm"
+                            type="number"
+                            value={editing[u.email].stopLossPoints}
+                            onChange={e => updateEditingField(u.email, { stopLossPoints: e.target.value })}
+                            style={{ width: 100 }}
+                          />
+                        ) : (
+                          (u.stopLossPoints ?? userDefaults.stopLossPoints) != null
+                            ? <span title={u.stopLossPoints == null ? 'global default' : undefined}>{u.stopLossPoints ?? userDefaults.stopLossPoints}</span>
+                            : '—'
                         )}
                       </td>
                       <td>
@@ -645,10 +747,7 @@ export default function AdminPage() {
                             id={`useGTT-${u.email}`}
                             title="Broker GTT bracket at entry vs. in-app target/SL monitoring"
                             checked={editing[u.email].useGTT}
-                            onChange={e => setEditing(prev => ({
-                              ...prev,
-                              [u.email]: { ...prev[u.email], useGTT: e.target.checked },
-                            }))}
+                            onChange={e => updateEditingField(u.email, { useGTT: e.target.checked })}
                           />
                         ) : (
                           <span className={`badge ${(u.useGTT ?? true) ? 'bg-secondary' : 'bg-info'}`}>
@@ -719,10 +818,7 @@ export default function AdminPage() {
                       <td style={stickyActionsStyle}>
                         <div className="d-flex gap-1">
                           {isEditing ? (
-                            <>
-                              <Button size="sm" variant="success" onClick={() => saveEdit(u.email)}>Save</Button>
-                              <Button size="sm" variant="secondary" onClick={() => cancelEdit(u.email)}>Cancel</Button>
-                            </>
+                            <Button size="sm" variant="secondary" onClick={() => cancelEdit(u.email)}>Cancel</Button>
                           ) : (
                             <>
                               <Button size="sm" variant="outline-primary" onClick={() => startEdit(u)}>Edit</Button>
@@ -1139,9 +1235,10 @@ export default function AdminPage() {
                   </Card.Body>
                 </Card>
 
-                <div className="d-flex gap-2">
-                  <Button variant="primary" onClick={saveConfig}>Save Configuration</Button>
+                <div className="d-flex align-items-center gap-2">
+                  <Button variant="primary" onClick={saveConfig}>Save Now</Button>
                   <Button variant="secondary" onClick={fetchConfig}>Reset</Button>
+                  <span className="text-muted small">Changes auto-save a moment after you stop typing.</span>
                 </div>
               </>
             ) : (

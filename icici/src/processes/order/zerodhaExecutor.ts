@@ -1,6 +1,7 @@
 import Log from '../../util/Log';
-import Zerodha from '../../zerodha/Zerodha';
+import Zerodha, { roundToTick } from '../../zerodha/Zerodha';
 import ZerodhaContractMaster from '../../zerodha/ZerodhaContractMaster';
+import AntContractMaster from '../../ant/AntContractMaster';
 import configService from '../../prism/ConfigService';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
@@ -8,7 +9,7 @@ import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
-import { trackPendingLimitOrder } from './pendingLimitOrders';
+import { trackPendingLimitOrder, untrackPendingLimitOrder } from './pendingLimitOrders';
 
 // Zerodha is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -28,8 +29,15 @@ import { trackPendingLimitOrder } from './pendingLimitOrders';
 async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number): Promise<void> {
     const entryPrice = trade.price;
     trade.targetPoints = targetPoints;
-    trade.stopLossPrice = entryPrice - stopLossPoints;
-    trade.targetPrice = entryPrice + targetPoints;
+    // Tick-rounded (not just entryPrice +/- points) so these match whatever
+    // placeTargetStopLossGTT actually sends the broker, and stay sane if a
+    // GTT failure falls back to exitMonitor's in-app target/SL comparison
+    // below - a multi-fill average entryPrice (e.g. 133.61363636363637)
+    // otherwise produces a stopLossPrice that isn't a tick multiple, which
+    // Zerodha's GTT API rejects outright (confirmed live: "Stoploss trigger
+    // price should be a multiple of tick size 0.05").
+    trade.stopLossPrice = roundToTick(entryPrice - stopLossPoints);
+    trade.targetPrice = roundToTick(entryPrice + targetPoints);
 
     if (targetPoints > 0 && stopLossPoints > 0) {
         if (bookkeeping.getUserUseGTT(userId)) {
@@ -45,8 +53,22 @@ async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BF
                     stopLossPoints,
                     entryPrice
                 );
+                // GTT owns the actual exit, but nothing else keeps trade.lastTradePrice
+                // fresh after entry - register watch-only so the frontend's live P&L
+                // still moves with the market instead of freezing at the fill price.
+                if (trade.token) exitMonitor.registerTrade(trade, exchange, 'zerodha', true);
             } catch (e) {
-                Log.log('[order] GTT placement failed (position is open without a bracket):', e);
+                Log.log('[order] GTT placement failed - falling back to in-app target/SL monitoring:', e);
+                // Without this, a GTT failure left the position with zero
+                // protection at all (no broker bracket, and the watch-only
+                // registration above never runs since it's after the failed
+                // call) - degrade to the same in-app monitoring useGTT=false
+                // users get, instead of leaving it completely unwatched.
+                if (trade.token) {
+                    exitMonitor.registerTrade(trade, exchange, 'zerodha');
+                } else {
+                    Log.log(`[order] GTT failed for ${userId} and trade has no token (${trade.tsym}) - exit will not be monitored`);
+                }
             }
         } else if (trade.token) {
             exitMonitor.registerTrade(trade, exchange, 'zerodha');
@@ -83,8 +105,8 @@ export async function buyIndexOnZerodha(req: BuyIndexRequest): Promise<Trade> {
     }
 
     const settings = configService.getConfig().settings;
-    const targetPoints = req.targetPoints ?? settings.targetPriceDiff;
-    const stopLossPoints = req.stopLossPoints ?? settings.stopLossPriceDiff;
+    const targetPoints = req.targetPoints ?? bookkeeping.getUserTargetPoints(req.userId) ?? settings.targetPriceDiff;
+    const stopLossPoints = req.stopLossPoints ?? bookkeeping.getUserStopLossPoints(req.userId) ?? settings.stopLossPriceDiff;
     const optionType = req.right === CALL ? 'CE' : 'PE';
     const index = req.index ?? 'NIFTY';
 
@@ -101,6 +123,9 @@ export async function buyIndexOnZerodha(req: BuyIndexRequest): Promise<Trade> {
     const contract = req.strike && req.expiry
         ? await ZerodhaContractMaster.getInstance().findExactOption(req.strike, req.expiry, optionType, index)
         : await ZerodhaContractMaster.getInstance().findATMOption(req.niftyLtp, optionType, index);
+    const commonToken = req.strike && req.expiry
+        ? AntContractMaster.getInstance().resolveCommonToken(index, optionType, { strike: req.strike, expiry: req.expiry })
+        : AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.niftyLtp });
     Log.log(`[order] Buying ${contract.tradingSymbol} qty=${req.quantity} for ${req.userId}`);
 
     const { orderId } = await zerodha.buyOption(contract.tradingSymbol, req.quantity, contract.exchange);
@@ -109,7 +134,7 @@ export async function buyIndexOnZerodha(req: BuyIndexRequest): Promise<Trade> {
 
     const trade = new Trade();
     trade.tsym = contract.tradingSymbol;
-    trade.token = String(contract.instrumentToken);
+    trade.token = commonToken;
     trade.quantity = req.quantity;
     trade.price = entryPrice;
     trade.lastTradePrice = entryPrice;
@@ -148,9 +173,10 @@ export async function manualBuyOnZerodha(req: ManualBuyRequest): Promise<Trade> 
     if (req.contract) {
         const canonical = parseCanonicalSymbol(req.contract);
         const resolved = await ZerodhaContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
+        const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
         const price = await estimateOptionPrice(canonical.symbol, canonical.strike, canonical.optionType);
         const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity);
-        return buyContractOnZerodha(req.userId, resolved.tradingSymbol, String(resolved.instrumentToken), quantity, resolved.exchange, req.price, req.targetPoints, req.stopLossPoints);
+        return buyContractOnZerodha(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.price, req.targetPoints, req.stopLossPoints);
     }
 
     if (!req.right) throw new Error('manualBuy requires either contract or right');
@@ -163,16 +189,17 @@ export async function manualBuyOnZerodha(req: ManualBuyRequest): Promise<Trade> 
         // strike prices are already multiples of that step, so feeding it the
         // strike directly lands exactly on it without needing a live NIFTY quote.
         const contract = await ZerodhaContractMaster.getInstance().findATMOption(req.strikePrice, optionType, index);
+        const commonToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.strikePrice });
         const price = await estimateOptionPrice(index, req.strikePrice, optionType);
         const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity);
-        return buyContractOnZerodha(req.userId, contract.tradingSymbol, String(contract.instrumentToken), quantity, contract.exchange, req.price, req.targetPoints, req.stopLossPoints);
+        return buyContractOnZerodha(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.price, req.targetPoints, req.stopLossPoints);
     }
 
     const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
     return buyIndexOnZerodha({ userId: req.userId, index: req.index, niftyLtp: 0, right: req.right, quantity, targetPoints: req.targetPoints, stopLossPoints: req.stopLossPoints });
 }
 
-async function buyContractOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number, targetPoints?: number, stopLossPoints?: number): Promise<Trade> {
+async function buyContractOnZerodha(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number, targetPoints?: number, stopLossPoints?: number): Promise<Trade> {
     const zerodha = Zerodha.getInstance();
     if (!(await zerodha.hasValidSession())) {
         throw new Error('Zerodha session not active - complete /kite/login first.');
@@ -183,7 +210,7 @@ async function buyContractOnZerodha(userId: string, tradingSymbol: string, instr
 
     const trade = new Trade();
     trade.tsym = tradingSymbol;
-    trade.token = instrumentToken;
+    trade.token = commonToken;
     trade.quantity = quantity;
     trade.price = entryPrice;
     trade.lastTradePrice = entryPrice;
@@ -193,8 +220,8 @@ async function buyContractOnZerodha(userId: string, tradingSymbol: string, instr
     trade.brokerOrderId = orderId;
 
     const settings = configService.getConfig().settings;
-    const finalTargetPoints = targetPoints ?? settings.targetPriceDiff;
-    const finalStopLossPoints = stopLossPoints ?? settings.stopLossPriceDiff;
+    const finalTargetPoints = targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? settings.targetPriceDiff;
+    const finalStopLossPoints = stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? settings.stopLossPriceDiff;
     await finalizeEntry(trade, userId, exchange, finalTargetPoints, finalStopLossPoints);
     return trade;
 }
@@ -325,6 +352,17 @@ export async function placeLimitBuyBareOnZerodha(userId: string, tradingSymbol: 
     const { orderId } = await zerodha.placeLimitBuyOption(tradingSymbol, quantity, price, exchange);
     trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity, exchange });
     return { orderId };
+}
+
+// Cancels a resting limit order (e.g. ContinuousStrategy's root-refill drift-cancel
+// check) and stops pollPendingLimitOrders from continuing to poll it.
+export async function cancelOrderOnZerodha(orderId: string): Promise<void> {
+    const zerodha = Zerodha.getInstance();
+    if (!(await zerodha.hasValidSession())) {
+        throw new Error('Zerodha session not active - complete /kite/login first.');
+    }
+    await zerodha.cancelOrder(orderId);
+    untrackPendingLimitOrder(orderId);
 }
 
 // Zerodha-side premium-range strike lookup (mirrors Prism.getContractByPriceRange's
