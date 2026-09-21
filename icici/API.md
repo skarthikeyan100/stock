@@ -582,7 +582,7 @@ data: { "symbol": "NIFTY 50", "ltp": 17480.6, ... }
 ```json
 [
   {
-    "type": "BuySellStrategy",
+    "type": "ContinuousStrategy",
     "userId": "user_id",
     "enabled": true
   }
@@ -667,8 +667,7 @@ data: { "symbol": "NIFTY 50", "ltp": 17480.6, ... }
 
 ## Frontend Routes
 
-### GET /app
-### GET /app/*
+### GET / (and any unmatched path)
 **Description:** Serve React frontend application
 
 **Response:** index.html for the React app

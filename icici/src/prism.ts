@@ -855,6 +855,116 @@ export default class Prism {
 
     }
 
+    // Cover order (prd 'H') - protects the position with a broker-native
+    // stop-loss leg placed at entry, mirroring ANT.placeCoverOrder's shape:
+    // the fill price isn't known before submission, so - same reasoning as
+    // antExecutor.enterPosition's bracket-order branch - this quotes first,
+    // derives a marketable limit price from that quote, and computes the
+    // absolute book-loss price (blprc) from *that* reference price, not the
+    // eventual real fill. Unverified against a live Shoonya response - see
+    // ToDo.md's live-verification entry for this feature; if `bookloss_price`
+    // turns out to need a different convention (e.g. points instead of an
+    // absolute price) this will reject or silently mis-bracket the position,
+    // exactly the same caveat class ANT's placeBracketOrder/placeCoverOrder
+    // already carry.
+    placeCoverOrder = async (contract: string, qty: number, stopLossPoints: number, userContext?: UserContext): Promise<any> => {
+        const quote = await this.getStockOptionQuote(contract);
+        const ltp = quote.ltp;
+        const limitPrice = Math.round(ltp * 1.01 * 20) / 20;
+        const bookLossPrice = Math.round((limitPrice - stopLossPoints) * 20) / 20;
+
+        const token = await this.getToken(contract);
+        if (!qty) {
+            const lotSize = await this.findLotSizeByContract(contract);
+            const lotSizeAsInt = parseInt(lotSize);
+            const lotCount = userContext?.lotCount ?? Config.lotCount;
+            qty = lotCount * lotSizeAsInt;
+        }
+        const user = userContext?.email;
+
+        const order = {
+            "trantype": 'B',
+            "prd": 'H',
+            "exch": 'NFO',
+            "tsym": contract,
+            "qty": qty,
+            "prctyp": 'LMT',
+            "prc": limitPrice,
+            "bookloss_price": bookLossPrice,
+        };
+
+        Log.log(`[Order] Placing cover order ${contract} qty=${qty} limit=${limitPrice} bookLoss=${bookLossPrice}`);
+        const response = await this._placeOrderWithForce(order, user);
+        Log.log(`[Order] Cover order placed ${response?.contract} orderId=${response?.norenordno} qty=${response?.qty}`);
+
+        if (response?.norenordno) {
+            response.price = await this.getOrderFillPrice(response.norenordno, limitPrice);
+        }
+        return response;
+    }
+
+    // Polls get_orderbook for this order's terminal status, mirroring
+    // ANT.getFillPrice's poll/timeout shape and multi-field fallback (the
+    // real field name for a filled Noren order's average price is
+    // unconfirmed live for this endpoint specifically - falls back through
+    // the same candidates ANT's getFillPrice already needed). Falls back to
+    // the requested limit price if the broker never confirms a fill within
+    // the timeout, matching this file's existing buyContract behavior
+    // (trusts the requested price) rather than throwing and orphaning an
+    // otherwise-successful order.
+    getOrderFillPrice = async (orderNo: string, requestedPrice: number, maxAttempts = 12, intervalMs = 5000): Promise<number> => {
+        if (MOCK_BROKER) return requestedPrice;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            try {
+                const orders: any[] = await NorenRestApi.get_orderbook() ?? [];
+                const match = orders.find((o) => o.norenordno === orderNo);
+                if (match && (match.status === 'COMPLETE' || match.status === 'REJECTED' || match.status === 'CANCELED')) {
+                    if (match.status !== 'COMPLETE') {
+                        throw new Error(`Prism cover order ${orderNo} ended ${match.status}: ${JSON.stringify(match)}`);
+                    }
+                    const fillPrice = match.avgprc ?? match.flprc ?? match.avgPrice;
+                    if (fillPrice) return Number(fillPrice);
+                    Log.log(`[Order] Cover order ${orderNo} COMPLETE but no recognizable fill-price field - using requested price ${requestedPrice}:`, match);
+                    return requestedPrice;
+                }
+            } catch (e) {
+                Log.log(`[Order] getOrderFillPrice poll attempt ${attempt + 1}/${maxAttempts} failed for ${orderNo}:`, e);
+            }
+            await delay(intervalMs);
+        }
+        Log.log(`[Order] getOrderFillPrice timed out for ${orderNo} - using requested price ${requestedPrice}`);
+        return requestedPrice;
+    }
+
+    // Closes a cover-order position - Shoonya/Noren's exit_order (already
+    // live, product_type-aware) mirrors ANT.exitBracketOrder.
+    exitCoverOrder = async (orderNo: string): Promise<void> => {
+        const reply: any = await NorenRestApi.exit_order(orderNo, 'H');
+        if (reply?.stat !== 'Ok') {
+            throw new Error(`Prism exitCoverOrder failed for ${orderNo}: ${JSON.stringify(reply)}`);
+        }
+    }
+
+    // Cancels a still-resting (unfilled) order - RestAPI.ts's cancel_order
+    // was already live, just never exposed above this layer.
+    cancelOrder = async (orderNo: string): Promise<void> => {
+        const reply: any = await NorenRestApi.cancel_order(orderNo);
+        if (reply?.stat !== 'Ok') {
+            throw new Error(`Prism cancelOrder failed for ${orderNo}: ${JSON.stringify(reply)}`);
+        }
+    }
+
+    // RestAPI.ts's get_positions (/PositionBook) was already live, just never
+    // exposed above this layer. Field names (tsym/token/netqty/netavgprc/exch)
+    // are the standard Noren/Shoonya position-book convention but - like the
+    // rest of this session's new Prism work - unconfirmed against a live
+    // response; falls back defensively (0 qty/price) rather than throwing on
+    // an unexpected shape.
+    getPositions = async (): Promise<any[]> => {
+        const positions: any = (await NorenRestApi.get_positions()) ?? [];
+        return Array.isArray(positions) ? positions : [];
+    }
+
     buyIndex = async({ userContext, index, ltp, right, qty }: { userContext?: UserContext, index: string, ltp?: number, right?: string, qty?: number }) => {
         Log.log('Buy Index ', index, ' ltp: ', ltp, ' right: ', right, ' qty: ', qty)
         const nseIndex = indexMap.get(index as string);
@@ -1185,7 +1295,8 @@ export default class Prism {
                 "lastOrderedPrice": order.prc,
                 "token": token,
                 "profit": 0,
-                "status": OrderStatus.ORDERED
+                "status": OrderStatus.ORDERED,
+                "norenordno": response?.norenordno,
             }
         } finally {
             if (user) bookkeeping.clearPendingOrder(order.tsym, user);

@@ -66,12 +66,24 @@ class NorenRestApi {
 
     this.reloadToken();
 
+    // Scoped to this.endpoint (Shoonya's API host) - these interceptors are
+    // installed on the *global* axios instance (not a private axios.create()),
+    // so an unscoped version silently breaks every other library in the
+    // process that also calls the bare axios module directly (e.g.
+    // breezeconnect's REST calls, which have no way to opt out since they
+    // don't accept an injected axios instance) - the response interceptor's
+    // `return response.data` unwrap in particular makes response.data
+    // undefined one level down for anyone else's request. ANT.ts/AntSession.ts
+    // already avoid this via their own axios.create(); this guard protects
+    // everyone else that can't.
     axios.interceptors.request.use(req => {
+      if (!req.url?.startsWith(this.endpoint)) return req;
       console.log(`[REQ] ${req.method?.toUpperCase()} ${req.url}`, req.data);
       return req;
     });
-    
+
     axios.interceptors.response.use(response => {
+      if (!response.config.url?.startsWith(this.endpoint)) return response;
       console.log(`[RES] ${response.status} ${response.config.url}`, response.data);
       if (response.status === 200) {
         if (response.data.success || response.data.status) {
@@ -81,6 +93,7 @@ class NorenRestApi {
         }
       }
     }, error => {
+      if (!error.config?.url?.startsWith(this.endpoint)) return Promise.reject(error);
       console.log(`[ERR] ${error.config?.url}`, error.response?.data ?? error.message);
       Log.log(error)
       // ... rest of error handling
@@ -273,7 +286,7 @@ class NorenRestApi {
   get_time_price_series = function (params) {
 
     let values = {}
-    values["uid"] = this.username;
+    values["uid"] = this.userId;
     values["exch"] = params.exchange;
     values["token"] = params.token;
     values["st"] = params.starttime;
@@ -320,14 +333,16 @@ class NorenRestApi {
     // if (order.amo !== undefined)
     //   values["amo"] = order.amo;
 
-    //if cover order or high leverage order
-    // if (order.product_type == 'H') {
-    //   values["blprc"] = order.bookloss_price.toString();
-    //   //trailing price
-    //   if (order.trail_price != 0.0) {
-    //     values["trailprc"] = order.trail_price.toString();
-    //   }
-    // }
+    // Cover order (prd 'H') - book-loss price is required; unverified live
+    // (never tested against a real Shoonya response - see prismExecutor.ts's
+    // placeCoverOrder). Bracket order (prd 'B', adds bpprc) stays commented
+    // out below - not implemented, no current caller needs it.
+    if (order.prd === 'H') {
+      values["blprc"] = order.bookloss_price.toString();
+      if (order.trail_price) {
+        values["trailprc"] = order.trail_price.toString();
+      }
+    }
     // //bracket order
     // if (order.product_type == 'B') {
     //   values["blprc"] = order.bookloss_price.toString();
@@ -440,7 +455,7 @@ class NorenRestApi {
   exit_order = function (orderno, product_type) {
 
     let values = {};
-    values["uid"] = this.username;
+    values["uid"] = this.userId;
     values["norenordno"] = orderno;
     values["prd"] = product_type;
 
@@ -491,7 +506,7 @@ class NorenRestApi {
   get_holdings = function (product_type = 'C') {
 
     let values = {};
-    values["uid"] = this.username;
+    values["uid"] = this.userId;
     values["actid"] = this.accountid;
     values["prd"] = product_type;
 
@@ -525,7 +540,7 @@ class NorenRestApi {
   get_limits = function (product_type = '', segment = '', exchange = '') {
 
     let values = {};
-    values["uid"] = this.username;
+    values["uid"] = this.userId;
     values["actid"] = this.accountid;
 
     if (product_type != '') {

@@ -1,6 +1,6 @@
 import { Button, ButtonGroup, Form } from 'react-bootstrap';
 
-export type DateRangeMode = 'day' | 'month' | 'custom';
+export type DateRangeMode = 'day' | 'week' | 'month' | 'custom';
 export interface DateRange {
   mode: DateRangeMode;
   from: string; // YYYY-MM-DD, local time - always populated regardless of mode
@@ -22,6 +22,14 @@ export function resolveDateRange(mode: DateRangeMode, customFrom: string, custom
     const today = toDateInputValue(now);
     return { mode, from: today, to: today };
   }
+  if (mode === 'week') {
+    // Trading week is Wednesday through Tuesday - mirrors the boundary
+    // computed server-side in src/util/weekWindow.ts's startOfWeek(). Kept
+    // in sync by construction (frontend/backend are separate TS projects).
+    const diff = (now.getDay() - 3 + 7) % 7; // 3 = Wednesday
+    const wednesday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diff);
+    return { mode, from: toDateInputValue(wednesday), to: toDateInputValue(now) };
+  }
   if (mode === 'month') {
     const first = new Date(now.getFullYear(), now.getMonth(), 1);
     return { mode, from: toDateInputValue(first), to: toDateInputValue(now) };
@@ -36,7 +44,24 @@ export function formatRangeLabel(range: DateRange): string {
   return range.from === range.to ? `Showing ${fmt(range.from)}` : `Showing ${fmt(range.from)} - ${fmt(range.to)}`;
 }
 
-export default function DateRangeFilter({ value, onChange, size }: { value: DateRange; onChange: (next: DateRange) => void; size?: 'sm' }) {
+const MODE_LABELS: Record<DateRangeMode, string> = {
+  day: 'This Day',
+  week: 'This Week',
+  month: 'This Month',
+  custom: 'Custom',
+};
+
+export default function DateRangeFilter({
+  value,
+  onChange,
+  size,
+  modes = ['day', 'month', 'custom'],
+}: {
+  value: DateRange;
+  onChange: (next: DateRange) => void;
+  size?: 'sm';
+  modes?: DateRangeMode[];
+}) {
   const setMode = (mode: DateRangeMode) => {
     onChange(resolveDateRange(mode, value.from, value.to));
   };
@@ -44,13 +69,13 @@ export default function DateRangeFilter({ value, onChange, size }: { value: Date
   return (
     <div className="d-flex align-items-end gap-2 flex-wrap">
       <ButtonGroup size={size}>
-        {(['day', 'month', 'custom'] as DateRangeMode[]).map((m) => (
+        {modes.map((m) => (
           <Button
             key={m}
             variant={value.mode === m ? 'primary' : 'outline-primary'}
             onClick={() => setMode(m)}
           >
-            {m === 'day' ? 'This Day' : m === 'month' ? 'This Month' : 'Custom'}
+            {MODE_LABELS[m]}
           </Button>
         ))}
       </ButtonGroup>

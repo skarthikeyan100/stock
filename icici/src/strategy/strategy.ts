@@ -50,6 +50,29 @@ export abstract class Strategy {
         this.lastTriggerTime = Date.now();
     }
 
+    // ANT's raw ft field (which becomes NiftyQuote/OptionQuote.ltt via
+    // *.fromAnt) is Unix epoch SECONDS, e.g. "ft": "1789722664" observed on a
+    // real live tick 2026-09-18 - not milliseconds. Every backtest/hypothesis-
+    // test tool in this codebase already knows this and converts with
+    // `Number(r.ltt) * 1000` at its own point of use (see backtestCsvUtils.ts,
+    // SupportResistanceHypothesisTest.ts, etc.); the live path never got the
+    // same treatment, which silently broke ContinuousStrategy's PCR-recheck
+    // throttle (needed ~83 hours to release instead of 5 minutes) until fixed
+    // the same day. Any strategy comparing tick timestamps against a
+    // millisecond-scale threshold (cooldowns, breach-confirm windows, etc.)
+    // needs this same normalization - shared here rather than duplicated per
+    // strategy. Backtest tick.ltt already arrives pre-converted to ms (via
+    // backtestCsvUtils), so a blind `* 1000` would double-convert and break
+    // it - normalize by magnitude instead (a real "seconds" epoch is
+    // comfortably under 1e12 for centuries; a real "ms" epoch already exceeds
+    // it today).
+    protected toMillis(ltt: number | string | undefined): number | undefined {
+        if (!ltt) return undefined;
+        const n = Number(ltt);
+        if (!n) return undefined;
+        return n < 1e12 ? n * 1000 : n;
+    }
+
     getMonitorConfig(): { targetPoints: number; stopLossPoints: number; trailingDistance: number } | null {
         return {
             targetPoints: configService.getConfig().settings.targetPriceDiff,

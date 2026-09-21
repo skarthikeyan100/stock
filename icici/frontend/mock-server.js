@@ -138,9 +138,7 @@ app.post('/users/:email/settings', async (req, res) => {
 // GET /config
 let mockConfig = {
   settings: { minPrice: 20, maxPrice: 30000, cooldownSeconds: 0, trailingDistance: 3 },
-  buySellStrategy: { type: 'BuySellStrategy', enabled: false, initialQuantity: 150, incrementQuantity: 150, averageThreshold: 10, targetPrice: 5, maxIterationCount: 10, right: 'none', stopEnabled: false, logEnabled: false },
   sentimentStrategy: { type: 'SentimentStrategy', enabled: false, averageThreshold: 20, targetPrice: 2, orderQuantity: 7200, sentiment: 'put', loopCount: 1 },
-  intermittentStrategy: { type: 'IntermittentStrategy', enabled: false, loopCount: 3, targetPrice: 2, quantity: 75, threshold: 10, logEnabled: false },
   rateOfChangeStrategy: { type: 'RateOfChangeStrategy', enabled: false, pointsThreshold: 30, accelerationThreshold: 5, numberOfDatapointsReceived: 50, quantity: 65, targetPrice: 2, stopLossPrice: 11, maxHoldTimeMinutes: 30, logEnabled: true },
 };
 

@@ -82,6 +82,21 @@ class StrategiesClient {
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
+
+    async subscribeToken(token: string): Promise<void> {
+        const res = await this.request('subscribeToken', { token });
+        if (!res.ok) throw new Error(res.error);
+    }
+
+    async unsubscribeToken(token: string): Promise<void> {
+        const res = await this.request('unsubscribeToken', { token });
+        if (!res.ok) throw new Error(res.error);
+    }
+
+    async syncFromConfig(): Promise<void> {
+        const res = await this.request('syncFromConfig', {});
+        if (!res.ok) throw new Error(res.error);
+    }
 }
 
 export default StrategiesClient;

@@ -11,6 +11,14 @@ This project operates with full permissions in accept edits mode. No permission 
 
 **Update `ToDo.md` the moment an item is resolved, not just when asked to check it.** If work done during the current session (a fix, a cleanup, a live verification) satisfies something listed in `ToDo.md` — even a sub-bullet of a larger entry — remove that item/sub-bullet immediately, in the same turn as the fix. Don't rely on a future session to notice and clean it up; that's how stale "still pending" items survive after the work is actually done (e.g. a debug-log cleanup that shipped but whose `ToDo.md` line lingered until a later session caught the mismatch).
 
+## Code Review Before Declaring a Fix Done
+**Run a code review pass (use the `code-review` skill) on any fix or change to live-trading-affecting code (order placement, broker execution, strategy entry/exit logic, config live-sync) before telling the user it's done — not just a `tsc`/build check.** This came up 2026-09-21 after a fix was shipped without a thorough review and a real, unreviewed gap (a stuck limit sell with no re-pricing) caused an actual trading loss live. Compiling clean or "looks right" is not the same as reviewed; the review must specifically consider edge cases and interaction with existing timeouts/retries/live state before calling the work complete.
+
+## Session Efficiency
+**Don't re-read a file already read earlier in the same session unless it may have changed since** (e.g. another edit/tool call touched it, or enough time/actions passed that an externally-modified file like `ToDo.md`, `config.yml`, or a log file could plausibly be stale). Rely on the file's contents already in context instead of issuing a fresh `Read`/`cat`. This came up because `ToDo.md` was re-read more than once in a single session with nothing in between that would have changed it.
+
+**Only use the Claude-in-Chrome browser extension with the user's approval first** — it burns significantly more tokens than server-side checks (curl, logs, DB queries). Before reaching for it, ask whether it's OK to drive the browser; don't invoke it proactively just because it's connected/available.
+
 ## Overview
 This is a Node.js/TypeScript-based options trading platform built for automated trading strategies using ICICI Direct APIs. The system supports multiple users, real-time market data streaming, and automated trade execution with risk management.
 
@@ -50,7 +58,7 @@ This is a Node.js/TypeScript-based options trading platform built for automated 
 
 **Strategies** - Automated Trading Logic
 - Location: `src/strategy/`
-- Implements various trading strategies (DiffStrategy, BuySellStrategy, etc.)
+- Implements various trading strategies (DiffStrategy, ContinuousStrategy, etc.)
 - Generates buy/sell signals based on technical indicators
 - Tracks strategy-level performance statistics
 
@@ -109,16 +117,43 @@ npm run build  # one-time TypeScript compilation
 
 ### Running the Server
 ```bash
-npm run server
+npm run processes
 ```
-This starts the server with TypeScript watch mode. The server:
-- Automatically recompiles on file changes
-- Listens on port 3000 (or process.env.PORT)
-- Logs output to `server.log`
-- Serves the trading platform API and UI
+**Use this, not `npm run server`, for anything involving live trading, order placement, or broker WebSocket streaming (ANT/Breeze market-data ticks, order-notify pushes).** It's the full orchestrator: spawns `order`/`data`/`strategies`/`frontend` as child processes (`orchestrator.ts`), watches/rebuilds via `tsc -w`, and logs to `orchestrator.log`. `npm run server` only starts the standalone `frontend`-equivalent process (`server.ts` directly) with no `order`/`data`/`strategies` processes behind it — broker order execution and stream auto-connect (e.g. `BreezeOrderNotifyStream`, `AntStream`'s order side) live in those other processes, so `npm run server` alone can't exercise them. Reach for plain `npm run server` only for UI/API-only work that doesn't touch orders or streaming.
+
+Both listen on port 3000 (or `process.env.PORT`) and serve the trading platform API and UI; `npm run processes` additionally always listens on 80/443.
 
 ### Environment
-- **PORT:** 3000 (or process.env.PORT)
+
+**Config lives in `.env`** (repo root, gitignored - copy `.env.example` to `.env` and fill in real
+values). Loaded via `dotenv/config`, imported as the first line of `src/server.ts` and
+`src/orchestrator.ts` - covers every process, since `orchestrator.ts` spawns
+order/data/strategies/frontend as children that inherit its already-populated `process.env`.
+`npm run server` (standalone, outside the orchestrator) is covered by `server.ts`'s own load.
+
+**Required - the server refuses to start (fails closed) if either is unset:**
+- `SESSION_COOKIE_SECRET` - session cookie signing secret. Generate with `openssl rand -hex 32`.
+- `GOOGLE_CLIENT_ID` - Google OAuth client ID, used server-side to verify login ID tokens
+  (`google-auth-library`'s `verifyIdToken`). Must exactly match `frontend/.env`'s
+  `VITE_GOOGLE_CLIENT_ID` - same public client ID, not a secret.
+
+**Recommended (has a fallback default):**
+- `ADMIN_EMAILS` - comma-separated emails granted the `admin` role on account creation. Default:
+  `skarthikeyan100@gmail.com`.
+- `PORT` - HTTP port for the frontend/API server. Default: `3000` (also always listens on 80/443
+  regardless of this value).
+
+**Infra/dev (defaults are fine for a normal single-machine setup):**
+- `CONFIG_PATH` - path to the strategy/risk config YAML. Default: `./config.yml`.
+- `ORDER_IPC_SOCKET`, `STRATEGIES_IPC_SOCKET` - Unix domain socket paths for the order/strategies
+  IPC channels. Defaults: `/tmp/icici-order.sock`, `/tmp/icici-strategies.sock`.
+- `ORDER_IPC_TIMEOUT_MS` - timeout (ms) for a single order-process IPC request. Default: `90000`.
+- `HOT_RESTART` - `orchestrator.ts` dev convenience; set to `'false'` to disable auto-restarting a
+  child process when its compiled output changes. Default: on.
+
+**Test/mock mode only (do not set for real trading):** `MOCK_BROKER`, `MOCK_QUOTES`, `MOCK_DATE` -
+see `src/constants.ts`.
+
 - **MongoDB:** Connection via Mongo.getInstance()
 - **ICICI Direct:** OAuth-based authentication
 
@@ -202,7 +237,8 @@ Common settings:
 - **Event Streaming:** Uses Server-Sent Events (SSE) for real-time data
 - **Database:** MongoDB stores all persistent state
 - **Broker:** ICICI Direct API (Prism client)
-- **Frontend:** React app served from /app route
+- **Frontend:** React app served from / (root)
+- **Frontend build is NOT hot-reloaded:** unlike the backend (`tsc-watch` auto-restarts on save), the frontend is a static pre-built bundle at `public/`, built from `frontend/` via `npm run build` (vite outputs directly into `../public`, per `frontend/vite.config.ts`). Any edit under `frontend/src/` is inert on the running server until you `cd frontend && npm run build` — always do this after frontend changes, or the user will see stale UI with no visible error.
 
 ## Debugging
 
@@ -211,6 +247,12 @@ Check these log sources:
 - `server_logs.txt` - Runtime execution logs
 - Console output from `Log.log()` calls throughout codebase
 - Monitor class tracks state changes and order rejections
+
+**When a broker/API call fails or returns something unusable (null result, 404, unexpected shape), don't just explain what the error means and stop there — web search for a fix or alternative before reporting back.** This applies especially to AliceBlue/ANT API gaps: check their official docs (`v2api.aliceblueonline.com`) and other sources for a working endpoint or workaround, then verify anything found live (real session, real token) before proposing it. Only hand the problem back unsolved if a real search turns up nothing usable. This came up when an ANT `getQuote` call returned `result: [null]` post-market-close — the fix (a different ScripDetails endpoint) should have been found via search, not left for the user to go find via Claude.ai and paste back in.
+
+## Testing
+
+- `npm run test:continuousStrategy` (and other test scripts) should only be run when explicitly requested by the user — not automatically after a code change, even to verify a fix.
 
 ## Future Enhancements
 

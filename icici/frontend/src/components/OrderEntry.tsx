@@ -14,7 +14,26 @@ export default function OrderEntry() {
   const [showDropdown, setShowDropdown] = useState(false);
   const [targetPoints, setTargetPoints] = useState('');
   const [stopLossPoints, setStopLossPoints] = useState('');
+  const [defaultTargetPoints, setDefaultTargetPoints] = useState<number | null>(null);
+  const [defaultStopLossPoints, setDefaultStopLossPoints] = useState<number | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Mirrors the fallback chain manualBuyOnZerodha/manualBuyOnAnt apply server-side
+  // when targetPoints/stopLossPoints are omitted: the user's own override, else
+  // config.yml's global settings.targetPriceDiff/stopLossPriceDiff - so the
+  // placeholder shows the real value that will be used, not a vague "(default)".
+  useEffect(() => {
+    fetch('/config')
+      .then(res => res.json())
+      .then(data => {
+        setDefaultTargetPoints(data?.settings?.targetPriceDiff ?? null);
+        setDefaultStopLossPoints(data?.settings?.stopLossPriceDiff ?? null);
+      })
+      .catch(err => console.error('Failed to load config:', err));
+  }, []);
+
+  const effectiveDefaultTarget = user?.targetPoints ?? defaultTargetPoints;
+  const effectiveDefaultStopLoss = user?.stopLossPoints ?? defaultStopLossPoints;
 
   // Load symbols list once. Expiry filtering happens server-side now, at
   // generation time (see update-symbols.sh, which filters Zerodha's real
@@ -87,89 +106,104 @@ export default function OrderEntry() {
   return (
     <div>
       {/* Section A: Flash Trade */}
-      <div className="d-flex align-items-center gap-2 mb-3">
-        <span className="fw-bold text-muted text-nowrap">Flash Trade</span>
-        <Button
-          variant="success"
-          disabled={isOrderDisabled}
-          onClick={() => handleTrendBuy('call')}
+      <fieldset style={{ border: '1px solid #dee2e6', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
+        <legend
+          className="fw-bold text-muted"
+          style={{ width: 'auto', float: 'none', padding: '0 6px', fontSize: '1rem', marginBottom: 8 }}
         >
-          {placingOrder ? <Spinner animation="border" size="sm" /> : 'Up'}
-        </Button>
-        <Button
-          variant="danger"
-          disabled={isOrderDisabled}
-          onClick={() => handleTrendBuy('put')}
-        >
-          {placingOrder ? <Spinner animation="border" size="sm" /> : 'Down'}
-        </Button>
-        <small className="text-muted text-nowrap" style={{ fontSize: '0.75rem' }}>
-          Predict the trend — buys NIFTY CE or PE at market
-        </small>
-      </div>
+          Flash Trade
+        </legend>
+        <div className="d-flex align-items-center gap-2 flex-wrap">
+          <Button
+            variant="success"
+            disabled={isOrderDisabled}
+            onClick={() => handleTrendBuy('call')}
+          >
+            {placingOrder ? <Spinner animation="border" size="sm" /> : 'Up'}
+          </Button>
+          <Button
+            variant="danger"
+            disabled={isOrderDisabled}
+            onClick={() => handleTrendBuy('put')}
+          >
+            {placingOrder ? <Spinner animation="border" size="sm" /> : 'Down'}
+          </Button>
+          <small className="text-muted" style={{ fontSize: '0.75rem' }}>
+            Predict the trend — buys NIFTY CE or PE at market
+          </small>
+        </div>
+      </fieldset>
 
       {/* Section B: Symbol Search */}
-      <div ref={dropdownRef} style={{ position: 'relative' }}>
-        <form onSubmit={handleContractBuy}>
-          <InputGroup>
-            <Form.Control
-              type="text"
-              placeholder="e.g. NIFTY_24100_CE"
-              value={input}
-              onChange={(e) => handleInputChange(e.target.value)}
-              disabled={isOrderDisabled}
-            />
-            <Button
-              variant="success"
-              type="submit"
-              disabled={isOrderDisabled || !selectedSymbol}
-            >
-              {placingOrder ? <Spinner animation="border" size="sm" /> : 'Buy'}
-            </Button>
-          </InputGroup>
-          <div className="d-flex gap-2 mt-2">
-            <Form.Control
-              type="number"
-              size="sm"
-              placeholder="Target pts (default)"
-              value={targetPoints}
-              onChange={(e) => setTargetPoints(e.target.value)}
-              disabled={isOrderDisabled}
-            />
-            <Form.Control
-              type="number"
-              size="sm"
-              placeholder="Stop-loss pts (default)"
-              value={stopLossPoints}
-              onChange={(e) => setStopLossPoints(e.target.value)}
-              disabled={isOrderDisabled}
-            />
-          </div>
-        </form>
-
-        {showDropdown && (
-          <ListGroup
-            style={{
-              position: 'absolute',
-              zIndex: 1000,
-              width: '100%',
-              maxHeight: 300,
-              overflowY: 'auto',
-            }}
-          >
-            {suggestions.map(sym => (
-              <ListGroup.Item
-                key={sym}
-                action
-                onClick={() => handleSelect(sym)}
-                style={{ cursor: 'pointer' }}
+      <fieldset style={{ border: '1px solid #dee2e6', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
+        <legend
+          className="fw-bold text-muted"
+          style={{ width: 'auto', float: 'none', padding: '0 6px', fontSize: '1rem', marginBottom: 8 }}
+        >
+          Search &amp; Buy
+        </legend>
+        <div ref={dropdownRef} style={{ position: 'relative' }}>
+          <form onSubmit={handleContractBuy}>
+            <InputGroup>
+              <Form.Control
+                type="text"
+                placeholder="e.g. NIFTY_24100_CE"
+                value={input}
+                onChange={(e) => handleInputChange(e.target.value)}
+                disabled={isOrderDisabled}
+              />
+              <Button
+                variant="success"
+                type="submit"
+                disabled={isOrderDisabled || !selectedSymbol}
               >
-                {sym}
-              </ListGroup.Item>
-            ))}
-          </ListGroup>
-        )}
-      </div>
+                {placingOrder ? <Spinner animation="border" size="sm" /> : 'Buy'}
+              </Button>
+            </InputGroup>
+            <div className="d-flex gap-2 mt-2">
+              <Form.Control
+                type="number"
+                size="sm"
+                placeholder={effectiveDefaultTarget != null ? `Target pts (default: ${effectiveDefaultTarget})` : 'Target pts'}
+                value={targetPoints}
+                onChange={(e) => setTargetPoints(e.target.value)}
+                disabled={isOrderDisabled}
+              />
+              <Form.Control
+                type="number"
+                size="sm"
+                placeholder={effectiveDefaultStopLoss != null ? `Stop-loss pts (default: ${effectiveDefaultStopLoss})` : 'Stop-loss pts'}
+                value={stopLossPoints}
+                onChange={(e) => setStopLossPoints(e.target.value)}
+                disabled={isOrderDisabled}
+              />
+            </div>
+          </form>
+
+          {showDropdown && (
+            <ListGroup
+              style={{
+                position: 'absolute',
+                zIndex: 1000,
+                width: '100%',
+                maxHeight: 300,
+                overflowY: 'auto',
+              }}
+            >
+              {suggestions.map(sym => (
+                <ListGroup.Item
+                  key={sym}
+                  action
+                  onClick={() => handleSelect(sym)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  {sym}
+                </ListGroup.Item>
+              ))}
+            </ListGroup>
+          )}
+        </div>
+      </fieldset>
 
       {orderError && (
         <Alert variant="danger" className="mt-2 py-2" dismissible onClose={clearError}>

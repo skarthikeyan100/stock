@@ -184,6 +184,22 @@ class ANT {
         return this.userSession;
     }
 
+    // No dedicated lightweight "am I logged in" endpoint exists for ANT the
+    // way Zerodha.hasValidSession has getProfile() - mirrors that same
+    // pattern (a cheap authenticated call, fail closed on any error) using
+    // getPositions() instead. Added for BrokerExecutor parity - not
+    // previously called anywhere, so its actual behavior against a real
+    // stale/valid session is unverified. See ToDo.md.
+    async hasValidSession(): Promise<boolean> {
+        if (!this.userSession) return false;
+        try {
+            await this.getPositions();
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
     getUserId(): string | null {
         return this.userId;
     }
@@ -231,7 +247,13 @@ class ANT {
             return [];
         } catch (e: any) {
             Log.log('Error fetching ANT trades:', e.message);
-            return [];
+            // Rethrow (was previously swallowed into an empty array) - an
+            // absent/expired session must not look identical to "genuinely no
+            // trades today". Callers (the /ant/trades route, and anything
+            // that later depends on this as a live session probe) need the
+            // failure to actually surface. Mirrors getPositions() below and
+            // Zerodha.getPositions()'s existing throw-on-failure pattern.
+            throw new Error(`Failed to fetch trades: ${e.message}`);
         }
     }
 
@@ -254,7 +276,11 @@ class ANT {
             return [];
         } catch (e: any) {
             Log.log('Error fetching ANT positions:', e.message);
-            return [];
+            // Rethrow (was previously swallowed into an empty array) - see
+            // getTrades()'s comment above for why. Also relied on by
+            // bookkeeping.loadOpenTradesFromBroker's own try/catch, which
+            // otherwise silently never fires on a real session failure.
+            throw new Error(`Failed to fetch positions: ${e.message}`);
         }
     }
 
@@ -322,6 +348,36 @@ class ANT {
         return map;
     }
 
+    // Per-scrip quote via AliceBlue's older ScripDetails endpoint (different
+    // host/API family from the OHLC endpoint above, and a different auth
+    // header shape - "Bearer <USERID> <userSession>" rather than just
+    // "Bearer <userSession>"). Confirmed live to return real LTP for a token
+    // that the OHLC endpoint's postOhlc/getQuote returned `result: [null]`
+    // for post-market-close, so this is used as the post-close fallback
+    // instead of getQuote (see GapScreenerOptionQuoteEod.ts) - not used
+    // during live market hours, where getQuote/getQuotes (used for BO limit
+    // pricing and strike-range walks) are unaffected and already proven.
+    async getScripQuote(exchange: string, token: string): Promise<number> {
+        if (!this.userSession || !this.userId) {
+            throw new Error('No active session. Please login first.');
+        }
+        const resp = await axios.post(
+            'https://ant.aliceblueonline.com/rest/AliceBlueAPIService/api/ScripDetails/getScripQuoteDetails',
+            { exch: exchange, symbol: String(token) },
+            {
+                headers: {
+                    'X-SAS-Version': '2.0',
+                    Authorization: `Bearer ${this.userId.toUpperCase()} ${this.userSession}`,
+                },
+            }
+        );
+        const ltp = resp.data?.LTP;
+        if (ltp == null) {
+            throw new Error(`ANT getScripQuote failed for ${exchange}|${token}: ${JSON.stringify(resp.data)}`);
+        }
+        return Number(ltp);
+    }
+
     // Shared by getOptionChainPCR/getOptionChain - both need the same
     // nearest-expiry option chain raw rows (v2, obrest/optionChain). Field
     // shape confirmed live: getUnderlyingExp -> result[0].underlying_expiry[]
@@ -333,7 +389,7 @@ class ANT {
     private async fetchOptionChainRows(underlying: string): Promise<any[]> {
         const expResp = await axios.post(
             'https://a3.aliceblueonline.com/obrest/optionChain/getUnderlyingExp',
-            { underlying },
+            { underlying, exch: 'nse_fo' },
             { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
         );
         const expiry = expResp.data?.result?.[0]?.underlying_expiry?.[0];
@@ -481,6 +537,47 @@ class ANT {
         const orderNo = resp.data?.result?.[0]?.brokerOrderId;
         if (!orderNo) {
             throw new Error(`ANT placeBracketOrder failed: ${JSON.stringify(resp.data)}`);
+        }
+        return { orderNo };
+    }
+
+    // Same unverified-against-a-live-response caveat as placeBracketOrder
+    // above: orderComplexity 'CO' and slLegPrice as a point-offset are
+    // inferred from AliceBlue's BO shape, not confirmed live. Confirm on
+    // first real use (see the gap-screener cover-order plan's verification
+    // section). A cover order carries only a stop-loss leg, no target leg.
+    async placeCoverOrder(params: {
+        exchange: 'NFO' | 'BFO';
+        instrumentId: string;
+        tradingSymbol: string;
+        quantity: number;
+        transactionType: 'BUY' | 'SELL';
+        price?: number; // omitted/0 => MARKET entry
+        stopLossPoints: number;
+    }): Promise<{ orderNo: string }> {
+        const body = [{
+            exchange: params.exchange,
+            instrumentId: params.instrumentId,
+            tradingSymbol: params.tradingSymbol,
+            transactionType: params.transactionType,
+            quantity: params.quantity,
+            product: 'INTRADAY',
+            orderType: params.price ? 'LIMIT' : 'MARKET',
+            price: params.price ?? 0,
+            orderComplexity: 'CO',
+            validity: 'DAY',
+            slLegPrice: params.stopLossPoints,
+        }];
+        Log.log('[ANT] placeCoverOrder request:', JSON.stringify(body));
+        const resp = await axios.post(
+            'https://a3.aliceblueonline.com/open-api/od/v1/orders/placeorder',
+            body,
+            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+        );
+        Log.log('[ANT] placeCoverOrder response:', JSON.stringify(resp.data));
+        const orderNo = resp.data?.result?.[0]?.brokerOrderId;
+        if (!orderNo) {
+            throw new Error(`ANT placeCoverOrder failed: ${JSON.stringify(resp.data)}`);
         }
         return { orderNo };
     }

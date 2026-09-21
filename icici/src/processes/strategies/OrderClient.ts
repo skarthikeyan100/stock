@@ -52,6 +52,14 @@ class OrderClient {
         this.positionsChangedHandlers.push(handler);
     }
 
+    // For short-lived, one-shot callers (e.g. GapScreenerCoverOrder.ts) that
+    // need to know whether the initial connect() attempt succeeded before
+    // issuing a request, rather than relying on request()'s "Not connected"
+    // rejection or connect()'s indefinite background retry loop.
+    isConnected(): boolean {
+        return this.connected;
+    }
+
     connect(): void {
         this.socket = net.createConnection(ORDER_SOCKET_PATH);
 
@@ -95,7 +103,7 @@ class OrderClient {
         this.socket.on('error', (e) => Log.log('[strategies] Order socket error:', e));
     }
 
-    private request(type: OrderRequestType, userId: string, payload: any): Promise<OrderResponse> {
+    private request(type: OrderRequestType, userId: string, payload: any, timeoutMs: number = OrderClient.REQUEST_TIMEOUT_MS): Promise<OrderResponse> {
         return new Promise((resolve, reject) => {
             if (!this.socket || !this.connected) return reject(new Error('Not connected to order process'));
             const id = String(this.nextId++);
@@ -107,10 +115,10 @@ class OrderClient {
             // plans/bug-09-no-timeout-broker-http-ipc.md.
             const timer = setTimeout(() => {
                 if (this.pending.delete(id)) {
-                    Log.log(`[strategies] Order request '${type}' (id=${id}) timed out after ${OrderClient.REQUEST_TIMEOUT_MS}ms - order process may be stuck`);
-                    reject(new Error(`Order process request '${type}' timed out after ${OrderClient.REQUEST_TIMEOUT_MS}ms`));
+                    Log.log(`[strategies] Order request '${type}' (id=${id}) timed out after ${timeoutMs}ms - order process may be stuck`);
+                    reject(new Error(`Order process request '${type}' timed out after ${timeoutMs}ms`));
                 }
-            }, OrderClient.REQUEST_TIMEOUT_MS);
+            }, timeoutMs);
             this.pending.set(id, {
                 resolve: (r: OrderResponse) => { clearTimeout(timer); resolve(r); },
                 reject: (e: Error) => { clearTimeout(timer); reject(e); },
@@ -219,6 +227,56 @@ class OrderClient {
         return res.result;
     }
 
+    // ICICI Breeze order path - see src/processes/order/breezeExecutor.ts.
+    async breezeBuyIndex(userId: string, payload: { right: string; quantity?: number; targetPoints?: number; stopLossPoints?: number }): Promise<any> {
+        const res = await this.request('breezeBuyIndex', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async breezeSquareOff(userId: string, payload: { tsym: string; quantity: number }): Promise<any> {
+        const res = await this.request('breezeSquareOff', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    // Broker-agnostic freeze-quantity-chunked buy/squareoff - see
+    // src/processes/order/chunkedOrder.ts. BulkPcrStrategy's use case (13975
+    // qty = 8 sequential chunks against NIFTY's 1755 freeze cap). Each chunk
+    // is one full broker round trip; on the (fixed) square-off side each
+    // chunk can itself retry/re-price up to ~60s if it doesn't fill
+    // immediately (see breezeExecutor.ts's squareOffOnBreeze), and on the
+    // entry/buy side (deliberately not given the same retry treatment - see
+    // that file's scope note) a single chunk can still take up to ~90s
+    // (waitForBreezeFill's un-overridden default) before throwing outright.
+    // 8 chunks worst-case on either side is well past the default 90s IPC
+    // timeout used by every other (single-order) request type - exactly what
+    // left a chunk resting unfilled and the whole call timing out live on
+    // 2026-09-21 before a single retry was even possible. 15 minutes covers
+    // both sides' theoretical worst case (8x60s=8min sell, 8x90s=12min buy)
+    // with margin; every other request type keeps failing fast at the
+    // default, since only these two are structurally multi-chunk/variable-
+    // duration.
+    private static CHUNKED_ORDER_TIMEOUT_MS = 15 * 60 * 1000;
+
+    async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number }): Promise<any> {
+        const res = await this.request('chunkedBuyIndex', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async chunkedSquareOff(userId: string, payload: { tsym: string; quantity: number; freezeQuantity?: number }): Promise<any> {
+        const res = await this.request('chunkedSquareOff', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async antPlaceCoverOrder(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; transactionType: 'BUY' | 'SELL'; stopLossPoints: number }): Promise<any> {
+        const res = await this.request('antPlaceCoverOrder', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
     async antSquareOff(userId: string, payload: { tsym?: string; token?: string; quantity?: number; exchange?: 'NFO' | 'BFO' }): Promise<any> {
         const res = await this.request('antSquareOff', userId, payload);
         if (!res.ok) throw new Error(res.error);
@@ -235,6 +293,11 @@ class OrderClient {
         if (!res.ok) throw new Error(res.error);
     }
 
+    async reloadUserLimits(userId = 'Default'): Promise<void> {
+        const res = await this.request('reloadUserLimits', userId, {});
+        if (!res.ok) throw new Error(res.error);
+    }
+
     async refreshTradeList(userId = 'Default'): Promise<any> {
         const res = await this.request('refreshTradeList', userId, {});
         if (!res.ok) throw new Error(res.error);
@@ -247,7 +310,7 @@ class OrderClient {
         return res.result;
     }
 
-    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'zerodha' | 'ant'; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number }): Promise<void> {
+    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'zerodha' | 'ant' | 'breeze'; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number }): Promise<void> {
         const res = await this.request('updateUserSettings', userId, settings);
         if (!res.ok) throw new Error(res.error);
     }
@@ -262,6 +325,12 @@ class OrderClient {
 
     async hasActiveTrade(userId: string): Promise<boolean> {
         const res = await this.request('hasActiveTrade', userId, {});
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async getOpenTrades(userId: string): Promise<any[]> {
+        const res = await this.request('openTrades', userId, {});
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
@@ -295,43 +364,55 @@ class OrderClient {
         return res.result;
     }
 
-    // ContinuousStrategy's bare Zerodha execution path - see
-    // src/processes/order/zerodhaExecutor.ts. Bypasses the GTT/exitMonitor
-    // bracket the other Zerodha entry points (buyIndex, manualBuy) go through -
-    // ContinuousStrategy self-monitors every leg from live option ticks instead.
-    async buyContractZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number): Promise<any> {
-        const res = await this.request('buyContractZerodhaBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price });
+    // Bare (unprotected, self-monitored) execution path used by LegManager
+    // (ContinuousStrategy/SupportResistanceStrategy) - see
+    // src/processes/order/zerodhaExecutor.ts/breezeExecutor.ts. Bypasses the
+    // GTT/exitMonitor bracket the other entry points (buyIndex, manualBuy) go
+    // through - these strategies self-monitor every leg from live option ticks
+    // instead. Broker is resolved server-side in orderProcess.ts, keyed off
+    // userId (a strategy's pseudo-user id) via bookkeeping.getUserBroker - the
+    // same per-user convention buyIndex/manualBuy/squareOff already use for
+    // real users, so this class stays entirely broker-agnostic.
+    async buyContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number): Promise<any> {
+        const res = await this.request('buyContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price });
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
-    async sellContractZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<any> {
-        const res = await this.request('sellContractZerodhaBare', userId, { tradingSymbol, instrumentToken, quantity, exchange });
+    async sellContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<any> {
+        const res = await this.request('sellContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange });
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
     // Returns immediately with {orderId} - the fill arrives later as a normal
-    // fill notification once pendingLimitOrders.ts's poller sees it complete.
-    async placeLimitBuyZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO'): Promise<{ orderId: string }> {
-        const res = await this.request('placeLimitBuyZerodhaBare', userId, { tradingSymbol, instrumentToken, quantity, price, exchange });
+    // fill notification once pendingLimitOrders.ts's/breezePendingLimitOrders.ts's
+    // poller sees it complete.
+    async placeLimitBuyBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO'): Promise<{ orderId: string }> {
+        const res = await this.request('placeLimitBuyBare', userId, { tradingSymbol, instrumentToken, quantity, price, exchange });
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
-    async cancelOrderZerodha(userId: string, orderId: string): Promise<void> {
-        const res = await this.request('cancelOrderZerodha', userId, { orderId });
+    async cancelOrderBare(userId: string, orderId: string): Promise<void> {
+        const res = await this.request('cancelOrderBare', userId, { orderId });
         if (!res.ok) throw new Error(res.error);
     }
 
-    async getContractByPriceRangeZerodha(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, index: 'NIFTY' | 'SENSEX' = 'NIFTY', excludeStrikes: number[] = []): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
-        const res = await this.request('getContractByPriceRangeZerodha', userId, { underlyingLtp, optionType, minPremium, index, excludeStrikes });
+    async getContractByPriceRangeBare(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, index: 'NIFTY' | 'SENSEX' = 'NIFTY', excludeStrikes: number[] = []): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
+        const res = await this.request('getContractByPriceRangeBare', userId, { underlyingLtp, optionType, minPremium, index, excludeStrikes });
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
     async getPCR(userId: string, underlying: string, spot: number, window: number): Promise<number> {
         const res = await this.request('getPCR', userId, { underlying, spot, window });
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async getATMTokens(userId: string, niftyLtp: number, index: string = 'NIFTY'): Promise<{ ce: { token: string; tradingSymbol: string }; pe: { token: string; tradingSymbol: string } }> {
+        const res = await this.request('getATMTokens', userId, { niftyLtp, index });
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }

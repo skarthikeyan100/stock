@@ -1,7 +1,9 @@
 #!/bin/bash
-# Checks ANT (AliceBlue) and Kite (Zerodha) session-token validity, plus the
-# ANT market-data WebSocket connection state. Read-only: uses each broker's
-# trades/positions endpoint as a live token-validity probe (no orders placed).
+# Checks ANT (AliceBlue), Kite (Zerodha), and Breeze (ICICI Direct) session-token
+# validity, plus each broker's market-data WebSocket connection state (ANT and
+# Breeze only - Kite/Zerodha has no live tick stream in this codebase, ticks are
+# always ANT/Breeze-sourced). Read-only: uses each broker's trades/positions
+# endpoint as a live token-validity probe (no orders placed).
 
 set -u
 
@@ -9,60 +11,92 @@ BASE_URL="${BASE_URL:-http://localhost:3000}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ORCH_LOG="$REPO_ROOT/orchestrator.log"
 
-pass=0
 fail=0
 
-ok()   { echo "  OK   $1"; pass=$((pass+1)); }
-bad()  { echo "  FAIL $1"; fail=$((fail+1)); }
-
-echo "== Session files =="
-for f in .ant_session.json .zerodha_session.json; do
-    path="$REPO_ROOT/$f"
+session_status() {
+    # $1 = file path -> prints "OK (last written: ...)" or "FAIL (missing)"
+    local path="$1"
     if [ -f "$path" ]; then
+        local mtime
         mtime=$(date -d "@$(stat -c %Y "$path")" '+%Y-%m-%d %H:%M:%S')
-        ok "$f present (last written: $mtime)"
+        echo "OK ($mtime)"
     else
-        bad "$f missing"
+        echo "FAIL (missing)"
+        fail=$((fail+1))
     fi
-done
+}
 
-echo
-echo "== Live token validity (via broker API calls) =="
+token_status() {
+    # $1 = broker path segment, $2 = probe path ("trades" or "positions")
+    local broker="$1" kind="$2"
+    local resp
+    resp=$(curl -s -m 10 "$BASE_URL/broker/$broker/$kind")
+    if echo "$resp" | grep -q '"success":true'; then
+        echo "OK"
+    else
+        local detail
+        detail=$(echo "$resp" | grep -oE '"details":"[^"]*"' | sed -E 's/^"details":"//; s/"$//' | head -1)
+        detail="${detail:-$resp}"
+        if [ "${#detail}" -gt 40 ]; then detail="${detail:0:37}..."; fi
+        echo "FAIL ($detail)"
+        fail=$((fail+1))
+    fi
+}
 
-ant_resp=$(curl -s -m 10 "$BASE_URL/ant/trades")
-if echo "$ant_resp" | grep -q '"success":true'; then
-    ok "ANT session token valid (GET /ant/trades succeeded)"
-else
-    bad "ANT session token invalid or server unreachable: $ant_resp"
-fi
-
-kite_resp=$(curl -s -m 10 "$BASE_URL/kite/positions")
-if echo "$kite_resp" | grep -q '"positions"'; then
-    ok "Kite/Zerodha session token valid (GET /kite/positions succeeded)"
-else
-    bad "Kite/Zerodha session token invalid or server unreachable: $kite_resp"
-fi
-
-echo
-echo "== ANT WebSocket (live market data) connection state =="
-if [ -f "$ORCH_LOG" ]; then
-    last_connect=$(grep -n "\[AntDataStream\] Connected and streaming" "$ORCH_LOG" | tail -1)
-    last_disconnect=$(grep -nE "\[AntDataStream\].*(Disconnected|onerror|onclose)|\[AntWS\].*(Disconnected|closed)" "$ORCH_LOG" | tail -1)
+ws_status() {
+    # $1 = connected-log tag, $2 = disconnect-pattern (extended regex)
+    local connect_tag="$1" disconnect_pattern="$2"
+    if [ ! -f "$ORCH_LOG" ]; then
+        echo "FAIL (orchestrator.log not found)"
+        fail=$((fail+1))
+        return
+    fi
+    local last_connect last_disconnect connect_line disconnect_line
+    last_connect=$(grep -n "$connect_tag" "$ORCH_LOG" | tail -1)
+    last_disconnect=$(grep -nE "$disconnect_pattern" "$ORCH_LOG" | tail -1)
     connect_line=$(echo "$last_connect" | cut -d: -f1)
     disconnect_line=$(echo "$last_disconnect" | cut -d: -f1)
 
     if [ -z "$connect_line" ]; then
-        bad "No 'Connected and streaming' line found in orchestrator.log"
+        echo "FAIL (never connected this run)"
+        fail=$((fail+1))
     elif [ -n "$disconnect_line" ] && [ "$disconnect_line" -gt "$connect_line" ]; then
-        bad "ANT WS disconnected after its last connect: $last_disconnect"
+        echo "FAIL (disconnected after last connect)"
+        fail=$((fail+1))
     else
+        local ts
         ts=$(echo "$last_connect" | grep -oE '\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' | head -1 | tr -d '[]')
-        ok "ANT WS connected (last connect: ${ts:-see log}, no disconnect since)"
+        echo "OK (${ts:-connected})"
     fi
-else
-    bad "orchestrator.log not found at $ORCH_LOG (is the orchestrator running?)"
-fi
+}
+
+ant_session=$(session_status "$REPO_ROOT/.ant_session.json")
+zerodha_session=$(session_status "$REPO_ROOT/.zerodha_session.json")
+breeze_session=$(session_status "$REPO_ROOT/.breeze_session.json")
+
+ant_token=$(token_status ant trades)
+zerodha_token=$(token_status zerodha positions)
+breeze_token=$(token_status breeze trades)
+
+ant_ws=$(ws_status "\[AntDataStream\] Connected and streaming" '\[AntDataStream\].*(Disconnected|onerror|onclose)|\[AntWS\].*(Disconnected|closed)')
+breeze_ws=$(ws_status "\[BreezeDataStream\] Connected and streaming" '\[BreezeDataStream\].*(disconnected|connect_error)')
+zerodha_ws="N/A (no live tick stream for this broker)"
+
+print_row() {
+    printf '%-10s | %-28s | %-40s | %-42s\n' "$1" "$2" "$3" "$4"
+}
+
+echo "== Broker session status =="
+print_row "Broker" "Session File" "Token Valid" "WS Streaming"
+print_row "----------" "----------------------------" "----------------------------------------" "------------------------------------------"
+print_row "ANT" "$ant_session" "$ant_token" "$ant_ws"
+print_row "Zerodha" "$zerodha_session" "$zerodha_token" "$zerodha_ws"
+print_row "Breeze" "$breeze_session" "$breeze_token" "$breeze_ws"
 
 echo
-echo "== Summary: $pass OK, $fail FAIL =="
+if [ "$fail" -eq 0 ]; then
+    echo "== Summary: all checks OK =="
+else
+    echo "== Summary: $fail check(s) FAILED =="
+fi
 [ "$fail" -eq 0 ]

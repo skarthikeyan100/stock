@@ -15,7 +15,7 @@ const NON_NEGATIVE_FIELDS: string[] = [
     'targetPoints', 'stopLossPoints', 'targetPrice', 'stopLossPrice', 'target', 'stopLoss',
     'minPrice', 'maxPrice', 'targetPriceDiff', 'stopLossPriceDiff', 'trailingDistance',
     'cooldownSeconds', 'safetyBufferAmount', 'maxTradesPerDay',
-    'slDistance', 'minPremium', 'allottedCapital', 'refillCancelDistance',
+    'slDistance', 'postAverageTargetDistance', 'minPremium', 'refillCancelDistance',
     'pointsThreshold', 'accelerationThreshold', 'numberOfDatapointsReceived',
     'maxHoldTimeMinutes', 'gapReversalThreshold',
     'averageThreshold', 'threshold', 'loopCount', 'activateIntermittentCount',
@@ -23,13 +23,18 @@ const NON_NEGATIVE_FIELDS: string[] = [
 ];
 
 // Order/lot-size fields - zero or negative is meaningless as an order quantity.
+// spawnQuantityMode is included here too: it's now a flat hedge-spawn quantity
+// multiplier (see ContinuousStrategy.ts's trySpawnLevel), and while the runtime
+// code itself falls back to 1 for a <=0/non-numeric value (defense-in-depth),
+// this admin-facing save-time validator should reject such a value outright
+// rather than silently accepting one that would just be overridden anyway.
 const POSITIVE_QUANTITY_FIELDS: string[] = [
-    'quantity', 'orderQuantity', 'initialQuantity', 'incrementQuantity',
+    'quantity', 'orderQuantity', 'initialQuantity', 'incrementQuantity', 'spawnQuantityMode',
 ];
 
 // Percent-of-profit / drawdown fields, constrained to a sane 0-100 range.
 const PERCENT_FIELDS: string[] = [
-    'consistencyLimitPercent', 'maxDailyDrawdownPercent', 'maxMonthlyDrawdownPercent',
+    'consistencyLimitPercent', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
 ];
 
 // target/stop-loss field-name pairs used across different strategies for the

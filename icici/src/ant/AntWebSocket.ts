@@ -88,7 +88,13 @@ class AntWebSocket {
             if (data.t === 'ck' || data.t === 'cf') {
               Log.log('[AntWS] Connect ack:', data);
               this.trigger('open', data);
-            } else if (data.t === 'tk' || data.t === 'tf') {
+            } else if (data.t === 'tk' || data.t === 'tf' || data.t === 'dk' || data.t === 'df') {
+              // Depth ack/update ('dk'/'df') is a superset of touchline
+              // ('tk'/'tf') - also carries 'lp' plus 'tbq'/'tsq' (total buy/
+              // sell qty), only available in depth mode. Routed through the
+              // same 'quote' event so every existing consumer (which only
+              // reads 'lp'/'tk'/'ft') keeps working unchanged; only
+              // depth-aware code (see OptionQuote.fromAnt) reads tbq/tsq.
               this.trigger('quote', data);
             }
           } catch (e) {
@@ -134,6 +140,31 @@ class AntWebSocket {
     const k = keys.join('#');
     const msg = { k, t: 'u' };
     Log.log('[AntWS] Unsubscribing:', k);
+    this.ws.send(JSON.stringify(msg));
+  }
+
+  // Depth mode - separate AliceBlue subscription type from touchline above,
+  // needed only for tbq/tsq (total buy/sell qty), which touchline does not
+  // carry. A token can be depth- and touchline-subscribed independently.
+  subscribeDepth(keys: string[]): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      Log.log('[AntWS] Cannot subscribe (depth): connection not open');
+      return;
+    }
+    const k = keys.join('#');
+    const msg = { k, t: 'd' };
+    Log.log('[AntWS] Subscribing (depth):', k);
+    this.ws.send(JSON.stringify(msg));
+  }
+
+  unsubscribeDepth(keys: string[]): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      Log.log('[AntWS] Cannot unsubscribe (depth): connection not open');
+      return;
+    }
+    const k = keys.join('#');
+    const msg = { k, t: 'ud' };
+    Log.log('[AntWS] Unsubscribing (depth):', k);
     this.ws.send(JSON.stringify(msg));
   }
 

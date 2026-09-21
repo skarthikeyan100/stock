@@ -36,13 +36,25 @@ export async function enterPosition(
     quantity: number,
     exchange: 'NFO' | 'BFO',
     targetPoints: number,
-    stopLossPoints: number
+    stopLossPoints: number,
+    orderMode: 'bracket' | 'cover' = 'bracket'
 ): Promise<Trade> {
     const ant = ANT.getInstance();
-    const useBracket = targetPoints > 0 && stopLossPoints > 0 && bookkeeping.getUserUseGTT(userId);
+    const useCover = orderMode === 'cover';
+    const useBracket = !useCover && targetPoints > 0 && stopLossPoints > 0 && bookkeeping.getUserUseGTT(userId);
 
     let orderNo: string;
-    if (useBracket) {
+    if (useCover) {
+        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT cover order (sl=${stopLossPoints})`);
+        ({ orderNo } = await ant.placeCoverOrder({
+            exchange,
+            instrumentId,
+            tradingSymbol,
+            quantity,
+            transactionType: 'BUY',
+            stopLossPoints,
+        }));
+    } else if (useBracket) {
         // Confirmed live: ANT rejects MARKET orders for Bracket Orders
         // ("Market orders are not allowed") - needs a LIMIT price. Priced
         // slightly above the current LTP (a marketable limit) so it fills
@@ -110,25 +122,29 @@ export async function enterPosition(
     trade.user = userId;
     trade.brokerOrderId = orderNo;
 
-    if (targetPoints > 0 && stopLossPoints > 0) {
-        trade.targetPoints = targetPoints;
+    if (useCover || (targetPoints > 0 && stopLossPoints > 0)) {
         // Tick-rounded for consistency with the Zerodha path and with
         // whatever exitMonitor/frontend display expects - AliceBlue itself
-        // computes the actual bracket trigger prices server-side from
-        // targetLegPrice/slLegPrice point offsets (see placeBracketOrder),
-        // not from an absolute price we send, so there's no equivalent
-        // broker-rejection risk here today; this is purely local-field hygiene.
+        // computes the actual bracket/cover trigger prices server-side from
+        // targetLegPrice/slLegPrice point offsets (see placeBracketOrder/
+        // placeCoverOrder), not from an absolute price we send, so there's no
+        // equivalent broker-rejection risk here today; this is purely
+        // local-field hygiene.
         trade.stopLossPrice = roundToTick(entryPrice - stopLossPoints);
-        trade.targetPrice = roundToTick(entryPrice + targetPoints);
+        if (!useCover) {
+            // Cover orders carry no target leg - nothing to record.
+            trade.targetPoints = targetPoints;
+            trade.targetPrice = roundToTick(entryPrice + targetPoints);
+        }
 
-        if (useBracket) {
+        if (useBracket || useCover) {
             // The broker (not this process) watches price after this - kept
             // on the trade so squareOffOnAnt knows to exit via exitBracketOrder.
             trade.antOrderNo = orderNo;
             // Nothing else keeps trade.lastTradePrice fresh after entry - register
             // watch-only so the frontend's live P&L still moves with the market
-            // instead of freezing at the fill price (the bracket order itself
-            // still owns the actual exit).
+            // instead of freezing at the fill price (the bracket/cover order
+            // itself still owns the actual exit).
             if (trade.token) exitMonitor.registerTrade(trade, exchange, 'ant', true);
         } else if (trade.token) {
             exitMonitor.registerTrade(trade, exchange, 'ant');
@@ -215,6 +231,26 @@ export async function estimateOptionPrice(symbol: string, strike: number, option
         Log.log('[order] Contract resolution for price estimate failed (falling back to 1-lot sizing):', e);
         return 0;
     }
+}
+
+// Read-only ATM CE/PE token lookup for MomentumSignal.ts - the tbq/tsq
+// momentum check needs both ATM contracts' ANT tokens to depth-subscribe,
+// same findATMOption resolution buyIndexOnAnt already uses for real entries.
+// Always ANT (AntContractMaster) regardless of which broker a strategy's own
+// order execution is configured to route through - ANT is the platform's
+// sole tick source, and depth mode (tbq/tsq) is ANT-only.
+export interface AtmTokens {
+    ce: { token: string; tradingSymbol: string };
+    pe: { token: string; tradingSymbol: string };
+}
+
+export function getATMTokens(niftyLtp: number, index: string = 'NIFTY'): AtmTokens {
+    const ce = AntContractMaster.getInstance().findATMOption(niftyLtp, 'CE', index);
+    const pe = AntContractMaster.getInstance().findATMOption(niftyLtp, 'PE', index);
+    return {
+        ce: { token: ce.token, tradingSymbol: ce.tradingSymbol },
+        pe: { token: pe.token, tradingSymbol: pe.tradingSymbol },
+    };
 }
 
 // Batched sibling of estimateOptionPrice - sources every candidate's token
@@ -340,8 +376,12 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
 
         let squareOffOrderNo: string | undefined;
         if (existing?.antOrderNo) {
-            Log.log(`[order] Square-off ${tsym} qty=${quantity} for ${userId} via ANT exitBracketOrder (${existing.antOrderNo})`);
-            await ant.exitBracketOrder(existing.antOrderNo, 'BO');
+            // Only bracket-order trades carry a target leg (see enterPosition) -
+            // a cover-order trade has none, so its absence distinguishes 'CO'
+            // from 'BO' without needing a separate field on Trade.
+            const orderComplexity = existing.targetPoints ? 'BO' : 'CO';
+            Log.log(`[order] Square-off ${tsym} qty=${quantity} for ${userId} via ANT exitBracketOrder (${existing.antOrderNo}, ${orderComplexity})`);
+            await ant.exitBracketOrder(existing.antOrderNo, orderComplexity);
         } else {
             Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId} via ANT regular order`);
             const instrumentId = existing?.token ?? '';
@@ -387,3 +427,13 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
 exitMonitor.onExit('ant', async (trade: Trade, exchange: 'NFO' | 'BFO') => {
     await squareOffOnAnt(trade.user, trade.tsym, trade.quantity, exchange);
 });
+
+// Entry point for the gap-screener cover-order flow (GapScreenerCoverOrder.ts) -
+// the caller already has an exact resolved contract/token, so unlike
+// manualBuyOnAnt this needs no contract-resolution branching.
+export async function placeCoverOrderForGapScreener(
+    userId: string, tradingSymbol: string, instrumentId: string,
+    quantity: number, exchange: 'NFO' | 'BFO', stopLossPoints: number,
+): Promise<Trade> {
+    return enterPosition(userId, tradingSymbol, instrumentId, quantity, exchange, 0, stopLossPoints, 'cover');
+}

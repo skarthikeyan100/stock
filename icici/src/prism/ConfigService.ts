@@ -54,10 +54,30 @@ class ConfigService {
     const parsed: any = load(fileContents);
     this.config = parsed as AppConfig;
     Log.log('Config Updated:', this.config);
-  } 
+  }
 
+  // Forces an immediate re-read, bypassing fs.watchFile's polling interval
+  // (~5s by default). Needed by any live-sync path that must act on a config
+  // write immediately (e.g. server.ts's POST /config calling into the
+  // `strategies`/`order` processes' own syncFromConfig/loadUserLimits right
+  // after writing) - each process has its own ConfigService instance with
+  // its own independent poller, so without this, a sync call could read
+  // stale in-memory config if it runs before that process's own poll happens
+  // to fire, silently reintroducing the staleness this is meant to fix.
+  public reloadNow(): void {
+    this.loadConfig();
+  }
+
+  // fs.watch (inotify-backed on Linux) instead of fs.watchFile's stat-polling -
+  // event-driven, near-instant, and avoids polling every process for a file
+  // that changes rarely. fs.watch can fire more than once for a single save
+  // (a well-known Node quirk) - harmless here since loadConfig() is a cheap,
+  // idempotent re-read. Watches the file directly rather than its parent
+  // directory: correct for this app's own writes (writeConfig always
+  // overwrites in place via writeFileSync, never replaces the inode via
+  // rename), which is the only writer that matters in practice.
   private watchConfig() {
-    fs.watchFile(this.configPath, () => {
+    fs.watch(this.configPath, () => {
         Log.log('Config file changed. Reloading...');
         this.loadConfig();
       });

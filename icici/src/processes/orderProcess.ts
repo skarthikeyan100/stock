@@ -18,18 +18,28 @@ import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
-import { buyIndexOnZerodha, squareOffOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, cancelOrderOnZerodha, getContractByPriceRangeOnZerodha } from './order/zerodhaExecutor';
-import { pollPendingLimitOrders } from './order/pendingLimitOrders';
+import { buyIndexOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, cancelOrderOnZerodha, getContractByPriceRangeOnZerodha } from './order/zerodhaExecutor';
+import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo } from './order/pendingLimitOrders';
 import * as antExecutor from './order/antExecutor';
+import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getOptionQuote, tsymFor } from './order/breezeExecutor';
+import { pollPendingBreezeLimitOrders, loadPendingBreezeLimitOrdersFromMongo } from './order/breezePendingLimitOrders';
+import { buyChunked, squareOffChunked } from './order/chunkedOrder';
+import BreezeContractMaster from '../breeze/BreezeContractMaster';
+import Breeze from '../breeze/Breeze';
+import ZerodhaContractMaster from '../zerodha/ZerodhaContractMaster';
+import AntContractMaster from '../ant/AntContractMaster';
+import BreezeOrderNotifyStream from '../breeze/BreezeOrderNotifyStream';
 import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
 import * as prismExecutor from './order/prismExecutor';
+import { getBrokerExecutor } from './order/brokerExecutors';
 import Zerodha from '../zerodha/Zerodha';
 import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
-import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../constants';
+import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, CALL } from '../constants';
 import { getUser, getAllUsers } from '../user';
 import { OptionQuote } from '../model/model';
+import { isPastExpirySquareOffTime } from '../util/marketHours';
 
 // Defense-in-depth: an unhandled promise rejection anywhere in this process
 // (e.g. a fire-and-forget Mongo write - see bookkeeping.ts's
@@ -88,6 +98,19 @@ function connectAntOrderNotifyIfSessionValid(context: string): void {
     AntOrderNotifyStream.getInstance().connect().catch((e) => Log.log('[order] AntOrderNotifyStream connect failed (ANT fills will not resolve until this connects):', e));
 }
 
+// Same gating reasoning as connectAntOrderNotifyIfSessionValid above, adapted
+// for Breeze's async hasValidSession() (a REST round-trip, unlike ANT's
+// synchronous local session-file check) - waitForBreezeFill's push path
+// (breezeExecutor.ts) silently degrades to REST polling if this never
+// connects, so a failed/skipped connect here is non-fatal, just slower fills.
+async function connectBreezeOrderNotifyIfSessionValid(context: string): Promise<void> {
+    if (!(await Breeze.getInstance().hasValidSession())) {
+        Log.log(`[order] Breeze session not valid (${context}) - skipping BreezeOrderNotifyStream connect until next Breeze login`);
+        return;
+    }
+    BreezeOrderNotifyStream.getInstance().connect().catch((e) => Log.log('[order] BreezeOrderNotifyStream connect failed (Breeze fills will fall back to REST polling):', e));
+}
+
 // Shared guard for every buy-style request type: check canPlaceOrder, reserve
 // the slot via bookkeeping.markPending() (so a concurrent request for the same
 // user sees the reservation - see bookkeeping.markPending's doc comment), then
@@ -95,8 +118,9 @@ function connectAntOrderNotifyIfSessionValid(context: string): void {
 //
 // On success, the broker call itself is responsible for releasing the
 // reservation - synchronously, via bookkeeping.recordFill, for every market
-// order here; asynchronously, later, via pollPendingLimitOrders's recordFill,
-// for placeLimitBuyZerodhaBare specifically. Either way this function must
+// order here; asynchronously, later, via pollPendingLimitOrders'/
+// pollPendingBreezeLimitOrders' recordFill, for placeLimitBuyBare specifically.
+// Either way this function must
 // NOT release on success, or it would double-release / release too early for
 // the limit-order case.
 //
@@ -130,7 +154,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result: await bookkeeping.canPlaceOrder(req.userId) };
 
             case 'buyIndex': {
-                return placeOrderWithPendingGuard(req, undefined, () => {
+                return await placeOrderWithPendingGuard(req, undefined, () => {
                     const broker = bookkeeping.getUserBroker(req.userId);
                     return broker === 'ant'
                         ? antExecutor.buyIndexOnAnt({ userId: req.userId, ...req.payload })
@@ -152,23 +176,129 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     tsym = trade.tsym;
                     quantity = quantity ?? trade.quantity;
                 }
-                const broker = bookkeeping.getUserBroker(req.userId);
-                const trade = broker === 'ant'
-                    ? await antExecutor.squareOffOnAnt(req.userId, tsym, quantity, exchange)
-                    : await squareOffOnZerodha(req.userId, tsym, quantity, exchange);
+                const trade = await getBrokerExecutor(req.userId).squareOff(req.userId, tsym, quantity, exchange);
                 return { kind: 'response', id: req.id, ok: true, result: trade };
             }
 
             case 'antBuyIndex': {
-                return placeOrderWithPendingGuard(req, undefined, () =>
+                return await placeOrderWithPendingGuard(req, undefined, () =>
                     antExecutor.buyIndexOnAnt({ userId: req.userId, ...req.payload }),
                 );
+            }
+
+            case 'breezeBuyIndex': {
+                return await placeOrderWithPendingGuard(req, undefined, () =>
+                    buyIndexOnBreeze({ userId: req.userId, ...req.payload }),
+                );
+            }
+
+            // Dedicated Breeze square-off, bypassing getBrokerExecutor's
+            // per-user broker lookup (see brokerExecutors.getBrokerExecutor) -
+            // used directly by the /breeze/order/squareoff debug route, which
+            // always knows it's closing a Breeze position regardless of
+            // whatever the caller's bookkeeping.getUserBroker setting says.
+            case 'breezeSquareOff': {
+                const trade = await squareOffOnBreeze(req.userId, req.payload.tsym, req.payload.quantity);
+                return { kind: 'response', id: req.id, ok: true, result: trade };
+            }
+
+            // Broker-agnostic freeze-quantity-chunked buy/squareoff (see
+            // chunkedOrder.ts) - BulkPcrStrategy's use case (13975 qty, over
+            // NIFTY's 1755 exchange freeze cap). Breeze and Zerodha are wired
+            // up; the getBrokerExecutor(...) dispatch already makes extending
+            // to other brokers additive, not a rewrite.
+            case 'chunkedBuyIndex': {
+                const executor = getBrokerExecutor(req.userId);
+                const optionType = req.payload.right === CALL ? 'CE' : 'PE';
+
+                if (executor.brokerName === 'breeze') {
+                    // Real pre-trade valuation (unlike breezeBuyIndex's `undefined`) -
+                    // this order is large enough that maxInvestment/perOrderCap must
+                    // actually gate it, not just record it after the fact.
+                    const niftyQuote = await Breeze.getInstance().getQuotes({ stockCode: 'NIFTY', exchangeCode: 'NSE', productType: 'cash' });
+                    const spotRecord = Array.isArray(niftyQuote?.Success) ? niftyQuote.Success[0] : niftyQuote?.Success;
+                    const contract = await BreezeContractMaster.getInstance().findATMOption(Number(spotRecord?.ltp), optionType, 'NIFTY');
+                    const { bestAsk } = await getOptionQuote(contract);
+                    const estimatedOrderValue = req.payload.quantity * bestAsk;
+
+                    return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
+                        const result = await buyChunked(
+                            executor,
+                            {
+                                userId: req.userId,
+                                tradingSymbol: tsymFor(contract),
+                                instrumentId: contract.token,
+                                quantity: req.payload.quantity,
+                                exchange: 'NFO',
+                            },
+                            req.payload.freezeQuantity
+                        );
+                        return { tsym: tsymFor(contract), token: contract.token, ...result };
+                    });
+                }
+
+                if (executor.brokerName === 'zerodha') {
+                    // Live option ticks for a zerodha-routed strategy arrive over the
+                    // ANT feed, not Zerodha's own (tokenRouter.ts's resolveSource maps
+                    // broker 'zerodha' -> feed 'ant'), so the token recorded on the
+                    // Trade - and therefore what registerTrade subscribes to and what
+                    // the strategy's canHandleOptionQuote matches against - must be
+                    // ANT's commonToken, not ZerodhaContractMaster's instrumentToken.
+                    // Mirrors buyIndexOnZerodha's exact same resolution.
+                    const niftyLtp = req.payload.niftyLtp;
+                    if (!Number.isFinite(niftyLtp)) {
+                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (zerodha): niftyLtp is required and must be a finite number' };
+                    }
+                    const contract = await ZerodhaContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
+                    const commonToken = String(AntContractMaster.getInstance().resolveCommonToken('NIFTY', optionType, { atmLtp: niftyLtp }));
+                    // NIFTY strike step (50) mirrors ZerodhaContractMaster.findATMOption's
+                    // own rounding - needed here only for the pre-trade price estimate.
+                    const atmStrike = Math.round(niftyLtp / 50) * 50;
+                    const estimatedPrice = await antExecutor.estimateOptionPrice('NIFTY', atmStrike, optionType);
+                    const estimatedOrderValue = req.payload.quantity * estimatedPrice;
+
+                    return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
+                        const result = await buyChunked(
+                            executor,
+                            {
+                                userId: req.userId,
+                                tradingSymbol: contract.tradingSymbol,
+                                instrumentId: commonToken,
+                                quantity: req.payload.quantity,
+                                exchange: contract.exchange,
+                            },
+                            req.payload.freezeQuantity
+                        );
+                        return { tsym: contract.tradingSymbol, token: commonToken, ...result };
+                    });
+                }
+
+                return { kind: 'response', id: req.id, ok: false, error: `chunkedBuyIndex: broker '${executor.brokerName}' not yet supported (breeze/zerodha only)` };
+            }
+
+            case 'chunkedSquareOff': {
+                const executor = getBrokerExecutor(req.userId);
+                const result = await squareOffChunked(executor, req.userId, req.payload.tsym, req.payload.quantity, 'NFO', req.payload.freezeQuantity);
+                return { kind: 'response', id: req.id, ok: true, result };
             }
 
             case 'antManualBuy': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return placeOrderWithPendingGuard(req, estimatedValue, () =>
                     antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload }),
+                );
+            }
+
+            case 'antPlaceCoverOrder': {
+                return placeOrderWithPendingGuard(req, undefined, () =>
+                    antExecutor.placeCoverOrderForGapScreener(
+                        req.userId,
+                        req.payload.tradingSymbol,
+                        req.payload.instrumentId,
+                        req.payload.quantity,
+                        req.payload.exchange,
+                        req.payload.stopLossPoints,
+                    ),
                 );
             }
 
@@ -263,7 +393,29 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 NorenRestApi.reloadToken();
                 ANT.getInstance().reloadSession();
                 connectAntOrderNotifyIfSessionValid('reloadSession');
+                Breeze.getInstance().reloadSession();
+                connectBreezeOrderNotifyIfSessionValid('reloadSession').catch((e) => Log.log('[order] connectBreezeOrderNotifyIfSessionValid failed:', e));
+                // Re-run broker-position reconciliation now that a login just
+                // succeeded (server.ts only calls reloadSession from its
+                // OAuth callback handlers) - closes the gap where a session
+                // that was stale/invalid at process startup left
+                // bookkeeping.trades permanently empty until the next
+                // restart, even after the user re-logged in. Each reconcile
+                // call is a no-op (besides a failed getPositions log) if that
+                // broker's session isn't actually the one that just changed.
+                bookkeeping.reconcileZerodhaPositions().catch((e) => Log.log('[order] reloadSession: reconcileZerodhaPositions failed:', e));
+                bookkeeping.reconcileAntPositions().catch((e) => Log.log('[order] reloadSession: reconcileAntPositions failed:', e));
+                bookkeeping.reconcileBreezePositions().catch((e) => Log.log('[order] reloadSession: reconcileBreezePositions failed:', e));
                 return { kind: 'response', id: req.id, ok: true };
+            }
+
+            // Live config-reload, called from server.ts's POST /config after every
+            // save - re-reads each strategy's broker/maxInvestment/useGTT from
+            // config.yml into bookkeeping's settings cache. Safe to call anytime:
+            // it only rewrites settings, never touches live trade/position state.
+            case 'reloadUserLimits': {
+                await loadUserLimits();
+                return { kind: 'response', id: req.id, ok: true, result: null };
             }
 
             case 'refreshTradeList': {
@@ -283,6 +435,9 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'hasActiveTrade':
                 return { kind: 'response', id: req.id, ok: true, result: bookkeeping.hasActiveTrade(req.userId) };
+
+            case 'openTrades':
+                return { kind: 'response', id: req.id, ok: true, result: bookkeeping.getOpenTrades(req.userId) };
 
             case 'findToken': {
                 const result = await prismExecutor.findToken(req.payload.index, req.payload.depth, req.payload.right);
@@ -311,39 +466,62 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
-            // ContinuousStrategy's bare Zerodha execution path - see zerodhaExecutor.ts.
-            case 'buyContractZerodhaBare': {
+            // Bare execution path shared by ContinuousStrategy/SupportResistanceStrategy's
+            // LegManager - broker-resolved per userId (a strategy's pseudo-user id), the
+            // same convention buyIndex/manualBuy/squareOff already use for real users. See
+            // bookkeeping.getUserBroker (populated from each strategy's own config.yml
+            // `broker` field via loadUserLimits below).
+            case 'buyContractBare': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                return placeOrderWithPendingGuard(req, estimatedValue, () =>
-                    marketBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange),
-                );
+                return await placeOrderWithPendingGuard(req, estimatedValue, () => {
+                    const broker = bookkeeping.getUserBroker(req.userId);
+                    return broker === 'breeze'
+                        ? marketBuyBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange)
+                        : marketBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
+                });
             }
 
-            case 'sellContractZerodhaBare': {
-                const result = await marketSellBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
+            case 'sellContractBare': {
+                const broker = bookkeeping.getUserBroker(req.userId);
+                const result = broker === 'breeze'
+                    ? await marketSellBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange)
+                    : await marketSellBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
-            case 'placeLimitBuyZerodhaBare': {
+            case 'placeLimitBuyBare': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                return placeOrderWithPendingGuard(req, estimatedValue, () =>
-                    placeLimitBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange),
-                );
+                return await placeOrderWithPendingGuard(req, estimatedValue, () => {
+                    const broker = bookkeeping.getUserBroker(req.userId);
+                    return broker === 'breeze'
+                        ? placeLimitBuyBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange)
+                        : placeLimitBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange);
+                });
             }
 
-            case 'cancelOrderZerodha': {
-                await cancelOrderOnZerodha(req.payload.orderId);
+            case 'cancelOrderBare': {
+                const broker = bookkeeping.getUserBroker(req.userId);
+                if (broker === 'breeze') await cancelOrderOnBreeze(req.payload.orderId);
+                else await cancelOrderOnZerodha(req.payload.orderId);
                 return { kind: 'response', id: req.id, ok: true, result: undefined };
             }
 
-            case 'getContractByPriceRangeZerodha': {
+            case 'getContractByPriceRangeBare': {
+                const broker = bookkeeping.getUserBroker(req.userId);
                 const excludeStrikes = new Set<number>(req.payload.excludeStrikes || []);
-                const result = await getContractByPriceRangeOnZerodha(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes);
+                const result = broker === 'breeze'
+                    ? await getContractByPriceRangeOnBreeze(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes)
+                    : await getContractByPriceRangeOnZerodha(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
             case 'getPCR': {
                 const result = await ANT.getInstance().getOptionChainPCR(req.payload.underlying, req.payload.spot, req.payload.window);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'getATMTokens': {
+                const result = antExecutor.getATMTokens(req.payload.niftyLtp, req.payload.index);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -362,6 +540,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 }
 
 async function loadUserLimits() {
+    configService.reloadNow(); // don't wait on fs.watchFile's own poll - see ConfigService.reloadNow's comment
     const config = configService.getConfig();
     for (const cfg of config.strategies || []) {
         const userId = cfg.userId || cfg.type;
@@ -415,26 +594,39 @@ async function main() {
     // on every restart even though nothing was actually lost (see
     // loadClosedTradesFromMongo's comment).
     await bookkeeping.loadClosedTradesFromMongo();
-    // bookkeeping.trades is only ever populated live (via fills) today - there
-    // is no startup refresh from Mongo/broker - so this reconciles 0 trades on
-    // a fresh restart until the first fill arrives. Still worth calling here:
-    // it's a no-op today and becomes effective the moment a startup trade
-    // refresh is added (see Analysis.md's exitMonitor/pendingLimitOrders
-    // restart-reconciliation gap).
+    // Must complete before connectAntOrderNotifyIfSessionValid() and before
+    // the IPC socket starts accepting strategies/frontend connections below,
+    // so no client ever observes an empty bookkeeping.trades mid-restore.
+    await bookkeeping.loadOpenTradesFromBroker();
+    // Now live: bookkeeping.trades is populated from the broker/Mongo restore
+    // above (previously this reconciled against an always-empty list on a
+    // fresh restart).
     exitMonitor.reconcileFromTrades(bookkeeping.trades);
 
-    // Auto-squareoff on daily/monthly drawdown breach (see bookkeeping.ts's
-    // isDailyDrawdownBreached/isMonthlyDrawdownBreached, checked after every
+    // Restore any resting root-refill limit orders tracked before this restart,
+    // so the pollPendingLimitOrders interval below can pick up a fill (or
+    // cancellation) that happened while this process was down instead of
+    // silently orphaning it - see pendingLimitOrders.ts's header comment.
+    await loadPendingLimitOrdersFromMongo();
+    await loadPendingBreezeLimitOrdersFromMongo();
+
+    // Auto-squareoff on daily/weekly drawdown breach (see bookkeeping.ts's
+    // isDailyDrawdownBreached/isWeeklyDrawdownBreached, checked after every
     // closing trade) - closes a snapshot of the user's remaining open
     // positions through their configured broker. Each squareoff's own Sell
     // fill re-enters this same check, which is safe: it only ever acts on
     // trades still open at that moment, so it converges once none are left.
+    // Routed via getBrokerExecutor (same dispatch case 'squareOff' uses) rather
+    // than a hand-rolled ant/else-zerodha branch, so a breeze-routed position
+    // (e.g. ContinuousStrategy with config.yml broker: breeze) doesn't get
+    // misrouted to a Zerodha square-off call for a symbol it never bought there.
+    // Trade has no `exchange` field, so 'NFO' is passed literally - every trade
+    // reaching this loop is a NIFTY/NFO option, matching the pre-existing
+    // (implicit, default-'NFO') behavior of both branches this replaces.
     bookkeeping.onDrawdownBreach(async (user) => {
-        const broker = bookkeeping.getUserBroker(user);
         for (const trade of bookkeeping.trades.filter((t) => t.user === user)) {
             try {
-                if (broker === 'ant') await antExecutor.squareOffOnAnt(user, trade.tsym, trade.quantity);
-                else await squareOffOnZerodha(user, trade.tsym, trade.quantity);
+                await getBrokerExecutor(user).squareOff(user, trade.tsym, trade.quantity, 'NFO');
             } catch (e) {
                 Log.log('[order] Auto-squareoff on drawdown breach failed for', trade.tsym, e);
             }
@@ -442,9 +634,34 @@ async function main() {
     });
 
     connectAntOrderNotifyIfSessionValid('startup');
+    connectBreezeOrderNotifyIfSessionValid('startup').catch((e) => Log.log('[order] connectBreezeOrderNotifyIfSessionValid failed:', e));
 
     setInterval(() => pollGttFills().catch((e) => Log.log('[order] pollGttFills failed:', e)), 60_000);
+    setInterval(() => reconcileManualSells().catch((e) => Log.log('[order] reconcileManualSells failed:', e)), 60_000);
     setInterval(() => pollPendingLimitOrders().catch((e) => Log.log('[order] pollPendingLimitOrders failed:', e)), 15_000);
+    setInterval(() => pollPendingBreezeLimitOrders().catch((e) => Log.log('[order] pollPendingBreezeLimitOrders failed:', e)), 15_000);
+    // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
+    // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than
+    // event-driven since there's no fill/tick event marking "expiry day
+    // deadline reached". expirySquareOffInFlight guards against re-submitting
+    // a squareoff for the same open position on the next tick before its
+    // Sell fill has removed it from bookkeeping.trades; a failed attempt is
+    // simply retried on the next tick since the trade is still open.
+    const expirySquareOffInFlight = new Set<string>();
+    setInterval(() => {
+        if (!isPastExpirySquareOffTime()) return;
+        for (const trade of bookkeeping.trades) {
+            const key = `${trade.user}:${trade.token}`;
+            if (expirySquareOffInFlight.has(key)) continue;
+            expirySquareOffInFlight.add(key);
+            // Routed via getBrokerExecutor (see the drawdown-breach handler's comment
+            // above for why) instead of a hand-rolled ant/else-zerodha branch.
+            const squareOff = getBrokerExecutor(trade.user).squareOff(trade.user, trade.tsym, trade.quantity, 'NFO');
+            squareOff
+                .catch((e) => Log.log('[order] Expiry-day auto-squareoff failed for', trade.tsym, e))
+                .finally(() => expirySquareOffInFlight.delete(key));
+        }
+    }, 60_000);
 
     readJsonLines(
         process.stdin,

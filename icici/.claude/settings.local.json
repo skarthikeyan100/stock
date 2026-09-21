@@ -58,7 +58,15 @@
       "Read(//home/karthikeyan/Downloads/NFO_symbols.txt/**)",
       "Read(//home/karthikeyan/Downloads/**)",
       "Bash(grep -n \"class Prism\\\\|getInstance\\\\|^  async\\\\|^  [a-zA-Z_]*\\(.*\\).*{$\\\\|private \\\\|public \\\\|niftyDataFile\\\\|contractMaster\\\\|WebSocket\\\\|ws\\\\.\" /home/karthikeyan/work/icici/src/prism.ts)",
-      "Bash(grep -n \"^    static\\\\|^    async\\\\|^    [a-zA-Z_]*\\(.*\\): .*{$\\\\|^    private\\\\|^    public\\\\|this\\\\.[a-zA-Z]* =\\\\|contractMaster\\\\|niftyContractMaster\\\\|WebSocket\\\\|instance:\" /home/karthikeyan/work/icici/src/prism.ts)"
+      "Bash(grep -n \"^    static\\\\|^    async\\\\|^    [a-zA-Z_]*\\(.*\\): .*{$\\\\|^    private\\\\|^    public\\\\|this\\\\.[a-zA-Z]* =\\\\|contractMaster\\\\|niftyContractMaster\\\\|WebSocket\\\\|instance:\" /home/karthikeyan/work/icici/src/prism.ts)",
+      "Bash(mongosh --quiet mongodb://localhost:27017/stocks --eval ' *)",
+      "Bash(bash /home/karthikeyan/work/icici/scripts/continuous-strategy-trades.sh)",
+      "Bash(tsc)",
+      "Bash(timeout 10 head -50 /tmp/claude-1000/-home-karthikeyan-work-icici/a20473c8-e497-441b-8efe-2a35a736708a/tasks/b0rg01bip.output)",
+      "Bash(crontab -l)",
+      "Bash(systemctl --user list-timers)",
+      "Read(//etc/cron.d/**)",
+      "Bash(grep -rn \"enable=true\\\\|enable=\\\\${\\\\|/strategies\\\\b\" frontend/src)"
     ]
   }
 }

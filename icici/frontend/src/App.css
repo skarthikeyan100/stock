@@ -325,11 +325,25 @@
   background: #f8f9fa;
 }
 
-.pnl-bar {
+/* Wraps the P&L bar and the Available/Used bar so they stick to the top of
+   the viewport together - without this, only the P&L bar was sticky and the
+   Available/Used bar (normal flow, directly below it) would scroll up and
+   get visually overlapped by the sticky P&L bar once the positions list
+   below was tall enough to scroll. */
+.trading-header-sticky {
   position: sticky;
   top: 0;
   z-index: 100;
+}
+
+.pnl-bar {
   background: #fff;
+}
+
+.pnl-center {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 /* Nifty live ticker strip */
@@ -357,4 +371,26 @@
 .ticker-down { color: #dc3545; }
 .ticker-change, .ticker-pct { font-size: 13px; font-weight: 500; }
 .ticker-time  { margin-left: auto; font-size: 11px; color: #adb5bd; }
+
+/* Trading UI - mobile */
+@media (max-width: 576px) {
+  .pnl-bar > .container,
+  .pnl-bar > .container-fluid {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .pnl-center {
+    position: static;
+    transform: none;
+    width: 100%;
+    order: 3;
+  }
+  .nifty-ticker {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .ticker-time {
+    margin-left: 0;
+  }
+}
 .ticker-loading { color: #adb5bd; font-size: 13px; }

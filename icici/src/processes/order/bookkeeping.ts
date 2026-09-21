@@ -1,10 +1,14 @@
 import Log from '../../util/Log';
 import Mongo from '../../tools/mongo';
+import Zerodha from '../../zerodha/Zerodha';
+import ANT from '../../ant/ANT';
+import Breeze from '../../breeze/Breeze';
 import { Trade } from '../../model/model';
 import { UserContext } from '../../user';
 import { PUT, CALL, USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../../constants';
 import * as exitMonitor from './exitMonitor';
 import configService from '../../prism/ConfigService';
+import { startOfWeek } from '../../util/weekWindow';
 
 // Order-process-local replacement for Monitor's bookkeeping (trades/closedTrades,
 // risk limits, order<->user attribution, P&L). Ported from src/monitor.ts, with
@@ -26,7 +30,7 @@ interface UserSettings {
     investmentMode?: string;
     investmentAmount?: number;
     useGTT?: boolean;
-    broker?: 'zerodha' | 'ant';
+    broker?: 'zerodha' | 'ant' | 'breeze';
     perOrderCap?: number;
     allottedCapital?: number;
     targetPoints?: number;
@@ -86,7 +90,7 @@ class OrderBookkeeping {
     // executors - bookkeeping.ts can't import them, they already import it,
     // same problem exitMonitor.ts's onExit(broker, handler) solves). Fired
     // from _processTradeEvent when a closing trade pushes the user past the
-    // daily or monthly drawdown limit, so the listener can square off their
+    // daily or weekly drawdown limit, so the listener can square off their
     // remaining open positions.
     onDrawdownBreach(listener: DrawdownBreachListener) {
         this.drawdownBreachListeners.push(listener);
@@ -131,7 +135,7 @@ class OrderBookkeeping {
         return this.userSettingsCache.get(user)?.useGTT ?? true;
     }
 
-    getUserBroker(user: string): 'zerodha' | 'ant' {
+    getUserBroker(user: string): 'zerodha' | 'ant' | 'breeze' {
         return this.userSettingsCache.get(user)?.broker ?? 'zerodha';
     }
 
@@ -201,6 +205,10 @@ class OrderBookkeeping {
         return this.trades.some((t) => t.user === user) || (this.pendingOrders.get(user)?.length ?? 0) > 0;
     }
 
+    getOpenTrades(user: string): Trade[] {
+        return this.trades.filter((t) => t.user === user);
+    }
+
     getCurrentInvestment(user: string): number {
         return this.trades.filter((t) => t.user === user).reduce((sum, t) => sum + t.price * t.quantity, 0);
     }
@@ -250,16 +258,9 @@ class OrderBookkeeping {
         return d;
     }
 
-    private static startOfMonth(): Date {
-        const d = new Date();
-        d.setDate(1);
-        d.setHours(0, 0, 0, 0);
-        return d;
-    }
-
     // Realized P&L only (not unrealized/open-position exposure), summed from
     // the closedTrades collection (see persistClosedTrade) rather than the
-    // in-memory, never-resetting userPnL map, so the daily/monthly window is
+    // in-memory, never-resetting userPnL map, so the daily/weekly window is
     // correct across process restarts. Returns 0 (never blocks) on a Mongo
     // hiccup - matches this file's existing "don't let Mongo block live
     // trading" convention (see persistClosedTrade's comment).
@@ -288,12 +289,12 @@ class OrderBookkeeping {
         return pnl <= -(investmentAmount * limitPercent) / 100;
     }
 
-    async isMonthlyDrawdownBreached(user: string): Promise<boolean> {
+    async isWeeklyDrawdownBreached(user: string): Promise<boolean> {
         const investmentAmount = this.userSettingsCache.get(user)?.investmentAmount;
         if (!investmentAmount) return false;
         const settings = configService.getConfig().settings as any;
-        const limitPercent = settings.maxMonthlyDrawdownPercent ?? 50;
-        const pnl = await this.getRealizedPnLSince(user, OrderBookkeeping.startOfMonth());
+        const limitPercent = settings.maxWeeklyDrawdownPercent ?? 50;
+        const pnl = await this.getRealizedPnLSince(user, startOfWeek());
         return pnl <= -(investmentAmount * limitPercent) / 100;
     }
 
@@ -320,6 +321,20 @@ class OrderBookkeeping {
     // (niftyLtp * quantity - the real option premium isn't known until
     // contract selection) but exact for buyContract's price * quantity.
     async canPlaceOrder(user: string, estimatedOrderValue?: number): Promise<{ allowed: boolean; reason?: string }> {
+        // ContinuousStrategy manages its own risk (per-leg averaging/hedging,
+        // its own allottedCapital gate in ContinuousStrategy.capitalCheck())
+        // and was hitting the shared daily-trade-count limit on ordinary
+        // multi-leg activity - at the user's request, only the capital-usage
+        // check below still gates it; lot limit, per-order cap, drawdown
+        // breach, and the trade-count limit are skipped entirely.
+        if (user === 'ContinuousStrategy') {
+            const currentInvestment = this.getCurrentInvestment(user) + this.pendingValue(user);
+            const maxInvestment = this.getUserMaxInvestment(user);
+            if (currentInvestment >= maxInvestment) {
+                return { allowed: false, reason: `User '${user}' has reached max investment (${currentInvestment}/${maxInvestment}).` };
+            }
+            return { allowed: true };
+        }
         const tradedLots = this.getTradedLots(user) + this.pendingLots(user);
         const lotLimit = this.getUserLotLimit(user);
         if (tradedLots >= lotLimit) {
@@ -339,8 +354,8 @@ class OrderBookkeeping {
             this.logOrderRejection(user, reason);
             return { allowed: false, reason };
         }
-        if (await this.isMonthlyDrawdownBreached(user)) {
-            const reason = `User '${user}' has reached the maximum monthly drawdown.`;
+        if (await this.isWeeklyDrawdownBreached(user)) {
+            const reason = `User '${user}' has reached the maximum weekly drawdown.`;
             this.logOrderRejection(user, reason);
             return { allowed: false, reason };
         }
@@ -473,6 +488,11 @@ class OrderBookkeeping {
 
     private async _processTradeEvent(tradeEvent: Trade) {
         Log.log(`[order] ${tradeEvent.action} ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} status=${tradeEvent.status}`);
+        // Every raw fill doc needs a real entryTime, not just a token's first
+        // fill - restoreOneOpenTrade's `entryTime: { $gte: startOfDay() }`
+        // query otherwise silently excludes later same-day fills (e.g. an
+        // averaging buy) from restart recovery.
+        tradeEvent.entryTime = new Date();
         // Fire-and-forget, same convention as checkDrawdownNotification/
         // persistClosedTrade elsewhere in this class - never let a Mongo
         // hiccup block live bookkeeping. The .catch() (not a try/catch,
@@ -487,7 +507,6 @@ class OrderBookkeeping {
             this.releasePending(tradeEvent.user || 'Default');
             const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user);
             if (index == -1) {
-                tradeEvent.entryTime = new Date();
                 this.trades.push(tradeEvent);
             } else {
                 const trade = this.trades[index];
@@ -546,7 +565,7 @@ class OrderBookkeeping {
                     if (buyTrade.token) exitMonitor.unregisterTrade(user, buyTrade.token);
                 }
 
-                if ((await this.isDailyDrawdownBreached(user)) || (await this.isMonthlyDrawdownBreached(user))) {
+                if ((await this.isDailyDrawdownBreached(user)) || (await this.isWeeklyDrawdownBreached(user))) {
                     for (const l of this.drawdownBreachListeners) l(user);
                 }
             }
@@ -592,6 +611,248 @@ class OrderBookkeeping {
         } catch (e) {
             Log.log('[order] loadClosedTradesFromMongo failed (not blocking startup):', e);
         }
+    }
+
+    // Called once at order-process startup, alongside loadClosedTradesFromMongo:
+    // this.trades (currently-open positions) is in-memory only and has no
+    // closedTrades-style durable "open positions" collection to reload from -
+    // every fill, Buy AND Sell, gets its own raw insertOne into Mongo's `Trade`
+    // collection (see _processTradeEvent), with no open/closed flag or linkage
+    // between them. Not safely queryable as "current open positions" on its
+    // own (would require replaying/netting fills, exactly the kind of fragile
+    // logic to avoid for a live-money restore path).
+    //
+    // Design: the broker is ground truth for *which* contracts are actually
+    // open right now, immune to any of our own process restarts. For each
+    // open broker position, restoreOpenTradesForTsym (below) recovers the
+    // app-only fields the broker doesn't know (user/targetPrice/
+    // stopLossPrice/gttTriggerId/strategy/antOrderNo/prismCoverOrderNo) from
+    // Mongo's raw Buy fills - finalizeEntry (zerodhaExecutor.ts/
+    // antExecutor.ts)/prismExecutor.ts's buyOnPrism always set those on the
+    // Trade object before calling recordFill, so the raw Mongo insert
+    // already captured them. Split per-user (not just per-tsym) - see that
+    // function's own comment for why that split matters once more than one
+    // app user can share a broker.
+    // This app only trades NIFTY index options - the broker account can (and,
+    // per the 2026-09-03 incident, does) also carry unrelated stock-option/
+    // other-index positions placed outside the app (e.g. AMBER, BANKNIFTY).
+    // Restoring those into bookkeeping.trades would hand them to exitMonitor/
+    // strategies as if this app were managing their target/SL, which it never
+    // set. Scope every broker restore to plain NIFTY options only.
+    private static isNiftyOption(tsym: string | undefined): boolean {
+        return typeof tsym === 'string' && tsym.startsWith('NIFTY') && (tsym.endsWith('CE') || tsym.endsWith('PE'));
+    }
+
+    private mergeRestored(restored: Trade[]): void {
+        for (const trade of restored) {
+            // Same guard as ContinuousStrategy's Fix 4 (legsByToken collision) -
+            // never silently merge two broker-reported open positions on the
+            // same token into one bookkeeping entry.
+            if (this.trades.some((t) => t.token === trade.token && t.user === trade.user)) {
+                Log.log(`[order] loadOpenTradesFromBroker: REFUSING to add duplicate - token ${trade.token} (${trade.tsym}) already restored for user ${trade.user}`);
+                continue;
+            }
+            this.trades.push(trade);
+        }
+        if (restored.length > 0) {
+            Log.log(`[order] Reloaded ${restored.length} open trade(s) from broker`);
+            exitMonitor.reconcileFromTrades(this.trades);
+        }
+    }
+
+    // Called both at order-process startup and reactively whenever `order`
+    // is told a Zerodha login just succeeded (see orderProcess.ts's
+    // 'reloadSession' handler) - a stale/expired session on disk at startup
+    // otherwise means this never gets a second chance until the next process
+    // restart, silently leaving real open positions untracked (2026-09-03
+    // incident: session was invalid at startup, a same-session re-login later
+    // fixed it, but nothing re-ran this, so bookkeeping.trades stayed empty
+    // against 4 real open Zerodha positions).
+    async reconcileZerodhaPositions(): Promise<void> {
+        const restored: Trade[] = [];
+        try {
+            const positions = await Zerodha.getInstance().getPositions();
+            const open = (positions?.net || []).filter((p: any) => p.quantity !== 0 && OrderBookkeeping.isNiftyOption(p.tradingsymbol));
+            for (const p of open) {
+                restored.push(...(await this.restoreOpenTradesForTsym(p.tradingsymbol, p.quantity, p.instrument_token != null ? String(p.instrument_token) : undefined)));
+            }
+        } catch (e) {
+            Log.log('[order] reconcileZerodhaPositions: Zerodha getPositions failed (continuing without restore):', e);
+            return;
+        }
+        this.mergeRestored(restored);
+    }
+
+    // Caveat, not yet live-verified: ANT's getPositions() return shape is
+    // untyped/`any` and hasn't been confirmed against a real response - same
+    // caveat ToDo.md already carries for AntOrderNotifyStream's norenordno/
+    // flprc fields. The field names below (netQty/token/tradingSymbol/
+    // exchange) are a best guess from AliceBlue's v2 REST conventions, not
+    // observed - verify against a live response before trusting this in
+    // production. Called both at startup and reactively after a successful
+    // ANT login (see reconcileZerodhaPositions's comment for why).
+    async reconcileAntPositions(): Promise<void> {
+        const restored: Trade[] = [];
+        try {
+            const positions = await ANT.getInstance().getPositions();
+            const list = Array.isArray(positions) ? positions : [];
+            const open = list.filter((p: any) => Number(p.netQty ?? p.netqty ?? 0) !== 0 && OrderBookkeeping.isNiftyOption(p.tradingSymbol ?? p.tsym ?? p.symbol));
+            for (const p of open) {
+                const tsym = p.tradingSymbol ?? p.tsym ?? p.symbol;
+                const qty = Number(p.netQty ?? p.netqty);
+                const token = p.token != null ? String(p.token) : undefined;
+                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, token)));
+            }
+        } catch (e) {
+            Log.log('[order] reconcileAntPositions: ANT getPositions failed (continuing without restore):', e);
+            return;
+        }
+        this.mergeRestored(restored);
+    }
+
+    // Mirrors reconcileAntPositions's shape exactly. Without this, restarting
+    // `order` while a LegManager-driven strategy (ContinuousStrategy/
+    // SupportResistanceStrategy) has an open Breeze leg would leave
+    // bookkeeping.trades empty for it - the strategy's own restart-reconcile
+    // (LegManager.restoreFromOpenTrades) never runs since it only fires when
+    // OrderClient.getOpenTrades reports something to restore, so it would
+    // silently open a duplicate root leg while the real one sits open and
+    // untracked at the broker. Field names (stock_code/expiry_date/
+    // strike_price/right/quantity) confirmed live 2026-09-17 against a real
+    // open position - see breezeExecutor.ts's getPositionsOnBreeze comment.
+    async reconcileBreezePositions(): Promise<void> {
+        const restored: Trade[] = [];
+        try {
+            if (!(await Breeze.getInstance().hasValidSession())) return;
+            const result = await Breeze.getInstance().getPortfolioPositions();
+            const rows = Array.isArray(result?.Success) ? result.Success : [];
+            for (const p of rows) {
+                const optionType = p.right === 'Call' ? 'CE' : p.right === 'Put' ? 'PE' : undefined;
+                if (!optionType) continue;
+                const tsym = `${p.stock_code}${p.strike_price}${optionType}`;
+                const qty = Number(p.quantity ?? 0);
+                if (qty === 0 || !OrderBookkeeping.isNiftyOption(tsym)) continue;
+                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, undefined)));
+            }
+        } catch (e) {
+            Log.log('[order] reconcileBreezePositions: Breeze getPortfolioPositions failed (continuing without restore):', e);
+            return;
+        }
+        this.mergeRestored(restored);
+    }
+
+    async loadOpenTradesFromBroker(): Promise<void> {
+        await this.reconcileZerodhaPositions();
+        await this.reconcileAntPositions();
+        await this.reconcileBreezePositions();
+    }
+
+    // Recovers the app-only fields (user/target/stopLoss/gttTriggerId/strategy)
+    // for one broker-reported open position, from the most recent Buy fill(s)
+    // in Mongo's raw `Trade` collection - one restored Trade PER distinct
+    // user who holds it, not one merged Trade for the whole tsym. The broker
+    // only reports one aggregate position per contract (it has no concept of
+    // "app user" at all), so if two different app users both hold the same
+    // contract via the same shared broker, treating it as a single position
+    // would attribute the whole thing to whichever user's Buy doc is most
+    // recent, silently losing the other user's tracked position - this was a
+    // known, deliberately-deferred risk ("very low likelihood on this
+    // single-account setup") until the multi-user-per-broker model made it a
+    // real, expected scenario. Returns an empty array (logged loudly, not
+    // thrown) when no matching doc exists for any user - a manual trade
+    // placed outside the app, or a failed insert - so the caller can leave it
+    // visibly untracked rather than guessing at its fields.
+    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number, brokerToken: string | undefined): Promise<Trade[]> {
+        const db = Mongo.getInstance()?.db;
+        if (!db || !tsym) return [];
+
+        // Every user who has ever bought this tsym - each reconciled
+        // independently below (including their own last-Sell boundary), so
+        // one user's Sell can no longer wrongly close the boundary
+        // calculation for a *different* user's still-open position on the
+        // same tsym (the previous single-query version scoped the last-Sell
+        // boundary globally across all users, not per user - a second latent
+        // bug this fixes at the same time).
+        const users: string[] = await db.collection('Trade').distinct('user', { tsym, action: 'Buy' });
+
+        const restored: Trade[] = [];
+        let totalRestoredQty = 0;
+        for (const user of users) {
+            // A same-tsym position can close and reopen (e.g. ContinuousStrategy's
+            // root-refill re-enters the identical contract right after a
+            // target-hit sell) - all-time Buy docs for this tsym can therefore
+            // span multiple unrelated legs. Scope to only the Buy docs after the
+            // most recent Sell (if any), so a closed leg's old fills never bleed
+            // into the currently-open leg's restored price/quantity.
+            //
+            // Deliberately NOT bounded to "today" (startOfDay()) on either query
+            // below: this app carries NRML/overnight positions across multiple
+            // days (ContinuousStrategy), and a position opened yesterday but
+            // still open today has no Buy doc within a same-day window - fixed
+            // 2026-09-03 after exactly that scenario left 3 real overnight NIFTY
+            // legs untracked despite having been opened by this app the day
+            // before. tsym already encodes the specific contract (strike+expiry),
+            // so an unbounded search can't cross-match a different contract.
+            const lastSell = await db.collection('Trade')
+                .find({ tsym, action: 'Sell', user })
+                .sort({ entryTime: -1 })
+                .limit(1)
+                .toArray();
+            const rows = lastSell[0]
+                ? await db.collection('Trade').find({ tsym, action: 'Buy', user, entryTime: { $gt: lastSell[0].entryTime } }).sort({ entryTime: -1 }).toArray()
+                : await db.collection('Trade').find({ tsym, action: 'Buy', user }).sort({ entryTime: -1 }).toArray();
+            const row = rows[0];
+            if (!row) continue; // this user's position on this tsym is fully closed
+
+            // A multi-fill position (e.g. ContinuousStrategy's tryAverageLevel
+            // averaging into an existing leg) has one Buy doc per fill, not one
+            // per position - blend them into a single quantity-weighted average
+            // price (same formula _processTradeEvent's live merge path uses)
+            // instead of trusting just the latest fill's price.
+            const totalQty = rows.reduce((sum, r) => sum + r.quantity, 0);
+            const blendedPrice = rows.reduce((sum, r) => sum + r.quantity * r.price, 0) / totalQty;
+            // The earliest surviving fill (rows is sorted newest-first) is this
+            // leg's true original entry - distinct from the blended price/current
+            // broker total above. See originalEntryPrice/originalEntryQuantity's
+            // doc comments on Trade (model.ts) for why ContinuousStrategy.reconcile()
+            // needs both.
+            const firstFill = rows[rows.length - 1];
+            const trade = new Trade();
+            trade.tsym = tsym;
+            // Prefer the common/ANT-native token already recorded on the Mongo doc
+            // (trade.token is always ANT-native since the 2026-08-27 fix - see
+            // ToDo.md) over the broker's own token, which may use a different
+            // scheme (e.g. Zerodha's instrument_token).
+            trade.token = row.token ?? brokerToken ?? '';
+            trade.right = row.right;
+            trade.quantity = totalQty; // this user's own portion, not the broker's aggregate total
+            trade.price = blendedPrice;
+            trade.lastTradePrice = blendedPrice;
+            trade.originalEntryPrice = firstFill.price;
+            trade.originalEntryQuantity = firstFill.quantity;
+            trade.action = 'Buy';
+            trade.status = 'COMPLETE';
+            trade.user = user;
+            trade.open = true;
+            trade.targetPrice = row.targetPrice;
+            trade.stopLossPrice = row.stopLossPrice;
+            trade.gttTriggerId = row.gttTriggerId;
+            trade.antOrderNo = row.antOrderNo;
+            trade.prismCoverOrderNo = row.prismCoverOrderNo;
+            trade.strategy = row.strategy;
+            trade.entryTime = row.entryTime;
+
+            restored.push(trade);
+            totalRestoredQty += totalQty;
+        }
+
+        if (restored.length === 0) {
+            Log.log(`[order] loadOpenTradesFromBroker: WARNING - broker reports an open position on ${tsym} (qty=${brokerQuantity}) with no matching Mongo Buy doc for any user - leaving untracked`);
+        } else if (totalRestoredQty !== brokerQuantity) {
+            Log.log(`[order] loadOpenTradesFromBroker: WARNING - broker reports ${brokerQuantity} total on ${tsym} but Mongo reconciliation across ${restored.length} user(s) totals ${totalRestoredQty} - broker is ground truth for aggregate size, but the per-user split above may be stale/wrong`);
+        }
+
+        return restored;
     }
 
     // Additive, purpose-built realized-P&L ledger - distinct from the raw

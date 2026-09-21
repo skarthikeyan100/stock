@@ -1,0 +1,9 @@
+# SupportResistanceStrategy Backtest - Data Folders List
+# Add folder paths below, one per line
+# Each folder should contain a Quote.csv file with NIFTY quote data
+#
+# Example:
+# /home/karthikeyan/work/data/2026-08-15
+# /home/karthikeyan/work/data/2026-08-16
+#
+

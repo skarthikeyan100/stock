@@ -31,6 +31,40 @@ class Zerodha {
     private accessToken: string | null = null;
     private sessionFile = path.join(__dirname, '../../.zerodha_session.json');
 
+    // Set once the broker rejects a buy with an "ageing debit balance" error
+    // (InputException - collateral margin for option buying is blocked until
+    // the debit is cleared). Every subsequent buy would fail the same way, so
+    // rather than keep hitting the broker and burning 90s per attempt (see
+    // orderProcess.ts's OrderClient timeout), fail fast in-process instead.
+    // Deliberately never auto-clears - the debit balance is an account-level
+    // condition this app has no way to observe changing; recovering requires
+    // a process restart once the balance is actually cleared. Sells/square-offs
+    // are unaffected - they go through getKiteConnect().placeOrder() directly,
+    // not buyOption()/placeLimitBuyOption().
+    private buyHaltReason: string | null = null;
+
+    isBuyHalted(): boolean {
+        return this.buyHaltReason !== null;
+    }
+
+    getBuyHaltReason(): string | null {
+        return this.buyHaltReason;
+    }
+
+    private assertBuysNotHalted(): void {
+        if (this.buyHaltReason) {
+            throw new Error(`Zerodha buying halted - ${this.buyHaltReason}`);
+        }
+    }
+
+    private haltBuysOnDebitBalance(e: any): void {
+        const message = e?.message ?? String(e);
+        if (/ageing debit balance/i.test(message)) {
+            this.buyHaltReason = message;
+            Log.log(`[Zerodha] FATAL: ${message} - halting ALL further buy orders until the order process is restarted (sell/square-off is unaffected)`);
+        }
+    }
+
     private constructor() {
         this.kc = new KiteConnect({ api_key: this.apiKey });
         this.loadSession();
@@ -197,42 +231,54 @@ class Zerodha {
     // permission). Not in the kiteconnect SDK's typed params, but placeOrder() forwards
     // the whole params object through to the REST call untouched, so it's honored.
     async buyOption(tradingSymbol: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+        this.assertBuysNotHalted();
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
         }
         Log.log(`[Zerodha] Placing NRML market buy: ${tradingSymbol} qty=${quantity} exchange=${exchange}`);
-        const response = await this.kc.placeOrder('regular', {
-            exchange,
-            tradingsymbol: tradingSymbol,
-            transaction_type: 'BUY',
-            quantity,
-            product: 'NRML',
-            order_type: 'MARKET',
-            market_protection: -1,
-        });
-        Log.log(`[Zerodha] Buy order placed: ${response.order_id}`);
-        return { orderId: response.order_id };
+        try {
+            const response = await this.kc.placeOrder('regular', {
+                exchange,
+                tradingsymbol: tradingSymbol,
+                transaction_type: 'BUY',
+                quantity,
+                product: 'NRML',
+                order_type: 'MARKET',
+                market_protection: -1,
+            });
+            Log.log(`[Zerodha] Buy order placed: ${response.order_id}`);
+            return { orderId: response.order_id };
+        } catch (e) {
+            this.haltBuysOnDebitBalance(e);
+            throw e;
+        }
     }
 
     // Standalone LIMIT buy - no market_protection (that's a MARKET/SL-M-only param; a plain
     // `price` is what Kite expects for LIMIT). Used by ContinuousStrategy's target-hit
     // re-entries, which need to sit at a specific price rather than fill immediately.
     async placeLimitBuyOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+        this.assertBuysNotHalted();
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
         }
         Log.log(`[Zerodha] Placing NRML limit buy: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
-        const response = await this.kc.placeOrder('regular', {
-            exchange,
-            tradingsymbol: tradingSymbol,
-            transaction_type: 'BUY',
-            quantity,
-            product: 'NRML',
-            order_type: 'LIMIT',
-            price,
-        });
-        Log.log(`[Zerodha] Limit buy order placed: ${response.order_id}`);
-        return { orderId: response.order_id };
+        try {
+            const response = await this.kc.placeOrder('regular', {
+                exchange,
+                tradingsymbol: tradingSymbol,
+                transaction_type: 'BUY',
+                quantity,
+                product: 'NRML',
+                order_type: 'LIMIT',
+                price,
+            });
+            Log.log(`[Zerodha] Limit buy order placed: ${response.order_id}`);
+            return { orderId: response.order_id };
+        } catch (e) {
+            this.haltBuysOnDebitBalance(e);
+            throw e;
+        }
     }
 
     // Polls order history until the fill (average_price) is known - Kite has no
@@ -251,6 +297,20 @@ class Zerodha {
             }
 
             await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
+        // Give up waiting - but an order left resting at the broker after we
+        // stop watching it is an orphan: no bookkeeping, no target/SL, no
+        // exit monitoring, yet still live and able to fill later on its own.
+        // Cancel it here so a market-protection LIMIT that never matched
+        // (see NIFTY2690124100PE, 2026-08-31) can't silently turn into an
+        // untracked position. Best-effort - if the cancel itself fails
+        // (already filled/cancelled in the interim), log and still throw the
+        // original timeout so the caller aborts the trade either way.
+        try {
+            await this.cancelOrder(orderId);
+            Log.log(`[Zerodha] Cancelled unfilled order ${orderId} after fill-price timeout`);
+        } catch (e) {
+            Log.log(`[Zerodha] Failed to cancel unfilled order ${orderId} after fill-price timeout:`, e);
         }
         throw new Error(`Zerodha order ${orderId} did not fill within timeout`);
     }
@@ -329,7 +389,7 @@ class Zerodha {
             throw new Error('No active session. Please login first.');
         }
         Log.log(`[Zerodha] Cancelling order ${orderId}`);
-        await this.kc.cancelOrder(orderId, 'regular');
+        await this.kc.cancelOrder('regular', orderId);
     }
 }
 

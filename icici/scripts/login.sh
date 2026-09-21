@@ -5,6 +5,7 @@ set -e
 PRISM_URL="http://localhost:3000/prism/login"
 ANT_URL="http://localhost:3000/ant/login"
 KITE_URL="http://localhost:3000/kite/login"
+BREEZE_URL="http://localhost:3000/breeze/login"
 
 if ! command -v firefox &> /dev/null; then
     echo "Error: firefox is not installed."
@@ -25,3 +26,6 @@ env -u GTK_MODULES firefox "$ANT_URL" &
 
 echo "Opening Kite (Zerodha) login: $KITE_URL"
 env -u GTK_MODULES firefox "$KITE_URL" &
+
+echo "Opening Breeze (ICICI Direct) login: $BREEZE_URL"
+env -u GTK_MODULES firefox "$BREEZE_URL" &

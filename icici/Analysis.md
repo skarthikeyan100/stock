@@ -477,6 +477,104 @@ Consolidated from all domains, each with importer-search evidence in its source 
 
 ---
 
+## Addendum (2026-09-08): SupportResistance dynamic-detector grid search
+
+*Not part of the original 2026-08-25 agent audit above — added after a follow-up session that
+fixed and then tuned the S/R hypothesis-testing pipeline. Scope: `src/lib/supportResistance.ts`,
+`src/test/supportResistanceBacktest.ts`, `src/tools/SupportResistanceHypothesisTest.ts`,
+`src/tools/SupportResistanceGridSearch.ts` (new), `config.yml`'s `srHypothesis:` block.*
+
+**Important distinction from §3 above:** this work is entirely separate from the live
+`SupportResistanceStrategy` class flagged in [§3's Gaps](#gaps--missing-features-3) (the one with
+the dangerous `supportPrice: 0`/`resistancePrice: 0` config default). That strategy still
+compares `quote.ltp` against static config values and is unaffected by anything below — nothing
+here is wired into live trading. This addendum concerns only the **analysis-only** dynamic
+support/resistance detector (`initSRState()`/`processTick()` in `src/lib/supportResistance.ts`),
+which locks a support/resistance range once price consolidates and detects confirmed breaches,
+consumed by manual backtest/hypothesis tools, not by any live strategy.
+
+### What changed
+
+1. **Fixed `src/test/supportResistanceBacktest.ts`**, which previously drove the static-config
+   `SupportResistanceStrategy` (a no-op with `supportPrice`/`resistancePrice` both `0`) and
+   simulated P&L with `Math.random() > 0.5` — not a real test of anything. Rewrote it to run the
+   real dynamic detector and a genuine target/stop-loss walk-forward simulation on each breach
+   (CE on resistance breach, PE on support breach), mirroring the approach already used by
+   `src/tools/SupportResistanceHypothesisTest.ts`. Cross-checked: both tools now produce
+   identical trade counts/win rates for the same day and config (verified on Sep-01: 34
+   trades/20 wins/14 losses/58.8% in both).
+2. **Restored the `srHypothesis:` block to `config.yml`** (present in a prior git-synced copy,
+   commit `e5498bf`, but missing from the live config — `SupportResistanceHypothesisTest.ts`
+   would otherwise throw), so both analysis tools share one tuning surface.
+3. **Added `src/tools/SupportResistanceGridSearch.ts`** — grid-searches
+   `confirmWindowMin`/`maxJump`/`maxRangeWidth`/`buffer`/`breachBuffer`/`breachConfirmSec`
+   (detection parameters) × `target`/`stopLoss` (simulation parameters) across all 7 available
+   backup days (`/home/karthikeyan/work/data/backups/{Aug-19,Aug-20,Aug-28,Sep-01,Sep-02,Sep-03,Sep-04}`).
+   Uses its own O(1)-amortized sliding-window reimplementation of the detector (monotonic
+   min/max deques) instead of the library's O(window-length)-per-tick array spread/filter/map,
+   since the latter is too slow to run thousands of times over ~650K total ticks. Self-validates
+   against the real library output for the current config before trusting any sweep result — the
+   script aborts if they don't match exactly.
+
+### Grid search result
+
+Swept 972 detection configs × 9 target/stopLoss pairs = 8,748 combos in ~25s. Original defaults
+(`confirmWindowMin: 2, maxJump: 15, maxRangeWidth: 30, buffer: 10, breachBuffer: 0,
+breachConfirmSec: 0, target: 10, stopLoss: 10`) produced 192 trades across all 7 days at ~48%
+overall win rate and −4,000 net points — no real edge.
+
+The best **robust** config found — defined as ≥60% aggregate win rate **and** ≥50% win rate on
+*every individual day* (not just a good aggregate propped up by one lucky day) — was:
+
+| Parameter | Old default | New (tuned) |
+|---|---:|---:|
+| `confirmWindowMin` | 2 | **3** |
+| `maxJump` | 15 | 15 (unchanged) |
+| `maxRangeWidth` | 30 | **25** |
+| `buffer` | 10 | **8** |
+| `breachBuffer` | 0 | **5** |
+| `breachConfirmSec` | 0 | **15** |
+| `target` | 10 | **8** |
+| `stopLoss` | 10 | **15** |
+
+Result: 79 trades, 78.5% win rate, +12,050 net points, verified consistent across all 7 days
+(worst single day 71.4%, best 100%):
+
+| day | trades | win rate |
+|---|---:|---:|
+| Aug-19 | 6 | 100.0% |
+| Aug-20 | 2 | 100.0% |
+| Aug-28 | 21 | 76.2% |
+| Sep-01 | 16 | 81.3% |
+| Sep-02 | 15 | 73.3% |
+| Sep-03 | 12 | 75.0% |
+| Sep-04 | 7 | 71.4% |
+
+The key driver was adding a non-zero `breachBuffer` + `breachConfirmSec` (requiring price to
+clear the locked line by 5pts and hold for 15s before confirming a breach) — this filters out
+the noise-wick breaches that dominated the old zero/zero (immediate-confirm) config. Tightening
+`maxRangeWidth` and lengthening `confirmWindowMin` also helped, by requiring a longer, narrower
+consolidation before a range is allowed to lock.
+
+Notably, no config was found that got trade count down to ~5/day while staying consistently
+≥60% per day — the closest attempts had at least one day dip to 40% or 0% win rate. Selectivity
+(fewer trades) and per-day consistency traded off against each other on this dataset; tightening
+further concentrated risk into fewer, noisier per-day samples rather than uniformly improving
+quality.
+
+**Applied**: `config.yml`'s `srHypothesis:` block now uses the tuned values above (verified via a
+live re-run of `supportResistanceBacktest.js`, which reproduced the exact 79-trade/78.5% numbers
+end-to-end, not just via the sweep's fast reimplementation).
+
+**Caveat — in-sample search, not yet out-of-sample validated:** all 8,748 combos were scored
+against the same 7 days used to pick the winner, with no held-out data. 79 trades is a reasonably
+sized sample, but searching this many combinations against one fixed dataset carries real
+overfitting risk. Treat the tuned config as a strong hypothesis to re-validate as new days'
+`Quote.csv` data is collected — not a proven edge yet. Full 8,748-row sweep output saved to
+`supportresistance_grid_search_results.csv` (repo root) for later re-analysis.
+
+---
+
 *End of consolidated analysis. Six raw per-domain reports remain at `.analysis-work/*.md` pending
 a decision on whether to delete that directory (this repo is not git-tracked, so there is no
 low-cost "just don't commit it" fallback — ask before deleting).*

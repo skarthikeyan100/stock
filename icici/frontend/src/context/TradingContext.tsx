@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
+import { isMarketHours } from '../utils/marketHours';
 
 export interface Trade {
   tsym: string;
@@ -15,6 +16,12 @@ export interface Trade {
   realizedPnL?: number;
   targetPrice?: number;
   stopLossPrice?: number;
+  // Demo-only: target/SL points requested at Buy time, before there's a live
+  // price to resolve them to an absolute targetPrice/stopLossPrice against
+  // (see DemoTradingContext's pendingPointsRef). Lets a still-pending
+  // position show what was requested instead of looking like nothing was set.
+  pendingTargetPoints?: number;
+  pendingStopLossPoints?: number;
 }
 
 interface TradingState {
@@ -25,6 +32,8 @@ interface TradingState {
   usedAmount: number;
   placingOrder: boolean;
   isOrderDisabled: boolean;
+  tradingBlocked: boolean;
+  blockReason: string | null;
   orderError: string | null;
   placeOrder: (right: string) => Promise<void>;
   placeContractOrder: (contract: string, targetPoints?: number, stopLossPoints?: number) => Promise<void>;
@@ -33,7 +42,10 @@ interface TradingState {
   clearError: () => void;
 }
 
-const TradingContext = createContext<TradingState | null>(null);
+// Exported (not just the Provider) so DemoTradingProvider can feed the same
+// context with an in-memory implementation - OrderEntry/PositionCard import
+// useTrading() from this module regardless of which provider is mounted.
+export const TradingContext = createContext<TradingState | null>(null);
 
 export function TradingProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
@@ -43,6 +55,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const [closedTrades, setClosedTrades] = useState<Trade[]>([]);
   const [placingOrder, setPlacingOrder] = useState(false);
   const [orderError, setOrderError] = useState<string | null>(null);
+  const [tradingBlocked, setTradingBlocked] = useState(false);
+  const [blockReason, setBlockReason] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -63,7 +77,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     return 65;
   };
   const tradedLots = trades.reduce((sum, t) => sum + Math.ceil(t.quantity / getInstrumentLotSize(t.tsym)), 0);
-  const isOrderDisabled = tradedLots >= lotLimit || totalPnL <= -maxLoss || placingOrder;
+  const isOrderDisabled = tradedLots >= lotLimit || totalPnL <= -maxLoss || placingOrder || !isMarketHours();
 
   // SSE: Position stream — connects only after user is authenticated, retries
   // indefinitely with a capped exponential backoff (never gives up: a live
@@ -129,6 +143,32 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     };
   }, [user]);
 
+  // Polls the real daily/weekly-drawdown check (src/processes/order/bookkeeping.ts's
+  // canPlaceOrder) rather than relying on the client-side lossLimit heuristic
+  // above, which doesn't know about the 25% daily / 50% weekly rules.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+
+    const check = () => {
+      fetch('/prism/canPlaceOrder', { headers: { 'X-User-Id': user.email } })
+        .then(res => res.json())
+        .then((data: { allowed: boolean; reason?: string }) => {
+          if (cancelled) return;
+          setTradingBlocked(!data.allowed);
+          setBlockReason(data.reason ?? null);
+        })
+        .catch(() => {});
+    };
+
+    check();
+    const interval = setInterval(check, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [user?.email]);
+
   const describeOrderError = (body: any): string => {
     // Backend sends { error: string }, not { message: string } - read the
     // field it actually sends. Zerodha's raw insufficient-funds message
@@ -146,7 +186,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     setOrderError(null);
     try {
       const response = await fetch(
-        `/prism/order/buy?index=NIFTY&right=${right}`,
+        `/order/buy?index=NIFTY&right=${right}`,
         { headers: { 'X-User-Id': user?.email || 'Default' } }
       );
       if (!response.ok) {
@@ -169,7 +209,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       if (targetPoints !== undefined) params.set('targetPoints', String(targetPoints));
       if (stopLossPoints !== undefined) params.set('stopLossPoints', String(stopLossPoints));
       const response = await fetch(
-        `/prism/order/buy?${params.toString()}`,
+        `/order/buy?${params.toString()}`,
         { headers: { 'X-User-Id': user?.email || 'Default' } }
       );
       if (!response.ok) {
@@ -188,7 +228,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     setOrderError(null);
     try {
       const response = await fetch(
-        `/prism/squareoff?token=${encodeURIComponent(token)}&qty=${qty}`,
+        `/order/squareoff?token=${encodeURIComponent(token)}&qty=${qty}`,
         { headers: { 'X-User-Id': user?.email || 'Default' } }
       );
       if (!response.ok) {
@@ -203,7 +243,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
   const setTargetStopLoss = useCallback(async (token: string, targetPoints: number, stopLossPoints: number) => {
     try {
-      await fetch('/prism/settarget', {
+      await fetch('/order/settarget', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, targetPoints, stopLossPoints }),
@@ -216,7 +256,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setOrderError(null), []);
 
   return (
-    <TradingContext.Provider value={{ trades, closedTrades, openPnL, totalPnL, usedAmount, placingOrder, isOrderDisabled, orderError, placeOrder, placeContractOrder, squareOff, setTargetStopLoss, clearError }}>
+    <TradingContext.Provider value={{ trades, closedTrades, openPnL, totalPnL, usedAmount, placingOrder, isOrderDisabled, tradingBlocked, blockReason, orderError, placeOrder, placeContractOrder, squareOff, setTargetStopLoss, clearError }}>
       {children}
     </TradingContext.Provider>
   );

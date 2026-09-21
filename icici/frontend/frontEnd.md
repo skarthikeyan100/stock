@@ -185,10 +185,8 @@ Admin-only dashboard with two tabs:
 - Loads from `GET /config`, saves via `POST /config`.
 - Sections rendered with `renderConfigField()` helper (number input or boolean toggle):
   - **Global Settings:** `minPrice`, `maxPrice`
-  - **BuySellStrategy:** enabled, initialQuantity, incrementQuantity, averageThreshold, targetPrice, maxIterationCount, right, stopEnabled, logEnabled
-  - **ContinuousStrategy:** enabled, initialQuantity, slDistance, minPremium, allottedCapital, spawnQuantityMode, right, cooldownSeconds, logEnabled
+  - **ContinuousStrategy:** enabled, initialQuantity, slDistance, minPremium, allottedCapital, spawnQuantityMode, right, cooldownSeconds, momentumEnabled, momentumTimeoutMs, logEnabled
   - **SentimentStrategy:** enabled, averageThreshold, targetPrice, orderQuantity, sentiment, loopCount
-  - **IntermittentStrategy:** enabled, loopCount, targetPrice, quantity, threshold, logEnabled
   - **RateOfChangeStrategy:** enabled, rocThresholdPercent, quantity, targetProfitPercent, stopLossPercent, maxHoldTimeMinutes, cooldownSeconds, useWindowMomentum, gapOnlyMode, gapReversalMode, gapReversalThreshold, logEnabled
 
 ---

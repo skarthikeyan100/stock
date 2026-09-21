@@ -381,7 +381,7 @@ export default function ProfilePage() {
           <span className="fw-bold">My Profile</span>
           <div className="d-flex align-items-center gap-3">
             <NotificationBell />
-            <Button variant="outline-secondary" size="sm" onClick={() => navigate('/app/trade')}>← Trading</Button>
+            <Button variant="outline-secondary" size="sm" onClick={() => navigate('/trade')}>← Trading</Button>
             <Button variant="outline-secondary" size="sm" onClick={logout}>Logout</Button>
           </div>
         </Container>

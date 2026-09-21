@@ -15,36 +15,21 @@ strategies:
     orderQuantity: 7200
     sentiment: put
     loopCount: 1
-  - type: BuySellStrategy
-    enabled: false
-    initialQuantity: 150
-    incrementFactor: single
-    incrementQuantity: 150
-    averageThreshold: 10
-    targetPrice: 5
-    stopEnabled: false
-    activateIntermittentCount: 100
-    maxIterationCount: 10
-    logEnabled: true
-    right: none
   - type: ContinuousStrategy
     enabled: false
     initialQuantity: 75
     slDistance: 10
+    squareOffDistance: 50
     minPremium: 100
     allottedCapital: 500000
-    spawnQuantityMode: multiplied
+    maxProfit: 2
+    spawnQuantityMode: 3
     averageQuantityMode: same
     right: none
     cooldownSeconds: 60
     logEnabled: true
-  - type: IntermittentStrategy
-    enabled: false
-    loopCount: 3
-    targetPrice: 2
-    quantity: 75
-    threshold: 10
-    logEnabled: true
+    momentumEnabled: false
+    momentumTimeoutMs: 3000
   - type: RateOfChangeStrategy
     enabled: true
     pointsThreshold: 5

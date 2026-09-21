@@ -12,10 +12,12 @@ import { STRATEGIES_SOCKET_PATH, StrategiesRequest, StrategiesResponse } from '.
 import strategies from '../strategy/strategies';
 import OrderClient from './strategies/OrderClient';
 import { registerTrade, unregisterTrade, routeOptionTick } from './strategies/tokenRouter';
+import { subscribeToken, unsubscribeToken } from './strategies/DataClient';
 import * as niftyQuoteHistory from './strategies/niftyQuoteHistory';
 import * as niftyCandleBuilder from './strategies/niftyCandleBuilder';
 import * as niftyStatsBuilder from './strategies/niftyStatsBuilder';
 import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
+import { FeedSource, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
 
 // Entry point for the `strategies` process. No Prism/Zerodha dependency at all -
 // ticks arrive over stdin (piped from `data` by the orchestrator), orders go out
@@ -38,7 +40,17 @@ async function onFill(userId: string, raw: any) {
     await strategy.updateTrade(trade);
 }
 
+// Ticks queued on stdin during startup (data.stdout is piped in before
+// strategies.initialize()/reconcile() resolve) must not reach
+// strategy.processNiftyQuote before every strategy has had a chance to
+// restore its "is a position already open" state - otherwise a fresh
+// instance can fire a duplicate live T1 entry before reconciliation ever
+// runs. A few dropped ticks during this brief window are harmless; the next
+// tick moments later re-populates lastNiftyLtp etc.
+let ready = false;
+
 async function onTick(tick: any) {
+    if (!ready) return;
     if (tick.type === 'nifty') {
         const quote = Object.assign(new NiftyQuote(), tick.quote) as NiftyQuote;
         niftyQuoteHistory.record(quote);
@@ -59,7 +71,7 @@ async function onTick(tick: any) {
         }
     } else if (tick.type === 'option') {
         const quote = Object.assign(new OptionQuote(), tick.quote) as OptionQuote;
-        await routeOptionTick(quote);
+        await routeOptionTick((tick.source ?? DEFAULT_FEED_SOURCE) as FeedSource, quote);
     }
 }
 
@@ -79,9 +91,7 @@ async function handleStrategiesRequest(req: StrategiesRequest): Promise<Strategi
 
             case 'setEnabled': {
                 const { identifier, enabled } = req.payload;
-                strategies.getList().forEach((s) => {
-                    if (s.userId === identifier || s.getClassName() === identifier) s.enabled = enabled;
-                });
+                strategies.setEnabledOverride(identifier, enabled);
                 return {
                     kind: 'response',
                     id: req.id,
@@ -98,6 +108,25 @@ async function handleStrategiesRequest(req: StrategiesRequest): Promise<Strategi
 
             case 'getCandles':
                 return { kind: 'response', id: req.id, ok: true, result: niftyCandleBuilder.getCandles() };
+
+            // Demo-mode support: fires a real subscribe/unsubscribe command for
+            // an arbitrary token on request, with no ref-counting against
+            // watchToken/registerTrade - a demo request isn't a Strategy, and
+            // a stray duplicate/early (un)subscribe here is harmless.
+            case 'subscribeToken':
+                subscribeToken(req.payload.token);
+                return { kind: 'response', id: req.id, ok: true, result: null };
+
+            case 'unsubscribeToken':
+                unsubscribeToken(req.payload.token);
+                return { kind: 'response', id: req.id, ok: true, result: null };
+
+            // Live config-reload, called from server.ts's POST /config after every
+            // save - see Strategies.syncFromConfig's own comment for why this is
+            // safe to call unconditionally (doesn't touch live position state).
+            case 'syncFromConfig':
+                strategies.syncFromConfig();
+                return { kind: 'response', id: req.id, ok: true, result: null };
 
             default:
                 return { kind: 'response', id: req.id, ok: false, error: `Unknown request type: ${(req as any).type}` };
@@ -145,6 +174,30 @@ async function main() {
     );
 
     await strategies.initialize();
+
+    // Only ContinuousStrategy implements reconcile() today - optional-chained
+    // since other strategies don't need it, and each call is independently
+    // try/caught so one strategy's reconcile failure can't block the others
+    // or crash startup (reconcile() itself already fails closed internally -
+    // see ContinuousStrategy.reconcile).
+    for (const strategy of strategies.getList()) {
+        try {
+            await (strategy as any).reconcile?.();
+        } catch (e) {
+            Log.log(`[strategies] reconcile() failed for ${strategy.userId}:`, e);
+        }
+    }
+
+    // Keeps the trading-window gate (strategies.ts's enforceTradingWindow)
+    // self-correcting without needing a restart - disable-only: force-disables
+    // any strategy still enabled once the window closes (past 15:25). Never
+    // re-enables anything - a strategy only becomes enabled again via a fresh
+    // explicit enable action (config save or admin live-toggle) made while
+    // within the window; see strategies.ts's enforceTradingWindow/
+    // setEnabledOverride comments.
+    setInterval(() => strategies.recheckTradingWindow(), 60 * 1000);
+
+    ready = true;
     Log.log(`[strategies] Ready - ${strategies.getList().length} strategies loaded.`);
 }
 

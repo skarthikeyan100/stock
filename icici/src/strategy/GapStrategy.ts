@@ -8,6 +8,11 @@ import moment from 'moment';
 
 const round = (num: number) => Math.round(num * 100) / 100;
 
+// Near-the-money window (points either side of spot) for PCR's OI summation -
+// matches ContinuousStrategy's PCR_WINDOW_POINTS (not config-driven, agreed
+// with the user).
+const PCR_WINDOW_POINTS = 300;
+
 class GapContract {
     contract: string = '';
     token: string = '';
@@ -170,13 +175,42 @@ export default class GapStrategy extends Strategy {
 
         this.decidedToday = true; // one decision per day, trade or not - re-armed by resetIfNewDay() on a new trading day
 
-        if (direction) {
-            if (!this.isSentimentAligned(quote, direction)) {
-                Log.log('[Gap] Sentiment not aligned for', direction, '— skipping');
-                return;
-            }
-            this.contract = new GapContract();
-            await this.executeTrade(quote, direction, gapPoints);
+        if (!direction) {
+            Log.log(`[Gap] Decision: NO TRADE - gap ${round(gapPoints)} within ±${config.pointsThreshold} threshold`);
+            return;
+        }
+
+        if (!(await this.isPcrAligned(quote, direction))) {
+            Log.log(`[Gap] Decision: NO TRADE - ${direction} signal (Gap=${round(gapPoints)}) but PCR not aligned`);
+            return;
+        }
+
+        Log.log(`[Gap] Decision: ${direction} chosen - Gap=${round(gapPoints)} vs Threshold=±${config.pointsThreshold}`);
+        this.contract = new GapContract();
+        await this.executeTrade(quote, direction, gapPoints);
+    }
+
+    // Real alignment gate, replacing the dead isSentimentAligned(quote, right)
+    // base-class check (keys off quote.buyQty/sellQty, which ANT ticks never
+    // populate, so it always auto-passed - see ContinuousStrategy.ts's
+    // fetchPcrIfDue comment for the same finding). PCR = sum(PE oi)/sum(CE oi)
+    // over strikes within PCR_WINDOW_POINTS of spot, from AliceBlue's Option
+    // Chain API (routed through OrderClient -> order process -
+    // see ANT.getOptionChainPCR). PCR > 1 (more put OI) favors PUT, PCR < 1
+    // favors CALL. Unlike ContinuousStrategy's version, no throttle/recheck
+    // state is needed here - decidedToday already limits this to one call
+    // per trading day. Any failure to get a fresh PCR fails closed (blocks
+    // the trade) rather than defaulting to "aligned".
+    private async isPcrAligned(quote: NiftyQuote, direction: string): Promise<boolean> {
+        try {
+            const pcr = await OrderClient.getInstance().getPCR(this.userId, 'NIFTY', quote.ltp, PCR_WINDOW_POINTS);
+            const pcrFavors = pcr > 1 ? PUT : CALL;
+            const aligned = pcrFavors === direction;
+            Log.log(`[Gap] PCR=${pcr.toFixed(3)} favors ${pcrFavors}, gap signal ${direction} -> ${aligned ? 'ALIGNED' : 'NOT aligned'}`);
+            return aligned;
+        } catch (e) {
+            Log.log('[Gap] PCR check failed, blocking (fail-closed):', e);
+            return false;
         }
     }
 

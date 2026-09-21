@@ -1,3 +1,10 @@
+// Load .env into process.env before anything else - every child this spawns
+// below inherits process.env at spawn time (see spawnChild's `{ ...process.env,
+// ...extraEnv }`), so loading it here covers order/data/strategies/frontend
+// too without each needing its own dotenv call. See .env.example for the full
+// variable list and CLAUDE.md's Environment section for which are required.
+import 'dotenv/config';
+
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -78,7 +85,11 @@ async function main() {
     let order = spawnChild('order', 'processes/orderProcess.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV);
     data.stdout.pipe(order.stdin, { end: false });
     order.stdout.pipe(data.stdin, { end: false });
-    watchAndRestart('order', [path.join(DIST, 'processes', 'order'), path.join(DIST, 'processes', 'orderProcess.js')], () => {
+    watchAndRestart('order', [
+        path.join(DIST, 'processes', 'order'), path.join(DIST, 'processes', 'orderProcess.js'),
+        path.join(DIST, 'ant'), path.join(DIST, 'zerodha'), path.join(DIST, 'model'),
+        path.join(DIST, 'util'), path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'),
+    ], () => {
         log('dev', 'Restarting order (data/strategies/frontend untouched)...');
         const old = order;
         data.stdout.unpipe(old.stdin);
@@ -100,7 +111,11 @@ async function main() {
     let frontend = spawnChild('frontend', 'server.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV);
     data.stdout.pipe(frontend.stdin, { end: false });
     frontend.stdout.pipe(data.stdin, { end: false });
-    watchAndRestart('frontend', [path.join(DIST, 'server.js')], () => {
+    watchAndRestart('frontend', [
+        path.join(DIST, 'server.js'),
+        path.join(DIST, 'ant'), path.join(DIST, 'zerodha'), path.join(DIST, 'model'),
+        path.join(DIST, 'util'), path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'),
+    ], () => {
         log('dev', 'Restarting frontend (data/order/strategies untouched)...');
         data.stdout.unpipe(frontend.stdin);
         frontend.stdout.unpipe(data.stdin);
@@ -123,7 +138,11 @@ async function main() {
 
     watchAndRestart(
         'strategies',
-        [path.join(DIST, 'strategy'), path.join(DIST, 'processes', 'strategiesProcess.js'), path.join(DIST, 'processes', 'strategies')],
+        [
+            path.join(DIST, 'strategy'), path.join(DIST, 'processes', 'strategiesProcess.js'), path.join(DIST, 'processes', 'strategies'),
+            path.join(DIST, 'ant'), path.join(DIST, 'model'), path.join(DIST, 'util'),
+            path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'), path.join(DIST, 'lib'),
+        ],
         () => {
             log('dev', 'Restarting strategies (data/order untouched)...');
             const old = strategies;
@@ -135,7 +154,17 @@ async function main() {
     );
 
     // --- data itself (rare: only strategy/order-agnostic tick logic lives here) ---
-    watchAndRestart('data', [path.join(DIST, 'processes', 'data'), path.join(DIST, 'processes', 'dataProcess.js')], () => {
+    // `data` now also watches `ant` (all 4 children import from shared dirs -
+    // see the dependency table this was derived from) - editing src/ant/* now
+    // correctly restarts the live WS instead of silently running stale code.
+    // Intentional: AntDataStream's exponential-backoff reconnect + the
+    // disk-persisted session (.ant_session.json) already make that
+    // reconnection fast and automatic, so the extra restarts are cheap.
+    watchAndRestart('data', [
+        path.join(DIST, 'processes', 'data'), path.join(DIST, 'processes', 'dataProcess.js'),
+        path.join(DIST, 'ant'), path.join(DIST, 'model'), path.join(DIST, 'util'),
+        path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'),
+    ], () => {
         log('dev', 'Restarting data (order/strategies/frontend untouched)...');
         const oldData = data;
         oldData.stdout.unpipe(frontend.stdin);

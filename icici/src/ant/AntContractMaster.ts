@@ -207,6 +207,61 @@ class AntContractMaster {
     const exch = symbol === 'SENSEX' ? 'BFO' : 'NFO';
     return this.findNearestExpiryOption({ symbol, exch, strike: selector.strike, optionType }).token;
   }
+
+  // Full option chain (both CE and PE, every strike) for the nearest expiry
+  // >= today - used by the demo-mode contract search, which needs to offer a
+  // pickable list of ANT-native (symbol, token) pairs rather than resolving
+  // one strike at a time.
+  listNearestExpiryOptions(symbol: string, exch: string = 'NFO'): { token: string; tradingSymbol: string; strike: number; optionType: string }[] {
+    const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
+    const todayStartUtc = Math.floor(Date.now() / 86400000) * 86400000;
+    const candidates = cache.filter((r) => r.Symbol === symbol && r.Exch === exch && parseInt(r['Expiry Date']) >= todayStartUtc);
+    if (candidates.length === 0) return [];
+    const nearestExpiry = Math.min(...candidates.map((r) => parseInt(r['Expiry Date'])));
+    return candidates
+      .filter((r) => parseInt(r['Expiry Date']) === nearestExpiry)
+      .map((r) => ({
+        token: r.Token,
+        tradingSymbol: r['Trading Symbol'] || r.Trading || '',
+        strike: Number(r['Strike Price']),
+        optionType: r['Option Type'],
+      }));
+  }
+
+  // Recovers strike/optionType/exch/tradingSymbol from a common (ANT-native)
+  // token alone - used by restart reconciliation (ContinuousStrategy.reconcile,
+  // order's loadOpenTradesFromBroker) where only trade.token is known.
+  // Deliberately a linear scan rather than a regex over the trading symbol -
+  // the tsym format is ambiguous (expiry-code digits run into the strike,
+  // e.g. NIFTY2690124200CE), so the cache is the only reliable source.
+  findByToken(token: string): { strike: number; optionType: string; exch: string; tradingSymbol: string } | undefined {
+    const record = this.loadNFO().find((r) => r.Token === token) || this.loadBFO().find((r) => r.Token === token);
+    if (!record) return undefined;
+    return {
+      strike: Number(record['Strike Price']),
+      optionType: record['Option Type'],
+      exch: record.Exch,
+      tradingSymbol: record['Trading Symbol'] || record.Trading || '',
+    };
+  }
+
+  // The reverse of findByToken - resolves a stored trading symbol (e.g. from
+  // a previous run's CSV output) back to its token, so a later re-quote hits
+  // the exact same contract instead of re-deriving nearest-OTM against a spot
+  // price that's since moved. Used by GapScreenerOptionQuoteEod.ts.
+  findByTradingSymbol(tradingSymbol: string, exch: 'NFO' | 'BFO' = 'NFO'): { token: string; strike: number; optionType: string; exch: string; tradingSymbol: string; lotSize: string } | undefined {
+    const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
+    const record = cache.find((r) => (r['Trading Symbol'] || r.Trading) === tradingSymbol);
+    if (!record) return undefined;
+    return {
+      token: record.Token,
+      strike: Number(record['Strike Price']),
+      optionType: record['Option Type'],
+      exch: record.Exch,
+      tradingSymbol: record['Trading Symbol'] || record.Trading || '',
+      lotSize: record['Lot Size'],
+    };
+  }
 }
 
 export default AntContractMaster;

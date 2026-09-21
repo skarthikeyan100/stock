@@ -1,0 +1,376 @@
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 17 row(s) from the morning run
+
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 23 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+HDFCBANK -> HDFCBANK29SEP26P690 (token 78298)
+TATASTEEL -> TATASTEEL29SEP26C187.5 (token 112727)
+KOTAKBANK -> KOTAKBANK29SEP26P415 (token 88395)
+ADANIENT -> ADANIENT29SEP26C3100 (token 80428)
+BAJFINANCE -> BAJFINANCE29SEP26P1040 (token 89015)
+MUTHOOTFIN -> MUTHOOTFIN29SEP26P2800 (token 129634)
+CIPLA -> CIPLA29SEP26P1370 (token 63211)
+TVSMOTOR -> TVSMOTOR29SEP26P4050 (token 115467)
+MAZDOCK -> MAZDOCK29SEP26P2400 (token 127461)
+HINDUNILVR -> HINDUNILVR29SEP26P1940 (token 79449)
+M&M -> M&M29SEP26P3100 (token 124587)
+TATACONSUM -> TATACONSUM29SEP26P1000 (token 151955)
+LODHA -> LODHA29SEP26P1200 (token 122051)
+HYUNDAI -> HYUNDAI29SEP26P2180 (token 79893)
+DRREDDY -> DRREDDY29SEP26P1140 (token 101869)
+DMART -> DMART29SEP26P3700 (token 101233)
+BAJAJ-AUTO -> BAJAJ-AUTO29SEP26P11800 (token 87626)
+
+Opening ANT websocket session and subscribing 17 option(s)...
+[15:25:16] [ANT.loadSession] ANT session loaded from file
+[15:25:16] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
+[15:25:16] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
+  "status": "Ok",
+  "message": "Success",
+  "result": [
+    {
+      "Status": "OK"
+    }
+  ]
+}
+[15:25:16] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
+[15:25:16] [ws.onopen] [AntWS] Connected, sending auth payload...
+[antBatchQuote] Subscribing to 17 option token(s)...
+[15:25:16] [AntWebSocket.subscribe] [AntWS] Subscribing: NFO|78298#NFO|112727#NFO|88395#NFO|80428#NFO|89015#NFO|129634#NFO|63211#NFO|115467#NFO|127461#NFO|79449#NFO|124587#NFO|151955#NFO|122051#NFO|79893#NFO|101869#NFO|101233#NFO|87626
+[15:25:16] [ws.onmessage] [AntWS] Connect ack: {
+  "t": "ck",
+  "s": "OK",
+  "uid": "924118_API"
+}
+[antBatchQuote]   tick NFO|78298 lp=10.90
+[antBatchQuote]   tick NFO|112727 lp=4.92
+[antBatchQuote]   tick NFO|88395 lp=5.45
+[antBatchQuote]   tick NFO|80428 lp=84.05
+[antBatchQuote]   tick NFO|89015 lp=17.95
+[antBatchQuote]   tick NFO|129634 lp=57.70
+[antBatchQuote]   tick NFO|63211 lp=23.00
+[antBatchQuote]   tick NFO|115467 lp=38.50
+[antBatchQuote]   tick NFO|127461 lp=61.35
+[antBatchQuote]   tick NFO|79449 lp=26.75
+[antBatchQuote]   tick NFO|124587 lp=40.60
+[antBatchQuote]   tick NFO|151955 lp=16.10
+[antBatchQuote]   tick NFO|122051 lp=54.00
+[antBatchQuote]   tick NFO|79893 lp=55.00
+[antBatchQuote]   tick NFO|101869 lp=20.95
+[antBatchQuote]   tick NFO|101233 lp=63.70
+[antBatchQuote]   tick NFO|87626 lp=183.45
+[antBatchQuote]   tick NFO|78298 lp=(none)
+[antBatchQuote]   tick NFO|87626 lp=(none)
+[antBatchQuote]   tick NFO|112727 lp=(none)
+[antBatchQuote]   tick NFO|79893 lp=(none)
+[antBatchQuote]   tick NFO|80428 lp=(none)
+[antBatchQuote]   tick NFO|129634 lp=(none)
+[antBatchQuote]   tick NFO|87626 lp=182.90
+[antBatchQuote]   tick NFO|115467 lp=(none)
+[antBatchQuote]   tick NFO|101233 lp=(none)
+[antBatchQuote]   tick NFO|87626 lp=(none)
+[antBatchQuote]   tick NFO|78298 lp=(none)
+[antBatchQuote]   tick NFO|80428 lp=(none)
+[antBatchQuote]   tick NFO|115467 lp=(none)
+[antBatchQuote]   tick NFO|101233 lp=(none)
+[antBatchQuote]   tick NFO|112727 lp=4.93
+[antBatchQuote]   tick NFO|87626 lp=(none)
+[antBatchQuote]   tick NFO|78298 lp=(none)
+[antBatchQuote]   tick NFO|129634 lp=(none)
+[antBatchQuote]   tick NFO|115467 lp=(none)
+[antBatchQuote]   tick NFO|112727 lp=(none)
+[antBatchQuote]   tick NFO|78298 lp=(none)
+[antBatchQuote]   tick NFO|129634 lp=(none)
+[antBatchQuote]   tick NFO|80428 lp=(none)
+[antBatchQuote]   tick NFO|101233 lp=(none)
+[antBatchQuote]   tick NFO|101869 lp=(none)
+[antBatchQuote]   tick NFO|101233 lp=(none)
+[antBatchQuote]   tick NFO|115467 lp=(none)
+[antBatchQuote]   tick NFO|112727 lp=(none)
+[antBatchQuote]   tick NFO|78298 lp=(none)
+[antBatchQuote]   tick NFO|129634 lp=(none)
+[antBatchQuote]   tick NFO|87626 lp=(none)
+[antBatchQuote]   tick NFO|80428 lp=(none)
+[antBatchQuote]   tick NFO|129634 lp=(none)
+[antBatchQuote]   tick NFO|101233 lp=(none)
+[antBatchQuote]   tick NFO|112727 lp=(none)
+[antBatchQuote]   tick NFO|78298 lp=(none)
+[antBatchQuote]   tick NFO|87626 lp=(none)
+[antBatchQuote]   tick NFO|115467 lp=(none)
+[antBatchQuote]   tick NFO|78298 lp=10.85
+[antBatchQuote] Unsubscribing and closing websocket...
+[15:25:22] [AntWebSocket.unsubscribe] [AntWS] Unsubscribing: NFO|78298#NFO|112727#NFO|88395#NFO|80428#NFO|89015#NFO|129634#NFO|63211#NFO|115467#NFO|127461#NFO|79449#NFO|124587#NFO|151955#NFO|122051#NFO|79893#NFO|101869#NFO|101233#NFO|87626
+HDFCBANK -> HDFCBANK29SEP26P690 = 10.85 (bought 9.55); stock Sell LTP 693 vs 1st15m High 700 / Low 697, result=true
+TATASTEEL -> TATASTEEL29SEP26C187.5 = 4.93 (bought 3.26); stock Buy LTP 185 vs 1st15m High 185 / Low 183, result=true
+KOTAKBANK -> KOTAKBANK29SEP26P415 = 5.45 (bought 5.3); stock Sell LTP 416 vs 1st15m High 420 / Low 418, result=true
+ADANIENT -> ADANIENT29SEP26C3100 = 84.05 (bought 68); stock Buy LTP 3054 vs 1st15m High 2996 / Low 2953, result=true
+BAJFINANCE -> BAJFINANCE29SEP26P1040 = 17.95 (bought 17.55); stock Sell LTP 1045 vs 1st15m High 1053 / Low 1045, result=true
+MUTHOOTFIN -> MUTHOOTFIN29SEP26P2800 = 57.7 (bought 68); stock Sell LTP 2816 vs 1st15m High 2856 / Low 2830, result=true
+CIPLA -> CIPLA29SEP26P1370 = 23 (bought 20.25); stock Sell LTP 1376 vs 1st15m High 1388 / Low 1379, result=true
+TVSMOTOR -> TVSMOTOR29SEP26P4050 = 38.5 (bought 64.7); stock Sell LTP 4078 vs 1st15m High 4110 / Low 4085, result=true
+MAZDOCK -> MAZDOCK29SEP26P2400 = 61.35 (bought 60.85); stock Sell LTP 2423 vs 1st15m High 2461 / Low 2442, result=true
+HINDUNILVR -> HINDUNILVR29SEP26P1940 = 26.75 (bought 21.15); stock Sell LTP 1953 vs 1st15m High 1973 / Low 1962, result=true
+M&M -> M&M29SEP26P3100 = 40.6 (bought 47); stock Sell LTP 3125 vs 1st15m High 3149 / Low 3131, result=true
+TATACONSUM -> TATACONSUM29SEP26P1000 = 16.1 (bought 14.1); stock Sell LTP 1007 vs 1st15m High 1013 / Low 1010, result=true
+LODHA -> LODHA29SEP26P1200 = 54 (bought 36.4); stock Sell LTP 1203 vs 1st15m High 1211 / Low 1204, result=true
+HYUNDAI -> HYUNDAI29SEP26P2180 = 55 (bought 47.5); stock Sell LTP 2195 vs 1st15m High 2218 / Low 2200, result=true
+DRREDDY -> DRREDDY29SEP26P1140 = 20.95 (bought 19.2); stock Sell LTP 1143 vs 1st15m High 1150 / Low 1146, result=true
+DMART -> DMART29SEP26P3700 = 63.7 (bought 62.4); stock Sell LTP 3710 vs 1st15m High 3738 / Low 3713, result=true
+BAJAJ-AUTO -> BAJAJ-AUTO29SEP26P11800 = 182.9 (bought 165.75); stock Sell LTP 11840 vs 1st15m High 11893 / Low 11842, result=true
+
+Wrote 17 row(s) to /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv (17/17 with a new Result)
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 7 row(s) from the morning run
+
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 24 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+HCLTECH -> HCLTECH29SEP26P1210 (token 77861)
+TECHM -> TECHM29SEP26C1540 (token 113425)
+BAJFINANCE -> BAJFINANCE29SEP26C1050 (token 57105)
+HYUNDAI -> HYUNDAI29SEP26C2220 (token 79894)
+INDIGO -> INDIGO29SEP26P4800 (token 114542)
+CIPLA -> CIPLA29SEP26C1380 (token 96642)
+EICHERMOT -> EICHERMOT29SEP26P7600 (token 102313)
+
+Opening ANT websocket session and subscribing 7 option(s)...
+[15:25:12] [ANT.loadSession] ANT session loaded from file
+[15:25:12] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
+[15:25:13] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
+  "status": "Ok",
+  "message": "Success",
+  "result": [
+    {
+      "Status": "OK"
+    }
+  ]
+}
+[15:25:13] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
+[15:25:13] [ws.onopen] [AntWS] Connected, sending auth payload...
+[antBatchQuote] Subscribing to 7 option token(s)...
+[15:25:13] [AntWebSocket.subscribe] [AntWS] Subscribing: NFO|77861#NFO|113425#NFO|57105#NFO|79894#NFO|114542#NFO|96642#NFO|102313
+[15:25:13] [ws.onmessage] [AntWS] Connect ack: {
+  "t": "ck",
+  "s": "OK",
+  "uid": "924118_API"
+}
+[antBatchQuote]   tick NFO|77861 lp=30.95
+[antBatchQuote]   tick NFO|113425 lp=30.80
+[antBatchQuote]   tick NFO|57105 lp=18.10
+[antBatchQuote]   tick NFO|79894 lp=35.25
+[antBatchQuote]   tick NFO|114542 lp=57.30
+[antBatchQuote]   tick NFO|96642 lp=20.45
+[antBatchQuote]   tick NFO|102313 lp=86.00
+[antBatchQuote]   tick NFO|77861 lp=(none)
+[antBatchQuote]   tick NFO|77861 lp=(none)
+[antBatchQuote]   tick NFO|77861 lp=(none)
+[antBatchQuote]   tick NFO|114542 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|77861 lp=31.25
+[antBatchQuote]   tick NFO|113425 lp=30.65
+[antBatchQuote]   tick NFO|77861 lp=(none)
+[antBatchQuote]   tick NFO|77861 lp=(none)
+[antBatchQuote]   tick NFO|114542 lp=(none)
+[antBatchQuote]   tick NFO|77861 lp=(none)
+[antBatchQuote] Unsubscribing and closing websocket...
+[15:25:19] [AntWebSocket.unsubscribe] [AntWS] Unsubscribing: NFO|77861#NFO|113425#NFO|57105#NFO|79894#NFO|114542#NFO|96642#NFO|102313
+HCLTECH -> HCLTECH29SEP26P1210 = 31.25 (bought 26.6); stock Sell LTP 1218 vs 1st15m High 1229 / Low 1220, result=true
+TECHM -> TECHM29SEP26C1540 = 30.65 (bought 32.35); stock Buy LTP 1530 vs 1st15m High 1523 / Low 1498, result=true
+BAJFINANCE -> BAJFINANCE29SEP26C1050 = 18.1 (bought 21.6); stock Buy LTP 1044 vs 1st15m High 1044 / Low 1037, result=false
+HYUNDAI -> HYUNDAI29SEP26C2220 = 35.25 (bought 43.3); stock Buy LTP 2202 vs 1st15m High 2192 / Low 2175, result=true
+INDIGO -> INDIGO29SEP26P4800 = 57.3 (bought 70.15); stock Sell LTP 4884 vs 1st15m High 4963 / Low 4938, result=true
+CIPLA -> CIPLA29SEP26C1380 = 20.45 (bought 23.3); stock Buy LTP 1375 vs 1st15m High 1373 / Low 1367, result=true
+EICHERMOT -> EICHERMOT29SEP26P7600 = 86 (bought 96.45); stock Sell LTP 7656 vs 1st15m High 7745 / Low 7677, result=true
+
+Wrote 7 row(s) to /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv (7/7 with a new Result)
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 7 row(s) from the morning run
+
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 25 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+HCLTECH -> HCLTECH29SEP26P1210 (token 77861)
+TECHM -> TECHM29SEP26C1540 (token 113425)
+BAJFINANCE -> BAJFINANCE29SEP26C1050 (token 57105)
+HYUNDAI -> HYUNDAI29SEP26C2220 (token 79894)
+INDIGO -> INDIGO29SEP26P4800 (token 114542)
+CIPLA -> CIPLA29SEP26C1380 (token 96642)
+EICHERMOT -> EICHERMOT29SEP26P7600 (token 102313)
+
+Opening ANT websocket session and subscribing 7 option(s)...
+[15:25:24] [ANT.loadSession] ANT session was issued on an earlier date - discarding, re-login required (/ant/login)
+Fatal error: ANT userSession not available. Complete OAuth login first (/ant/login).
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 7 row(s) from the morning run
+
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 31 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+HCLTECH -> HCLTECH29SEP26P1210 (token 77861)
+TECHM -> TECHM29SEP26C1540 (token 113425)
+BAJFINANCE -> BAJFINANCE29SEP26C1050 (token 57105)
+HYUNDAI -> HYUNDAI29SEP26C2220 (token 79894)
+INDIGO -> INDIGO29SEP26P4800 (token 114542)
+CIPLA -> CIPLA29SEP26C1380 (token 96642)
+EICHERMOT -> EICHERMOT29SEP26P7600 (token 102313)
+
+Opening ANT websocket session and subscribing 7 option(s)...
+Fatal error: ANT userSession not available. Complete OAuth login first (/ant/login).
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 7 row(s) from the morning run
+
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 32 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+HCLTECH -> HCLTECH29SEP26P1210 (token 77861)
+TECHM -> TECHM29SEP26C1540 (token 113425)
+BAJFINANCE -> BAJFINANCE29SEP26C1050 (token 57105)
+HYUNDAI -> HYUNDAI29SEP26C2220 (token 79894)
+INDIGO -> INDIGO29SEP26P4800 (token 114542)
+CIPLA -> CIPLA29SEP26C1380 (token 96642)
+EICHERMOT -> EICHERMOT29SEP26P7600 (token 102313)
+
+Opening ANT websocket session and subscribing 7 option(s)...
+[15:25:13] [ANT.loadSession] ANT session loaded from file
+[15:25:13] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
+[15:25:14] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
+  "status": "Ok",
+  "message": "Success",
+  "result": [
+    {
+      "Status": "OK"
+    }
+  ]
+}
+[15:25:14] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
+[15:25:14] [ws.onopen] [AntWS] Connected, sending auth payload...
+[antBatchQuote] Subscribing to 7 option token(s)...
+[15:25:14] [AntWebSocket.subscribe] [AntWS] Subscribing: NFO|77861#NFO|113425#NFO|57105#NFO|79894#NFO|114542#NFO|96642#NFO|102313
+[15:25:14] [ws.onmessage] [AntWS] Connect ack: {
+  "t": "ck",
+  "s": "OK",
+  "uid": "924118_API"
+}
+[antBatchQuote]   tick NFO|77861 lp=10.35
+[antBatchQuote]   tick NFO|113425 lp=27.90
+[antBatchQuote]   tick NFO|57105 lp=7.35
+[antBatchQuote]   tick NFO|114542 lp=30.85
+[antBatchQuote]   tick NFO|96642 lp=16.75
+[antBatchQuote]   tick NFO|102313 lp=134.05
+[antBatchQuote]   tick NFO|79894 lp=15.35
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|113425 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|114542 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|77861 lp=(none)
+[antBatchQuote]   tick NFO|114542 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|114542 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote] Unsubscribing and closing websocket...
+[15:25:20] [AntWebSocket.unsubscribe] [AntWS] Unsubscribing: NFO|77861#NFO|113425#NFO|57105#NFO|79894#NFO|114542#NFO|96642#NFO|102313
+HCLTECH -> HCLTECH29SEP26P1210 = 10.35 (bought 26.6); stock Sell LTP 1218 vs 1st15m High 1229 / Low 1220, result=true
+TECHM -> TECHM29SEP26C1540 = 27.9 (bought 32.35); stock Buy LTP 1530 vs 1st15m High 1523 / Low 1498, result=true
+BAJFINANCE -> BAJFINANCE29SEP26C1050 = 7.35 (bought 21.6); stock Buy LTP 1044 vs 1st15m High 1044 / Low 1037, result=false
+HYUNDAI -> HYUNDAI29SEP26C2220 = 15.35 (bought 43.3); stock Buy LTP 2202 vs 1st15m High 2192 / Low 2175, result=true
+INDIGO -> INDIGO29SEP26P4800 = 30.85 (bought 70.15); stock Sell LTP 4884 vs 1st15m High 4963 / Low 4938, result=true
+CIPLA -> CIPLA29SEP26C1380 = 16.75 (bought 23.3); stock Buy LTP 1375 vs 1st15m High 1373 / Low 1367, result=true
+EICHERMOT -> EICHERMOT29SEP26P7600 = 134.05 (bought 96.45); stock Sell LTP 7656 vs 1st15m High 7745 / Low 7677, result=true
+
+Wrote 7 row(s) to /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv (7/7 with a new Result)
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 7 row(s) from the morning run
+
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 35 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+HCLTECH -> HCLTECH29SEP26P1210 (token 77861)
+TECHM -> TECHM29SEP26C1540 (token 113425)
+BAJFINANCE -> BAJFINANCE29SEP26C1050 (token 57105)
+HYUNDAI -> HYUNDAI29SEP26C2220 (token 79894)
+INDIGO -> INDIGO29SEP26P4800 (token 114542)
+CIPLA -> CIPLA29SEP26C1380 (token 96642)
+EICHERMOT -> EICHERMOT29SEP26P7600 (token 102313)
+
+Opening ANT websocket session and subscribing 7 option(s)...
+[15:25:15] [ANT.loadSession] ANT session loaded from file
+[15:25:15] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
+[15:25:15] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
+  "status": "Ok",
+  "message": "Success",
+  "result": [
+    {
+      "Status": "OK"
+    }
+  ]
+}
+[15:25:15] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
+[15:25:15] [ws.onopen] [AntWS] Connected, sending auth payload...
+[antBatchQuote] Subscribing to 7 option token(s)...
+[15:25:15] [AntWebSocket.subscribe] [AntWS] Subscribing: NFO|77861#NFO|113425#NFO|57105#NFO|79894#NFO|114542#NFO|96642#NFO|102313
+[15:25:15] [ws.onmessage] [AntWS] Connect ack: {
+  "t": "ck",
+  "s": "OK",
+  "uid": "924118_API"
+}
+[antBatchQuote]   tick NFO|77861 lp=2.15
+[antBatchQuote]   tick NFO|113425 lp=33.95
+[antBatchQuote]   tick NFO|57105 lp=4.60
+[antBatchQuote]   tick NFO|79894 lp=8.25
+[antBatchQuote]   tick NFO|114542 lp=19.05
+[antBatchQuote]   tick NFO|96642 lp=16.40
+[antBatchQuote]   tick NFO|102313 lp=139.30
+[antBatchQuote]   tick NFO|114542 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|114542 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|96642 lp=(none)
+[antBatchQuote]   tick NFO|102313 lp=(none)
+[antBatchQuote]   tick NFO|96642 lp=(none)
+[antBatchQuote] Unsubscribing and closing websocket...
+[15:25:21] [AntWebSocket.unsubscribe] [AntWS] Unsubscribing: NFO|77861#NFO|113425#NFO|57105#NFO|79894#NFO|114542#NFO|96642#NFO|102313
+HCLTECH -> HCLTECH29SEP26P1210 = 2.15 (bought 26.6); stock Sell LTP 1218 vs 1st15m High 1229 / Low 1220, result=true
+TECHM -> TECHM29SEP26C1540 = 33.95 (bought 32.35); stock Buy LTP 1530 vs 1st15m High 1523 / Low 1498, result=true
+BAJFINANCE -> BAJFINANCE29SEP26C1050 = 4.6 (bought 21.6); stock Buy LTP 1044 vs 1st15m High 1044 / Low 1037, result=false
+HYUNDAI -> HYUNDAI29SEP26C2220 = 8.25 (bought 43.3); stock Buy LTP 2202 vs 1st15m High 2192 / Low 2175, result=true
+INDIGO -> INDIGO29SEP26P4800 = 19.05 (bought 70.15); stock Sell LTP 4884 vs 1st15m High 4963 / Low 4938, result=true
+CIPLA -> CIPLA29SEP26C1380 = 16.4 (bought 23.3); stock Buy LTP 1375 vs 1st15m High 1373 / Low 1367, result=true
+EICHERMOT -> EICHERMOT29SEP26P7600 = 139.3 (bought 96.45); stock Sell LTP 7656 vs 1st15m High 7745 / Low 7677, result=true
+
+Wrote 7 row(s) to /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv (7/7 with a new Result)

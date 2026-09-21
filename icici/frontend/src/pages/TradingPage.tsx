@@ -9,7 +9,7 @@ import PositionCard from '../components/PositionCard';
 import NotificationBell from '../components/NotificationBell';
 
 export default function TradingPage() {
-  const { trades, closedTrades, openPnL, totalPnL, usedAmount } = useTrading();
+  const { trades, closedTrades, openPnL, totalPnL, usedAmount, tradingBlocked, blockReason } = useTrading();
   const { user, logout, isAdmin } = useAuth();
   const navigate = useNavigate();
   const maxLoss = user?.lossLimit ?? 15000;
@@ -23,58 +23,60 @@ export default function TradingPage() {
 
   return (
     <div className="trading-bg min-vh-100">
-      {/* P&L Header */}
-      <div className={`pnl-bar bg-${totalColor} bg-opacity-10 border-bottom`}>
-        <Container className="py-2 d-flex justify-content-between align-items-center" style={{ position: 'relative' }}>
-          <div className="d-flex align-items-center gap-2">
-            <div
-              className="d-flex align-items-center gap-2"
-              role="button"
-              style={{ cursor: 'pointer' }}
-              onClick={() => navigate('/app/profile')}
-              title="View profile"
-            >
-              {user?.picture && <img src={user.picture} alt="" width={28} height={28} className="rounded-circle" />}
-              <span className="fw-bold">{user?.name || 'PropFirm Trading'}</span>
+      <div className="trading-header-sticky">
+        {/* P&L Header */}
+        <div className={`pnl-bar bg-${totalColor} bg-opacity-10 border-bottom`}>
+          <Container className="py-2 d-flex justify-content-between align-items-center" style={{ position: 'relative' }}>
+            <div className="d-flex align-items-center gap-2">
+              <div
+                className="d-flex align-items-center gap-2"
+                role="button"
+                style={{ cursor: 'pointer' }}
+                onClick={() => navigate('/profile')}
+                title="View profile"
+              >
+                {user?.picture && <img src={user.picture} alt="" width={28} height={28} className="rounded-circle" />}
+                <span className="fw-bold">{user?.name || 'PropFirm Trading'}</span>
+              </div>
+              <NotificationBell />
+              <Button variant="outline-secondary" size="sm" onClick={() => navigate('/profile')}>Profile</Button>
+              {isAdmin && (
+                <Button variant="outline-primary" size="sm" onClick={() => navigate('/admin')}>Admin</Button>
+              )}
+              <Button variant="outline-secondary" size="sm" onClick={logout}>Logout</Button>
             </div>
-            <NotificationBell />
-            <Button variant="outline-secondary" size="sm" onClick={() => navigate('/app/profile')}>Profile</Button>
-            {isAdmin && (
-              <Button variant="outline-primary" size="sm" onClick={() => navigate('/app/admin')}>Admin</Button>
-            )}
-            <Button variant="outline-secondary" size="sm" onClick={logout}>Logout</Button>
-          </div>
-          <div className={`text-center text-${openColor}`} style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)' }}>
-            <div className="small">Current P&amp;L</div>
-            <span className={`fw-bold fs-5`}>{openPnL >= 0 ? '+' : ''}&#8377;{openPnL.toFixed(2)}</span>
-          </div>
-          <div className="text-end">
-            <div className="small text-muted">Total P&amp;L</div>
-            <span className={`fw-bold fs-5 text-${totalColor}`}>
-              {totalPnL >= 0 ? '+' : ''}&#8377;{totalPnL.toFixed(2)}
-            </span>
-          </div>
-        </Container>
-      </div>
+            <div className={`pnl-center text-center text-${openColor}`}>
+              <div className="small">Current P&amp;L</div>
+              <span className={`fw-bold fs-5`}>{openPnL >= 0 ? '+' : ''}&#8377;{openPnL.toFixed(2)}</span>
+            </div>
+            <div className="text-end">
+              <div className="small text-muted">Total P&amp;L</div>
+              <span className={`fw-bold fs-5 text-${totalColor}`}>
+                {totalPnL >= 0 ? '+' : ''}&#8377;{totalPnL.toFixed(2)}
+              </span>
+            </div>
+          </Container>
+        </div>
 
-      {/* Available / Used bar */}
-      <div className="border-bottom bg-light">
-        <Container className="py-1 d-flex justify-content-center gap-4">
-          <small>
-            <span className="text-muted">Available: </span>
-            <span className={`fw-bold ${availableAmount >= 0 ? 'text-success' : 'text-danger'}`}>
-              &#8377;{availableAmount.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-            </span>
-          </small>
-          <small>
-            <span className="text-muted">Used: </span>
-            <span className="fw-bold">&#8377;{usedAmount.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
-          </small>
-        </Container>
-      </div>
+        {/* Available / Used bar */}
+        <div className="border-bottom bg-light">
+          <Container className="py-1 d-flex justify-content-center gap-4">
+            <small>
+              <span className="text-muted">Available: </span>
+              <span className={`fw-bold ${availableAmount >= 0 ? 'text-success' : 'text-danger'}`}>
+                &#8377;{availableAmount.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </span>
+            </small>
+            <small>
+              <span className="text-muted">Used: </span>
+              <span className="fw-bold">&#8377;{usedAmount.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+            </small>
+          </Container>
+        </div>
 
-      {/* NIFTY live price ticker */}
-      <NiftyTicker />
+        {/* NIFTY live price ticker */}
+        <NiftyTicker />
+      </div>
 
       {nearLimit && (
         <Alert variant="warning" className="mb-0 rounded-0 text-center">
@@ -84,8 +86,16 @@ export default function TradingPage() {
 
       <Container className="py-4" style={{ maxWidth: 700 }}>
         {/* Order Entry */}
-        <h6 className="text-muted mb-2">Place Order</h6>
-        <OrderEntry />
+        {tradingBlocked ? (
+          <Alert variant="danger" className="text-center mb-4">
+            <strong>Trading disabled.</strong> {blockReason || 'You have breached a trading rule.'}
+          </Alert>
+        ) : (
+          <>
+            <h6 className="text-muted mb-2">Place Order</h6>
+            <OrderEntry />
+          </>
+        )}
 
         {/* Positions Tabs */}
         <div className="mt-4">

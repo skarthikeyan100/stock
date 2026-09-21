@@ -72,10 +72,12 @@ Notes:
 
 ### 4.3 Quantity
 - Root leg's initial quantity: config-driven (`initialQuantity`).
-- Level-spawn quantity is controlled by a strategy-level toggle, `spawnQuantityMode`:
-  - `'multiplied'` (default): 1x/2x/3x/4x spawn quantity = 1x/2x/3x/4x of the parent leg's own
-    quantity (unchanged from the original design).
-  - `'same'`: every level spawn uses the same quantity as its parent leg, regardless of level.
+- Level-spawn quantity is controlled by a strategy-level numeric field, `spawnQuantityMode`
+  (a flat multiplier applied identically at every adverse level 1-4, e.g. `2` = double the
+  causing leg's own *current* held quantity — `totalQuantity`, which grows via averaging —
+  at level 1, 2, 3, and 4 alike, NOT scaled further by level). Falls back to `1` if
+  unset/non-numeric/non-positive. (Supersedes the original `'same'`/`'multiplied'`
+  string-enum design recorded in `continuous-strategy-plan.md`.)
 - Target-hit re-entries (root only, Section 4.1): same quantity as the root leg that hit target.
 
 ## 5. Target / Stop-loss configuration

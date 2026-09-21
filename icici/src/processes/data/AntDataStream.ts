@@ -6,11 +6,12 @@ import ANT from '../../ant/ANT';
 import Mongo from '../../tools/mongo';
 import configService from '../../prism/ConfigService';
 import { NiftyQuote, OptionQuote, SensexQuote } from '../../model/model';
+import { DataStream } from './DataStream';
 
 // data process's own tick source. Adapted from src/ant/AntStream.ts: same ANT
 // session/websocket plumbing, but ticks go to stdout (writeTick) instead of
 // Monitor/Decision/myEmitter - this process has no dependency on any of those.
-class AntDataStream {
+class AntDataStream implements DataStream {
     private static instance: AntDataStream;
     private ws: AntWebSocket | null = null;
     private connected = false;
@@ -27,6 +28,12 @@ class AntDataStream {
     ];
 
     private dynamicOptionTokens: Set<string> = new Set();
+    // Depth-mode subscriptions - a separate AliceBlue subscription type from
+    // dynamicOptionTokens' touchline above, used only for the momentum
+    // signal's tbq/tsq (see MomentumSignal.ts). A token can be in both sets
+    // independently (e.g. an open leg's touchline token happening to also be
+    // momentum-checked).
+    private dynamicDepthTokens: Set<string> = new Set();
 
     constructor(private writeTick: (tick: any) => void) {}
 
@@ -60,6 +67,9 @@ class AntDataStream {
             const fixedKeys = this.ALWAYS_ON.map((i) => `${i.exch}|${i.token}`);
             const dynamicKeys = Array.from(this.dynamicOptionTokens).map((t) => `NFO|${t}`);
             this.ws!.subscribe([...fixedKeys, ...dynamicKeys]);
+            if (this.dynamicDepthTokens.size > 0) {
+                this.ws!.subscribeDepth(Array.from(this.dynamicDepthTokens).map((t) => `NFO|${t}`));
+            }
         });
 
         this.ws.on('quote', (_event, data) => {
@@ -122,13 +132,18 @@ class AntDataStream {
     }
 
     private emitTick(data: any): void {
-        if (!data.lp) return;
+        // Depth feed updates ('df') are sparse - a tick carrying a fresh
+        // tbq/tsq for a depth-tracked token doesn't always also carry 'lp',
+        // so the usual "no lp, nothing new" short-circuit would silently
+        // drop it. Relax the guard only for tokens actually depth-tracked.
+        const isDepthTracked = this.dynamicDepthTokens.has(data.tk);
+        if (!data.lp && !(isDepthTracked && (data.tbq !== undefined || data.tsq !== undefined))) return;
         try {
             if (data.tk === this.INDEX_TOKEN) {
                 this.writeTick({ type: 'nifty', quote: NiftyQuote.fromAnt(data) });
             } else if (data.tk === this.SENSEX_TOKEN) {
                 this.writeTick({ type: 'sensex', quote: SensexQuote.fromAnt(data) });
-            } else if (this.dynamicOptionTokens.has(data.tk)) {
+            } else if (this.dynamicOptionTokens.has(data.tk) || isDepthTracked) {
                 this.writeTick({ type: 'option', quote: OptionQuote.fromAnt(data) });
             }
         } catch (e) {
@@ -143,7 +158,7 @@ class AntDataStream {
                 Mongo.getInstance()?.insert(NiftyQuote.fromAnt(data));
             } else if (data.tk === this.SENSEX_TOKEN) {
                 Mongo.getInstance()?.insert(SensexQuote.fromAnt(data));
-            } else if (this.dynamicOptionTokens.has(data.tk)) {
+            } else if (this.dynamicOptionTokens.has(data.tk) || this.dynamicDepthTokens.has(data.tk)) {
                 Mongo.getInstance()?.insert(OptionQuote.fromAnt(data));
             }
         } catch (e) {
@@ -161,6 +176,18 @@ class AntDataStream {
         if (!this.dynamicOptionTokens.has(token)) return;
         this.dynamicOptionTokens.delete(token);
         this.ws?.unsubscribe([`NFO|${token}`]);
+    }
+
+    async subscribeOptionDepth(token: string): Promise<void> {
+        if (this.dynamicDepthTokens.has(token)) return;
+        this.dynamicDepthTokens.add(token);
+        this.ws?.subscribeDepth([`NFO|${token}`]);
+    }
+
+    async unsubscribeOptionDepth(token: string): Promise<void> {
+        if (!this.dynamicDepthTokens.has(token)) return;
+        this.dynamicDepthTokens.delete(token);
+        this.ws?.unsubscribeDepth([`NFO|${token}`]);
     }
 
     disconnect(): void {

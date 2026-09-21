@@ -27,4 +27,8 @@ export class Settings {
     // day may contribute before the payout is blocked outright.
     safetyBufferAmount = 5000
     consistencyLimitPercent = 40
+    gapScreenerCoverOrderEnabled = false
+    gapScreenerCoverOrderUserEmail = ''
+    gapScreenerCoverOrderQuantity = 0
+    gapScreenerCoverOrderStopLossPoints = 0
 }

@@ -3,10 +3,13 @@ import { getUser } from './user';
 import { computeTax } from './tax';
 import configService from './prism/ConfigService';
 import myEmitter from './tools/emitter';
+import { weekKey, startOfWeek, endOfWeek } from './util/weekWindow';
 
 export interface PayoutDecisionDetail {
     day?: string;
     dayPnL?: number;
+    week?: string;
+    weekPnL?: number;
     cumulativePnL?: number;
     lossLimitThreshold?: number;
     tradeIds?: any[];
@@ -89,6 +92,68 @@ function groupByDay(trades: any[]): Map<string, { pnl: number; tradeIds: any[] }
     return byDay;
 }
 
+// Groups a period's closed trades by their trading week (Wed-Tue, local
+// time - see util/weekWindow.ts), keyed by that week's Wednesday. Deliberately
+// local time, unlike groupByDay's UTC calendar-date slicing above - that's a
+// pre-existing inconsistency this change doesn't attempt to fix, since
+// groupByDay's UTC semantics are unrelated to the weekly-drawdown rule.
+function groupByWeek(trades: any[]): Map<string, { pnl: number; tradeIds: any[]; weekStart: Date; weekEnd: Date }> {
+    const byWeek = new Map<string, { pnl: number; tradeIds: any[]; weekStart: Date; weekEnd: Date }>();
+    for (const t of trades) {
+        const exitTime = new Date(t.exitTime);
+        const key = weekKey(exitTime);
+        const entry = byWeek.get(key) ?? { pnl: 0, tradeIds: [], weekStart: startOfWeek(exitTime), weekEnd: endOfWeek(exitTime) };
+        entry.pnl += t.realizedPnL || 0;
+        entry.tradeIds.push(t._id);
+        byWeek.set(key, entry);
+    }
+    return byWeek;
+}
+
+// Pure drawdown-forfeiture check, shared by computePayout (below) and
+// computePnlSummary (the Trades-tab "eligible P/L" endpoint): a single day
+// (or a single week) losing more than the live daily/weekly drawdown limit
+// forfeits the checked period's profit entirely - the at-rest consequence of
+// the same breach that bookkeeping.ts's isDailyDrawdownBreached/
+// isWeeklyDrawdownBreached block new orders and trigger auto-squareoff for,
+// live, using the same config values.
+export function computeDrawdownForfeiture(
+    periodTrades: Array<{ exitTime: any; realizedPnL?: number; _id?: any }>,
+    investmentAmount: number,
+    maxDailyDrawdownPercent: number,
+    maxWeeklyDrawdownPercent: number
+): { forfeited: boolean; reason?: string; detail?: PayoutDecisionDetail } {
+    if (!(investmentAmount > 0)) return { forfeited: false };
+
+    const dailyLimit = (investmentAmount * maxDailyDrawdownPercent) / 100;
+    const weeklyLimit = (investmentAmount * maxWeeklyDrawdownPercent) / 100;
+
+    const byDay = groupByDay(periodTrades);
+    for (const [day, entry] of byDay) {
+        if (entry.pnl <= -dailyLimit) {
+            return {
+                forfeited: true,
+                reason: `${day} lost ₹${Math.abs(entry.pnl).toFixed(2)} - exceeds the daily drawdown limit of ${maxDailyDrawdownPercent}% (₹${dailyLimit.toFixed(2)}) of your investment amount. All profit since the last payout is forfeited.`,
+                detail: { day, dayPnL: entry.pnl, tradeIds: entry.tradeIds },
+            };
+        }
+    }
+
+    const byWeek = groupByWeek(periodTrades);
+    for (const [week, entry] of byWeek) {
+        if (entry.pnl <= -weeklyLimit) {
+            const weekLabel = `Week of ${entry.weekStart.toDateString()}–${entry.weekEnd.toDateString()}`;
+            return {
+                forfeited: true,
+                reason: `${weekLabel} lost ₹${Math.abs(entry.pnl).toFixed(2)} - exceeds the weekly loss limit of ${maxWeeklyDrawdownPercent}% (₹${weeklyLimit.toFixed(2)}) of your investment amount. All profit since the last payout is forfeited.`,
+                detail: { week, weekPnL: entry.pnl, tradeIds: entry.tradeIds },
+            };
+        }
+    }
+
+    return { forfeited: false };
+}
+
 // Computes (without persisting) what a payout for this user/period would be:
 // gross profit from persisted closedTrades, the profit-split amount, TDS/GST
 // via src/tax.ts, and whether the safety-buffer or consistency rules block it
@@ -149,32 +214,20 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
         }
     }
 
-    // Drawdown forfeiture: a single day (or the whole period) losing more
-    // than the live daily/monthly drawdown limit forfeits the period's
-    // payout entirely - the payout-time consequence of the same breach that
-    // bookkeeping.ts's isDailyDrawdownBreached/isMonthlyDrawdownBreached
+    // Drawdown forfeiture: a single day (or a single week) losing more than
+    // the live daily/weekly drawdown limit forfeits the period's payout
+    // entirely - the payout-time consequence of the same breach that
+    // bookkeeping.ts's isDailyDrawdownBreached/isWeeklyDrawdownBreached
     // already block new orders and trigger auto-squareoff for live, using
     // the same config values.
-    if (!blocked && userDoc.investmentAmount > 0) {
+    if (!blocked) {
         const maxDailyDrawdownPercent: number = settings.maxDailyDrawdownPercent ?? 25;
-        const maxMonthlyDrawdownPercent: number = settings.maxMonthlyDrawdownPercent ?? 50;
-        const dailyLimit = (userDoc.investmentAmount * maxDailyDrawdownPercent) / 100;
-        const monthlyLimit = (userDoc.investmentAmount * maxMonthlyDrawdownPercent) / 100;
-
-        const byDayForDrawdown = groupByDay(periodTrades);
-        for (const [day, entry] of byDayForDrawdown) {
-            if (entry.pnl <= -dailyLimit) {
-                blocked = true;
-                blockReason = `${day} lost ₹${Math.abs(entry.pnl).toFixed(2)} - exceeds the daily drawdown limit of ${maxDailyDrawdownPercent}% (₹${dailyLimit.toFixed(2)}) of your investment amount. All profit since the last payout is forfeited.`;
-                blockDetail = { day, dayPnL: entry.pnl, tradeIds: entry.tradeIds };
-                break;
-            }
-        }
-
-        if (!blocked && grossProfit <= -monthlyLimit) {
+        const maxWeeklyDrawdownPercent: number = settings.maxWeeklyDrawdownPercent ?? 50;
+        const drawdown = computeDrawdownForfeiture(periodTrades, userDoc.investmentAmount, maxDailyDrawdownPercent, maxWeeklyDrawdownPercent);
+        if (drawdown.forfeited) {
             blocked = true;
-            blockReason = `This period lost ₹${Math.abs(grossProfit).toFixed(2)} - exceeds the monthly loss limit of ${maxMonthlyDrawdownPercent}% (₹${monthlyLimit.toFixed(2)}) of your investment amount. All profit since the last payout is forfeited.`;
-            blockDetail = { cumulativePnL: grossProfit };
+            blockReason = drawdown.reason;
+            blockDetail = drawdown.detail;
         }
     }
 
@@ -198,6 +251,94 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
         blockReason,
         blockDetail,
     };
+}
+
+export interface WeekPnlBreakdown {
+    weekStart: string;
+    weekEnd: string;
+    rawPnL: number;
+    eligiblePnL: number;
+    forfeited: boolean;
+    forfeitReason?: string;
+}
+
+export interface PnlSummary {
+    rawTotal: number;
+    eligibleTotal: number;
+    forfeited: boolean;
+    forfeitReason?: string;
+    weeks?: WeekPnlBreakdown[];
+}
+
+// Trades-tab "eligible P/L" view: like computePayout's drawdown-forfeiture
+// check, but for an arbitrary display range rather than a payout period, and
+// without the safety-buffer/consistency/non-positive-profit payout rules
+// (those are payout-specific, not relevant to a plain P/L summary). A
+// forfeited period/week contributes only its loss, never its gross profit -
+// "do not include forfeited profit" in the eligible total.
+//
+// breakdownByWeek=true (Month view) buckets by week but CLIPS each week to
+// trades within [from,to] rather than pulling in a full Wed-Tue week that
+// straddles the range boundary - keeps "month total = sum of displayed
+// weeks" exact and avoids a day double-counting into an adjacent month's
+// view. This is a display slice, not a re-derivation of the authoritative
+// enforcement decision (that always operates on true full weeks, in
+// bookkeeping.ts/payout.ts's computePayout).
+export async function computePnlSummary(user: string, from: Date, to: Date, breakdownByWeek: boolean): Promise<PnlSummary> {
+    const userDoc = await getUser(user);
+    if (!userDoc) throw new Error(`User not found: ${user}`);
+
+    const settings = configService.getConfig().settings as any;
+    const maxDailyDrawdownPercent: number = settings.maxDailyDrawdownPercent ?? 25;
+    const maxWeeklyDrawdownPercent: number = settings.maxWeeklyDrawdownPercent ?? 50;
+    const investmentAmount = userDoc.investmentAmount || 0;
+
+    const periodTrades = await closedTradesCollection()
+        .find({ user, exitTime: { $gte: from, $lte: to } })
+        .toArray();
+
+    const eligiblePnL = (rawPnL: number, forfeited: boolean) => (forfeited ? Math.min(rawPnL, 0) : rawPnL);
+
+    if (!breakdownByWeek) {
+        const rawTotal = periodTrades.reduce((sum, t) => sum + (t.realizedPnL || 0), 0);
+        const drawdown = computeDrawdownForfeiture(periodTrades, investmentAmount, maxDailyDrawdownPercent, maxWeeklyDrawdownPercent);
+        return {
+            rawTotal,
+            eligibleTotal: eligiblePnL(rawTotal, drawdown.forfeited),
+            forfeited: drawdown.forfeited,
+            forfeitReason: drawdown.reason,
+        };
+    }
+
+    const tradesByWeek = new Map<string, { trades: any[]; weekStart: Date; weekEnd: Date }>();
+    for (const t of periodTrades) {
+        const exitTime = new Date(t.exitTime);
+        const key = weekKey(exitTime);
+        const entry = tradesByWeek.get(key) ?? { trades: [], weekStart: startOfWeek(exitTime), weekEnd: endOfWeek(exitTime) };
+        entry.trades.push(t);
+        tradesByWeek.set(key, entry);
+    }
+
+    const weeks: WeekPnlBreakdown[] = [];
+    let rawTotal = 0;
+    let eligibleTotal = 0;
+    for (const { trades: weekTrades, weekStart, weekEnd } of Array.from(tradesByWeek.values()).sort((a, b) => a.weekStart.getTime() - b.weekStart.getTime())) {
+        const weekRawPnL = weekTrades.reduce((sum, t) => sum + (t.realizedPnL || 0), 0);
+        const drawdown = computeDrawdownForfeiture(weekTrades, investmentAmount, maxDailyDrawdownPercent, maxWeeklyDrawdownPercent);
+        const weekEligible = eligiblePnL(weekRawPnL, drawdown.forfeited);
+        weeks.push({
+            weekStart: weekStart.toISOString().slice(0, 10),
+            weekEnd: weekEnd.toISOString().slice(0, 10),
+            rawPnL: weekRawPnL,
+            eligiblePnL: weekEligible,
+            forfeited: drawdown.forfeited,
+            forfeitReason: drawdown.reason,
+        });
+        rawTotal += weekRawPnL;
+        eligibleTotal += weekEligible;
+    }
+
+    return { rawTotal, eligibleTotal, forfeited: weeks.some((w) => w.forfeited), weeks };
 }
 
 async function nextInvoiceNumber(): Promise<string> {

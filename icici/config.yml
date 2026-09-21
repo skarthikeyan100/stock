@@ -1,23 +1,3 @@
-srHypothesis:
-  confirmWindowMin: 2
-  maxJump: 15
-  maxRangeWidth: 30
-  buffer: 10
-  target: 10
-  stopLoss: 10
-  breachBuffer: 0
-  breachConfirmSec: 0
-  heldMinSec: 407
-  heldMaxSec: 651
-  csvOutput: false
-rocHypothesis:
-  target: 10
-  stopLoss: 10
-  cooldownSec: 60
-  minWins: 2
-  windowGridMin: [1, 2, 3, 4, 5, 7, 10, 15]
-  thresholdGrid: [5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 100]
-  csvOutput: false
 settings:
   minPrice: 20
   maxPrice: 30000
@@ -29,8 +9,12 @@ settings:
   safetyBufferAmount: 5000
   consistencyLimitPercent: 40
   maxDailyDrawdownPercent: 25
-  maxMonthlyDrawdownPercent: 50
+  maxWeeklyDrawdownPercent: 50
   maxTradesPerDay: 10
+  gapScreenerCoverOrderEnabled: false
+  gapScreenerCoverOrderUserEmail: ''
+  gapScreenerCoverOrderQuantity: 0
+  gapScreenerCoverOrderStopLossPoints: 0
 strategies:
   - type: SentimentStrategy
     enabled: false
@@ -39,37 +23,26 @@ strategies:
     orderQuantity: 7200
     sentiment: put
     loopCount: 1
-  - type: BuySellStrategy
-    enabled: false
-    initialQuantity: 150
-    incrementFactor: single
-    incrementQuantity: 150
-    averageThreshold: 10
-    targetPrice: 5
-    stopEnabled: false
-    activateIntermittentCount: 100
-    maxIterationCount: 10
-    logEnabled: false
-    right: none
   - type: ContinuousStrategy
     enabled: false
+    broker: breeze
     initialQuantity: 65
     slDistance: 10
-    minPremium: 100
-    allottedCapital: 200000
-    spawnQuantityMode: same
+    squareOffDistance: 500
+    postAverageTargetDistance: 1
+    minPremium: 50
+    maxInvestment: 200000
+    maxProfit: 1
+    spawnQuantityMode: '1'
     averageQuantityMode: same
     right: none
+    marketSentiment: none
+    maxLevels: 4
     cooldownSeconds: 60
     refillCancelDistance: 50
     logEnabled: true
-  - type: IntermittentStrategy
-    enabled: false
-    loopCount: 3
-    targetPrice: 2
-    quantity: 75
-    threshold: 10
-    logEnabled: false
+    momentumEnabled: false
+    momentumTimeoutMs: 3000
   - type: RateOfChangeStrategy
     enabled: false
     pointsThreshold: 30
@@ -121,12 +94,21 @@ strategies:
     minMovementPoints: 30
   - type: SupportResistanceStrategy
     enabled: false
-    supportPrice: 0
-    resistancePrice: 0
+    broker: zerodha
     quantity: 1755
-    targetPoints: 10
-    stopLossPoints: 15
     logEnabled: true
+    slDistance: 10
+    squareOffDistance: 100
+    maxLevels: 4
+    spawnQuantityMode: '1'
+    averageQuantityMode: same
+    postAverageTargetDistance: 1
+    refillCancelDistance: 50
+    minPremium: 50
+    maxInvestment: 200000
+    maxProfit: 100
+    cooldownSeconds: 60
+    marketSentiment: none
   - type: TargetReachStrategy
     enabled: false
     symbol: NIFTY
@@ -137,4 +119,12 @@ strategies:
     quantity: 1755
     targetPoints: 10
     stopLossPoints: 15
+    logEnabled: true
+  - type: BulkPcrStrategy
+    enabled: true
+    broker: zerodha
+    quantity: 13975
+    targetPoints: 2
+    right: none
+    maxInvestment: 3000000
     logEnabled: true

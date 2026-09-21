@@ -35,7 +35,7 @@ class MockOrderClient {
         return this.right;
     }
 
-    async getContractByPriceRangeZerodha(_userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, index = 'NIFTY', excludeStrikes: number[] = []) {
+    async getContractByPriceRangeBare(_userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, index = 'NIFTY', excludeStrikes: number[] = []) {
         this.contractLookupCalls.push({ underlyingLtp, optionType, minPremium, index, excludeStrikes });
         this.strikeCounter += 50;
         const strike = this.strikeCounter;
@@ -55,7 +55,7 @@ class MockOrderClient {
         };
     }
 
-    async buyContractZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade> {
+    async buyContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade> {
         this.buyContractCalls.push({ userId, tradingSymbol, instrumentToken, quantity, exchange });
         const trade = new Trade();
         trade.tsym = tradingSymbol;
@@ -69,7 +69,7 @@ class MockOrderClient {
         return trade;
     }
 
-    async sellContractZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade> {
+    async sellContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade> {
         this.sellContractCalls.push({ userId, tradingSymbol, instrumentToken, quantity, exchange });
         const trade = new Trade();
         trade.tsym = tradingSymbol;
@@ -82,12 +82,12 @@ class MockOrderClient {
         return trade;
     }
 
-    async placeLimitBuyZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO'): Promise<{ orderId: string }> {
+    async placeLimitBuyBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO'): Promise<{ orderId: string }> {
         this.limitBuyCalls.push({ userId, tradingSymbol, instrumentToken, quantity, price, exchange });
         return { orderId: 'ORDER_' + this.limitBuyCalls.length };
     }
 
-    async cancelOrderZerodha(userId: string, orderId: string): Promise<void> {
+    async cancelOrderBare(userId: string, orderId: string): Promise<void> {
         this.cancelOrderCalls.push({ userId, orderId });
     }
 
@@ -97,7 +97,7 @@ class MockOrderClient {
     }
 
     async getUserAllottedCapital(_userId: string): Promise<number | undefined> {
-        return undefined; // no per-user override in tests - capitalCheck falls back to cfg().allottedCapital
+        return undefined; // no longer consulted by capitalCheck() (reads maxInvestment from cfg() directly) - kept as a harmless stub
     }
 }
 
@@ -117,8 +117,8 @@ function setConfig(overrides: Record<string, any> = {}) {
         initialQuantity: 65,
         slDistance: 10,
         minPremium: 100,
-        allottedCapital: undefined as number | undefined,
-        spawnQuantityMode: 'multiplied',
+        maxInvestment: 10_000_000 as number | undefined, // effectively uncapped by default - tests below tighten it explicitly
+        spawnQuantityMode: 2, // flat multiplier - mirrors config.yml's live "double" value
         right: 'call',
         cooldownSeconds: 0,
         logEnabled: false,
@@ -174,7 +174,7 @@ function newStrategy(): any {
 }
 
 function legs(strategy: any): Map<string, any> {
-    return strategy.legsByToken as Map<string, any>;
+    return strategy.legManager.getLegsByToken() as Map<string, any>;
 }
 
 function legByLegId(strategy: any, legId: string): any {
@@ -239,8 +239,8 @@ async function testRootTargetHitImmediateRefill() {
     await s.processOptionQuote(mockOptionQuote(root.token, 161)); // >= 150 + 10
 
     assert(legs(s).size === 0, 'root leg removed on target hit');
-    assert(s.pendingReEntries.size === 1, 'root refill placed immediately (no nested legs)');
-    assert(s.deferredRootRefill === null, 'no deferred refill');
+    assert(s.legManager.getPendingReEntries().size === 1, 'root refill placed immediately (no nested legs)');
+    assert(s.legManager.getDeferredRootRefill() === null, 'no deferred refill');
     assert(mock.limitBuyCalls.length === 1 && mock.limitBuyCalls[0].price === 150, 'limit re-entry placed at original entry price');
 }
 
@@ -258,7 +258,8 @@ async function testGappedTickFiresDeepestFreeLevelOnly() {
     assert(legs(s).size === 2, 'one spawn created (root + child)');
     assert(root.childByLevel.has(3) && !root.childByLevel.has(1) && !root.childByLevel.has(2), 'only level 3 slot occupied');
     const child = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
-    assert(child.quantity === 65 * 3, 'level-3 spawn quantity = 3x parent (multiplied mode)');
+    assert(child.quantity === 65 * 2, 'level-3 spawn quantity = flat 2x multiplier (spawnQuantityMode=2), not level-scaled');
+    assert(child.quantity !== 65 * 3, 'must NOT equal the old level-scaled (3x) value - confirms flat-multiplier semantics');
 }
 
 async function testOccupiedLevelDoesNotRefire() {
@@ -319,9 +320,9 @@ async function testNestedLegRefillsWhenParentAlive() {
 
     await s.processOptionQuote(mockOptionQuote(child.token, 91)); // child target hit (entry 80 + D 10 = 90)
 
-    assert(s.pendingReEntries.size === 1, 'nested leg refill placed while its parent (root) is still alive');
+    assert(s.legManager.getPendingReEntries().size === 1, 'nested leg refill placed while its parent (root) is still alive');
     assert(mock.limitBuyCalls.length === 1 && mock.limitBuyCalls[0].price === 80, 'limit re-entry at the nested leg\'s original entry price');
-    const pending = s.pendingReEntries.get(child.token);
+    const pending = s.legManager.getPendingReEntries().get(child.token);
     assert(pending.isRoot === false, 'pending refill records nested identity');
     assert(pending.parentLegId === root.legId && pending.parentLevel === 1, 'pending refill records its parent leg/level');
     assert(!root.childByLevel.has(1), 'level 1 slot freed immediately on the child\'s close');
@@ -344,7 +345,7 @@ async function testNestedLegBlockedWhenParentClosed() {
 
     await s.processOptionQuote(mockOptionQuote(child.token, 91)); // child's own target hit (entry 80 + D 10 = 90)
 
-    assert(s.pendingReEntries.size === 0, 'no refill placed - parent (root) is no longer alive');
+    assert(s.legManager.getPendingReEntries().size === 0, 'no refill placed - parent (root) is no longer alive');
 }
 
 async function testNestedCapitalBlockedRefillSkippedOutright() {
@@ -358,13 +359,13 @@ async function testNestedCapitalBlockedRefillSkippedOutright() {
     await s.processOptionQuote(mockOptionQuote(root.token, 140)); // level 1 spawn; child now open
     const child = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
 
-    setConfig({ allottedCapital: 1 }); // tighten the cap so any nonzero refill is blocked
+    setConfig({ maxInvestment: 1 }); // tighten the cap so any nonzero refill is blocked
 
     await s.processOptionQuote(mockOptionQuote(child.token, 91)); // child target hit -> refill capital-blocked
 
-    assert(s.pendingReEntries.size === 0, 'nested refill skipped outright - not placed');
-    assert(s.deferredRootRefill === null, 'no defer/retry state created for a nested refill');
-    assert(mock.limitBuyCalls.length === 0, 'placeLimitBuyZerodhaBare never called for the blocked nested refill');
+    assert(s.legManager.getPendingReEntries().size === 0, 'nested refill skipped outright - not placed');
+    assert(s.legManager.getDeferredRootRefill() === null, 'no defer/retry state created for a nested refill');
+    assert(mock.limitBuyCalls.length === 0, 'placeLimitBuyBare never called for the blocked nested refill');
 }
 
 async function testDeferredRootRefillPromotesWhenNestedClears() {
@@ -381,21 +382,21 @@ async function testDeferredRootRefillPromotesWhenNestedClears() {
     // Root hits its own target while the nested child is still open
     await s.processOptionQuote(mockOptionQuote(root.token, 161));
 
-    assert(s.deferredRootRefill !== null, 'root refill deferred while nested leg open');
-    assert(s.pendingReEntries.size === 0, 'no limit order placed yet');
-    assert(mock.limitBuyCalls.length === 0, 'placeLimitBuyZerodhaBare not called yet');
+    assert(s.legManager.getDeferredRootRefill() !== null, 'root refill deferred while nested leg open');
+    assert(s.legManager.getPendingReEntries().size === 0, 'no limit order placed yet');
+    assert(mock.limitBuyCalls.length === 0, 'placeLimitBuyBare not called yet');
 
     // Now close the nested child (5x, for variety)
     await s.processOptionQuote(mockOptionQuote(child.token, 30)); // entry 80, D 10 -> 5x threshold = 30
 
-    assert(s.deferredRootRefill === null, 'deferred refill cleared');
-    assert(s.pendingReEntries.size === 1, 'deferred refill promoted into a pending re-entry');
+    assert(s.legManager.getDeferredRootRefill() === null, 'deferred refill cleared');
+    assert(s.legManager.getPendingReEntries().size === 1, 'deferred refill promoted into a pending re-entry');
     assert(mock.limitBuyCalls.length === 1 && mock.limitBuyCalls[0].price === 150, 'limit order placed at original root entry price');
 }
 
 async function testCapitalCapBlocksSpawnUntilFreed() {
     console.log('\n--- Test 10: Capital cap blocks a spawn until capital frees up ---');
-    setConfig({ allottedCapital: 65 * 150 }); // exactly T1's own investment, no headroom
+    setConfig({ maxInvestment: 65 * 150 }); // exactly T1's own investment, no headroom
     installMock();
     const s = newStrategy();
     const root = await enterT1(s, 150);
@@ -410,15 +411,15 @@ async function testCapitalCapBlocksSpawnUntilFreed() {
     assert(mock.buyContractCalls.length === buysBeforeAttempt, 'no buy order placed while blocked');
 
     // Capital frees up
-    configService.config.strategies[0].allottedCapital = 10_000_000;
+    configService.config.strategies[0].maxInvestment = 10_000_000;
     await s.processOptionQuote(mockOptionQuote(root.token, 140)); // retry same tick condition
 
     assert(legs(s).size === 2, 'spawn succeeds once capital is available');
 }
 
-async function testQuantityModeSame() {
-    console.log('\n--- Test 11: spawnQuantityMode "same" ---');
-    setConfig({ spawnQuantityMode: 'same' });
+async function testSpawnQuantityModeExplicitOne() {
+    console.log('\n--- Test 11: spawnQuantityMode=1 - flat 1x regardless of level ---');
+    setConfig({ spawnQuantityMode: 1 });
     installMock();
     const s = newStrategy();
     const root = await enterT1(s, 150);
@@ -428,7 +429,44 @@ async function testQuantityModeSame() {
     await s.processOptionQuote(mockOptionQuote(root.token, 105)); // adverseMove=45, level=4
 
     const child = legByLegId(s, root.childByLevel.get(4));
-    assert(child.quantity === 65, 'level-4 spawn uses same quantity as parent, not 4x');
+    assert(child.quantity === 65, 'level-4 spawn quantity = 1x parent (spawnQuantityMode=1), not 4x level-scaled');
+}
+
+async function testSpawnQuantityModeFallback() {
+    console.log('\n--- Test 11b: spawnQuantityMode falls back to a flat 1x when unset, zero, negative, or non-numeric ---');
+    for (const badValue of [undefined, 0, -2, 'not-a-number', NaN]) {
+        setConfig({ spawnQuantityMode: badValue });
+        installMock();
+        const s = newStrategy();
+        const root = await enterT1(s, 150);
+
+        mock.nextPremium = 80;
+        mock.nextEntryPrice = 80;
+        await s.processOptionQuote(mockOptionQuote(root.token, 140)); // level 1 spawn
+
+        const child = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
+        assert(child.quantity === 65, `spawnQuantityMode=${JSON.stringify(badValue)} falls back to 1x (65), got ${child?.quantity}`);
+    }
+}
+
+async function testSpawnQuantityReadsCurrentTotalQuantity() {
+    console.log('\n--- Test 11c: hedge spawn sizes off totalQuantity (post-averaging), not original quantity ---');
+    setConfig({ spawnQuantityMode: 2 });
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150); // entry=150, qty=65, D=10
+
+    mock.nextPremium = 130;
+    mock.nextEntryPrice = 130;
+    await s.processOptionQuote(mockOptionQuote(root.token, 140)); // level 1: spawn (totalQuantity=65 at spawn time) + average -> totalQuantity=130
+    assert(root.totalQuantity === 130, 'root grew to 130 via the level-1 average-add');
+
+    mock.nextPremium = 110;
+    mock.nextEntryPrice = 110;
+    await s.processOptionQuote(mockOptionQuote(root.token, 125)); // adverseMove=25 -> level 2, root.totalQuantity is now 130
+
+    const level2Child = legByLegId(s, root.childByLevel.get(2));
+    assert(level2Child.quantity === 260, `level-2 spawn = 2x root's CURRENT totalQuantity (130), i.e. 260 - got ${level2Child?.quantity}`);
 }
 
 async function testFiveXClosesOnlyThisLeg() {
@@ -482,7 +520,7 @@ async function testUpdateTradeResolvesPendingRootRefill() {
     setConfig();
     installMock();
     const s = newStrategy();
-    s.pendingReEntries.set('TOKEN_X', {
+    s.legManager.getPendingReEntries().set('TOKEN_X', {
         token: 'TOKEN_X', tsym: 'NIFTY-CE-24500', exchange: 'NFO', strike: 24500,
         right: 'call', quantity: 65, limitPrice: 150, orderId: 'ORDER_X',
         isRoot: true, parentLegId: null, parentLevel: null,
@@ -490,7 +528,7 @@ async function testUpdateTradeResolvesPendingRootRefill() {
 
     await s.updateTrade(buyTrade('NIFTY-CE-24500', 'TOKEN_X', 152, 65));
 
-    assert(s.pendingReEntries.size === 0, 'pending re-entry cleared');
+    assert(s.legManager.getPendingReEntries().size === 0, 'pending re-entry cleared');
     assert(legs(s).size === 1, 'new leg opened');
     const leg = legs(s).get('TOKEN_X');
     assert(leg.isRoot === true, 'resolved leg is root');
@@ -509,12 +547,12 @@ async function testUpdateTradeReoccupiesParentSlotForNestedRefill() {
     const child = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
 
     await s.processOptionQuote(mockOptionQuote(child.token, 141)); // child target hit (entry 130 + D 10 = 140) -> refill pending
-    assert(s.pendingReEntries.size === 1, 'nested refill pending');
+    assert(s.legManager.getPendingReEntries().size === 1, 'nested refill pending');
     assert(!root.childByLevel.has(1), 'level 1 slot freed on the child\'s close');
 
     await s.updateTrade(buyTrade(child.tsym, child.token, 132, 65)); // fill echo for the pending refill
 
-    assert(s.pendingReEntries.size === 0, 'pending refill resolved');
+    assert(s.legManager.getPendingReEntries().size === 0, 'pending refill resolved');
     const newLeg = legs(s).get(child.token);
     assert(newLeg !== undefined, 'new leg opened for the filled nested refill');
     assert(newLeg.isRoot === false, 'new leg keeps nested identity');
@@ -617,12 +655,12 @@ async function testRootRefillDriftCancelsPastThreshold() {
     const s = newStrategy();
     const root = await enterT1(s, 150);
     await s.processOptionQuote(mockOptionQuote(root.token, 161)); // target hit -> refill placed at 150
-    assert(s.pendingReEntries.size === 1, 'root refill pending');
+    assert(s.legManager.getPendingReEntries().size === 1, 'root refill pending');
 
     await s.processOptionQuote(mockOptionQuote(root.token, 150 + 51)); // 51 > default 50-pt cancelDistance
 
-    assert(mock.cancelOrderCalls.length === 1 && mock.cancelOrderCalls[0].orderId === 'ORDER_1', 'cancelOrderZerodha called for the pending order');
-    assert(s.pendingReEntries.size === 0, 'pending re-entry dropped, no re-place at a new price');
+    assert(mock.cancelOrderCalls.length === 1 && mock.cancelOrderCalls[0].orderId === 'ORDER_1', 'cancelOrderBare called for the pending order');
+    assert(s.legManager.getPendingReEntries().size === 0, 'pending re-entry dropped, no re-place at a new price');
 }
 
 async function testRootRefillNoCancelAtBoundary() {
@@ -636,7 +674,7 @@ async function testRootRefillNoCancelAtBoundary() {
     await s.processOptionQuote(mockOptionQuote(root.token, 150 + 50)); // exactly the default cancelDistance
 
     assert(mock.cancelOrderCalls.length === 0, 'no cancel call at the boundary');
-    assert(s.pendingReEntries.size === 1, 'order still resting');
+    assert(s.legManager.getPendingReEntries().size === 1, 'order still resting');
 }
 
 async function testLateFillEchoAfterCancelIsNoOp() {
@@ -648,7 +686,7 @@ async function testLateFillEchoAfterCancelIsNoOp() {
     const cancelledToken = root.token;
     await s.processOptionQuote(mockOptionQuote(cancelledToken, 161)); // target hit -> refill placed at 150
     await s.processOptionQuote(mockOptionQuote(cancelledToken, 150 + 51)); // drift-cancel
-    assert(s.pendingReEntries.size === 0, 'pending re-entry dropped by the cancel');
+    assert(s.legManager.getPendingReEntries().size === 0, 'pending re-entry dropped by the cancel');
 
     await s.updateTrade(buyTrade('NIFTY-CE-24500', cancelledToken, 150, 65)); // late echo of the now-cancelled order
 
@@ -667,7 +705,7 @@ async function testDeeperLevelCancelsShallowerPendingRefills() {
     const l1 = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
 
     await s.processOptionQuote(mockOptionQuote(l1.token, 141)); // L1 target hit (entry 130 + D 10 = 140) -> refill pending
-    assert(s.pendingReEntries.size === 1, 'L1 refill pending');
+    assert(s.legManager.getPendingReEntries().size === 1, 'L1 refill pending');
     const cancelsBefore = mock.cancelOrderCalls.length;
 
     mock.nextPremium = 110;
@@ -675,7 +713,7 @@ async function testDeeperLevelCancelsShallowerPendingRefills() {
     await s.processOptionQuote(mockOptionQuote(root.token, 125)); // adverseMove=25 -> level 2 (125 < root's target 141, no premature target-hit)
 
     assert(mock.cancelOrderCalls.length === cancelsBefore + 1, 'L1\'s pending refill cancelled once level 2 fires');
-    assert(s.pendingReEntries.size === 0, 'no pending refills remain after cancellation');
+    assert(s.legManager.getPendingReEntries().size === 0, 'no pending refills remain after cancellation');
     assert(root.childByLevel.has(2), 'level 2 spawned');
     assert(legs(s).size === 2, 'root + new level-2 child open (L1 already closed, not live)');
 }
@@ -693,7 +731,7 @@ async function testSameLevelRecrossCancelsAndRespawns() {
     const firstL1LegId = l1.legId;
 
     await s.processOptionQuote(mockOptionQuote(l1.token, 141)); // L1 target hit -> refill pending, slot 1 freed
-    assert(s.pendingReEntries.size === 1, 'L1 refill pending');
+    assert(s.legManager.getPendingReEntries().size === 1, 'L1 refill pending');
     assert(!root.childByLevel.has(1), 'level 1 slot freed on L1\'s close');
 
     // Root ticks at level 1's range again - slot is free, already averaged at level 1
@@ -703,7 +741,7 @@ async function testSameLevelRecrossCancelsAndRespawns() {
     await s.processOptionQuote(mockOptionQuote(root.token, 140)); // level 1 again
 
     assert(mock.cancelOrderCalls.length === 1, 'stale L1 pending refill cancelled on re-crossing level 1');
-    assert(s.pendingReEntries.size === 0, 'no pending refills remain');
+    assert(s.legManager.getPendingReEntries().size === 0, 'no pending refills remain');
     assert(root.childByLevel.has(1), 'level 1 respawned');
     const newL1LegId = root.childByLevel.get(1);
     assert(newL1LegId !== firstL1LegId, 'fresh spawn has a new legId, not the old L1');
@@ -721,13 +759,38 @@ async function test5xCancelsChildPendingRefills() {
     const l1 = Array.from(legs(s).values()).find((l: any) => !l.isRoot);
 
     await s.processOptionQuote(mockOptionQuote(l1.token, 141)); // L1 target hit -> refill pending
-    assert(s.pendingReEntries.size === 1, 'L1 refill pending');
+    assert(s.legManager.getPendingReEntries().size === 1, 'L1 refill pending');
 
     await s.processOptionQuote(mockOptionQuote(root.token, 100)); // root 5x's (adverseMove=50, level 5) - gone for good
 
     assert(!legs(s).has(root.token), 'root closed via 5x');
-    assert(s.pendingReEntries.size === 0, 'L1\'s pending refill cancelled when root 5x\'d');
-    assert(mock.cancelOrderCalls.length === 1, 'cancelOrderZerodha called for L1\'s pending refill');
+    assert(s.legManager.getPendingReEntries().size === 0, 'L1\'s pending refill cancelled when root 5x\'d');
+    assert(mock.cancelOrderCalls.length === 1, 'cancelOrderBare called for L1\'s pending refill');
+}
+
+async function testHedgeStartLevelDelaysHedgeSpawn() {
+    console.log('\n--- Test 30: hedgeStartLevel delays the hedge spawn but not averaging ---');
+    setConfig({ hedgeStartLevel: 2 });
+    installMock();
+    const s = newStrategy();
+    const root = await enterT1(s, 150); // entry=150, qty=65, D=10
+
+    mock.nextEntryPrice = 140;
+    mock.nextPremium = 140;
+    await s.processOptionQuote(mockOptionQuote(root.token, 135)); // adverseMove=15, level=1 (< hedgeStartLevel=2)
+
+    assert(legs(s).size === 1, 'level 1 (below hedgeStartLevel) does not spawn a hedge leg');
+    assert(root.averagedLevels.has(1), 'level 1 still averages into the root leg (unconditional, unlike the hedge spawn)');
+    assert(root.totalQuantity === 130, `averaging raised totalQuantity to 130 (got ${root.totalQuantity})`);
+    assert(Math.abs(root.avgPrice - 145) < 1e-9, `averaging lowered avgPrice to the weighted average of 150 and 140 (got ${root.avgPrice})`);
+
+    mock.nextEntryPrice = 80;
+    mock.nextPremium = 80;
+    await s.processOptionQuote(mockOptionQuote(root.token, 125)); // adverseMove=25, level=2 (>= hedgeStartLevel)
+
+    assert(legs(s).size === 2, 'level 2 (at hedgeStartLevel) spawns a hedge leg');
+    assert(root.childByLevel.has(2), 'level 2 hedge slot occupied');
+    assert(root.averagedLevels.has(2), 'level 2 also averages into the root leg, same as any level');
 }
 
 // --- Run All Tests ---
@@ -748,7 +811,9 @@ async function runAllTests() {
         ['Nested capital-blocked refill skipped outright', testNestedCapitalBlockedRefillSkippedOutright],
         ['Deferred root refill promotes', testDeferredRootRefillPromotesWhenNestedClears],
         ['Capital cap blocks then frees', testCapitalCapBlocksSpawnUntilFreed],
-        ['spawnQuantityMode same', testQuantityModeSame],
+        ['spawnQuantityMode explicit 1x (not level-scaled)', testSpawnQuantityModeExplicitOne],
+        ['spawnQuantityMode fallback to 1x on invalid config', testSpawnQuantityModeFallback],
+        ['spawnQuantityMode reads current totalQuantity, not original quantity', testSpawnQuantityReadsCurrentTotalQuantity],
         ['5x closes only this leg', testFiveXClosesOnlyThisLeg],
         ['Concurrent ticks spawn once', testConcurrentTicksSpawnOnce],
         ['updateTrade ignores unmatched fill', testUpdateTradeIgnoresUnmatchedFill],
@@ -764,6 +829,7 @@ async function runAllTests() {
         ['Deeper level cancels shallower pending refills', testDeeperLevelCancelsShallowerPendingRefills],
         ['Same-level re-cross cancels and respawns', testSameLevelRecrossCancelsAndRespawns],
         ['5x cancels child pending refills', test5xCancelsChildPendingRefills],
+        ['hedgeStartLevel delays the hedge spawn but not averaging', testHedgeStartLevelDelaysHedgeSpawn],
     ];
 
     for (const [name, fn] of tests) {

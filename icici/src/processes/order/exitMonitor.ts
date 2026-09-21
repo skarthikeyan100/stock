@@ -11,7 +11,7 @@ import { OptionQuote, Trade } from '../../model/model';
 // via onExit() rather than imported directly, to avoid a circular dependency
 // with zerodhaExecutor.ts/antExecutor.ts.
 
-export type Broker = 'zerodha' | 'ant';
+export type Broker = 'zerodha' | 'ant' | 'prism';
 
 interface MonitoredTrade {
     trade: Trade;
@@ -120,14 +120,20 @@ export function reconcileFromTrades(trades: Trade[]): void {
         // Exchange/broker aren't stored on Trade - infer exchange the same
         // way setTargetStopLoss does (tsym prefix), and broker from
         // whichever executor's Trade shape this is (antOrderNo present -> ant,
-        // otherwise zerodha - matches this file's existing Broker union).
+        // prismCoverOrderNo present -> prism, otherwise zerodha - matches
+        // this file's existing Broker union).
         const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('BSE') ? 'BFO' : 'NFO';
-        const broker: Broker = trade.antOrderNo ? 'ant' : 'zerodha';
-        // A GTT/bracket trade (gttTriggerId set) already has its exit owned by
-        // the broker - reconcile it watch-only (mark-to-market only) so a
-        // restart doesn't also arm an in-app square-off that would race the
-        // broker's own bracket.
-        registerTrade(trade, exchange, broker, trade.gttTriggerId != null);
+        const broker: Broker = trade.antOrderNo ? 'ant' : trade.prismCoverOrderNo ? 'prism' : 'zerodha';
+        // A GTT/bracket/cover trade already has its exit owned by the broker -
+        // reconcile it watch-only (mark-to-market only) so a restart doesn't
+        // also arm an in-app square-off that would race the broker's own
+        // bracket/cover. Previously only checked gttTriggerId (Zerodha-only),
+        // which meant a restored ANT bracket/cover trade (no gttTriggerId -
+        // that field is Zerodha-specific) was wrongly reconciled as
+        // NOT watch-only - the same gap a Prism cover-order restore would hit
+        // too, since Prism has no gttTriggerId either.
+        const watchOnly = trade.gttTriggerId != null || trade.antOrderNo != null || trade.prismCoverOrderNo != null;
+        registerTrade(trade, exchange, broker, watchOnly);
         reconciled++;
     }
     if (reconciled > 0) {

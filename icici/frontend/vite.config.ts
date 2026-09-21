@@ -31,9 +31,9 @@ export default defineConfig({
       },
     },
   ],
-  base: '/app/',
+  base: '/',
   build: {
-    outDir: '../public/app',
+    outDir: '../public',
     emptyOutDir: true,
   },
   server: {

@@ -6,8 +6,8 @@ interface NiftyQuote {
   open: number;
   high: number;
   low: number;
-  prevClose: number;
   change: number;
+  changePercent: number;
 }
 
 export default function NiftyTicker() {
@@ -46,9 +46,8 @@ export default function NiftyTicker() {
   }
 
   const ltp = Number(quote.ltp) || 0;
-  const prevClose = Number(quote.prevClose) || 0;
-  const change = Number(quote.change) || (prevClose ? ltp - prevClose : 0);
-  const changePct = prevClose ? ((change / prevClose) * 100).toFixed(2) : '0.00';
+  const change = Number(quote.change) || 0;
+  const changePct = (Number(quote.changePercent) || 0).toFixed(2);
   const isUp = change >= 0;
   const colorClass = isUp ? 'ticker-up' : 'ticker-down';
   const arrow = isUp ? '▲' : '▼';

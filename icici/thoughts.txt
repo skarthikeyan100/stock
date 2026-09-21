@@ -1,0 +1,7 @@
+1. Demo Mode - Show comment like text. Only trades, no profile, no trading, only in browser memor
+2. Ban trading if the rule is breached
+3. Mobile version with limited screen
+4. ENable google in stock.nivedhatech.com
+5. Change text to weekly mode
+6. Option to trade without stoploss and target for advanced users (advisors)
+7. Login as another user and check UX

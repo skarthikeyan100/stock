@@ -10,6 +10,7 @@ import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingLimitOrder, untrackPendingLimitOrder } from './pendingLimitOrders';
+import { BuyRequest } from './BrokerExecutor';
 
 // Zerodha is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -279,10 +280,51 @@ export async function squareOffOnZerodha(userId: string, tsym: string, quantity:
     return trade;
 }
 
+// BrokerExecutor.buy() implementation (see BrokerExecutor.ts) - places a
+// market buy for an already-resolved contract (caller did strike/expiry
+// selection; buyIndexOnZerodha/manualBuyOnZerodha above do their own
+// resolution before ever reaching a Trade), then finalizeEntry protects it
+// (GTT or exitMonitor watch) when both target/stopLossPoints are set, or
+// leaves it unprotected when they aren't - the same "bare" semantics
+// marketBuyBareOnZerodha below hand-implements by skipping finalizeEntry
+// entirely, unified here into one function since finalizeEntry already
+// no-ops protection on its own when targetPoints/stopLossPoints are 0.
+export async function buyResolvedOnZerodha(request: BuyRequest): Promise<Trade> {
+    const zerodha = Zerodha.getInstance();
+    if (!(await zerodha.hasValidSession())) {
+        throw new Error('Zerodha session not active - complete /kite/login first.');
+    }
+    // 'NSE' in Exchange is Breeze-only (Zerodha never trades NSE cash through
+    // this path) - cast is safe, this dispatch only reaches here for
+    // Zerodha-broker users.
+    const exchange = request.exchange as 'NFO' | 'BFO';
+    Log.log(`[order] Buying ${request.tradingSymbol} qty=${request.quantity} for ${request.userId} (BrokerExecutor.buy)`);
+    const { orderId } = await zerodha.buyOption(request.tradingSymbol, request.quantity, exchange);
+    const entryPrice = await zerodha.getFillPrice(orderId);
+
+    const trade = new Trade();
+    trade.tsym = request.tradingSymbol;
+    trade.token = request.instrumentId;
+    trade.quantity = request.quantity;
+    trade.price = entryPrice;
+    trade.lastTradePrice = entryPrice;
+    trade.action = 'Buy';
+    trade.status = 'COMPLETE';
+    trade.user = request.userId;
+    trade.brokerOrderId = orderId;
+
+    await finalizeEntry(trade, request.userId, exchange, request.targetPoints ?? 0, request.stopLossPoints ?? 0);
+    return trade;
+}
+
 // --- ContinuousStrategy bare execution primitives ---
 // Deliberately bypass finalizeEntry (no GTT, no exitMonitor registration) -
 // ContinuousStrategy self-monitors every leg's target/1x-5x thresholds from
 // live option ticks instead. "Bare" = just buy/sell + record the fill.
+// Left as its own separate path (not migrated onto buyResolvedOnZerodha
+// above) rather than touching ContinuousStrategy's already-working, live
+// call sites as part of this change - see the BrokerExecutor plan's
+// migration notes.
 
 export async function marketBuyBareOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const zerodha = Zerodha.getInstance();
@@ -466,6 +508,58 @@ export async function pollGttFills(): Promise<void> {
             Log.log(`[order] GTT poll: ${trade.tsym} (${trade.user}) closed, recorded exit at ${sellTrade.price}`);
         } catch (e) {
             Log.log('[order] GTT poll: failed to resolve exit for', trade.tsym, e);
+        }
+    }
+}
+
+// Detects a sell placed OUTSIDE this app - e.g. the user manually squared off
+// a position from the Kite app UI directly - and reconciles it into
+// bookkeeping so the trade doesn't stay open forever (blocking future orders
+// via lot/investment limits) and its P&L never gets recorded. Every sell this
+// app itself places already sets trade.brokerOrderId and is recorded via
+// recordFill synchronously at its own call site, and recordFill's own
+// processedFillIds dedup (keyed on brokerOrderId, see bookkeeping.ts) means
+// blindly re-feeding an order it already knows about is a silent no-op - so
+// this function doesn't need its own "is this orderId ours" tracking, it just
+// finds every COMPLETE SELL order for each open trade's tsym since that
+// trade's entryTime and lets recordFill sort out which (if any) are actually
+// new. Called on an interval from orderProcess.ts, same cadence as pollGttFills.
+export async function reconcileManualSells(): Promise<void> {
+    const zerodha = Zerodha.getInstance();
+    if (!(await zerodha.hasValidSession())) return;
+    if (bookkeeping.trades.length === 0) return;
+
+    let orders: any[];
+    try {
+        orders = await zerodha.getKiteConnect().getOrders();
+    } catch (e) {
+        Log.log('[order] reconcileManualSells: failed to fetch orders:', e);
+        return;
+    }
+
+    for (const trade of bookkeeping.trades) {
+        const entryTimeMs = trade.entryTime?.getTime() ?? 0;
+        const sellFills = orders.filter((o: any) =>
+            o.tradingsymbol === trade.tsym && o.transaction_type === 'SELL' && o.status === 'COMPLETE' &&
+            new Date(o.order_timestamp).getTime() >= entryTimeMs
+        );
+
+        for (const fill of sellFills) {
+            try {
+                const sellTrade = new Trade();
+                sellTrade.tsym = trade.tsym;
+                sellTrade.token = trade.token;
+                sellTrade.quantity = fill.filled_quantity;
+                sellTrade.price = fill.average_price;
+                sellTrade.action = 'Sell';
+                sellTrade.status = 'COMPLETE';
+                sellTrade.user = trade.user;
+                sellTrade.brokerOrderId = fill.order_id;
+
+                await bookkeeping.recordFill(sellTrade);
+            } catch (e) {
+                Log.log('[order] reconcileManualSells: failed to record fill for', trade.tsym, fill.order_id, e);
+            }
         }
     }
 }

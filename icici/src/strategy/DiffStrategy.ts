@@ -56,8 +56,8 @@ export default class DiffStrategy extends Strategy {
     }
     
     buyIndex = async (right) => {
-        Log.log('IntermittentStrategy: buyIndex called with right: ', right);
-        const quantity = configService.getStrategyConfig('IntermittentStrategy').quantity;
+        Log.log('DiffStrategy: buyIndex called with right: ', right);
+        const quantity = configService.getStrategyConfig('DiffStrategy')?.quantity ?? 75;
         const niftyLtp = this.stats?.close ?? 0;
         const response = await OrderClient.getInstance().buyIndex(this.userId, { niftyLtp, right, quantity });
         if (response) {
@@ -71,8 +71,7 @@ export default class DiffStrategy extends Strategy {
     }
 
     processOptionQuote = async (quote: OptionQuote) : Promise<void> => {
-        const enabled = configService.getStrategyConfig('IntermittentStrategy').enabled;
-        if (enabled && this.token == quote.token) {
+        if (this.enabled && this.token == quote.token) {
             const profit = round((quote.ltp - this.price) * this.qty);
             Log.log('DiffStrategy: ', this.contract, ' ltp: ', quote.ltp, ' price: ', this.price, ' qty: ', this.qty, ' profit: ', profit)
         }

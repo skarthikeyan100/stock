@@ -1,8 +1,6 @@
 import Log from '../util/Log';
 import { Strategy } from './strategy';
-import BuySellStrategy from './BuySellStrategy';
 import SentimentStrategy from './SentimentStrategy';
-import IntermittentStrategy from './IntermittentStrategy';
 import BiDirectionStrategy from './BiDirectionStrategy';
 import DiffStrategy from './DiffStrategy';
 import PivotStrategy from './PivotStrategy';
@@ -17,12 +15,11 @@ import GoodMorningSensexStrategy from './GoodMorningSensexStrategy';
 import SupportResistanceStrategy from './SupportResistanceStrategy';
 import TargetReachStrategy from './TargetReachStrategy';
 import ContinuousStrategy from './ContinuousStrategy';
+import BulkPcrStrategy from './BulkPcrStrategy';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 
 const STRATEGY_REGISTRY = new Map<string, new (userId?: string) => Strategy>();
-STRATEGY_REGISTRY.set('BuySellStrategy', BuySellStrategy);
 STRATEGY_REGISTRY.set('SentimentStrategy', SentimentStrategy);
-STRATEGY_REGISTRY.set('IntermittentStrategy', IntermittentStrategy);
 STRATEGY_REGISTRY.set('BiDirectionStrategy', BiDirectionStrategy);
 STRATEGY_REGISTRY.set('DiffStrategy', DiffStrategy);
 STRATEGY_REGISTRY.set('PivotStrategy', PivotStrategy);
@@ -37,6 +34,7 @@ STRATEGY_REGISTRY.set('GoodMorningSensexStrategy', GoodMorningSensexStrategy);
 STRATEGY_REGISTRY.set('SupportResistanceStrategy', SupportResistanceStrategy);
 STRATEGY_REGISTRY.set('TargetReachStrategy', TargetReachStrategy);
 STRATEGY_REGISTRY.set('ContinuousStrategy', ContinuousStrategy);
+STRATEGY_REGISTRY.set('BulkPcrStrategy', BulkPcrStrategy);
 
 export function createStrategy(config: StrategyInstanceConfig): Strategy | null {
     const StrategyClass = STRATEGY_REGISTRY.get(config.type);

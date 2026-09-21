@@ -5,6 +5,16 @@
 // with ordinary log lines.
 console.log = console.error;
 
+// Load .env into process.env before any other module - several modules read
+// process.env at import time (e.g. src/constants.ts's MOCK_BROKER/MOCK_QUOTES/
+// MOCK_DATE), so this must be the very first import. See .env.example for the
+// full list of variables this project reads and CLAUDE.md's Environment
+// section for which are required. Harmless if this process was itself
+// spawned by orchestrator.ts (which already loaded .env into its own
+// process.env, inherited by every child it spawns) - dotenv never overwrites
+// a variable that's already set.
+import 'dotenv/config';
+
 import dns from 'dns';
 // This host is dual-stack; Node prefers IPv6 by default for outbound requests,
 // which bypasses Zerodha/Kite's IPv4-only IP allowlist. Force IPv4 first so
@@ -17,11 +27,13 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import cookieParser from 'cookie-parser';
 import path from 'path';
+import https from 'https';
+import fs from 'fs';
 import { Trade } from './model/model';
 import configService from './prism/ConfigService';
 import { validateFlatConfig } from './prism/configValidation';
 import { getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile } from './user';
-import { computePayout, createPayoutRecord, markPayoutDecision, generateInvoiceHtml, getPayoutDecisionLog } from './payout';
+import { computePayout, createPayoutRecord, markPayoutDecision, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary } from './payout';
 import multer from 'multer';
 import { GridFSBucket, ObjectId } from 'mongodb';
 import Tesseract from 'tesseract.js';
@@ -32,10 +44,15 @@ import { dateRangeQuery } from './tools/quoteDateRange';
 import myEmitter from './tools/emitter';
 import Prism from './prism';
 import ANT from './ant/ANT';
+import AntContractMaster from './ant/AntContractMaster';
 import Zerodha from './zerodha/Zerodha';
+import Breeze from './breeze/Breeze';
+import BreezeStream from './breeze/BreezeStream';
 import OrderClient from './processes/strategies/OrderClient';
 import StrategiesClient from './ipc/StrategiesClient';
 import { readJsonLines, writeJsonLine } from './ipc/jsonLines';
+import { cloudflareOnly, isLoopback } from './middleware/cloudflareOnly';
+import { OAuth2Client } from 'google-auth-library';
 
 // `frontend` process (server.ts, unchanged name/entry point - see the plan:
 // "frontend should be server.ts itself, edited in place"). Every route below
@@ -53,32 +70,100 @@ import { readJsonLines, writeJsonLine } from './ipc/jsonLines';
 // /ant/trades route registrations. Fixed in passing: /search's malformed JSON
 // response, /logout's missing response.
 
+// Fail closed: the whole auth model (session-cookie signing, Google ID-token
+// verification) is worthless if either secret is missing/guessable - refuse
+// to start rather than silently fall back to something insecure.
+const SESSION_COOKIE_SECRET = process.env.SESSION_COOKIE_SECRET;
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+if (!SESSION_COOKIE_SECRET) {
+    throw new Error('SESSION_COOKIE_SECRET env var is required (session cookie signing secret) - refusing to start.');
+}
+if (!GOOGLE_CLIENT_ID) {
+    throw new Error('GOOGLE_CLIENT_ID env var is required (must match frontend VITE_GOOGLE_CLIENT_ID) - refusing to start.');
+}
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+
 var app = express();
 
+app.use(cloudflareOnly);
 app.use(express.static('public'));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 app.use(bodyParser());
-app.use(cookieParser('propfirm-secret'));
+app.use(cookieParser(SESSION_COOKIE_SECRET));
 app.disable('etag');
 
 const orderClient = OrderClient.getInstance();
 const strategiesClient = StrategiesClient.getInstance();
 
-// Helper: resolve user from session cookie, fallback to X-User-Id header
-function resolveUser(req: express.Request): string {
-    const cookieEmail = (req as any).signedCookies?.session;
-    if (cookieEmail) return cookieEmail;
-    return (req.headers['x-user-id'] as string) || 'Default';
+// Resolves the user ONLY from the server-signed session cookie - proves
+// nothing was forged, unlike the X-User-Id header this used to also trust
+// (any caller could set that header to act as anyone) or the 'Default'
+// fallback (a real, tradeable pseudo-user reachable by anyone with no
+// identity at all). Returns null when there's no valid session; callers that
+// need a guaranteed identity go through requireAuth/requireSelfOrAdmin below
+// first, which reject the request before the handler body ever runs.
+function resolveUser(req: express.Request): string | null {
+    return (req as any).signedCookies?.session || null;
+}
+
+// Loopback requests (a process on this same machine - see isLoopback's own
+// comment for why that's a safe thing to trust here) skip all three checks
+// below entirely, per the user's direct instruction. Used by local ops
+// scripts (e.g. scripts/check-broker-sessions.sh) that have no browser
+// session to present.
+function requestIsLoopback(req: express.Request): boolean {
+    return isLoopback(req.socket.remoteAddress);
+}
+
+function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): void {
+    if (requestIsLoopback(req)) { next(); return; }
+    if (!resolveUser(req)) { res.status(401).json({ error: 'Not logged in' }); return; }
+    next();
+}
+
+async function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
+    if (requestIsLoopback(req)) { next(); return; }
+    const email = resolveUser(req);
+    if (!email) { res.status(401).json({ error: 'Not logged in' }); return; }
+    const user = await getUser(email);
+    if (!user || user.role !== 'admin') { res.status(403).json({ error: 'Forbidden' }); return; }
+    next();
+}
+
+function requireSelfOrAdmin(paramName = 'email') {
+    return async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
+        if (requestIsLoopback(req)) { next(); return; }
+        const email = resolveUser(req);
+        if (!email) { res.status(401).json({ error: 'Not logged in' }); return; }
+        if (email === req.params[paramName]) { next(); return; }
+        const user = await getUser(email);
+        if (user?.role === 'admin') { next(); return; }
+        res.status(403).json({ error: 'Forbidden' });
+    };
 }
 
 // ============================== Auth ==============================
 
 app.post('/auth/login', async function (req, res) {
     try {
-        const { email, name, picture } = req.body;
+        const { credential } = req.body;
+        if (!credential) {
+            res.status(400).json({ error: 'credential (Google ID token) is required' });
+            return;
+        }
+        let payload: { email?: string; name?: string; picture?: string };
+        try {
+            const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID });
+            payload = ticket.getPayload() ?? {};
+        } catch (e) {
+            Log.log('Google ID token verification failed:', e);
+            res.status(401).json({ error: 'Invalid credential' });
+            return;
+        }
+        const { email, name, picture } = payload;
         if (!email) {
-            res.status(400).json({ error: 'Email is required' });
+            res.status(400).json({ error: 'Verified token had no email' });
             return;
         }
         const user = await getOrCreateUser(email, name, picture);
@@ -89,7 +174,7 @@ app.post('/auth/login', async function (req, res) {
             investmentAmount: user.investmentAmount,
             useGTT: user.useGTT,
         }).catch((e) => Log.log('[frontend] updateUserSettings on login failed:', e));
-        res.cookie('session', email, { signed: true, httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
+        res.cookie('session', email, { signed: true, httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
         res.json(toClientUser(user));
     } catch (e) {
         Log.log('Login error:', e);
@@ -135,7 +220,7 @@ app.post('/auth/logout', function (req, res) {
 
 // ============================== User Management ==============================
 
-app.get('/users', async function (req, res) {
+app.get('/users', requireAdmin, async function (req, res) {
     try {
         const users = await getAllUsers();
         // hasActiveTrade doesn't include the brief pendingUsers window the old
@@ -156,7 +241,7 @@ app.get('/users', async function (req, res) {
     }
 });
 
-app.post('/users', async function (req, res) {
+app.post('/users', requireAdmin, async function (req, res) {
     try {
         const { email, name, lossLimit, lotCount, role } = req.body;
         if (!email || !name) {
@@ -182,7 +267,7 @@ app.post('/users', async function (req, res) {
     }
 });
 
-app.delete('/users/:email', async function (req, res) {
+app.delete('/users/:email', requireAdmin, async function (req, res) {
     try {
         const { email } = req.params;
         const success = await deleteUser(email);
@@ -197,7 +282,7 @@ app.delete('/users/:email', async function (req, res) {
     }
 });
 
-app.patch('/users/:email/role', async function (req, res) {
+app.patch('/users/:email/role', requireAdmin, async function (req, res) {
     try {
         const { email } = req.params;
         const { role } = req.body;
@@ -221,7 +306,7 @@ app.patch('/users/:email/role', async function (req, res) {
     }
 });
 
-app.post('/users/:email/settings', async function (req, res) {
+app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
         const { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled } = req.body;
@@ -249,7 +334,7 @@ app.post('/users/:email/settings', async function (req, res) {
     }
 });
 
-app.patch('/users/:email/profile', async function (req, res) {
+app.patch('/users/:email/profile', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
         const { phone, legalName } = req.body;
@@ -266,7 +351,7 @@ app.patch('/users/:email/profile', async function (req, res) {
     }
 });
 
-app.patch('/users/:email/kyc-numbers', async function (req, res) {
+app.patch('/users/:email/kyc-numbers', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
         const { aadharNumber, panNumber } = req.body;
@@ -284,7 +369,7 @@ app.patch('/users/:email/kyc-numbers', async function (req, res) {
     }
 });
 
-app.patch('/users/:email/bank-details', async function (req, res) {
+app.patch('/users/:email/bank-details', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
         const { bankAccountHolderName, bankAccountNumber, bankIFSC, upiId } = req.body;
@@ -297,7 +382,7 @@ app.patch('/users/:email/bank-details', async function (req, res) {
     }
 });
 
-app.patch('/users/:email/entity-type', async function (req, res) {
+app.patch('/users/:email/entity-type', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
         const { entityType } = req.body;
@@ -313,7 +398,7 @@ app.patch('/users/:email/entity-type', async function (req, res) {
     }
 });
 
-app.patch('/users/:email/company-profile', async function (req, res) {
+app.patch('/users/:email/company-profile', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
         const { gstin, companyRegisteredName } = req.body;
@@ -326,7 +411,7 @@ app.patch('/users/:email/company-profile', async function (req, res) {
     }
 });
 
-app.patch('/users/:email/verify', async function (req, res) {
+app.patch('/users/:email/verify', requireAdmin, async function (req, res) {
     try {
         const { email } = req.params;
         const { field, verified } = req.body;
@@ -400,7 +485,7 @@ async function extractIdNumber(docType: 'pan' | 'aadhar', buffer: Buffer, mimety
     return null;
 }
 
-app.post('/users/:email/documents/:docType', upload.single('file'), async function (req, res) {
+app.post('/users/:email/documents/:docType', requireSelfOrAdmin('email'), upload.single('file'), async function (req, res) {
     try {
         const { email, docType } = req.params;
         if (docType !== 'address' && docType !== 'dob' && docType !== 'pan' && docType !== 'aadhar' && docType !== 'gst') {
@@ -444,7 +529,7 @@ app.post('/users/:email/documents/:docType', upload.single('file'), async functi
     }
 });
 
-app.get('/users/:email/documents/:docType', async function (req, res) {
+app.get('/users/:email/documents/:docType', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email, docType } = req.params;
         if (docType !== 'address' && docType !== 'dob' && docType !== 'pan' && docType !== 'aadhar' && docType !== 'gst') {
@@ -476,7 +561,7 @@ app.get('/users/:email/documents/:docType', async function (req, res) {
 // KYC-verification-toggle pattern above. Amounts are always server-recomputed
 // from persisted closedTrades (never trusted from the client).
 
-app.get('/users/:email/payouts', async function (req, res) {
+app.get('/users/:email/payouts', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
         const payouts = await Mongo.getInstance().db.collection('payouts').find({ user: email }).sort({ createdAt: -1 }).toArray();
@@ -487,7 +572,7 @@ app.get('/users/:email/payouts', async function (req, res) {
     }
 });
 
-app.get('/users/:email/payouts/:id/invoice', async function (req, res) {
+app.get('/users/:email/payouts/:id/invoice', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const html = await generateInvoiceHtml(req.params.id);
         res.setHeader('Content-Type', 'text/html');
@@ -498,7 +583,7 @@ app.get('/users/:email/payouts/:id/invoice', async function (req, res) {
     }
 });
 
-app.get('/users/:email/payouts/:id/decision-log', async function (req, res) {
+app.get('/users/:email/payouts/:id/decision-log', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const entries = await getPayoutDecisionLog(req.params.id);
         res.json(entries);
@@ -508,7 +593,7 @@ app.get('/users/:email/payouts/:id/decision-log', async function (req, res) {
     }
 });
 
-app.get('/admin/payouts', async function (req, res) {
+app.get('/admin/payouts', requireAdmin, async function (req, res) {
     try {
         const { status, user } = req.query as { status?: string; user?: string };
         const query: any = {};
@@ -522,7 +607,7 @@ app.get('/admin/payouts', async function (req, res) {
     }
 });
 
-app.post('/admin/payouts/compute', async function (req, res) {
+app.post('/admin/payouts/compute', requireAdmin, async function (req, res) {
     try {
         const { user, periodStart, periodEnd } = req.body;
         if (!user || !periodStart || !periodEnd) {
@@ -536,7 +621,7 @@ app.post('/admin/payouts/compute', async function (req, res) {
     }
 });
 
-app.post('/admin/payouts', async function (req, res) {
+app.post('/admin/payouts', requireAdmin, async function (req, res) {
     try {
         const { user, periodStart, periodEnd } = req.body;
         if (!user || !periodStart || !periodEnd) {
@@ -550,7 +635,7 @@ app.post('/admin/payouts', async function (req, res) {
     }
 });
 
-app.patch('/admin/payouts/:id', async function (req, res) {
+app.patch('/admin/payouts/:id', requireAdmin, async function (req, res) {
     try {
         const { status, note } = req.body;
         if (status !== 'paid' && status !== 'rejected') {
@@ -573,8 +658,6 @@ app.patch('/admin/payouts/:id', async function (req, res) {
 // already-running singletons need telling to re-read it (reloadSession, below).
 
 let authorizationCode = '';
-let antAccessToken: string | null = null;
-let zerodhaAccessToken: string | null = null;
 
 app.get('/prism/oauthurl', function (_req, res) {
     const url = Prism.getInstance().getOAuthURL();
@@ -604,7 +687,7 @@ const shoonyaCallback = async function (req: express.Request, res: express.Respo
         await Prism.getInstance().loginWithGenAcsTok(code);
         await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
         Log.log('Shoonya authentication successful.');
-        res.redirect(302, '/app');
+        res.redirect(302, '/');
     } catch (e: any) {
         Log.log('Shoonya callback error:', e);
         res.status(500).json({ error: 'Authentication failed', details: e.message });
@@ -623,18 +706,6 @@ app.get('/prism/authcode', function (_req, res) {
         return;
     }
     res.json({ code: authorizationCode });
-});
-
-app.get('/prism/quick-login', async function (req, res) {
-    Log.log('Logging in with QuickAuth');
-    try {
-        await Prism.getInstance().login(req.query.otp as string);
-        await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
-        res.sendStatus(200);
-    } catch (e) {
-        Log.log(e);
-        res.sendStatus(500);
-    }
 });
 
 app.get('/prism/token', async function (req, res) {
@@ -678,7 +749,6 @@ app.get('/ant/callback', async function (req, res) {
         Log.log('ANT Callback received - exchanging authCode for token');
         const ant = ANT.getInstance();
         const result = await ant.exchangeAuthCodeForToken(userId, authCode);
-        antAccessToken = result.userSession;
         res.cookie('ant_session', result.userSession, { signed: true, httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
         // Tell `data` to (re)connect now that a session exists - same mechanism
         // /ant/connect uses (see below), needed here since `data` typically
@@ -691,40 +761,10 @@ app.get('/ant/callback', async function (req, res) {
         // re-reads .ant_session.json and (re)connects the order-notify stream.
         await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
         Log.log('ANT Authentication successful. Token stored.');
-        res.redirect(302, '/app');
+        res.redirect(302, '/');
     } catch (e: any) {
         Log.log('ANT callback error:', e);
         res.status(500).json({ error: 'Authentication failed', details: e.message });
-    }
-});
-
-app.get('/ant/token', async function (req, res) {
-    if (!antAccessToken) {
-        res.status(401).json({ error: 'No ANT access token available. Please login first.' });
-        return;
-    }
-    res.json({ access_token: antAccessToken });
-});
-
-app.get('/ant/positions', async function (req, res) {
-    try {
-        const ant = ANT.getInstance();
-        const positions = await ant.getPositions();
-        res.json({ success: true, positions, count: Array.isArray(positions) ? positions.length : 0 });
-    } catch (e: any) {
-        Log.log('Error fetching ANT positions:', e.message);
-        res.status(500).json({ error: 'Failed to fetch positions', details: e.message });
-    }
-});
-
-app.get('/ant/trades', async function (req, res) {
-    try {
-        const ant = ANT.getInstance();
-        const trades = await ant.getTrades();
-        res.json({ success: true, trades, count: Array.isArray(trades) ? trades.length : 0 });
-    } catch (e: any) {
-        Log.log('Error fetching ANT trades:', e.message);
-        res.status(500).json({ error: 'Failed to fetch trades', details: e.message });
     }
 });
 
@@ -751,42 +791,183 @@ app.get('/kite/callback', async function (req, res) {
         Log.log('Zerodha Callback received - exchanging request_token for access_token');
         const zerodha = Zerodha.getInstance();
         const result = await zerodha.exchangeRequestTokenForSession(requestToken);
-        zerodhaAccessToken = result.access_token;
         res.cookie('zerodha_session', result.access_token, { signed: true, httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
         await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
         Log.log('Zerodha Authentication successful. Token stored.');
-        res.redirect(302, '/app');
+        res.redirect(302, '/');
     } catch (e: any) {
         Log.log('Zerodha callback error:', e);
         res.status(500).json({ error: 'Authentication failed', details: e.message });
     }
 });
 
-app.get('/kite/token', async function (req, res) {
-    if (!zerodhaAccessToken) {
-        res.status(401).json({ error: 'No Zerodha access token available. Please login first.' });
-        return;
-    }
-    res.json({ access_token: zerodhaAccessToken });
-});
-
-app.get('/kite/trades', async function (req, res) {
+app.get('/breeze/login', async function (req, res) {
     try {
-        const trades = await Zerodha.getInstance().getTrades();
-        res.json({ trades });
+        const breeze = Breeze.getInstance();
+        const loginUrl = breeze.getLoginURL();
+        Log.log('Redirecting to Breeze login:', loginUrl);
+        res.redirect(302, loginUrl);
     } catch (e: any) {
-        Log.log('Zerodha trades error:', e);
-        res.status(500).json({ error: 'Failed to fetch trades', details: e.message });
+        Log.log('Breeze login error:', e);
+        res.status(500).json({ error: 'Failed to initiate Breeze login' });
     }
 });
 
-app.get('/kite/positions', async function (req, res) {
+// ICICI's redirect back to this route can hand the session value back either
+// as a GET query param or as POST form data (unconfirmed which until a live
+// login - see ToDo.md), so this accepts both methods and checks query/body
+// under either of the two param names ICICI's own docs/SDK use.
+async function handleBreezeCallback(req: express.Request, res: express.Response) {
     try {
-        const positions = await Zerodha.getInstance().getPositions();
-        res.json({ positions });
+        const apiSession = (req.query.apisession ?? req.query.API_Session ?? req.body?.apisession ?? req.body?.API_Session) as string;
+        if (!apiSession) {
+            Log.log('Missing API_Session in Breeze callback', { query: req.query, body: req.body });
+            res.status(400).json({ error: 'Missing API_Session from ICICI Breeze' });
+            return;
+        }
+        Log.log('Breeze Callback received - generating session');
+        const breeze = Breeze.getInstance();
+        await breeze.generateSession(apiSession);
+        // Tell `data` to (re)connect its BreezeDataStream now that a session
+        // exists - mirrors /ant/callback's same-purpose signal below. Without
+        // this, a Breeze login completing after `data` already started (the
+        // common case, since `data`'s own initial connect attempt fails with
+        // no session yet) leaves BreezeDataStream stuck until a full restart.
+        writeJsonLine(process.stdout, { cmd: 'reconnect', source: 'breeze' });
+        await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
+        Log.log('Breeze Authentication successful. Session stored.');
+        res.redirect(302, '/');
     } catch (e: any) {
-        Log.log('Zerodha positions error:', e);
-        res.status(500).json({ error: 'Failed to fetch positions', details: e.message });
+        Log.log('Breeze callback error:', e);
+        res.status(500).json({ error: 'Authentication failed', details: e.message });
+    }
+}
+app.get('/breeze/callback', handleBreezeCallback);
+app.post('/breeze/callback', handleBreezeCallback);
+
+// Manual test-order route for the Breeze integration (admin-only, mirrors the
+// admin/debug nature of the other manual broker routes above) - resolves the
+// live NIFTY ATM contract and places a bare (unprotected) limit buy via
+// breezeExecutor.buyIndexOnBreeze. Square-off reuses the existing generic
+// /order/squareoff route unchanged (see brokerExecutors.getBrokerExecutor -
+// Breeze-aware once the placing user's `broker` setting is 'breeze').
+// `user` query override: this route is requireAdmin-gated and single-purpose
+// (manual test-order tooling) - loopback callers (e.g. curl from this same
+// machine) have no session cookie, so resolveUser(req) is always null for
+// them. Falls back to the session user when present, matching the same
+// "loopback == trusted, but needs an explicit identity" gap requireAuth's own
+// header comment already describes for local ops scripts. Deliberately not
+// applied to resolveUser() itself or to /order/squareoff - narrowly scoped to
+// these two debug routes only, so it can't reintroduce the X-User-Id-header
+// trust that was deliberately removed elsewhere (see ToDo.md, 2026-09-10).
+app.get('/breeze/order/buy', requireAdmin, async function (req, res) {
+    try {
+        const { right, user: userOverride } = req.query;
+        const user = (userOverride as string) || resolveUser(req);
+        const result = await orderClient.breezeBuyIndex(user, { right: right as string });
+        res.json(result);
+    } catch (e: any) {
+        Log.log(e);
+        res.status(500).json({ error: e?.message ?? String(e) });
+    }
+});
+
+// Dedicated Breeze square-off (see orderProcess.ts's 'breezeSquareOff' case
+// for why this bypasses the generic /order/squareoff route).
+app.get('/breeze/order/squareoff', requireAdmin, async function (req, res) {
+    try {
+        const { tsym, qty, user: userOverride } = req.query;
+        const user = (userOverride as string) || resolveUser(req);
+        const result = await orderClient.breezeSquareOff(user, { tsym: tsym as string, quantity: Number(qty) });
+        res.json(result);
+    } catch (e: any) {
+        Log.log(e);
+        res.status(500).json({ error: e?.message ?? String(e) });
+    }
+});
+
+// Starts BreezeStream (live price ticks, this `frontend` process only - NOT
+// wired into Monitor/Decision, matching AntStream's own "isolated" scope for
+// a first pass) - mirrors /ant/connect's role. NOT yet live-verified - see
+// ToDo.md. The `order`-process order-notify stream (needed for
+// waitForBreezeFill's push path) connects separately, automatically, at
+// `order` process startup/reloadSession (see orderProcess.ts's
+// connectBreezeOrderNotifyIfSessionValid) - nothing to trigger here for that.
+app.get('/breeze/connect', requireAdmin, async function (req, res) {
+    try {
+        BreezeStream.getInstance().connect();
+        res.json({ status: 'connected' });
+    } catch (e: any) {
+        Log.log('Breeze connect error:', e);
+        res.status(500).json({ error: 'Failed to connect to Breeze streaming', details: e.message });
+    }
+});
+
+const breezeStreamClients = new Set<express.Response>();
+app.get('/breeze/stream', requireAdmin, function (req, res) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    breezeStreamClients.add(res);
+    req.on('close', () => breezeStreamClients.delete(res));
+});
+myEmitter.on('breeze-quote', (tick: any) => {
+    const payload = `data: ${JSON.stringify(tick)}\n\n`;
+    for (const res of breezeStreamClients) res.write(payload);
+});
+
+// ============================== Broker debug/ops queries (admin-only) ==============================
+// Consolidates the old broker-specific /kite/trades+/ant/trades and
+// /kite/positions+/ant/positions (plus /kite/token+/ant/token, deleted
+// outright - raw session-token exposure over HTTP with zero callers) into
+// one parameterized pair - a bonus: this also adds Prism support these debug
+// routes never had. Deliberately calls ANT/Zerodha/Prism's own
+// getTrades()/getPositions() directly (same as the routes this replaces),
+// NOT the order-process-only BrokerExecutor abstraction (brokerExecutors.ts)
+// - that pulls in bookkeeping.ts/exitMonitor.ts, which are `order`-process
+// state this `frontend` process has no business touching (see this file's
+// own header comment on the IPC process split).
+async function getBrokerTrades(broker: string): Promise<any[]> {
+    if (broker === 'zerodha') return Zerodha.getInstance().getTrades();
+    if (broker === 'ant') return ANT.getInstance().getTrades();
+    if (broker === 'prism') return Prism.getInstance().getTradeList();
+    if (broker === 'breeze') {
+        const toDate = new Date();
+        const fromDate = new Date(toDate);
+        fromDate.setDate(fromDate.getDate() - 7);
+        const result = await Breeze.getInstance().getTradeList({ fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), exchangeCode: 'NFO' });
+        return Array.isArray(result?.Success) ? result.Success : [];
+    }
+    throw new Error(`Unknown broker '${broker}' - expected zerodha, ant, prism, or breeze`);
+}
+async function getBrokerPositions(broker: string): Promise<any[]> {
+    if (broker === 'zerodha') return Zerodha.getInstance().getPositions();
+    if (broker === 'ant') return ANT.getInstance().getPositions();
+    if (broker === 'prism') return Prism.getInstance().getPositions();
+    if (broker === 'breeze') {
+        const result = await Breeze.getInstance().getPortfolioPositions();
+        return Array.isArray(result?.Success) ? result.Success : [];
+    }
+    throw new Error(`Unknown broker '${broker}' - expected zerodha, ant, prism, or breeze`);
+}
+
+app.get('/broker/:broker/trades', requireAdmin, async function (req, res) {
+    try {
+        const trades = await getBrokerTrades(req.params.broker);
+        res.json({ success: true, broker: req.params.broker, trades });
+    } catch (e: any) {
+        Log.log(`${req.params.broker} trades error:`, e);
+        res.status(e.message.startsWith('Unknown broker') ? 400 : 500).json({ error: 'Failed to fetch trades', details: e.message });
+    }
+});
+
+app.get('/broker/:broker/positions', requireAdmin, async function (req, res) {
+    try {
+        const positions = await getBrokerPositions(req.params.broker);
+        res.json({ success: true, broker: req.params.broker, positions });
+    } catch (e: any) {
+        Log.log(`${req.params.broker} positions error:`, e);
+        res.status(e.message.startsWith('Unknown broker') ? 400 : 500).json({ error: 'Failed to fetch positions', details: e.message });
     }
 });
 
@@ -796,7 +977,7 @@ app.get('/kite/positions', async function (req, res) {
 // the only way to get connected - it writes a control command on frontend's
 // own stdout, which the orchestrator pipes into `data`'s stdin (mirroring how
 // `strategies` talks to `data`).
-app.get('/ant/connect', async function (req, res) {
+app.get('/ant/connect', requireAdmin, async function (req, res) {
     try {
         writeJsonLine(process.stdout, { cmd: 'reconnect' });
         res.json({ status: 'connected' });
@@ -807,7 +988,7 @@ app.get('/ant/connect', async function (req, res) {
 });
 
 const antStreamClients = new Set<express.Response>();
-app.get('/ant/stream', function (req, res) {
+app.get('/ant/stream', requireAdmin, function (req, res) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -815,7 +996,17 @@ app.get('/ant/stream', function (req, res) {
     req.on('close', () => antStreamClients.delete(res));
 });
 
-app.get('/prism/orderbook', async function (req: express.Request, res) {
+app.get('/prism/canPlaceOrder', requireAuth, async function (req: express.Request, res) {
+    try {
+        const result = await orderClient.canPlaceOrder(resolveUser(req));
+        res.send(result);
+    } catch (e) {
+        Log.log(e);
+        res.sendStatus(500);
+    }
+});
+
+app.get('/prism/orderbook', requireAdmin, async function (req: express.Request, res) {
     try {
         const orders = await orderClient.getOrders();
         res.send(orders);
@@ -827,7 +1018,13 @@ app.get('/prism/orderbook', async function (req: express.Request, res) {
 
 // ============================== Order Placement & Execution ==============================
 
-app.get('/prism/order/buy', async function (req: express.Request, res) {
+// Generic order placement - dispatches Zerodha-or-ANT internally via
+// bookkeeping.getUserBroker (manualBuy/squareOff/setTargetStopLoss). Renamed
+// from /prism/order/buy, /prism/squareoff, /prism/settarget - despite the
+// old name, none of these ever called prismExecutor.ts; the "prism" prefix
+// was actively misleading now that Prism is a real third broker with its own
+// distinct routes elsewhere.
+app.get('/order/buy', requireAuth, async function (req: express.Request, res) {
     try {
         const { right, index, strikePrice, price, contract, targetPoints, stopLossPoints } = req.query;
         const user = resolveUser(req);
@@ -848,11 +1045,15 @@ app.get('/prism/order/buy', async function (req: express.Request, res) {
     }
 });
 
-app.get('/prism/squareoff', async function (req, res) {
+app.get('/order/squareoff', requireAuth, async function (req, res) {
     try {
-        const { token, qty } = req.query;
+        const { token, qty, tsym } = req.query;
         const user = resolveUser(req);
-        await orderClient.squareOff(user, { token: token as string, quantity: qty ? Number(qty) : undefined });
+        await orderClient.squareOff(user, {
+            token: token as string,
+            tsym: tsym as string,
+            quantity: qty ? Number(qty) : undefined,
+        });
         res.sendStatus(200);
     } catch (e) {
         Log.log(e);
@@ -860,7 +1061,7 @@ app.get('/prism/squareoff', async function (req, res) {
     }
 });
 
-app.post('/prism/settarget', express.json(), async function (req: express.Request, res) {
+app.post('/order/settarget', requireAuth, express.json(), async function (req: express.Request, res) {
     try {
         const { token, targetPoints, stopLossPoints } = req.body;
         if (!token || targetPoints == null || stopLossPoints == null) {
@@ -876,84 +1077,7 @@ app.post('/prism/settarget', express.json(), async function (req: express.Reques
     }
 });
 
-// ANT (AliceBlue) order placement - same shape as the /prism/order/* routes
-// above, routed to antExecutor.ts instead of zerodhaExecutor.ts.
-app.get('/ant/order/buy', async function (req: express.Request, res) {
-    try {
-        const { right, index, strikePrice, contract, quantity, targetPoints, stopLossPoints } = req.query;
-        const user = resolveUser(req);
-        Log.log('Resolved order while placing an ANT order ', user);
-        const result = await orderClient.antManualBuy(user, {
-            index: index as any,
-            right: right as string,
-            contract: contract as string,
-            strikePrice: strikePrice ? parseInt(strikePrice as string) : undefined,
-            quantity: quantity ? parseInt(quantity as string) : undefined,
-            targetPoints: targetPoints ? parseFloat(targetPoints as string) : undefined,
-            stopLossPoints: stopLossPoints ? parseFloat(stopLossPoints as string) : undefined,
-        });
-        res.json(result);
-    } catch (e: any) {
-        Log.log(e);
-        res.status(e?.message?.includes('limit') ? 403 : 500).json({ error: e?.message ?? String(e) });
-    }
-});
-
-app.get('/ant/order/squareoff', async function (req, res) {
-    try {
-        const { token, qty } = req.query;
-        const user = resolveUser(req);
-        await orderClient.antSquareOff(user, { token: token as string, quantity: qty ? Number(qty) : undefined });
-        res.sendStatus(200);
-    } catch (e: any) {
-        Log.log(e);
-        res.status(500).json({ error: e?.message ?? String(e) });
-    }
-});
-
-app.post('/ant/order/settarget', express.json(), async function (req: express.Request, res) {
-    try {
-        const { token, targetPoints, stopLossPoints } = req.body;
-        if (!token || targetPoints == null || stopLossPoints == null) {
-            res.status(400).json({ error: 'Missing token, targetPoints, or stopLossPoints' });
-            return;
-        }
-        const user = resolveUser(req);
-        await orderClient.antSetTargetStopLoss(user, token, targetPoints, stopLossPoints);
-        res.sendStatus(200);
-    } catch (e: any) {
-        Log.log(e);
-        res.status(500).json({ error: e?.message ?? String(e) });
-    }
-});
-
-app.get('/addTrade', async function (req: express.Request, res) {
-    try {
-        const trantype = 'B';
-        const { tsym, flqty, flprc } = req.query;
-        await orderClient.injectTrade({ tsym: tsym as string, flqty: flqty as string, flprc: flprc as string, trantype });
-        res.sendStatus(200);
-    } catch (e) {
-        Log.log(e);
-        res.sendStatus(500);
-    }
-});
-
-app.get('/start', async function (req: express.Request, res) {
-    try {
-        // Original bought NIFTY then BANKNIFTY - ZerodhaContractMaster only
-        // supports NIFTY/SENSEX today (see src/zerodha/ZerodhaContractMaster.ts's
-        // INDEX_EXCHANGE map), so the BANKNIFTY leg is dropped rather than
-        // silently mis-resolved.
-        await orderClient.manualBuy('Default', { index: 'NIFTY' });
-        res.sendStatus(200);
-    } catch (e) {
-        Log.log(e);
-        res.sendStatus(500);
-    }
-});
-
-app.get('/connect', async function (req: express.Request, res) {
+app.get('/connect', requireAdmin, async function (req: express.Request, res) {
     try {
         await orderClient.connectPrism();
         res.sendStatus(200);
@@ -963,7 +1087,7 @@ app.get('/connect', async function (req: express.Request, res) {
     }
 });
 
-app.get('/subscribe', async function (req: express.Request, res) {
+app.get('/subscribe', requireAdmin, async function (req: express.Request, res) {
     // Touchline quote subscription moved entirely to ANT/`data`; kept as a
     // no-op so stale frontend calls don't 404.
     res.sendStatus(200);
@@ -971,7 +1095,7 @@ app.get('/subscribe', async function (req: express.Request, res) {
 
 // ============================== Trade & Position Queries ==============================
 
-app.get('/openTrades', async function (req: express.Request, res) {
+app.get('/openTrades', requireAdmin, async function (req: express.Request, res) {
     try {
         const stats = await orderClient.stats();
         res.send(stats.trades);
@@ -981,7 +1105,7 @@ app.get('/openTrades', async function (req: express.Request, res) {
     }
 });
 
-app.get('/trades', async function (req, res) {
+app.get('/trades', requireAuth, async function (req, res) {
     try {
         const user = resolveUser(req);
         const stats = await orderClient.stats();
@@ -992,7 +1116,7 @@ app.get('/trades', async function (req, res) {
     }
 });
 
-app.get('/closedtrades', async function (req, res) {
+app.get('/closedtrades', requireAuth, async function (req, res) {
     try {
         const user = resolveUser(req);
         const stats = await orderClient.stats();
@@ -1007,7 +1131,7 @@ app.get('/closedtrades', async function (req, res) {
 // 'closedTrades' Mongo collection) - distinct from /closedtrades above, which reads
 // `order`'s in-memory session state and is lost on restart. This is the source for
 // payout computation (src/payout.ts) and payout-rejection trade breakdowns.
-app.get('/users/:email/trades/closed', async function (req, res) {
+app.get('/users/:email/trades/closed', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
         const { from, to } = req.query as { from?: string; to?: string };
@@ -1025,7 +1149,7 @@ app.get('/users/:email/trades/closed', async function (req, res) {
     }
 });
 
-app.get('/admin/trades/closed', async function (req, res) {
+app.get('/admin/trades/closed', requireAdmin, async function (req, res) {
     try {
         const { user, from, to } = req.query as { user?: string; from?: string; to?: string };
         const query: any = {};
@@ -1043,11 +1167,31 @@ app.get('/admin/trades/closed', async function (req, res) {
     }
 });
 
+// "Eligible" P&L (excludes forfeited profit) for the Trades tab's date-range
+// summary - single user only (forfeiture is computed against that user's
+// investmentAmount). breakdown=week (Month view) additionally buckets by
+// trading week; otherwise the whole [from,to] range is one figure (Day/Week
+// views).
+app.get('/admin/trades/pnl-summary', requireAdmin, async function (req, res) {
+    try {
+        const { user, from, to, breakdown } = req.query as { user?: string; from?: string; to?: string; breakdown?: string };
+        if (!user || !from || !to) {
+            res.status(400).json({ error: 'user, from and to are required' });
+            return;
+        }
+        const summary = await computePnlSummary(user, new Date(from), new Date(to), breakdown === 'week');
+        res.json(summary);
+    } catch (e) {
+        Log.log('Admin get P&L summary error:', e);
+        res.sendStatus(500);
+    }
+});
+
 // Admin, all-users (or one user via ?user=) view of currently open trades -
 // mirrors /admin/trades/closed's optional-user-filter shape, but reads the
 // same in-memory order-process bookkeeping /openTrades does (open trades
 // aren't in Mongo until they close).
-app.get('/admin/trades/open', async function (req, res) {
+app.get('/admin/trades/open', requireAdmin, async function (req, res) {
     try {
         const { user } = req.query as { user?: string };
         const stats = await orderClient.stats();
@@ -1059,7 +1203,7 @@ app.get('/admin/trades/open', async function (req, res) {
     }
 });
 
-app.get('/refreshtrades', async function (req, res) {
+app.get('/refreshtrades', requireAdmin, async function (req, res) {
     try {
         const openTrades = await orderClient.refreshTradeList();
         res.send(openTrades);
@@ -1069,7 +1213,7 @@ app.get('/refreshtrades', async function (req, res) {
     }
 });
 
-app.get('/subscribetrades', async function (req, res) {
+app.get('/subscribetrades', requireAdmin, async function (req, res) {
     try {
         // Re-subscription for live per-tick tracking is obsolete now that exits
         // are GTT-driven (see zerodhaExecutor.ts) - kept as a refresh alias for
@@ -1093,7 +1237,7 @@ const positionStreamClients = new Map<express.Response, string>(); // res -> use
 // live update - which may not arrive until the next session.
 let lastNiftyQuote: any = null;
 
-app.get('/niftystream', async function (req, res) {
+app.get('/niftystream', requireAuth, async function (req, res) {
     res.set({ 'Cache-Control': 'no-cache', 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
     res.flushHeaders();
     res.write('retry: 10000\n\n');
@@ -1102,12 +1246,71 @@ app.get('/niftystream', async function (req, res) {
     req.on('close', () => niftyStreamClients.delete(res));
 });
 
-app.get('/optionstream', async function (req, res) {
+app.get('/optionstream', requireAuth, async function (req, res) {
     res.set({ 'Cache-Control': 'no-cache', 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
     res.flushHeaders();
     res.write('retry: 10000\n\n');
     optionStreamClients.add(res);
     req.on('close', () => optionStreamClients.delete(res));
+});
+
+// Demo mode: lets an anonymous client trigger a real subscribe/unsubscribe for
+// an arbitrary option token, so /optionstream carries live ticks for whatever
+// contract the demo user picked. No auth/order side effect - same anonymous-
+// safe posture as /search, /quote, /optionstream itself.
+app.get('/demo/subscribe', async function (req, res) {
+    try {
+        const { token, subscribe } = req.query;
+        if (!token) {
+            res.status(400).json({ error: 'Missing token' });
+            return;
+        }
+        if (subscribe === 'false') {
+            await strategiesClient.unsubscribeToken(token as string);
+        } else {
+            await strategiesClient.subscribeToken(token as string);
+        }
+        res.sendStatus(200);
+    } catch (e: any) {
+        Log.log(e);
+        res.status(500).json({ error: e?.message ?? String(e) });
+    }
+});
+
+// Demo mode: resolves the ATM NIFTY CE/PE contract for the Up/Down flash-trade
+// buttons using the ANT-native contract master + the ANT-sourced live NIFTY
+// LTP already cached in `lastNiftyQuote` - deliberately NOT the Shoonya-based
+// /search (that returns a Zerodha instrument token, which AntDataStream can't
+// subscribe: see the "must never be stored as trade.token" warning in
+// AntContractMaster.ts).
+app.get('/demo/resolve', async function (req, res) {
+    try {
+        const { right } = req.query;
+        if (!lastNiftyQuote?.ltp) {
+            res.status(503).json({ error: 'NIFTY quote not available yet' });
+            return;
+        }
+        const optionType = right === 'put' ? 'PE' : 'CE';
+        const resolved = AntContractMaster.getInstance().findATMOption(lastNiftyQuote.ltp, optionType, 'NIFTY');
+        res.json({ token: resolved.token, tradingSymbol: resolved.tradingSymbol });
+    } catch (e: any) {
+        Log.log(e);
+        res.status(500).json({ error: e?.message ?? String(e) });
+    }
+});
+
+// Demo mode: ANT-native contract list (nearest expiry, both CE/PE, all
+// strikes) for the manual contract-search Buy flow - same reasoning as
+// /demo/resolve above, a Zerodha symbols.txt entry can't be ANT-subscribed.
+app.get('/demo/symbols', async function (req, res) {
+    try {
+        const { symbol } = req.query;
+        const options = AntContractMaster.getInstance().listNearestExpiryOptions((symbol as string) || 'NIFTY', 'NFO');
+        res.json(options);
+    } catch (e: any) {
+        Log.log(e);
+        res.status(500).json({ error: e?.message ?? String(e) });
+    }
 });
 
 async function pushPositionSnapshot(res: express.Response, user: string) {
@@ -1125,7 +1328,7 @@ async function pushPositionSnapshot(res: express.Response, user: string) {
     }
 }
 
-app.get('/positionstream', async function (req, res) {
+app.get('/positionstream', requireAuth, async function (req, res) {
     const user = resolveUser(req);
     res.set({ 'Cache-Control': 'no-cache', 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
     res.flushHeaders();
@@ -1152,7 +1355,7 @@ orderClient.onPositionsChanged(() => {
 const notificationStreamClients = new Map<express.Response, string>(); // res -> user
 let lastNotificationPollAt = new Date();
 
-app.get('/users/:email/notifications', async function (req, res) {
+app.get('/users/:email/notifications', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
         const { unreadOnly } = req.query as { unreadOnly?: string };
@@ -1166,7 +1369,7 @@ app.get('/users/:email/notifications', async function (req, res) {
     }
 });
 
-app.patch('/users/:email/notifications/:id/read', async function (req, res) {
+app.patch('/users/:email/notifications/:id/read', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { ObjectId } = require('mongodb');
         await Mongo.getInstance().db.collection('notifications').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { read: true } });
@@ -1177,7 +1380,7 @@ app.patch('/users/:email/notifications/:id/read', async function (req, res) {
     }
 });
 
-app.get('/notificationstream', async function (req, res) {
+app.get('/notificationstream', requireAuth, async function (req, res) {
     const user = resolveUser(req);
     res.set({ 'Cache-Control': 'no-cache', 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
     res.flushHeaders();
@@ -1208,9 +1411,28 @@ setInterval(async () => {
     }
 }, 12_000);
 
+// Cloudflare (see `cloudflareOnly` middleware) silently drops a proxied
+// connection that goes ~100s with no bytes written, without necessarily
+// surfacing a client-side `onerror` - so an SSE stream can go zombie (looks
+// open, never receives anything again) instead of triggering the frontend's
+// reconnect-on-error logic. /notificationstream hits this in practice since
+// notifications are rare and it can otherwise go idle far longer than that;
+// the other streams mostly avoid it only because market-hours data keeps
+// them busy. A periodic SSE comment (ignored by EventSource's onmessage,
+// per spec) on every stream keeps bytes flowing so Cloudflare never sees
+// them as idle.
+setInterval(() => {
+    const heartbeat = ': heartbeat\n\n';
+    for (const res of antStreamClients) res.write(heartbeat);
+    for (const res of niftyStreamClients) res.write(heartbeat);
+    for (const res of optionStreamClients) res.write(heartbeat);
+    for (const res of positionStreamClients.keys()) res.write(heartbeat);
+    for (const res of notificationStreamClients.keys()) res.write(heartbeat);
+}, 20_000);
+
 // ============================== Strategy Admin ==============================
 
-app.get('/stats', async function (req: express.Request, res) {
+app.get('/stats', requireAdmin, async function (req: express.Request, res) {
     try {
         const allStats = await strategiesClient.stats();
         const cols = ['Strategy', 'Trades', 'Wins', 'Losses', 'Timeouts', 'Win%', 'P&L'];
@@ -1234,7 +1456,7 @@ app.get('/stats', async function (req: express.Request, res) {
     }
 });
 
-app.get('/strategies', async function (req: express.Request, res) {
+app.get('/strategies', requireAdmin, async function (req: express.Request, res) {
     try {
         const { strategy, userId, enable } = req.query;
         const identifier = (userId || strategy) as string;
@@ -1250,7 +1472,7 @@ app.get('/strategies', async function (req: express.Request, res) {
     }
 });
 
-app.get('/strategies/:type/reset', async function (req: express.Request, res) {
+app.get('/strategies/:type/reset', requireAdmin, async function (req: express.Request, res) {
     try {
         const { type } = req.params;
         res.json(await strategiesClient.reset(type));
@@ -1262,7 +1484,7 @@ app.get('/strategies/:type/reset', async function (req: express.Request, res) {
 
 // ============================== Market Data / Quotes ==============================
 
-app.get('/quotes', async function (req, res) {
+app.get('/quotes', requireAuth, async function (req, res) {
     try {
         const [nifty, bankNifty, finNifty] = await Promise.all([
             orderClient.getIndexQuote(resolveUser(req), 'NIFTY'),
@@ -1276,7 +1498,7 @@ app.get('/quotes', async function (req, res) {
     }
 });
 
-app.get('/niftyquote', async function (req, res) {
+app.get('/niftyquote', requireAuth, async function (req, res) {
     try {
         const response = await orderClient.getNiftyQuote(resolveUser(req));
         res.send(response);
@@ -1286,7 +1508,7 @@ app.get('/niftyquote', async function (req, res) {
     }
 });
 
-app.get('/quote', async function (req, res) {
+app.get('/quote', requireAuth, async function (req, res) {
     try {
         const { symbol } = req.query;
         const response = await orderClient.getStockQuote(resolveUser(req), symbol as string);
@@ -1297,18 +1519,8 @@ app.get('/quote', async function (req, res) {
     }
 });
 
-app.get('/requestOtp', async function (req, res) {
-    try {
-        Log.log('Requesting OTP');
-        await Prism.getInstance().requestOtp();
-        res.send('Requested OTP');
-    } catch (e) {
-        Log.log(e);
-        res.sendStatus(500);
-    }
-});
 
-app.get('/search', async function (req, res) {
+app.get('/search', requireAuth, async function (req, res) {
     try {
         const { depth, right, index } = req.query;
         const token = await orderClient.findToken(resolveUser(req), index as string, parseInt(depth as string), right as string);
@@ -1319,7 +1531,7 @@ app.get('/search', async function (req, res) {
     }
 });
 
-app.get('/logout', async function (req, res) {
+app.get('/logout', requireAdmin, async function (req, res) {
     try {
         await Prism.getInstance().logout();
         res.sendStatus(200);
@@ -1329,7 +1541,7 @@ app.get('/logout', async function (req, res) {
     }
 });
 
-app.get('/candles', async function (req, res) {
+app.get('/candles', requireAdmin, async function (req, res) {
     try {
         const candles = await strategiesClient.getCandles();
         res.send(candles);
@@ -1339,19 +1551,13 @@ app.get('/candles', async function (req, res) {
     }
 });
 
-app.get('/test', async function (req, res) {
-    // Original discarded Prism.getOptionChain()'s result and just returned this
-    // literal string - kept behavior-equivalent without the round trip.
-    res.send('Done');
-});
-
 // ============================== Configuration ==============================
 
-app.get('/config', (req, res) => {
+app.get('/config', requireAdmin, (req, res) => {
     res.json(configService.configToFlat());
 });
 
-app.post('/config', (req, res) => {
+app.post('/config', requireAdmin, async (req, res) => {
     const flat = req.body;
     const current = configService.configToFlat();
     const errors = validateFlatConfig(flat, current);
@@ -1359,12 +1565,34 @@ app.post('/config', (req, res) => {
         return res.status(400).json({ error: errors.join('; ') });
     }
     configService.writeConfig(configService.flatToConfig(flat));
+    configService.reloadNow(); // this process's own in-memory copy shouldn't lag its own write either
+
+    // config.yml is hot-*read* (ConfigService.watchConfig), but several
+    // fields are only ever consumed once at process boot and cached from
+    // there (a strategy's `enabled`/`broker` in `strategies`'s Strategies
+    // list and expandedConfigs; `broker`/`maxInvestment`/`useGTT` in
+    // `order`'s bookkeeping settings cache - see Strategies.syncFromConfig's
+    // and loadUserLimits's own comments). Refresh both unconditionally on
+    // every save rather than diffing which specific field changed - both are
+    // cheap, idempotent, and never touch live position/trade state, so this
+    // is simpler and can't miss a field the way a per-field diff can.
+    try {
+        await strategiesClient.syncFromConfig();
+    } catch (e) {
+        Log.log('[config] Failed to live-sync strategies process:', e);
+    }
+    try {
+        await orderClient.reloadUserLimits();
+    } catch (e) {
+        Log.log('[config] Failed to live-sync order-process user limits:', e);
+    }
+
     res.json(flat);
 });
 
 // ============================== Backtesting / Replay ==============================
 
-app.get('/replay', async (req, res) => {
+app.get('/replay', requireAdmin, async (req, res) => {
     const date = req.query.date as string;
     if (!date) return res.status(400).json({ error: 'date query param required' });
 
@@ -1389,8 +1617,8 @@ app.get('/replay', async (req, res) => {
 
 // ============================== Static UI ==============================
 
-app.get('/app*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../public/app/index.html'));
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
 // ============================== Boot ==============================
@@ -1408,7 +1636,6 @@ async function main() {
         (tick) => {
             if (tick.type === 'nifty') {
                 lastNiftyQuote = tick.quote;
-                Log.log('[frontend] nifty tick:', JSON.stringify(tick.quote), `clients=${niftyStreamClients.size}`);
                 const payload = `data: ${JSON.stringify({ nifty: tick.quote })}\n\n`;
                 for (const res of niftyStreamClients) res.write(payload);
             } else if (tick.type === 'option') {
@@ -1424,6 +1651,22 @@ async function main() {
 
     const port = Number(process.env.PORT) || 3000;
     app.listen(port, () => Log.log(`[frontend] Listening on ${port}`));
+
+    const port80Server = app.listen(80, () => Log.log(`[frontend] Listening on 80`));
+    port80Server.on('error', (err) => Log.log(`[frontend] Failed to listen on port 80: ${err.message}`));
+
+    // Self-signed cert (repo root) - lets the origin terminate TLS directly,
+    // e.g. for Cloudflare Full/Strict mode. See cloudflareOnly middleware.
+    try {
+        const httpsOptions = {
+            key: fs.readFileSync(path.join(__dirname, '../key.pem')),
+            cert: fs.readFileSync(path.join(__dirname, '../cert.pem')),
+        };
+        const httpsServer = https.createServer(httpsOptions, app).listen(443, () => Log.log(`[frontend] Listening on 443 (https)`));
+        httpsServer.on('error', (err) => Log.log(`[frontend] Failed to listen on port 443: ${err.message}`));
+    } catch (err) {
+        Log.log(`[frontend] Skipping HTTPS: failed to load key.pem/cert.pem:`, err);
+    }
 }
 
 main().catch((e) => {

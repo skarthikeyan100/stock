@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, CSSProperties } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Container, Table, Form, Button, Spinner, Tabs, Tab, Card, Row, Col, Alert } from 'react-bootstrap';
+import { Container, Table, Form, Button, Spinner, Tabs, Tab, Card, Row, Col, Alert, OverlayTrigger, Tooltip, Modal } from 'react-bootstrap';
 import { useAuth, AuthUser } from '../context/AuthContext';
 import DateRangeFilter, { DateRange, resolveDateRange, formatRangeLabel } from '../components/DateRangeFilter';
 
@@ -73,8 +73,15 @@ export default function AdminPage() {
   });
   const [openTradesList, setOpenTradesList] = useState<any[]>([]);
   const [closedTradesList, setClosedTradesList] = useState<any[]>([]);
+  const [showStatusModal, setShowStatusModal] = useState(false);
   const [tradesLoading, setTradesLoading] = useState(false);
   const [tradesError, setTradesError] = useState<string | null>(null);
+  const [pnlSummary, setPnlSummary] = useState<any>(null);
+
+  // Bulk PCR Strategy card's inline "Show Orders" panel
+  const [showBulkPcrOrders, setShowBulkPcrOrders] = useState(false);
+  const [bulkPcrTrades, setBulkPcrTrades] = useState<{ open: any[]; closed: any[] } | null>(null);
+  const [bulkPcrTradesLoading, setBulkPcrTradesLoading] = useState(false);
 
   const fetchAdminPayouts = () => {
     setPayoutsLoading(true);
@@ -122,6 +129,29 @@ export default function AdminPage() {
     }
   };
 
+  const toggleBulkPcrOrders = async () => {
+    const next = !showBulkPcrOrders;
+    setShowBulkPcrOrders(next);
+    if (next && !bulkPcrTrades) {
+      setBulkPcrTradesLoading(true);
+      try {
+        const [openRes, closedRes] = await Promise.all([
+          fetch('/admin/trades/open?user=BulkPcrStrategy'),
+          fetch('/admin/trades/closed?user=BulkPcrStrategy'),
+        ]);
+        const [openData, closedData] = await Promise.all([openRes.json(), closedRes.json()]);
+        setBulkPcrTrades({
+          open: Array.isArray(openData) ? openData : [],
+          closed: Array.isArray(closedData) ? closedData : [],
+        });
+      } catch {
+        setBulkPcrTrades({ open: [], closed: [] });
+      } finally {
+        setBulkPcrTradesLoading(false);
+      }
+    }
+  };
+
   // Auto-fetch (debounced) on user/date-range change instead of a manual Load
   // click - see Analysis.md's admin-trade-filtering finding.
   useEffect(() => {
@@ -129,6 +159,26 @@ export default function AdminPage() {
     const timer = setTimeout(loadTrades, 300);
     return () => clearTimeout(timer);
   }, [activeTab, tradeUser, tradeDateRange.from, tradeDateRange.to]);
+
+  // "Eligible" P&L (excludes forfeited profit) - only meaningful for a single
+  // user, since forfeiture is checked against that user's investmentAmount.
+  // Day mode needs no fetch (see the plain-sum banner rendered below).
+  useEffect(() => {
+    if (activeTab !== 'trades') return;
+    if (tradeUser === '__all__' || tradeDateRange.mode === 'day') {
+      setPnlSummary(null);
+      return;
+    }
+    const qs = new URLSearchParams({ user: tradeUser, from: tradeDateRange.from, to: tradeDateRange.to });
+    if (tradeDateRange.mode === 'month') qs.set('breakdown', 'week');
+    const timer = setTimeout(() => {
+      fetch(`/admin/trades/pnl-summary?${qs.toString()}`)
+        .then(res => res.json())
+        .then(data => setPnlSummary(data))
+        .catch(() => setPnlSummary(null));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [activeTab, tradeUser, tradeDateRange.mode, tradeDateRange.from, tradeDateRange.to]);
 
   useEffect(() => {
     if (activeTab !== 'trades') return;
@@ -441,6 +491,17 @@ export default function AdminPage() {
     }
   };
 
+  const handleResetContinuousStrategy = async () => {
+    if (!confirm('Reset Continuous Strategy? This clears ALL in-memory leg tracking (open positions become untracked at the app level, though they remain open at the broker) and re-arms new entries from scratch. Only use this if you understand the current open-position state.')) return;
+    try {
+      const res = await fetch('/strategies/ContinuousStrategy/reset');
+      if (!res.ok) throw new Error('Failed to reset strategy');
+    } catch (err) {
+      console.error('Reset strategy error:', err);
+      alert('Failed to reset strategy');
+    }
+  };
+
   if (loading) {
     return (
       <div className="d-flex justify-content-center align-items-center min-vh-100">
@@ -449,20 +510,176 @@ export default function AdminPage() {
     );
   }
 
-  const renderConfigField = (label: string, path: string[], value: any, type: 'number' | 'boolean' | 'text' = 'number') => {
+  // One-line description + possible-values hint per config field, shown in a
+  // hover tooltip next to its label. Keyed by path.join('.') so renderConfigField
+  // (and the hand-written Indicators textarea below) can look themselves up -
+  // no call site needs to pass this explicitly. A field with no entry here just
+  // renders without a tooltip icon (see fieldLabel).
+  const FIELD_HELP: Record<string, { description: string; values: string }> = {
+    'settings.minPrice': { description: "Skip generating a buy signal when the option's LTP is below this floor.", values: 'Integer, in ₹ (e.g. 20).' },
+    'settings.maxPrice': { description: "Skip generating a buy signal when the option's LTP is above this ceiling.", values: 'Integer, in ₹ (e.g. 30000).' },
+    'settings.cooldownSeconds': { description: 'Minimum wait after an exit before a new entry can be attempted.', values: 'Integer seconds (e.g. 60).' },
+    'settings.trailingDistance': { description: 'Distance the trailing stop trails behind the best price seen since entry.', values: 'Integer points.' },
+    'settings.logQuotes': { description: "Persist every incoming option tick to Mongo's OptionQuote collection.", values: 'On/Off — heavy write volume when enabled.' },
+
+    'buySellStrategy.enabled': { description: 'Turn this strategy on/off — disabled strategies never place new entries.', values: 'On/Off.' },
+    'buySellStrategy.initialQuantity': { description: 'Lot size of the first entry.', values: 'Integer, must match the instrument lot size.' },
+    'buySellStrategy.incrementQuantity': { description: 'Additional quantity added on each averaging step.', values: 'Integer.' },
+    'buySellStrategy.averageThreshold': { description: 'Adverse points moved (below last buy price) before averaging into the position.', values: 'Integer points.' },
+    'buySellStrategy.targetPrice': { description: 'Profit target, in points above average entry, that closes the position.', values: 'Integer points.' },
+    'buySellStrategy.maxIterationCount': { description: 'Maximum number of times this strategy will average into a losing position before giving up.', values: 'Integer, e.g. 3.' },
+    'buySellStrategy.right': { description: 'Restrict entries to calls or puts, or leave unset for either.', values: "'CE', 'PE', or 'none'." },
+    'buySellStrategy.stopEnabled': { description: 'Enforce a hard stop-loss exit in addition to averaging.', values: 'On/Off.' },
+    'buySellStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
+
+    'continuousStrategy.enabled': { description: 'Turn this strategy on/off. Disabled: no new T1 entries, but already-open legs keep hedging/averaging/exiting normally.', values: 'On/Off.' },
+    'continuousStrategy.initialQuantity': { description: 'Lot size of the root T1 entry.', values: 'Integer, must match the instrument lot size.' },
+    'continuousStrategy.slDistance': { description: 'Adverse-move step size (premium points) between each hedge/average level (levels 1-4).', values: 'Integer points, e.g. 10.' },
+    'continuousStrategy.squareOffDistance': { description: 'Adverse move (premium points) from entry at which the leg is force-sold at market and abandoned for good, regardless of hedging/averaging already in place.', values: 'Integer points, independent of SL Distance. Default 50.' },
+    'continuousStrategy.minPremium': { description: 'Lowest option premium a contract must have to be eligible for a T1 entry or hedge spawn.', values: 'Integer, in ₹ premium, default 100.' },
+    'continuousStrategy.maxInvestment': { description: 'Total capital (qty × price, across all open legs + pending refills) this strategy may deploy before new orders are permanently blocked for the session.', values: 'Integer, in ₹.' },
+    'continuousStrategy.spawnQuantityMode': { description: "Multiplier applied to a leg's current size when spawning an opposite-direction hedge at an adverse level.", values: 'Positive number, e.g. 2 = double. Falls back to 1 if missing/non-numeric/≤0.' },
+    'continuousStrategy.maxProfit': { description: 'Cumulative realized+unrealized profit, as a % of Max Investment, at which every open leg is closed and new entries are permanently blocked for the session.', values: 'Percent, e.g. 2. Leave unset to disable.' },
+    'continuousStrategy.right': { description: 'Restrict T1 entries to calls or puts, or resolve the direction automatically from PCR.', values: "'CE', 'PE', or 'none' for PCR-based auto-resolve." },
+    'continuousStrategy.cooldownSeconds': { description: 'Minimum wait after a T1 entry before another T1 entry can be attempted.', values: 'Integer seconds, default 60.' },
+    'continuousStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines (spawn/average/refill messages).", values: 'On/Off.' },
+
+    'sentimentStrategy.enabled': { description: 'Turn this strategy on/off.', values: 'On/Off.' },
+    'sentimentStrategy.averageThreshold': { description: 'Adverse points moved (below last buy price) before averaging into the position.', values: 'Integer points.' },
+    'sentimentStrategy.targetPrice': { description: 'Profit target, in points above average entry, that closes the position.', values: 'Integer points.' },
+    'sentimentStrategy.orderQuantity': { description: 'Lot size used for every entry/average.', values: 'Integer, must match the instrument lot size.' },
+    'sentimentStrategy.sentiment': { description: 'Fixed market direction this strategy always trades.', values: "'call', 'put', or 'any' to let each entry decide." },
+    'sentimentStrategy.loopCount': { description: 'Maximum number of entry cycles per day before this strategy stops for the session.', values: 'Integer, e.g. 3.' },
+
+    'intermittentStrategy.enabled': { description: 'Turn this strategy on/off.', values: 'On/Off.' },
+    'intermittentStrategy.loopCount': { description: 'Maximum number of entry cycles per day before this strategy stops for the session.', values: 'Integer, e.g. 3.' },
+    'intermittentStrategy.targetPrice': { description: 'Profit target, in points above entry, that closes the position.', values: 'Integer points.' },
+    'intermittentStrategy.quantity': { description: 'Lot size used for every entry.', values: 'Integer, must match the instrument lot size.' },
+    'intermittentStrategy.threshold': { description: 'Adverse points moved (below last price) that triggers the next buy.', values: 'Integer points.' },
+    'intermittentStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
+
+    'rateOfChangeStrategy.enabled': { description: 'Turn this strategy on/off.', values: 'On/Off.' },
+    'rateOfChangeStrategy.pointsThreshold': { description: "NIFTY's velocity (points moved over the datapoint window) must reach this magnitude to trigger an entry.", values: 'Integer points, checked as ±value.' },
+    'rateOfChangeStrategy.accelerationThreshold': { description: "NIFTY's acceleration (change in velocity) must reach this magnitude to trigger/confirm an entry.", values: 'Integer points, checked as ±value.' },
+    'rateOfChangeStrategy.quantity': { description: 'Lot size used for the entry.', values: 'Integer, must match the instrument lot size.' },
+    'rateOfChangeStrategy.numberOfDatapointsReceived': { description: 'Number of recent NIFTY ticks used to compute velocity/acceleration.', values: 'Integer count of datapoints, e.g. 50.' },
+    'rateOfChangeStrategy.targetPrice': { description: 'Profit target, in points above entry, that closes the position.', values: 'Integer points.' },
+    'rateOfChangeStrategy.stopLossPrice': { description: 'Loss, in points below entry, that force-closes the position.', values: 'Integer points.' },
+    'rateOfChangeStrategy.maxHoldTimeMinutes': { description: 'Force-close the position after this much time in the trade regardless of price.', values: 'Integer minutes.' },
+    'rateOfChangeStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
+
+    'gapStrategy.enabled': { description: 'Turn this strategy on/off.', values: 'On/Off.' },
+    'gapStrategy.pointsThreshold': { description: "Today's opening gap from previous close must reach this magnitude to trigger an entry.", values: 'Integer points, checked as ±value.' },
+    'gapStrategy.numberOfDatapointsReceived': { description: 'Number of recent NIFTY ticks required before the gap check is evaluated.', values: 'Integer count of datapoints, e.g. 50.' },
+    'gapStrategy.quantity': { description: 'Lot size used for the entry.', values: 'Integer, must match the instrument lot size.' },
+    'gapStrategy.targetPrice': { description: 'Profit target, in points above entry, that closes the position.', values: 'Integer points.' },
+    'gapStrategy.stopLossPrice': { description: 'Loss, in points below entry, that force-closes the position.', values: 'Integer points.' },
+    'gapStrategy.maxHoldTimeMinutes': { description: 'Force-close the position after this much time in the trade regardless of price.', values: 'Integer minutes.' },
+    'gapStrategy.gapReversalThreshold': { description: 'When Gap Reversal Mode is on, a gap larger than this is treated as likely to reverse (fade the gap) instead of continue.', values: 'Integer points.' },
+    'gapStrategy.gapReversalMode': { description: 'Fade large gaps (trade against the gap direction) instead of always trading with the gap.', values: 'On/Off.' },
+    'gapStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
+
+    'goodMorningStrategy.enabled': { description: 'Turn this strategy on/off.', values: 'On/Off.' },
+    'goodMorningStrategy.quantity': { description: 'Lot size used for the entry.', values: 'Integer, must match the instrument lot size.' },
+    'goodMorningStrategy.targetPoints': { description: 'Profit target, in points above entry, that closes the position.', values: 'Integer points.' },
+    'goodMorningStrategy.stopLossPoints': { description: 'Loss, in points below entry, that force-closes the position.', values: 'Integer points.' },
+    'goodMorningStrategy.previousClose': { description: "Baseline NIFTY close price this strategy compares the snapshot-time price against. Auto-updated after each trade/skip cycle.", values: 'Integer, in NIFTY points.' },
+    'goodMorningStrategy.snapshotTime': { description: 'Time of day the strategy records its reference NIFTY price.', values: "'HH:mm' 24h format, e.g. '10:00'." },
+    'goodMorningStrategy.confirmTime': { description: 'Time of day the strategy checks whether the move from the snapshot price has held, and enters if so.', values: "'HH:mm' 24h format, e.g. '10:30'." },
+    'goodMorningStrategy.minMovementPoints': { description: 'Minimum NIFTY movement between snapshot and confirm time required to enter.', values: 'Integer points.' },
+    'goodMorningStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
+
+    'goodMorningSensexStrategy.enabled': { description: 'Turn this strategy on/off.', values: 'On/Off.' },
+    'goodMorningSensexStrategy.quantity': { description: 'Lot size used for the entry.', values: 'Integer, must match the instrument lot size.' },
+    'goodMorningSensexStrategy.targetPoints': { description: 'Profit target, in points above entry, that closes the position.', values: 'Integer points.' },
+    'goodMorningSensexStrategy.stopLossPoints': { description: 'Loss, in points below entry, that force-closes the position.', values: 'Integer points.' },
+    'goodMorningSensexStrategy.previousClose': { description: 'Baseline SENSEX close price this strategy compares the snapshot-time price against. Auto-updated after each trade/skip cycle.', values: 'Integer, in SENSEX points.' },
+    'goodMorningSensexStrategy.snapshotTime': { description: 'Time of day the strategy records its reference SENSEX price.', values: "'HH:mm' 24h format, e.g. '09:40'." },
+    'goodMorningSensexStrategy.confirmTime': { description: 'Time of day the strategy checks whether the move from the snapshot price has held, and enters if so.', values: "'HH:mm' 24h format, e.g. '09:45'." },
+    'goodMorningSensexStrategy.minMovementPoints': { description: 'Minimum SENSEX movement between snapshot and confirm time required to enter.', values: 'Integer points.' },
+    'goodMorningSensexStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
+
+    'supportResistanceStrategy.enabled': { description: 'Turn this strategy on/off. Entries fire off the dynamic support/resistance breach detector (see the srHypothesis section above), not a fixed NIFTY level.', values: 'On/Off.' },
+    'supportResistanceStrategy.quantity': { description: 'Lot size of the root entry.', values: 'Integer, must match the instrument lot size.' },
+    'supportResistanceStrategy.slDistance': { description: 'Adverse-move step size (premium points) between each hedge/average level.', values: 'Integer points, e.g. 10.' },
+    'supportResistanceStrategy.squareOffDistance': { description: 'Adverse move (premium points) from entry at which the leg is force-sold at market and abandoned for good.', values: 'Integer points, independent of SL Distance.' },
+    'supportResistanceStrategy.maxLevels': { description: 'Number of stacked hedge/average levels between entry and the hard square-off.', values: 'Integer, e.g. 4.' },
+    'supportResistanceStrategy.minPremium': { description: 'Lowest option premium a contract must have to be eligible for an entry or hedge spawn.', values: 'Integer, in ₹ premium.' },
+    'supportResistanceStrategy.maxInvestment': { description: 'Total capital (qty × price, across all open legs + pending refills) this strategy may deploy before new orders are permanently blocked for the session.', values: 'Integer, in ₹.' },
+    'supportResistanceStrategy.maxProfit': { description: 'Cumulative realized+unrealized profit, as a % of Max Investment, at which every open leg is closed and new entries are permanently blocked for the session.', values: 'Percent, e.g. 2. Leave unset to disable.' },
+    'supportResistanceStrategy.spawnQuantityMode': { description: "Multiplier applied to a leg's current size when spawning an opposite-direction hedge at an adverse level.", values: 'Positive number, e.g. 2 = double. Falls back to 1 if missing/non-numeric/≤0.' },
+    'supportResistanceStrategy.cooldownSeconds': { description: 'Minimum wait after an entry before another entry can be attempted.', values: 'Integer seconds, default 60.' },
+    'supportResistanceStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
+
+    'targetReachStrategy.enabled': { description: 'Turn this strategy on/off.', values: 'On/Off.' },
+    'targetReachStrategy.symbol': { description: 'Underlying index for the specific option contract this strategy watches.', values: "'NIFTY' or 'SENSEX'." },
+    'targetReachStrategy.strike': { description: 'Strike price of the exact option contract this strategy watches.', values: 'Integer strike price.' },
+    'targetReachStrategy.expiry': { description: 'Expiry date of the exact option contract this strategy watches.', values: "Date string, e.g. '2026-01-01'." },
+    'targetReachStrategy.optionType': { description: 'Whether the watched contract is a call or a put.', values: "'CE' or 'PE'." },
+    'targetReachStrategy.targetPrice': { description: "Entry trigger: the strategy buys once this contract's own LTP reaches this price.", values: 'Integer, in ₹ premium.' },
+    'targetReachStrategy.quantity': { description: 'Lot size used for the entry.', values: 'Integer, must match the instrument lot size.' },
+    'targetReachStrategy.targetPoints': { description: 'Profit target, in points above entry, that closes the position (applied after entry, separate from the entry trigger above).', values: 'Integer points.' },
+    'targetReachStrategy.stopLossPoints': { description: 'Loss, in points below entry, that force-closes the position.', values: 'Integer points.' },
+    'targetReachStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
+
+    'ruleBasedStrategy.enabled': { description: 'Turn this rule on/off.', values: 'On/Off.' },
+    'ruleBasedStrategy.quantity': { description: 'Lot size used for the entry.', values: 'Integer, must match the instrument lot size, e.g. 65 for NIFTY.' },
+    'ruleBasedStrategy.target': { description: 'Profit target, in points above entry, that closes the position.', values: 'Integer points.' },
+    'ruleBasedStrategy.stopLoss': { description: 'Loss, in points below entry, that force-closes the position.', values: 'Integer points.' },
+    'ruleBasedStrategy.maxHoldTimeMinutes': { description: 'Force-close the position after this much time in the trade regardless of price.', values: 'Integer minutes.' },
+    'ruleBasedStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
+    'ruleBasedStrategy.indicators': { description: 'Technical indicators this rule evaluates to decide entries — one string per indicator, encoding its parameters.', values: "e.g. 'RSI_5_80_20' (RSI, period 5, overbought 80, oversold 20), 'MACD_12_26_9', 'EMA_5_13', 'Bollinger_20_2', 'ADX_14', 'Stochastic_14_3'. Must be valid JSON array of strings." },
+
+    'bulkPcrStrategy.enabled': { description: 'Turn this one-shot strategy on/off. It durably disables itself (writes enabled: false back to config.yml) after completing one full buy → target → sell cycle.', values: 'On/Off.' },
+    'bulkPcrStrategy.broker': { description: 'Broker used to place this block order.', values: "'breeze' or 'zerodha'." },
+    'bulkPcrStrategy.quantity': { description: 'Total quantity bought in one go; split into exchange-compliant chunks automatically (NIFTY freeze quantity is 1755).', values: 'Integer, must be a multiple of the instrument lot size. Default 13975 (215 lots × 65).' },
+    'bulkPcrStrategy.targetPoints': { description: 'Profit target, in points above entry average, that triggers the exit. There is no stop-loss — the position holds indefinitely until this is hit.', values: 'Integer points.' },
+    'bulkPcrStrategy.right': { description: 'Fixed entry direction, or auto-resolve from PCR (put/call OI ratio) when left as none.', values: "'call', 'put', or 'none' for PCR-based auto-resolve." },
+    'bulkPcrStrategy.maxInvestment': { description: 'Reference figure for total capital this block order deploys (quantity × price).', values: 'Integer, in ₹.' },
+    'bulkPcrStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
+  };
+
+  // Adds a hover ⓘ icon next to a field's label showing its FIELD_HELP entry
+  // (description + possible values), looked up by the field's own config path -
+  // so renderConfigField's call sites never need to pass this explicitly. Falls
+  // back to the plain label when no entry exists (safe for any field not yet
+  // covered above).
+  const fieldLabel = (label: string, path: string[]): React.ReactNode => {
+    const help = FIELD_HELP[path.join('.')];
+    if (!help) return label;
+    return (
+      <OverlayTrigger placement="top" overlay={<Tooltip>{help.description} Possible values: {help.values}</Tooltip>}>
+        <span style={{ cursor: 'help', borderBottom: '1px dotted #6c757d' }}>
+          {label} <span style={{ color: '#6c757d' }}>&#9432;</span>
+        </span>
+      </OverlayTrigger>
+    );
+  };
+
+  const renderConfigField = (label: string, path: string[], value: any, type: 'number' | 'boolean' | 'text' | 'select' = 'number', options?: string[]) => {
     if (type === 'boolean') {
       return (
         <Form.Check
           type="switch"
-          label={label}
+          label={fieldLabel(label, path)}
           checked={value}
           onChange={e => updateConfigValue(path, e.target.checked)}
         />
       );
     }
+    if (type === 'select') {
+      return (
+        <Form.Group className="mb-3">
+          <Form.Label>{fieldLabel(label, path)}</Form.Label>
+          <Form.Select value={value} onChange={e => updateConfigValue(path, e.target.value)}>
+            {(options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          </Form.Select>
+        </Form.Group>
+      );
+    }
     return (
       <Form.Group className="mb-3">
-        <Form.Label>{label}</Form.Label>
+        <Form.Label>{fieldLabel(label, path)}</Form.Label>
         <Form.Control
           type={type}
           value={value}
@@ -472,13 +689,69 @@ export default function AdminPage() {
     );
   };
 
+  // Shared table renderers for open/closed trades - used by both the Trades
+  // tab and any inline per-strategy orders panel (e.g. Bulk PCR Strategy's
+  // Show Orders toggle), so there's one source of truth for these columns.
+  const renderOpenTradesTable = (trades: any[]) => (
+    trades.length === 0 ? (
+      <p className="text-center text-muted py-4 mb-0">No open positions.</p>
+    ) : (
+      <Table striped hover responsive className="mb-0">
+        <thead>
+          <tr><th>Symbol</th><th>Right</th><th>Qty</th><th>Entry Price</th><th>Entry Time</th></tr>
+        </thead>
+        <tbody>
+          {trades.map((t, i) => (
+            <tr key={t._id || i}>
+              <td>{t.tsym}</td>
+              <td>{t.right || '—'}</td>
+              <td>{t.quantity}</td>
+              <td>&#8377;{Number(t.price).toFixed(2)}</td>
+              <td>{t.entryTime ? new Date(t.entryTime).toLocaleString() : '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    )
+  );
+
+  const renderClosedTradesTable = (trades: any[]) => (
+    trades.length === 0 ? (
+      <p className="text-center text-muted py-4 mb-0">No closed trades.</p>
+    ) : (
+      <Table striped hover responsive className="mb-0">
+        <thead>
+          <tr><th>Symbol</th><th>Right</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Entry Time</th><th>Exit Time</th></tr>
+        </thead>
+        <tbody>
+          {trades.map((t, i) => {
+            const pnl = t.realizedPnL || 0;
+            const pnlColor = pnl >= 0 ? 'text-success' : 'text-danger';
+            return (
+              <tr key={t._id || i}>
+                <td>{t.tsym}</td>
+                <td>{t.right || '—'}</td>
+                <td>{t.quantity}</td>
+                <td>&#8377;{Number(t.entryPrice).toFixed(2)}</td>
+                <td>&#8377;{Number(t.exitPrice).toFixed(2)}</td>
+                <td className={`fw-bold ${pnlColor}`}>{pnl >= 0 ? '+' : ''}&#8377;{pnl.toFixed(2)}</td>
+                <td>{t.entryTime ? new Date(t.entryTime).toLocaleString() : '—'}</td>
+                <td>{t.exitTime ? new Date(t.exitTime).toLocaleString() : '—'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </Table>
+    )
+  );
+
   return (
     <div className="min-vh-100 bg-light">
       <div className="bg-dark bg-opacity-10 border-bottom">
         <Container className="py-2 d-flex justify-content-between align-items-center">
           <span className="fw-bold">Admin Dashboard</span>
           <div className="d-flex align-items-center gap-3">
-            <Button variant="outline-secondary" size="sm" onClick={() => navigate('/app/trade')}>← Trading</Button>
+            <Button variant="outline-secondary" size="sm" onClick={() => navigate('/trade')}>← Trading</Button>
             <span className="text-muted small">{user?.email}</span>
           </div>
         </Container>
@@ -934,7 +1207,10 @@ export default function AdminPage() {
                 </Card>
 
                 <Card className="mb-3">
-                  <Card.Header className="fw-bold">Continuous Strategy</Card.Header>
+                  <Card.Header className="fw-bold d-flex justify-content-between align-items-center">
+                    Continuous Strategy
+                    <Button size="sm" variant="outline-danger" onClick={handleResetContinuousStrategy}>Reset</Button>
+                  </Card.Header>
                   <Card.Body>
                     {renderConfigField('Enabled', ['continuousStrategy', 'enabled'], config.continuousStrategy?.enabled, 'boolean')}
                     <Row>
@@ -945,13 +1221,19 @@ export default function AdminPage() {
                         {renderConfigField('SL Distance', ['continuousStrategy', 'slDistance'], config.continuousStrategy?.slDistance)}
                       </Col>
                       <Col md={6}>
+                        {renderConfigField('Square-off Distance', ['continuousStrategy', 'squareOffDistance'], config.continuousStrategy?.squareOffDistance)}
+                      </Col>
+                      <Col md={6}>
                         {renderConfigField('Minimum Premium', ['continuousStrategy', 'minPremium'], config.continuousStrategy?.minPremium)}
                       </Col>
                       <Col md={6}>
-                        {renderConfigField('Allotted Capital', ['continuousStrategy', 'allottedCapital'], config.continuousStrategy?.allottedCapital)}
+                        {renderConfigField('Max Investment', ['continuousStrategy', 'maxInvestment'], config.continuousStrategy?.maxInvestment)}
                       </Col>
                       <Col md={6}>
-                        {renderConfigField('Spawn Quantity Mode', ['continuousStrategy', 'spawnQuantityMode'], config.continuousStrategy?.spawnQuantityMode, 'text')}
+                        {renderConfigField('Spawn Quantity Mode', ['continuousStrategy', 'spawnQuantityMode'], config.continuousStrategy?.spawnQuantityMode)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Max Profit %', ['continuousStrategy', 'maxProfit'], config.continuousStrategy?.maxProfit)}
                       </Col>
                       <Col md={6}>
                         {renderConfigField('Right', ['continuousStrategy', 'right'], config.continuousStrategy?.right, 'text')}
@@ -1141,19 +1423,31 @@ export default function AdminPage() {
                     {renderConfigField('Enabled', ['supportResistanceStrategy', 'enabled'], config.supportResistanceStrategy?.enabled, 'boolean')}
                     <Row>
                       <Col md={6}>
-                        {renderConfigField('Support Price', ['supportResistanceStrategy', 'supportPrice'], config.supportResistanceStrategy?.supportPrice)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Resistance Price', ['supportResistanceStrategy', 'resistancePrice'], config.supportResistanceStrategy?.resistancePrice)}
-                      </Col>
-                      <Col md={6}>
                         {renderConfigField('Quantity', ['supportResistanceStrategy', 'quantity'], config.supportResistanceStrategy?.quantity)}
                       </Col>
                       <Col md={6}>
-                        {renderConfigField('Target Points', ['supportResistanceStrategy', 'targetPoints'], config.supportResistanceStrategy?.targetPoints)}
+                        {renderConfigField('SL Distance', ['supportResistanceStrategy', 'slDistance'], config.supportResistanceStrategy?.slDistance)}
                       </Col>
                       <Col md={6}>
-                        {renderConfigField('Stop Loss Points', ['supportResistanceStrategy', 'stopLossPoints'], config.supportResistanceStrategy?.stopLossPoints)}
+                        {renderConfigField('Square-off Distance', ['supportResistanceStrategy', 'squareOffDistance'], config.supportResistanceStrategy?.squareOffDistance)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Max Levels', ['supportResistanceStrategy', 'maxLevels'], config.supportResistanceStrategy?.maxLevels)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Minimum Premium', ['supportResistanceStrategy', 'minPremium'], config.supportResistanceStrategy?.minPremium)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Max Investment', ['supportResistanceStrategy', 'maxInvestment'], config.supportResistanceStrategy?.maxInvestment)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Max Profit %', ['supportResistanceStrategy', 'maxProfit'], config.supportResistanceStrategy?.maxProfit)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Spawn Quantity Mode', ['supportResistanceStrategy', 'spawnQuantityMode'], config.supportResistanceStrategy?.spawnQuantityMode)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Cooldown (sec)', ['supportResistanceStrategy', 'cooldownSeconds'], config.supportResistanceStrategy?.cooldownSeconds)}
                       </Col>
                     </Row>
                     {renderConfigField('Log Enabled', ['supportResistanceStrategy', 'logEnabled'], config.supportResistanceStrategy?.logEnabled, 'boolean')}
@@ -1213,7 +1507,7 @@ export default function AdminPage() {
                       </Col>
                     </Row>
                     <Form.Group className="mb-3">
-                      <Form.Label>Indicators (JSON)</Form.Label>
+                      <Form.Label>{fieldLabel('Indicators (JSON)', ['ruleBasedStrategy', 'indicators'])}</Form.Label>
                       <Form.Control
                         as="textarea"
                         rows={6}
@@ -1232,6 +1526,51 @@ export default function AdminPage() {
                       {indicatorsJsonError && <div className="text-danger small mt-1">{indicatorsJsonError}</div>}
                     </Form.Group>
                     {renderConfigField('Log Enabled', ['ruleBasedStrategy', 'logEnabled'], config.ruleBasedStrategy?.logEnabled, 'boolean')}
+                  </Card.Body>
+                </Card>
+
+                <Card className="mb-3">
+                  <Card.Header className="fw-bold d-flex justify-content-between align-items-center">
+                    <span>Bulk PCR Strategy</span>
+                    <Button size="sm" variant="outline-secondary" onClick={toggleBulkPcrOrders}>
+                      {showBulkPcrOrders ? 'Hide Orders' : 'Show Orders'}
+                    </Button>
+                  </Card.Header>
+                  <Card.Body>
+                    {renderConfigField('Enabled', ['bulkPcrStrategy', 'enabled'], config.bulkPcrStrategy?.enabled, 'boolean')}
+                    <Row>
+                      <Col md={6}>
+                        {renderConfigField('Broker', ['bulkPcrStrategy', 'broker'], config.bulkPcrStrategy?.broker, 'select', ['breeze', 'zerodha'])}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Quantity', ['bulkPcrStrategy', 'quantity'], config.bulkPcrStrategy?.quantity)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Target Points', ['bulkPcrStrategy', 'targetPoints'], config.bulkPcrStrategy?.targetPoints)}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Right', ['bulkPcrStrategy', 'right'], config.bulkPcrStrategy?.right, 'text')}
+                      </Col>
+                      <Col md={6}>
+                        {renderConfigField('Max Investment', ['bulkPcrStrategy', 'maxInvestment'], config.bulkPcrStrategy?.maxInvestment)}
+                      </Col>
+                    </Row>
+                    {renderConfigField('Log Enabled', ['bulkPcrStrategy', 'logEnabled'], config.bulkPcrStrategy?.logEnabled, 'boolean')}
+
+                    {showBulkPcrOrders && (
+                      <div className="mt-3 border-top pt-3">
+                        {bulkPcrTradesLoading ? (
+                          <Spinner animation="border" size="sm" />
+                        ) : (
+                          <>
+                            <h6>Open Positions</h6>
+                            {renderOpenTradesTable(bulkPcrTrades?.open || [])}
+                            <h6 className="mt-3">Closed Trades</h6>
+                            {renderClosedTradesTable(bulkPcrTrades?.closed || [])}
+                          </>
+                        )}
+                      </div>
+                    )}
                   </Card.Body>
                 </Card>
 
@@ -1379,7 +1718,7 @@ export default function AdminPage() {
                     </Form.Group>
                   </Col>
                   <Col md={8}>
-                    <DateRangeFilter value={tradeDateRange} onChange={setTradeDateRange} size="sm" />
+                    <DateRangeFilter value={tradeDateRange} onChange={setTradeDateRange} size="sm" modes={['day', 'week', 'month']} />
                   </Col>
                 </Row>
                 <div className="d-flex align-items-center gap-2">
@@ -1390,67 +1729,112 @@ export default function AdminPage() {
               </Card.Body>
             </Card>
 
+            <Button variant="outline-primary" size="sm" className="mb-3" onClick={() => setShowStatusModal(v => !v)}>
+              {showStatusModal ? 'Hide Status' : 'View Status'}
+            </Button>
+
             <Card className="mb-3">
-              <Card.Header className="fw-bold d-flex justify-content-between align-items-center">
-                <span>Open Positions</span>
-                <small className="text-muted fw-normal">(always live - not date-filtered)</small>
-              </Card.Header>
-              <Card.Body className="p-0">
-                {openTradesList.length === 0 ? (
-                  <p className="text-center text-muted py-4 mb-0">No open positions.</p>
+              <Card.Header className="fw-bold">P&amp;L Summary</Card.Header>
+              <Card.Body>
+                {tradeUser === '__all__' ? (
+                  <>
+                    <div className="fs-4 fw-bold">
+                      &#8377;{closedTradesList.reduce((s, t) => s + (t.realizedPnL || 0), 0).toFixed(2)}
+                    </div>
+                    <small className="text-muted">Select a single user to see eligible P&amp;L (excluding any forfeited profit).</small>
+                  </>
+                ) : tradeDateRange.mode === 'day' ? (
+                  <div className="fs-4 fw-bold">
+                    &#8377;{closedTradesList.reduce((s, t) => s + (t.realizedPnL || 0), 0).toFixed(2)}
+                  </div>
+                ) : !pnlSummary ? (
+                  <Spinner animation="border" size="sm" />
+                ) : tradeDateRange.mode === 'week' ? (
+                  <>
+                    <div className="fs-4 fw-bold">&#8377;{pnlSummary.eligibleTotal.toFixed(2)}</div>
+                    {pnlSummary.rawTotal !== pnlSummary.eligibleTotal && (
+                      <small className="text-muted d-block">Raw P&amp;L: &#8377;{pnlSummary.rawTotal.toFixed(2)}</small>
+                    )}
+                    {pnlSummary.forfeited && (
+                      <Alert variant="warning" className="mt-2 mb-0">{pnlSummary.forfeitReason}</Alert>
+                    )}
+                  </>
                 ) : (
-                  <Table striped hover responsive className="mb-0">
-                    <thead>
-                      <tr><th>Symbol</th><th>Right</th><th>Qty</th><th>Entry Price</th><th>Entry Time</th></tr>
-                    </thead>
-                    <tbody>
-                      {openTradesList.map((t, i) => (
-                        <tr key={t._id || i}>
-                          <td>{t.tsym}</td>
-                          <td>{t.right || '—'}</td>
-                          <td>{t.quantity}</td>
-                          <td>&#8377;{Number(t.price).toFixed(2)}</td>
-                          <td>{t.entryTime ? new Date(t.entryTime).toLocaleString() : '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </Table>
+                  <>
+                    <div className="fs-4 fw-bold mb-3">&#8377;{pnlSummary.eligibleTotal.toFixed(2)}</div>
+                    <Table size="sm" striped responsive className="mb-0">
+                      <thead>
+                        <tr><th>Week</th><th>Raw P&amp;L</th><th>Eligible P&amp;L</th><th>Status</th></tr>
+                      </thead>
+                      <tbody>
+                        {(pnlSummary.weeks || []).map((w: any, i: number) => (
+                          <tr key={i}>
+                            <td>{w.weekStart} – {w.weekEnd}</td>
+                            <td>&#8377;{w.rawPnL.toFixed(2)}</td>
+                            <td>&#8377;{w.eligiblePnL.toFixed(2)}</td>
+                            <td>{w.forfeited ? <span className="text-danger" title={w.forfeitReason}>Forfeited</span> : <span className="text-success">OK</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </Table>
+                  </>
                 )}
               </Card.Body>
             </Card>
 
-            <Card>
-              <Card.Header className="fw-bold">Closed Trades</Card.Header>
-              <Card.Body className="p-0">
-                {closedTradesList.length === 0 ? (
-                  <p className="text-center text-muted py-4 mb-0">No closed trades.</p>
-                ) : (
-                  <Table striped hover responsive className="mb-0">
-                    <thead>
-                      <tr><th>Symbol</th><th>Right</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Entry Time</th><th>Exit Time</th></tr>
-                    </thead>
-                    <tbody>
-                      {closedTradesList.map((t, i) => {
-                        const pnl = t.realizedPnL || 0;
-                        const pnlColor = pnl >= 0 ? 'text-success' : 'text-danger';
-                        return (
-                          <tr key={t._id || i}>
-                            <td>{t.tsym}</td>
-                            <td>{t.right || '—'}</td>
-                            <td>{t.quantity}</td>
-                            <td>&#8377;{Number(t.entryPrice).toFixed(2)}</td>
-                            <td>&#8377;{Number(t.exitPrice).toFixed(2)}</td>
-                            <td className={`fw-bold ${pnlColor}`}>{pnl >= 0 ? '+' : ''}&#8377;{pnl.toFixed(2)}</td>
-                            <td>{t.entryTime ? new Date(t.entryTime).toLocaleString() : '—'}</td>
-                            <td>{t.exitTime ? new Date(t.exitTime).toLocaleString() : '—'}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </Table>
-                )}
-              </Card.Body>
-            </Card>
+            <Modal show={showStatusModal} onHide={() => setShowStatusModal(false)} centered>
+              <Modal.Header closeButton>
+                <Modal.Title>Status</Modal.Title>
+              </Modal.Header>
+              <Modal.Body>
+                {(() => {
+                  const realizedPnL = closedTradesList.reduce((s, t) => s + (t.realizedPnL || 0), 0);
+                  const unrealizedPnL = openTradesList.reduce((s, t) => s + ((t.lastTradePrice - t.price) * t.quantity || 0), 0);
+                  const realizedColor = realizedPnL >= 0 ? 'text-success' : 'text-danger';
+                  const unrealizedColor = unrealizedPnL >= 0 ? 'text-success' : 'text-danger';
+                  return (
+                    <>
+                      <Row className="mb-3 text-center">
+                        <Col>
+                          <div className="small text-muted">Realized PnL</div>
+                          <div className={`fs-5 fw-bold ${realizedColor}`}>
+                            {realizedPnL >= 0 ? '+' : ''}&#8377;{realizedPnL.toFixed(2)}
+                          </div>
+                        </Col>
+                        <Col>
+                          <div className="small text-muted">Unrealized PnL</div>
+                          <div className={`fs-5 fw-bold ${unrealizedColor}`}>
+                            {unrealizedPnL >= 0 ? '+' : ''}&#8377;{unrealizedPnL.toFixed(2)}
+                          </div>
+                        </Col>
+                      </Row>
+                      {openTradesList.length === 0 ? (
+                        <p className="text-center text-muted py-3 mb-0">No open positions.</p>
+                      ) : (
+                        <Table striped hover responsive size="sm" className="mb-0">
+                          <thead>
+                            <tr><th>Contract</th><th>Qty</th><th>PnL</th></tr>
+                          </thead>
+                          <tbody>
+                            {openTradesList.map((t, i) => {
+                              const pnl = (t.lastTradePrice - t.price) * t.quantity || 0;
+                              const pnlColor = pnl >= 0 ? 'text-success' : 'text-danger';
+                              return (
+                                <tr key={t._id || i}>
+                                  <td>{t.tsym}</td>
+                                  <td>{t.quantity}</td>
+                                  <td className={`fw-bold ${pnlColor}`}>{pnl >= 0 ? '+' : ''}&#8377;{pnl.toFixed(2)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </Table>
+                      )}
+                    </>
+                  );
+                })()}
+              </Modal.Body>
+            </Modal>
           </Tab>
         </Tabs>
       </Container>

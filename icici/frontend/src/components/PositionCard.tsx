@@ -89,7 +89,7 @@ export default function PositionCard({ trade, closed }: { trade: Trade; closed?:
                 Stop Loss: <span className="fw-bold text-danger">&#8377;{trade.stopLossPrice?.toFixed(2)}</span>
               </small>
             ) : (
-              <div className="d-flex align-items-center gap-2">
+              <div className="d-flex align-items-center gap-2 flex-wrap">
                 <InputGroup size="sm" style={{ width: 120 }}>
                   <InputGroup.Text>T</InputGroup.Text>
                   <Form.Control

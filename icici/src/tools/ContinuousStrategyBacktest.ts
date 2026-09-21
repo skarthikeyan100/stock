@@ -24,255 +24,72 @@
  * 10:00-15:00 gate is bypassed correctly via MOCK_BROKER=true (see the npm
  * script), since that check already has a mock-mode escape hatch.
  *
- * Usage:
+ * Usage (single day):
  *   tsc && MOCK_BROKER=true node ./dist/tools/ContinuousStrategyBacktest.js \
  *     --niftyFile /path/to/Quote.csv --optionFile /path/to/OptionQuote.csv \
- *     [--spawnQuantityMode same|multiplied] [--averageQuantityMode same|multiplied]
+ *     [--spawnQuantityMode <number, e.g. 2>] [--averageQuantityMode same|multiplied]
+ *
+ * Usage (every day at once):
+ *   tsc && MOCK_BROKER=true node ./dist/tools/ContinuousStrategyBacktest.js \
+ *     --allDays /path/to/backups [--verbose] \
+ *     [--spawnQuantityMode <number, e.g. 2>] [--averageQuantityMode same|multiplied]
+ *
+ * --allDays scans <baseDir>/<day>/csv/Quote.csv + OptionQuote.csv for every
+ * subfolder of baseDir (matching this repo's work/data/backups/<Mon-DD>/csv/
+ * layout), skipping any day missing either file, and runs a fresh backtest
+ * (a brand-new ContinuousStrategy instance and mock broker per day - no
+ * state carries over) for each one it finds. Prints a compact one-line
+ * summary per day plus an aggregate totals row, instead of every day's full
+ * detailed report - pass --verbose to also print the full per-day report
+ * (the same one single-day mode always prints).
  *
  * Every field in config.yml's `continuousStrategy` block is used as-is except
  * `right` (always forced, see above) and `enabled` (always forced true - a
- * disabled strategy trivially produces zero trades). `--spawnQuantityMode`/
- * `--averageQuantityMode` optionally override those two fields for a single
- * run, to compare "same quantity every level" against "multiplied by level"
- * (for hedge spawns and/or loss-averaging respectively) without editing
- * config.yml.
+ * disabled strategy trivially produces zero trades). `--spawnQuantityMode`
+ * optionally overrides the hedge-spawn flat quantity multiplier (a positive
+ * number, e.g. 2 = double the causing leg's own totalQuantity at every
+ * adverse level 1-4 - see LegManager.ts's trySpawnLevel) for the
+ * whole run (every day, in --allDays mode). `--averageQuantityMode`
+ * independently overrides the separate 'same'/'multiplied' loss-averaging
+ * toggle (unaffected by this change) - the two flags can be varied
+ * independently to compare hedge-sizing and loss-averaging strategies
+ * without editing config.yml.
  */
-import * as fs from 'fs';
-import { parse } from 'csv-parse/sync';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import OrderClient from '../processes/strategies/OrderClient';
 import configService from '../prism/ConfigService';
 import ContinuousStrategy from '../strategy/ContinuousStrategy';
 import { CALL, PUT } from '../constants';
+import {
+    getArg, getFlag, DEFAULT_ALL_DAYS_DIR, loadNiftyTicks, loadNiftyOptionTicks,
+    buildContractDirectory, contractKey, fmtTime, round2, discoverDayFolders,
+    BacktestOrderClient,
+} from './backtestCsvUtils';
 
-const FORCED_RIGHT = 'call';
-
-function getArg(name: string, defaultValue: string): string {
-    const idx = process.argv.indexOf(`--${name}`);
-    return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : defaultValue;
-}
+const FORCED_RIGHT: 'call' | 'put' = 'call';
 
 const SPAWN_QUANTITY_MODE_OVERRIDE = getArg('spawnQuantityMode', '');
 const AVERAGE_QUANTITY_MODE_OVERRIDE = getArg('averageQuantityMode', '');
 
 const NIFTY_FILE = getArg('niftyFile', '');
 const OPTION_FILE = getArg('optionFile', '');
+const ALL_DAYS_DIR = getArg('allDays', (NIFTY_FILE || OPTION_FILE) ? '' : DEFAULT_ALL_DAYS_DIR);
+const VERBOSE = getFlag('verbose');
 
-interface NiftyTick { ltp: number; ltt: number; }
-interface OptionTick { strike: number; optionType: 'CE' | 'PE'; tsym: string; ltp: number; ltt: number; }
-
-// Displays in IST (the CSV's own `time` column is IST-labeled) rather than
-// UTC/local, so times in the report line up with the source data.
-function fmtTime(epochMs: number): string {
-    return new Date(epochMs).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false });
-}
-
-function round2(n: number): number {
-    return Math.round(n * 100) / 100;
-}
-
-function loadNiftyTicks(filePath: string): NiftyTick[] {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const records: any[] = parse(content, { columns: true, skip_empty_lines: true, trim: true });
-    const ticks = records
-        .filter((r) => r.index === 'NIFTY')
-        .map((r) => ({ ltp: Number(r.ltp), ltt: Number(r.ltt) * 1000 }));
-    ticks.sort((a, b) => a.ltt - b.ltt);
-    return ticks;
-}
-
-// Pre-filters to NIFTY-only lines by a raw string check before handing the
-// reduced text to csv-parse - cuts parse work roughly in half (SENSEX rows
-// are pure waste for this tool). Reliable because the header order
-// (tsym,index,strike,optionType) puts a bare quoted "NIFTY" only in the
-// index column - a tsym like "NIFTY25AUG26C24050" never matches the exact
-// `,"NIFTY",` substring.
-function loadNiftyOptionTicks(filePath: string): OptionTick[] {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const lines = content.split('\n');
-    const niftyLines = [lines[0]];
-    for (let i = 1; i < lines.length; i++) {
-        if (lines[i].includes(',"NIFTY",')) niftyLines.push(lines[i]);
-    }
-    const records: any[] = parse(niftyLines.join('\n'), { columns: true, skip_empty_lines: true, trim: true });
-    const ticks = records.map((r) => ({
-        strike: Number(r.strike),
-        optionType: r.optionType as 'CE' | 'PE',
-        tsym: r.tsym as string,
-        ltp: Number(r.ltp),
-        ltt: Number(r.ltt) * 1000,
-    }));
-    ticks.sort((a, b) => a.ltt - b.ltt);
-    return ticks;
-}
-
-// --- Synthetic contract directory (no live broker involved) ---
-
-interface ContractInfo { token: string; tsym: string; strike: number; optionType: 'CE' | 'PE'; exchange: 'NFO'; }
-
-function contractKey(strike: number, optionType: string): string {
-    return `${strike}_${optionType}`;
-}
-
-function buildContractDirectory(ticks: OptionTick[]): Map<string, ContractInfo> {
-    const dir = new Map<string, ContractInfo>();
-    for (const t of ticks) {
-        const key = contractKey(t.strike, t.optionType);
-        if (!dir.has(key)) {
-            dir.set(key, { token: `OPT_${key}`, tsym: t.tsym, strike: t.strike, optionType: t.optionType, exchange: 'NFO' });
-        }
-    }
-    return dir;
-}
-
-// --- Trade ledger ---
-
-interface OpenLedgerEntry { tsym: string; right: string; entryTime: number; entryPrice: number; quantity: number; }
-interface TradeRecord {
-    tsym: string; right: string; entryTime: number; entryPrice: number;
-    exitTime: number; exitPrice: number; quantity: number; pnl: number;
-}
-
-// --- Mock OrderClient, data-driven from the loaded CSVs instead of test-controlled
-// (compare src/test/continuousStrategyTest.ts's MockOrderClient) ---
-
-class BacktestOrderClient {
-    latestPrice = new Map<string, number>(); // contractKey -> latest known ltp, updated by the replay loop
-    pendingLimitOrders = new Map<string, { tsym: string; quantity: number; limitPrice: number; exchange: 'NFO'; userId: string }>();
-    openTrades = new Map<string, OpenLedgerEntry>(); // token -> open ledger entry
-    closedTrades: TradeRecord[] = [];
-    currentTime = 0; // set by the replay loop before each dispatch
-
-    constructor(private contractDirectory: Map<string, ContractInfo>) {}
-
-    async calculateRight(_userId: string, _ltp?: number): Promise<string> {
-        return FORCED_RIGHT;
-    }
-
-    async getContractByPriceRangeZerodha(
-        _userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number,
-        _index = 'NIFTY', excludeStrikes: number[] = []
-    ) {
-        const strikeStep = 50;
-        const atmStrike = Math.round(underlyingLtp / strikeStep) * strikeStep;
-        const excluded = new Set(excludeStrikes);
-
-        const tryStrike = (strike: number) => {
-            if (excluded.has(strike)) return null;
-            const key = contractKey(strike, optionType);
-            const contract = this.contractDirectory.get(key);
-            if (!contract) return null;
-            const premium = this.latestPrice.get(key);
-            if (premium == null || premium < minPremium) return null;
-            // Single unified synthetic token space in this backtest (no real broker
-            // divergence to model) - antToken is the same value ContinuousStrategy.ts
-            // now reads instead of instrumentToken (see its T1-entry comment).
-            return { tradingSymbol: contract.tsym, instrumentToken: contract.token, antToken: contract.token, lotSize: 65, exchange: contract.exchange, strike, premium };
-        };
-
-        for (let depth = 0; depth < 5; depth++) {
-            const strike = optionType === 'CE' ? atmStrike + depth * strikeStep : atmStrike - depth * strikeStep;
-            const result = tryStrike(strike);
-            if (result) return result;
-        }
-        for (let depth = 1; depth < 5; depth++) {
-            const strike = optionType === 'CE' ? atmStrike - depth * strikeStep : atmStrike + depth * strikeStep;
-            const result = tryStrike(strike);
-            if (result) return result;
-        }
-        throw new Error(`No ${optionType} contract found with premium >= ${minPremium} (underlyingLtp=${underlyingLtp})`);
-    }
-
-    async buyContractZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, _exchange: 'NFO' | 'BFO', _price?: number): Promise<Trade> {
-        const key = this.keyForToken(instrumentToken);
-        const contract = key ? this.contractDirectory.get(key) : undefined;
-        const price = key ? this.latestPrice.get(key) : undefined;
-        if (!contract || price == null) throw new Error(`No known price for ${tradingSymbol} at buy time`);
-        const right = contract.optionType === 'CE' ? CALL : PUT;
-        this.openLeg(instrumentToken, tradingSymbol, right, quantity, price);
-        return this.makeTrade(tradingSymbol, instrumentToken, quantity, price, 'Buy', userId);
-    }
-
-    async sellContractZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, _exchange: 'NFO' | 'BFO'): Promise<Trade> {
-        const key = this.keyForToken(instrumentToken);
-        const price = key ? this.latestPrice.get(key) : undefined;
-        if (price == null) throw new Error(`No known price for ${tradingSymbol} at sell time`);
-        this.closeLeg(instrumentToken, price);
-        return this.makeTrade(tradingSymbol, instrumentToken, quantity, price, 'Sell', userId);
-    }
-
-    async placeLimitBuyZerodhaBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO'): Promise<{ orderId: string }> {
-        this.pendingLimitOrders.set(instrumentToken, { tsym: tradingSymbol, quantity, limitPrice: price, exchange: exchange as 'NFO', userId });
-        return { orderId: `SIM_${instrumentToken}_${this.pendingLimitOrders.size}` };
-    }
-
-    // The historical CSVs backing this backtest carry no option-chain OI data,
-    // so PCR gating can't be simulated - fixed neutral stub that always aligns
-    // with FORCED_RIGHT ('call'), i.e. PCR gating is effectively a no-op here.
-    // Backtest P&L therefore does NOT reflect live PCR gating - a known,
-    // documented gap, not a silent inaccuracy.
-    async getPCR(_userId: string, _underlying: string, _spot: number, _window: number): Promise<number> {
-        return 0.5; // < 1 favors CALL, matching FORCED_RIGHT
-    }
-
-    openLeg(token: string, tsym: string, right: string, quantity: number, price: number): void {
-        this.openTrades.set(token, { tsym, right, entryTime: this.currentTime, entryPrice: price, quantity });
-    }
-
-    closeLeg(token: string, price: number): void {
-        const open = this.openTrades.get(token);
-        if (!open) return;
-        this.openTrades.delete(token);
-        this.closedTrades.push({
-            tsym: open.tsym, right: open.right, entryTime: open.entryTime, entryPrice: open.entryPrice,
-            exitTime: this.currentTime, exitPrice: price, quantity: open.quantity,
-            pnl: (price - open.entryPrice) * open.quantity,
-        });
-    }
-
-    private keyForToken(token: string): string | undefined {
-        return token.startsWith('OPT_') ? token.slice(4) : undefined;
-    }
-
-    private makeTrade(tsym: string, token: string, quantity: number, price: number, action: 'Buy' | 'Sell', userId: string): Trade {
-        const t = new Trade();
-        t.tsym = tsym; t.token = token; t.quantity = quantity; t.price = price;
-        t.lastTradePrice = price; t.action = action; t.status = 'COMPLETE'; t.user = userId;
-        return t;
-    }
-}
-
-async function main() {
-    if (!NIFTY_FILE || !OPTION_FILE) {
-        console.error('Usage: node ./dist/tools/ContinuousStrategyBacktest.js --niftyFile <Quote.csv> --optionFile <OptionQuote.csv>');
-        process.exit(1);
-    }
-
-    const niftyTicks = loadNiftyTicks(NIFTY_FILE);
-    const optionTicks = loadNiftyOptionTicks(OPTION_FILE);
-    console.error(`Loaded ${niftyTicks.length} NIFTY ticks, ${optionTicks.length} NIFTY option ticks`);
-    if (niftyTicks.length === 0 || optionTicks.length === 0) {
-        console.error('No ticks loaded - aborting');
-        process.exit(1);
-    }
-
-    const contractDirectory = buildContractDirectory(optionTicks);
-    console.error(`Contract directory: ${contractDirectory.size} contracts`);
-
-    const mock = new BacktestOrderClient(contractDirectory);
-    (OrderClient as any).instance = mock;
-
-    // Force `right` (config.yml's `right: none` can't be resolved from CSV
-    // data - see file header comment) and `enabled` (config.yml's `false` is
-    // a live-trading safety default, not a strategy parameter - a disabled
-    // strategy trivially produces zero trades, which isn't useful backtest
-    // output). `spawnQuantityMode` is only overridden if --spawnQuantityMode
-    // was passed; every other field is left exactly as config.yml has it.
+// Force `right` (config.yml's `right: none` can't be resolved from CSV data -
+// see file header comment) and `enabled` (config.yml's `false` is a
+// live-trading safety default, not a strategy parameter - a disabled
+// strategy trivially produces zero trades, which isn't useful backtest
+// output). `spawnQuantityMode`/`averageQuantityMode` are only overridden if
+// the matching CLI flag was passed; every other field is left exactly as
+// config.yml has it. Applies globally to every day run in this process
+// (single day or --allDays), so this only needs to run once.
+function setupConfig(): void {
     configService.config.strategies = (configService.config.strategies || []).map((s) =>
         s.type === 'ContinuousStrategy'
             ? {
                 ...s, right: FORCED_RIGHT, enabled: true,
-                ...(SPAWN_QUANTITY_MODE_OVERRIDE ? { spawnQuantityMode: SPAWN_QUANTITY_MODE_OVERRIDE } : {}),
+                ...(SPAWN_QUANTITY_MODE_OVERRIDE ? { spawnQuantityMode: Number(SPAWN_QUANTITY_MODE_OVERRIDE) } : {}),
                 ...(AVERAGE_QUANTITY_MODE_OVERRIDE ? { averageQuantityMode: AVERAGE_QUANTITY_MODE_OVERRIDE } : {}),
             }
             : s
@@ -280,12 +97,42 @@ async function main() {
     const resolvedCfg = configService.getStrategyConfig('ContinuousStrategy');
     console.error(
         `Config (right/enabled forced${SPAWN_QUANTITY_MODE_OVERRIDE ? ', spawnQuantityMode overridden' : ''}` +
-        `${AVERAGE_QUANTITY_MODE_OVERRIDE ? ', averageQuantityMode overridden' : ''} for this run, everything else from config.yml as-is): ` +
+        `${AVERAGE_QUANTITY_MODE_OVERRIDE ? ', averageQuantityMode overridden' : ''}, everything else from config.yml as-is): ` +
         `initialQuantity=${resolvedCfg.initialQuantity} slDistance=${resolvedCfg.slDistance} ` +
-        `minPremium=${resolvedCfg.minPremium} allottedCapital=${resolvedCfg.allottedCapital} ` +
+        `minPremium=${resolvedCfg.minPremium} maxInvestment=${resolvedCfg.maxInvestment} ` +
         `spawnQuantityMode=${resolvedCfg.spawnQuantityMode} averageQuantityMode=${resolvedCfg.averageQuantityMode} ` +
-        `right=${resolvedCfg.right} enabled=${resolvedCfg.enabled}`
+        `right=${resolvedCfg.right} enabled=${resolvedCfg.enabled} maxProfit=${resolvedCfg.maxProfit}`
     );
+}
+
+interface DaySummary {
+    day: string;
+    niftyTicks: number;
+    optionTicks: number;
+    closedTrades: number;
+    wins: number;
+    losses: number;
+    winRate: number | null;
+    totalPnL: number;
+    openAtEOD: number;
+    unfilledRefills: number;
+    maxProfitTripped: boolean;
+}
+
+async function runBacktestForDay(niftyFile: string, optionFile: string, dayLabel: string, verbose: boolean): Promise<DaySummary> {
+    const niftyTicks = loadNiftyTicks(niftyFile);
+    const optionTicks = loadNiftyOptionTicks(optionFile);
+    console.error(`[${dayLabel}] Loaded ${niftyTicks.length} NIFTY ticks, ${optionTicks.length} NIFTY option ticks`);
+    if (niftyTicks.length === 0 || optionTicks.length === 0) {
+        console.error(`[${dayLabel}] No ticks loaded - skipping`);
+        return { day: dayLabel, niftyTicks: niftyTicks.length, optionTicks: optionTicks.length, closedTrades: 0, wins: 0, losses: 0, winRate: null, totalPnL: 0, openAtEOD: 0, unfilledRefills: 0, maxProfitTripped: false };
+    }
+
+    const contractDirectory = buildContractDirectory(optionTicks);
+    console.error(`[${dayLabel}] Contract directory: ${contractDirectory.size} contracts`);
+
+    const mock = new BacktestOrderClient(contractDirectory, FORCED_RIGHT);
+    (OrderClient as any).instance = mock;
 
     const strategy: any = new ContinuousStrategy('Backtest');
     // Strategy.enabled (src/strategy/strategy.ts) defaults to false and is normally
@@ -354,56 +201,143 @@ async function main() {
         }
     }
 
-    // --- report ---
+    // --- report (full detail only when verbose - always computed either way) ---
 
-    const label = new Date(niftyTicks[0].ltt).toISOString().slice(0, 10);
-    const dayStart = Math.min(niftyTicks[0].ltt, optionTicks[0].ltt);
-    const dayEnd = Math.max(niftyTicks[niftyTicks.length - 1].ltt, optionTicks[optionTicks.length - 1].ltt);
-
-    console.log(`\n=== ContinuousStrategy Backtest: ${label} ===`);
-    console.log(`Time range: ${fmtTime(dayStart)} - ${fmtTime(dayEnd)}`);
-    console.log(`NIFTY ticks: ${niftyTicks.length}, option ticks: ${optionTicks.length}, contracts: ${contractDirectory.size}`);
-
-    console.log(`\n${'#'.padStart(3)}  ${'tsym'.padEnd(20)}  ${'right'.padStart(5)}  ${'entryTime'.padStart(9)}  ${'entry'.padStart(8)}  ${'exitTime'.padStart(9)}  ${'exit'.padStart(8)}  ${'qty'.padStart(5)}  ${'pnl'.padStart(10)}`);
-    console.log('-'.repeat(95));
-    mock.closedTrades.forEach((t, idx) => {
-        console.log(
-            `${String(idx + 1).padStart(3)}  ${t.tsym.padEnd(20)}  ${t.right.padStart(5)}  ${fmtTime(t.entryTime).padStart(9)}  ${round2(t.entryPrice).toFixed(2).padStart(8)}  ${fmtTime(t.exitTime).padStart(9)}  ${round2(t.exitPrice).toFixed(2).padStart(8)}  ${String(t.quantity).padStart(5)}  ${round2(t.pnl).toFixed(2).padStart(10)}`
-        );
-    });
-    if (mock.closedTrades.length === 0) {
-        console.log('(no closed trades)');
-    }
-
-    const openLegs: any[] = Array.from((strategy.legsByToken as Map<string, any>).values());
-    if (openLegs.length > 0) {
-        console.log('\n--- open at EOD (unrealized) ---');
-        openLegs.forEach((leg) => {
-            const key = contractKey(leg.strike, leg.right === CALL ? 'CE' : 'PE');
-            const markPrice = mock.latestPrice.get(key);
-            // totalQuantity/avgPrice - not quantity/entryPrice - reflect this leg's true
-            // held size/cost basis if it has been averaged (see ContinuousStrategy.ts).
-            const unrealized = markPrice != null ? (markPrice - leg.avgPrice) * leg.totalQuantity : null;
-            console.log(`  ${leg.tsym} qty=${leg.totalQuantity} avg=${round2(leg.avgPrice)} mark=${markPrice != null ? round2(markPrice) : 'n/a'} unrealized=${unrealized != null ? round2(unrealized) : 'n/a'} (${leg.isRoot ? 'root' : 'nested'}${leg.averagedLevels.size > 0 ? `, averaged x${leg.averagedLevels.size}` : ''})`);
-        });
-    }
-    if (mock.pendingLimitOrders.size > 0) {
-        console.log('\n--- unfilled root refill limit orders at EOD ---');
-        mock.pendingLimitOrders.forEach((p) => console.log(`  ${p.tsym} qty=${p.quantity} limitPrice=${p.limitPrice}`));
-    }
-
+    const openLegs: any[] = Array.from((strategy.legManager.getLegsByToken() as Map<string, any>).values());
     const totalClosedPnL = mock.closedTrades.reduce((s, t) => s + t.pnl, 0);
     const stats = strategy.getStats();
+    const maxProfitTripped: boolean = strategy.legManager.isMaxProfitTripped();
 
-    console.log('\n--- summary ---');
-    console.log(`closed trades:                  ${mock.closedTrades.length}`);
-    console.log(`open at EOD:                    ${openLegs.length}`);
-    console.log(`unfilled refill orders at EOD:  ${mock.pendingLimitOrders.size}`);
-    console.log(`wins:                           ${stats.wins}`);
-    console.log(`losses:                         ${stats.losses}`);
-    console.log(`win rate:                       ${stats.winRate != null ? stats.winRate + '%' : 'n/a'}`);
-    console.log(`total P&L (strategy.getStats):  ${stats.totalPnL}`);
-    console.log(`total P&L (ledger cross-check):  ${round2(totalClosedPnL)}`);
+    if (verbose) {
+        const dayStart = Math.min(niftyTicks[0].ltt, optionTicks[0].ltt);
+        const dayEnd = Math.max(niftyTicks[niftyTicks.length - 1].ltt, optionTicks[optionTicks.length - 1].ltt);
+        // Prefer the date derived from the ticks themselves for the header (matches
+        // this tool's original single-day behavior) - dayLabel alone is "single-day"
+        // for a direct --niftyFile/--optionFile run, not a real date.
+        const isoDate = new Date(niftyTicks[0].ltt).toISOString().slice(0, 10);
+        const headerLabel = dayLabel === 'single-day' ? isoDate : `${dayLabel} (${isoDate})`;
+
+        console.log(`\n=== ContinuousStrategy Backtest: ${headerLabel} ===`);
+        console.log(`Time range: ${fmtTime(dayStart)} - ${fmtTime(dayEnd)}`);
+        console.log(`NIFTY ticks: ${niftyTicks.length}, option ticks: ${optionTicks.length}, contracts: ${contractDirectory.size}`);
+
+        console.log(`\n${'#'.padStart(3)}  ${'tsym'.padEnd(20)}  ${'right'.padStart(5)}  ${'entryTime'.padStart(9)}  ${'entry'.padStart(8)}  ${'exitTime'.padStart(9)}  ${'exit'.padStart(8)}  ${'qty'.padStart(5)}  ${'pnl'.padStart(10)}`);
+        console.log('-'.repeat(95));
+        mock.closedTrades.forEach((t, idx) => {
+            console.log(
+                `${String(idx + 1).padStart(3)}  ${t.tsym.padEnd(20)}  ${t.right.padStart(5)}  ${fmtTime(t.entryTime).padStart(9)}  ${round2(t.entryPrice).toFixed(2).padStart(8)}  ${fmtTime(t.exitTime).padStart(9)}  ${round2(t.exitPrice).toFixed(2).padStart(8)}  ${String(t.quantity).padStart(5)}  ${round2(t.pnl).toFixed(2).padStart(10)}`
+            );
+        });
+        if (mock.closedTrades.length === 0) {
+            console.log('(no closed trades)');
+        }
+
+        if (openLegs.length > 0) {
+            console.log('\n--- open at EOD (unrealized) ---');
+            openLegs.forEach((leg) => {
+                const key = contractKey(leg.strike, leg.right === CALL ? 'CE' : 'PE');
+                const markPrice = mock.latestPrice.get(key);
+                // totalQuantity/avgPrice - not quantity/entryPrice - reflect this leg's true
+                // held size/cost basis if it has been averaged (see LegManager.ts).
+                const unrealized = markPrice != null ? (markPrice - leg.avgPrice) * leg.totalQuantity : null;
+                console.log(`  ${leg.tsym} qty=${leg.totalQuantity} avg=${round2(leg.avgPrice)} mark=${markPrice != null ? round2(markPrice) : 'n/a'} unrealized=${unrealized != null ? round2(unrealized) : 'n/a'} (${leg.isRoot ? 'root' : 'nested'}${leg.averagedLevels.size > 0 ? `, averaged x${leg.averagedLevels.size}` : ''})`);
+            });
+        }
+        if (mock.pendingLimitOrders.size > 0) {
+            console.log('\n--- unfilled root refill limit orders at EOD ---');
+            mock.pendingLimitOrders.forEach((p) => console.log(`  ${p.tsym} qty=${p.quantity} limitPrice=${p.limitPrice}`));
+        }
+
+        console.log('\n--- summary ---');
+        console.log(`closed trades:                  ${mock.closedTrades.length}`);
+        console.log(`open at EOD:                    ${openLegs.length}`);
+        console.log(`unfilled refill orders at EOD:  ${mock.pendingLimitOrders.size}`);
+        console.log(`wins:                           ${stats.wins}`);
+        console.log(`losses:                         ${stats.losses}`);
+        console.log(`win rate:                       ${stats.winRate != null ? stats.winRate + '%' : 'n/a'}`);
+        console.log(`total P&L (strategy.getStats):  ${stats.totalPnL}`);
+        console.log(`total P&L (ledger cross-check):  ${round2(totalClosedPnL)}`);
+        console.log(`maxProfit tripped:              ${maxProfitTripped}`);
+    }
+
+    return {
+        day: dayLabel,
+        niftyTicks: niftyTicks.length,
+        optionTicks: optionTicks.length,
+        closedTrades: mock.closedTrades.length,
+        wins: stats.wins,
+        losses: stats.losses,
+        winRate: stats.winRate,
+        totalPnL: round2(totalClosedPnL),
+        openAtEOD: openLegs.length,
+        unfilledRefills: mock.pendingLimitOrders.size,
+        maxProfitTripped,
+    };
+}
+
+function printAggregateSummary(summaries: DaySummary[]): void {
+    console.log(`\n=== ContinuousStrategy Backtest: all days (${summaries.length}) ===\n`);
+    console.log(`${'day'.padEnd(10)}  ${'niftyTk'.padStart(8)}  ${'optTk'.padStart(8)}  ${'trades'.padStart(6)}  ${'wins'.padStart(5)}  ${'losses'.padStart(6)}  ${'winRate'.padStart(8)}  ${'totalPnL'.padStart(12)}  ${'openEOD'.padStart(7)}  ${'maxProfit'.padStart(9)}`);
+    console.log('-'.repeat(102));
+    for (const s of summaries) {
+        const winRateStr = s.winRate != null ? s.winRate + '%' : 'n/a';
+        console.log(
+            `${s.day.padEnd(10)}  ${String(s.niftyTicks).padStart(8)}  ${String(s.optionTicks).padStart(8)}  ${String(s.closedTrades).padStart(6)}  ${String(s.wins).padStart(5)}  ${String(s.losses).padStart(6)}  ${winRateStr.padStart(8)}  ${s.totalPnL.toFixed(2).padStart(12)}  ${String(s.openAtEOD).padStart(7)}  ${(s.maxProfitTripped ? 'YES' : '-').padStart(9)}`
+        );
+    }
+    console.log('-'.repeat(102));
+
+    const totalTrades = summaries.reduce((sum, s) => sum + s.closedTrades, 0);
+    const totalWins = summaries.reduce((sum, s) => sum + s.wins, 0);
+    const totalLosses = summaries.reduce((sum, s) => sum + s.losses, 0);
+    const totalPnL = round2(summaries.reduce((sum, s) => sum + s.totalPnL, 0));
+    const totalOpenEOD = summaries.reduce((sum, s) => sum + s.openAtEOD, 0);
+    const daysMaxProfitTripped = summaries.filter((s) => s.maxProfitTripped).length;
+    const decided = totalWins + totalLosses;
+    const aggregateWinRate = decided > 0 ? round2((totalWins / decided) * 100) : null;
+
+    console.log(
+        `${'TOTAL'.padEnd(10)}  ${' '.repeat(8)}  ${' '.repeat(8)}  ${String(totalTrades).padStart(6)}  ${String(totalWins).padStart(5)}  ${String(totalLosses).padStart(6)}  ${(aggregateWinRate != null ? aggregateWinRate + '%' : 'n/a').padStart(8)}  ${totalPnL.toFixed(2).padStart(12)}  ${String(totalOpenEOD).padStart(7)}  ${String(daysMaxProfitTripped).padStart(9)}`
+    );
+
+    console.log('\n--- aggregate summary ---');
+    console.log(`days run:             ${summaries.length}`);
+    console.log(`total closed trades:  ${totalTrades}`);
+    console.log(`total wins:           ${totalWins}`);
+    console.log(`total losses:         ${totalLosses}`);
+    console.log(`aggregate win rate:   ${aggregateWinRate != null ? aggregateWinRate + '%' : 'n/a'}`);
+    console.log(`aggregate total P&L:  ${totalPnL}`);
+    console.log(`total open at EOD:    ${totalOpenEOD} (across all days - each day's open legs are separate, not carried into the next day)`);
+    console.log(`days maxProfit tripped: ${daysMaxProfitTripped} / ${summaries.length}`);
+}
+
+async function main() {
+    if (!ALL_DAYS_DIR && (!NIFTY_FILE || !OPTION_FILE)) {
+        console.error(
+            'Usage:\n' +
+            '  Single day: node ./dist/tools/ContinuousStrategyBacktest.js --niftyFile <Quote.csv> --optionFile <OptionQuote.csv>\n' +
+            '  All days:   node ./dist/tools/ContinuousStrategyBacktest.js --allDays <baseDir> [--verbose]'
+        );
+        process.exit(1);
+    }
+
+    setupConfig();
+
+    if (ALL_DAYS_DIR) {
+        const days = discoverDayFolders(ALL_DAYS_DIR);
+        console.error(`Found ${days.length} day(s) with both Quote.csv and OptionQuote.csv under ${ALL_DAYS_DIR}`);
+        if (days.length === 0) {
+            console.error('No valid day folders found - aborting');
+            process.exit(1);
+        }
+        const summaries: DaySummary[] = [];
+        for (const d of days) {
+            summaries.push(await runBacktestForDay(d.niftyFile, d.optionFile, d.day, VERBOSE));
+        }
+        printAggregateSummary(summaries);
+    } else {
+        await runBacktestForDay(NIFTY_FILE, OPTION_FILE, 'single-day', true);
+    }
 
     process.exit(0);
 }

@@ -13,6 +13,12 @@ export const DEFAULT_MAX_INVESTMENT = 100000;
 export const DEFAULT_PROFIT_SPLIT_PERCENT = 80;
 export const TDS_RATE_PERCENT = 10;
 
+// Exchange-mandated max quantity per single NIFTY options order (27 lots x 65).
+// Confirmed 2026-09-18. Used by BulkPcrStrategy's chunked buy/sell (see
+// src/processes/order/chunkedOrder.ts) - any single order above this is
+// rejected by the exchange.
+export const NIFTY_FREEZE_QUANTITY = 1755;
+
 // Mock broker flags — set MOCK_BROKER=false for live trading
 export const MOCK_BROKER = process.env.MOCK_BROKER === 'true';   // true = use MockAPI instead of real Shoonya broker
 export const MOCK_QUOTES = process.env.MOCK_QUOTES === 'true';   // true = mock subscribe/quotes (Option B); false = real quotes, mock orders only (Option A)

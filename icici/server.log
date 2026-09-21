@@ -1,8 +1,17 @@
-[11:54:15] [Object.<anonymous>] Hello
-[11:54:15] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
-[11:54:15] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
-[11:54:15] [new NorenRestApi] Restored Shoonya access token from userToken.txt
-[11:54:15] [ConfigService.loadConfig] Config Updated: {
+[13:00:03] [ConfigService.loadConfig] Config Updated: {
+  "srHypothesis": {
+    "confirmWindowMin": 3,
+    "maxJump": 15,
+    "maxRangeWidth": 25,
+    "buffer": 8,
+    "target": 8,
+    "stopLoss": 15,
+    "breachBuffer": 5,
+    "breachConfirmSec": 15,
+    "heldMinSec": 407,
+    "heldMaxSec": 651,
+    "csvOutput": false
+  },
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -10,7 +19,16 @@
     "stopLossPriceDiff": 11,
     "trailingDistance": 4,
     "cooldownSeconds": 0,
-    "logQuotes": false
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
   },
   "strategies": [
     {
@@ -35,6 +53,25 @@
       "maxIterationCount": 10,
       "logEnabled": false,
       "right": "none"
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true
     },
     {
       "type": "IntermittentStrategy",
@@ -84,334 +121,14 @@
     },
     {
       "type": "GoodMorningStrategy",
-      "enabled": true,
-      "quantity": 650,
+      "enabled": false,
+      "quantity": 65,
       "targetPoints": 10,
       "stopLossPoints": 10,
       "logEnabled": true,
-      "snapshotTime": "09:40",
-      "confirmTime": "09:45",
-      "previousClose": 24078,
-      "minMovementPoints": 10
-    },
-    {
-      "type": "SupportResistanceStrategy",
-      "enabled": false,
-      "supportPrice": 0,
-      "resistancePrice": 0,
-      "quantity": 1755,
-      "targetPoints": 10,
-      "stopLossPoints": 15,
-      "logEnabled": true
-    },
-    {
-      "type": "TargetReachStrategy",
-      "enabled": false,
-      "symbol": "NIFTY",
-      "strike": 0,
-      "expiry": "2026-01-01",
-      "optionType": "CE",
-      "targetPrice": 0,
-      "quantity": 1755,
-      "targetPoints": 10,
-      "stopLossPoints": 15,
-      "logEnabled": true
-    }
-  ]
-}
-Thu, 20 Aug 2026 06:24:15 GMT body-parser deprecated bodyParser: use individual json/urlencoded middlewares at dist/server.js:119:35
-Thu, 20 Aug 2026 06:24:15 GMT body-parser deprecated undefined extended: provide extended option at node_modules/body-parser/index.js:104:29
-[11:54:15] [Object.<anonymous>] [
-  "/auth/login",
-  "/auth/me",
-  "/auth/logout",
-  "/users",
-  "/users/:email/settings",
-  "/users",
-  "/users/:email",
-  "/users/:email/role",
-  "/users/:email/profile",
-  "/users/:email/verify",
-  "/users/:email/documents/:docType",
-  "/users/:email/documents/:docType",
-  "/prism/oauthurl",
-  "/prism/login",
-  "/prism/callback",
-  "/prism/authcode",
-  "/prism/quick-login",
-  "/prism/token",
-  "/ant/login",
-  "/ant/callback",
-  "/ant/token",
-  "/ant/positions",
-  "/ant/trades",
-  "/kite/login",
-  "/kite/callback",
-  "/kite/token",
-  "/kite/trades",
-  "/kite/positions",
-  "/ant/trades",
-  "/ant/positions",
-  "/ant/connect",
-  "/ant/stream",
-  "/prism/orderbook",
-  "/start",
-  "/stats",
-  "/strategies",
-  "/strategies/:type/reset",
-  "/addTrade",
-  "/openTrades",
-  "/prism/order/buy",
-  "/connect",
-  "/subscribe",
-  "/trades",
-  "/closedtrades",
-  "/refreshtrades",
-  "/subscribetrades",
-  "/prism/squareoff",
-  "/prism/settarget",
-  "/niftystream",
-  "/optionstream",
-  "/positionstream",
-  "/test",
-  "/quotes",
-  "/niftyquote",
-  "/quote",
-  "/requestOtp",
-  "/search",
-  "/logout",
-  "/candles",
-  "/config",
-  "/config"
-]
-[11:54:15] [Server.<anonymous>] Icici server started 
-[11:54:15] [Mongo.init] Mongo is initialized
-[11:54:15] [Config._processFile] lot count: 1
-[11:54:15] [Config._processFile] Auto Trade: false
-[11:54:15] [Mongo._init] Mongo is initialized
-[11:54:15] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
-[11:54:15] [Strategies.initialize] [] expandedConfigArray:  [
-  {
-    "type": "SentimentStrategy",
-    "enabled": false,
-    "averageThreshold": 20,
-    "targetPrice": 2,
-    "orderQuantity": 7200,
-    "sentiment": "put",
-    "loopCount": 1
-  },
-  {
-    "type": "BuySellStrategy",
-    "enabled": false,
-    "initialQuantity": 150,
-    "incrementFactor": "single",
-    "incrementQuantity": 150,
-    "averageThreshold": 10,
-    "targetPrice": 5,
-    "stopEnabled": false,
-    "activateIntermittentCount": 100,
-    "maxIterationCount": 10,
-    "logEnabled": false,
-    "right": "none"
-  },
-  {
-    "type": "IntermittentStrategy",
-    "enabled": false,
-    "loopCount": 3,
-    "targetPrice": 2,
-    "quantity": 75,
-    "threshold": 10,
-    "logEnabled": false
-  },
-  {
-    "type": "RateOfChangeStrategy",
-    "enabled": false,
-    "pointsThreshold": 30,
-    "accelerationThreshold": 5,
-    "numberOfDatapointsReceived": 50,
-    "quantity": 65,
-    "targetPrice": 2,
-    "stopLossPrice": 11,
-    "maxHoldTimeMinutes": 30,
-    "logEnabled": true
-  },
-  {
-    "type": "GapStrategy",
-    "enabled": false,
-    "pointsThreshold": 20,
-    "numberOfDatapointsReceived": 50,
-    "quantity": 65,
-    "targetPrice": 10,
-    "stopLossPrice": 5,
-    "maxHoldTimeMinutes": 600,
-    "gapReversalMode": false,
-    "gapReversalThreshold": 100,
-    "logEnabled": true
-  },
-  {
-    "type": "RuleBasedStrategy",
-    "enabled": false,
-    "indicators": [
-      "RSI_5_70_30"
-    ],
-    "quantity": 65,
-    "target": 10,
-    "stopLoss": 20,
-    "maxHoldTimeMinutes": 30,
-    "logEnabled": true,
-    "userId": "Rule-RSI_5_70_30"
-  },
-  {
-    "type": "GoodMorningStrategy",
-    "enabled": true,
-    "quantity": 650,
-    "targetPoints": 10,
-    "stopLossPoints": 10,
-    "logEnabled": true,
-    "snapshotTime": "09:40",
-    "confirmTime": "09:45",
-    "previousClose": 24078,
-    "minMovementPoints": 10
-  },
-  {
-    "type": "SupportResistanceStrategy",
-    "enabled": false,
-    "supportPrice": 0,
-    "resistancePrice": 0,
-    "quantity": 1755,
-    "targetPoints": 10,
-    "stopLossPoints": 15,
-    "logEnabled": true
-  },
-  {
-    "type": "TargetReachStrategy",
-    "enabled": false,
-    "symbol": "NIFTY",
-    "strike": 0,
-    "expiry": "2026-01-01",
-    "optionType": "CE",
-    "targetPrice": 0,
-    "quantity": 1755,
-    "targetPoints": 10,
-    "stopLossPoints": 15,
-    "logEnabled": true
-  }
-]
-[11:54:15] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
-[11:54:15] [new RuleBasedStrategy] [RuleBased:Rule-RSI_5_70_30] Initialized with indicators: RSI_5_70_30
-[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: SentimentStrategy
-[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: BuySellStrategy
-[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: IntermittentStrategy
-[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: RateOfChangeStrategy
-[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: GapStrategy
-[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: Rule-RSI_5_70_30
-[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: GoodMorningStrategy
-[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: SupportResistanceStrategy
-[11:54:15] [Monitor.registerStrategy] [Monitor] Registered strategy: TargetReachStrategy
-[11:54:15] [Strategies.initialize] [Strategies] Initialized 9 strategies: [
-  "SentimentStrategy(SentimentStrategy, enabled=false)",
-  "BuySellStrategy(BuySellStrategy, enabled=false)",
-  "IntermittentStrategy(IntermittentStrategy, enabled=false)",
-  "RateOfChangeStrategy(RateOfChangeStrategy, enabled=false)",
-  "GapStrategy(GapStrategy, enabled=false)",
-  "RuleBasedStrategy(Rule-RSI_5_70_30, enabled=false)",
-  "GoodMorningStrategy(GoodMorningStrategy, enabled=true)",
-  "SupportResistanceStrategy(SupportResistanceStrategy, enabled=false)",
-  "TargetReachStrategy(TargetReachStrategy, enabled=false)"
-]
-[11:54:15] [Server.<anonymous>] ********************  Threshold:  10
-[11:54:15] [Prism.cacheFile] [Symbols] Loaded 79341 NFO symbols
-[11:54:35] [StatWatcher.<anonymous>] Config file changed. Reloading...
-[11:54:35] [ConfigService.loadConfig] Config Updated: {
-  "settings": {
-    "minPrice": 20,
-    "maxPrice": 30000,
-    "targetPriceDiff": 2,
-    "stopLossPriceDiff": 11,
-    "trailingDistance": 4,
-    "cooldownSeconds": 0,
-    "logQuotes": false
-  },
-  "strategies": [
-    {
-      "type": "SentimentStrategy",
-      "enabled": false,
-      "averageThreshold": 20,
-      "targetPrice": 2,
-      "orderQuantity": 7200,
-      "sentiment": "put",
-      "loopCount": 1
-    },
-    {
-      "type": "BuySellStrategy",
-      "enabled": false,
-      "initialQuantity": 150,
-      "incrementFactor": "single",
-      "incrementQuantity": 150,
-      "averageThreshold": 10,
-      "targetPrice": 5,
-      "stopEnabled": false,
-      "activateIntermittentCount": 100,
-      "maxIterationCount": 10,
-      "logEnabled": false,
-      "right": "none"
-    },
-    {
-      "type": "IntermittentStrategy",
-      "enabled": false,
-      "loopCount": 3,
-      "targetPrice": 2,
-      "quantity": 75,
-      "threshold": 10,
-      "logEnabled": false
-    },
-    {
-      "type": "RateOfChangeStrategy",
-      "enabled": false,
-      "pointsThreshold": 30,
-      "accelerationThreshold": 5,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 2,
-      "stopLossPrice": 11,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GapStrategy",
-      "enabled": false,
-      "pointsThreshold": 20,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 10,
-      "stopLossPrice": 5,
-      "maxHoldTimeMinutes": 600,
-      "gapReversalMode": false,
-      "gapReversalThreshold": 100,
-      "logEnabled": true
-    },
-    {
-      "type": "RuleBasedStrategy",
-      "enabled": false,
-      "indicators": [
-        "RSI_5_70_30"
-      ],
-      "quantity": 65,
-      "target": 10,
-      "stopLoss": 20,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GoodMorningStrategy",
-      "enabled": true,
-      "quantity": 650,
-      "targetPoints": 10,
-      "stopLossPoints": 10,
-      "logEnabled": true,
-      "snapshotTime": "09:40",
-      "confirmTime": "09:45",
-      "previousClose": 24078,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
       "minMovementPoints": 10
     },
     {
@@ -428,12 +145,20 @@ Thu, 20 Aug 2026 06:24:15 GMT body-parser deprecated undefined extended: provide
     {
       "type": "SupportResistanceStrategy",
       "enabled": false,
-      "supportPrice": 0,
-      "resistancePrice": 0,
       "quantity": 1755,
-      "targetPoints": 10,
-      "stopLossPoints": 15,
-      "logEnabled": true
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
     },
     {
       "type": "TargetReachStrategy",
@@ -450,3 +175,225 @@ Thu, 20 Aug 2026 06:24:15 GMT body-parser deprecated undefined extended: provide
     }
   ]
 }
+[13:00:03] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
+[13:00:03] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
+[13:00:03] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
+Thu, 17 Sep 2026 07:30:03 GMT body-parser deprecated bodyParser: use individual json/urlencoded middlewares at dist/server.js:121:35
+Thu, 17 Sep 2026 07:30:03 GMT body-parser deprecated undefined extended: provide extended option at node_modules/body-parser/index.js:104:29
+[13:00:03] [Mongo.init] Mongo is initialized
+[13:00:03] [Config._processFile] lot count: 1
+[13:00:03] [Config._processFile] Auto Trade: false
+[13:00:03] [Mongo._init] Mongo is initialized
+[13:00:03] [Server.<anonymous>] [frontend] Listening on 3000
+[13:00:03] [Server.<anonymous>] [frontend] Listening on 80
+[13:00:03] [Server.<anonymous>] [frontend] Listening on 443 (https)
+[13:00:03] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:03] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:03] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:03] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:03] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:03] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:05] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:05] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:05] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:05] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:05] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:05] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:07] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:07] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:07] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:07] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:07] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:07] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:09] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:09] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:09] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:09] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:09] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:09] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:11] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:11] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:11] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:12] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:12] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:12] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:14] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:14] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:14] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:14] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:14] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:14] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:16] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:16] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:16] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:16] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:16] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:16] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:18] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:18] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:18] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:18] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:18] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:18] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:20] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:20] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:20] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:20] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:20] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:20] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:22] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:22] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:22] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:22] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:22] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:22] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:24] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:24] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:24] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:24] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:24] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:24] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:26] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:26] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:26] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:26] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:26] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:26] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:28] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:28] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:28] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:28] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:28] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:28] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:30] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:30] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:30] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:30] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:30] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:30] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:32] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:32] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:32] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:32] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:32] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:32] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:34] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:34] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:34] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:34] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:34] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:34] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:36] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:36] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:36] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:36] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:36] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:36] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:38] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:38] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:38] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:38] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:38] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:38] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:40] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:40] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:40] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:40] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:40] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:40] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:42] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:42] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:42] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:42] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:42] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:42] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[13:00:44] [/home/karthikeyan/work/icici/dist/ipc/StrategiesClient.js:35:41] [frontend] Failed to parse strategies-process message:  Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:44] [Socket.<anonymous>] [frontend] Strategies socket error: Error: connect ENOENT /tmp/icici-strategies.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:44] [Socket.<anonymous>] [frontend] Disconnected from strategies process, retrying in 2s...
+[13:00:44] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:44] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[13:00:44] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...

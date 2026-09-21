@@ -72,14 +72,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (credential: string) => {
-    // Decode Google JWT payload to extract email, name, picture
-    const payload = JSON.parse(atob(credential.split('.')[1]));
-    const { email, name, picture } = payload;
-
+    // The raw Google ID token is sent as-is - the server verifies it
+    // (google-auth-library's verifyIdToken) and derives email/name/picture
+    // from the verified payload itself, rather than trusting client-decoded
+    // fields (which anyone could forge with an unsigned POST).
     const res = await fetch('/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, name, picture }),
+      body: JSON.stringify({ credential }),
     });
     if (!res.ok) throw new Error('Login failed');
     const userData = await res.json();

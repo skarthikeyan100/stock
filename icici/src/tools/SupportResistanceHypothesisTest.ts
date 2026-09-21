@@ -7,9 +7,13 @@
  * breach) to see whether a configured target is hit before a configured
  * stop-loss.
  *
- * Not wired into live trading - SupportResistanceStrategy still uses static
- * config.supportPrice/config.resistancePrice. This is a manual analysis tool
- * to run once a day's data has been collected.
+ * This tool's own target/stopLoss/momentum/magnitude simulation is a separate,
+ * standalone analysis path - SupportResistanceStrategy.ts (as of 2026-09-11)
+ * also drives its live/backtested entries off the same detector + held-duration
+ * filter, but exits via its own LegManager-based slDistance/squareOffDistance
+ * model (config.yml's supportResistanceStrategy: block), not this tool's
+ * target/stopLoss. This remains a manual analysis tool to run once a day's
+ * data has been collected.
  *
  * Usage:
  *   tsc && node ./dist/tools/SupportResistanceHypothesisTest.js --file /path/to/Quote.csv

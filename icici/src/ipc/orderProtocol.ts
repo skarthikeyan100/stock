@@ -22,25 +22,43 @@ export type OrderRequestType =
     | 'setTargetStopLoss'
     | 'antBuyIndex'
     | 'antManualBuy'
+    | 'antPlaceCoverOrder'
     | 'antSquareOff'
     | 'antSetTargetStopLoss'
     | 'reloadSession'
+    | 'reloadUserLimits'
     | 'refreshTradeList'
     | 'getOrders'
     | 'updateUserSettings'
     | 'hasActiveTrade'
+    | 'openTrades'
     | 'findToken'
     | 'injectTrade'
     | 'connectPrism'
     | 'getIndexQuote'
     | 'getStockQuote'
-    | 'buyContractZerodhaBare'
-    | 'sellContractZerodhaBare'
-    | 'placeLimitBuyZerodhaBare'
-    | 'cancelOrderZerodha'
-    | 'getContractByPriceRangeZerodha'
+    // Bare (unprotected, self-monitored) execution path used by LegManager
+    // (ContinuousStrategy/SupportResistanceStrategy) - broker-resolved per userId
+    // via bookkeeping.getUserBroker in orderProcess.ts's handlers, the same
+    // convention buyIndex/manualBuy/squareOff already use for real users. Not
+    // broker-specific despite the historical "Zerodha" naming these replaced -
+    // see orderProcess.ts's case 'buyContractBare' etc.
+    | 'buyContractBare'
+    | 'sellContractBare'
+    | 'placeLimitBuyBare'
+    | 'cancelOrderBare'
+    | 'getContractByPriceRangeBare'
     | 'getPCR'
-    | 'getUserAllottedCapital';
+    | 'getATMTokens'
+    | 'getUserAllottedCapital'
+    | 'breezeBuyIndex'
+    | 'breezeSquareOff'
+    // Broker-agnostic freeze-quantity-chunked buy/squareoff (see
+    // src/processes/order/chunkedOrder.ts) - only Breeze is wired up today
+    // (BulkPcrStrategy's use case), but the dispatch already branches on
+    // getBrokerExecutor(userId) so extending to other brokers is additive.
+    | 'chunkedBuyIndex'
+    | 'chunkedSquareOff';
 
 export interface OrderRequest {
     kind: 'request';

@@ -2,13 +2,14 @@ import { useNavigate } from 'react-router-dom';
 import { useEffect } from 'react';
 import { GoogleLogin } from '@react-oauth/google';
 import { useAuth } from '../context/AuthContext';
+import { isMarketHours } from '../utils/marketHours';
 
 export default function LoginPage() {
   const { login, isLoggedIn } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (isLoggedIn) navigate('/app/rules', { replace: true });
+    if (isLoggedIn) navigate('/rules', { replace: true });
   }, [isLoggedIn, navigate]);
 
   return (
@@ -16,18 +17,17 @@ export default function LoginPage() {
       {/* Nav */}
       <nav className="landing-nav">
         <span className="landing-nav-brand">PropFirm</span>
-        <div className="landing-nav-signin">
-          <GoogleLogin
-            onSuccess={async (credentialResponse) => {
-              try {
-                await login(credentialResponse.credential!);
-                navigate('/app/rules');
-              } catch (e) {
-                console.error('Login failed:', e);
-              }
-            }}
-            onError={() => console.error('Google login error')}
-          />
+        <div className="landing-nav-signin d-flex align-items-center gap-3">
+          {isMarketHours() && (
+            <span
+              role="button"
+              className="landing-nav-demo"
+              style={{ cursor: 'pointer', textDecoration: 'underline' }}
+              onClick={() => navigate('/demo')}
+            >
+              Try Demo
+            </span>
+          )}
         </div>
       </nav>
 
@@ -48,7 +48,7 @@ export default function LoginPage() {
               onSuccess={async (credentialResponse) => {
                 try {
                   await login(credentialResponse.credential!);
-                  navigate('/app/rules');
+                  navigate('/rules');
                 } catch (e) {
                   console.error('Login failed:', e);
                 }
@@ -63,7 +63,7 @@ export default function LoginPage() {
             <div className="stat-label">Your Profit Share</div>
           </div>
           <div className="stat-card stat-card-2">
-            <div className="stat-value">Twice a Month</div>
+            <div className="stat-value">Once a Week</div>
             <div className="stat-label">Payout Schedule</div>
           </div>
           <div className="stat-card stat-card-3">
@@ -94,7 +94,7 @@ export default function LoginPage() {
             <div className="step-card">
               <div className="step-number">03</div>
               <h4>Earn Your Share</h4>
-              <p>25% of all profits you generate are yours — paid out every other Wednesday, fortnightly.</p>
+              <p>25% of all profits you generate are yours — paid out every Wednesday.</p>
             </div>
           </div>
         </div>
@@ -119,9 +119,9 @@ export default function LoginPage() {
               <div className="rule-icon rule-icon-red">✗</div>
               <h4>Scenario B — Profits Forfeited</h4>
               <p>
-                You had ₹30,000 in accumulated profits, but a single bad session hits the loss limit.
-                <strong> All accumulated profits are forfeited</strong> — you receive nothing for that period
-                and the account resets. <strong>Protect your gains. Never let a bad day erase a good week.</strong>
+                You had ₹30,000 in accumulated profits, but a bad week breaches the weekly
+                loss limit. <strong> All profits accumulated since your last payout are forfeited</strong> —
+                you receive nothing for that period. <strong>Protect your gains. Never let a bad week erase your accumulated profits.</strong>
               </p>
             </div>
           </div>
@@ -146,15 +146,18 @@ export default function LoginPage() {
               <div className="rule-icon rule-icon-red">!</div>
               <h4>Loss Limit & Reset</h4>
               <p>
-                Each session has a maximum loss limit. If you hit it, <strong>all accumulated profits
-                from previous days are forfeited</strong> and your account resets. Manage your risk carefully.
+                Your realized loss on any single day may not exceed <strong>25% of your allocated capital</strong> —
+                breach it and your positions are squared off with trading paused until the next trading day, but
+                your accumulated profits are untouched. Your realized loss across a trading week (Wednesday–Tuesday)
+                may not exceed <strong>50%</strong> — breach this weekly limit and <strong>all profits accumulated
+                since your last payout are forfeited</strong>. Manage your risk carefully.
               </p>
             </div>
             <div className="rule-card">
               <div className="rule-icon rule-icon-blue">📅</div>
               <h4>Payout Schedule</h4>
               <p>
-                Payouts are processed <strong>every other Wednesday</strong> — once a fortnight, on alternate weeks.
+                Payouts are processed <strong>every Wednesday</strong>.
                 Earnings are calculated from all confirmed closed trades since the previous payout.
               </p>
             </div>
@@ -171,7 +174,7 @@ export default function LoginPage() {
             onSuccess={async (credentialResponse) => {
               try {
                 await login(credentialResponse.credential!);
-                navigate('/app/rules');
+                navigate('/rules');
               } catch (e) {
                 console.error('Login failed:', e);
               }

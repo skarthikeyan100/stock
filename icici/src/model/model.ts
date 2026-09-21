@@ -14,6 +14,7 @@ export class NiftyQuote {
     buyQty
     sellQty
     changePercent
+    change
 
     constructor(response?) {
         if (response != null && response != undefined) {
@@ -42,6 +43,7 @@ export class NiftyQuote {
         quote.buyQty = parseInt(response.bq1) + parseInt(response.bq2) + parseInt(response.bq3) + parseInt(response.bq4) + parseInt(response.bq5)
         quote.sellQty = parseInt(response.sq1) + parseInt(response.sq2) + parseInt(response.sq3) + parseInt(response.sq4) + parseInt(response.sq5)
         quote.changePercent = quote.prevClose ? (quote.ltp - quote.prevClose) / quote.prevClose * 100 : 0;
+        quote.change = quote.prevClose ? quote.ltp - quote.prevClose : 0;
         return quote;
     }
 
@@ -56,14 +58,23 @@ export class NiftyQuote {
         quote.ltt = response.ft
         quote.token = response.tk
 
-        if (response.pc !== undefined) {
-            quote.changePercent = parseFloat(response.pc)
-            quote.prevClose = quote.ltp / (1 + quote.changePercent / 100)
-            NiftyQuote.lastPrevClose.set(quote.token, quote.prevClose)
-        } else {
-            quote.prevClose = NiftyQuote.lastPrevClose.get(quote.token)
-            quote.changePercent = quote.prevClose ? (quote.ltp - quote.prevClose) / quote.prevClose * 100 : undefined
+        // response.pc (AliceBlue's own percent-change) turns out to be present
+        // on nearly every touchline tick, each rounded to 2 decimals - re-deriving
+        // prevClose from it on every tick (the old behavior here) made prevClose
+        // itself jitter +/-1-2 points tick to tick instead of staying the fixed
+        // once-a-day anchor the comment above claims, and made changePercent only
+        // advance in ~2.4-point steps instead of tracking ltp's fine movement -
+        // exactly the "price updates but the difference lags" symptom reported
+        // 2026-08-31. Seed the cache from pc only once per token; every tick after
+        // that (even ones that also carry pc) derives change/changePercent from
+        // live ltp against the now-stable cached prevClose.
+        if (!NiftyQuote.lastPrevClose.has(quote.token) && response.pc !== undefined) {
+            const seedChangePercent = parseFloat(response.pc)
+            NiftyQuote.lastPrevClose.set(quote.token, quote.ltp / (1 + seedChangePercent / 100))
         }
+        quote.prevClose = NiftyQuote.lastPrevClose.get(quote.token)
+        quote.changePercent = quote.prevClose ? (quote.ltp - quote.prevClose) / quote.prevClose * 100 : undefined
+        quote.change = quote.prevClose ? quote.ltp - quote.prevClose : undefined
 
         return quote;
     }
@@ -126,9 +137,12 @@ export class Trade {
     unrealizedPnL: number // live mark-to-market on an open position - distinct from realizedPnL, which is only ever set once, at close
     gttTriggerId: number // Zerodha GTT trigger id, if a bracket was placed at entry (setTargetStopLoss modifies it later)
     antOrderNo?: string // AliceBlue BO order number, if a bracket was placed at entry
+    prismCoverOrderNo?: string // Shoonya/Noren cover-order (prd 'H') entry order number, if a cover order was placed at entry - see prism.ts's placeCoverOrder/exitCoverOrder
     brokerOrderId?: string // broker's own order id for this specific fill, when the caller has one - used by bookkeeping.recordFill to dedup a redelivered fill event (reconnect replay, webhook retry)
     entryTime?: Date // set once, at the first fill that opens the position
     exitTime?: Date // set when the position is closed
+    originalEntryPrice?: number // set by restoreOneOpenTrade: the current leg's true first-fill price, distinct from `price` (which may be a multi-fill blended average) - see ContinuousStrategy.reconcile()
+    originalEntryQuantity?: number // set by restoreOneOpenTrade: the current leg's true first-fill quantity, distinct from `quantity` (the broker's current aggregate) - see ContinuousStrategy.reconcile()
 
 
     static getTradeFromResponse(response) {
@@ -227,20 +241,29 @@ export class OptionQuote {
     ltp: number
     ltt
     token
+    // Total buy/sell qty - only ever populated by fromAnt() on a depth-mode
+    // ('dk'/'df') tick, used for the momentum signal (see MomentumSignal.ts).
+    // Touchline ('tk'/'tf') ticks never carry these - stay undefined then.
+    tbq?: number
+    tsq?: number
 
 
-    // static fromBreeze(response) : OptionQuote {
-    //     const quote = new OptionQuote();
-
-    //     quote.ltp = response.ltp
-    //     quote.ltt = response.ltt
-    //     quote.open = response.open
-    //     quote.high = response.high
-    //     quote.low = response.low
-    //     quote.prevClose = response.prevClose
-    //     return quote;
-
-    // }
+    // Confirmed live 2026-09-18 against a real NFO exchange-quotes tick (via
+    // BreezeDataStream, stockToken "4.1!<token>" subscription): the LTP field
+    // is literally named "last", not "ltp", and "symbol" echoes back the
+    // exact "<exch>.<dataType>!<token>" string subscribed with - stripping the
+    // prefix recovers the bare token matching Trade.token's format (the same
+    // BreezeContractMaster.FnoRecord.token value breezeExecutor.ts stores on
+    // every Breeze-executed Trade). ltt is a formatted date string (not epoch
+    // millis) - unused by LegManager/ContinuousStrategy.processOptionQuote for
+    // option quotes, kept only for parity with fromAnt/fromPrism.
+    static fromBreeze(tick): OptionQuote {
+        const quote = new OptionQuote();
+        quote.ltp = parseFloat(tick.last);
+        quote.ltt = tick.ltt;
+        quote.token = typeof tick.symbol === 'string' && tick.symbol.includes('!') ? tick.symbol.split('!')[1] : tick.symbol;
+        return quote;
+    }
 
     static fromPrism(response): OptionQuote {
         const quote = new OptionQuote();
@@ -257,9 +280,16 @@ export class OptionQuote {
 
     static fromAnt(response): OptionQuote {
         const quote = new OptionQuote();
-        quote.ltp = parseFloat(response.lp)
+        // Depth feed updates ('df') are sparse - a message carrying a fresh
+        // tbq/tsq does not always also carry 'lp' (see AntDataStream's
+        // relaxed depth-token guard). Leave ltp undefined rather than NaN
+        // when absent, so a momentum-only tick doesn't masquerade as a real
+        // price update.
+        if (response.lp !== undefined) quote.ltp = parseFloat(response.lp)
         quote.ltt = response.ft
         quote.token = response.tk
+        if (response.tbq !== undefined) quote.tbq = parseInt(response.tbq)
+        if (response.tsq !== undefined) quote.tsq = parseInt(response.tsq)
         return quote;
     }
 

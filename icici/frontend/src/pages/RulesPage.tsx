@@ -3,22 +3,25 @@ import { Container, Card, Button, ListGroup } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
 
 const DAILY_DRAWDOWN_PERCENT = 25;
-const MONTHLY_LOSS_PERCENT = 50;
+const WEEKLY_LOSS_PERCENT = 50;
 
 export default function RulesPage() {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
+
+  const handleClose = async () => {
+    await logout();
+    navigate('/');
+  };
 
   const investmentAmount = user?.investmentAmount ?? 100000;
   const dailyLimit = Math.round(investmentAmount * (DAILY_DRAWDOWN_PERCENT / 100));
-  const monthlyLimit = Math.round(investmentAmount * (MONTHLY_LOSS_PERCENT / 100));
+  const weeklyLimit = Math.round(investmentAmount * (WEEKLY_LOSS_PERCENT / 100));
 
   const rules = [
-    'The number of simultaneous trades depends on how your account is configured. If your account trades by fixed lot size, multiple positions can run at the same time. If it trades by total investment amount, your entire allocated capital is committed to one trade at a time.',
+    'The number of simultaneous trades depends on how your account is configured. If your account trades by fixed lot size, multiple positions can run at the same time. If it trades by total investment amount, your entire allocated capital is committed to one trade at a time. Additionally, a single user may place at most 10 trades in one day. These trade-count and investment limits are checked before every order is placed (on the first leg of the trade) and simply reject it if breached.',
     `Maximum daily drawdown: your realized loss on any single day may not exceed ${DAILY_DRAWDOWN_PERCENT}% of your allocated investment amount (₹${dailyLimit.toLocaleString()} for your account). If this limit is reached, your active positions will be automatically squared off and further order placement will be restricted until the next trading day.`,
-    `Maximum monthly loss: your total realized loss across a calendar month may not exceed ${MONTHLY_LOSS_PERCENT}% of your allocated investment amount (₹${monthlyLimit.toLocaleString()} for your account). Breaching either the daily or monthly limit forfeits all profit accumulated since your last payout.`,
-    'Maximum trades per day: a single user may place at most 10 trades in one day.',
-    'The trade-count and investment limits above are checked before every order is placed (on the first leg of the trade) and simply reject it. The daily and monthly drawdown limits are enforced the moment a closing trade breaches them — remaining open positions are squared off automatically, and further orders are blocked.',
+    `Maximum weekly loss: your total realized loss across a trading week (Wednesday through Tuesday) may not exceed ${WEEKLY_LOSS_PERCENT}% of your allocated investment amount (₹${weeklyLimit.toLocaleString()} for your account). If this limit is breached, remaining open positions will be automatically squared off, further order placement will be restricted, and all profit accumulated since your last payout is forfeited.`,
   ];
 
   return (
@@ -38,13 +41,20 @@ export default function RulesPage() {
               ))}
             </ListGroup>
 
-            <div className="d-grid">
+            <div className="d-grid gap-2">
               <Button
                 variant="primary"
                 size="lg"
-                onClick={() => navigate('/app/trade')}
+                onClick={() => navigate('/trade')}
               >
                 Accept &amp; Continue
+              </Button>
+              <Button
+                variant="secondary"
+                size="lg"
+                onClick={handleClose}
+              >
+                Close
               </Button>
             </div>
           </Card.Body>
