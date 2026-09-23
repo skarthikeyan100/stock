@@ -37,6 +37,13 @@ interface PendingLimitOrder {
 
 const pending = new Map<string, PendingLimitOrder>();
 
+type CancelledListener = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: 'zerodha', orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
+const cancelledListeners: CancelledListener[] = [];
+
+export function onCancelled(listener: CancelledListener): void {
+    cancelledListeners.push(listener);
+}
+
 // Used to cancel a resting SELL leg before a force-close path (EOD
 // expiry-day squareoff, drawdown-breach auto-squareoff - both in
 // orderProcess.ts) also market-sells the same still-open quantity, which
@@ -111,11 +118,16 @@ export async function pollPendingLimitOrders(): Promise<void> {
                 trade.action = order.action;
                 trade.status = 'COMPLETE';
                 trade.user = order.userId;
+                trade.broker = 'zerodha';
                 trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
                 Log.log(`[order] Pending limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
             } else if (latest.status === 'REJECTED' || latest.status === 'CANCELLED') {
                 untrackPendingLimitOrder(orderId);
+                const reason = latest.status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
+                for (const listener of cancelledListeners) {
+                    listener(order.userId, order.tradingSymbol, order.instrumentToken, order.quantity, order.exchange, order.action, 'zerodha', orderId, reason);
+                }
                 Log.log(`[order] Pending limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${latest.status}`);
             }
             // else: still pending, leave in map for the next poll

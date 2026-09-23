@@ -95,4 +95,21 @@ export interface PositionsChangedNotification {
     kind: 'positionsChanged';
 }
 
-export type OrderMessage = OrderRequest | OrderResponse | FillNotification | PositionsChangedNotification;
+// Unsolicited push from order -> strategies when a resting limit order is
+// cancelled/rejected (e.g. a DAY-validity order expires unfilled at end of session).
+// Allows strategies like BulkPcrStrategy to detect and re-place exits that were
+// orphaned by broker cancellation, rather than silently abandoning the position.
+export interface OrderCancelledNotification {
+    kind: 'cancelled';
+    userId: string;
+    tradingSymbol: string;
+    instrumentToken: string;
+    quantity: number;        // qty that was resting in the cancelled/rejected order
+    exchange: 'NFO' | 'BFO';
+    action: 'Buy' | 'Sell';
+    broker: 'zerodha' | 'breeze';
+    orderId: string;
+    reason: 'CANCELLED' | 'REJECTED';
+}
+
+export type OrderMessage = OrderRequest | OrderResponse | FillNotification | PositionsChangedNotification | OrderCancelledNotification;

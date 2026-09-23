@@ -1,7 +1,7 @@
 import net from 'net';
 import Log from '../../util/Log';
 import { writeJsonLine, readJsonLines } from '../../ipc/jsonLines';
-import { ORDER_SOCKET_PATH, OrderRequest, OrderRequestType, OrderResponse, FillNotification } from '../../ipc/orderProtocol';
+import { ORDER_SOCKET_PATH, OrderRequest, OrderRequestType, OrderResponse, FillNotification, OrderCancelledNotification } from '../../ipc/orderProtocol';
 
 // The strategies process's only path to broker execution - no Prism/Zerodha
 // dependency lives here at all, by design (see plan). Connects to `order`'s
@@ -12,6 +12,7 @@ import { ORDER_SOCKET_PATH, OrderRequest, OrderRequestType, OrderResponse, FillN
 
 type FillHandler = (userId: string, trade: any) => void;
 type PositionsChangedHandler = () => void;
+type CancelledHandler = (userId: string, notification: OrderCancelledNotification) => void;
 
 class OrderClient {
     private static instance: OrderClient;
@@ -37,6 +38,7 @@ class OrderClient {
     private pending: Map<string, { resolve: (r: OrderResponse) => void; reject: (e: Error) => void }> = new Map();
     private fillHandlers: FillHandler[] = [];
     private positionsChangedHandlers: PositionsChangedHandler[] = [];
+    private cancelledHandlers: CancelledHandler[] = [];
     private nextId = 0;
 
     static getInstance(): OrderClient {
@@ -50,6 +52,10 @@ class OrderClient {
 
     onPositionsChanged(handler: PositionsChangedHandler) {
         this.positionsChangedHandlers.push(handler);
+    }
+
+    onCancelled(handler: CancelledHandler) {
+        this.cancelledHandlers.push(handler);
     }
 
     // For short-lived, one-shot callers (e.g. GapScreenerCoverOrder.ts) that
@@ -82,6 +88,9 @@ class OrderClient {
                     for (const h of this.fillHandlers) h(fill.userId, fill.trade);
                 } else if (msg.kind === 'positionsChanged') {
                     for (const h of this.positionsChangedHandlers) h();
+                } else if (msg.kind === 'cancelled') {
+                    const cancelled = msg as OrderCancelledNotification;
+                    for (const h of this.cancelledHandlers) h(cancelled.userId, cancelled);
                 }
             },
             (line, err) => Log.log('[strategies] Failed to parse order-process message:', line, err)
@@ -259,13 +268,18 @@ class OrderClient {
     // duration.
     private static CHUNKED_ORDER_TIMEOUT_MS = 15 * 60 * 1000;
 
-    async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number }): Promise<any> {
+    // `broker`, when supplied, overrides the per-userId broker resolution for
+    // this one call (see getBrokerExecutor) - lets a single strategy identity
+    // place independent orders on several brokers at once (BulkPcrStrategy's
+    // multi-broker support). Omitted by every other caller, which keeps
+    // today's per-userId resolution unchanged.
+    async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number; broker?: 'zerodha' | 'ant' | 'breeze' }): Promise<any> {
         const res = await this.request('chunkedBuyIndex', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
-    async chunkedSquareOff(userId: string, payload: { tsym: string; quantity: number; freezeQuantity?: number }): Promise<any> {
+    async chunkedSquareOff(userId: string, payload: { tsym: string; quantity: number; freezeQuantity?: number; broker?: 'zerodha' | 'ant' | 'breeze' }): Promise<any> {
         const res = await this.request('chunkedSquareOff', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
         if (!res.ok) throw new Error(res.error);
         return res.result;
@@ -276,7 +290,7 @@ class OrderClient {
     // squareOffLimitChunked). Reuses the same generous chunked timeout since
     // placement is still up to 8 sequential broker calls, even though it
     // shouldn't normally take anywhere near as long as a fill-waiting call.
-    async chunkedSquareOffLimit(userId: string, payload: { tsym: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number }): Promise<any> {
+    async chunkedSquareOffLimit(userId: string, payload: { tsym: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number; broker?: 'zerodha' | 'ant' | 'breeze' }): Promise<any> {
         const res = await this.request('chunkedSquareOffLimit', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
         if (!res.ok) throw new Error(res.error);
         return res.result;

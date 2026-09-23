@@ -25,6 +25,13 @@ interface PendingBreezeLimitOrder {
 
 const pending = new Map<string, PendingBreezeLimitOrder>();
 
+type CancelledListener = (userId: string, tradingSymbol: string, antToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: 'breeze', orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
+const cancelledListeners: CancelledListener[] = [];
+
+export function onCancelled(listener: CancelledListener): void {
+    cancelledListeners.push(listener);
+}
+
 // See pendingLimitOrders.ts's findPendingOrdersForSymbol for why this exists.
 export function findPendingOrdersForSymbol(userId: string, tradingSymbol: string): PendingBreezeLimitOrder[] {
     return Array.from(pending.values()).filter((o) => o.userId === userId && o.tradingSymbol === tradingSymbol);
@@ -94,11 +101,16 @@ export async function pollPendingBreezeLimitOrders(): Promise<void> {
                 trade.action = order.action;
                 trade.status = 'COMPLETE';
                 trade.user = order.userId;
+                trade.broker = 'breeze';
                 trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
                 Log.log(`[order] Pending Breeze limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
             } else if (record.status && /rejected|cancelled/i.test(String(record.status))) {
                 untrackPendingBreezeLimitOrder(orderId);
+                const reason = /rejected/i.test(String(record.status)) ? 'REJECTED' : 'CANCELLED';
+                for (const listener of cancelledListeners) {
+                    listener(order.userId, order.tradingSymbol, order.antToken, order.quantity, order.exchange, order.action, 'breeze', orderId, reason);
+                }
                 Log.log(`[order] Pending Breeze limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${record.status}`);
             }
             // else: still pending, leave in map for the next poll

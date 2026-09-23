@@ -18,6 +18,7 @@ import * as niftyCandleBuilder from './strategies/niftyCandleBuilder';
 import * as niftyStatsBuilder from './strategies/niftyStatsBuilder';
 import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 import { FeedSource, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
+import { OrderCancelledNotification } from '../ipc/orderProtocol';
 
 // Entry point for the `strategies` process. No Prism/Zerodha dependency at all -
 // ticks arrive over stdin (piped from `data` by the orchestrator), orders go out
@@ -38,6 +39,17 @@ async function onFill(userId: string, raw: any) {
         unregisterTrade(trade.token, strategy);
     }
     await strategy.updateTrade(trade);
+}
+
+async function onOrderCancelled(userId: string, notification: OrderCancelledNotification) {
+    const strategy = strategies.getByUserId(userId);
+    if (!strategy) {
+        Log.log('[strategies] Order cancelled for unknown strategy userId:', userId);
+        return;
+    }
+    if (strategy.onOrderCancelled) {
+        await strategy.onOrderCancelled(notification);
+    }
 }
 
 // Ticks queued on stdin during startup (data.stdout is piped in before
@@ -161,6 +173,9 @@ async function main() {
 
     OrderClient.getInstance().onFill((userId, trade) => {
         onFill(userId, trade).catch((e) => Log.log('[strategies] onFill handler failed:', e));
+    });
+    OrderClient.getInstance().onCancelled((userId, notification) => {
+        onOrderCancelled(userId, notification).catch((e) => Log.log('[strategies] onOrderCancelled handler failed:', e));
     });
     OrderClient.getInstance().connect();
     startStrategiesServer();

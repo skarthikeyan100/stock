@@ -5,13 +5,21 @@ import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
+import { roundToTick } from '../zerodha/Zerodha';
+import MomentumSignal from './MomentumSignal';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot - no recheck-throttle needed here (one-shot)
 
 const STATE_COLLECTION = 'bulkPcrStrategyState';
 
-interface PersistedState {
-    phase: 'selling' | 'error';
+// chunkedBuyIndex/chunkedSquareOffLimit (orderProcess.ts) only support these
+// two brokers today - 'ant' is deliberately not in this union yet (see
+// getBrokerExecutor's brokerOverride type); adding it would need its own
+// contract-resolution/pricing branch in orderProcess.ts first.
+type BrokerName = 'zerodha' | 'breeze';
+
+interface BrokerPosition {
+    phase: 'buying' | 'selling' | 'error' | 'done';
     heldTsym: string | null;
     heldToken: string | null;
     entryAvg: number;
@@ -20,12 +28,20 @@ interface PersistedState {
     soldValue: number;
 }
 
-// One-shot large block order via ICICI Breeze: buys a total quantity (config
-// `quantity`, default 13975 = 215 lots x 65) of a NIFTY option in one go,
-// then immediately exits at a fixed points target with NO stop-loss (holds
-// indefinitely until the resting exit fills, however long that takes), then
-// durably disables itself so it can never fire a second block order on a
-// later restart.
+interface PersistedState {
+    positions: Partial<Record<BrokerName, BrokerPosition>>;
+}
+
+// One-shot large block order: buys a total quantity (config `quantity`,
+// default 13975 = 215 lots x 65) of a NIFTY option independently and in
+// FULL on every configured broker (config `brokers: [zerodha, breeze]`,
+// falling back to a single legacy `broker:` field) - not a split of one
+// pooled quantity. One PCR-driven direction decision drives every broker's
+// entry; each broker then runs its own entirely independent chunked
+// buy -> immediate resting-limit exit -> fill-tracking lifecycle, tracked in
+// `positions` (keyed by broker). The whole cycle only durably self-disables
+// once EVERY configured broker's position has been fully sold - see
+// updateTrade.
 //
 // Direction: if config `right` is 'call'/'put', use that fixed direction
 // directly (no PCR check). If 'none' (default), PCR (put/call OI ratio)
@@ -33,46 +49,57 @@ interface PersistedState {
 // WITHOUT its PCR_RECHECK_MS/lastPcrCheckTime recheck-throttle, which exists
 // there only because it re-evaluates repeatedly all day - this strategy
 // fires at most once ever per arming, so a single direct fetch when the
-// entry gate first clears is all that's needed.
+// entry gate first clears is all that's needed. MomentumSignal (ANT
+// depth-mode tbq/tsq order-book imbalance on the ATM CALL/PUT) always acts
+// as an additional veto ahead of this - no config toggle, unlike
+// ContinuousStrategy's optional momentumEnabled, since this strategy places
+// a single large one-shot block order and the extra confirmation is worth
+// always paying for. PCR still decides direction, but an ACTIVE
+// disagreement from momentum blocks the entry for this tick (retried on the
+// next one). Momentum unavailable/inconclusive never blocks by itself.
 //
 // NIFTY's exchange freeze quantity (1755, see NIFTY_FREEZE_QUANTITY in
-// constants.ts) caps any single order - the entry buy is placed via the
-// shared, broker-agnostic buyChunked helper (src/processes/order/chunkedOrder.ts)
-// through the IPC-exposed chunkedBuyIndex order-process handler, which
-// splits into exchange-compliant chunks automatically and only returns once
-// every chunk has filled. The exit sell is placed the same way via
-// squareOffLimitChunked/chunkedSquareOffLimit, as soon as the buy resolves
-// (see placeExitSell below) - as a resting LIMIT sell at the target price,
-// NOT a market order. A blind market square-off is what caused the
-// 2026-09-22 loss above (a single bad/stale tick falsely read as "target
-// hit" sold straight into a loss, since a market order has no price floor);
-// a resting LIMIT order can only ever fill at the target price or better,
-// so that failure mode doesn't apply here regardless of when it's placed -
-// there is deliberately no tick-based "confirm the target first" gate
-// before placing it, since one would add nothing but a dependency on the
-// live option-tick feed being connected and a delay in placing an already
-// price-safe order.
+// constants.ts) caps any single order - each broker's entry buy is placed
+// via the shared, broker-agnostic buyChunked helper
+// (src/processes/order/chunkedOrder.ts) through the IPC-exposed
+// chunkedBuyIndex order-process handler, which splits into
+// exchange-compliant chunks automatically and only returns once every chunk
+// has filled. Each broker's exit sell is placed the same way via
+// squareOffLimitChunked/chunkedSquareOffLimit, as soon as that broker's own
+// buy resolves (see placeExitSell below) - as a resting LIMIT sell at that
+// broker's own (entryAvg + targetPoints) price, NOT a market order. A blind
+// market square-off is what caused the 2026-09-22 loss above (a single
+// bad/stale tick falsely read as "target hit" sold straight into a loss,
+// since a market order has no price floor); a resting LIMIT order can only
+// ever fill at the target price or better, so that failure mode doesn't
+// apply here regardless of when it's placed - there is deliberately no
+// tick-based "confirm the target first" gate before placing it.
 export default class BulkPcrStrategy extends Strategy {
     name = 'BulkPcrStrategy';
 
-    private phase: 'idle' | 'buying' | 'selling' | 'error' | 'done' = 'idle';
-    private heldTsym: string | null = null;
-    private heldToken: string | null = null;
-    private entryAvg = 0;
-    // Exit-fill accumulation - the limit-sell chunks placed in
-    // placeExitSell (immediately once the buy completes) fill asynchronously
-    // and independently (each one only once the market actually reaches the
-    // target price), so updateTrade tallies them here until the full
-    // position is confirmed sold.
-    private targetQuantity = 0;
-    private soldQty = 0;
-    private soldValue = 0;
+    // Outer one-shot reentrancy gate only - every broker's actual progress
+    // lives in `positions`, keyed by broker, since brokers advance through
+    // buying/selling/error/done entirely independently of each other.
+    private phase: 'idle' | 'running' | 'done' = 'idle';
+    private positions = new Map<BrokerName, BrokerPosition>();
+    private momentum = new MomentumSignal();
     private lastGateLog = new Map<string, number>();
 
     receive(oldStats, newStats) {}
 
     private cfg() {
         return configService.getStrategyConfig('BulkPcrStrategy');
+    }
+
+    // `brokers: [zerodha, breeze]` (new, multi-broker) takes priority when
+    // present and non-empty; falls back to the legacy single `broker:`
+    // field (defaulting to zerodha) for backward compatibility. Deduped and
+    // lowercased so a config typo/duplicate can't silently double-run a
+    // broker.
+    private configuredBrokers(): BrokerName[] {
+        const cfg = this.cfg();
+        const list: string[] = Array.isArray(cfg.brokers) && cfg.brokers.length > 0 ? cfg.brokers : [cfg.broker ?? 'zerodha'];
+        return Array.from(new Set(list.map((b: string) => String(b).toLowerCase()))) as BrokerName[];
     }
 
     // Throttled gate-visibility logging, same shape as ContinuousStrategy's
@@ -87,28 +114,23 @@ export default class BulkPcrStrategy extends Strategy {
         Log.log(`[BulkPcrStrategy] gate: ${reason}`);
     }
 
-    // Persists just enough state for reconcile() to tell 'selling' (a
-    // limit-sell exit is already resting at the broker - re-placing it on
-    // restart would risk a SECOND exit for the same quantity) apart from
-    // 'error' (something failed and needs manual review - re-placing an
-    // exit automatically on restart would be just as wrong, whether the
-    // failure was a partial buy or a partial/failed sell) - see reconcile()
-    // below. Fire-and-forget, same convention as bookkeeping's own Mongo
-    // writes elsewhere.
+    // Persists one BrokerPosition per configured broker, keyed by broker -
+    // lets reconcile() tell 'selling' (a limit-sell exit is already resting
+    // at that broker - re-placing it on restart would risk a SECOND exit for
+    // the same quantity) apart from 'error' (something failed and needs
+    // manual review - re-placing an exit automatically on restart would be
+    // just as wrong, whether the failure was a partial buy or a
+    // partial/failed sell) on a PER-BROKER basis - one broker can be resting
+    // fine while a different broker sits in 'error' needing manual review.
+    // Fire-and-forget, same convention as bookkeeping's own Mongo writes
+    // elsewhere.
     private persistState(): void {
+        const positions: Partial<Record<BrokerName, BrokerPosition>> = {};
+        for (const [broker, pos] of this.positions) positions[broker] = pos;
         Mongo.getInstance()?.db.collection(STATE_COLLECTION)
             .replaceOne(
                 { userId: this.userId },
-                {
-                    userId: this.userId,
-                    phase: this.phase,
-                    heldTsym: this.heldTsym,
-                    heldToken: this.heldToken,
-                    entryAvg: this.entryAvg,
-                    targetQuantity: this.targetQuantity,
-                    soldQty: this.soldQty,
-                    soldValue: this.soldValue,
-                },
+                { userId: this.userId, positions },
                 { upsert: true }
             )
             .catch((e) => Log.log('[BulkPcrStrategy] persistState failed:', e));
@@ -124,13 +146,22 @@ export default class BulkPcrStrategy extends Strategy {
         }
     }
 
+    // See file header for the momentum-veto rationale.
+    private static readonly MOMENTUM_TIMEOUT_MS = 3000;
+
     private async resolveEntryRight(quote: NiftyQuote, configuredRight?: string): Promise<string | null> {
         if (configuredRight && configuredRight !== 'none') return configuredRight; // explicit direction - skip PCR entirely
         try {
             const pcr = await OrderClient.getInstance().getPCR(this.userId, 'NIFTY', quote.ltp, PCR_WINDOW_POINTS);
-            const right = pcr > 1 ? PUT : CALL;
-            Log.log(`[BulkPcrStrategy] PCR=${pcr.toFixed(3)} -> resolved direction ${right}`);
-            return right;
+            const pcrFavors = pcr > 1 ? PUT : CALL;
+            Log.log(`[BulkPcrStrategy] PCR=${pcr.toFixed(3)} -> resolved direction ${pcrFavors}`);
+
+            const momentumFavors = await this.momentum.getDirection(this, quote.ltp, BulkPcrStrategy.MOMENTUM_TIMEOUT_MS);
+            if (momentumFavors != null && momentumFavors !== pcrFavors) {
+                Log.log(`[BulkPcrStrategy] Momentum (${momentumFavors}) disagrees with PCR (${pcrFavors}) - blocking entry this window`);
+                return null;
+            }
+            return pcrFavors;
         } catch (e) {
             Log.log('[BulkPcrStrategy] PCR check failed, blocking entry (fail-closed):', e);
             return null;
@@ -143,15 +174,15 @@ export default class BulkPcrStrategy extends Strategy {
         if (!this.isTimeInRange()) { this.logGateOnce('outside time window'); return; }
         this.logGateOnce('gates clear - attempting entry');
 
-        // Reentrancy guard set synchronously here, BEFORE the PCR resolution
-        // below awaits - resolveEntryRight makes an async IPC call, and a
-        // second tick arriving during that gap would otherwise still see
-        // phase='idle' (this used to be set only after the await, which let
-        // concurrent ticks race past the idle-check together and each
+        // Reentrancy guard set synchronously here, BEFORE the PCR/momentum
+        // resolution below awaits - resolveEntryRight makes async IPC calls,
+        // and a second tick arriving during that gap would otherwise still
+        // see phase='idle' (this used to be set only after the await, which
+        // let concurrent ticks race past the idle-check together and each
         // launch their own chunkedBuyIndex call - observed live 2026-09-21,
         // caused multiple duplicate block buys before Breeze's own rate
         // limit accidentally capped the damage).
-        this.phase = 'buying';
+        this.phase = 'running';
 
         const cfg = this.cfg();
         const configuredRight = cfg.right && cfg.right !== 'none' ? cfg.right : undefined;
@@ -159,37 +190,87 @@ export default class BulkPcrStrategy extends Strategy {
         if (right == null) { this.phase = 'idle'; return; } // retried on the next tick
 
         const quantity = cfg.quantity ?? 13975;
+        const brokers = this.configuredBrokers();
+        Log.log(`[BulkPcrStrategy] Entering ${right} qty=${quantity} independently on: ${brokers.join(', ')}`);
+
+        // allSettled, not all - one broker's entry failing must not abort a
+        // different broker's already-in-flight buy. Each broker's own
+        // success/failure is handled entirely inside enterOnBroker.
+        await Promise.allSettled(brokers.map((broker) => this.enterOnBroker(broker, right, quantity, quote.ltp)));
+    }
+
+    // One broker's entire entry: buy the full configured quantity on this
+    // broker only, then immediately place this broker's own resting exit
+    // sell. Independent of every other broker's own enterOnBroker call -
+    // failure here only marks THIS broker's position 'error', never touches
+    // another broker's state.
+    //
+    // Note: bookkeeping's investment/lot caps (canPlaceOrder) are per-USER,
+    // not per-broker, and this.userId is the same across every concurrent
+    // call here - so with 2+ brokers configured, `maxInvestment` is a
+    // COMBINED cap across all of them, not a per-broker one. Size it for the
+    // full combined exposure, or a later broker's chunkedBuyIndex call can
+    // legitimately get rejected on "max investment" purely because an
+    // earlier one already reserved its own share of the same cap - this is
+    // the capital gate working as designed, not a bug, but easy to be
+    // surprised by if `maxInvestment` was only ever sized for one broker.
+    private async enterOnBroker(broker: BrokerName, right: string, quantity: number, niftyLtp: number): Promise<void> {
+        this.positions.set(broker, {
+            phase: 'buying',
+            heldTsym: null,
+            heldToken: null,
+            entryAvg: 0,
+            targetQuantity: 0,
+            soldQty: 0,
+            soldValue: 0,
+        });
 
         try {
-            const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, { right, quantity, niftyLtp: quote.ltp });
-            this.heldTsym = result.tsym;
-            this.heldToken = String(result.token);
-            this.entryAvg = result.avgPrice;
-            Log.log(`[BulkPcrStrategy] Entry complete: ${this.heldTsym} qty=${result.quantity} avg=${this.entryAvg}`);
-            await this.placeExitSell(result.quantity);
+            const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, { right, quantity, niftyLtp, broker });
+            const pos = this.positions.get(broker)!;
+            pos.heldTsym = result.tsym;
+            pos.heldToken = String(result.token);
+            pos.entryAvg = result.avgPrice;
+            Log.log(`[BulkPcrStrategy] [${broker}] Entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
+            await this.placeExitSell(broker, result.quantity);
         } catch (e) {
-            Log.log('[BulkPcrStrategy] Chunked entry failed - manual review required:', e);
-            this.phase = 'error';
-            this.persistState(); // so reconcile() on restart knows this needs manual review, not an auto-placed exit
+            Log.log(`[BulkPcrStrategy] [${broker}] Chunked entry failed - manual review required:`, e);
+            const pos = this.positions.get(broker);
+            if (pos) pos.phase = 'error';
+            this.persistState(); // so reconcile() on restart knows this broker needs manual review, not an auto-placed exit
         }
     }
 
-    // Places the resting LIMIT exit sell immediately once `quantity` (the
-    // full held position) is confirmed bought - no live-tick "confirm the
-    // target first" gate (see file header comment for why one isn't needed
-    // here). Called both from the live entry path above and from
-    // reconcile() below when a restart lands between "buy filled" and "sell
-    // placed".
-    private async placeExitSell(quantity: number): Promise<void> {
+    // Shared logic for placing a resting limit exit sell at the strategy's target
+    // price. Factored out so both placeExitSell and onOrderCancelled use the same
+    // price-rounding/chunking code without duplication.
+    private async placeExitSellAtTargetPrice(broker: BrokerName, quantity: number, resetProgress: boolean = true): Promise<void> {
+        const pos = this.positions.get(broker);
+        if (!pos) return; // defensive - should always exist by the time this is called
+
         const cfg = this.cfg();
         const targetPoints = cfg.targetPoints ?? 2;
-        const targetPrice = this.entryAvg + targetPoints;
+        // entryAvg is a multi-chunk weighted average (buyChunked's
+        // filledValue/filledQty) and essentially never lands on an exact
+        // multiple of NFO's 0.05 tick size, so entryAvg + targetPoints must
+        // be rounded before it's used as an order price - confirmed live
+        // 2026-09-23: an unrounded price was REJECTED by Zerodha on all 8
+        // resting sell chunks, leaving the full position with no exit order
+        // at all. Same helper zerodhaExecutor.ts/antExecutor.ts already use
+        // for this.
+        const targetPrice = roundToTick(pos.entryAvg + targetPoints);
 
-        this.phase = 'selling'; // synchronous, before any await
-        this.soldQty = 0;
-        this.soldValue = 0;
-        this.targetQuantity = quantity;
-        Log.log(`[BulkPcrStrategy] Placing resting limit sell for ${this.heldTsym} qty=${quantity} @ ${targetPrice}`);
+        if (resetProgress) {
+            // First-time placement: reset progress counters
+            pos.soldQty = 0;
+            pos.soldValue = 0;
+            pos.targetQuantity = quantity;
+        }
+        // Cancellation re-placement: keep soldQty/soldValue/targetQuantity untouched,
+        // just re-place the chunk that was orphaned by cancellation
+
+        pos.phase = 'selling'; // synchronous, before any await
+        Log.log(`[BulkPcrStrategy] [${broker}] Placing resting limit sell for ${pos.heldTsym} qty=${quantity} @ ${targetPrice}`);
         this.persistState();
 
         try {
@@ -201,44 +282,74 @@ export default class BulkPcrStrategy extends Strategy {
             // filled; completion is handled in updateTrade below as fills
             // arrive asynchronously.
             await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
-                tsym: this.heldTsym!,
-                instrumentId: this.heldToken!,
-                quantity: this.targetQuantity,
+                tsym: pos.heldTsym!,
+                instrumentId: pos.heldToken!,
+                quantity,
                 price: targetPrice,
+                broker,
             });
-            Log.log(`[BulkPcrStrategy] Limit sell chunks resting for ${this.heldTsym} @ ${targetPrice} - waiting for fills`);
+            Log.log(`[BulkPcrStrategy] [${broker}] Limit sell chunks resting for ${pos.heldTsym} @ ${targetPrice} - waiting for fills`);
         } catch (e) {
-            Log.log('[BulkPcrStrategy] Chunked limit-sell placement failed - manual review required:', e);
-            this.phase = 'error';
+            Log.log(`[BulkPcrStrategy] [${broker}] Chunked limit-sell placement failed - manual review required:`, e);
+            pos.phase = 'error';
             this.persistState();
         }
     }
 
-    canHandleOptionQuote(quote: OptionQuote): boolean {
-        return false; // no live-tick trigger needed - see placeExitSell
+    // Places broker's resting LIMIT exit sell immediately once `quantity`
+    // (that broker's full held position) is confirmed bought - no live-tick
+    // "confirm the target first" gate (see file header comment for why one
+    // isn't needed here). Called both from enterOnBroker above and from
+    // reconcile() below when a restart lands between "buy filled" and "sell
+    // placed" for a given broker.
+    private async placeExitSell(broker: BrokerName, quantity: number): Promise<void> {
+        await this.placeExitSellAtTargetPrice(broker, quantity, true);
     }
 
-    async processOptionQuote(quote: OptionQuote): Promise<void> {}
+    // Momentum-only tick consumer - this strategy has no live-tick "confirm
+    // target" gate of its own (see file header), so the only option ticks it
+    // ever needs are the ATM CE/PE legs MomentumSignal itself subscribes to
+    // for a one-shot direction reading. Mirrors ContinuousStrategy's exact
+    // wiring.
+    canHandleOptionQuote(quote: OptionQuote): boolean {
+        return this.momentum.isTracking(String(quote.token));
+    }
 
-    // Fills for the exit round-trip back here asynchronously, one chunk at a
-    // time, potentially far apart - a resting limit sell only fills once the
-    // market actually reaches the target price, unlike the old synchronous
-    // market-order exit this replaced. Accumulates until the full sold
-    // quantity is confirmed, then runs the completion (durable self-disable)
-    // logic that used to run synchronously right after chunkedSquareOff
-    // returned.
+    async processOptionQuote(quote: OptionQuote): Promise<void> {
+        if (this.momentum.isTracking(String(quote.token))) {
+            this.momentum.onTick(quote);
+        }
+    }
+
+    // Fills for a broker's exit round-trip back here asynchronously, one
+    // chunk at a time, potentially far apart - a resting limit sell only
+    // fills once the market actually reaches the target price, unlike the
+    // old synchronous market-order exit this replaced. Accumulates until
+    // that broker's full sold quantity is confirmed, then - only once EVERY
+    // configured broker has independently reached that same point - runs the
+    // completion (durable self-disable) logic that used to run
+    // unconditionally right after a single chunkedSquareOff returned.
     updateTrade = async (trade: Trade): Promise<void> => {
-        if (this.phase !== 'selling') return;
-        if (trade.action !== 'Sell' || trade.tsym !== this.heldTsym) return;
+        const broker = trade.broker as BrokerName | undefined;
+        if (!broker) return; // untagged fill - can't attribute to a broker position, ignore defensively
+        const pos = this.positions.get(broker);
+        if (!pos || pos.phase !== 'selling') return;
+        if (trade.action !== 'Sell' || trade.tsym !== pos.heldTsym) return;
 
-        this.soldQty += trade.quantity;
-        this.soldValue += trade.quantity * trade.price;
-        Log.log(`[BulkPcrStrategy] Exit fill: ${trade.tsym} qty=${trade.quantity} @ ${trade.price} (sold ${this.soldQty}/${this.targetQuantity})`);
+        pos.soldQty += trade.quantity;
+        pos.soldValue += trade.quantity * trade.price;
+        Log.log(`[BulkPcrStrategy] [${broker}] Exit fill: ${trade.tsym} qty=${trade.quantity} @ ${trade.price} (sold ${pos.soldQty}/${pos.targetQuantity})`);
         this.persistState();
-        if (this.soldQty < this.targetQuantity) return; // more chunks still resting
+        if (pos.soldQty < pos.targetQuantity) return; // more chunks still resting for this broker
 
-        const avgExit = this.soldValue / this.soldQty;
-        Log.log(`[BulkPcrStrategy] Exit complete: ${this.heldTsym} qty=${this.soldQty} avgExit=${avgExit}`);
+        const avgExit = pos.soldValue / pos.soldQty;
+        pos.phase = 'done';
+        Log.log(`[BulkPcrStrategy] [${broker}] Exit complete: ${pos.heldTsym} qty=${pos.soldQty} avgExit=${avgExit}`);
+        this.persistState();
+
+        const brokers = this.configuredBrokers();
+        const allDone = brokers.every((b) => this.positions.get(b)?.phase === 'done');
+        if (!allDone) return; // other broker(s) still buying/selling/erroring - wait for them
 
         // Durable self-disable - mirrors GoodMorningStrategy.ts's exact
         // pattern (configService.writeConfig), since an in-memory-only
@@ -251,105 +362,149 @@ export default class BulkPcrStrategy extends Strategy {
         configService.writeConfig(configService.getConfig());
         this.enabled = false; // stop in-memory immediately too - config.yml only gets re-read on next restart
         this.phase = 'done';
-        this.persistState();
-        Log.log('[BulkPcrStrategy] Cycle complete - durably disabled. Flip enabled: true in config.yml manually to arm another run.');
+        Log.log('[BulkPcrStrategy] Cycle complete on every configured broker - durably disabled. Flip enabled: true in config.yml manually to arm another run.');
+    };
+
+    // Called when a resting limit order (e.g. an exit sell) is cancelled/rejected,
+    // typically because a DAY-validity order expires unfilled at end of session.
+    // Re-places a resting sell for the cancelled quantity at the same target price,
+    // without disturbing already-filled or still-resting chunks.
+    onOrderCancelled = async (notification: any): Promise<void> => {
+        const broker = notification.broker as BrokerName | undefined;
+        if (!broker) return;
+        const pos = this.positions.get(broker);
+
+        // Ignore if this notification doesn't match an open/selling position we care about.
+        if (!pos || pos.phase !== 'selling' || pos.heldTsym !== notification.tradingSymbol) {
+            return;
+        }
+
+        Log.log(`[BulkPcrStrategy] [${broker}] Order cancelled: ${notification.tradingSymbol} qty=${notification.quantity} (${notification.reason}) - re-placing resting sell`);
+        await this.placeExitSellAtTargetPrice(broker, notification.quantity, false);
     };
 
     getMonitorConfig() {
         return null; // self-monitored, no GTT/bracket - Breeze doesn't support them anyway
     }
 
-    // Restart-safety: without this, a restart between "buy completed" and
-    // "target hit" would reset phase to 'idle' in memory and could fire a
-    // SECOND live block buy on the next PCR-aligned tick. Mirrors
-    // ContinuousStrategy.reconcile()'s retry shape.
+    // Restart-safety: without this, a restart mid-cycle would reset phase to
+    // 'idle' in memory and could fire a SECOND live block buy on the next
+    // PCR-aligned tick. Runs independently per configured broker - one
+    // broker can be resting fine while a different broker sits in 'error'
+    // needing manual review, or a third was never even attempted yet.
+    // Mirrors ContinuousStrategy.reconcile()'s retry shape.
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
         const persisted = await this.loadState();
-        if (persisted?.phase === 'selling') {
-            // A limit-sell exit was already resting when this process last
-            // shut down. The broker-side pending-order trackers
-            // (pendingLimitOrders.ts / breezePendingLimitOrders.ts /
-            // pendingAntLimitOrders.ts) are independently restart-safe and
-            // will keep polling that same resting order to completion,
-            // feeding fills back through updateTrade as usual. Falling
-            // through to the 'error'/open-trades branches below instead
-            // would risk calling placeExitSell again and placing a SECOND
-            // limit sell for the same already-resting quantity - an oversell
-            // if both eventually filled.
-            this.phase = 'selling';
-            this.heldTsym = persisted.heldTsym;
-            this.heldToken = persisted.heldToken;
-            this.entryAvg = persisted.entryAvg;
-            this.targetQuantity = persisted.targetQuantity;
-            this.soldQty = persisted.soldQty;
-            this.soldValue = persisted.soldValue;
-            Log.log(`[BulkPcrStrategy] reconcile: restored in-flight limit-sell exit for ${this.heldTsym} (${this.soldQty}/${this.targetQuantity} filled so far) - resuming fill watch`);
-            return;
-        }
+        const brokers = this.configuredBrokers();
+        let anyRestored = false;
 
-        if (persisted?.phase === 'error') {
-            // Last run failed - either a partial buy (chunkedBuyIndex threw
-            // mid-chunk) or a partial/failed exit placement
-            // (chunkedSquareOffLimit threw after some chunks may already be
-            // resting, see placeExitSell's catch). Either way, getOpenTrades
-            // below can't tell "clean buy done, exit never attempted" apart
-            // from "exit partially placed then failed" - blindly calling
-            // placeExitSell here (as the openTrades branch below does) could
-            // place a SECOND full-quantity resting sell on top of chunks
-            // already resting from the failed attempt, risking an oversell
-            // if both fill. Stay in 'error' and require the manual review
-            // the original failure already called for.
-            this.phase = 'error';
-            this.heldTsym = persisted.heldTsym;
-            this.heldToken = persisted.heldToken;
-            this.entryAvg = persisted.entryAvg;
-            this.targetQuantity = persisted.targetQuantity;
-            this.soldQty = persisted.soldQty;
-            this.soldValue = persisted.soldValue;
-            Log.log(`[BulkPcrStrategy] reconcile: last run ended in 'error' for ${this.heldTsym} - manual review required, NOT auto-placing an exit`);
-            return;
-        }
-
-        let openTrades: any[] | undefined;
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                openTrades = await OrderClient.getInstance().getOpenTrades(this.userId);
-                break;
-            } catch (e) {
-                Log.log(`[BulkPcrStrategy] reconcile: order query attempt ${attempt}/${maxAttempts} failed:`, e);
-                if (attempt === maxAttempts) {
-                    Log.log('[BulkPcrStrategy] reconcile: order query exhausted retries - failing closed');
-                    this.phase = 'error';
-                    return;
-                }
-                await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        // getOpenTrades(userId) returns the SAME full list regardless of
+        // which broker is asking (bookkeeping.trades filtered by user only,
+        // each entry separately tagged with its own broker) - fetched at
+        // most once, lazily, the first time any broker actually needs it
+        // below, and reused for every other broker that also needs it.
+        // Avoids both a redundant IPC round-trip per broker and (more
+        // importantly) doubling the worst-case retry-exhaustion latency if
+        // the order-process IPC channel is down at startup - a query that's
+        // already proven to fail 15 times for broker A tells us nothing new
+        // by failing 15 more times for broker B.
+        let openTradesFetch: Promise<any[] | undefined> | null = null;
+        const getOpenTradesOnce = (): Promise<any[] | undefined> => {
+            if (!openTradesFetch) {
+                openTradesFetch = (async () => {
+                    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                        try {
+                            return await OrderClient.getInstance().getOpenTrades(this.userId);
+                        } catch (e) {
+                            Log.log(`[BulkPcrStrategy] reconcile: order query attempt ${attempt}/${maxAttempts} failed:`, e);
+                            if (attempt === maxAttempts) {
+                                Log.log('[BulkPcrStrategy] reconcile: order query exhausted retries - failing closed for every broker still pending reconciliation');
+                                return undefined;
+                            }
+                            await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+                        }
+                    }
+                    return undefined;
+                })();
             }
-        }
-        if (!openTrades || openTrades.length === 0) return; // nothing open - stays 'idle'
+            return openTradesFetch;
+        };
 
-        // Reached only when persisted state was neither 'selling' nor
-        // 'error' (i.e. a clean buy completed and crashed before
-        // placeExitSell's very first, synchronous persistState() call could
-        // run) - a genuinely never-attempted exit, safe to place now.
-        // trade.quantity is bookkeeping's volume-weighted aggregate over
-        // every buy chunk for this tsym+user (bookkeeping.ts recordFill),
-        // i.e. the same total the live path's result.quantity would give.
-        const trade = openTrades[0];
-        this.heldTsym = trade.tsym;
-        this.heldToken = String(trade.token);
-        this.entryAvg = trade.price;
-        Log.log(`[BulkPcrStrategy] reconcile: restored open position ${this.heldTsym} avg=${this.entryAvg} qty=${trade.quantity} - placing exit sell`);
-        await this.placeExitSell(trade.quantity);
+        for (const broker of brokers) {
+            const persistedPos = persisted?.positions?.[broker];
+
+            if (persistedPos?.phase === 'selling') {
+                // A limit-sell exit was already resting for this broker when
+                // this process last shut down. The broker-side pending-order
+                // trackers (pendingLimitOrders.ts / breezePendingLimitOrders.ts)
+                // are independently restart-safe and will keep polling that
+                // same resting order to completion, feeding fills back
+                // through updateTrade as usual. Falling through to the
+                // 'error'/open-trades branches below instead would risk
+                // calling placeExitSell again and placing a SECOND limit sell
+                // for the same already-resting quantity - an oversell if both
+                // eventually filled.
+                this.positions.set(broker, { ...persistedPos });
+                anyRestored = true;
+                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: restored in-flight limit-sell exit for ${persistedPos.heldTsym} (${persistedPos.soldQty}/${persistedPos.targetQuantity} filled so far) - resuming fill watch`);
+                continue;
+            }
+
+            if (persistedPos?.phase === 'error') {
+                // Last run failed for this broker - either a partial buy or a
+                // partial/failed exit placement. Either way, getOpenTrades
+                // below can't tell "clean buy done, exit never attempted"
+                // apart from "exit partially placed then failed" - blindly
+                // calling placeExitSell here could place a SECOND
+                // full-quantity resting sell on top of chunks already resting
+                // from the failed attempt, risking an oversell if both fill.
+                // Stay in 'error' for this broker and require the manual
+                // review the original failure already called for.
+                this.positions.set(broker, { ...persistedPos });
+                anyRestored = true;
+                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: last run ended in 'error' for ${persistedPos.heldTsym} - manual review required, NOT auto-placing an exit`);
+                continue;
+            }
+
+            // Reached only when persisted state for this broker was neither
+            // 'selling' nor 'error' - check the live broker for an open
+            // position a crash left with a genuinely never-attempted exit.
+            const openTrades = await getOpenTradesOnce();
+            if (!openTrades) {
+                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: order query exhausted retries - failing closed`);
+                this.positions.set(broker, { phase: 'error', heldTsym: null, heldToken: null, entryAvg: 0, targetQuantity: 0, soldQty: 0, soldValue: 0 });
+                anyRestored = true;
+                continue;
+            }
+
+            // getOpenTrades(userId) returns one entry per broker this user
+            // holds a position on (bookkeeping.trades is keyed by (tsym,
+            // user, broker)) - filter to this broker specifically rather
+            // than assuming a single entry describes the whole position, as
+            // was safe in the single-broker world.
+            const brokerTrade = openTrades.find((t: any) => t.broker === broker);
+            if (!brokerTrade) continue; // nothing open for this broker - stays untracked
+
+            anyRestored = true;
+            this.positions.set(broker, {
+                phase: 'buying',
+                heldTsym: brokerTrade.tsym,
+                heldToken: String(brokerTrade.token),
+                entryAvg: brokerTrade.price,
+                targetQuantity: 0,
+                soldQty: 0,
+                soldValue: 0,
+            });
+            Log.log(`[BulkPcrStrategy] [${broker}] reconcile: restored open position ${brokerTrade.tsym} avg=${brokerTrade.price} qty=${brokerTrade.quantity} - placing exit sell`);
+            await this.placeExitSell(broker, brokerTrade.quantity);
+        }
+
+        if (anyRestored) this.phase = 'running';
     }
 
     reset(): void {
         this.phase = 'idle';
-        this.heldTsym = null;
-        this.heldToken = null;
-        this.entryAvg = 0;
-        this.targetQuantity = 0;
-        this.soldQty = 0;
-        this.soldValue = 0;
+        this.positions.clear();
         Mongo.getInstance()?.db.collection(STATE_COLLECTION).deleteOne({ userId: this.userId })
             .catch((e) => Log.log('[BulkPcrStrategy] reset: persisted-state clear failed:', e));
         Log.log(`[${this.userId}] Reset via admin request`);

@@ -16,14 +16,14 @@ import Log from '../util/Log';
 import Mongo from '../tools/mongo';
 import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
-import { ORDER_SOCKET_PATH, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification } from '../ipc/orderProtocol';
+import { ORDER_SOCKET_PATH, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
 import { buyIndexOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, cancelOrderOnZerodha, getContractByPriceRangeOnZerodha } from './order/zerodhaExecutor';
-import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingZerodhaOrdersForSymbol } from './order/pendingLimitOrders';
+import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingZerodhaOrdersForSymbol, onCancelled as onPendingZerodhaCancelled } from './order/pendingLimitOrders';
 import { pollPendingAntLimitOrders, loadPendingAntLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingAntOrdersForSymbol } from './order/pendingAntLimitOrders';
 import * as antExecutor from './order/antExecutor';
-import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getOptionQuote, tsymFor } from './order/breezeExecutor';
-import { pollPendingBreezeLimitOrders, loadPendingBreezeLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol } from './order/breezePendingLimitOrders';
+import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
+import { pollPendingBreezeLimitOrders, loadPendingBreezeLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, onCancelled as onPendingBreezeCancelled } from './order/breezePendingLimitOrders';
 import { buyChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
 import Breeze from '../breeze/Breeze';
@@ -65,7 +65,7 @@ process.on('unhandledRejection', (reason) => {
 
 const clients = new Set<net.Socket>();
 
-function broadcast(msg: FillNotification | PositionsChangedNotification) {
+function broadcast(msg: FillNotification | PositionsChangedNotification | OrderCancelledNotification) {
     for (const c of clients) writeJsonLine(c, msg);
 }
 
@@ -75,6 +75,14 @@ bookkeeping.onFill((userId, trade) => {
 
 bookkeeping.onPositionsChanged(() => {
     broadcast({ kind: 'positionsChanged' });
+});
+
+onPendingZerodhaCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason) => {
+    broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason });
+});
+
+onPendingBreezeCancelled((userId, tradingSymbol, antToken, quantity, exchange, action, broker, orderId, reason) => {
+    broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken: antToken, quantity, exchange, action, broker, orderId, reason });
 });
 
 // exitMonitor watches live ticks for every monitored trade (both in-app
@@ -210,18 +218,30 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // up; the getBrokerExecutor(...) dispatch already makes extending
             // to other brokers additive, not a rewrite.
             case 'chunkedBuyIndex': {
-                const executor = getBrokerExecutor(req.userId);
+                const executor = getBrokerExecutor(req.userId, req.payload.broker);
                 const optionType = req.payload.right === CALL ? 'CE' : 'PE';
 
                 if (executor.brokerName === 'breeze') {
                     // Real pre-trade valuation (unlike breezeBuyIndex's `undefined`) -
                     // this order is large enough that maxInvestment/perOrderCap must
                     // actually gate it, not just record it after the fact.
-                    const niftyQuote = await Breeze.getInstance().getQuotes({ stockCode: 'NIFTY', exchangeCode: 'NSE', productType: 'cash' });
-                    const spotRecord = Array.isArray(niftyQuote?.Success) ? niftyQuote.Success[0] : niftyQuote?.Success;
-                    const contract = await BreezeContractMaster.getInstance().findATMOption(Number(spotRecord?.ltp), optionType, 'NIFTY');
-                    const { bestAsk } = await getOptionQuote(contract);
-                    const estimatedOrderValue = req.payload.quantity * bestAsk;
+                    //
+                    // Uses the caller-supplied niftyLtp (ANT-sourced, same as the
+                    // zerodha branch below) instead of an independent Breeze spot
+                    // quote, and getMarketableBreezeBuyPrice (also ANT-sourced) for
+                    // the option premium estimate - Breeze's own getQuotes has been
+                    // observed live 2026-09-23 returning a generic nginx "resource
+                    // unavailable" page (session/auth endpoints kept working in the
+                    // same window, so this is API/infra flakiness, not an auth
+                    // problem), and req.payload.niftyLtp was already available here
+                    // for free either way.
+                    const niftyLtp = req.payload.niftyLtp;
+                    if (!Number.isFinite(niftyLtp)) {
+                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (breeze): niftyLtp is required and must be a finite number' };
+                    }
+                    const contract = await BreezeContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
+                    const buyPrice = await getMarketableBreezeBuyPrice(contract);
+                    const estimatedOrderValue = req.payload.quantity * buyPrice;
 
                     return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
                         const result = await buyChunked(
@@ -279,13 +299,13 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'chunkedSquareOff': {
-                const executor = getBrokerExecutor(req.userId);
+                const executor = getBrokerExecutor(req.userId, req.payload.broker);
                 const result = await squareOffChunked(executor, req.userId, req.payload.tsym, req.payload.quantity, 'NFO', req.payload.freezeQuantity);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
             case 'chunkedSquareOffLimit': {
-                const executor = getBrokerExecutor(req.userId);
+                const executor = getBrokerExecutor(req.userId, req.payload.broker);
                 const result = await squareOffLimitChunked(
                     executor,
                     req.userId,

@@ -2,6 +2,7 @@ import Log from '../util/Log';
 import { NIFTY, MOCK_BROKER, CALL, PUT } from "../constants";
 import configService from '../prism/ConfigService';
 import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, SensexQuote, Trade } from "../model/model";
+import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import moment from "moment";
 import OrderClient from "../processes/strategies/OrderClient";
 
@@ -181,5 +182,10 @@ export abstract class Strategy {
 
     updateTrade = async (trade: Trade) : Promise<void> => {
         Log.log('*******  SHOULD BE OVERRIDDEN ******* ', trade)
+    }
+
+    onOrderCancelled = async (notification: OrderCancelledNotification): Promise<void> => {
+        // Default no-op - subclasses override if they need to handle order cancellations
+        // (e.g. BulkPcrStrategy re-places exit sells when resting orders are cancelled).
     }
 }
