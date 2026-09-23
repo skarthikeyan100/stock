@@ -182,6 +182,7 @@ export async function buyIndexOnZerodha(req: BuyIndexRequest): Promise<Trade> {
     trade.status = 'COMPLETE';
     trade.right = req.right;
     trade.user = req.userId;
+    trade.broker = 'zerodha';
     trade.brokerOrderId = orderId;
 
     await finalizeEntry(trade, req.userId, contract.exchange, targetPoints, stopLossPoints);
@@ -258,6 +259,7 @@ async function buyContractOnZerodha(userId: string, tradingSymbol: string, commo
     trade.action = 'Buy';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.broker = 'zerodha';
     trade.brokerOrderId = orderId;
 
     const settings = configService.getConfig().settings;
@@ -312,6 +314,7 @@ export async function squareOffOnZerodha(userId: string, tsym: string, quantity:
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.broker = 'zerodha';
     trade.brokerOrderId = orderId;
     const fillPrice = await zerodha.getFillPrice(orderId);
     trade.price = fillPrice;
@@ -356,6 +359,7 @@ export async function buyResolvedOnZerodha(request: BuyRequest): Promise<Trade> 
     trade.action = 'Buy';
     trade.status = 'COMPLETE';
     trade.user = request.userId;
+    trade.broker = 'zerodha';
     trade.brokerOrderId = orderId;
 
     await finalizeEntry(trade, request.userId, exchange, request.targetPoints ?? 0, request.stopLossPoints ?? 0);
@@ -394,6 +398,7 @@ export async function marketBuyBareOnZerodha(userId: string, tradingSymbol: stri
     trade.action = 'Buy';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.broker = 'zerodha';
     trade.brokerOrderId = orderId;
 
     await bookkeeping.recordFill(trade);
@@ -418,6 +423,7 @@ export async function marketSellBareOnZerodha(userId: string, tradingSymbol: str
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.broker = 'zerodha';
     trade.brokerOrderId = orderId;
 
     await bookkeeping.recordFill(trade);
@@ -564,6 +570,7 @@ export async function pollGttFills(): Promise<void> {
             sellTrade.action = 'Sell';
             sellTrade.status = 'COMPLETE';
             sellTrade.user = trade.user;
+            sellTrade.broker = 'zerodha';
 
             await bookkeeping.recordFill(sellTrade);
             Log.log(`[order] GTT poll: ${trade.tsym} (${trade.user}) closed, recorded exit at ${sellTrade.price}`);
@@ -615,6 +622,7 @@ export async function reconcileManualSells(): Promise<void> {
                 sellTrade.action = 'Sell';
                 sellTrade.status = 'COMPLETE';
                 sellTrade.user = trade.user;
+                sellTrade.broker = 'zerodha';
                 sellTrade.brokerOrderId = fill.order_id;
 
                 await bookkeeping.recordFill(sellTrade);

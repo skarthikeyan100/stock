@@ -135,8 +135,26 @@ class OrderBookkeeping {
         return this.userSettingsCache.get(user)?.useGTT ?? true;
     }
 
+    // A strategy with no explicit `userId:` in config.yml runs under its own
+    // type name as a pseudo-user (StrategyFactory.createStrategy: userId =
+    // config.userId || config.type) - there's no real per-email user account
+    // for that pseudo-user, so userSettingsCache (populated from the Users
+    // collection, keyed by email) never has an entry for it, and every
+    // strategy's own `broker:` config field was silently ignored, always
+    // falling back to the 'zerodha' default below regardless of what was
+    // configured. Used only as a FALLBACK, after userSettingsCache, in
+    // getUserBroker below - a real user's own account-level broker
+    // preference must still win over a strategy's config broker if that
+    // strategy was ever given an explicit `userId:` equal to a real email
+    // (config's broker overriding a human's own setting with no log/error
+    // would be a silent, surprising precedence hazard otherwise).
+    private getStrategyConfigBroker(user: string): 'zerodha' | 'ant' | 'breeze' | undefined {
+        const strategy = configService.getConfig().strategies?.find((s) => (s.userId || s.type) === user);
+        return strategy?.broker;
+    }
+
     getUserBroker(user: string): 'zerodha' | 'ant' | 'breeze' {
-        return this.userSettingsCache.get(user)?.broker ?? 'zerodha';
+        return this.userSettingsCache.get(user)?.broker ?? this.getStrategyConfigBroker(user) ?? 'zerodha';
     }
 
     getUserPerOrderCap(user: string): number | undefined {
@@ -327,7 +345,19 @@ class OrderBookkeeping {
         // multi-leg activity - at the user's request, only the capital-usage
         // check below still gates it; lot limit, per-order cap, drawdown
         // breach, and the trade-count limit are skipped entirely.
-        if (user === 'ContinuousStrategy') {
+        //
+        // BulkPcrStrategy gets the same exemption, at the user's request
+        // 2026-09-23 - it hit the same shared trade-count limit purely from
+        // live testing (each resting-sell chunk fill writes its own
+        // closedTrades doc, so a handful of full buy->sell cycles exhausts
+        // maxTradesPerDay fast), and it already self-manages via its own
+        // `maxInvestment` config field, same as ContinuousStrategy. Lot
+        // limit is a non-issue for it anyway (getTradedLots only counts
+        // currently-open trades, which reset to 0 every time a cycle fully
+        // sells out), and per-order cap/drawdown are already no-ops for any
+        // strategy pseudo-user (see isDailyDrawdownBreached's comment - they
+        // never have investmentAmount configured).
+        if (user === 'ContinuousStrategy' || user === 'BulkPcrStrategy') {
             const currentInvestment = this.getCurrentInvestment(user) + this.pendingValue(user);
             const maxInvestment = this.getUserMaxInvestment(user);
             if (currentInvestment >= maxInvestment) {
@@ -475,6 +505,7 @@ class OrderBookkeeping {
         tradeEvent.status = data.status;
         tradeEvent.right = tradeEvent.tsym.indexOf('P') !== -1 ? PUT : CALL;
         tradeEvent.user = user;
+        tradeEvent.broker = 'prism';
         tradeEvent.brokerOrderId = data.norenordno;
         if (tradeEvent.action == 'Buy') tradeEvent.lastTradePrice = tradeEvent.price;
 
@@ -505,7 +536,7 @@ class OrderBookkeeping {
 
         if (tradeEvent.action == 'Buy') {
             this.releasePending(tradeEvent.user || 'Default');
-            const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user);
+            const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user && t.broker == tradeEvent.broker);
             if (index == -1) {
                 this.trades.push(tradeEvent);
             } else {
@@ -516,7 +547,7 @@ class OrderBookkeeping {
                 trade.price = (traded + newTraded) / trade.quantity;
             }
         } else {
-            const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user);
+            const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user && t.broker == tradeEvent.broker);
             if (index != -1) {
                 const buyTrade = this.trades[index];
                 const user = buyTrade.user || 'Default';
@@ -551,6 +582,7 @@ class OrderBookkeeping {
                 closedPortion.price = buyTrade.price;
                 closedPortion.action = 'Sell';
                 closedPortion.user = user;
+                closedPortion.broker = buyTrade.broker;
                 closedPortion.open = false;
                 closedPortion.realizedPnL = realizedPnL;
                 closedPortion.entryTime = buyTrade.entryTime;
@@ -598,6 +630,7 @@ class OrderBookkeeping {
                 trade.action = 'Sell';
                 trade.status = 'COMPLETE';
                 trade.user = row.user;
+                trade.broker = row.broker;
                 trade.open = false;
                 trade.realizedPnL = row.realizedPnL;
                 trade.entryTime = row.entryTime;
@@ -648,7 +681,7 @@ class OrderBookkeeping {
             // Same guard as ContinuousStrategy's Fix 4 (legsByToken collision) -
             // never silently merge two broker-reported open positions on the
             // same token into one bookkeeping entry.
-            if (this.trades.some((t) => t.token === trade.token && t.user === trade.user)) {
+            if (this.trades.some((t) => t.token === trade.token && t.user === trade.user && t.broker === trade.broker)) {
                 Log.log(`[order] loadOpenTradesFromBroker: REFUSING to add duplicate - token ${trade.token} (${trade.tsym}) already restored for user ${trade.user}`);
                 continue;
             }
@@ -674,7 +707,7 @@ class OrderBookkeeping {
             const positions = await Zerodha.getInstance().getPositions();
             const open = (positions?.net || []).filter((p: any) => p.quantity !== 0 && OrderBookkeeping.isNiftyOption(p.tradingsymbol));
             for (const p of open) {
-                restored.push(...(await this.restoreOpenTradesForTsym(p.tradingsymbol, p.quantity, p.instrument_token != null ? String(p.instrument_token) : undefined)));
+                restored.push(...(await this.restoreOpenTradesForTsym(p.tradingsymbol, p.quantity, p.instrument_token != null ? String(p.instrument_token) : undefined, 'zerodha')));
             }
         } catch (e) {
             Log.log('[order] reconcileZerodhaPositions: Zerodha getPositions failed (continuing without restore):', e);
@@ -701,7 +734,7 @@ class OrderBookkeeping {
                 const tsym = p.tradingSymbol ?? p.tsym ?? p.symbol;
                 const qty = Number(p.netQty ?? p.netqty);
                 const token = p.token != null ? String(p.token) : undefined;
-                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, token)));
+                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, token, 'ant')));
             }
         } catch (e) {
             Log.log('[order] reconcileAntPositions: ANT getPositions failed (continuing without restore):', e);
@@ -732,7 +765,7 @@ class OrderBookkeeping {
                 const tsym = `${p.stock_code}${p.strike_price}${optionType}`;
                 const qty = Number(p.quantity ?? 0);
                 if (qty === 0 || !OrderBookkeeping.isNiftyOption(tsym)) continue;
-                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, undefined)));
+                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, undefined, 'breeze')));
             }
         } catch (e) {
             Log.log('[order] reconcileBreezePositions: Breeze getPortfolioPositions failed (continuing without restore):', e);
@@ -762,18 +795,36 @@ class OrderBookkeeping {
     // thrown) when no matching doc exists for any user - a manual trade
     // placed outside the app, or a failed insert - so the caller can leave it
     // visibly untracked rather than guessing at its fields.
-    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number, brokerToken: string | undefined): Promise<Trade[]> {
+    // `broker` scopes every query here alongside tsym/user - without it, two
+    // brokers holding the identical tsym+user (e.g. BulkPcrStrategy trading
+    // NIFTY23450PE on both Zerodha and Breeze at once) would pool both
+    // brokers' Mongo Buy/Sell docs into one blended restored position on
+    // restart, corrupting quantity/avgPrice and losing which broker a
+    // resting exit order belongs to.
+    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number, brokerToken: string | undefined, broker: 'zerodha' | 'ant' | 'breeze' | 'prism'): Promise<Trade[]> {
         const db = Mongo.getInstance()?.db;
         if (!db || !tsym) return [];
 
-        // Every user who has ever bought this tsym - each reconciled
-        // independently below (including their own last-Sell boundary), so
-        // one user's Sell can no longer wrongly close the boundary
-        // calculation for a *different* user's still-open position on the
-        // same tsym (the previous single-query version scoped the last-Sell
-        // boundary globally across all users, not per user - a second latent
-        // bug this fixes at the same time).
-        const users: string[] = await db.collection('Trade').distinct('user', { tsym, action: 'Buy' });
+        // Matches this broker's own docs, OR any doc with no `broker` field at
+        // all - every Trade document written before the broker field existed
+        // has no such field, and a strict `{broker}` equality match would
+        // silently exclude all of them (confirmed: MongoDB equality never
+        // matches a missing field), dropping any position opened before this
+        // change from restart recovery entirely. Safe to treat a fieldless
+        // doc as belonging to whichever single broker is being reconciled
+        // here - multi-broker overlap for one tsym+user is only possible from
+        // this change onward, so a legacy fieldless doc can never actually be
+        // one half of a genuine two-broker collision.
+        const brokerOrLegacy = { $or: [{ broker }, { broker: { $exists: false } }] };
+
+        // Every user who has ever bought this tsym on this broker - each
+        // reconciled independently below (including their own last-Sell
+        // boundary), so one user's Sell can no longer wrongly close the
+        // boundary calculation for a *different* user's still-open position on
+        // the same tsym (the previous single-query version scoped the
+        // last-Sell boundary globally across all users, not per user - a
+        // second latent bug this fixes at the same time).
+        const users: string[] = await db.collection('Trade').distinct('user', { tsym, action: 'Buy', ...brokerOrLegacy });
 
         const restored: Trade[] = [];
         let totalRestoredQty = 0;
@@ -794,13 +845,13 @@ class OrderBookkeeping {
             // before. tsym already encodes the specific contract (strike+expiry),
             // so an unbounded search can't cross-match a different contract.
             const lastSell = await db.collection('Trade')
-                .find({ tsym, action: 'Sell', user })
+                .find({ tsym, action: 'Sell', user, ...brokerOrLegacy })
                 .sort({ entryTime: -1 })
                 .limit(1)
                 .toArray();
             const rows = lastSell[0]
-                ? await db.collection('Trade').find({ tsym, action: 'Buy', user, entryTime: { $gt: lastSell[0].entryTime } }).sort({ entryTime: -1 }).toArray()
-                : await db.collection('Trade').find({ tsym, action: 'Buy', user }).sort({ entryTime: -1 }).toArray();
+                ? await db.collection('Trade').find({ tsym, action: 'Buy', user, ...brokerOrLegacy, entryTime: { $gt: lastSell[0].entryTime } }).sort({ entryTime: -1 }).toArray()
+                : await db.collection('Trade').find({ tsym, action: 'Buy', user, ...brokerOrLegacy }).sort({ entryTime: -1 }).toArray();
             const row = rows[0];
             if (!row) continue; // this user's position on this tsym is fully closed
 
@@ -833,6 +884,7 @@ class OrderBookkeeping {
             trade.action = 'Buy';
             trade.status = 'COMPLETE';
             trade.user = user;
+            trade.broker = broker;
             trade.open = true;
             trade.targetPrice = row.targetPrice;
             trade.stopLossPrice = row.stopLossPrice;
@@ -873,6 +925,7 @@ class OrderBookkeeping {
             entryTime: trade.entryTime,
             exitTime: trade.exitTime,
             strategy: trade.strategy,
+            broker: trade.broker,
             createdAt: new Date(),
         }).catch((e) => Log.log('[order] Failed to persist closedTrade for', user, ':', e));
     }

@@ -3,3 +3,7 @@ dist/
 build/
 .claude
 .dart_tool/
+
+# Data/log files
+*.csv
+*.log

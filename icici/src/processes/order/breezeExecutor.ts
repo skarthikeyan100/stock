@@ -8,6 +8,7 @@ import bookkeeping from './bookkeeping';
 import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder } from './breezePendingLimitOrders';
+import { roundToTick } from '../../zerodha/Zerodha';
 
 // ICICI Breeze execution, mirroring zerodhaExecutor.ts/antExecutor.ts's shape.
 // Structurally different from both in one way: Breeze identifies a contract
@@ -90,6 +91,32 @@ export async function getOptionQuote(record: FnoRecord): Promise<{ bestBid: numb
     return { bestBid: Number(q.best_bid_price), bestAsk: Number(q.best_offer_price), ltp: Number(q.ltp) };
 }
 
+// Breeze's own getQuotes has been observed live 2026-09-23 returning a
+// generic nginx "resource unavailable" page for this exact contract-quote
+// call - genuine API/infra flakiness (Breeze's session/auth/trades endpoints
+// kept working in the same window), not a business error there's a param fix
+// for. zerodhaExecutor.ts's getMarketableZerodhaPrice already works around
+// the identical class of problem for Zerodha (whose own quote/LTP endpoint
+// isn't usable at all for this account) by pricing off ANT's feed instead -
+// applying the same pattern here for Breeze's BUY entry pricing: ANT's LTP,
+// buffered 1% and tick-rounded, exactly like getMarketableZerodhaPrice's own
+// BUY case. Breeze's own API is still used for the actual order placement -
+// only pricing is rerouted.
+//
+// Uses estimateOptionPricesBatch (option-chain based), NOT estimateOptionPrice
+// (single-quote/OHLC based) - confirmed live 2026-09-23 that estimateOptionPrice
+// hit ANT's OHLC endpoint's documented 429 rate limit here (see
+// estimateOptionPricesBatch's own comment: "the OHLC endpoint rate-limits
+// (429) after just 1-2 rapid calls"). getContractByPriceRangeOnBreeze right
+// below already uses the batch helper for the identical reason.
+export async function getMarketableBreezeBuyPrice(contract: FnoRecord): Promise<number> {
+    const strike = Number(contract.strikePrice);
+    const premiumData = await estimateOptionPricesBatch('NIFTY', [{ strike, optionType: contract.optionType }]);
+    const data = premiumData.get(`${strike}_${contract.optionType}`);
+    if (!data) throw new Error(`No ANT price estimate available for ${tsymFor(contract)}`);
+    return roundToTick(data.premium * 1.01);
+}
+
 async function placeLimitOptionOrder(
     record: FnoRecord,
     action: 'buy' | 'sell',
@@ -153,6 +180,7 @@ export async function buyIndexOnBreeze(req: BuyIndexOnBreezeRequest): Promise<Tr
     trade.status = 'COMPLETE';
     trade.right = req.right;
     trade.user = req.userId;
+    trade.broker = 'breeze';
     trade.brokerOrderId = orderId;
     trade.targetPoints = req.targetPoints;
 
@@ -226,6 +254,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
             trade.action = 'Sell';
             trade.status = 'COMPLETE';
             trade.user = userId;
+            trade.broker = 'breeze';
             trade.brokerOrderId = orderId;
             await bookkeeping.recordFill(trade);
             return trade;
@@ -289,11 +318,11 @@ async function buyResolvedOnBreeze(request: BuyRequest): Promise<Trade> {
     if (!contract) {
         throw new Error(`Breeze contract master has no record for token ${request.instrumentId}`);
     }
-    const { bestAsk } = await getOptionQuote(contract);
+    const buyPrice = await getMarketableBreezeBuyPrice(contract);
     const tsym = tsymFor(contract);
 
-    Log.log(`[order] Buying ${tsym} qty=${request.quantity} @ ${bestAsk} (limit) for ${request.userId} via Breeze`);
-    const { orderId } = await placeLimitOptionOrder(contract, 'buy', request.quantity, bestAsk);
+    Log.log(`[order] Buying ${tsym} qty=${request.quantity} @ ${buyPrice} (limit, ANT-priced) for ${request.userId} via Breeze`);
+    const { orderId } = await placeLimitOptionOrder(contract, 'buy', request.quantity, buyPrice);
     const entryPrice = await waitForBreezeFill(orderId);
 
     const trade = new Trade();
@@ -306,6 +335,7 @@ async function buyResolvedOnBreeze(request: BuyRequest): Promise<Trade> {
     trade.status = 'COMPLETE';
     trade.right = contract.optionType === 'CE' ? CALL : 'put';
     trade.user = request.userId;
+    trade.broker = 'breeze';
     trade.brokerOrderId = orderId;
 
     await bookkeeping.recordFill(trade);
@@ -350,6 +380,7 @@ export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: strin
     trade.action = 'Buy';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.broker = 'breeze';
     trade.brokerOrderId = orderId;
     await bookkeeping.recordFill(trade);
     return trade;
@@ -371,6 +402,7 @@ export async function marketSellBareOnBreeze(userId: string, tradingSymbol: stri
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.broker = 'breeze';
     trade.brokerOrderId = orderId;
     await bookkeeping.recordFill(trade);
     return trade;
@@ -490,6 +522,7 @@ async function getTradesOnBreeze(): Promise<Trade[]> {
         trade.tsym = r.stock_code ?? r.stockCode ?? '';
         trade.action = r.action;
         trade.quantity = Number(r.quantity ?? 0);
+        trade.broker = 'breeze';
         trade.price = Number(r.execution_price ?? r.average_cost ?? 0);
         trade.brokerOrderId = r.order_id;
         return trade;

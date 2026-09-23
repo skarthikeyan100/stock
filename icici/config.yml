@@ -122,9 +122,12 @@ strategies:
     logEnabled: true
   - type: BulkPcrStrategy
     enabled: false
-    broker: zerodha
+    broker: breeze
     quantity: 13975
     targetPoints: 2
     right: none
     maxInvestment: 3000000
     logEnabled: true
+    brokers:
+      - zerodha
+      - breeze

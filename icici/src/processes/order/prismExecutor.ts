@@ -67,6 +67,7 @@ export async function buyContract(userId: string, contract: string, quantity: nu
     trade.action = 'Buy';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.broker = 'prism';
 
     await bookkeeping.recordFill(trade);
     return response;
@@ -107,6 +108,7 @@ export async function sellContract(userId: string, contract: string, quantity: n
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.broker = 'prism';
 
     await bookkeeping.recordFill(trade);
     return trade;
@@ -133,6 +135,7 @@ export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
         trade.action = 'Buy';
         trade.status = 'COMPLETE';
         trade.user = userId;
+        trade.broker = 'prism';
         trade.stopLossPrice = response.price - stopLossPoints;
 
         if (response.norenordno) {
@@ -165,6 +168,7 @@ export async function squareOffOnPrism(userId: string, tsym: string, quantity: n
         trade.action = 'Sell';
         trade.status = 'COMPLETE';
         trade.user = userId;
+        trade.broker = 'prism';
         // No separate fill-price signal from exit_order itself - same
         // last-seen-price fallback antExecutor.squareOffOnAnt uses for its
         // own exitBracketOrder path.

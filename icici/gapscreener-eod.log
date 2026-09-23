@@ -392,3 +392,21 @@ Found 7 row(s) from the morning run
 [gapScreenerOptionQuoteEod] dropping CIPLA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
 [gapScreenerOptionQuoteEod] dropping EICHERMOT: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
 No rows with a current Buy/Sell Recommendation found.
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 7 row(s) from the morning run
+
+[gapScreenerOptionQuoteEod] dropping HCLTECH: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping TECHM: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping BAJFINANCE: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping HYUNDAI: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping INDIGO: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CIPLA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping EICHERMOT: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+No rows with a current Buy/Sell Recommendation found.

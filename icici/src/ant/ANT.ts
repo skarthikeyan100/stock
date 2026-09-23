@@ -420,7 +420,9 @@ class ANT {
         if (ceOi === 0) {
             throw new Error(`ANT getOptionChainPCR: no CE OI in +/-${window} window around ${spot}`);
         }
-        return peOi / ceOi;
+        const pcr = peOi / ceOi;
+        Log.log(`[ANT] getOptionChainPCR ${underlying}: spot=${spot} window=${window} ceOi=${ceOi} peOi=${peOi} pcr=${pcr.toFixed(4)}`);
+        return pcr;
     }
 
     // Per-strike CE/PE token + live LTP for every strike in the nearest

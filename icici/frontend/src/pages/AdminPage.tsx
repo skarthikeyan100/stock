@@ -78,10 +78,10 @@ export default function AdminPage() {
   const [tradesError, setTradesError] = useState<string | null>(null);
   const [pnlSummary, setPnlSummary] = useState<any>(null);
 
-  // Bulk PCR Strategy card's inline "Show Orders" panel
-  const [showBulkPcrOrders, setShowBulkPcrOrders] = useState(false);
+  // Bulk PCR Strategy status popover
   const [bulkPcrTrades, setBulkPcrTrades] = useState<{ open: any[]; closed: any[] } | null>(null);
-  const [bulkPcrTradesLoading, setBulkPcrTradesLoading] = useState(false);
+  const [showBulkPcrStatus, setShowBulkPcrStatus] = useState(false);
+  const bulkPcrStatusRef = useRef<HTMLDivElement>(null);
 
   const fetchAdminPayouts = () => {
     setPayoutsLoading(true);
@@ -129,28 +129,6 @@ export default function AdminPage() {
     }
   };
 
-  const toggleBulkPcrOrders = async () => {
-    const next = !showBulkPcrOrders;
-    setShowBulkPcrOrders(next);
-    if (next && !bulkPcrTrades) {
-      setBulkPcrTradesLoading(true);
-      try {
-        const [openRes, closedRes] = await Promise.all([
-          fetch('/admin/trades/open?user=BulkPcrStrategy'),
-          fetch('/admin/trades/closed?user=BulkPcrStrategy'),
-        ]);
-        const [openData, closedData] = await Promise.all([openRes.json(), closedRes.json()]);
-        setBulkPcrTrades({
-          open: Array.isArray(openData) ? openData : [],
-          closed: Array.isArray(closedData) ? closedData : [],
-        });
-      } catch {
-        setBulkPcrTrades({ open: [], closed: [] });
-      } finally {
-        setBulkPcrTradesLoading(false);
-      }
-    }
-  };
 
   // Auto-fetch (debounced) on user/date-range change instead of a manual Load
   // click - see Analysis.md's admin-trade-filtering finding.
@@ -159,6 +137,18 @@ export default function AdminPage() {
     const timer = setTimeout(loadTrades, 300);
     return () => clearTimeout(timer);
   }, [activeTab, tradeUser, tradeDateRange.from, tradeDateRange.to]);
+
+  // Close Bulk PCR Status popover on outside click
+  useEffect(() => {
+    if (!showBulkPcrStatus) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (bulkPcrStatusRef.current && !bulkPcrStatusRef.current.contains(e.target as Node)) {
+        setShowBulkPcrStatus(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showBulkPcrStatus]);
 
   // "Eligible" P&L (excludes forfeited profit) - only meaningful for a single
   // user, since forfeiture is checked against that user's investmentAmount.
@@ -631,11 +621,12 @@ export default function AdminPage() {
     'ruleBasedStrategy.indicators': { description: 'Technical indicators this rule evaluates to decide entries — one string per indicator, encoding its parameters.', values: "e.g. 'RSI_5_80_20' (RSI, period 5, overbought 80, oversold 20), 'MACD_12_26_9', 'EMA_5_13', 'Bollinger_20_2', 'ADX_14', 'Stochastic_14_3'. Must be valid JSON array of strings." },
 
     'bulkPcrStrategy.enabled': { description: 'Turn this one-shot strategy on/off. It durably disables itself (writes enabled: false back to config.yml) after completing one full buy → target → sell cycle.', values: 'On/Off.' },
-    'bulkPcrStrategy.broker': { description: 'Broker used to place this block order.', values: "'breeze' or 'zerodha'." },
-    'bulkPcrStrategy.quantity': { description: 'Total quantity bought in one go; split into exchange-compliant chunks automatically (NIFTY freeze quantity is 1755).', values: 'Integer, must be a multiple of the instrument lot size. Default 13975 (215 lots × 65).' },
+    'bulkPcrStrategy.broker': { description: "Legacy single-broker field - only used as a fallback when no boxes are checked below.", values: "'breeze' or 'zerodha'." },
+    'bulkPcrStrategy.brokers': { description: 'Which broker(s) place this block order. Checking more than one places the FULL configured quantity independently on each broker at once (not a split) - e.g. 13975 qty on Zerodha AND 13975 qty on Breeze. One PCR decision drives all of them; the cycle only self-disables once every checked broker is fully sold.', values: 'One or more of: Zerodha, Breeze.' },
+    'bulkPcrStrategy.quantity': { description: 'Total quantity bought in one go, on each selected broker; split into exchange-compliant chunks automatically (NIFTY freeze quantity is 1755).', values: 'Integer, must be a multiple of the instrument lot size. Default 13975 (215 lots × 65).' },
     'bulkPcrStrategy.targetPoints': { description: 'Profit target, in points above entry average, that triggers the exit. There is no stop-loss — the position holds indefinitely until this is hit.', values: 'Integer points.' },
     'bulkPcrStrategy.right': { description: 'Fixed entry direction, or auto-resolve from PCR (put/call OI ratio) when left as none.', values: "'call', 'put', or 'none' for PCR-based auto-resolve." },
-    'bulkPcrStrategy.maxInvestment': { description: 'Reference figure for total capital this block order deploys (quantity × price).', values: 'Integer, in ₹.' },
+    'bulkPcrStrategy.maxInvestment': { description: 'Reference figure for total capital this block order deploys (quantity × price). This is a per-account cap shared across every broker checked above, not per broker - with 2 brokers checked, both run under the same combined limit, so size this for the FULL combined exposure (roughly 2× a single-broker figure) or one broker can get rejected while the other succeeds.', values: 'Integer, in ₹.' },
     'bulkPcrStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
   };
 
@@ -690,60 +681,6 @@ export default function AdminPage() {
   };
 
   // Shared table renderers for open/closed trades - used by both the Trades
-  // tab and any inline per-strategy orders panel (e.g. Bulk PCR Strategy's
-  // Show Orders toggle), so there's one source of truth for these columns.
-  const renderOpenTradesTable = (trades: any[]) => (
-    trades.length === 0 ? (
-      <p className="text-center text-muted py-4 mb-0">No open positions.</p>
-    ) : (
-      <Table striped hover responsive className="mb-0">
-        <thead>
-          <tr><th>Symbol</th><th>Right</th><th>Qty</th><th>Entry Price</th><th>Entry Time</th></tr>
-        </thead>
-        <tbody>
-          {trades.map((t, i) => (
-            <tr key={t._id || i}>
-              <td>{t.tsym}</td>
-              <td>{t.right || '—'}</td>
-              <td>{t.quantity}</td>
-              <td>&#8377;{Number(t.price).toFixed(2)}</td>
-              <td>{t.entryTime ? new Date(t.entryTime).toLocaleString() : '—'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </Table>
-    )
-  );
-
-  const renderClosedTradesTable = (trades: any[]) => (
-    trades.length === 0 ? (
-      <p className="text-center text-muted py-4 mb-0">No closed trades.</p>
-    ) : (
-      <Table striped hover responsive className="mb-0">
-        <thead>
-          <tr><th>Symbol</th><th>Right</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Entry Time</th><th>Exit Time</th></tr>
-        </thead>
-        <tbody>
-          {trades.map((t, i) => {
-            const pnl = t.realizedPnL || 0;
-            const pnlColor = pnl >= 0 ? 'text-success' : 'text-danger';
-            return (
-              <tr key={t._id || i}>
-                <td>{t.tsym}</td>
-                <td>{t.right || '—'}</td>
-                <td>{t.quantity}</td>
-                <td>&#8377;{Number(t.entryPrice).toFixed(2)}</td>
-                <td>&#8377;{Number(t.exitPrice).toFixed(2)}</td>
-                <td className={`fw-bold ${pnlColor}`}>{pnl >= 0 ? '+' : ''}&#8377;{pnl.toFixed(2)}</td>
-                <td>{t.entryTime ? new Date(t.entryTime).toLocaleString() : '—'}</td>
-                <td>{t.exitTime ? new Date(t.exitTime).toLocaleString() : '—'}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </Table>
-    )
-  );
 
   return (
     <div className="min-vh-100 bg-light">
@@ -1532,15 +1469,114 @@ export default function AdminPage() {
                 <Card className="mb-3">
                   <Card.Header className="fw-bold d-flex justify-content-between align-items-center">
                     <span>Bulk PCR Strategy</span>
-                    <Button size="sm" variant="outline-secondary" onClick={toggleBulkPcrOrders}>
-                      {showBulkPcrOrders ? 'Hide Orders' : 'Show Orders'}
-                    </Button>
+                    <div ref={bulkPcrStatusRef} style={{ position: 'relative' }}>
+                          <Button
+                            size="sm"
+                            variant="outline-info"
+                            onClick={async () => {
+                              if (!showBulkPcrStatus && !bulkPcrTrades) {
+                                try {
+                                  const [openRes, closedRes] = await Promise.all([
+                                    fetch('/admin/trades/open?user=BulkPcrStrategy'),
+                                    fetch('/admin/trades/closed?user=BulkPcrStrategy'),
+                                  ]);
+                                  const [openData, closedData] = await Promise.all([openRes.json(), closedRes.json()]);
+                                  setBulkPcrTrades({
+                                    open: Array.isArray(openData) ? openData : [],
+                                    closed: Array.isArray(closedData) ? closedData : [],
+                                  });
+                                } catch {
+                                  setBulkPcrTrades({ open: [], closed: [] });
+                                }
+                              }
+                              setShowBulkPcrStatus(!showBulkPcrStatus);
+                            }}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            Status
+                          </Button>
+                          {showBulkPcrStatus && bulkPcrTrades && (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                top: '100%',
+                                right: 0,
+                                marginTop: '0.5rem',
+                                backgroundColor: '#fff',
+                                border: '1px solid #dee2e6',
+                                borderRadius: '0.25rem',
+                                boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                                zIndex: 1000,
+                                padding: '1rem',
+                                minWidth: '300px',
+                              }}
+                            >
+                              {(() => {
+                                const today = new Date().toISOString().split('T')[0];
+                                const todaysClosed = (bulkPcrTrades.closed || []).filter(t => {
+                                  const dateStr = t.exitTime || t.closedAt || t.date;
+                                  if (!dateStr) return true; // Include if no date to avoid filtering everything
+                                  const tradeDate = new Date(dateStr);
+                                  if (isNaN(tradeDate.getTime())) return true;
+                                  return tradeDate.toISOString().split('T')[0] === today;
+                                });
+                                const todaysOpen = (bulkPcrTrades.open || []).filter(t => {
+                                  const dateStr = t.entryTime || t.openedAt || t.date;
+                                  if (!dateStr) return true; // Include if no date to avoid filtering everything
+                                  const tradeDate = new Date(dateStr);
+                                  if (isNaN(tradeDate.getTime())) return true;
+                                  return tradeDate.toISOString().split('T')[0] === today;
+                                });
+                                const realizedPnL = todaysClosed.reduce((s, t) => s + (t.realizedPnL || 0), 0);
+                                const unrealizedPnL = todaysOpen.reduce((s, t) => s + ((t.lastTradePrice - t.price) * t.quantity || 0), 0);
+                                const realizedColor = realizedPnL >= 0 ? 'text-success' : 'text-danger';
+                                const unrealizedColor = unrealizedPnL >= 0 ? 'text-success' : 'text-danger';
+                                return (
+                                  <div>
+                                    <div className="small text-muted mb-3 text-center">
+                                      As of: {new Date().toLocaleString()}
+                                    </div>
+                                    <div className="row mb-3 text-center">
+                                      <div className="col">
+                                        <div className="small text-muted">Realized P&L</div>
+                                        <div className={`fw-bold ${realizedColor}`} style={{ fontSize: '1.1rem' }}>
+                                          {realizedPnL >= 0 ? '+' : ''}₹{realizedPnL.toFixed(2)}
+                                        </div>
+                                      </div>
+                                      <div className="col">
+                                        <div className="small text-muted">Unrealized P&L</div>
+                                        <div className={`fw-bold ${unrealizedColor}`} style={{ fontSize: '1.1rem' }}>
+                                          {unrealizedPnL >= 0 ? '+' : ''}₹{unrealizedPnL.toFixed(2)}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          )}
+                        </div>
                   </Card.Header>
                   <Card.Body>
                     {renderConfigField('Enabled', ['bulkPcrStrategy', 'enabled'], config.bulkPcrStrategy?.enabled, 'boolean')}
                     <Row>
                       <Col md={6}>
-                        {renderConfigField('Broker', ['bulkPcrStrategy', 'broker'], config.bulkPcrStrategy?.broker, 'select', ['breeze', 'zerodha'])}
+                        <Form.Group className="mb-3">
+                          <Form.Label>{fieldLabel('Brokers', ['bulkPcrStrategy', 'brokers'])}</Form.Label>
+                          {(['zerodha', 'breeze'] as const).map(broker => (
+                            <Form.Check
+                              key={broker}
+                              type="checkbox"
+                              label={broker === 'zerodha' ? 'Zerodha' : 'Breeze'}
+                              checked={(config.bulkPcrStrategy?.brokers ?? []).includes(broker)}
+                              onChange={e => {
+                                const current: string[] = config.bulkPcrStrategy?.brokers ?? [];
+                                const next = e.target.checked ? [...current, broker] : current.filter((b: string) => b !== broker);
+                                updateConfigValue(['bulkPcrStrategy', 'brokers'], next);
+                              }}
+                            />
+                          ))}
+                        </Form.Group>
                       </Col>
                       <Col md={6}>
                         {renderConfigField('Quantity', ['bulkPcrStrategy', 'quantity'], config.bulkPcrStrategy?.quantity)}
@@ -1556,21 +1592,6 @@ export default function AdminPage() {
                       </Col>
                     </Row>
                     {renderConfigField('Log Enabled', ['bulkPcrStrategy', 'logEnabled'], config.bulkPcrStrategy?.logEnabled, 'boolean')}
-
-                    {showBulkPcrOrders && (
-                      <div className="mt-3 border-top pt-3">
-                        {bulkPcrTradesLoading ? (
-                          <Spinner animation="border" size="sm" />
-                        ) : (
-                          <>
-                            <h6>Open Positions</h6>
-                            {renderOpenTradesTable(bulkPcrTrades?.open || [])}
-                            <h6 className="mt-3">Closed Trades</h6>
-                            {renderClosedTradesTable(bulkPcrTrades?.closed || [])}
-                          </>
-                        )}
-                      </div>
-                    )}
                   </Card.Body>
                 </Card>
 

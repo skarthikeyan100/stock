@@ -61,7 +61,7 @@ export async function enterPosition(
         // slightly above the current LTP (a marketable limit) so it fills
         // immediately like a market buy would.
         const ltp = await ant.getQuote(exchange, instrumentId);
-        const limitPrice = Math.round(ltp * 1.01 * 20) / 20;
+        const limitPrice = roundToTick(ltp * 1.01);
         Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT bracket order (ltp=${ltp} limit=${limitPrice} target=${targetPoints} sl=${stopLossPoints})`);
         ({ orderNo } = await ant.placeBracketOrder({
             exchange,
@@ -121,6 +121,7 @@ export async function enterPosition(
     trade.action = 'Buy';
     trade.status = 'COMPLETE';
     trade.user = userId;
+    trade.broker = 'ant';
     trade.brokerOrderId = orderNo;
 
     if (useCover || (targetPoints > 0 && stopLossPoints > 0)) {
@@ -424,6 +425,7 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
         trade.action = 'Sell';
         trade.status = 'COMPLETE';
         trade.user = userId;
+        trade.broker = 'ant';
         if (squareOffOrderNo) {
             try {
                 trade.price = await AntOrderNotifyStream.getInstance().waitForFill(squareOffOrderNo);

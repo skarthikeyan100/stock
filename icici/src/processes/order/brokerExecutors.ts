@@ -112,8 +112,14 @@ export const PrismExecutor: BrokerExecutor = {
 // selection (it has its own separate 'buyContract'/'sellContract' IPC
 // actions, unchanged by this) and isn't reachable from here; PrismExecutor is
 // exported above for direct use instead.
-export function getBrokerExecutor(userId: string): BrokerExecutor {
-    const broker = bookkeeping.getUserBroker(userId);
+// `brokerOverride` lets a single call bypass per-userId resolution entirely -
+// needed by BulkPcrStrategy's multi-broker support, where one strategy
+// identity places independent full-quantity orders on several brokers at
+// once, so no single per-userId broker can describe "which broker this
+// specific call is for." Every other caller omits it and gets today's
+// per-userId behavior unchanged.
+export function getBrokerExecutor(userId: string, brokerOverride?: 'zerodha' | 'ant' | 'breeze'): BrokerExecutor {
+    const broker = brokerOverride ?? bookkeeping.getUserBroker(userId);
     if (broker === 'ant') return AntExecutor;
     if (broker === 'breeze') return BreezeExecutor;
     return ZerodhaExecutor;

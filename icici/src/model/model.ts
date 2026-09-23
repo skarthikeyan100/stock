@@ -139,6 +139,7 @@ export class Trade {
     antOrderNo?: string // AliceBlue BO order number, if a bracket was placed at entry
     prismCoverOrderNo?: string // Shoonya/Noren cover-order (prd 'H') entry order number, if a cover order was placed at entry - see prism.ts's placeCoverOrder/exitCoverOrder
     brokerOrderId?: string // broker's own order id for this specific fill, when the caller has one - used by bookkeeping.recordFill to dedup a redelivered fill event (reconnect replay, webhook retry)
+    broker?: 'zerodha' | 'ant' | 'prism' | 'breeze' // which broker executed this specific fill (see BrokerExecutor.brokerName) - set by the broker-specific executor/poller that constructed this Trade, never derived centrally. Needed so bookkeeping can tell apart two brokers' fills for the identical (tsym, user) pair - e.g. BulkPcrStrategy trading the same contract on both Zerodha and Breeze under one strategy identity.
     entryTime?: Date // set once, at the first fill that opens the position
     exitTime?: Date // set when the position is closed
     originalEntryPrice?: number // set by restoreOneOpenTrade: the current leg's true first-fill price, distinct from `price` (which may be a multi-fill blended average) - see ContinuousStrategy.reconcile()

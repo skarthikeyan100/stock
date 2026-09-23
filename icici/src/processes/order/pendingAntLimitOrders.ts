@@ -95,6 +95,7 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                 trade.action = order.action;
                 trade.status = 'COMPLETE';
                 trade.user = order.userId;
+                trade.broker = 'ant';
                 trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
                 Log.log(`[order] Pending ANT limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
