@@ -271,6 +271,17 @@ class OrderClient {
         return res.result;
     }
 
+    // LIMIT-priced counterpart of chunkedSquareOff - returns once the resting
+    // orders are placed, not once filled (see chunkedOrder.ts's
+    // squareOffLimitChunked). Reuses the same generous chunked timeout since
+    // placement is still up to 8 sequential broker calls, even though it
+    // shouldn't normally take anywhere near as long as a fill-waiting call.
+    async chunkedSquareOffLimit(userId: string, payload: { tsym: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number }): Promise<any> {
+        const res = await this.request('chunkedSquareOffLimit', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
     async antPlaceCoverOrder(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; transactionType: 'BUY' | 'SELL'; stopLossPoints: number }): Promise<any> {
         const res = await this.request('antPlaceCoverOrder', userId, payload);
         if (!res.ok) throw new Error(res.error);

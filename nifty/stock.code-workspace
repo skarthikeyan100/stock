@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../icici"
+		},
+		{
+			"path": "../whatsapp"
+		},
+		{
+			"path": "../zerodha"
+		},
+		{
+			"path": "../data"
+		}
+	]
+}

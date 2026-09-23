@@ -1,4 +1,33 @@
 node_modules/
 dist/
 build/
+
+# Environment
 .env
+
+# Session files (contain credentials/tokens)
+.ant_session.json
+.zerodha_session.json
+.breeze_session.json
+
+# Log files
+*.log
+
+# Lock files
+.claude/scheduled_tasks.lock
+.~lock.*
+
+# IDE/Editor files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*.iml
+
+# Temporary/generated files
+tmp/
+.tmp/
+*.csv
+public/
+output.csv

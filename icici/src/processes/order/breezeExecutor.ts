@@ -389,7 +389,23 @@ export async function placeLimitBuyBareOnBreeze(userId: string, tradingSymbol: s
     const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
     Log.log(`[order] Bare Breeze limit buy ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, price);
-    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange });
+    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange, action: 'Buy' });
+    return { orderId };
+}
+
+// SELL counterpart of placeLimitBuyBareOnBreeze above - target-hit exit that
+// must lock in a specific price rather than accept whatever squareOffOnBreeze's
+// current-bestBid limit gets filled at (still a live-market price, not the
+// strategy's own target). Returns immediately; fill arrives later via
+// pollPendingBreezeLimitOrders.
+export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+    const breeze = Breeze.getInstance();
+    if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
+    const { shortName, strike, optionType } = parseTsym(tradingSymbol);
+    const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
+    Log.log(`[order] Bare Breeze limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
+    const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, price);
+    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange, action: 'Sell' });
     return { orderId };
 }
 
@@ -486,6 +502,8 @@ export const BreezeExecutor: BrokerExecutor = {
     buy: buyResolvedOnBreeze,
     squareOff: (userId: string, tradingSymbol: string, quantity: number, _exchange: Exchange) =>
         squareOffOnBreeze(userId, tradingSymbol, quantity),
+    squareOffLimit: (userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: Exchange, limitPrice: number) =>
+        placeLimitSellBareOnBreeze(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as 'NFO' | 'BFO'),
     cancelOrder: cancelOrderOnBreeze,
     getFillPrice: (orderId: string) => Breeze.getInstance().getFillPrice('NFO', orderId),
     getPositions: getPositionsOnBreeze,

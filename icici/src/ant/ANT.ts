@@ -642,6 +642,27 @@ class ANT {
         }
         throw new Error(`ANT order ${orderNo} did not complete within ${maxAttempts * intervalMs}ms`);
     }
+
+    // Single-shot status check (no retry loop) - for a poller that checks a
+    // resting order once per interval tick rather than blocking until it
+    // fills, mirroring Zerodha.getOrderHistory's role in pollPendingLimitOrders.
+    // Same field/shape caveats as getFillPrice above.
+    async getOrderStatus(orderNo: string): Promise<{ status: string; fillPrice?: number }> {
+        const resp = await axios.post(
+            'https://a3.aliceblueonline.com/open-api/od/v1/orders/history',
+            { brokerOrderId: orderNo },
+            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+        );
+        const records: any[] = resp.data?.result ?? [];
+        const completed = records.find((r) => r.orderStatus === 'COMPLETE');
+        if (completed) {
+            const fillPrice = completed.averageTradedPrice ?? completed.averagePrice ?? completed.avgPrice;
+            return { status: 'COMPLETE', fillPrice: fillPrice ? Number(fillPrice) : undefined };
+        }
+        const rejected = records.find((r) => r.orderStatus === 'REJECTED' || r.orderStatus === 'CANCELLED');
+        if (rejected) return { status: rejected.orderStatus };
+        return { status: 'PENDING' };
+    }
 }
 
 export default ANT;

@@ -20,9 +20,15 @@ interface PendingBreezeLimitOrder {
     antToken: string;
     quantity: number;
     exchange: 'NFO' | 'BFO';
+    action: 'Buy' | 'Sell';
 }
 
 const pending = new Map<string, PendingBreezeLimitOrder>();
+
+// See pendingLimitOrders.ts's findPendingOrdersForSymbol for why this exists.
+export function findPendingOrdersForSymbol(userId: string, tradingSymbol: string): PendingBreezeLimitOrder[] {
+    return Array.from(pending.values()).filter((o) => o.userId === userId && o.tradingSymbol === tradingSymbol);
+}
 
 export function trackPendingBreezeLimitOrder(order: PendingBreezeLimitOrder): void {
     pending.set(order.orderId, order);
@@ -54,6 +60,7 @@ export async function loadPendingBreezeLimitOrdersFromMongo(): Promise<void> {
             antToken: row.antToken,
             quantity: row.quantity,
             exchange: row.exchange,
+            action: row.action ?? 'Buy', // pre-2026-09-22 rows predate this field - all were Buy
         });
     }
     if (rows.length > 0) {
@@ -84,12 +91,12 @@ export async function pollPendingBreezeLimitOrders(): Promise<void> {
                 trade.quantity = order.quantity;
                 trade.price = price;
                 trade.lastTradePrice = price;
-                trade.action = 'Buy';
+                trade.action = order.action;
                 trade.status = 'COMPLETE';
                 trade.user = order.userId;
                 trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
-                Log.log(`[order] Pending Breeze limit order filled: ${order.tradingSymbol} (${order.userId}) at ${trade.price}`);
+                Log.log(`[order] Pending Breeze limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
             } else if (record.status && /rejected|cancelled/i.test(String(record.status))) {
                 untrackPendingBreezeLimitOrder(orderId);
                 Log.log(`[order] Pending Breeze limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${record.status}`);

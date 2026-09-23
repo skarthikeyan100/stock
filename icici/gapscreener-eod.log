@@ -374,3 +374,21 @@ CIPLA -> CIPLA29SEP26C1380 = 16.4 (bought 23.3); stock Buy LTP 1375 vs 1st15m Hi
 EICHERMOT -> EICHERMOT29SEP26P7600 = 139.3 (bought 96.45); stock Sell LTP 7656 vs 1st15m High 7745 / Low 7677, result=true
 
 Wrote 7 row(s) to /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv (7/7 with a new Result)
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 7 row(s) from the morning run
+
+[gapScreenerOptionQuoteEod] dropping HCLTECH: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping TECHM: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping BAJFINANCE: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping HYUNDAI: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping INDIGO: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CIPLA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping EICHERMOT: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+No rows with a current Buy/Sell Recommendation found.

@@ -27,6 +27,9 @@ export const ZerodhaExecutor: BrokerExecutor = {
     squareOff: (userId, tradingSymbol, quantity, exchange) =>
         zerodhaExecutor.squareOffOnZerodha(userId, tradingSymbol, quantity, exchange as 'NFO' | 'BFO'),
 
+    squareOffLimit: (userId, tradingSymbol, instrumentId, quantity, exchange, limitPrice) =>
+        zerodhaExecutor.placeLimitSellBareOnZerodha(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as 'NFO' | 'BFO'),
+
     cancelOrder: (orderId) => zerodhaExecutor.cancelOrderOnZerodha(orderId),
 
     getFillPrice: (orderId) => Zerodha.getInstance().getFillPrice(orderId),
@@ -60,6 +63,9 @@ export const AntExecutor: BrokerExecutor = {
     // Same 'NSE'-is-Breeze-only reasoning as ZerodhaExecutor above.
     squareOff: (userId, tradingSymbol, quantity, exchange) =>
         antExecutor.squareOffOnAnt(userId, tradingSymbol, quantity, exchange as 'NFO' | 'BFO'),
+
+    squareOffLimit: (userId, tradingSymbol, instrumentId, quantity, exchange, limitPrice) =>
+        antExecutor.placeLimitSellBareOnAnt(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as 'NFO' | 'BFO'),
 
     cancelOrder: (orderId) => ANT.getInstance().cancelOrder(orderId),
 

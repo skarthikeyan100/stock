@@ -6,10 +6,13 @@ import Mongo from '../../tools/mongo';
 
 // In-memory tracker (mirrored to Mongo, see loadPendingLimitOrdersFromMongo)
 // for limit orders placed via placeLimitBuyBareOnZerodha (zerodhaExecutor.ts)
-// - ContinuousStrategy's target-hit re-entries. No automatic timeout - a
-// resting order polls indefinitely unless explicitly cancelled (see
-// untrackPendingLimitOrder, used by ContinuousStrategy's root-refill
-// drift-cancel check).
+// - ContinuousStrategy's target-hit re-entries - and, since 2026-09-22, via
+// placeLimitSellBareOnZerodha - BulkPcrStrategy's target-hit exit, which
+// needs a resting SELL leg instead of a blind market order. `action`
+// distinguishes the two so a fill is recorded as the right side. No
+// automatic timeout - a resting order polls indefinitely unless explicitly
+// cancelled (see untrackPendingLimitOrder, used by ContinuousStrategy's
+// root-refill drift-cancel check).
 //
 // The Mongo mirror exists specifically so a process restart can't silently
 // orphan a resting order's eventual fill: before the mirror was added, a
@@ -29,9 +32,19 @@ interface PendingLimitOrder {
     instrumentToken: string;
     quantity: number;
     exchange: 'NFO' | 'BFO';
+    action: 'Buy' | 'Sell';
 }
 
 const pending = new Map<string, PendingLimitOrder>();
+
+// Used to cancel a resting SELL leg before a force-close path (EOD
+// expiry-day squareoff, drawdown-breach auto-squareoff - both in
+// orderProcess.ts) also market-sells the same still-open quantity, which
+// would otherwise double-sell it (see chunkedSquareOffLimit's "leave it
+// resting" design - those force-close paths don't know about it otherwise).
+export function findPendingOrdersForSymbol(userId: string, tradingSymbol: string): PendingLimitOrder[] {
+    return Array.from(pending.values()).filter((o) => o.userId === userId && o.tradingSymbol === tradingSymbol);
+}
 
 export function trackPendingLimitOrder(order: PendingLimitOrder): void {
     pending.set(order.orderId, order);
@@ -66,6 +79,7 @@ export async function loadPendingLimitOrdersFromMongo(): Promise<void> {
             instrumentToken: row.instrumentToken,
             quantity: row.quantity,
             exchange: row.exchange,
+            action: row.action ?? 'Buy', // pre-2026-09-22 rows predate this field - all were Buy
         });
     }
     if (rows.length > 0) {
@@ -94,12 +108,12 @@ export async function pollPendingLimitOrders(): Promise<void> {
                 trade.quantity = order.quantity;
                 trade.price = latest.average_price;
                 trade.lastTradePrice = latest.average_price;
-                trade.action = 'Buy';
+                trade.action = order.action;
                 trade.status = 'COMPLETE';
                 trade.user = order.userId;
                 trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
-                Log.log(`[order] Pending limit order filled: ${order.tradingSymbol} (${order.userId}) at ${trade.price}`);
+                Log.log(`[order] Pending limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
             } else if (latest.status === 'REJECTED' || latest.status === 'CANCELLED') {
                 untrackPendingLimitOrder(orderId);
                 Log.log(`[order] Pending limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${latest.status}`);

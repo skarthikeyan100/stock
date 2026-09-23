@@ -65,3 +65,42 @@ export async function squareOffChunked(
     }
     return { quantity: filledQty, avgPrice: filledValue / filledQty };
 }
+
+// LIMIT-priced counterpart of squareOffChunked above - places resting sell
+// orders at `limitPrice` and returns as soon as they're all placed, WITHOUT
+// waiting for fills (a resting limit order may take arbitrarily long to
+// fill, or never fill if price never reaches it - see BrokerExecutor.squareOffLimit's
+// comment). Each chunk's eventual fill round-trips back to the caller later
+// via the normal bookkeeping.recordFill -> onFill -> strategy.updateTrade
+// path, not via this function's return value.
+export async function squareOffLimitChunked(
+    executor: BrokerExecutor,
+    userId: string,
+    tradingSymbol: string,
+    instrumentId: string,
+    quantity: number,
+    exchange: Exchange,
+    limitPrice: number,
+    freezeQty: number = NIFTY_FREEZE_QUANTITY
+): Promise<{ orderIds: string[] }> {
+    if (!executor.squareOffLimit) {
+        throw new Error(`squareOffLimitChunked: broker '${executor.brokerName}' does not support a limit-priced square-off`);
+    }
+    const chunks = splitIntoFreezeQtyChunks(quantity, freezeQty);
+    const orderIds: string[] = [];
+    let placedQty = 0;
+    for (let i = 0; i < chunks.length; i++) {
+        try {
+            const { orderId } = await executor.squareOffLimit(userId, tradingSymbol, instrumentId, chunks[i], exchange, limitPrice);
+            orderIds.push(orderId);
+            placedQty += chunks[i];
+            Log.log(`[order] squareOffLimitChunked: chunk ${i + 1}/${chunks.length} placed qty=${chunks[i]} @ ${limitPrice} for ${userId}`);
+        } catch (e: any) {
+            throw new Error(
+                `squareOffLimitChunked: chunk ${i + 1}/${chunks.length} failed to place after placing ${placedQty}/${quantity} - ` +
+                    `${quantity - placedQty} qty NOT resting. Manual review required. Underlying error: ${e?.message ?? e}`
+            );
+        }
+    }
+    return { orderIds };
+}

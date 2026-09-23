@@ -49,6 +49,20 @@ export interface BrokerExecutor {
     // already both happen to share exactly today - no change needed to this shape.
     squareOff(userId: string, tradingSymbol: string, quantity: number, exchange: Exchange): Promise<Trade>;
 
+    // Optional: places a resting LIMIT sell at `limitPrice` instead of squareOff's
+    // immediate (market or current-bid) exit - for a caller that must lock in a
+    // specific price rather than accept whatever squareOff's own pricing gets
+    // filled at (see BulkPcrStrategy's target-hit exit, added 2026-09-22 after a
+    // blind MARKET square-off filled below entry on a stray tick). Returns as
+    // soon as the order is resting, NOT once filled - the fill round-trips back
+    // later via each broker's own pending-limit-order poller into the normal
+    // bookkeeping.recordFill -> onFill -> strategy.updateTrade path. instrumentId
+    // is the broker-agnostic token (ANT commonToken) already carried on Trade.token
+    // for this position, needed by the pending-order tracker for the eventual fill.
+    // Not implemented for every broker (e.g. Prism) - callers must check for its
+    // presence before use.
+    squareOffLimit?(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: Exchange, limitPrice: number): Promise<{ orderId: string }>;
+
     cancelOrder(orderId: string): Promise<void>;
 
     getFillPrice(orderId: string): Promise<number>;

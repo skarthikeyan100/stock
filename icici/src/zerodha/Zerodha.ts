@@ -222,41 +222,14 @@ class Zerodha {
         }
     }
 
-    // Kite's API requires MARKET (and SL-M) orders to carry a market_protection value -
-    // "Market orders without market protection are not allowed via API. Please set market
-    // protection or use a Limit order." market_protection: -1 means "automatic protection
-    // per exchange guidelines" (converts to a protected limit order internally, bounded by
-    // the exchange's LPP range) - avoids needing a live quote, which this account's Kite
-    // Connect subscription doesn't have access to anyway (getLTP returns 403 Insufficient
-    // permission). Not in the kiteconnect SDK's typed params, but placeOrder() forwards
-    // the whole params object through to the REST call untouched, so it's honored.
-    async buyOption(tradingSymbol: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
-        this.assertBuysNotHalted();
-        if (!this.accessToken) {
-            throw new Error('No active session. Please login first.');
-        }
-        Log.log(`[Zerodha] Placing NRML market buy: ${tradingSymbol} qty=${quantity} exchange=${exchange}`);
-        try {
-            const response = await this.kc.placeOrder('regular', {
-                exchange,
-                tradingsymbol: tradingSymbol,
-                transaction_type: 'BUY',
-                quantity,
-                product: 'NRML',
-                order_type: 'MARKET',
-                market_protection: -1,
-            });
-            Log.log(`[Zerodha] Buy order placed: ${response.order_id}`);
-            return { orderId: response.order_id };
-        } catch (e) {
-            this.haltBuysOnDebitBalance(e);
-            throw e;
-        }
-    }
-
     // Standalone LIMIT buy - no market_protection (that's a MARKET/SL-M-only param; a plain
-    // `price` is what Kite expects for LIMIT). Used by ContinuousStrategy's target-hit
-    // re-entries, which need to sit at a specific price rather than fill immediately.
+    // `price` is what Kite expects for LIMIT). Originally added for ContinuousStrategy's
+    // target-hit re-entries; since 2026-09-22 this is also the ONLY entry point every
+    // Zerodha buy anywhere in the app funnels through - the old buyOption() (blind
+    // MARKET + market_protection:-1) was removed, since a market order has no price
+    // floor at all (see zerodhaExecutor.ts's getMarketableZerodhaPrice comment for why).
+    // Every caller now fetches a live ANT-sourced quote first and prices a marketable
+    // limit here instead.
     async placeLimitBuyOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
         this.assertBuysNotHalted();
         if (!this.accessToken) {
@@ -279,6 +252,30 @@ class Zerodha {
             this.haltBuysOnDebitBalance(e);
             throw e;
         }
+    }
+
+    // Standalone LIMIT sell, mirroring placeLimitBuyOption above (no buy-halt
+    // check - that only applies to entries). Used for a target-hit exit that
+    // must lock in a specific price rather than accept whatever a MARKET
+    // order fills at - see BulkPcrStrategy's target-hit exit (2026-09-22
+    // incident: a MARKET square-off filled below entry on a stray tick that
+    // never reflected a real tradable price).
+    async placeLimitSellOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+        if (!this.accessToken) {
+            throw new Error('No active session. Please login first.');
+        }
+        Log.log(`[Zerodha] Placing NRML limit sell: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
+        const response = await this.kc.placeOrder('regular', {
+            exchange,
+            tradingsymbol: tradingSymbol,
+            transaction_type: 'SELL',
+            quantity,
+            product: 'NRML',
+            order_type: 'LIMIT',
+            price,
+        });
+        Log.log(`[Zerodha] Limit sell order placed: ${response.order_id}`);
+        return { orderId: response.order_id };
     }
 
     // Polls order history until the fill (average_price) is known - Kite has no

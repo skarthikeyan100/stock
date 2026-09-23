@@ -19,11 +19,12 @@ import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
 import { buyIndexOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, cancelOrderOnZerodha, getContractByPriceRangeOnZerodha } from './order/zerodhaExecutor';
-import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo } from './order/pendingLimitOrders';
+import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingZerodhaOrdersForSymbol } from './order/pendingLimitOrders';
+import { pollPendingAntLimitOrders, loadPendingAntLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingAntOrdersForSymbol } from './order/pendingAntLimitOrders';
 import * as antExecutor from './order/antExecutor';
 import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getOptionQuote, tsymFor } from './order/breezeExecutor';
-import { pollPendingBreezeLimitOrders, loadPendingBreezeLimitOrdersFromMongo } from './order/breezePendingLimitOrders';
-import { buyChunked, squareOffChunked } from './order/chunkedOrder';
+import { pollPendingBreezeLimitOrders, loadPendingBreezeLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol } from './order/breezePendingLimitOrders';
+import { buyChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
 import Breeze from '../breeze/Breeze';
 import ZerodhaContractMaster from '../zerodha/ZerodhaContractMaster';
@@ -33,6 +34,7 @@ import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
 import * as prismExecutor from './order/prismExecutor';
 import { getBrokerExecutor } from './order/brokerExecutors';
+import { BrokerExecutor } from './order/BrokerExecutor';
 import Zerodha from '../zerodha/Zerodha';
 import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
@@ -279,6 +281,21 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'chunkedSquareOff': {
                 const executor = getBrokerExecutor(req.userId);
                 const result = await squareOffChunked(executor, req.userId, req.payload.tsym, req.payload.quantity, 'NFO', req.payload.freezeQuantity);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'chunkedSquareOffLimit': {
+                const executor = getBrokerExecutor(req.userId);
+                const result = await squareOffLimitChunked(
+                    executor,
+                    req.userId,
+                    req.payload.tsym,
+                    req.payload.instrumentId,
+                    req.payload.quantity,
+                    'NFO',
+                    req.payload.price,
+                    req.payload.freezeQuantity
+                );
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -609,6 +626,35 @@ async function main() {
     // silently orphaning it - see pendingLimitOrders.ts's header comment.
     await loadPendingLimitOrdersFromMongo();
     await loadPendingBreezeLimitOrdersFromMongo();
+    await loadPendingAntLimitOrdersFromMongo();
+
+    // Cancels any resting limit-sell order(s) tracked for this user+tsym
+    // before a force-close path market-sells the same still-open quantity -
+    // added 2026-09-22 alongside chunkedSquareOffLimit (BulkPcrStrategy's
+    // target-hit exit, which now leaves a limit sell resting indefinitely
+    // instead of filling near-instantly like the old market order it
+    // replaced). Without this, a drawdown-breach or expiry-day force-close
+    // firing while that resting order is still live would place a SECOND,
+    // independent sell for the same quantity - an oversell if both filled.
+    // Best-effort: a cancel failing (already filled, already gone) is not
+    // itself an error - the force-close square-off below is what actually
+    // matters, and each pending-order poller self-heals its own tracking
+    // within 15s regardless of whether the cancel here succeeded.
+    async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: string, tsym: string): Promise<void> {
+        const pending = [
+            ...findPendingZerodhaOrdersForSymbol(userId, tsym),
+            ...findPendingBreezeOrdersForSymbol(userId, tsym),
+            ...findPendingAntOrdersForSymbol(userId, tsym),
+        ].filter((o) => o.action === 'Sell');
+        for (const order of pending) {
+            try {
+                await executor.cancelOrder(order.orderId);
+                Log.log(`[order] cancelAnyRestingLimitSell: cancelled resting limit sell ${order.orderId} for ${tsym} (${userId}) ahead of a force-close`);
+            } catch (e) {
+                Log.log(`[order] cancelAnyRestingLimitSell: cancel failed for ${order.orderId} (${tsym}, ${userId}) - proceeding with force-close anyway:`, e);
+            }
+        }
+    }
 
     // Auto-squareoff on daily/weekly drawdown breach (see bookkeeping.ts's
     // isDailyDrawdownBreached/isWeeklyDrawdownBreached, checked after every
@@ -626,6 +672,7 @@ async function main() {
     bookkeeping.onDrawdownBreach(async (user) => {
         for (const trade of bookkeeping.trades.filter((t) => t.user === user)) {
             try {
+                await cancelAnyRestingLimitSell(getBrokerExecutor(user), user, trade.tsym);
                 await getBrokerExecutor(user).squareOff(user, trade.tsym, trade.quantity, 'NFO');
             } catch (e) {
                 Log.log('[order] Auto-squareoff on drawdown breach failed for', trade.tsym, e);
@@ -640,6 +687,7 @@ async function main() {
     setInterval(() => reconcileManualSells().catch((e) => Log.log('[order] reconcileManualSells failed:', e)), 60_000);
     setInterval(() => pollPendingLimitOrders().catch((e) => Log.log('[order] pollPendingLimitOrders failed:', e)), 15_000);
     setInterval(() => pollPendingBreezeLimitOrders().catch((e) => Log.log('[order] pollPendingBreezeLimitOrders failed:', e)), 15_000);
+    setInterval(() => pollPendingAntLimitOrders().catch((e) => Log.log('[order] pollPendingAntLimitOrders failed:', e)), 15_000);
     // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
     // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than
     // event-driven since there's no fill/tick event marking "expiry day
@@ -656,7 +704,9 @@ async function main() {
             expirySquareOffInFlight.add(key);
             // Routed via getBrokerExecutor (see the drawdown-breach handler's comment
             // above for why) instead of a hand-rolled ant/else-zerodha branch.
-            const squareOff = getBrokerExecutor(trade.user).squareOff(trade.user, trade.tsym, trade.quantity, 'NFO');
+            const executor = getBrokerExecutor(trade.user);
+            const squareOff = cancelAnyRestingLimitSell(executor, trade.user, trade.tsym)
+                .then(() => executor.squareOff(trade.user, trade.tsym, trade.quantity, 'NFO'));
             squareOff
                 .catch((e) => Log.log('[order] Expiry-day auto-squareoff failed for', trade.tsym, e))
                 .finally(() => expirySquareOffInFlight.delete(key));

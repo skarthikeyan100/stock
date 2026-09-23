@@ -1,184 +1,29 @@
 [orchestrator] [boot] Starting data...
 [orchestrator] [boot] Starting order...
 [orchestrator] [boot] Watching order: [
-  [32m'/home/karthikeyan/work/icici/dist/processes/order'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/processes/orderProcess.js'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/ant'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/zerodha'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/model'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/util'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/prism'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/tools'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/ipc'[39m
+  '/home/karthikeyan/work/icici/dist/processes/order',
+  '/home/karthikeyan/work/icici/dist/processes/orderProcess.js',
+  '/home/karthikeyan/work/icici/dist/ant',
+  '/home/karthikeyan/work/icici/dist/zerodha',
+  '/home/karthikeyan/work/icici/dist/model',
+  '/home/karthikeyan/work/icici/dist/util',
+  '/home/karthikeyan/work/icici/dist/prism',
+  '/home/karthikeyan/work/icici/dist/tools',
+  '/home/karthikeyan/work/icici/dist/ipc'
 ]
-[14:36:10] [ConfigService.loadConfig] Config Updated: {
-  "settings": {
-    "minPrice": 20,
-    "maxPrice": 30000,
-    "targetPriceDiff": 2,
-    "stopLossPriceDiff": 11,
-    "trailingDistance": 4,
-    "cooldownSeconds": 0,
-    "logQuotes": false,
-    "safetyBufferAmount": 5000,
-    "consistencyLimitPercent": 40,
-    "maxDailyDrawdownPercent": 25,
-    "maxWeeklyDrawdownPercent": 50,
-    "maxTradesPerDay": 10,
-    "gapScreenerCoverOrderEnabled": false,
-    "gapScreenerCoverOrderUserEmail": "",
-    "gapScreenerCoverOrderQuantity": 0,
-    "gapScreenerCoverOrderStopLossPoints": 0
-  },
-  "strategies": [
-    {
-      "type": "SentimentStrategy",
-      "enabled": false,
-      "averageThreshold": 20,
-      "targetPrice": 2,
-      "orderQuantity": 7200,
-      "sentiment": "put",
-      "loopCount": 1
-    },
-    {
-      "type": "ContinuousStrategy",
-      "enabled": false,
-      "broker": "breeze",
-      "initialQuantity": 65,
-      "slDistance": 10,
-      "squareOffDistance": 500,
-      "postAverageTargetDistance": 1,
-      "minPremium": 50,
-      "maxInvestment": 200000,
-      "maxProfit": 1,
-      "spawnQuantityMode": "1",
-      "averageQuantityMode": "same",
-      "right": "none",
-      "marketSentiment": "none",
-      "maxLevels": 4,
-      "cooldownSeconds": 60,
-      "refillCancelDistance": 50,
-      "logEnabled": true,
-      "momentumEnabled": false,
-      "momentumTimeoutMs": 3000
-    },
-    {
-      "type": "RateOfChangeStrategy",
-      "enabled": false,
-      "pointsThreshold": 30,
-      "accelerationThreshold": 5,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 2,
-      "stopLossPrice": 11,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GapStrategy",
-      "enabled": false,
-      "pointsThreshold": 20,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 10,
-      "stopLossPrice": 5,
-      "maxHoldTimeMinutes": 600,
-      "gapReversalMode": false,
-      "gapReversalThreshold": 100,
-      "logEnabled": true
-    },
-    {
-      "type": "RuleBasedStrategy",
-      "enabled": false,
-      "indicators": [
-        "RSI_5_70_30"
-      ],
-      "quantity": 65,
-      "target": 10,
-      "stopLoss": 20,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GoodMorningStrategy",
-      "enabled": false,
-      "quantity": 65,
-      "targetPoints": 10,
-      "stopLossPoints": 10,
-      "logEnabled": true,
-      "snapshotTime": "10:00",
-      "confirmTime": "10:30",
-      "previousClose": 24219,
-      "minMovementPoints": 10
-    },
-    {
-      "type": "GoodMorningSensexStrategy",
-      "enabled": false,
-      "quantity": 200,
-      "targetPoints": 30,
-      "stopLossPoints": 30,
-      "logEnabled": true,
-      "snapshotTime": "09:40",
-      "confirmTime": "09:45",
-      "minMovementPoints": 30
-    },
-    {
-      "type": "SupportResistanceStrategy",
-      "enabled": false,
-      "broker": "zerodha",
-      "quantity": 1755,
-      "logEnabled": true,
-      "slDistance": 10,
-      "squareOffDistance": 100,
-      "maxLevels": 4,
-      "spawnQuantityMode": "1",
-      "averageQuantityMode": "same",
-      "postAverageTargetDistance": 1,
-      "refillCancelDistance": 50,
-      "minPremium": 50,
-      "maxInvestment": 200000,
-      "maxProfit": 100,
-      "cooldownSeconds": 60,
-      "marketSentiment": "none"
-    },
-    {
-      "type": "TargetReachStrategy",
-      "enabled": false,
-      "symbol": "NIFTY",
-      "strike": 0,
-      "expiry": "2026-01-01",
-      "optionType": "CE",
-      "targetPrice": 0,
-      "quantity": 1755,
-      "targetPoints": 10,
-      "stopLossPoints": 15,
-      "logEnabled": true
-    },
-    {
-      "type": "BulkPcrStrategy",
-      "enabled": false,
-      "broker": "breeze",
-      "quantity": 13975,
-      "targetPoints": 2,
-      "right": "none",
-      "maxInvestment": 3000000,
-      "logEnabled": true
-    }
-  ]
-}
 [orchestrator] [boot] Starting frontend (server.ts)...
 [orchestrator] [boot] Watching frontend: [
-  [32m'/home/karthikeyan/work/icici/dist/server.js'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/ant'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/zerodha'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/model'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/util'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/prism'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/tools'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/ipc'[39m
+  '/home/karthikeyan/work/icici/dist/server.js',
+  '/home/karthikeyan/work/icici/dist/ant',
+  '/home/karthikeyan/work/icici/dist/zerodha',
+  '/home/karthikeyan/work/icici/dist/model',
+  '/home/karthikeyan/work/icici/dist/util',
+  '/home/karthikeyan/work/icici/dist/prism',
+  '/home/karthikeyan/work/icici/dist/tools',
+  '/home/karthikeyan/work/icici/dist/ipc'
 ]
 [orchestrator] [boot] Starting strategies...
-[14:36:10] [ConfigService.loadConfig] Config Updated: {
+[12:27:59] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -324,7 +169,7 @@
     {
       "type": "BulkPcrStrategy",
       "enabled": false,
-      "broker": "breeze",
+      "broker": "zerodha",
       "quantity": 13975,
       "targetPoints": 2,
       "right": "none",
@@ -333,39 +178,39 @@
     }
   ]
 }
-[14:36:10] [Mongo.init] Mongo is initialized
 [orchestrator] [boot] Watching strategies: [
-  [32m'/home/karthikeyan/work/icici/dist/strategy'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/processes/strategies'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/ant'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/model'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/util'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/prism'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/tools'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/ipc'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/lib'[39m
+  '/home/karthikeyan/work/icici/dist/strategy',
+  '/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js',
+  '/home/karthikeyan/work/icici/dist/processes/strategies',
+  '/home/karthikeyan/work/icici/dist/ant',
+  '/home/karthikeyan/work/icici/dist/model',
+  '/home/karthikeyan/work/icici/dist/util',
+  '/home/karthikeyan/work/icici/dist/prism',
+  '/home/karthikeyan/work/icici/dist/tools',
+  '/home/karthikeyan/work/icici/dist/ipc',
+  '/home/karthikeyan/work/icici/dist/lib'
 ]
 [orchestrator] [boot] Watching data: [
-  [32m'/home/karthikeyan/work/icici/dist/processes/data'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/processes/dataProcess.js'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/ant'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/model'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/util'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/prism'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/tools'[39m,
-  [32m'/home/karthikeyan/work/icici/dist/ipc'[39m
+  '/home/karthikeyan/work/icici/dist/processes/data',
+  '/home/karthikeyan/work/icici/dist/processes/dataProcess.js',
+  '/home/karthikeyan/work/icici/dist/ant',
+  '/home/karthikeyan/work/icici/dist/model',
+  '/home/karthikeyan/work/icici/dist/util',
+  '/home/karthikeyan/work/icici/dist/prism',
+  '/home/karthikeyan/work/icici/dist/tools',
+  '/home/karthikeyan/work/icici/dist/ipc'
 ]
-[14:36:10] [Mongo._init] Mongo is initialized
-[14:36:10] [AntDataStream.connect] [AntDataStream] Connecting to ANT streaming...
-[14:36:10] [ANT.loadSession] ANT session loaded from file
-[14:36:10] [Breeze.generateSession] [Breeze] Generating session...
-[14:36:10] [Breeze.loadSession] [Breeze] Session loaded from file
-[14:36:10] [main] [data] Ready - NIFTY/SENSEX always subscribed (ANT), streaming to stdout.
-[14:36:10] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
-(node:9075) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
+[12:27:59] [Mongo.init] Mongo is initialized
+[12:27:59] [Mongo._init] Mongo is initialized
+[12:27:59] [AntDataStream.connect] [AntDataStream] Connecting to ANT streaming...
+[12:27:59] [ANT.loadSession] ANT session loaded from file
+[12:27:59] [Breeze.generateSession] [Breeze] Generating session...
+[12:27:59] [Breeze.loadSession] [Breeze] Session loaded from file
+[12:27:59] [main] [data] Ready - NIFTY/SENSEX always subscribed (ANT), streaming to stdout.
+[12:27:59] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
+(node:16917) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
 (Use `node --trace-warnings ...` to show where the warning was created)
-[14:36:10] [ConfigService.loadConfig] Config Updated: {
+[12:27:59] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -511,7 +356,7 @@
     {
       "type": "BulkPcrStrategy",
       "enabled": false,
-      "broker": "breeze",
+      "broker": "zerodha",
       "quantity": 13975,
       "targetPoints": 2,
       "right": "none",
@@ -520,9 +365,7 @@
     }
   ]
 }
-[14:36:11] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
-[14:36:11] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
-[14:36:11] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
+[12:27:59] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
   "status": "Ok",
   "message": "Success",
   "result": [
@@ -531,9 +374,18 @@
     }
   ]
 }
-[14:36:11] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
-[14:36:11] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
-[14:36:11] [ConfigService.loadConfig] Config Updated: {
+[12:27:59] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
+[12:28:00] [/home/karthikeyan/work/icici/dist/breeze/Breeze.js:129:112] [Breeze] Failed to restore session from file: Error: Breeze generateSession failed: breezeconnect SDK threw with no recoverable diagnostic
+    at Breeze.callSdk (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:107:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async Breeze.generateSession (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:255:9)
+    at async Breeze.ensureSessionRestored (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:141:13)
+    at async Breeze.hasValidSession (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:262:13)
+    at async BreezeDataStream.connect (/home/karthikeyan/work/icici/dist/processes/data/BreezeDataStream.js:80:23)
+[12:28:00] [/home/karthikeyan/work/icici/dist/processes/dataProcess.js:87:41] [data] Initial breeze connect failed (will retry via reconnect): Error: Breeze session not available. Complete OAuth login first (/breeze/login).
+    at BreezeDataStream.connect (/home/karthikeyan/work/icici/dist/processes/data/BreezeDataStream.js:82:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+[12:28:00] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -679,7 +531,7 @@
     {
       "type": "BulkPcrStrategy",
       "enabled": false,
-      "broker": "breeze",
+      "broker": "zerodha",
       "quantity": 13975,
       "targetPoints": 2,
       "right": "none",
@@ -688,39 +540,353 @@
     }
   ]
 }
-[14:36:11] [Breeze.saveSession] [Breeze] Session saved
-[14:36:11] [Breeze.generateSession] [Breeze] Session generated and saved
-[14:36:11] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
-[14:36:11] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
-[14:36:11] [BreezeDataStream.connect] [BreezeDataStream] Connected and streaming
-[14:36:11] [/home/karthikeyan/work/icici/dist/processes/dataProcess.js:86:39] [data] breeze stream ready
-[14:36:11] [ws.onopen] [AntWS] Connected, sending auth payload...
-[14:36:11] [AntDataStream.connect] [AntDataStream] Connected and streaming
-[14:36:11] [/home/karthikeyan/work/icici/dist/processes/dataProcess.js:86:39] [data] ant stream ready
-[14:36:11] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
-[14:36:11] [ws.onmessage] [AntWS] Connect ack: {
+[12:28:00] [ws.onopen] [AntWS] Connected, sending auth payload...
+[12:28:00] [AntDataStream.connect] [AntDataStream] Connected and streaming
+[12:28:00] [/home/karthikeyan/work/icici/dist/processes/dataProcess.js:86:39] [data] ant stream ready
+[12:28:00] [ws.onmessage] [AntWS] Connect ack: {
   "t": "ck",
   "s": "OK",
   "uid": "924118_API"
 }
-[14:36:11] [/home/karthikeyan/work/icici/dist/processes/data/AntDataStream.js:63:27] [AntDataStream] WebSocket open, subscribing to always-on instruments...
-[14:36:11] [AntWebSocket.subscribe] [AntWS] Subscribing: NSE|26000#BSE|1
-[14:36:11] [Mongo.init] Mongo is initialized
-[14:36:11] [Mongo._init] Mongo is initialized
-[14:36:11] [Config._processFile] lot count: 1
-[14:36:11] [Config._processFile] Auto Trade: false
-[14:36:11] [OrderBookkeeping.loadClosedTradesFromMongo] [order] Reloaded 8 closed trade(s) from Mongo for today
-[14:36:11] [Zerodha.loadSession] Zerodha session loaded from file
-[14:36:11] [Zerodha.getPositions] Fetching Zerodha positions...
-[14:36:11] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
-[14:36:11] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
-[14:36:11] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
-(node:9076) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
+[12:28:00] [/home/karthikeyan/work/icici/dist/processes/data/AntDataStream.js:63:27] [AntDataStream] WebSocket open, subscribing to always-on instruments...
+[12:28:00] [AntWebSocket.subscribe] [AntWS] Subscribing: NSE|26000#BSE|1
+[12:28:00] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
+[12:28:00] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
+[12:28:00] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:28:00] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
+[12:28:00] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
+[12:28:00] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
+[12:28:00] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
+[12:28:00] [Mongo.init] Mongo is initialized
+[12:28:01] [Mongo._init] Mongo is initialized
+[12:28:01] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:28:01] [Config._processFile] lot count: 1
+[12:28:01] [Config._processFile] Auto Trade: false
+[12:28:01] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
+[12:28:01] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
+[12:28:01] [OrderBookkeeping.loadClosedTradesFromMongo] [order] Reloaded 8 closed trade(s) from Mongo for today
+[12:28:01] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
+[12:28:01] [Zerodha.loadSession] Zerodha session loaded from file
+[12:28:01] [Zerodha.getPositions] Fetching Zerodha positions...
+(node:16918) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
 (Use `node --trace-warnings ...` to show where the warning was created)
-[14:36:12] [Mongo.init] Mongo is initialized
-[14:36:12] [Mongo._init] Mongo is initialized
-[14:36:12] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
-[14:36:12] [Strategies.initialize] [] expandedConfigArray:  [
+[12:28:01] [Mongo.init] Mongo is initialized
+[12:28:01] [Config._processFile] lot count: 1
+[12:28:01] [Config._processFile] Auto Trade: false
+[12:28:01] [Mongo._init] Mongo is initialized
+[12:28:01] [Zerodha.getPositions] Positions fetched
+[12:28:01] [ANT.loadSession] ANT session loaded from file
+[12:28:01] [ANT.getPositions] Fetching ANT positions...
+[12:28:01] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
+[12:28:01] [Strategies.initialize] [] expandedConfigArray:  [
   {
     "type": "SentimentStrategy",
     "enabled": false,
@@ -848,7 +1014,7 @@
   {
     "type": "BulkPcrStrategy",
     "enabled": false,
-    "broker": "breeze",
+    "broker": "zerodha",
     "quantity": 13975,
     "targetPoints": 2,
     "right": "none",
@@ -856,9 +1022,9 @@
     "logEnabled": true
   }
 ]
-[14:36:12] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
-[14:36:12] [new RuleBasedStrategy] [RuleBased:Rule-RSI_5_70_30] Initialized with indicators: RSI_5_70_30
-[14:36:12] [Strategies.initialize] [Strategies] Initialized 10 strategies: [
+[12:28:01] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
+[12:28:01] [new RuleBasedStrategy] [RuleBased:Rule-RSI_5_70_30] Initialized with indicators: RSI_5_70_30
+[12:28:01] [Strategies.initialize] [Strategies] Initialized 10 strategies: [
   "SentimentStrategy(SentimentStrategy, enabled=false)",
   "ContinuousStrategy(ContinuousStrategy, enabled=false)",
   "RateOfChangeStrategy(RateOfChangeStrategy, enabled=false)",
@@ -870,75 +1036,70 @@
   "TargetReachStrategy(TargetReachStrategy, enabled=false)",
   "BulkPcrStrategy(BulkPcrStrategy, enabled=false)"
 ]
-[14:36:12] [ContinuousStrategy.reconcile] [ContinuousStrategy] reconcile: order query attempt 1/15 failed: Error: Not connected to order process
+[12:28:01] [ContinuousStrategy.reconcile] [ContinuousStrategy] reconcile: order query attempt 1/15 failed: Error: Not connected to order process
     at /home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:80:31
     at new Promise (<anonymous>)
     at OrderClient.request (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:78:16)
-    at OrderClient.getOpenTrades (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:282:32)
+    at OrderClient.getOpenTrades (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:296:32)
     at ContinuousStrategy.reconcile (/home/karthikeyan/work/icici/dist/strategy/ContinuousStrategy.js:132:72)
-    at main (/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js:203:93)
+    at main (/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js:206:93)
     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-[14:36:12] [Server.<anonymous>] [strategies] Listening on /tmp/icici-strategies.sock
-[14:36:12] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ECONNREFUSED /tmp/icici-order.sock
+[12:28:01] [Server.<anonymous>] [strategies] Listening on /tmp/icici-strategies.sock
+[12:28:01] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ECONNREFUSED /tmp/icici-order.sock
     at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
-[14:36:12] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ECONNREFUSED /tmp/icici-order.sock
+[12:28:01] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ECONNREFUSED /tmp/icici-order.sock
     at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
-[14:36:12] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
-[14:36:12] [Config._processFile] lot count: 1
-[14:36:12] [Config._processFile] Auto Trade: false
-[14:36:12] [Zerodha.getPositions] Error fetching positions: Incorrect `api_key` or `access_token`.
-[14:36:12] [OrderBookkeeping.reconcileZerodhaPositions] [order] reconcileZerodhaPositions: Zerodha getPositions failed (continuing without restore): Error: Failed to fetch positions: Incorrect `api_key` or `access_token`.
-    at Zerodha.getPositions (/home/karthikeyan/work/icici/dist/zerodha/Zerodha.js:203:19)
+[12:28:01] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[12:28:01] [ANT.getPositions] ANT Positions response: EC920
+[12:28:01] [Breeze.generateSession] [Breeze] Generating session...
+[12:28:01] [Breeze.loadSession] [Breeze] Session loaded from file
+Tue, 22 Sep 2026 06:58:01 GMT body-parser deprecated bodyParser: use individual json/urlencoded middlewares at dist/server.js:122:35
+Tue, 22 Sep 2026 06:58:01 GMT body-parser deprecated undefined extended: provide extended option at node_modules/body-parser/index.js:104:29
+[12:28:01] [Mongo.init] Mongo is initialized
+[12:28:01] [/home/karthikeyan/work/icici/dist/breeze/Breeze.js:129:112] [Breeze] Failed to restore session from file: Error: Breeze generateSession failed: breezeconnect SDK threw with no recoverable diagnostic
+    at Breeze.callSdk (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:107:19)
     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    at async OrderBookkeeping.reconcileZerodhaPositions (/home/karthikeyan/work/icici/dist/processes/order/bookkeeping.js:663:31)
-    at async OrderBookkeeping.loadOpenTradesFromBroker (/home/karthikeyan/work/icici/dist/processes/order/bookkeeping.js:739:9)
-    at async main (/home/karthikeyan/work/icici/dist/processes/orderProcess.js:541:5)
-[14:36:12] [ANT.loadSession] ANT session loaded from file
-[14:36:12] [ANT.getPositions] Fetching ANT positions...
-[14:36:12] [ANT.getPositions] ANT Positions response: EC920
-[14:36:12] [Breeze.generateSession] [Breeze] Generating session...
-[14:36:12] [Breeze.loadSession] [Breeze] Session loaded from file
-[14:36:12] [Breeze.saveSession] [Breeze] Session saved
-[14:36:12] [Breeze.generateSession] [Breeze] Session generated and saved
-Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated bodyParser: use individual json/urlencoded middlewares at dist/server.js:122:35
-Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide extended option at node_modules/body-parser/index.js:104:29
-[14:36:12] [Mongo.init] Mongo is initialized
-[14:36:12] [Mongo._init] Mongo is initialized
-[14:36:12] [Server.<anonymous>] [order] Listening on /tmp/icici-order.sock
-[14:36:12] [Server.<anonymous>] [strategies] Frontend client connected
-[14:36:12] [Server.<anonymous>] [order] Client connected, total: 1
-[14:36:12] [Server.<anonymous>] [frontend] Listening on 3000
-[14:36:12] [Server.<anonymous>] [frontend] Listening on 80
-[14:36:12] [Server.<anonymous>] [frontend] Listening on 443 (https)
-[14:36:12] [Config._processFile] lot count: 1
-[14:36:12] [Config._processFile] Auto Trade: false
-[14:36:13] [Socket.<anonymous>] [strategies] Connected to order process
-[14:36:13] [Socket.<anonymous>] [frontend] Connected to strategies process
-[14:36:13] [BreezeOrderNotifyStream.connect] [BreezeOrderNotifyStream] Connected and subscribed to order notifications
-[14:36:13] [AntOrderNotifyStream.getWsToken] [AntOrderNotify] createWsToken response: {"status":"Ok","message":"200","result":[{"orderToken":"4483627ee1a9050040fcfb2ac445ba9cdbf9cf64f71af1a4ec6ec3b1bd098820"}]}
-[14:36:13] [ws.onopen] [AntOrderNotify] Connected, subscribing...
-[14:36:14] [ContinuousStrategy.reconcile] [ContinuousStrategy] reconcile: order query attempt 2/15 failed: Error: Not connected to order process
+    at async Breeze.generateSession (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:255:9)
+    at async Breeze.ensureSessionRestored (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:141:13)
+    at async Breeze.hasValidSession (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:262:13)
+    at async OrderBookkeeping.reconcileBreezePositions (/home/karthikeyan/work/icici/dist/processes/order/bookkeeping.js:717:19)
+    at async OrderBookkeeping.loadOpenTradesFromBroker (/home/karthikeyan/work/icici/dist/processes/order/bookkeeping.js:741:9)
+    at async main (/home/karthikeyan/work/icici/dist/processes/orderProcess.js:559:5)
+[12:28:01] [connectBreezeOrderNotifyIfSessionValid] [order] Breeze session not valid (startup) - skipping BreezeOrderNotifyStream connect until next Breeze login
+[12:28:02] [Server.<anonymous>] [order] Listening on /tmp/icici-order.sock
+[12:28:02] [Config._processFile] lot count: 1
+[12:28:02] [Config._processFile] Auto Trade: false
+[12:28:02] [Mongo._init] Mongo is initialized
+[12:28:02] [Server.<anonymous>] [strategies] Frontend client connected
+[12:28:02] [Server.<anonymous>] [order] Client connected, total: 1
+[12:28:02] [AntOrderNotifyStream.getWsToken] [AntOrderNotify] createWsToken response: {"status":"Ok","message":"200","result":[{"orderToken":"6b7b6b6d9f87e60e118802b3ce7f42b09f8face53d9ece5aa9efcbe51180b36f"}]}
+[12:28:02] [Server.<anonymous>] [frontend] Listening on 3000
+[12:28:02] [Server.<anonymous>] [frontend] Listening on 80
+[12:28:02] [Server.<anonymous>] [frontend] Listening on 443 (https)
+[12:28:02] [Socket.<anonymous>] [strategies] Connected to order process
+[12:28:02] [Socket.<anonymous>] [frontend] Connected to strategies process
+[12:28:02] [ws.onopen] [AntOrderNotify] Connected, subscribing...
+[12:28:03] [ContinuousStrategy.reconcile] [ContinuousStrategy] reconcile: order query attempt 2/15 failed: Error: Not connected to order process
     at /home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:80:31
     at new Promise (<anonymous>)
     at OrderClient.request (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:78:16)
-    at OrderClient.getOpenTrades (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:282:32)
+    at OrderClient.getOpenTrades (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:296:32)
     at ContinuousStrategy.reconcile (/home/karthikeyan/work/icici/dist/strategy/ContinuousStrategy.js:132:72)
-    at async main (/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js:203:13)
-[14:36:14] [Server.<anonymous>] [order] Client connected, total: 2
-[14:36:14] [Socket.<anonymous>] [strategies] Connected to order process
-[14:36:16] [main] [strategies] Ready - 10 strategies loaded.
+    at async main (/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js:206:13)
+[12:28:03] [Socket.<anonymous>] [strategies] Connected to order process
+[12:28:03] [Server.<anonymous>] [order] Client connected, total: 2
+[12:28:05] [main] [strategies] Ready - 10 strategies loaded.
 [orchestrator] [dev] Restarting order (data/strategies/frontend untouched)...
 [orchestrator] [dev] Restarting frontend (data/order/strategies untouched)...
-[14:36:24] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
 [orchestrator] [dev] Restarting strategies (data/order untouched)...
-[14:36:24] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
 [orchestrator] [boot] Starting strategies...
+[12:28:14] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
 [orchestrator] [dev] Restarting data (order/strategies/frontend untouched)...
-[orchestrator] [data] exited (code=0 signal=null)
 [orchestrator] [order] exited (code=0 signal=null)
 [orchestrator] [frontend] exited (code=0 signal=null)
+[orchestrator] [data] exited (code=0 signal=null)
 [orchestrator] [strategies] exited (code=0 signal=null)
-[14:36:24] [ConfigService.loadConfig] Config Updated: {
+[12:28:14] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -1084,7 +1245,7 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
     {
       "type": "BulkPcrStrategy",
       "enabled": false,
-      "broker": "breeze",
+      "broker": "zerodha",
       "quantity": 13975,
       "targetPoints": 2,
       "right": "none",
@@ -1093,7 +1254,7 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
     }
   ]
 }
-[14:36:24] [ConfigService.loadConfig] Config Updated: {
+[12:28:14] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -1239,7 +1400,7 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
     {
       "type": "BulkPcrStrategy",
       "enabled": false,
-      "broker": "breeze",
+      "broker": "zerodha",
       "quantity": 13975,
       "targetPoints": 2,
       "right": "none",
@@ -1248,7 +1409,9 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
     }
   ]
 }
-[14:36:24] [ConfigService.loadConfig] Config Updated: {
+[12:28:14] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
+[12:28:14] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
+[12:28:14] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -1394,7 +1557,7 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
     {
       "type": "BulkPcrStrategy",
       "enabled": false,
-      "broker": "breeze",
+      "broker": "zerodha",
       "quantity": 13975,
       "targetPoints": 2,
       "right": "none",
@@ -1403,7 +1566,8 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
     }
   ]
 }
-[14:36:24] [ConfigService.loadConfig] Config Updated: {
+[12:28:14] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
+[12:28:14] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -1549,7 +1713,7 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
     {
       "type": "BulkPcrStrategy",
       "enabled": false,
-      "broker": "breeze",
+      "broker": "zerodha",
       "quantity": 13975,
       "targetPoints": 2,
       "right": "none",
@@ -1558,27 +1722,20 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
     }
   ]
 }
-[14:36:24] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
-[14:36:24] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
-[14:36:24] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
-[14:36:24] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
-[14:36:25] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
-[14:36:25] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
-[14:36:25] [Mongo.init] Mongo is initialized
-[14:36:25] [Mongo._init] Mongo is initialized
-[14:36:25] [AntDataStream.connect] [AntDataStream] Connecting to ANT streaming...
-[14:36:25] [ANT.loadSession] ANT session loaded from file
-[14:36:25] [Breeze.generateSession] [Breeze] Generating session...
-[14:36:25] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
-[14:36:25] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
-[14:36:25] [Breeze.loadSession] [Breeze] Session loaded from file
-[14:36:25] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
-[14:36:25] [main] [data] Ready - NIFTY/SENSEX always subscribed (ANT), streaming to stdout.
-[14:36:25] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
-(node:9138) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
+[12:28:15] [Mongo.init] Mongo is initialized
+[12:28:15] [Mongo._init] Mongo is initialized
+[12:28:15] [AntDataStream.connect] [AntDataStream] Connecting to ANT streaming...
+[12:28:15] [ANT.loadSession] ANT session loaded from file
+[12:28:15] [Breeze.generateSession] [Breeze] Generating session...
+[12:28:15] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
+[12:28:15] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
+[12:28:15] [Breeze.loadSession] [Breeze] Session loaded from file
+[12:28:15] [main] [data] Ready - NIFTY/SENSEX always subscribed (ANT), streaming to stdout.
+[12:28:15] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
+[12:28:15] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
+(node:16990) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
 (Use `node --trace-warnings ...` to show where the warning was created)
-[14:36:25] [Mongo.init] Mongo is initialized
-[14:36:25] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
+[12:28:15] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
   "status": "Ok",
   "message": "Success",
   "result": [
@@ -1587,12 +1744,23 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
     }
   ]
 }
-[14:36:25] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
-[14:36:25] [Config._processFile] lot count: 1
-[14:36:25] [Config._processFile] Auto Trade: false
-[14:36:25] [Mongo._init] Mongo is initialized
-[14:36:25] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
-[14:36:25] [Strategies.initialize] [] expandedConfigArray:  [
+[12:28:15] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
+[12:28:15] [Mongo.init] Mongo is initialized
+[12:28:15] [/home/karthikeyan/work/icici/dist/breeze/Breeze.js:129:112] [Breeze] Failed to restore session from file: Error: Breeze generateSession failed: breezeconnect SDK threw with no recoverable diagnostic
+    at Breeze.callSdk (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:107:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async Breeze.generateSession (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:255:9)
+    at async Breeze.ensureSessionRestored (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:141:13)
+    at async Breeze.hasValidSession (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:262:13)
+    at async BreezeDataStream.connect (/home/karthikeyan/work/icici/dist/processes/data/BreezeDataStream.js:80:23)
+[12:28:15] [/home/karthikeyan/work/icici/dist/processes/dataProcess.js:87:41] [data] Initial breeze connect failed (will retry via reconnect): Error: Breeze session not available. Complete OAuth login first (/breeze/login).
+    at BreezeDataStream.connect (/home/karthikeyan/work/icici/dist/processes/data/BreezeDataStream.js:82:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+[12:28:15] [Config._processFile] lot count: 1
+[12:28:15] [Config._processFile] Auto Trade: false
+[12:28:15] [Mongo._init] Mongo is initialized
+[12:28:15] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
+[12:28:15] [Strategies.initialize] [] expandedConfigArray:  [
   {
     "type": "SentimentStrategy",
     "enabled": false,
@@ -1720,7 +1888,7 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
   {
     "type": "BulkPcrStrategy",
     "enabled": false,
-    "broker": "breeze",
+    "broker": "zerodha",
     "quantity": 13975,
     "targetPoints": 2,
     "right": "none",
@@ -1728,9 +1896,11 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
     "logEnabled": true
   }
 ]
-[14:36:25] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
-[14:36:25] [new RuleBasedStrategy] [RuleBased:Rule-RSI_5_70_30] Initialized with indicators: RSI_5_70_30
-[14:36:25] [Strategies.initialize] [Strategies] Initialized 10 strategies: [
+[12:28:15] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
+[12:28:15] [Config._processFile] Dir Name: /home/karthikeyan/work/icici/dist/prism
+[12:28:15] [Config._processFile] File Name: /home/karthikeyan/work/icici/dist/prism/config.js
+[12:28:15] [new RuleBasedStrategy] [RuleBased:Rule-RSI_5_70_30] Initialized with indicators: RSI_5_70_30
+[12:28:15] [Strategies.initialize] [Strategies] Initialized 10 strategies: [
   "SentimentStrategy(SentimentStrategy, enabled=false)",
   "ContinuousStrategy(ContinuousStrategy, enabled=false)",
   "RateOfChangeStrategy(RateOfChangeStrategy, enabled=false)",
@@ -1742,826 +1912,247 @@ Mon, 21 Sep 2026 09:06:12 GMT body-parser deprecated undefined extended: provide
   "TargetReachStrategy(TargetReachStrategy, enabled=false)",
   "BulkPcrStrategy(BulkPcrStrategy, enabled=false)"
 ]
-[14:36:25] [ContinuousStrategy.reconcile] [ContinuousStrategy] reconcile: order query attempt 1/15 failed: Error: Not connected to order process
+[12:28:15] [ContinuousStrategy.reconcile] [ContinuousStrategy] reconcile: order query attempt 1/15 failed: Error: Not connected to order process
     at /home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:80:31
     at new Promise (<anonymous>)
     at OrderClient.request (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:78:16)
-    at OrderClient.getOpenTrades (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:282:32)
+    at OrderClient.getOpenTrades (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:296:32)
     at ContinuousStrategy.reconcile (/home/karthikeyan/work/icici/dist/strategy/ContinuousStrategy.js:132:72)
-    at main (/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js:203:93)
+    at main (/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js:206:93)
     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-[14:36:25] [Server.<anonymous>] [strategies] Listening on /tmp/icici-strategies.sock
-[14:36:25] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+[12:28:15] [Server.<anonymous>] [strategies] Listening on /tmp/icici-strategies.sock
+[12:28:15] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
     at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
-[14:36:25] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+[12:28:15] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
     at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
-[14:36:25] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
-Mon, 21 Sep 2026 09:06:25 GMT body-parser deprecated bodyParser: use individual json/urlencoded middlewares at dist/server.js:122:35
-Mon, 21 Sep 2026 09:06:25 GMT body-parser deprecated undefined extended: provide extended option at node_modules/body-parser/index.js:104:29
-[14:36:25] [Mongo.init] Mongo is initialized
-[14:36:25] [Mongo.init] Mongo is initialized
-[14:36:25] [Breeze.saveSession] [Breeze] Session saved
-[14:36:25] [Breeze.generateSession] [Breeze] Session generated and saved
-[14:36:25] [Mongo._init] Mongo is initialized
-[14:36:25] [Mongo._init] Mongo is initialized
-[14:36:25] [Server.<anonymous>] [strategies] Frontend client connected
-[14:36:25] [Config._processFile] lot count: 1
-[14:36:25] [Config._processFile] Auto Trade: false
-[14:36:25] [OrderBookkeeping.loadClosedTradesFromMongo] [order] Reloaded 8 closed trade(s) from Mongo for today
-[14:36:25] [Zerodha.loadSession] Zerodha session loaded from file
-[14:36:25] [Zerodha.getPositions] Fetching Zerodha positions...
-[14:36:25] [Server.<anonymous>] [frontend] Listening on 3000
-[14:36:25] [Server.<anonymous>] [frontend] Listening on 80
-[14:36:25] [Server.<anonymous>] [frontend] Listening on 443 (https)
-[14:36:25] [Config._processFile] lot count: 1
-[14:36:25] [Config._processFile] Auto Trade: false
-[14:36:25] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
-    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
-[14:36:25] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
-    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
-[14:36:25] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
-[14:36:25] [Socket.<anonymous>] [frontend] Connected to strategies process
-(node:9135) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
-(Use `node --trace-warnings ...` to show where the warning was created)
-[14:36:26] [BreezeDataStream.connect] [BreezeDataStream] Connected and streaming
-[14:36:26] [/home/karthikeyan/work/icici/dist/processes/dataProcess.js:86:39] [data] breeze stream ready
-[14:36:26] [ws.onopen] [AntWS] Connected, sending auth payload...
-[14:36:26] [AntDataStream.connect] [AntDataStream] Connected and streaming
-[14:36:26] [/home/karthikeyan/work/icici/dist/processes/dataProcess.js:86:39] [data] ant stream ready
-[14:36:27] [ws.onmessage] [AntWS] Connect ack: {
+[12:28:15] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[12:28:15] [ws.onopen] [AntWS] Connected, sending auth payload...
+[12:28:15] [AntDataStream.connect] [AntDataStream] Connected and streaming
+[12:28:15] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
+[12:28:15] [/home/karthikeyan/work/icici/dist/processes/dataProcess.js:86:39] [data] ant stream ready
+[12:28:15] [Mongo.init] Mongo is initialized
+[12:28:15] [ws.onmessage] [AntWS] Connect ack: {
   "t": "ck",
   "s": "OK",
   "uid": "924118_API"
 }
-[14:36:27] [/home/karthikeyan/work/icici/dist/processes/data/AntDataStream.js:63:27] [AntDataStream] WebSocket open, subscribing to always-on instruments...
-[14:36:27] [AntWebSocket.subscribe] [AntWS] Subscribing: NSE|26000#BSE|1
-[14:36:27] [Zerodha.getPositions] Error fetching positions: Incorrect `api_key` or `access_token`.
-[14:36:27] [OrderBookkeeping.reconcileZerodhaPositions] [order] reconcileZerodhaPositions: Zerodha getPositions failed (continuing without restore): Error: Failed to fetch positions: Incorrect `api_key` or `access_token`.
-    at Zerodha.getPositions (/home/karthikeyan/work/icici/dist/zerodha/Zerodha.js:203:19)
-    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    at async OrderBookkeeping.reconcileZerodhaPositions (/home/karthikeyan/work/icici/dist/processes/order/bookkeeping.js:663:31)
-    at async OrderBookkeeping.loadOpenTradesFromBroker (/home/karthikeyan/work/icici/dist/processes/order/bookkeeping.js:739:9)
-    at async main (/home/karthikeyan/work/icici/dist/processes/orderProcess.js:541:5)
-[14:36:27] [ANT.loadSession] ANT session loaded from file
-[14:36:27] [ANT.getPositions] Fetching ANT positions...
-[14:36:27] [ANT.getPositions] ANT Positions response: EC920
-[14:36:27] [Breeze.generateSession] [Breeze] Generating session...
-[14:36:27] [Breeze.loadSession] [Breeze] Session loaded from file
-[14:36:27] [ContinuousStrategy.reconcile] [ContinuousStrategy] reconcile: order query attempt 2/15 failed: Error: Not connected to order process
-    at /home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:80:31
-    at new Promise (<anonymous>)
-    at OrderClient.request (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:78:16)
-    at OrderClient.getOpenTrades (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:282:32)
-    at ContinuousStrategy.reconcile (/home/karthikeyan/work/icici/dist/strategy/ContinuousStrategy.js:132:72)
-    at async main (/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js:203:13)
-[14:36:27] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
-    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
-[14:36:27] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
-    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
-[14:36:27] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
-[14:36:27] [Breeze.saveSession] [Breeze] Session saved
-[14:36:27] [Breeze.generateSession] [Breeze] Session generated and saved
-[14:36:27] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
-    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
-[14:36:27] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
-    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
-[14:36:27] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
-[14:36:28] [Server.<anonymous>] [order] Listening on /tmp/icici-order.sock
-[14:36:28] [AntOrderNotifyStream.getWsToken] [AntOrderNotify] createWsToken response: {"status":"Ok","message":"200","result":[{"orderToken":"4483627ee1a9050040fcfb2ac445ba9cdbf9cf64f71af1a4ec6ec3b1bd098820"}]}
-[14:36:28] [BreezeOrderNotifyStream.connect] [BreezeOrderNotifyStream] Connected and subscribed to order notifications
-[14:36:28] [ws.onopen] [AntOrderNotify] Connected, subscribing...
-[14:36:29] [ContinuousStrategy.reconcile] [ContinuousStrategy] reconcile: order query attempt 3/15 failed: Error: Not connected to order process
-    at /home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:80:31
-    at new Promise (<anonymous>)
-    at OrderClient.request (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:78:16)
-    at OrderClient.getOpenTrades (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:282:32)
-    at ContinuousStrategy.reconcile (/home/karthikeyan/work/icici/dist/strategy/ContinuousStrategy.js:132:72)
-    at async main (/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js:203:13)
-[14:36:29] [Socket.<anonymous>] [strategies] Connected to order process
-[14:36:29] [Server.<anonymous>] [order] Client connected, total: 1
-[14:36:29] [Server.<anonymous>] [order] Client connected, total: 2
-[14:36:29] [Socket.<anonymous>] [strategies] Connected to order process
-[14:36:31] [main] [strategies] Ready - 10 strategies loaded.
-[14:36:38] [ANT.loadSession] ANT session loaded from file
-[14:36:38] [ANT.getTrades] Fetching ANT trades...
-(node:9136) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
+[12:28:15] [/home/karthikeyan/work/icici/dist/processes/data/AntDataStream.js:63:27] [AntDataStream] WebSocket open, subscribing to always-on instruments...
+[12:28:15] [AntWebSocket.subscribe] [AntWS] Subscribing: NSE|26000#BSE|1
+[12:28:15] [Config._processFile] lot count: 1
+[12:28:15] [Config._processFile] Auto Trade: false
+[12:28:15] [Mongo._init] Mongo is initialized
+[12:28:15] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:28:15] [OrderBookkeeping.loadClosedTradesFromMongo] [order] Reloaded 8 closed trade(s) from Mongo for today
+[12:28:15] [Zerodha.loadSession] Zerodha session loaded from file
+[12:28:15] [Zerodha.getPositions] Fetching Zerodha positions...
+(node:16977) Warning: Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' makes TLS connections and HTTPS requests insecure by disabling certificate verification.
 (Use `node --trace-warnings ...` to show where the warning was created)
-[14:36:43] [ANT.getTrades] ANT Trades response: EC926
-[14:36:43] [Zerodha.loadSession] Zerodha session loaded from file
-[14:36:43] [Zerodha.getPositions] Fetching Zerodha positions...
-[14:36:43] [Zerodha.getPositions] Error fetching positions: Incorrect `api_key` or `access_token`.
-[14:36:43] [/home/karthikeyan/work/icici/dist/server.js:1060:23] zerodha positions error: Error: Failed to fetch positions: Incorrect `api_key` or `access_token`.
-    at Zerodha.getPositions (/home/karthikeyan/work/icici/dist/zerodha/Zerodha.js:203:19)
+Tue, 22 Sep 2026 06:58:15 GMT body-parser deprecated bodyParser: use individual json/urlencoded middlewares at dist/server.js:122:35
+Tue, 22 Sep 2026 06:58:15 GMT body-parser deprecated undefined extended: provide extended option at node_modules/body-parser/index.js:104:29
+[12:28:15] [Mongo.init] Mongo is initialized
+[12:28:15] [Zerodha.getPositions] Positions fetched
+[12:28:15] [ANT.loadSession] ANT session loaded from file
+[12:28:15] [ANT.getPositions] Fetching ANT positions...
+[12:28:15] [Config._processFile] lot count: 1
+[12:28:15] [Config._processFile] Auto Trade: false
+[12:28:15] [Mongo._init] Mongo is initialized
+[12:28:15] [Server.<anonymous>] [strategies] Frontend client connected
+[12:28:15] [ANT.getPositions] ANT Positions response: EC920
+[12:28:16] [Breeze.generateSession] [Breeze] Generating session...
+[12:28:16] [Breeze.loadSession] [Breeze] Session loaded from file
+[12:28:16] [Server.<anonymous>] [frontend] Listening on 3000
+[12:28:16] [Server.<anonymous>] [frontend] Listening on 80
+[12:28:16] [Server.<anonymous>] [frontend] Listening on 443 (https)
+[12:28:16] [/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:60:41] [strategies] Failed to parse order-process message:  Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[12:28:16] [Socket.<anonymous>] [strategies] Order socket error: Error: connect ENOENT /tmp/icici-order.sock
+    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1615:16)
+[12:28:16] [Socket.<anonymous>] [strategies] Disconnected from order process, retrying in 2s...
+[12:28:16] [Socket.<anonymous>] [frontend] Connected to strategies process
+[12:28:16] [/home/karthikeyan/work/icici/dist/breeze/Breeze.js:129:112] [Breeze] Failed to restore session from file: Error: Breeze generateSession failed: breezeconnect SDK threw with no recoverable diagnostic
+    at Breeze.callSdk (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:107:19)
     at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    at async /home/karthikeyan/work/icici/dist/server.js:1056:27
-[14:36:43] [Breeze.generateSession] [Breeze] Generating session...
-[14:36:43] [Breeze.loadSession] [Breeze] Session loaded from file
-[14:36:44] [Breeze.saveSession] [Breeze] Session saved
-[14:36:44] [Breeze.generateSession] [Breeze] Session generated and saved
-[14:40:56] [Zerodha.getLoginURL] Generated Zerodha login URL: https://kite.zerodha.com/connect/login?api_key=8ugdwlq4fz81o218&v=3
-[14:40:56] [/home/karthikeyan/work/icici/dist/server.js:857:23] Redirecting to Zerodha login: https://kite.zerodha.com/connect/login?api_key=8ugdwlq4fz81o218&v=3
-[14:41:20] [/home/karthikeyan/work/icici/dist/server.js:873:23] Zerodha Callback received - exchanging request_token for access_token
-[14:41:20] [Zerodha.exchangeRequestTokenForSession] === Zerodha Token Exchange Starting ===
-[14:41:20] [Zerodha.exchangeRequestTokenForSession] Request token: MVugtasOPHv4B46n14r4...
-[14:41:20] [Zerodha.exchangeRequestTokenForSession] Session generated: {
-  "user_type": "individual/res_no_nn",
-  "email": "karthikeyan@nivedhatech.com",
-  "user_name": "Karthikeyan .",
-  "user_shortname": "Karthikeyan",
-  "broker": "ZERODHA",
-  "exchanges": [
-    "NCO",
-    "MCX",
-    "BSE",
-    "NSE",
-    "BFO",
-    "MF",
-    "NFO"
-  ],
-  "products": [
-    "CNC",
-    "NRML",
-    "MIS",
-    "BO",
-    "CO"
-  ],
-  "order_types": [
-    "MARKET",
-    "LIMIT",
-    "SL",
-    "SL-M"
-  ],
-  "avatar_url": null,
-  "user_id": "ZV3536",
-  "api_key": "8ugdwlq4fz81o218",
-  "access_token": "GVDXF3X0WnVdr3UyXdxcMyE1uKX3zlXS",
-  "public_token": "JE6kMUGQBe52zZyO3XoMIFaXLwIEGc7c",
-  "refresh_token": "",
-  "enctoken": "PdCcsEuiBzvpPntbxGW/lOsbsBh46OvyKy9xrv9DWutBAYGfzshM5EB09DZE85Yo9UZJUyonv3WPL8/BIwb0OJJnfdDYNKkgT95U96KePS6xdKl1STixTXTITTA61Nw=",
-  "login_time": "2026-09-21T09:11:20.000Z",
-  "meta": {
-    "demat_consent": "physical"
-  }
-}
-[14:41:20] [Zerodha.saveSession] Zerodha session saved
-[14:41:20] [Zerodha.exchangeRequestTokenForSession] ✓ Access token obtained and saved
-[14:41:20] [Zerodha.exchangeRequestTokenForSession] === Zerodha Token Exchange Successful! ===
-[14:41:20] [Zerodha.loadSession] Zerodha session loaded from file
-[14:41:20] [NorenRestApi.reloadToken] Restored Shoonya access token from userToken.txt
-[14:41:20] [ANT.loadSession] ANT session loaded from file
-[14:41:20] [AntOrderNotifyStream.connect] [AntOrderNotify] Already connected
-[14:41:20] [Breeze.generateSession] [Breeze] Generating session...
-[14:41:20] [Breeze.loadSession] [Breeze] Session loaded from file
-[14:41:20] [Zerodha.getPositions] Fetching Zerodha positions...
-[14:41:20] [ANT.getPositions] Fetching ANT positions...
-[14:41:20] [/home/karthikeyan/work/icici/dist/server.js:878:23] Zerodha Authentication successful. Token stored.
-[14:41:20] [Zerodha.getPositions] Positions fetched
-[14:41:20] [ANT.getPositions] ANT Positions response: EC920
-[14:41:21] [Breeze.saveSession] [Breeze] Session saved
-[14:41:21] [Breeze.generateSession] [Breeze] Session generated and saved
-[14:41:21] [BreezeOrderNotifyStream.connect] [BreezeOrderNotifyStream] Already connected
-[14:41:28] [ws.onclose] [AntOrderNotify] WebSocket closed
-[14:41:28] [AntOrderNotifyStream.scheduleReconnect] [AntOrderNotify] Reconnecting in 2000ms...
-[14:41:30] [AntOrderNotifyStream.getWsToken] [AntOrderNotify] createWsToken response: {"status":"Ok","message":"200","result":[{"orderToken":"4483627ee1a9050040fcfb2ac445ba9cdbf9cf64f71af1a4ec6ec3b1bd098820"}]}
-[14:41:31] [ws.onopen] [AntOrderNotify] Connected, subscribing...
-[14:41:39] [ANT.getTrades] Fetching ANT trades...
-[14:41:39] [ANT.getTrades] ANT Trades response: EC926
-[14:41:39] [Zerodha.getPositions] Fetching Zerodha positions...
-[14:41:39] [Zerodha.getPositions] Positions fetched
-[14:42:04] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019263","requestType":"5","messageSequence":"2026092101959961","messageDate":"21-09-2026","messageTime":"14:42:04","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"DRREDD","productType":"Options","optionType":"Call","exerciseType":"E","strikePrice":"120000","expiryDate":"29-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Sell","limitMarketFlag":"Limit","orderType":"Day","limitRate":"1250","orderStatus":"Executed","orderReference":"202609212300012590","orderTotalQuantity":"5000","executedQuantity":"5000","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"23","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"2300000205943499    ","stopLossOrderReference":"2300000205943499    ","totalAmountBlocked":"*","averageExecutedRate":"0.000000","cancelFlag":"1250.000000","squareOffMarket":"N","quickExitFlag":"Y","stopValidTillDateFlag":"N","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:42:04] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] Push for order 202609212300012590 - not one we're waiting on (or field-mapping mismatch)
-[14:42:18] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019268","requestType":"5","messageSequence":"2026092101960950","messageDate":"21-09-2026","messageTime":"14:42:18","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"DRREDD","productType":"Options","optionType":"Call","exerciseType":"E","strikePrice":"120000","expiryDate":"29-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Sell","limitMarketFlag":"Limit","orderType":"Day","limitRate":"1250","orderStatus":"Executed","orderReference":"202609212300012770","orderTotalQuantity":"625","executedQuantity":"625","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"23","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"2300000209665709    ","stopLossOrderReference":"2300000209665709    ","totalAmountBlocked":"*","averageExecutedRate":"16105050.000000","cancelFlag":"1260.000000","squareOffMarket":"N","quickExitFlag":"N","stopValidTillDateFlag":"Y","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:42:18] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] Push for order 202609212300012770 - not one we're waiting on (or field-mapping mismatch)
-[14:44:24] [SecurityLog.log] [security] 2026-09-21 14:44:24 [BLOCKED_IP] ip=::ffff:205.210.31.230 method=GET path=/
-[14:45:34] [StatWatcher.<anonymous>] Config file changed. Reloading...
-[14:45:34] [ConfigService.loadConfig] Config Updated: {
-  "settings": {
-    "minPrice": 20,
-    "maxPrice": 30000,
-    "targetPriceDiff": 2,
-    "stopLossPriceDiff": 11,
-    "trailingDistance": 4,
-    "cooldownSeconds": 0,
-    "logQuotes": false,
-    "safetyBufferAmount": 5000,
-    "consistencyLimitPercent": 40,
-    "maxDailyDrawdownPercent": 25,
-    "maxWeeklyDrawdownPercent": 50,
-    "maxTradesPerDay": 10,
-    "gapScreenerCoverOrderEnabled": false,
-    "gapScreenerCoverOrderUserEmail": "",
-    "gapScreenerCoverOrderQuantity": 0,
-    "gapScreenerCoverOrderStopLossPoints": 0
-  },
-  "strategies": [
-    {
-      "type": "SentimentStrategy",
-      "enabled": false,
-      "averageThreshold": 20,
-      "targetPrice": 2,
-      "orderQuantity": 7200,
-      "sentiment": "put",
-      "loopCount": 1
-    },
-    {
-      "type": "ContinuousStrategy",
-      "enabled": false,
-      "broker": "breeze",
-      "initialQuantity": 65,
-      "slDistance": 10,
-      "squareOffDistance": 500,
-      "postAverageTargetDistance": 1,
-      "minPremium": 50,
-      "maxInvestment": 200000,
-      "maxProfit": 1,
-      "spawnQuantityMode": "1",
-      "averageQuantityMode": "same",
-      "right": "none",
-      "marketSentiment": "none",
-      "maxLevels": 4,
-      "cooldownSeconds": 60,
-      "refillCancelDistance": 50,
-      "logEnabled": true,
-      "momentumEnabled": false,
-      "momentumTimeoutMs": 3000
-    },
-    {
-      "type": "RateOfChangeStrategy",
-      "enabled": false,
-      "pointsThreshold": 30,
-      "accelerationThreshold": 5,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 2,
-      "stopLossPrice": 11,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GapStrategy",
-      "enabled": false,
-      "pointsThreshold": 20,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 10,
-      "stopLossPrice": 5,
-      "maxHoldTimeMinutes": 600,
-      "gapReversalMode": false,
-      "gapReversalThreshold": 100,
-      "logEnabled": true
-    },
-    {
-      "type": "RuleBasedStrategy",
-      "enabled": false,
-      "indicators": [
-        "RSI_5_70_30"
-      ],
-      "quantity": 65,
-      "target": 10,
-      "stopLoss": 20,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GoodMorningStrategy",
-      "enabled": false,
-      "quantity": 65,
-      "targetPoints": 10,
-      "stopLossPoints": 10,
-      "logEnabled": true,
-      "snapshotTime": "10:00",
-      "confirmTime": "10:30",
-      "previousClose": 24219,
-      "minMovementPoints": 10
-    },
-    {
-      "type": "GoodMorningSensexStrategy",
-      "enabled": false,
-      "quantity": 200,
-      "targetPoints": 30,
-      "stopLossPoints": 30,
-      "logEnabled": true,
-      "snapshotTime": "09:40",
-      "confirmTime": "09:45",
-      "minMovementPoints": 30
-    },
-    {
-      "type": "SupportResistanceStrategy",
-      "enabled": false,
-      "broker": "zerodha",
-      "quantity": 1755,
-      "logEnabled": true,
-      "slDistance": 10,
-      "squareOffDistance": 100,
-      "maxLevels": 4,
-      "spawnQuantityMode": "1",
-      "averageQuantityMode": "same",
-      "postAverageTargetDistance": 1,
-      "refillCancelDistance": 50,
-      "minPremium": 50,
-      "maxInvestment": 200000,
-      "maxProfit": 100,
-      "cooldownSeconds": 60,
-      "marketSentiment": "none"
-    },
-    {
-      "type": "TargetReachStrategy",
-      "enabled": false,
-      "symbol": "NIFTY",
-      "strike": 0,
-      "expiry": "2026-01-01",
-      "optionType": "CE",
-      "targetPrice": 0,
-      "quantity": 1755,
-      "targetPoints": 10,
-      "stopLossPoints": 15,
-      "logEnabled": true
-    },
-    {
-      "type": "BulkPcrStrategy",
-      "enabled": false,
-      "broker": "zerodha",
-      "quantity": 13975,
-      "targetPoints": 2,
-      "right": "none",
-      "maxInvestment": 3000000,
-      "logEnabled": true
-    }
-  ]
-}
-[14:45:34] [StatWatcher.<anonymous>] Config file changed. Reloading...
-[14:45:34] [StatWatcher.<anonymous>] Config file changed. Reloading...
-[14:45:34] [ConfigService.loadConfig] Config Updated: {
-  "settings": {
-    "minPrice": 20,
-    "maxPrice": 30000,
-    "targetPriceDiff": 2,
-    "stopLossPriceDiff": 11,
-    "trailingDistance": 4,
-    "cooldownSeconds": 0,
-    "logQuotes": false,
-    "safetyBufferAmount": 5000,
-    "consistencyLimitPercent": 40,
-    "maxDailyDrawdownPercent": 25,
-    "maxWeeklyDrawdownPercent": 50,
-    "maxTradesPerDay": 10,
-    "gapScreenerCoverOrderEnabled": false,
-    "gapScreenerCoverOrderUserEmail": "",
-    "gapScreenerCoverOrderQuantity": 0,
-    "gapScreenerCoverOrderStopLossPoints": 0
-  },
-  "strategies": [
-    {
-      "type": "SentimentStrategy",
-      "enabled": false,
-      "averageThreshold": 20,
-      "targetPrice": 2,
-      "orderQuantity": 7200,
-      "sentiment": "put",
-      "loopCount": 1
-    },
-    {
-      "type": "ContinuousStrategy",
-      "enabled": false,
-      "broker": "breeze",
-      "initialQuantity": 65,
-      "slDistance": 10,
-      "squareOffDistance": 500,
-      "postAverageTargetDistance": 1,
-      "minPremium": 50,
-      "maxInvestment": 200000,
-      "maxProfit": 1,
-      "spawnQuantityMode": "1",
-      "averageQuantityMode": "same",
-      "right": "none",
-      "marketSentiment": "none",
-      "maxLevels": 4,
-      "cooldownSeconds": 60,
-      "refillCancelDistance": 50,
-      "logEnabled": true,
-      "momentumEnabled": false,
-      "momentumTimeoutMs": 3000
-    },
-    {
-      "type": "RateOfChangeStrategy",
-      "enabled": false,
-      "pointsThreshold": 30,
-      "accelerationThreshold": 5,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 2,
-      "stopLossPrice": 11,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GapStrategy",
-      "enabled": false,
-      "pointsThreshold": 20,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 10,
-      "stopLossPrice": 5,
-      "maxHoldTimeMinutes": 600,
-      "gapReversalMode": false,
-      "gapReversalThreshold": 100,
-      "logEnabled": true
-    },
-    {
-      "type": "RuleBasedStrategy",
-      "enabled": false,
-      "indicators": [
-        "RSI_5_70_30"
-      ],
-      "quantity": 65,
-      "target": 10,
-      "stopLoss": 20,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GoodMorningStrategy",
-      "enabled": false,
-      "quantity": 65,
-      "targetPoints": 10,
-      "stopLossPoints": 10,
-      "logEnabled": true,
-      "snapshotTime": "10:00",
-      "confirmTime": "10:30",
-      "previousClose": 24219,
-      "minMovementPoints": 10
-    },
-    {
-      "type": "GoodMorningSensexStrategy",
-      "enabled": false,
-      "quantity": 200,
-      "targetPoints": 30,
-      "stopLossPoints": 30,
-      "logEnabled": true,
-      "snapshotTime": "09:40",
-      "confirmTime": "09:45",
-      "minMovementPoints": 30
-    },
-    {
-      "type": "SupportResistanceStrategy",
-      "enabled": false,
-      "broker": "zerodha",
-      "quantity": 1755,
-      "logEnabled": true,
-      "slDistance": 10,
-      "squareOffDistance": 100,
-      "maxLevels": 4,
-      "spawnQuantityMode": "1",
-      "averageQuantityMode": "same",
-      "postAverageTargetDistance": 1,
-      "refillCancelDistance": 50,
-      "minPremium": 50,
-      "maxInvestment": 200000,
-      "maxProfit": 100,
-      "cooldownSeconds": 60,
-      "marketSentiment": "none"
-    },
-    {
-      "type": "TargetReachStrategy",
-      "enabled": false,
-      "symbol": "NIFTY",
-      "strike": 0,
-      "expiry": "2026-01-01",
-      "optionType": "CE",
-      "targetPrice": 0,
-      "quantity": 1755,
-      "targetPoints": 10,
-      "stopLossPoints": 15,
-      "logEnabled": true
-    },
-    {
-      "type": "BulkPcrStrategy",
-      "enabled": false,
-      "broker": "zerodha",
-      "quantity": 13975,
-      "targetPoints": 2,
-      "right": "none",
-      "maxInvestment": 3000000,
-      "logEnabled": true
-    }
-  ]
-}
-[14:45:34] [StatWatcher.<anonymous>] Config file changed. Reloading...
-[14:45:34] [ConfigService.loadConfig] Config Updated: {
-  "settings": {
-    "minPrice": 20,
-    "maxPrice": 30000,
-    "targetPriceDiff": 2,
-    "stopLossPriceDiff": 11,
-    "trailingDistance": 4,
-    "cooldownSeconds": 0,
-    "logQuotes": false,
-    "safetyBufferAmount": 5000,
-    "consistencyLimitPercent": 40,
-    "maxDailyDrawdownPercent": 25,
-    "maxWeeklyDrawdownPercent": 50,
-    "maxTradesPerDay": 10,
-    "gapScreenerCoverOrderEnabled": false,
-    "gapScreenerCoverOrderUserEmail": "",
-    "gapScreenerCoverOrderQuantity": 0,
-    "gapScreenerCoverOrderStopLossPoints": 0
-  },
-  "strategies": [
-    {
-      "type": "SentimentStrategy",
-      "enabled": false,
-      "averageThreshold": 20,
-      "targetPrice": 2,
-      "orderQuantity": 7200,
-      "sentiment": "put",
-      "loopCount": 1
-    },
-    {
-      "type": "ContinuousStrategy",
-      "enabled": false,
-      "broker": "breeze",
-      "initialQuantity": 65,
-      "slDistance": 10,
-      "squareOffDistance": 500,
-      "postAverageTargetDistance": 1,
-      "minPremium": 50,
-      "maxInvestment": 200000,
-      "maxProfit": 1,
-      "spawnQuantityMode": "1",
-      "averageQuantityMode": "same",
-      "right": "none",
-      "marketSentiment": "none",
-      "maxLevels": 4,
-      "cooldownSeconds": 60,
-      "refillCancelDistance": 50,
-      "logEnabled": true,
-      "momentumEnabled": false,
-      "momentumTimeoutMs": 3000
-    },
-    {
-      "type": "RateOfChangeStrategy",
-      "enabled": false,
-      "pointsThreshold": 30,
-      "accelerationThreshold": 5,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 2,
-      "stopLossPrice": 11,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GapStrategy",
-      "enabled": false,
-      "pointsThreshold": 20,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 10,
-      "stopLossPrice": 5,
-      "maxHoldTimeMinutes": 600,
-      "gapReversalMode": false,
-      "gapReversalThreshold": 100,
-      "logEnabled": true
-    },
-    {
-      "type": "RuleBasedStrategy",
-      "enabled": false,
-      "indicators": [
-        "RSI_5_70_30"
-      ],
-      "quantity": 65,
-      "target": 10,
-      "stopLoss": 20,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GoodMorningStrategy",
-      "enabled": false,
-      "quantity": 65,
-      "targetPoints": 10,
-      "stopLossPoints": 10,
-      "logEnabled": true,
-      "snapshotTime": "10:00",
-      "confirmTime": "10:30",
-      "previousClose": 24219,
-      "minMovementPoints": 10
-    },
-    {
-      "type": "GoodMorningSensexStrategy",
-      "enabled": false,
-      "quantity": 200,
-      "targetPoints": 30,
-      "stopLossPoints": 30,
-      "logEnabled": true,
-      "snapshotTime": "09:40",
-      "confirmTime": "09:45",
-      "minMovementPoints": 30
-    },
-    {
-      "type": "SupportResistanceStrategy",
-      "enabled": false,
-      "broker": "zerodha",
-      "quantity": 1755,
-      "logEnabled": true,
-      "slDistance": 10,
-      "squareOffDistance": 100,
-      "maxLevels": 4,
-      "spawnQuantityMode": "1",
-      "averageQuantityMode": "same",
-      "postAverageTargetDistance": 1,
-      "refillCancelDistance": 50,
-      "minPremium": 50,
-      "maxInvestment": 200000,
-      "maxProfit": 100,
-      "cooldownSeconds": 60,
-      "marketSentiment": "none"
-    },
-    {
-      "type": "TargetReachStrategy",
-      "enabled": false,
-      "symbol": "NIFTY",
-      "strike": 0,
-      "expiry": "2026-01-01",
-      "optionType": "CE",
-      "targetPrice": 0,
-      "quantity": 1755,
-      "targetPoints": 10,
-      "stopLossPoints": 15,
-      "logEnabled": true
-    },
-    {
-      "type": "BulkPcrStrategy",
-      "enabled": false,
-      "broker": "zerodha",
-      "quantity": 13975,
-      "targetPoints": 2,
-      "right": "none",
-      "maxInvestment": 3000000,
-      "logEnabled": true
-    }
-  ]
-}
-[14:45:34] [ConfigService.loadConfig] Config Updated: {
-  "settings": {
-    "minPrice": 20,
-    "maxPrice": 30000,
-    "targetPriceDiff": 2,
-    "stopLossPriceDiff": 11,
-    "trailingDistance": 4,
-    "cooldownSeconds": 0,
-    "logQuotes": false,
-    "safetyBufferAmount": 5000,
-    "consistencyLimitPercent": 40,
-    "maxDailyDrawdownPercent": 25,
-    "maxWeeklyDrawdownPercent": 50,
-    "maxTradesPerDay": 10,
-    "gapScreenerCoverOrderEnabled": false,
-    "gapScreenerCoverOrderUserEmail": "",
-    "gapScreenerCoverOrderQuantity": 0,
-    "gapScreenerCoverOrderStopLossPoints": 0
-  },
-  "strategies": [
-    {
-      "type": "SentimentStrategy",
-      "enabled": false,
-      "averageThreshold": 20,
-      "targetPrice": 2,
-      "orderQuantity": 7200,
-      "sentiment": "put",
-      "loopCount": 1
-    },
-    {
-      "type": "ContinuousStrategy",
-      "enabled": false,
-      "broker": "breeze",
-      "initialQuantity": 65,
-      "slDistance": 10,
-      "squareOffDistance": 500,
-      "postAverageTargetDistance": 1,
-      "minPremium": 50,
-      "maxInvestment": 200000,
-      "maxProfit": 1,
-      "spawnQuantityMode": "1",
-      "averageQuantityMode": "same",
-      "right": "none",
-      "marketSentiment": "none",
-      "maxLevels": 4,
-      "cooldownSeconds": 60,
-      "refillCancelDistance": 50,
-      "logEnabled": true,
-      "momentumEnabled": false,
-      "momentumTimeoutMs": 3000
-    },
-    {
-      "type": "RateOfChangeStrategy",
-      "enabled": false,
-      "pointsThreshold": 30,
-      "accelerationThreshold": 5,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 2,
-      "stopLossPrice": 11,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GapStrategy",
-      "enabled": false,
-      "pointsThreshold": 20,
-      "numberOfDatapointsReceived": 50,
-      "quantity": 65,
-      "targetPrice": 10,
-      "stopLossPrice": 5,
-      "maxHoldTimeMinutes": 600,
-      "gapReversalMode": false,
-      "gapReversalThreshold": 100,
-      "logEnabled": true
-    },
-    {
-      "type": "RuleBasedStrategy",
-      "enabled": false,
-      "indicators": [
-        "RSI_5_70_30"
-      ],
-      "quantity": 65,
-      "target": 10,
-      "stopLoss": 20,
-      "maxHoldTimeMinutes": 30,
-      "logEnabled": true
-    },
-    {
-      "type": "GoodMorningStrategy",
-      "enabled": false,
-      "quantity": 65,
-      "targetPoints": 10,
-      "stopLossPoints": 10,
-      "logEnabled": true,
-      "snapshotTime": "10:00",
-      "confirmTime": "10:30",
-      "previousClose": 24219,
-      "minMovementPoints": 10
-    },
-    {
-      "type": "GoodMorningSensexStrategy",
-      "enabled": false,
-      "quantity": 200,
-      "targetPoints": 30,
-      "stopLossPoints": 30,
-      "logEnabled": true,
-      "snapshotTime": "09:40",
-      "confirmTime": "09:45",
-      "minMovementPoints": 30
-    },
-    {
-      "type": "SupportResistanceStrategy",
-      "enabled": false,
-      "broker": "zerodha",
-      "quantity": 1755,
-      "logEnabled": true,
-      "slDistance": 10,
-      "squareOffDistance": 100,
-      "maxLevels": 4,
-      "spawnQuantityMode": "1",
-      "averageQuantityMode": "same",
-      "postAverageTargetDistance": 1,
-      "refillCancelDistance": 50,
-      "minPremium": 50,
-      "maxInvestment": 200000,
-      "maxProfit": 100,
-      "cooldownSeconds": 60,
-      "marketSentiment": "none"
-    },
-    {
-      "type": "TargetReachStrategy",
-      "enabled": false,
-      "symbol": "NIFTY",
-      "strike": 0,
-      "expiry": "2026-01-01",
-      "optionType": "CE",
-      "targetPrice": 0,
-      "quantity": 1755,
-      "targetPoints": 10,
-      "stopLossPoints": 15,
-      "logEnabled": true
-    },
-    {
-      "type": "BulkPcrStrategy",
-      "enabled": false,
-      "broker": "zerodha",
-      "quantity": 13975,
-      "targetPoints": 2,
-      "right": "none",
-      "maxInvestment": 3000000,
-      "logEnabled": true
-    }
-  ]
-}
-[14:45:36] [BulkPcrStrategy.logGateOnce] [BulkPcrStrategy] gate: gates clear - attempting entry
-[14:45:36] [BulkPcrStrategy.logGateOnce] [BulkPcrStrategy] gate: entry already in progress or done (phase=buying)
-[14:45:37] [BulkPcrStrategy.resolveEntryRight] [BulkPcrStrategy] PCR=1.184 -> resolved direction put
-[14:45:39] [StatWatcher.<anonymous>] Config file changed. Reloading...
-[14:45:39] [ConfigService.loadConfig] Config Updated: {
+    at async Breeze.generateSession (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:255:9)
+    at async Breeze.ensureSessionRestored (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:141:13)
+    at async Breeze.hasValidSession (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:262:13)
+    at async OrderBookkeeping.reconcileBreezePositions (/home/karthikeyan/work/icici/dist/processes/order/bookkeeping.js:717:19)
+    at async OrderBookkeeping.loadOpenTradesFromBroker (/home/karthikeyan/work/icici/dist/processes/order/bookkeeping.js:741:9)
+    at async main (/home/karthikeyan/work/icici/dist/processes/orderProcess.js:559:5)
+[12:28:16] [connectBreezeOrderNotifyIfSessionValid] [order] Breeze session not valid (startup) - skipping BreezeOrderNotifyStream connect until next Breeze login
+[12:28:16] [Server.<anonymous>] [order] Listening on /tmp/icici-order.sock
+[12:28:16] [AntOrderNotifyStream.getWsToken] [AntOrderNotify] createWsToken response: {"status":"Ok","message":"200","result":[{"orderToken":"6b7b6b6d9f87e60e118802b3ce7f42b09f8face53d9ece5aa9efcbe51180b36f"}]}
+[12:28:16] [ws.onopen] [AntOrderNotify] Connected, subscribing...
+[12:28:17] [ContinuousStrategy.reconcile] [ContinuousStrategy] reconcile: order query attempt 2/15 failed: Error: Not connected to order process
+    at /home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:80:31
+    at new Promise (<anonymous>)
+    at OrderClient.request (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:78:16)
+    at OrderClient.getOpenTrades (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:296:32)
+    at ContinuousStrategy.reconcile (/home/karthikeyan/work/icici/dist/strategy/ContinuousStrategy.js:132:72)
+    at async main (/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js:206:13)
+[12:28:17] [Socket.<anonymous>] [strategies] Connected to order process
+[12:28:17] [Server.<anonymous>] [order] Client connected, total: 1
+[12:28:18] [Server.<anonymous>] [order] Client connected, total: 2
+[12:28:18] [Socket.<anonymous>] [strategies] Connected to order process
+[12:28:19] [main] [strategies] Ready - 10 strategies loaded.
+[12:28:32] [SecurityLog.log] [security] 2026-09-22 12:28:32 [BLOCKED_IP] ip=::ffff:209.38.208.214 method=GET path=/
+[12:32:47] [FSWatcher.<anonymous>] Config file changed. Reloading...
+[12:32:47] [FSWatcher.<anonymous>] Config file changed. Reloading...
+[12:32:47] [FSWatcher.<anonymous>] Config file changed. Reloading...
+[12:32:47] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -2716,9 +2307,7 @@ Mon, 21 Sep 2026 09:06:25 GMT body-parser deprecated undefined extended: provide
     }
   ]
 }
-[14:45:39] [StatWatcher.<anonymous>] Config file changed. Reloading...
-[14:45:39] [StatWatcher.<anonymous>] Config file changed. Reloading...
-[14:45:39] [ConfigService.loadConfig] Config Updated: {
+[12:32:47] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -2873,7 +2462,7 @@ Mon, 21 Sep 2026 09:06:25 GMT body-parser deprecated undefined extended: provide
     }
   ]
 }
-[14:45:39] [ConfigService.loadConfig] Config Updated: {
+[12:32:47] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -3028,9 +2617,7 @@ Mon, 21 Sep 2026 09:06:25 GMT body-parser deprecated undefined extended: provide
     }
   ]
 }
-[14:45:40] [BreezeContractMaster.loadFno] [BreezeContractMaster] Loaded 80071 NFO contracts
-[14:45:40] [StatWatcher.<anonymous>] Config file changed. Reloading...
-[14:45:40] [ConfigService.loadConfig] Config Updated: {
+[12:32:47] [ConfigService.loadConfig] Config Updated: {
   "settings": {
     "minPrice": 20,
     "maxPrice": 30000,
@@ -3185,199 +2772,1620 @@ Mon, 21 Sep 2026 09:06:25 GMT body-parser deprecated undefined extended: provide
     }
   ]
 }
-[14:45:41] [Object.buyResolvedOnBreeze [as buy]] [order] Buying NIFTY23450PE qty=1755 @ 64.55 (limit) for BulkPcrStrategy via Breeze
-[14:45:41] [Breeze.placeOrder] [Breeze] Placing buy limit order: NIFTY qty=1755
-[14:45:41] [Breeze.placeOrder] [Breeze] Order placed: 202609213800009374
-[14:45:41] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019285","requestType":"5","messageSequence":"2026092101973678","messageDate":"21-09-2026","messageTime":"14:45:41","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"NIFTY","productType":"Options","optionType":"Put","exerciseType":"E","strikePrice":"2345000","expiryDate":"22-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Buy","limitMarketFlag":"Limit","orderType":"Day","limitRate":"6455","orderStatus":"Partially Executed","orderReference":"202609213800009374","orderTotalQuantity":"1755","executedQuantity":"390","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"38","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"1000000107263178    ","stopLossOrderReference":"1000000107263178    ","totalAmountBlocked":"*","averageExecutedRate":"0.000000","cancelFlag":"6455.000000","squareOffMarket":"Y","quickExitFlag":"Y","stopValidTillDateFlag":"N","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:45:42] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019286","requestType":"5","messageSequence":"2026092101973683","messageDate":"21-09-2026","messageTime":"14:45:41","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"NIFTY","productType":"Options","optionType":"Put","exerciseType":"E","strikePrice":"2345000","expiryDate":"22-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Buy","limitMarketFlag":"Limit","orderType":"Day","limitRate":"6455","orderStatus":"Executed","orderReference":"202609213800009374","orderTotalQuantity":"1755","executedQuantity":"1755","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"38","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"1000000107263178    ","stopLossOrderReference":"1000000107263178    ","totalAmountBlocked":"*","averageExecutedRate":"0.000000","cancelFlag":"6455.000000","squareOffMarket":"Y","quickExitFlag":"Y","stopValidTillDateFlag":"N","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:45:42] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] Executed push for order 202609213800009374 carried an implausible averageExecutedRate (0.000000) - rejecting to force the REST fallback instead of recording a wrong price.
-[14:45:42] [waitForBreezeFill] [order] waitForFill failed for Breeze order 202609213800009374 - falling back to REST fill check: Error: Breeze order 202609213800009374 push carried an implausible fill price (0.000000)
-    at BreezeOrderNotifyStream.handleMessage (/home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:79:32)
-    at /home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:27:51
-    at breeze.onTicks (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:151:21)
-    at BreezeConnect.self.onMessage (/home/karthikeyan/work/icici/node_modules/breezeconnect/breezeConnect.js:194:14)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at Socket.emitEvent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:519:20)
-    at Socket.onevent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:506:18)
-    at Socket.onpacket (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:474:22)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at /home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/manager.js:237:18
-[14:45:42] [waitForBreezeFill] [order] REST fallback confirmed fill for Breeze order 202609213800009374 at 64.55 (order-notify push was missed)
-[14:45:42] [OrderBookkeeping._processTradeEvent] [order] Buy NIFTY23450PE qty=1755 price=64.55 status=COMPLETE
-[14:45:42] [buyChunked] [order] buyChunked: chunk 1/8 filled qty=1755 @ 64.55 for BulkPcrStrategy
-[14:45:42] [/home/karthikeyan/work/icici/dist/processes/data/BreezeDataStream.js:134:39] [BreezeDataStream] subscribed: 57006
-[14:45:42] [Object.buyResolvedOnBreeze [as buy]] [order] Buying NIFTY23450PE qty=1755 @ 64.6 (limit) for BulkPcrStrategy via Breeze
-[14:45:42] [Breeze.placeOrder] [Breeze] Placing buy limit order: NIFTY qty=1755
-[14:45:42] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=64.4 raw={"symbol":"4.1!57006","open":141.25,"last":64.4,"high":141.35,"low":58.6,"change":-54.26,"bPrice":64.5,"bQty":585,"sPrice":64.6,"sQty":4095,"ltq":65,"avgPrice":86.89,"quotes":"Quotes Data","OI":17474340,"CHNGOI":"","ttq":185360370,"totalBuyQt":3222245,"totalSellQ":2186860,"ttv":"161059.63C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:45:42","close":141,"exchange":"NSE Futures & Options"}
-[14:45:42] [Breeze.placeOrder] [Breeze] Order placed: 202609213800009375
-[14:45:44] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019286","requestType":"5","messageSequence":"2026092101973770","messageDate":"21-09-2026","messageTime":"14:45:44","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"NIFTY","productType":"Options","optionType":"Put","exerciseType":"E","strikePrice":"2345000","expiryDate":"22-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Buy","limitMarketFlag":"Limit","orderType":"Day","limitRate":"6460","orderStatus":"Executed","orderReference":"202609213800009375","orderTotalQuantity":"1755","executedQuantity":"1755","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"38","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"1000000107269849    ","stopLossOrderReference":"1000000107269849    ","totalAmountBlocked":"*","averageExecutedRate":"0.000000","cancelFlag":"6447.960000","squareOffMarket":"N","quickExitFlag":"N","stopValidTillDateFlag":"Y","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:45:44] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] Executed push for order 202609213800009375 carried an implausible averageExecutedRate (0.000000) - rejecting to force the REST fallback instead of recording a wrong price.
-[14:45:44] [waitForBreezeFill] [order] waitForFill failed for Breeze order 202609213800009375 - falling back to REST fill check: Error: Breeze order 202609213800009375 push carried an implausible fill price (0.000000)
-    at BreezeOrderNotifyStream.handleMessage (/home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:79:32)
-    at /home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:27:51
-    at breeze.onTicks (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:151:21)
-    at BreezeConnect.self.onMessage (/home/karthikeyan/work/icici/node_modules/breezeconnect/breezeConnect.js:194:14)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at Socket.emitEvent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:519:20)
-    at Socket.onevent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:506:18)
-    at Socket.onpacket (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:474:22)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at /home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/manager.js:237:18
-[14:45:44] [waitForBreezeFill] [order] REST fallback confirmed fill for Breeze order 202609213800009375 at 64.47 (order-notify push was missed)
-[14:45:44] [OrderBookkeeping._processTradeEvent] [order] Buy NIFTY23450PE qty=1755 price=64.47 status=COMPLETE
-[14:45:44] [buyChunked] [order] buyChunked: chunk 2/8 filled qty=1755 @ 64.47 for BulkPcrStrategy
-[14:45:44] [Object.buyResolvedOnBreeze [as buy]] [order] Buying NIFTY23450PE qty=1755 @ 64.5 (limit) for BulkPcrStrategy via Breeze
-[14:45:44] [Breeze.placeOrder] [Breeze] Placing buy limit order: NIFTY qty=1755
-[14:45:45] [Breeze.placeOrder] [Breeze] Order placed: 202609213800009376
-[14:45:46] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019292","requestType":"5","messageSequence":"2026092101973915","messageDate":"21-09-2026","messageTime":"14:45:46","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"NIFTY","productType":"Options","optionType":"Put","exerciseType":"E","strikePrice":"2345000","expiryDate":"22-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Buy","limitMarketFlag":"Limit","orderType":"Day","limitRate":"6450","orderStatus":"Executed","orderReference":"202609213800009376","orderTotalQuantity":"1755","executedQuantity":"1755","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"38","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"1000000107276569    ","stopLossOrderReference":"1000000107276569    ","totalAmountBlocked":"*","averageExecutedRate":"1114100.000000","cancelFlag":"6440.000000","squareOffMarket":"Y","quickExitFlag":"N","stopValidTillDateFlag":"Y","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:45:46] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] Executed push for order 202609213800009376 carried an implausible averageExecutedRate (1114100.000000) - rejecting to force the REST fallback instead of recording a wrong price.
-[14:45:46] [waitForBreezeFill] [order] waitForFill failed for Breeze order 202609213800009376 - falling back to REST fill check: Error: Breeze order 202609213800009376 push carried an implausible fill price (1114100.000000)
-    at BreezeOrderNotifyStream.handleMessage (/home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:79:32)
-    at /home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:27:51
-    at breeze.onTicks (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:151:21)
-    at BreezeConnect.self.onMessage (/home/karthikeyan/work/icici/node_modules/breezeconnect/breezeConnect.js:194:14)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at Socket.emitEvent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:519:20)
-    at Socket.onevent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:506:18)
-    at Socket.onpacket (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:474:22)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at /home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/manager.js:237:18
-[14:45:46] [waitForBreezeFill] [order] REST fallback confirmed fill for Breeze order 202609213800009376 at 64.4 (order-notify push was missed)
-[14:45:46] [OrderBookkeeping._processTradeEvent] [order] Buy NIFTY23450PE qty=1755 price=64.4 status=COMPLETE
-[14:45:46] [buyChunked] [order] buyChunked: chunk 3/8 filled qty=1755 @ 64.4 for BulkPcrStrategy
-[14:45:46] [Object.buyResolvedOnBreeze [as buy]] [order] Buying NIFTY23450PE qty=1755 @ 64.5 (limit) for BulkPcrStrategy via Breeze
-[14:45:46] [Breeze.placeOrder] [Breeze] Placing buy limit order: NIFTY qty=1755
-[14:45:47] [Breeze.placeOrder] [Breeze] Order placed: 202609213800009378
-[14:45:48] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019286","requestType":"5","messageSequence":"2026092101974030","messageDate":"21-09-2026","messageTime":"14:45:48","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"NIFTY","productType":"Options","optionType":"Put","exerciseType":"E","strikePrice":"2345000","expiryDate":"22-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Buy","limitMarketFlag":"Limit","orderType":"Day","limitRate":"6450","orderStatus":"Executed","orderReference":"202609213800009378","orderTotalQuantity":"1755","executedQuantity":"1755","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"38","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"1000000107284971    ","stopLossOrderReference":"1000000107284971    ","totalAmountBlocked":"*","averageExecutedRate":"0.000000","cancelFlag":"6430.000000","squareOffMarket":"Y","quickExitFlag":"Y","stopValidTillDateFlag":"N","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:45:48] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] Executed push for order 202609213800009378 carried an implausible averageExecutedRate (0.000000) - rejecting to force the REST fallback instead of recording a wrong price.
-[14:45:48] [waitForBreezeFill] [order] waitForFill failed for Breeze order 202609213800009378 - falling back to REST fill check: Error: Breeze order 202609213800009378 push carried an implausible fill price (0.000000)
-    at BreezeOrderNotifyStream.handleMessage (/home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:79:32)
-    at /home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:27:51
-    at breeze.onTicks (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:151:21)
-    at BreezeConnect.self.onMessage (/home/karthikeyan/work/icici/node_modules/breezeconnect/breezeConnect.js:194:14)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at Socket.emitEvent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:519:20)
-    at Socket.onevent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:506:18)
-    at Socket.onpacket (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:474:22)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at /home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/manager.js:237:18
-[14:45:48] [waitForBreezeFill] [order] REST fallback confirmed fill for Breeze order 202609213800009378 at 64.3 (order-notify push was missed)
-[14:45:48] [OrderBookkeeping._processTradeEvent] [order] Buy NIFTY23450PE qty=1755 price=64.3 status=COMPLETE
-[14:45:48] [buyChunked] [order] buyChunked: chunk 4/8 filled qty=1755 @ 64.3 for BulkPcrStrategy
-[14:45:48] [Object.buyResolvedOnBreeze [as buy]] [order] Buying NIFTY23450PE qty=1755 @ 64.3 (limit) for BulkPcrStrategy via Breeze
-[14:45:48] [Breeze.placeOrder] [Breeze] Placing buy limit order: NIFTY qty=1755
-[14:45:49] [Breeze.placeOrder] [Breeze] Order placed: 202609213800009381
-[14:45:50] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019292","requestType":"5","messageSequence":"2026092101974135","messageDate":"21-09-2026","messageTime":"14:45:50","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"NIFTY","productType":"Options","optionType":"Put","exerciseType":"E","strikePrice":"2345000","expiryDate":"22-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Buy","limitMarketFlag":"Limit","orderType":"Day","limitRate":"6430","orderStatus":"Executed","orderReference":"202609213800009381","orderTotalQuantity":"1755","executedQuantity":"1755","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"38","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"1000000107293764    ","stopLossOrderReference":"1000000107293764    ","totalAmountBlocked":"*","averageExecutedRate":"6163950.000000","cancelFlag":"6420.000000","squareOffMarket":"Y","quickExitFlag":"N","stopValidTillDateFlag":"Y","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:45:50] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] Executed push for order 202609213800009381 carried an implausible averageExecutedRate (6163950.000000) - rejecting to force the REST fallback instead of recording a wrong price.
-[14:45:50] [waitForBreezeFill] [order] waitForFill failed for Breeze order 202609213800009381 - falling back to REST fill check: Error: Breeze order 202609213800009381 push carried an implausible fill price (6163950.000000)
-    at BreezeOrderNotifyStream.handleMessage (/home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:79:32)
-    at /home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:27:51
-    at breeze.onTicks (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:151:21)
-    at BreezeConnect.self.onMessage (/home/karthikeyan/work/icici/node_modules/breezeconnect/breezeConnect.js:194:14)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at Socket.emitEvent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:519:20)
-    at Socket.onevent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:506:18)
-    at Socket.onpacket (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:474:22)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at /home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/manager.js:237:18
-[14:45:51] [waitForBreezeFill] [order] REST fallback confirmed fill for Breeze order 202609213800009381 at 64.2 (order-notify push was missed)
-[14:45:51] [OrderBookkeeping._processTradeEvent] [order] Buy NIFTY23450PE qty=1755 price=64.2 status=COMPLETE
-[14:45:51] [buyChunked] [order] buyChunked: chunk 5/8 filled qty=1755 @ 64.2 for BulkPcrStrategy
-[14:45:51] [Object.buyResolvedOnBreeze [as buy]] [order] Buying NIFTY23450PE qty=1755 @ 64.2 (limit) for BulkPcrStrategy via Breeze
-[14:45:51] [Breeze.placeOrder] [Breeze] Placing buy limit order: NIFTY qty=1755
-[14:45:51] [Breeze.placeOrder] [Breeze] Order placed: 202609213800009384
-[14:45:52] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019286","requestType":"5","messageSequence":"2026092101974302","messageDate":"21-09-2026","messageTime":"14:45:52","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"NIFTY","productType":"Options","optionType":"Put","exerciseType":"E","strikePrice":"2345000","expiryDate":"22-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Buy","limitMarketFlag":"Limit","orderType":"Day","limitRate":"6420","orderStatus":"Executed","orderReference":"202609213800009384","orderTotalQuantity":"1755","executedQuantity":"1755","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"38","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"1000000107307603    ","stopLossOrderReference":"1000000107307603    ","totalAmountBlocked":"*","averageExecutedRate":"0.000000","cancelFlag":"6420.000000","squareOffMarket":"Y","quickExitFlag":"Y","stopValidTillDateFlag":"N","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:45:52] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] Executed push for order 202609213800009384 carried an implausible averageExecutedRate (0.000000) - rejecting to force the REST fallback instead of recording a wrong price.
-[14:45:52] [waitForBreezeFill] [order] waitForFill failed for Breeze order 202609213800009384 - falling back to REST fill check: Error: Breeze order 202609213800009384 push carried an implausible fill price (0.000000)
-    at BreezeOrderNotifyStream.handleMessage (/home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:79:32)
-    at /home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:27:51
-    at breeze.onTicks (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:151:21)
-    at BreezeConnect.self.onMessage (/home/karthikeyan/work/icici/node_modules/breezeconnect/breezeConnect.js:194:14)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at Socket.emitEvent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:519:20)
-    at Socket.onevent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:506:18)
-    at Socket.onpacket (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:474:22)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at /home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/manager.js:237:18
-[14:45:52] [waitForBreezeFill] [order] REST fallback confirmed fill for Breeze order 202609213800009384 at 64.2 (order-notify push was missed)
-[14:45:52] [OrderBookkeeping._processTradeEvent] [order] Buy NIFTY23450PE qty=1755 price=64.2 status=COMPLETE
-[14:45:52] [buyChunked] [order] buyChunked: chunk 6/8 filled qty=1755 @ 64.2 for BulkPcrStrategy
-[14:45:52] [Object.buyResolvedOnBreeze [as buy]] [order] Buying NIFTY23450PE qty=1755 @ 64.2 (limit) for BulkPcrStrategy via Breeze
-[14:45:52] [Breeze.placeOrder] [Breeze] Placing buy limit order: NIFTY qty=1755
-[14:45:52] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=64.15 raw={"symbol":"4.1!57006","open":141.25,"last":64.15,"high":141.35,"low":58.6,"change":-54.5,"bPrice":64.15,"bQty":65,"sPrice":64.2,"sQty":2145,"ltq":65,"avgPrice":86.88,"quotes":"Quotes Data","OI":17474340,"CHNGOI":"","ttq":185471455,"totalBuyQt":3195530,"totalSellQ":2206295,"ttv":"161137.6C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:45:52","close":141,"exchange":"NSE Futures & Options"}
-[14:45:52] [Breeze.placeOrder] [Breeze] Order placed: 202609213800009385
-[14:45:54] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019286","requestType":"5","messageSequence":"2026092101974406","messageDate":"21-09-2026","messageTime":"14:45:54","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"NIFTY","productType":"Options","optionType":"Put","exerciseType":"E","strikePrice":"2345000","expiryDate":"22-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Buy","limitMarketFlag":"Limit","orderType":"Day","limitRate":"6420","orderStatus":"Executed","orderReference":"202609213800009385","orderTotalQuantity":"1755","executedQuantity":"1755","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"38","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"1000000107312215    ","stopLossOrderReference":"1000000107312215    ","totalAmountBlocked":"*","averageExecutedRate":"0.000000","cancelFlag":"6419.810000","squareOffMarket":"N","quickExitFlag":"N","stopValidTillDateFlag":"Y","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:45:54] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] Executed push for order 202609213800009385 carried an implausible averageExecutedRate (0.000000) - rejecting to force the REST fallback instead of recording a wrong price.
-[14:45:54] [waitForBreezeFill] [order] waitForFill failed for Breeze order 202609213800009385 - falling back to REST fill check: Error: Breeze order 202609213800009385 push carried an implausible fill price (0.000000)
-    at BreezeOrderNotifyStream.handleMessage (/home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:79:32)
-    at /home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:27:51
-    at breeze.onTicks (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:151:21)
-    at BreezeConnect.self.onMessage (/home/karthikeyan/work/icici/node_modules/breezeconnect/breezeConnect.js:194:14)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at Socket.emitEvent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:519:20)
-    at Socket.onevent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:506:18)
-    at Socket.onpacket (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:474:22)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at /home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/manager.js:237:18
-[14:45:54] [waitForBreezeFill] [order] REST fallback confirmed fill for Breeze order 202609213800009385 at 64.19 (order-notify push was missed)
-[14:45:54] [OrderBookkeeping._processTradeEvent] [order] Buy NIFTY23450PE qty=1755 price=64.19 status=COMPLETE
-[14:45:54] [buyChunked] [order] buyChunked: chunk 7/8 filled qty=1755 @ 64.19 for BulkPcrStrategy
-[14:45:54] [Object.buyResolvedOnBreeze [as buy]] [order] Buying NIFTY23450PE qty=1690 @ 64.2 (limit) for BulkPcrStrategy via Breeze
-[14:45:54] [Breeze.placeOrder] [Breeze] Placing buy limit order: NIFTY qty=1690
-[14:45:55] [Breeze.placeOrder] [Breeze] Order placed: 202609213800009386
-[14:45:56] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019286","requestType":"5","messageSequence":"2026092101974538","messageDate":"21-09-2026","messageTime":"14:45:56","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"NIFTY","productType":"Options","optionType":"Put","exerciseType":"E","strikePrice":"2345000","expiryDate":"22-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Buy","limitMarketFlag":"Limit","orderType":"Day","limitRate":"6420","orderStatus":"Executed","orderReference":"202609213800009386","orderTotalQuantity":"1690","executedQuantity":"1690","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"38","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"1000000107320252    ","stopLossOrderReference":"1000000107320252    ","totalAmountBlocked":"*","averageExecutedRate":"0.000000","cancelFlag":"6412.500000","squareOffMarket":"N","quickExitFlag":"N","stopValidTillDateFlag":"Y","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:45:56] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] Executed push for order 202609213800009386 carried an implausible averageExecutedRate (0.000000) - rejecting to force the REST fallback instead of recording a wrong price.
-[14:45:56] [waitForBreezeFill] [order] waitForFill failed for Breeze order 202609213800009386 - falling back to REST fill check: Error: Breeze order 202609213800009386 push carried an implausible fill price (0.000000)
-    at BreezeOrderNotifyStream.handleMessage (/home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:79:32)
-    at /home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:27:51
-    at breeze.onTicks (/home/karthikeyan/work/icici/dist/breeze/Breeze.js:151:21)
-    at BreezeConnect.self.onMessage (/home/karthikeyan/work/icici/node_modules/breezeconnect/breezeConnect.js:194:14)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at Socket.emitEvent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:519:20)
-    at Socket.onevent (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:506:18)
-    at Socket.onpacket (/home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/socket.js:474:22)
-    at Emitter.emit (/home/karthikeyan/work/icici/node_modules/@socket.io/component-emitter/index.js:143:20)
-    at /home/karthikeyan/work/icici/node_modules/breezeconnect/node_modules/socket.io-client/build/cjs/manager.js:237:18
-[14:45:56] [waitForBreezeFill] [order] REST fallback confirmed fill for Breeze order 202609213800009386 at 64.12 (order-notify push was missed)
-[14:45:56] [OrderBookkeeping._processTradeEvent] [order] Buy NIFTY23450PE qty=1690 price=64.12 status=COMPLETE
-[14:45:56] [buyChunked] [order] buyChunked: chunk 8/8 filled qty=1690 @ 64.12 for BulkPcrStrategy
-[14:45:56] [BulkPcrStrategy.processNiftyQuote] [BulkPcrStrategy] Entry complete: NIFTY23450PE qty=13975 avg=64.30460465116279
-[14:45:56] [BulkPcrStrategy.logGateOnce] [BulkPcrStrategy] gate: entry already in progress or done (phase=holding)
-[14:46:03] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=64 raw={"symbol":"4.1!57006","open":141.25,"last":64,"high":141.35,"low":58.6,"change":-54.61,"bPrice":64.05,"bQty":65,"sPrice":64.1,"sQty":195,"ltq":260,"avgPrice":86.87,"quotes":"Quotes Data","OI":17474340,"CHNGOI":"","ttq":185574805,"totalBuyQt":3178565,"totalSellQ":2206490,"ttv":"161208.83C","trend":"-","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:46:02","close":141,"exchange":"NSE Futures & Options"}
-[14:46:13] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=64.05 raw={"symbol":"4.1!57006","open":141.25,"last":64.05,"high":141.35,"low":58.6,"change":-54.68,"bPrice":63.9,"bQty":585,"sPrice":64.05,"sQty":2145,"ltq":65,"avgPrice":86.86,"quotes":"Quotes Data","OI":17474340,"CHNGOI":"","ttq":185629990,"totalBuyQt":3170505,"totalSellQ":2211105,"ttv":"161238.21C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:46:13","close":141,"exchange":"NSE Futures & Options"}
-[14:46:25] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=64.35 raw={"symbol":"4.1!57006","open":141.25,"last":64.35,"high":141.35,"low":58.6,"change":-54.26,"bPrice":64.4,"bQty":585,"sPrice":64.5,"sQty":65,"ltq":65,"avgPrice":86.85,"quotes":"Quotes Data","OI":17474340,"CHNGOI":"","ttq":185700125,"totalBuyQt":3213665,"totalSellQ":2171975,"ttv":"161280.56C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:46:23","close":141,"exchange":"NSE Futures & Options"}
-[14:46:31] [ws.onclose] [AntOrderNotify] WebSocket closed
-[14:46:31] [AntOrderNotifyStream.scheduleReconnect] [AntOrderNotify] Reconnecting in 2000ms...
-[14:46:34] [AntOrderNotifyStream.getWsToken] [AntOrderNotify] createWsToken response: {"status":"Ok","message":"200","result":[{"orderToken":"4483627ee1a9050040fcfb2ac445ba9cdbf9cf64f71af1a4ec6ec3b1bd098820"}]}
-[14:46:35] [ws.onopen] [AntOrderNotify] Connected, subscribing...
-[14:46:35] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=64.5 raw={"symbol":"4.1!57006","open":141.25,"last":64.5,"high":141.35,"low":58.6,"change":-54.26,"bPrice":64.45,"bQty":2405,"sPrice":64.5,"sQty":32435,"ltq":65,"avgPrice":86.84,"quotes":"Quotes Data","OI":17474340,"CHNGOI":"","ttq":185769415,"totalBuyQt":3195270,"totalSellQ":2203890,"ttv":"161322.16C","trend":"-","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:46:35","close":141,"exchange":"NSE Futures & Options"}
-[14:46:45] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=64.35 raw={"symbol":"4.1!57006","open":141.25,"last":64.35,"high":141.35,"low":58.6,"change":-54.36,"bPrice":64.35,"bQty":650,"sPrice":64.45,"sQty":1820,"ltq":260,"avgPrice":86.84,"quotes":"Quotes Data","OI":17462315,"CHNGOI":"","ttq":185817320,"totalBuyQt":3200210,"totalSellQ":2180425,"ttv":"161363.76C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:46:45","close":141,"exchange":"NSE Futures & Options"}
-[14:46:56] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=65.55 raw={"symbol":"4.1!57006","open":141.25,"last":65.55,"high":141.35,"low":58.6,"change":-53.51,"bPrice":65.4,"bQty":2210,"sPrice":65.55,"sQty":1560,"ltq":130,"avgPrice":86.82,"quotes":"Quotes Data","OI":17462315,"CHNGOI":"","ttq":185999515,"totalBuyQt":3229135,"totalSellQ":2074020,"ttv":"161484.78C","trend":"-","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:46:56","close":141,"exchange":"NSE Futures & Options"}
-[14:47:04] [BulkPcrStrategy.processOptionQuote] [BulkPcrStrategy] Target hit: ltp=66.4 >= 66.30460465116279 - exiting NIFTY23450PE
-[14:47:04] [BulkPcrStrategy.logGateOnce] [BulkPcrStrategy] gate: entry already in progress or done (phase=selling)
-[14:47:05] [squareOffOnBreeze] [order] Squaring off NIFTY23450PE qty=1755 @ 66.1 (limit) for BulkPcrStrategy via Breeze
-[14:47:05] [Breeze.placeOrder] [Breeze] Placing sell limit order: NIFTY qty=1755
-[14:47:05] [Breeze.placeOrder] [Breeze] Order placed: 202609213800009400
-[14:47:05] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019267","requestType":"5","messageSequence":"2026092101978960","messageDate":"21-09-2026","messageTime":"14:47:05","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"NIFTY","productType":"Options","optionType":"Put","exerciseType":"E","strikePrice":"2345000","expiryDate":"22-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Sell","limitMarketFlag":"Limit","orderType":"Day","limitRate":"6610","orderStatus":"Requested","orderReference":"202609213800009400","orderTotalQuantity":"1755","executedQuantity":"0","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"38","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"*","stopLossOrderReference":"*","totalAmountBlocked":"*","averageExecutedRate":"8190000.000000","cancelFlag":"0.000000","squareOffMarket":"N","quickExitFlag":"N","stopValidTillDateFlag":"Y","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:47:06] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=65.9 raw={"symbol":"4.1!57006","open":141.25,"last":65.9,"high":141.35,"low":58.6,"change":-53.33,"bPrice":65.6,"bQty":2340,"sPrice":65.8,"sQty":4030,"ltq":65,"avgPrice":86.79,"quotes":"Quotes Data","OI":17462315,"CHNGOI":"","ttq":186250090,"totalBuyQt":3225105,"totalSellQ":2053935,"ttv":"161646.45C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:47:06","close":141,"exchange":"NSE Futures & Options"}
-[14:47:06] [BreezeOrderNotifyStream.handleMessage] [BreezeOrderNotifyStream] raw push: {"sourceNumber":"1","group":"*","userId":"SSUKK001","key":"*","messageLength":"\u0019280","requestType":"5","messageSequence":"2026092101978970","messageDate":"21-09-2026","messageTime":"14:47:06","messageCategory":"Intraday Calls","messagePriority":"N","messageType":"6","orderMatchAccount":"8502440688","orderExchangeCode":"NFO","stockCode":"NIFTY","productType":"Options","optionType":"Put","exerciseType":"E","strikePrice":"2345000","expiryDate":"22-Sep-2026","orderValidDate":"21-Sep-2026","orderFlow":"Sell","limitMarketFlag":"Limit","orderType":"Day","limitRate":"6610","orderStatus":"Ordered","orderReference":"202609213800009400","orderTotalQuantity":"1755","executedQuantity":"0","cancelledQuantity":"0","expiredQuantity":"0","stopLossTrigger":"0","specialFlag":"N","pipeId":"38","channel":"WEB","modificationOrCancelFlag":"Y","tradeDate":"21-Sep-2026","acknowledgeNumber":"1000000107680329    ","stopLossOrderReference":"1000000107680329    ","totalAmountBlocked":"*","averageExecutedRate":"0.000000","cancelFlag":"0.000000","squareOffMarket":"N","quickExitFlag":"N","stopValidTillDateFlag":"Y","priceImprovementFlag":"N","conversionImprovementFlag":"N","trailUpdateCondition":"N","systemPartnerCode":"N"}
-[14:47:17] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=64.85 raw={"symbol":"4.1!57006","open":141.25,"last":64.85,"high":141.35,"low":58.6,"change":-54.01,"bPrice":64.7,"bQty":2275,"sPrice":64.9,"sQty":3120,"ltq":65,"avgPrice":86.77,"quotes":"Quotes Data","OI":17462315,"CHNGOI":"","ttq":186450875,"totalBuyQt":3190720,"totalSellQ":2076750,"ttv":"161783.42C","trend":"-","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:47:17","close":141,"exchange":"NSE Futures & Options"}
-[14:47:27] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=65.15 raw={"symbol":"4.1!57006","open":141.25,"last":65.15,"high":141.35,"low":58.6,"change":-53.79,"bPrice":65,"bQty":2730,"sPrice":65.2,"sQty":3120,"ltq":325,"avgPrice":86.76,"quotes":"Quotes Data","OI":17462315,"CHNGOI":"","ttq":186519905,"totalBuyQt":3220035,"totalSellQ":2077270,"ttv":"161824.67C","trend":"-","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:47:26","close":141,"exchange":"NSE Futures & Options"}
-[14:47:35] [waitForBreezeFill] [order] waitForFill failed for Breeze order 202609213800009400 - falling back to REST fill check: Error: Breeze order 202609213800009400 did not complete within 30000ms (order-notify)
-    at Timeout._onTimeout (/home/karthikeyan/work/icici/dist/breeze/BreezeOrderNotifyStream.js:96:24)
-    at listOnTimeout (node:internal/timers:594:17)
-    at process.processTimers (node:internal/timers:529:7)
-[14:47:37] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=65.15 raw={"symbol":"4.1!57006","open":141.25,"last":65.15,"high":141.35,"low":58.6,"change":-53.97,"bPrice":64.9,"bQty":2730,"sPrice":65.05,"sQty":130,"ltq":130,"avgPrice":86.74,"quotes":"Quotes Data","OI":17422145,"CHNGOI":"","ttq":186669275,"totalBuyQt":3220750,"totalSellQ":2094885,"ttv":"161916.93C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:47:37","close":141,"exchange":"NSE Futures & Options"}
-[14:47:47] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=65 raw={"symbol":"4.1!57006","open":141.25,"last":65,"high":141.35,"low":58.6,"change":-53.87,"bPrice":64.95,"bQty":390,"sPrice":65.05,"sQty":650,"ltq":195,"avgPrice":86.74,"quotes":"Quotes Data","OI":17422145,"CHNGOI":"","ttq":186717115,"totalBuyQt":3196700,"totalSellQ":2105415,"ttv":"161958.43C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:47:47","close":141,"exchange":"NSE Futures & Options"}
-[14:47:57] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=64.3 raw={"symbol":"4.1!57006","open":141.25,"last":64.3,"high":141.35,"low":58.6,"change":-54.36,"bPrice":64.35,"bQty":780,"sPrice":64.5,"sQty":910,"ltq":65,"avgPrice":86.73,"quotes":"Quotes Data","OI":17422145,"CHNGOI":"","ttq":186770415,"totalBuyQt":3197545,"totalSellQ":2127905,"ttv":"161985.98C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:47:57","close":141,"exchange":"NSE Futures & Options"}
-[14:48:09] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=63.75 raw={"symbol":"4.1!57006","open":141.25,"last":63.75,"high":141.35,"low":58.6,"change":-54.79,"bPrice":63.75,"bQty":3705,"sPrice":63.95,"sQty":3445,"ltq":65,"avgPrice":86.7,"quotes":"Quotes Data","OI":17422145,"CHNGOI":"","ttq":187003505,"totalBuyQt":3131180,"totalSellQ":2129205,"ttv":"162132.04C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:48:08","close":141,"exchange":"NSE Futures & Options"}
-[14:48:19] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=63.2 raw={"symbol":"4.1!57006","open":141.25,"last":63.2,"high":141.35,"low":58.6,"change":-54.96,"bPrice":63.35,"bQty":650,"sPrice":63.5,"sQty":2665,"ltq":195,"avgPrice":86.68,"quotes":"Quotes Data","OI":17422145,"CHNGOI":"","ttq":187130255,"totalBuyQt":3150680,"totalSellQ":2140710,"ttv":"162204.51C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:48:19","close":141,"exchange":"NSE Futures & Options"}
-[14:48:26] [Timeout._onTimeout] [BreezeDataStream] heartbeat resubscribe: 57006
-[14:48:26] [/home/karthikeyan/work/icici/dist/processes/data/BreezeDataStream.js:134:39] [BreezeDataStream] subscribed: 57006
-[14:48:30] [BreezeDataStream.emitTick] [BreezeDataStream] tick token=57006 ltp=63.05 raw={"symbol":"4.1!57006","open":141.25,"last":63.05,"high":141.35,"low":58.6,"change":-55.04,"bPrice":63.4,"bQty":845,"sPrice":63.5,"sQty":1170,"ltq":65,"avgPrice":86.67,"quotes":"Quotes Data","OI":17422145,"CHNGOI":"","ttq":187207865,"totalBuyQt":3176745,"totalSellQ":2144025,"ttv":"162253.06C","trend":"","lowerCktLm":0.05,"upperCktLm":508.85,"ltt":"Mon Sep 21 2026 14:48:30","close":141,"exchange":"NSE Futures & Options"}
-[14:48:34] [Timeout._onTimeout] [strategies] Order request 'chunkedSquareOff' (id=5) timed out after 90000ms - order process may be stuck
-[14:48:34] [BulkPcrStrategy.processOptionQuote] [BulkPcrStrategy] Chunked exit failed - manual review required, position may be partially closed: Error: Order process request 'chunkedSquareOff' timed out after 90000ms
-    at Timeout._onTimeout (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:91:28)
-    at listOnTimeout (node:internal/timers:594:17)
-    at process.processTimers (node:internal/timers:529:7)
-[14:48:34] [BulkPcrStrategy.logGateOnce] [BulkPcrStrategy] gate: entry already in progress or done (phase=error)
+[12:32:47] [FSWatcher.<anonymous>] Config file changed. Reloading...
+[12:32:47] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": true,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:32:47] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": true,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:32:47] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
+[12:32:47] [Strategies.syncFromConfig] [Strategies] syncFromConfig: refreshed 10 strategy configs
+[12:32:47] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": true,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:32:47] [BulkPcrStrategy.logGateOnce] [BulkPcrStrategy] gate: gates clear - attempting entry
+[12:32:47] [BulkPcrStrategy.logGateOnce] [BulkPcrStrategy] gate: entry already in progress or done (phase=buying)
+[12:32:48] [BulkPcrStrategy.resolveEntryRight] [BulkPcrStrategy] PCR=0.730 -> resolved direction call
+[ZerodhaContractMaster] WARNING: /home/karthikeyan/work/icici/data/zerodha/NFO_instruments.csv is 32 days old - run scripts/download-zerodha-master.sh to refresh
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 36 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+[12:32:49] [Object.buyResolvedOnZerodha] [order] Buying NIFTY2692223350CE qty=1755 for BulkPcrStrategy (BrokerExecutor.buy)
+[12:32:49] [Zerodha.placeLimitBuyOption] [Zerodha] Placing NRML limit buy: NIFTY2692223350CE qty=1755 price=139.45 exchange=NFO
+[12:32:50] [handleRequest] [order] Request failed: chunkedBuyIndex Error: buyChunked: chunk 1/8 failed after filling 0/13975 - 13975 qty NOT placed. Manual review required. Underlying error: Your order price is higher than the current limit price protection of 64.30. Please place an order below 64.30. [Read more.](https://support.zerodha.com/category/trading-and-markets/alerts-and-nudges/kite-error-messages/articles/price-out-of-lpp-range)
+    at buyChunked (/home/karthikeyan/work/icici/dist/processes/order/chunkedOrder.js:25:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async /home/karthikeyan/work/icici/dist/processes/orderProcess.js:269:40
+    at async placeOrderWithPendingGuard (/home/karthikeyan/work/icici/dist/processes/orderProcess.js:166:24)
+    at async handleRequest (/home/karthikeyan/work/icici/dist/processes/orderProcess.js:268:28)
+    at async /home/karthikeyan/work/icici/dist/processes/orderProcess.js:664:34
+[12:32:50] [BulkPcrStrategy.processNiftyQuote] [BulkPcrStrategy] Chunked entry failed - manual review required: Error: buyChunked: chunk 1/8 failed after filling 0/13975 - 13975 qty NOT placed. Manual review required. Underlying error: Your order price is higher than the current limit price protection of 64.30. Please place an order below 64.30. [Read more.](https://support.zerodha.com/category/trading-and-markets/alerts-and-nudges/kite-error-messages/articles/price-out-of-lpp-range)
+    at OrderClient.chunkedBuyIndex (/home/karthikeyan/work/icici/dist/processes/strategies/OrderClient.js:217:19)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async BulkPcrStrategy.processNiftyQuote (/home/karthikeyan/work/icici/dist/strategy/BulkPcrStrategy.js:249:28)
+    at async onTick (/home/karthikeyan/work/icici/dist/processes/strategiesProcess.js:102:17)
+[12:32:50] [BulkPcrStrategy.logGateOnce] [BulkPcrStrategy] gate: entry already in progress or done (phase=error)
+[12:33:16] [ws.onclose] [AntOrderNotify] WebSocket closed
+[12:33:16] [AntOrderNotifyStream.scheduleReconnect] [AntOrderNotify] Reconnecting in 2000ms...
+[12:33:18] [SecurityLog.log] [security] 2026-09-22 12:33:18 [BLOCKED_IP] ip=::ffff:34.38.176.89 method=GET path=/
+[12:33:23] [AntOrderNotifyStream.getWsToken] [AntOrderNotify] createWsToken response: {"status":"Ok","message":"200","result":[{"orderToken":"6b7b6b6d9f87e60e118802b3ce7f42b09f8face53d9ece5aa9efcbe51180b36f"}]}
+[12:33:24] [ws.onopen] [AntOrderNotify] Connected, subscribing...
+[12:34:00] [FSWatcher.<anonymous>] Config file changed. Reloading...
+[12:34:00] [FSWatcher.<anonymous>] Config file changed. Reloading...
+[12:34:00] [ConfigService.loadConfig] Config Updated: undefined
+[12:34:00] [ConfigService.loadConfig] Config Updated: undefined
+[12:34:00] [FSWatcher.<anonymous>] Config file changed. Reloading...
+[12:34:00] [FSWatcher.<anonymous>] Config file changed. Reloading...
+[12:34:00] [FSWatcher.<anonymous>] Config file changed. Reloading...
+[12:34:00] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:34:00] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:34:00] [FSWatcher.<anonymous>] Config file changed. Reloading...
+[12:34:00] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:34:00] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:34:00] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:34:00] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:34:00] [expandRuleBasedConfig] [StrategyFactory] Expanded RuleBasedStrategy into 1 instances
+[12:34:00] [Strategies.syncFromConfig] [Strategies] syncFromConfig: refreshed 10 strategy configs
+[12:34:00] [ConfigService.loadConfig] Config Updated: {
+  "settings": {
+    "minPrice": 20,
+    "maxPrice": 30000,
+    "targetPriceDiff": 2,
+    "stopLossPriceDiff": 11,
+    "trailingDistance": 4,
+    "cooldownSeconds": 0,
+    "logQuotes": false,
+    "safetyBufferAmount": 5000,
+    "consistencyLimitPercent": 40,
+    "maxDailyDrawdownPercent": 25,
+    "maxWeeklyDrawdownPercent": 50,
+    "maxTradesPerDay": 10,
+    "gapScreenerCoverOrderEnabled": false,
+    "gapScreenerCoverOrderUserEmail": "",
+    "gapScreenerCoverOrderQuantity": 0,
+    "gapScreenerCoverOrderStopLossPoints": 0
+  },
+  "strategies": [
+    {
+      "type": "SentimentStrategy",
+      "enabled": false,
+      "averageThreshold": 20,
+      "targetPrice": 2,
+      "orderQuantity": 7200,
+      "sentiment": "put",
+      "loopCount": 1
+    },
+    {
+      "type": "ContinuousStrategy",
+      "enabled": false,
+      "broker": "breeze",
+      "initialQuantity": 65,
+      "slDistance": 10,
+      "squareOffDistance": 500,
+      "postAverageTargetDistance": 1,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 1,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "right": "none",
+      "marketSentiment": "none",
+      "maxLevels": 4,
+      "cooldownSeconds": 60,
+      "refillCancelDistance": 50,
+      "logEnabled": true,
+      "momentumEnabled": false,
+      "momentumTimeoutMs": 3000
+    },
+    {
+      "type": "RateOfChangeStrategy",
+      "enabled": false,
+      "pointsThreshold": 30,
+      "accelerationThreshold": 5,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 2,
+      "stopLossPrice": 11,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GapStrategy",
+      "enabled": false,
+      "pointsThreshold": 20,
+      "numberOfDatapointsReceived": 50,
+      "quantity": 65,
+      "targetPrice": 10,
+      "stopLossPrice": 5,
+      "maxHoldTimeMinutes": 600,
+      "gapReversalMode": false,
+      "gapReversalThreshold": 100,
+      "logEnabled": true
+    },
+    {
+      "type": "RuleBasedStrategy",
+      "enabled": false,
+      "indicators": [
+        "RSI_5_70_30"
+      ],
+      "quantity": 65,
+      "target": 10,
+      "stopLoss": 20,
+      "maxHoldTimeMinutes": 30,
+      "logEnabled": true
+    },
+    {
+      "type": "GoodMorningStrategy",
+      "enabled": false,
+      "quantity": 65,
+      "targetPoints": 10,
+      "stopLossPoints": 10,
+      "logEnabled": true,
+      "snapshotTime": "10:00",
+      "confirmTime": "10:30",
+      "previousClose": 24219,
+      "minMovementPoints": 10
+    },
+    {
+      "type": "GoodMorningSensexStrategy",
+      "enabled": false,
+      "quantity": 200,
+      "targetPoints": 30,
+      "stopLossPoints": 30,
+      "logEnabled": true,
+      "snapshotTime": "09:40",
+      "confirmTime": "09:45",
+      "minMovementPoints": 30
+    },
+    {
+      "type": "SupportResistanceStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 1755,
+      "logEnabled": true,
+      "slDistance": 10,
+      "squareOffDistance": 100,
+      "maxLevels": 4,
+      "spawnQuantityMode": "1",
+      "averageQuantityMode": "same",
+      "postAverageTargetDistance": 1,
+      "refillCancelDistance": 50,
+      "minPremium": 50,
+      "maxInvestment": 200000,
+      "maxProfit": 100,
+      "cooldownSeconds": 60,
+      "marketSentiment": "none"
+    },
+    {
+      "type": "TargetReachStrategy",
+      "enabled": false,
+      "symbol": "NIFTY",
+      "strike": 0,
+      "expiry": "2026-01-01",
+      "optionType": "CE",
+      "targetPrice": 0,
+      "quantity": 1755,
+      "targetPoints": 10,
+      "stopLossPoints": 15,
+      "logEnabled": true
+    },
+    {
+      "type": "BulkPcrStrategy",
+      "enabled": false,
+      "broker": "zerodha",
+      "quantity": 13975,
+      "targetPoints": 2,
+      "right": "none",
+      "maxInvestment": 3000000,
+      "logEnabled": true
+    }
+  ]
+}
+[12:38:24] [ws.onclose] [AntOrderNotify] WebSocket closed
+[12:38:24] [AntOrderNotifyStream.scheduleReconnect] [AntOrderNotify] Reconnecting in 2000ms...
+[12:38:26] [AntOrderNotifyStream.getWsToken] [AntOrderNotify] createWsToken response: {"status":"Ok","message":"200","result":[{"orderToken":"6b7b6b6d9f87e60e118802b3ce7f42b09f8face53d9ece5aa9efcbe51180b36f"}]}
+[12:38:26] [ws.onopen] [AntOrderNotify] Connected, subscribing...
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: write EPIPE
+    at afterWriteDispatched (node:internal/stream_base_commons:159:15)
+    at writeGeneric (node:internal/stream_base_commons:150:3)
+    at Socket._writeGeneric (node:net:964:11)
+    at Socket._write (node:net:976:8)
+    at writeOrBuffer (node:internal/streams/writable:572:12)
+    at _write (node:internal/streams/writable:501:10)
+    at Writable.write (node:internal/streams/writable:510:10)
+    at writeJsonLine (/home/karthikeyan/work/icici/dist/ipc/jsonLines.js:14:12)
+    at AntDataStream.writeTick (/home/karthikeyan/work/icici/dist/processes/dataProcess.js:32:90)
+    at AntDataStream.emitTick (/home/karthikeyan/work/icici/dist/processes/data/AntDataStream.js:136:22)
+Emitted 'error' event on Socket instance at:
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  errno: -32,
+  code: 'EPIPE',
+  syscall: 'write'
+}
+
+Node.js v22.12.0

@@ -222,6 +222,28 @@ quote failure) and reused by both `manualBuyOnZerodha` and `manualBuyOnAnt`'s `c
 `strikePrice` branches. The `right`-only (Flash Trade / ATM-by-index) branch is unchanged,
 still 1 lot by default — no pre-resolved contract to price there without added complexity.
 
+## BulkPcrStrategy LPP order rejection (2026-09-22 12:32:50)
+
+**Status:** Active — requires manual review / contract data refresh
+
+**Incident:** BulkPcrStrategy enabled at 12:32:47, evaluated PCR=0.730, resolved to **CALL** direction, attempted chunked entry buy order for NIFTY2692223350CE at price=139.45 for qty=1755 (8 chunks). Chunk 1/8 failed immediately with Zerodha LPP (Limit Price Protection) rejection: "Your order price is higher than the current limit price protection of 64.30. Please place an order below 64.30."
+
+**Root cause:** Unknown — either:
+1. Strategy pricing logic is off by ~2.2x (139.45 vs realistic 64.30)
+2. Contract master data is stale (Zerodha instruments CSV is **32 days old**, ANT contract master is **36 days old**)
+3. PCR-to-direction resolution is correct but contract selection/pricing is misaligned with current market conditions
+
+**Actions taken:**
+- System caught the failure and flagged for manual review (no partial fill, all 13975 qty rejected)
+- Error logged: `BulkPcrStrategy.processNiftyQuote` → `OrderClient.chunkedBuyIndex` → `Zerodha.placeLimitBuyOption`
+- Strategy gate state: `phase=error`, prevents duplicate attempts
+
+**Follow-up required:**
+1. Run `scripts/download-zerodha-master.sh` to refresh Zerodha instruments (32 days stale)
+2. Re-download ANT contract master from `https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/` (36 days stale)
+3. Review `BulkPcrStrategy.resolveEntryRight()` pricing logic — verify contract selection and price derivation against live market data
+4. Consider adding pre-order validation: cap order price at or below current LTP + safety buffer before sending to broker
+
 ## investmentAmount is not editable anywhere in the frontend [RESOLVED]
 
 `frontend/src/pages/ProfilePage.tsx` has an editable `investmentMode` selector (~line 218-231,

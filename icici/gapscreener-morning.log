@@ -756,3 +756,119 @@ Wrote 7/8 rows to /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screene
 }
 === Gap-Screener Cover Order ===
 [gapScreenerCoverOrder] gapScreenerCoverOrderEnabled is not true - nothing to do.
+
+> icici@1.0.0 gapscreener:generate
+> tsc && node ./dist/tools/gapscreener/GapScreenerGenerate.js
+
+=== Gap-Screener Generate ===
+Running screener in: /home/karthikeyan/tools/ohlc
+
+> chartink-gap-screener@1.0.0 start
+> ts-node screener.ts
+
+Fetching Nifty 50 + Nifty Next 50 constituents from NSE...
+Universe size: 100 symbols.
+Authenticating with Chartink...
+Running gap-up scan...
+Running gap-down scan...
+Fetching open / previous close / first 15-min candle for matches (this can take a bit)...
+
+=== Screener 1: Gap Up (Nifty 50 + Next 50) (50 stocks) ===
+┌─────────┬──────────────┬───────┬───────┬────────────────┬─────────┬────────────┬──────────────┬─────────────┬─────────────┬─────────────┬────────────┬──────────────┐
+│ (index) │ Symbol       │ LTP   │ Gap % │ Recommendation │ Volume  │ Value      │ 1D Ago Close │ Latest Open │ 1st15m Open │ 1st15m High │ 1st15m Low │ 1st15m Close │
+├─────────┼──────────────┼───────┼───────┼────────────────┼─────────┼────────────┼──────────────┼─────────────┼─────────────┼─────────────┼────────────┼──────────────┤
+│ 0       │ 'BOSCHLTD'   │ 47880 │ 0.66  │ 'Buy'          │ 3269    │ 156519720  │ 47565        │ 47730       │ 47730       │ 47810       │ 47530      │ 47680        │
+│ 1       │ 'SOLARINDS'  │ 19625 │ 1.87  │ 'Buy'          │ 71883   │ 1410703875 │ 19265        │ 19360       │ 19360       │ 19600       │ 19335      │ 19435        │
+│ 2       │ 'DIVISLAB'   │ 9386  │ -0.26 │ '-'            │ 46923   │ 440419278  │ 9411         │ 9427        │ 9427        │ 9436        │ 9395       │ 9421         │
+│ 3       │ 'APOLLOHOSP' │ 8914  │ 0.02  │ '-'            │ 26208   │ 233605008  │ 8912         │ 8964        │ 8964        │ 8973        │ 8924       │ 8926         │
+│ 4       │ 'CUMMINSIND' │ 5096  │ 0.57  │ '-'            │ 58129   │ 296225384  │ 5067         │ 5099        │ 5099        │ 5125        │ 5084       │ 5084         │
+│ 5       │ 'INDIGO'     │ 4971  │ 0.61  │ '-'            │ 61672   │ 306571512  │ 4941         │ 4996        │ 4996        │ 5001        │ 4971       │ 4975         │
+│ 6       │ 'TORNTPHARM' │ 4961  │ -0.18 │ '-'            │ 24910   │ 123578510  │ 4970         │ 4965        │ 4965        │ 4971        │ 4938       │ 4949         │
+│ 7       │ 'LT'         │ 3917  │ 0.32  │ '-'            │ 135476  │ 530686587  │ 3905         │ 3920        │ 3920        │ 3929        │ 3918       │ 3920         │
+│ 8       │ 'ENRIN'      │ 3302  │ 2.73  │ '-'            │ 265781  │ 877715174  │ 3215         │ 3260        │ 3260        │ 3348        │ 3260       │ 3287         │
+│ 9       │ 'M&M'        │ 3068  │ 0.42  │ '-'            │ 315891  │ 969216766  │ 3055         │ 3070        │ 3070        │ 3090        │ 3068       │ 3077         │
+│ 10      │ 'ADANIENT'   │ 2994  │ 0.64  │ '-'            │ 221837  │ 664157794  │ 2975         │ 2995        │ 2995        │ 3025        │ 2992       │ 3014         │
+│ 11      │ 'TRENT'      │ 2811  │ -0.18 │ '-'            │ 134638  │ 378400099  │ 2816         │ 2827        │ 2827        │ 2846        │ 2815       │ 2823         │
+│ 12      │ 'ASIANPAINT' │ 2461  │ 0.86  │ '-'            │ 61856   │ 152239987  │ 2440         │ 2463        │ 2463        │ 2468        │ 2454       │ 2458         │
+│ 13      │ 'MAZDOCK'    │ 2225  │ -0.31 │ '-'            │ 172706  │ 384270850  │ 2232         │ 2248        │ 2248        │ 2250        │ 2234       │ 2238         │
+│ 14      │ 'TCS'        │ 2122  │ -0.31 │ '-'            │ 498298  │ 1057438186 │ 2129         │ 2131        │ 2131        │ 2131        │ 2113       │ 2114         │
+│ 15      │ 'HINDUNILVR' │ 1945  │ -0.1  │ '-'            │ 103863  │ 202023921  │ 1947         │ 1952        │ 1952        │ 1956        │ 1946       │ 1948         │
+│ 16      │ 'BAJAJFINSV' │ 1854  │ 0.23  │ '-'            │ 61613   │ 114230502  │ 1850         │ 1858        │ 1858        │ 1862        │ 1853       │ 1856         │
+│ 17      │ 'BHARTIARTL' │ 1829  │ -0.09 │ '-'            │ 534965  │ 978183503  │ 1830         │ 1832        │ 1832        │ 1832        │ 1823       │ 1826         │
+│ 18      │ 'ADANIPORTS' │ 1802  │ 0.84  │ '-'            │ 328777  │ 592521909  │ 1787         │ 1793        │ 1793        │ 1812        │ 1793       │ 1806         │
+│ 19      │ 'CHOLAFIN'   │ 1772  │ 0.48  │ '-'            │ 177243  │ 314145493  │ 1764         │ 1770        │ 1770        │ 1779        │ 1765       │ 1778         │
+│ 20      │ 'SBILIFE'    │ 1766  │ 0.56  │ '-'            │ 47192   │ 83331634   │ 1756         │ 1761        │ 1761        │ 1769        │ 1761       │ 1769         │
+│ 21      │ 'UNITDSPR'   │ 1399  │ 0.15  │ '-'            │ 46446   │ 64982599   │ 1397         │ 1403        │ 1403        │ 1405        │ 1399       │ 1404         │
+│ 22      │ 'ADANIGREEN' │ 1306  │ 0.2   │ '-'            │ 144363  │ 188566951  │ 1304         │ 1309        │ 1309        │ 1317        │ 1306       │ 1309         │
+│ 23      │ 'JSWSTEEL'   │ 1266  │ -0.17 │ '-'            │ 48098   │ 60911307   │ 1269         │ 1275        │ 1275        │ 1276        │ 1270       │ 1270         │
+│ 24      │ 'DRREDDY'    │ 1216  │ 1.5   │ 'Buy'          │ 847126  │ 1030359354 │ 1198         │ 1207        │ 1207        │ 1208        │ 1202       │ 1207         │
+│ 25      │ 'LODHA'      │ 1146  │ 0.72  │ '-'            │ 228449  │ 261848244  │ 1138         │ 1154        │ 1154        │ 1158        │ 1148       │ 1154         │
+│ 26      │ 'JINDALSTEL' │ 1136  │ 0.43  │ '-'            │ 57664   │ 65477472   │ 1131         │ 1138        │ 1138        │ 1138        │ 1133       │ 1133         │
+│ 27      │ 'BAJFINANCE' │ 1023  │ 0.19  │ '-'            │ 544890  │ 557531448  │ 1021         │ 1025        │ 1025        │ 1029        │ 1023       │ 1026         │
+│ 28      │ 'TATACONSUM' │ 999   │ -0.2  │ '-'            │ 70730   │ 70630978   │ 1001         │ 1003        │ 1003        │ 1005        │ 999        │ 1001         │
+│ 29      │ 'SBIN'       │ 997   │ 0.06  │ '-'            │ 564322  │ 562403305  │ 996          │ 999         │ 999         │ 999         │ 996        │ 997          │
+│ 30      │ 'HINDALCO'   │ 978   │ -0.38 │ '-'            │ 383860  │ 375223150  │ 981          │ 984         │ 984         │ 984         │ 978        │ 980          │
+│ 31      │ 'CGPOWER'    │ 914   │ 0.41  │ '-'            │ 532847  │ 486888946  │ 910          │ 916         │ 916         │ 926         │ 916        │ 918          │
+│ 32      │ 'GODREJCP'   │ 869   │ 0.17  │ '-'            │ 47234   │ 41043984   │ 868          │ 871         │ 871         │ 871         │ 869        │ 870          │
+│ 33      │ 'INDHOTEL'   │ 745   │ 0.01  │ '-'            │ 138555  │ 103230403  │ 745          │ 748         │ 748         │ 748         │ 741        │ 742          │
+│ 34      │ 'DLF'        │ 664   │ 0.52  │ '-'            │ 342300  │ 227184510  │ 660          │ 666         │ 666         │ 668         │ 663        │ 665          │
+│ 35      │ 'HDFCLIFE'   │ 564   │ 0.81  │ '-'            │ 241815  │ 136371569  │ 559          │ 562         │ 562         │ 565         │ 561        │ 564          │
+│ 36      │ 'VBL'        │ 425   │ 0.08  │ '-'            │ 410185  │ 174472190  │ 425          │ 427         │ 427         │ 427         │ 424        │ 425          │
+│ 37      │ 'COALINDIA'  │ 425   │ 2.5   │ 'Buy'          │ 3821393 │ 1624283095 │ 415          │ 423         │ 423         │ 424         │ 420        │ 422          │
+│ 38      │ 'KOTAKBANK'  │ 416   │ 0.27  │ '-'            │ 1048721 │ 436163064  │ 415          │ 417         │ 417         │ 417         │ 415        │ 417          │
+│ 39      │ 'ETERNAL'    │ 339   │ 0.82  │ 'Buy'          │ 5288405 │ 1790918353 │ 336          │ 336         │ 336         │ 337         │ 335        │ 336          │
+│ 40      │ 'BPCL'       │ 316   │ 1.02  │ '-'            │ 1298740 │ 410336903  │ 313          │ 314         │ 314         │ 317         │ 314        │ 316          │
+│ 41      │ 'ITC'        │ 267   │ 0.13  │ '-'            │ 1163089 │ 310951844  │ 267          │ 268         │ 268         │ 268         │ 267        │ 267          │
+│ 42      │ 'POWERGRID'  │ 266   │ 0.06  │ '-'            │ 541424  │ 144154140  │ 266          │ 267         │ 267         │ 268         │ 267        │ 268          │
+│ 43      │ 'JIOFIN'     │ 233   │ 1.14  │ 'Buy'          │ 2793351 │ 649733443  │ 230          │ 232         │ 232         │ 232         │ 231        │ 232          │
+│ 44      │ 'ADANIPOWER' │ 209   │ 0.98  │ '-'            │ 2443247 │ 509588027  │ 207          │ 208         │ 208         │ 209         │ 207        │ 208          │
+│ 45      │ 'GAIL'       │ 172   │ -0.1  │ '-'            │ 3935072 │ 678563816  │ 173          │ 174         │ 174         │ 174         │ 174        │ 174          │
+│ 46      │ 'IOC'        │ 138   │ 1.19  │ 'Buy'          │ 2585591 │ 357199397  │ 137          │ 138         │ 138         │ 138         │ 137        │ 137          │
+│ 47      │ 'CANBK'      │ 124   │ 0.34  │ '-'            │ 1585832 │ 196833468  │ 124          │ 124         │ 124         │ 124         │ 124        │ 124          │
+│ 48      │ 'PNB'        │ 118   │ -0.13 │ '-'            │ 1081874 │ 127498851  │ 118          │ 118         │ 118         │ 118         │ 118        │ 118          │
+│ 49      │ 'IRFC'       │ 80    │ 0.27  │ '-'            │ 1152381 │ 92697528   │ 80           │ 81          │ 81          │ 81          │ 80         │ 80           │
+└─────────┴──────────────┴───────┴───────┴────────────────┴─────────┴────────────┴──────────────┴─────────────┴─────────────┴─────────────┴────────────┴──────────────┘
+
+=== Screener 2: Gap Down (Nifty 50 + Next 50) (7 stocks) ===
+┌─────────┬──────────────┬───────┬───────┬────────────────┬────────┬────────────┬──────────────┬─────────────┬─────────────┬─────────────┬────────────┬──────────────┐
+│ (index) │ Symbol       │ LTP   │ Gap % │ Recommendation │ Volume │ Value      │ 1D Ago Close │ Latest Open │ 1st15m Open │ 1st15m High │ 1st15m Low │ 1st15m Close │
+├─────────┼──────────────┼───────┼───────┼────────────────┼────────┼────────────┼──────────────┼─────────────┼─────────────┼─────────────┼────────────┼──────────────┤
+│ 0       │ 'BAJAJHLDNG' │ 11352 │ -0.5  │ '-'            │ 4413   │ 50096376   │ 11409        │ 11342       │ 11342       │ 11358       │ 11260      │ 11290        │
+│ 1       │ 'LTM'        │ 4149  │ -3.06 │ '-'            │ 320445 │ 1329590394 │ 4280         │ 4161        │ 4161        │ 4166        │ 4095       │ 4110         │
+│ 2       │ 'TECHM'      │ 1548  │ -0.69 │ '-'            │ 214390 │ 331811403  │ 1559         │ 1554        │ 1554        │ 1554        │ 1535       │ 1540         │
+│ 3       │ 'NESTLEIND'  │ 1379  │ -0.47 │ 'Sell'         │ 120278 │ 165803223  │ 1385         │ 1382        │ 1382        │ 1391        │ 1381       │ 1382         │
+│ 4       │ 'AXISBANK'   │ 1248  │ -0.14 │ '-'            │ 277734 │ 346667579  │ 1250         │ 1245        │ 1245        │ 1251        │ 1245       │ 1248         │
+│ 5       │ 'MAXHEALTH'  │ 1058  │ -0.83 │ '-'            │ 97683  │ 103329077  │ 1067         │ 1066        │ 1066        │ 1067        │ 1057       │ 1059         │
+│ 6       │ 'TATACAP'    │ 343   │ -0.16 │ 'Sell'         │ 127178 │ 43641131   │ 344          │ 344         │ 344         │ 346         │ 344        │ 344          │
+└─────────┴──────────────┴───────┴───────┴────────────────┴────────┴────────────┴──────────────┴─────────────┴─────────────┴─────────────┴────────────┴──────────────┘
+
+Results written to gap-screener.csv
+[gapScreenerGenerate] Copied /home/karthikeyan/tools/ohlc/gap-screener.csv -> /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+> icici@1.0.0 gapscreener:start
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuote.js
+
+=== Gap-Screener Nearest-OTM Option Quote ===
+Input:  /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+Output: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+
+Found 9 recommended stock(s)
+
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 35 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+ETERNAL (Buy) -> ETERNAL29SEP26C340 (token 102566)
+COALINDIA (Buy) -> COALINDIA29SEP26C430 (token 96925)
+JIOFIN (Buy) -> JIOFIN29SEP26C235 (token 118866)
+IOC (Buy) -> IOC29SEP26C140 (token 116920)
+DRREDDY (Buy) -> DRREDDY29SEP26C1220 (token 101886)
+[gapScreenerOptionQuote] skipping TATACAP: no PE contract found in NFO contract master for the nearest expiry
+NESTLEIND (Sell) -> NESTLEIND29SEP26P1370 (token 96586)
+SOLARINDS (Buy) -> SOLARINDS29SEP26C19750 (token 109547)
+BOSCHLTD (Buy) -> BOSCHLTD29SEP26C48000 (token 93336)
+
+Opening ANT websocket session and subscribing 8 option(s)...
+[10:06:15] [ANT.loadSession] ANT session was issued on an earlier date - discarding, re-login required (/ant/login)
+Fatal error: ANT userSession not available. Complete OAuth login first (/ant/login).
+
+> icici@1.0.0 gapscreener:generate
+> tsc && node ./dist/tools/gapscreener/GapScreenerGenerate.js
+

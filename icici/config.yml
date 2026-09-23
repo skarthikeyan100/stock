@@ -121,7 +121,7 @@ strategies:
     stopLossPoints: 15
     logEnabled: true
   - type: BulkPcrStrategy
-    enabled: true
+    enabled: false
     broker: zerodha
     quantity: 13975
     targetPoints: 2

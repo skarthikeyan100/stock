@@ -2,6 +2,7 @@ import Log from '../../util/Log';
 import Zerodha, { roundToTick } from '../../zerodha/Zerodha';
 import ZerodhaContractMaster from '../../zerodha/ZerodhaContractMaster';
 import AntContractMaster from '../../ant/AntContractMaster';
+import ANT from '../../ant/ANT';
 import configService from '../../prism/ConfigService';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
@@ -23,6 +24,43 @@ import { BuyRequest } from './BrokerExecutor';
 // process, watches price after that). Users with useGTT=false instead get their
 // trade registered with exitMonitor.ts, which watches the tick feed piped in
 // from `data` and squares off in-app when target/SL is crossed.
+
+// 2026-09-22: there should be no true MARKET orders placed at the broker,
+// anywhere - a blind market order has no price floor at all, which is
+// exactly what turned a single bad/stale tick into a real trading loss (see
+// BulkPcrStrategy's exit fix earlier this session). Every remaining Zerodha
+// MARKET call site below now instead fetches the latest quote and places a
+// MARKETABLE LIMIT order priced just beyond it - fills immediately against
+// current liquidity, same as a market order would from the user's point of
+// view, but always carries a real price bound.
+//
+// Zerodha's own quote/LTP endpoints 403 for this account's Kite Connect
+// subscription (see the removed buyOption's old comment - Kite Connect
+// doesn't grant this), so ANT.getQuote is the pricing reference instead -
+// the same "confirmed live" primitive ANT's own bracket-order entries
+// already use to price their marketable limit (see ANT.ts's getQuote
+// comment). A short TTL cache means a CHUNKED order's several calls for the
+// SAME contract (all placed within a couple of seconds of each other, see
+// chunkedOrder.ts) reuse one fetch instead of hitting AliceBlue's
+// rate-limited OHLC endpoint (429 after 1-2 rapid sequential calls,
+// confirmed live elsewhere in this codebase) once per chunk.
+const REFERENCE_PRICE_TTL_MS = 10_000;
+const referencePriceCache = new Map<string, { price: number; fetchedAt: number }>();
+
+async function getMarketableZerodhaPrice(antToken: string, exchange: 'NFO' | 'BFO', direction: 'BUY' | 'SELL'): Promise<number> {
+    const key = `${antToken}:${direction}`;
+    const cached = referencePriceCache.get(key);
+    if (cached && Date.now() - cached.fetchedAt < REFERENCE_PRICE_TTL_MS) return cached.price;
+
+    const ltp = await ANT.getInstance().getQuote(exchange, antToken);
+    // 1% buffer beyond LTP - mirrors antExecutor.ts's enterPosition BO pricing
+    // convention exactly (same rationale: aggressive enough to fill
+    // immediately, not a resting order waiting for a specific price).
+    const buffered = direction === 'BUY' ? ltp * 1.01 : ltp * 0.99;
+    const price = roundToTick(buffered);
+    referencePriceCache.set(key, { price, fetchedAt: Date.now() });
+    return price;
+}
 
 // Shared by every entry path (index-ATM and manual/strike/contract): computes
 // target/SL from points, then places a GTT or registers with exitMonitor
@@ -129,7 +167,8 @@ export async function buyIndexOnZerodha(req: BuyIndexRequest): Promise<Trade> {
         : AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.niftyLtp });
     Log.log(`[order] Buying ${contract.tradingSymbol} qty=${req.quantity} for ${req.userId}`);
 
-    const { orderId } = await zerodha.buyOption(contract.tradingSymbol, req.quantity, contract.exchange);
+    const buyPrice = await getMarketableZerodhaPrice(commonToken, contract.exchange, 'BUY');
+    const { orderId } = await zerodha.placeLimitBuyOption(contract.tradingSymbol, req.quantity, buyPrice, contract.exchange);
     const entryPrice = await zerodha.getFillPrice(orderId);
     Log.log(`[order] Filled ${contract.tradingSymbol} at ${entryPrice} for ${req.userId}`);
 
@@ -206,7 +245,8 @@ async function buyContractOnZerodha(userId: string, tradingSymbol: string, commo
         throw new Error('Zerodha session not active - complete /kite/login first.');
     }
     Log.log(`[order] Buying (manual) ${tradingSymbol} qty=${quantity} for ${userId}`);
-    const { orderId } = await zerodha.buyOption(tradingSymbol, quantity, exchange);
+    const buyPrice = await getMarketableZerodhaPrice(commonToken, exchange, 'BUY');
+    const { orderId } = await zerodha.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
     const entryPrice = price ?? (await zerodha.getFillPrice(orderId));
 
     const trade = new Trade();
@@ -256,15 +296,15 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
 export async function squareOffOnZerodha(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const zerodha = Zerodha.getInstance();
     Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId}`);
-    const response = await zerodha.getKiteConnect().placeOrder('regular', {
-        exchange,
-        tradingsymbol: tsym,
-        transaction_type: 'SELL',
-        quantity,
-        product: 'NRML',
-        order_type: 'MARKET',
-        market_protection: -1,
-    } as any);
+    // ANT commonToken for pricing (see getMarketableZerodhaPrice) - every open
+    // Zerodha trade in bookkeeping.trades carries one, set at entry by every
+    // buy path above.
+    const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
+    if (!existing?.token) {
+        throw new Error(`squareOffOnZerodha: no tracked open trade (with a token) found for ${tsym} (${userId}) - cannot price a marketable limit sell without it`);
+    }
+    const sellPrice = await getMarketableZerodhaPrice(existing.token, exchange, 'SELL');
+    const { orderId } = await zerodha.placeLimitSellOption(tsym, quantity, sellPrice, exchange);
 
     const trade = new Trade();
     trade.tsym = tsym;
@@ -272,8 +312,8 @@ export async function squareOffOnZerodha(userId: string, tsym: string, quantity:
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
     trade.user = userId;
-    trade.brokerOrderId = response.order_id;
-    const fillPrice = await zerodha.getFillPrice(response.order_id);
+    trade.brokerOrderId = orderId;
+    const fillPrice = await zerodha.getFillPrice(orderId);
     trade.price = fillPrice;
 
     await bookkeeping.recordFill(trade);
@@ -299,7 +339,12 @@ export async function buyResolvedOnZerodha(request: BuyRequest): Promise<Trade> 
     // Zerodha-broker users.
     const exchange = request.exchange as 'NFO' | 'BFO';
     Log.log(`[order] Buying ${request.tradingSymbol} qty=${request.quantity} for ${request.userId} (BrokerExecutor.buy)`);
-    const { orderId } = await zerodha.buyOption(request.tradingSymbol, request.quantity, exchange);
+    // getMarketableZerodhaPrice's TTL cache means a chunked buy (buyChunked
+    // calling this once per chunk, same request.instrumentId every time)
+    // naturally reuses one ANT quote fetch across the whole chunk batch
+    // instead of one per chunk.
+    const buyPrice = await getMarketableZerodhaPrice(request.instrumentId, exchange, 'BUY');
+    const { orderId } = await zerodha.placeLimitBuyOption(request.tradingSymbol, request.quantity, buyPrice, exchange);
     const entryPrice = await zerodha.getFillPrice(orderId);
 
     const trade = new Trade();
@@ -332,7 +377,12 @@ export async function marketBuyBareOnZerodha(userId: string, tradingSymbol: stri
         throw new Error('Zerodha session not active - complete /kite/login first.');
     }
     Log.log(`[order] Bare market buy ${tradingSymbol} qty=${quantity} for ${userId}`);
-    const { orderId } = await zerodha.buyOption(tradingSymbol, quantity, exchange);
+    // instrumentToken here is the ANT commonToken (LegManager's callers
+    // always resolve it that way - live option ticks are keyed by ANT's
+    // token, not Zerodha's own instrumentToken), which is what
+    // getMarketableZerodhaPrice needs to query ANT for a live quote.
+    const buyPrice = await getMarketableZerodhaPrice(instrumentToken, exchange, 'BUY');
+    const { orderId } = await zerodha.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
     const entryPrice = await zerodha.getFillPrice(orderId);
 
     const trade = new Trade();
@@ -356,16 +406,9 @@ export async function marketBuyBareOnZerodha(userId: string, tradingSymbol: stri
 export async function marketSellBareOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const zerodha = Zerodha.getInstance();
     Log.log(`[order] Bare market sell ${tradingSymbol} qty=${quantity} for ${userId}`);
-    const response = await zerodha.getKiteConnect().placeOrder('regular', {
-        exchange,
-        tradingsymbol: tradingSymbol,
-        transaction_type: 'SELL',
-        quantity,
-        product: 'NRML',
-        order_type: 'MARKET',
-        market_protection: -1,
-    } as any);
-    const fillPrice = await zerodha.getFillPrice(response.order_id);
+    const sellPrice = await getMarketableZerodhaPrice(instrumentToken, exchange, 'SELL');
+    const { orderId } = await zerodha.placeLimitSellOption(tradingSymbol, quantity, sellPrice, exchange);
+    const fillPrice = await zerodha.getFillPrice(orderId);
 
     const trade = new Trade();
     trade.tsym = tradingSymbol;
@@ -375,7 +418,7 @@ export async function marketSellBareOnZerodha(userId: string, tradingSymbol: str
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
     trade.user = userId;
-    trade.brokerOrderId = response.order_id;
+    trade.brokerOrderId = orderId;
 
     await bookkeeping.recordFill(trade);
     return trade;
@@ -392,7 +435,25 @@ export async function placeLimitBuyBareOnZerodha(userId: string, tradingSymbol: 
     }
     Log.log(`[order] Bare limit buy ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await zerodha.placeLimitBuyOption(tradingSymbol, quantity, price, exchange);
-    trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity, exchange });
+    trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity, exchange, action: 'Buy' });
+    return { orderId };
+}
+
+// Returns immediately with {orderId} - fill arrives later via
+// pollPendingLimitOrders, mirroring placeLimitBuyBareOnZerodha exactly but
+// for a SELL leg. Used for a target-hit exit that must lock in a specific
+// price - unlike squareOffOnZerodha (blind MARKET order, no price floor at
+// all), a caller here controls exactly what price the position can close
+// at; if the market never actually reaches it, the order simply rests
+// rather than selling into a loss.
+export async function placeLimitSellBareOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+    const zerodha = Zerodha.getInstance();
+    if (!(await zerodha.hasValidSession())) {
+        throw new Error('Zerodha session not active - complete /kite/login first.');
+    }
+    Log.log(`[order] Bare limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
+    const { orderId } = await zerodha.placeLimitSellOption(tradingSymbol, quantity, price, exchange);
+    trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity, exchange, action: 'Sell' });
     return { orderId };
 }
 

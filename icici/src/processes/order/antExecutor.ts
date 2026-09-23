@@ -9,6 +9,7 @@ import { CALL } from '../../constants';
 import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
+import { trackPendingAntLimitOrder } from './pendingAntLimitOrders';
 
 // AliceBlue/ANT execution, mirroring zerodhaExecutor.ts's shape and the same
 // per-user useGTT gating (bookkeeping.getUserUseGTT) - but the actual
@@ -220,8 +221,8 @@ async function safeAntQuote(exch: 'NFO' | 'BFO', token: string): Promise<number>
 // Live price estimate for investment-amount-based manual-buy sizing,
 // resolved via ANT regardless of execution broker - Zerodha's own
 // quote/LTP endpoints return 403 for this account's Kite Connect
-// subscription (see Zerodha.ts buyOption's comment), so ANT (already the
-// app's sole live tick source) is the pricing reference for both executors.
+// subscription (see Zerodha.placeLimitBuyOption's comment), so ANT (already
+// the app's sole live tick source) is the pricing reference for both executors.
 export async function estimateOptionPrice(symbol: string, strike: number, optionType: string): Promise<number> {
     try {
         const exch = symbol === 'SENSEX' ? 'BFO' : 'NFO';
@@ -353,6 +354,28 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
         Log.log(`[order] setTargetStopLoss updated local bookkeeping for ANT order ${trade.antOrderNo} - live BO leg re-price not yet implemented (unverified endpoint shape)`);
     }
     bookkeeping.notifyTargetStopLossChanged();
+}
+
+// Returns immediately with {orderId} - fill arrives later via
+// pollPendingAntLimitOrders. Places a plain REGULAR LIMIT sell (ant.placeOrder,
+// 'Confirmed live' per its own comment) at a caller-chosen price, unlike
+// squareOffOnAnt below which either exits a bracket order's own legs or
+// places a regular order with no price floor. Used for a target-hit exit
+// that must lock in a specific price - see placeLimitSellBareOnZerodha's
+// comment for why (2026-09-22 incident).
+export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+    const ant = ANT.getInstance();
+    Log.log(`[order] Bare ANT limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
+    const { orderNo } = await ant.placeOrder({
+        exchange,
+        instrumentId,
+        tradingSymbol,
+        quantity,
+        transactionType: 'SELL',
+        price,
+    });
+    trackPendingAntLimitOrder({ orderId: orderNo, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell' });
+    return { orderId: orderNo };
 }
 
 export async function squareOffOnAnt(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {

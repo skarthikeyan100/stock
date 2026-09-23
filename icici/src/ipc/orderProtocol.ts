@@ -58,7 +58,11 @@ export type OrderRequestType =
     // (BulkPcrStrategy's use case), but the dispatch already branches on
     // getBrokerExecutor(userId) so extending to other brokers is additive.
     | 'chunkedBuyIndex'
-    | 'chunkedSquareOff';
+    | 'chunkedSquareOff'
+    // LIMIT-priced counterpart of chunkedSquareOff - places resting sells at
+    // a caller-chosen price instead of squareOffChunked's immediate market/
+    // current-bid exit (see chunkedOrder.ts's squareOffLimitChunked).
+    | 'chunkedSquareOffLimit';
 
 export interface OrderRequest {
     kind: 'request';
