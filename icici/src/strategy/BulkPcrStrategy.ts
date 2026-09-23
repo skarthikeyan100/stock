@@ -3,27 +3,15 @@ import { CALL, PUT } from '../constants';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
-import { registerTrade } from '../processes/strategies/tokenRouter';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot - no recheck-throttle needed here (one-shot)
 
-// Defense-in-depth against a single bad/stale option tick satisfying the
-// target check on its own - 2026-09-22 incident: entered NIFTY2692223400CE
-// at avg 52.22, and one second later a single ltp=138.6 tick (real market
-// ~50-52 the whole time, per every actual fill before and after) falsely
-// read as "target hit", triggering an exit that lost ~15,600. A tick priced
-// more than this multiple above entryAvg is treated as untrustworthy and
-// ignored outright rather than acted on - cheap, independent of the
-// limit-order fix below (which already can't fill below target, but this
-// catches the bad tick before it even reaches that logic).
-const MAX_SANE_LTP_MULTIPLE = 2;
-
 const STATE_COLLECTION = 'bulkPcrStrategyState';
 
 interface PersistedState {
-    phase: 'holding' | 'selling';
+    phase: 'selling' | 'error';
     heldTsym: string | null;
     heldToken: string | null;
     entryAvg: number;
@@ -34,9 +22,10 @@ interface PersistedState {
 
 // One-shot large block order via ICICI Breeze: buys a total quantity (config
 // `quantity`, default 13975 = 215 lots x 65) of a NIFTY option in one go,
-// exits at a fixed points target with NO stop-loss (holds indefinitely,
-// however long that takes), then durably disables itself so it can never
-// fire a second block order on a later restart.
+// then immediately exits at a fixed points target with NO stop-loss (holds
+// indefinitely until the resting exit fills, however long that takes), then
+// durably disables itself so it can never fire a second block order on a
+// later restart.
 //
 // Direction: if config `right` is 'call'/'put', use that fixed direction
 // directly (no PCR check). If 'none' (default), PCR (put/call OI ratio)
@@ -50,24 +39,31 @@ interface PersistedState {
 // constants.ts) caps any single order - the entry buy is placed via the
 // shared, broker-agnostic buyChunked helper (src/processes/order/chunkedOrder.ts)
 // through the IPC-exposed chunkedBuyIndex order-process handler, which
-// splits into exchange-compliant chunks automatically. The exit sell is
-// placed the same way via squareOffLimitChunked/chunkedSquareOffLimit - as a
-// resting LIMIT sell at the target price, NOT a market order (see
-// processOptionQuote below for why: a blind market square-off is exactly
-// what caused the 2026-09-22 loss above - it has no price floor at all, so
-// a false target-hit tick sold straight into a loss instead of the order
-// simply not filling).
+// splits into exchange-compliant chunks automatically and only returns once
+// every chunk has filled. The exit sell is placed the same way via
+// squareOffLimitChunked/chunkedSquareOffLimit, as soon as the buy resolves
+// (see placeExitSell below) - as a resting LIMIT sell at the target price,
+// NOT a market order. A blind market square-off is what caused the
+// 2026-09-22 loss above (a single bad/stale tick falsely read as "target
+// hit" sold straight into a loss, since a market order has no price floor);
+// a resting LIMIT order can only ever fill at the target price or better,
+// so that failure mode doesn't apply here regardless of when it's placed -
+// there is deliberately no tick-based "confirm the target first" gate
+// before placing it, since one would add nothing but a dependency on the
+// live option-tick feed being connected and a delay in placing an already
+// price-safe order.
 export default class BulkPcrStrategy extends Strategy {
     name = 'BulkPcrStrategy';
 
-    private phase: 'idle' | 'buying' | 'holding' | 'selling' | 'error' | 'done' = 'idle';
+    private phase: 'idle' | 'buying' | 'selling' | 'error' | 'done' = 'idle';
     private heldTsym: string | null = null;
     private heldToken: string | null = null;
     private entryAvg = 0;
     // Exit-fill accumulation - the limit-sell chunks placed in
-    // processOptionQuote fill asynchronously and independently (each one
-    // only when the market actually reaches the target price), so
-    // updateTrade tallies them here until the full position is confirmed sold.
+    // placeExitSell (immediately once the buy completes) fill asynchronously
+    // and independently (each one only once the market actually reaches the
+    // target price), so updateTrade tallies them here until the full
+    // position is confirmed sold.
     private targetQuantity = 0;
     private soldQty = 0;
     private soldValue = 0;
@@ -91,11 +87,14 @@ export default class BulkPcrStrategy extends Strategy {
         Log.log(`[BulkPcrStrategy] gate: ${reason}`);
     }
 
-    // Persists just enough state to distinguish 'holding' (safe to re-arm
-    // the target check on restart) from 'selling' (a limit-sell exit is
-    // already resting at the broker - re-arming would risk placing a SECOND
-    // exit for the same quantity) - see reconcile() below. Fire-and-forget,
-    // same convention as bookkeeping's own Mongo writes elsewhere.
+    // Persists just enough state for reconcile() to tell 'selling' (a
+    // limit-sell exit is already resting at the broker - re-placing it on
+    // restart would risk a SECOND exit for the same quantity) apart from
+    // 'error' (something failed and needs manual review - re-placing an
+    // exit automatically on restart would be just as wrong, whether the
+    // failure was a partial buy or a partial/failed sell) - see reconcile()
+    // below. Fire-and-forget, same convention as bookkeeping's own Mongo
+    // writes elsewhere.
     private persistState(): void {
         Mongo.getInstance()?.db.collection(STATE_COLLECTION)
             .replaceOne(
@@ -166,48 +165,31 @@ export default class BulkPcrStrategy extends Strategy {
             this.heldTsym = result.tsym;
             this.heldToken = String(result.token);
             this.entryAvg = result.avgPrice;
-            this.phase = 'holding';
-            this.persistState();
             Log.log(`[BulkPcrStrategy] Entry complete: ${this.heldTsym} qty=${result.quantity} avg=${this.entryAvg}`);
+            await this.placeExitSell(result.quantity);
         } catch (e) {
             Log.log('[BulkPcrStrategy] Chunked entry failed - manual review required:', e);
             this.phase = 'error';
+            this.persistState(); // so reconcile() on restart knows this needs manual review, not an auto-placed exit
         }
     }
 
-    canHandleOptionQuote = (quote: OptionQuote): boolean => {
-        return this.heldToken != null && String(quote.token) === this.heldToken;
-    };
-
-    processOptionQuote = async (quote: OptionQuote): Promise<void> => {
-        if (this.phase !== 'holding') return;
-
-        // Reject a non-finite tick outright, BEFORE the target comparison -
-        // `NaN < targetPrice` and `NaN > entryAvg*MULTIPLE` are both `false`
-        // in JS, so without this a NaN ltp (e.g. an unparseable Breeze
-        // tick - OptionQuote.fromBreeze has no presence/NaN guard, unlike
-        // fromAnt) would silently slip past both the target check below AND
-        // the sanity guard after it, and be treated as a genuine target hit.
-        if (!Number.isFinite(quote.ltp)) return;
-
+    // Places the resting LIMIT exit sell immediately once `quantity` (the
+    // full held position) is confirmed bought - no live-tick "confirm the
+    // target first" gate (see file header comment for why one isn't needed
+    // here). Called both from the live entry path above and from
+    // reconcile() below when a restart lands between "buy filled" and "sell
+    // placed".
+    private async placeExitSell(quantity: number): Promise<void> {
         const cfg = this.cfg();
         const targetPoints = cfg.targetPoints ?? 2;
         const targetPrice = this.entryAvg + targetPoints;
-        if (quote.ltp < targetPrice) return;
-
-        // Sanity guard - see MAX_SANE_LTP_MULTIPLE's comment. Only rejects
-        // implausibly HIGH ticks: that's the only direction that can falsely
-        // satisfy "ltp >= targetPrice" here, regardless of call/put.
-        if (quote.ltp > this.entryAvg * MAX_SANE_LTP_MULTIPLE) {
-            this.logGateOnce(`ignoring implausible tick ltp=${quote.ltp} (>${MAX_SANE_LTP_MULTIPLE}x entryAvg=${this.entryAvg}) for ${this.heldTsym} - not treating as target hit`);
-            return;
-        }
 
         this.phase = 'selling'; // synchronous, before any await
         this.soldQty = 0;
         this.soldValue = 0;
-        this.targetQuantity = cfg.quantity ?? 13975;
-        Log.log(`[BulkPcrStrategy] Target hit: ltp=${quote.ltp} >= ${targetPrice} - placing resting limit sell for ${this.heldTsym} @ ${targetPrice}`);
+        this.targetQuantity = quantity;
+        Log.log(`[BulkPcrStrategy] Placing resting limit sell for ${this.heldTsym} qty=${quantity} @ ${targetPrice}`);
         this.persistState();
 
         try {
@@ -230,7 +212,13 @@ export default class BulkPcrStrategy extends Strategy {
             this.phase = 'error';
             this.persistState();
         }
-    };
+    }
+
+    canHandleOptionQuote(quote: OptionQuote): boolean {
+        return false; // no live-tick trigger needed - see placeExitSell
+    }
+
+    async processOptionQuote(quote: OptionQuote): Promise<void> {}
 
     // Fills for the exit round-trip back here asynchronously, one chunk at a
     // time, potentially far apart - a resting limit sell only fills once the
@@ -283,11 +271,11 @@ export default class BulkPcrStrategy extends Strategy {
             // (pendingLimitOrders.ts / breezePendingLimitOrders.ts /
             // pendingAntLimitOrders.ts) are independently restart-safe and
             // will keep polling that same resting order to completion,
-            // feeding fills back through updateTrade as usual. Restoring
-            // 'holding' instead (the old, pre-fix behavior) would re-arm the
-            // target check and could place a SECOND limit sell for the same
-            // already-resting quantity on the next qualifying tick - risking
-            // an oversell if both eventually filled.
+            // feeding fills back through updateTrade as usual. Falling
+            // through to the 'error'/open-trades branches below instead
+            // would risk calling placeExitSell again and placing a SECOND
+            // limit sell for the same already-resting quantity - an oversell
+            // if both eventually filled.
             this.phase = 'selling';
             this.heldTsym = persisted.heldTsym;
             this.heldToken = persisted.heldToken;
@@ -295,8 +283,30 @@ export default class BulkPcrStrategy extends Strategy {
             this.targetQuantity = persisted.targetQuantity;
             this.soldQty = persisted.soldQty;
             this.soldValue = persisted.soldValue;
-            if (this.heldToken) registerTrade(this.heldToken, this);
             Log.log(`[BulkPcrStrategy] reconcile: restored in-flight limit-sell exit for ${this.heldTsym} (${this.soldQty}/${this.targetQuantity} filled so far) - resuming fill watch`);
+            return;
+        }
+
+        if (persisted?.phase === 'error') {
+            // Last run failed - either a partial buy (chunkedBuyIndex threw
+            // mid-chunk) or a partial/failed exit placement
+            // (chunkedSquareOffLimit threw after some chunks may already be
+            // resting, see placeExitSell's catch). Either way, getOpenTrades
+            // below can't tell "clean buy done, exit never attempted" apart
+            // from "exit partially placed then failed" - blindly calling
+            // placeExitSell here (as the openTrades branch below does) could
+            // place a SECOND full-quantity resting sell on top of chunks
+            // already resting from the failed attempt, risking an oversell
+            // if both fill. Stay in 'error' and require the manual review
+            // the original failure already called for.
+            this.phase = 'error';
+            this.heldTsym = persisted.heldTsym;
+            this.heldToken = persisted.heldToken;
+            this.entryAvg = persisted.entryAvg;
+            this.targetQuantity = persisted.targetQuantity;
+            this.soldQty = persisted.soldQty;
+            this.soldValue = persisted.soldValue;
+            Log.log(`[BulkPcrStrategy] reconcile: last run ended in 'error' for ${this.heldTsym} - manual review required, NOT auto-placing an exit`);
             return;
         }
 
@@ -317,13 +327,19 @@ export default class BulkPcrStrategy extends Strategy {
         }
         if (!openTrades || openTrades.length === 0) return; // nothing open - stays 'idle'
 
+        // Reached only when persisted state was neither 'selling' nor
+        // 'error' (i.e. a clean buy completed and crashed before
+        // placeExitSell's very first, synchronous persistState() call could
+        // run) - a genuinely never-attempted exit, safe to place now.
+        // trade.quantity is bookkeeping's volume-weighted aggregate over
+        // every buy chunk for this tsym+user (bookkeeping.ts recordFill),
+        // i.e. the same total the live path's result.quantity would give.
         const trade = openTrades[0];
         this.heldTsym = trade.tsym;
         this.heldToken = String(trade.token);
         this.entryAvg = trade.price;
-        this.phase = 'holding';
-        registerTrade(trade.token, this); // required - only the live fill handler calls this normally, not a restart
-        Log.log(`[BulkPcrStrategy] reconcile: restored open position ${this.heldTsym} avg=${this.entryAvg} - resuming target watch`);
+        Log.log(`[BulkPcrStrategy] reconcile: restored open position ${this.heldTsym} avg=${this.entryAvg} qty=${trade.quantity} - placing exit sell`);
+        await this.placeExitSell(trade.quantity);
     }
 
     reset(): void {

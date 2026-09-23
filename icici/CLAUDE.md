@@ -14,6 +14,9 @@ This project operates with full permissions in accept edits mode. No permission 
 ## Code Review Before Declaring a Fix Done
 **Run a code review pass (use the `code-review` skill) on any fix or change to live-trading-affecting code (order placement, broker execution, strategy entry/exit logic, config live-sync) before telling the user it's done — not just a `tsc`/build check.** This came up 2026-09-21 after a fix was shipped without a thorough review and a real, unreviewed gap (a stuck limit sell with no re-pricing) caused an actual trading loss live. Compiling clean or "looks right" is not the same as reviewed; the review must specifically consider edge cases and interaction with existing timeouts/retries/live state before calling the work complete.
 
+## Finishing a Task
+**Once all deliverables for a task are complete and verified (build/type-check passes, and a code-review pass has been run per the rule above for any live-trading-affecting change), commit and push — don't leave finished work sitting uncommitted for the user to commit manually.** Push to the current branch's existing remote tracking branch. This applies once work is genuinely done, not to partial/in-progress changes or anything still blocked on a question for the user.
+
 ## Session Efficiency
 **Don't re-read a file already read earlier in the same session unless it may have changed since** (e.g. another edit/tool call touched it, or enough time/actions passed that an externally-modified file like `ToDo.md`, `config.yml`, or a log file could plausibly be stale). Rely on the file's contents already in context instead of issuing a fresh `Read`/`cat`. This came up because `ToDo.md` was re-read more than once in a single session with nothing in between that would have changed it.
 
@@ -38,6 +41,12 @@ This is a Node.js/TypeScript-based options trading platform built for automated 
 - ANT (Alice Blue) OAuth authentication implementation
 - Architecture and design patterns used
 - Code examples and usage patterns
+
+### Trading Strategies
+**See [strategies.md](./strategies.md)** for every strategy under `src/strategy/`:
+- Entry triggers, position sizing, and exit mechanisms (GTT/bracket vs self-monitored vs polling)
+- Which strategies are actually armable via `config.yml` vs legacy/dead code
+- `LegManager.ts`/`strategy.ts` shared infrastructure (leg lifecycle, capital/max-profit gates)
 
 ## Architecture
 
