@@ -1,6 +1,7 @@
 import Log from '../../util/Log';
 import { writeJsonLine } from '../../ipc/jsonLines';
 import { OptionQuote, Trade } from '../../model/model';
+import configService from '../../prism/ConfigService';
 
 // In-app target/SL exit monitoring, for trades placed with useGTT=false (see
 // bookkeeping.getUserUseGTT / zerodhaExecutor.finalizeEntry, antExecutor.finalizeEntry).
@@ -80,7 +81,47 @@ export function onPriceUpdate(listener: PriceUpdateListener): void {
     priceUpdateListeners.push(listener);
 }
 
+// Strategy `type`s that own their entire exit lifecycle themselves (their own
+// chunked resting-limit-sell, not a GTT/bracket/cover the broker owns) and
+// must NEVER be picked up by this generic target/SL watch, in either
+// direction: not at entry time, and not on a restart-triggered
+// reconcileFromTrades() restore from a possibly-stale persisted Trade doc.
+// Live incident 2026-09-24: a Zerodha BulkPcrStrategy Buy doc had
+// targetPrice=stopLossPrice=entryPrice persisted (a since-fixed
+// zerodhaExecutor.finalizeEntry bug, see its comment), and every process
+// restart re-armed this watch from that doc regardless of the entry-time fix
+// - it fired almost immediately (price only has to move off entry by a
+// tick) and called the wrong, unchunked squareoff, which always exceeds the
+// exchange's per-order freeze-quantity limit for a position this size and
+// retried with no backoff, hammering Zerodha's API. This is the single choke
+// point every registerTrade() caller goes through, so excluding here closes
+// the gap regardless of what's already sitting in Mongo.
+//
+// Matched by TYPE against `configService.getStrategyConfig(type).userId`
+// (falling back to `type`, mirroring StrategyFactory.createStrategy's own
+// default) rather than a hardcoded literal userId string - `trade.user` only
+// happens to equal 'BulkPcrStrategy' today because config.yml has no
+// explicit `userId:` override for it. A literal-string Set would silently
+// stop matching (recreating the exact 2026-09-24 gap with no error) the
+// moment someone adds one; deriving it from live config every call can't
+// drift out of sync. ConfigService is safe to read directly here - it's a
+// plain fs.watch-backed singleton per process (already used elsewhere in
+// this same `order` process, e.g. bookkeeping.ts/zerodhaExecutor.ts), not an
+// IPC call into the separate `strategies` process.
+const SELF_MANAGED_STRATEGY_TYPES = ['BulkPcrStrategy'];
+
+function isSelfManagedTradeUser(userId: string): boolean {
+    return SELF_MANAGED_STRATEGY_TYPES.some((type) => {
+        const cfg = configService.getStrategyConfig(type);
+        return (cfg.userId || type) === userId;
+    });
+}
+
 export function registerTrade(trade: Trade, exchange: 'NFO' | 'BFO', broker: Broker, watchOnly = false): void {
+    if (isSelfManagedTradeUser(trade.user)) {
+        Log.log(`[order] exitMonitor: skipping ${trade.tsym} for ${trade.user} - self-managed strategy, never watched here`);
+        return;
+    }
     const key = monitorKey(trade.user, trade.token);
     // Check BEFORE inserting this entry - if some other entry (e.g. another
     // user's trade) already watches this token, the underlying token

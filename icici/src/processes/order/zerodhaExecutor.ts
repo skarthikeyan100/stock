@@ -67,18 +67,34 @@ async function getMarketableZerodhaPrice(antToken: string, exchange: 'NFO' | 'BF
 // depending on the placing user's useGTT setting, before recording the fill.
 async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number): Promise<void> {
     const entryPrice = trade.price;
-    trade.targetPoints = targetPoints;
-    // Tick-rounded (not just entryPrice +/- points) so these match whatever
-    // placeTargetStopLossGTT actually sends the broker, and stay sane if a
-    // GTT failure falls back to exitMonitor's in-app target/SL comparison
-    // below - a multi-fill average entryPrice (e.g. 133.61363636363637)
-    // otherwise produces a stopLossPrice that isn't a tick multiple, which
-    // Zerodha's GTT API rejects outright (confirmed live: "Stoploss trigger
-    // price should be a multiple of tick size 0.05").
-    trade.stopLossPrice = roundToTick(entryPrice - stopLossPoints);
-    trade.targetPrice = roundToTick(entryPrice + targetPoints);
 
     if (targetPoints > 0 && stopLossPoints > 0) {
+        trade.targetPoints = targetPoints;
+        // Tick-rounded (not just entryPrice +/- points) so these match whatever
+        // placeTargetStopLossGTT actually sends the broker, and stay sane if a
+        // GTT failure falls back to exitMonitor's in-app target/SL comparison
+        // below - a multi-fill average entryPrice (e.g. 133.61363636363637)
+        // otherwise produces a stopLossPrice that isn't a tick multiple, which
+        // Zerodha's GTT API rejects outright (confirmed live: "Stoploss trigger
+        // price should be a multiple of tick size 0.05").
+        //
+        // Deliberately scoped inside this guard (not set unconditionally
+        // above it): a caller with no real target/SL (targetPoints=0,
+        // stopLossPoints=0 - e.g. BulkPcrStrategy's buyResolvedOnZerodha,
+        // which manages its own separate chunked resting-limit-sell exit)
+        // must leave trade.targetPrice/stopLossPrice unset. Setting them to
+        // entryPrice+/-0 here used to persist a target=stopLoss=entryPrice
+        // Trade doc that looked, to a LATER exitMonitor.reconcileFromTrades()
+        // restart-reconciliation pass, exactly like a real armed target/SL -
+        // it would register a live (non-watchOnly) watch that fires on
+        // essentially the very next tick, then square off with a single
+        // unchunked order that always exceeds the exchange's per-order
+        // freeze-quantity limit for a BulkPcrStrategy-sized position. Live
+        // incident 2026-09-24: this fired hundreds of times/sec against
+        // Zerodha with no backoff before being caught.
+        trade.stopLossPrice = roundToTick(entryPrice - stopLossPoints);
+        trade.targetPrice = roundToTick(entryPrice + targetPoints);
+
         if (bookkeeping.getUserUseGTT(userId)) {
             try {
                 // Kept on the trade (not discarded) so setTargetStopLoss can modify

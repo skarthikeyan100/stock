@@ -3,6 +3,7 @@ import Zerodha from '../../zerodha/Zerodha';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import Mongo from '../../tools/mongo';
+import { isPastMarketClose } from '../../util/marketHours';
 
 // In-memory tracker (mirrored to Mongo, see loadPendingLimitOrdersFromMongo)
 // for limit orders placed via placeLimitBuyBareOnZerodha (zerodhaExecutor.ts)
@@ -124,11 +125,42 @@ export async function pollPendingLimitOrders(): Promise<void> {
                 Log.log(`[order] Pending limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
             } else if (latest.status === 'REJECTED' || latest.status === 'CANCELLED') {
                 untrackPendingLimitOrder(orderId);
-                const reason = latest.status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
-                for (const listener of cancelledListeners) {
-                    listener(order.userId, order.tradingSymbol, order.instrumentToken, order.quantity, order.exchange, order.action, 'zerodha', orderId, reason);
+                // Kite Connect has no separate "EXPIRED" status - an unfilled
+                // DAY order the exchange auto-cancels at EOD is reported back
+                // as plain 'CANCELLED'. Unlike breezePendingLimitOrders.ts
+                // (ICICI's API does report a distinct "Expired" string,
+                // letting that guard target EOD expiry specifically), Kite
+                // gives no way to tell an EOD auto-cancel apart from a
+                // genuine same-day manual/API cancel once status is already
+                // 'CANCELLED' - this time-based gate is a deliberate, known
+                // imprecision: a real manual cancel that happens to land
+                // after isPastMarketClose() also gets deferred to tomorrow
+                // instead of firing immediately. Accepted trade-off - that
+                // window is narrow (the exchange itself stops accepting
+                // order actions at close, so a genuine manual cancel this
+                // late is rare) and deferring is always safe (re-placement
+                // simply happens next reconcile() instead of now), whereas
+                // NOT deferring reproduces the live incident below on every
+                // single EOD, which is the common case. Firing the
+                // cancelled-listener after market close means an immediate
+                // same-day re-placement attempt (e.g.
+                // BulkPcrStrategy.onOrderCancelled ->
+                // placeExitSellAtTargetPrice) against a closed exchange,
+                // which will fail and drive the position into phase='error'
+                // every single EOD (live incident 2026-09-24, both the
+                // Zerodha and Breeze legs expired unfilled at EOD). Skip the
+                // listener call here and let the next morning's reconcile()
+                // (BulkPcrStrategy.ts's sellPlacedAt/
+                // isStillWithinSameTradingSession check) re-place it instead.
+                if (latest.status === 'CANCELLED' && isPastMarketClose()) {
+                    Log.log(`[order] Pending limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close - leaving re-placement to tomorrow's reconcile()`);
+                } else {
+                    const reason = latest.status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
+                    for (const listener of cancelledListeners) {
+                        listener(order.userId, order.tradingSymbol, order.instrumentToken, order.quantity, order.exchange, order.action, 'zerodha', orderId, reason);
+                    }
+                    Log.log(`[order] Pending limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${latest.status}`);
                 }
-                Log.log(`[order] Pending limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${latest.status}`);
             }
             // else: still pending, leave in map for the next poll
         } catch (e) {

@@ -33,6 +33,28 @@ export function isPastExpirySquareOffTime(): boolean {
   );
 }
 
+const RECONCILE_AFTER_HOUR = 9;
+const RECONCILE_AFTER_MINUTE = 10;
+
+// Login/startup-triggered broker-position reconciliation (bookkeeping's
+// reconcileZerodhaPositions/reconcileAntPositions/reconcileBreezePositions,
+// each strategy's own reconcile()) must not run against pre-market broker
+// state - a login done before the market opens (as happened 2026-09-24,
+// ~08:44-08:51) can see incomplete/stale broker responses and, worse, firing
+// it once per broker login in quick succession re-derives the same Mongo
+// aggregate multiple times, which is what actually produced a doubled
+// (27950 instead of 13975) quantity that morning. Gate reconciliation to the
+// first tick received once this returns true - in practice that's the first
+// live tick after market open (9:15), since no real tick exists before then
+// regardless of what this returns.
+export function isPastReconcileTime(): boolean {
+  const now = new Date();
+  return (
+    now.getHours() > RECONCILE_AFTER_HOUR ||
+    (now.getHours() === RECONCILE_AFTER_HOUR && now.getMinutes() >= RECONCILE_AFTER_MINUTE)
+  );
+}
+
 const TRADING_WINDOW_START_HOUR = 9;
 const TRADING_WINDOW_START_MINUTE = 14;
 

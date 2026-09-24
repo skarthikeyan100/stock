@@ -19,6 +19,7 @@ import * as niftyStatsBuilder from './strategies/niftyStatsBuilder';
 import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 import { FeedSource, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
+import { isPastReconcileTime } from '../util/marketHours';
 
 // Entry point for the `strategies` process. No Prism/Zerodha dependency at all -
 // ticks arrive over stdin (piped from `data` by the orchestrator), orders go out
@@ -61,7 +62,36 @@ async function onOrderCancelled(userId: string, notification: OrderCancelledNoti
 // tick moments later re-populates lastNiftyLtp etc.
 let ready = false;
 
+// Login/restart-triggered reconcile() must not run against pre-market
+// broker state (see marketHours.isPastReconcileTime's comment) - deferred
+// from main()'s startup path to here, so it fires on the first tick received
+// once the clock has passed 9:10 instead of unconditionally at process
+// start/login, whatever time that happens to be.
+let reconciled = false;
+
+async function runReconcileOnce(): Promise<void> {
+    if (reconciled) return;
+    reconciled = true;
+    // Only ContinuousStrategy/BulkPcrStrategy implement reconcile() today -
+    // optional-chained since other strategies don't need it, and each call
+    // is independently try/caught so one strategy's reconcile failure can't
+    // block the others (reconcile() itself already fails closed internally -
+    // see ContinuousStrategy.reconcile).
+    for (const strategy of strategies.getList()) {
+        try {
+            await (strategy as any).reconcile?.();
+        } catch (e) {
+            Log.log(`[strategies] reconcile() failed for ${strategy.userId}:`, e);
+        }
+    }
+    ready = true;
+    Log.log(`[strategies] Reconciled and ready - ${strategies.getList().length} strategies loaded.`);
+}
+
 async function onTick(tick: any) {
+    if (!reconciled && isPastReconcileTime()) {
+        await runReconcileOnce();
+    }
     if (!ready) return;
     if (tick.type === 'nifty') {
         const quote = Object.assign(new NiftyQuote(), tick.quote) as NiftyQuote;
@@ -190,18 +220,12 @@ async function main() {
 
     await strategies.initialize();
 
-    // Only ContinuousStrategy implements reconcile() today - optional-chained
-    // since other strategies don't need it, and each call is independently
-    // try/caught so one strategy's reconcile failure can't block the others
-    // or crash startup (reconcile() itself already fails closed internally -
-    // see ContinuousStrategy.reconcile).
-    for (const strategy of strategies.getList()) {
-        try {
-            await (strategy as any).reconcile?.();
-        } catch (e) {
-            Log.log(`[strategies] reconcile() failed for ${strategy.userId}:`, e);
-        }
-    }
+    // reconcile() itself (and setting ready=true) is deferred to the first
+    // tick received after isPastReconcileTime() - see runReconcileOnce/onTick
+    // above. If it's already past that time right now (e.g. a mid-day
+    // restart), it simply runs on whatever tick arrives next - no different
+    // in practice from running it here, since no tick exists before market
+    // open anyway.
 
     // Keeps the trading-window gate (strategies.ts's enforceTradingWindow)
     // self-correcting without needing a restart - disable-only: force-disables
@@ -212,8 +236,7 @@ async function main() {
     // setEnabledOverride comments.
     setInterval(() => strategies.recheckTradingWindow(), 60 * 1000);
 
-    ready = true;
-    Log.log(`[strategies] Ready - ${strategies.getList().length} strategies loaded.`);
+    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. Reconciliation deferred to first tick after 09:10.`);
 }
 
 main().catch((e) => {

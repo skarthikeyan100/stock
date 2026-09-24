@@ -7,6 +7,7 @@ import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
 import { roundToTick } from '../zerodha/Zerodha';
 import MomentumSignal from './MomentumSignal';
+import { isPastMarketClose } from '../util/marketHours';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot - no recheck-throttle needed here (one-shot)
 
@@ -26,10 +27,31 @@ interface BrokerPosition {
     targetQuantity: number;
     soldQty: number;
     soldValue: number;
+    // Epoch ms when phase last transitioned to 'selling' - lets reconcile()
+    // tell a genuinely still-resting exit apart from one that's certainly
+    // gone: every resting sell chunk placed by chunkedSquareOffLimit is a DAY
+    // order, which the exchange cancels/expires unfilled at EOD regardless of
+    // what this app believes - see reconcile()'s use of this field.
+    sellPlacedAt?: number;
 }
 
 interface PersistedState {
     positions: Partial<Record<BrokerName, BrokerPosition>>;
+}
+
+function isSameCalendarDay(epochMs: number): boolean {
+    const a = new Date(epochMs);
+    const b = new Date();
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+// A resting DAY-validity sell placed today is only still trustworthy as
+// "resting" if today's market hasn't closed since it was placed - same
+// calendar day alone isn't enough (a restart at, say, 20:00 the same day it
+// was placed would otherwise wrongly treat an already-EOD-expired order as
+// still resting). See reconcile()'s use of this below.
+function isStillWithinSameTradingSession(epochMs: number): boolean {
+    return isSameCalendarDay(epochMs) && !isPastMarketClose();
 }
 
 // One-shot large block order: buys a total quantity (config `quantity`,
@@ -270,6 +292,7 @@ export default class BulkPcrStrategy extends Strategy {
         // just re-place the chunk that was orphaned by cancellation
 
         pos.phase = 'selling'; // synchronous, before any await
+        pos.sellPlacedAt = Date.now();
         Log.log(`[BulkPcrStrategy] [${broker}] Placing resting limit sell for ${pos.heldTsym} qty=${quantity} @ ${targetPrice}`);
         this.persistState();
 
@@ -444,9 +467,52 @@ export default class BulkPcrStrategy extends Strategy {
                 // calling placeExitSell again and placing a SECOND limit sell
                 // for the same already-resting quantity - an oversell if both
                 // eventually filled.
+                //
+                // BUT every resting sell chunk is a DAY order - the exchange
+                // cancels/expires it unfilled at EOD regardless of what this
+                // app believes. If sellPlacedAt is missing (persisted before
+                // this field existed), falls on an earlier calendar day than
+                // now, OR falls on today but today's market has already
+                // closed since (a same-day restart after 15:25 - calendar
+                // date alone isn't enough), the resting order is certainly
+                // gone already, not "still resting" - live incident
+                // 2026-09-24: both the Zerodha and Breeze legs' chunks from
+                // 23-Sep expired unfilled at that day's EOD (Breeze's own
+                // order book showed status "Expired" on all of them), leaving
+                // the position with zero exit protection into the next day.
+                // Detected here rather than trusted, and re-placed for the
+                // remaining unsold quantity (soldQty/soldValue preserved, not
+                // reset).
+                const placedSameDay = persistedPos.sellPlacedAt != null && isStillWithinSameTradingSession(persistedPos.sellPlacedAt);
+                if (placedSameDay) {
+                    this.positions.set(broker, { ...persistedPos });
+                    anyRestored = true;
+                    Log.log(`[BulkPcrStrategy] [${broker}] reconcile: restored in-flight limit-sell exit for ${persistedPos.heldTsym} (${persistedPos.soldQty}/${persistedPos.targetQuantity} filled so far) - resuming fill watch`);
+                    continue;
+                }
+
+                if (isPastMarketClose()) {
+                    // reconcile() itself is running after hours (e.g. an
+                    // evening restart) - re-placing now would hit a closed
+                    // exchange and fail immediately, same reason
+                    // pendingLimitOrders.ts/breezePendingLimitOrders.ts defer
+                    // an EOD-detected cancellation instead of re-placing
+                    // on the spot. Restore the position as-is (still
+                    // 'selling', no live resting order at the broker) without
+                    // attempting a doomed placement - the next restart's
+                    // reconcile() re-evaluates this exact branch and will
+                    // succeed once it runs during market hours.
+                    this.positions.set(broker, { ...persistedPos });
+                    anyRestored = true;
+                    Log.log(`[BulkPcrStrategy] [${broker}] reconcile: persisted limit-sell exit for ${persistedPos.heldTsym} expired unfilled at EOD, but market is currently closed - deferring re-placement to the next restart during market hours (NOT auto-placing now)`);
+                    continue;
+                }
+
+                const remaining = persistedPos.targetQuantity - persistedPos.soldQty;
+                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: persisted limit-sell exit for ${persistedPos.heldTsym} was placed on a previous trading day (sellPlacedAt=${persistedPos.sellPlacedAt ?? 'unset'}) - DAY-order validity means it has certainly expired unfilled at the broker; re-placing exit for remaining qty=${remaining}`);
                 this.positions.set(broker, { ...persistedPos });
                 anyRestored = true;
-                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: restored in-flight limit-sell exit for ${persistedPos.heldTsym} (${persistedPos.soldQty}/${persistedPos.targetQuantity} filled so far) - resuming fill watch`);
+                await this.placeExitSellAtTargetPrice(broker, remaining, false);
                 continue;
             }
 

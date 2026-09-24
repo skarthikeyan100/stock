@@ -3,6 +3,7 @@ import Breeze from '../../breeze/Breeze';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import Mongo from '../../tools/mongo';
+import { isPastMarketClose } from '../../util/marketHours';
 
 // Mirrors pendingLimitOrders.ts exactly, for limit orders placed via
 // placeLimitBuyBareOnBreeze (breezeExecutor.ts) - root-refill re-entries for
@@ -105,13 +106,33 @@ export async function pollPendingBreezeLimitOrders(): Promise<void> {
                 trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
                 Log.log(`[order] Pending Breeze limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
-            } else if (record.status && /rejected|cancelled/i.test(String(record.status))) {
+            } else if (record.status && /rejected|cancelled|expired/i.test(String(record.status))) {
+                // "Expired" (live incident 2026-09-24): every resting sell
+                // chunk is a DAY order, which ICICI reports back with this
+                // exact status once the exchange cancels it unfilled at EOD -
+                // previously unmatched by this regex, so an EOD-expired
+                // chunk sat in `pending` forever and never fired the
+                // cancelled-listener that re-places the exit.
                 untrackPendingBreezeLimitOrder(orderId);
-                const reason = /rejected/i.test(String(record.status)) ? 'REJECTED' : 'CANCELLED';
-                for (const listener of cancelledListeners) {
-                    listener(order.userId, order.tradingSymbol, order.antToken, order.quantity, order.exchange, order.action, 'breeze', orderId, reason);
+                const isExpired = /expired/i.test(String(record.status));
+                // But firing the cancelled-listener for an EOD expiry means an
+                // immediate same-day re-placement attempt (onOrderCancelled ->
+                // placeExitSellAtTargetPrice) after the exchange has already
+                // closed - that placement will fail, driving the position into
+                // phase='error' every single day. Skip the listener call for an
+                // after-close expiry and let the next morning's reconcile()
+                // (BulkPcrStrategy.ts, its own sellPlacedAt/isPastMarketClose
+                // check) re-place it instead. A rejection/manual cancel is still
+                // handled immediately regardless of time of day.
+                if (isExpired && isPastMarketClose()) {
+                    Log.log(`[order] Pending Breeze limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) expired after market close - leaving re-placement to tomorrow's reconcile()`);
+                } else {
+                    const reason = /rejected/i.test(String(record.status)) ? 'REJECTED' : 'CANCELLED';
+                    for (const listener of cancelledListeners) {
+                        listener(order.userId, order.tradingSymbol, order.antToken, order.quantity, order.exchange, order.action, 'breeze', orderId, reason);
+                    }
+                    Log.log(`[order] Pending Breeze limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${record.status}`);
                 }
-                Log.log(`[order] Pending Breeze limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${record.status}`);
             }
             // else: still pending, leave in map for the next poll
         } catch (e) {
