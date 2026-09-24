@@ -1,12 +1,58 @@
 import { useState, useEffect, useRef, CSSProperties } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Container, Table, Form, Button, Spinner, Tabs, Tab, Card, Row, Col, Alert, OverlayTrigger, Tooltip, Modal } from 'react-bootstrap';
+import { Container, Table, Form, Button, Spinner, Tabs, Tab, Card, Row, Col, Alert, OverlayTrigger, Tooltip, Modal, Accordion } from 'react-bootstrap';
 import { useAuth, AuthUser } from '../context/AuthContext';
 import DateRangeFilter, { DateRange, resolveDateRange, formatRangeLabel } from '../components/DateRangeFilter';
 
 interface UserRow extends AuthUser {
   sessionPnL: number;
   hasActiveTrade: boolean;
+}
+
+// Config key -> the exact `user` value trades are tagged with, for the
+// Strategy Configuration tab's per-strategy Realized/Unrealized P&L badge.
+// Derived from `StrategyFactory.STRATEGY_REGISTRY` + config.yml (userId
+// defaults to `type` when no explicit `userId:` override exists, which is the
+// case for every one of these). `buySellStrategy`/`intermittentStrategy` have
+// no config.yml entry at all (legacy/dead UI - see strategies.md) so they get
+// no badge. `ruleBasedStrategy` is also left out: its actual runtime userId
+// is dynamically derived per indicator group by `expandRuleBasedConfig`
+// (e.g. 'Rule-RSI_5_80_20, EMA_5_13'), not the literal class name, so a
+// single fixed mapping here would silently show an always-empty P&L.
+const STRATEGY_PNL_USER: Record<string, string> = {
+  continuousStrategy: 'ContinuousStrategy',
+  sentimentStrategy: 'SentimentStrategy',
+  rateOfChangeStrategy: 'RateOfChangeStrategy',
+  gapStrategy: 'GapStrategy',
+  goodMorningStrategy: 'GoodMorningStrategy',
+  goodMorningSensexStrategy: 'GoodMorningSensexStrategy',
+  supportResistanceStrategy: 'SupportResistanceStrategy',
+  targetReachStrategy: 'TargetReachStrategy',
+  bulkPcrStrategy: 'BulkPcrStrategy',
+};
+
+// Today's realized (closed trades) + unrealized (open trades, marked to last
+// trade price) P&L - same aggregation the Bulk PCR status popover used to do
+// for itself alone, now shared across every strategy's collapsed-row badge.
+function computeTodayPnl(open: any[], closed: any[]): { realized: number; unrealized: number } {
+  const today = new Date().toISOString().split('T')[0];
+  const todaysClosed = (closed || []).filter(t => {
+    const dateStr = t.exitTime || t.closedAt || t.date;
+    if (!dateStr) return true;
+    const tradeDate = new Date(dateStr);
+    if (isNaN(tradeDate.getTime())) return true;
+    return tradeDate.toISOString().split('T')[0] === today;
+  });
+  const todaysOpen = (open || []).filter(t => {
+    const dateStr = t.entryTime || t.openedAt || t.date;
+    if (!dateStr) return true;
+    const tradeDate = new Date(dateStr);
+    if (isNaN(tradeDate.getTime())) return true;
+    return tradeDate.toISOString().split('T')[0] === today;
+  });
+  const realized = todaysClosed.reduce((s, t) => s + (t.realizedPnL || 0), 0);
+  const unrealized = todaysOpen.reduce((s, t) => s + ((t.lastTradePrice - t.price) * t.quantity || 0), 0);
+  return { realized, unrealized };
 }
 
 // Pins the Actions column to the right edge of the horizontally-scrollable
@@ -78,10 +124,8 @@ export default function AdminPage() {
   const [tradesError, setTradesError] = useState<string | null>(null);
   const [pnlSummary, setPnlSummary] = useState<any>(null);
 
-  // Bulk PCR Strategy status popover
-  const [bulkPcrTrades, setBulkPcrTrades] = useState<{ open: any[]; closed: any[] } | null>(null);
-  const [showBulkPcrStatus, setShowBulkPcrStatus] = useState(false);
-  const bulkPcrStatusRef = useRef<HTMLDivElement>(null);
+  // Strategy Configuration tab - per-strategy Realized/Unrealized P&L badges
+  const [strategyPnl, setStrategyPnl] = useState<Record<string, { realized: number; unrealized: number }>>({});
 
   const fetchAdminPayouts = () => {
     setPayoutsLoading(true);
@@ -138,17 +182,32 @@ export default function AdminPage() {
     return () => clearTimeout(timer);
   }, [activeTab, tradeUser, tradeDateRange.from, tradeDateRange.to]);
 
-  // Close Bulk PCR Status popover on outside click
+  // Refreshes every strategy's today's Realized/Unrealized P&L badge while the
+  // Strategy Configuration tab is open - same tab-scoped-polling convention
+  // the Trades/Payments/Users tabs already use above.
   useEffect(() => {
-    if (!showBulkPcrStatus) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (bulkPcrStatusRef.current && !bulkPcrStatusRef.current.contains(e.target as Node)) {
-        setShowBulkPcrStatus(false);
-      }
+    if (activeTab !== 'config') return;
+    const fetchAllPnl = async () => {
+      const entries = await Promise.all(
+        Object.entries(STRATEGY_PNL_USER).map(async ([configKey, pnlUser]) => {
+          try {
+            const [openRes, closedRes] = await Promise.all([
+              fetch(`/admin/trades/open?user=${encodeURIComponent(pnlUser)}`),
+              fetch(`/admin/trades/closed?user=${encodeURIComponent(pnlUser)}`),
+            ]);
+            const [openData, closedData] = await Promise.all([openRes.json(), closedRes.json()]);
+            return [configKey, computeTodayPnl(Array.isArray(openData) ? openData : [], Array.isArray(closedData) ? closedData : [])] as const;
+          } catch {
+            return [configKey, { realized: 0, unrealized: 0 }] as const;
+          }
+        })
+      );
+      setStrategyPnl(Object.fromEntries(entries));
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showBulkPcrStatus]);
+    fetchAllPnl();
+    const interval = setInterval(fetchAllPnl, 20000);
+    return () => clearInterval(interval);
+  }, [activeTab]);
 
   // "Eligible" P&L (excludes forfeited profit) - only meaningful for a single
   // user, since forfeiture is checked against that user's investmentAmount.
@@ -1114,486 +1173,328 @@ export default function AdminPage() {
                   </Card.Body>
                 </Card>
 
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold">Buy-Sell Strategy</Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['buySellStrategy', 'enabled'], config.buySellStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        {renderConfigField('Initial Quantity', ['buySellStrategy', 'initialQuantity'], config.buySellStrategy?.initialQuantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Increment Quantity', ['buySellStrategy', 'incrementQuantity'], config.buySellStrategy?.incrementQuantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Average Threshold', ['buySellStrategy', 'averageThreshold'], config.buySellStrategy?.averageThreshold)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Target Price', ['buySellStrategy', 'targetPrice'], config.buySellStrategy?.targetPrice)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Max Iteration Count', ['buySellStrategy', 'maxIterationCount'], config.buySellStrategy?.maxIterationCount)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Right', ['buySellStrategy', 'right'], config.buySellStrategy?.right, 'text')}
-                      </Col>
-                    </Row>
-                    {renderConfigField('Stop Enabled', ['buySellStrategy', 'stopEnabled'], config.buySellStrategy?.stopEnabled, 'boolean')}
-                    {renderConfigField('Log Enabled', ['buySellStrategy', 'logEnabled'], config.buySellStrategy?.logEnabled, 'boolean')}
-                  </Card.Body>
-                </Card>
-
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold d-flex justify-content-between align-items-center">
-                    Continuous Strategy
-                    <Button size="sm" variant="outline-danger" onClick={handleResetContinuousStrategy}>Reset</Button>
-                  </Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['continuousStrategy', 'enabled'], config.continuousStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        {renderConfigField('Initial Quantity', ['continuousStrategy', 'initialQuantity'], config.continuousStrategy?.initialQuantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('SL Distance', ['continuousStrategy', 'slDistance'], config.continuousStrategy?.slDistance)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Square-off Distance', ['continuousStrategy', 'squareOffDistance'], config.continuousStrategy?.squareOffDistance)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Minimum Premium', ['continuousStrategy', 'minPremium'], config.continuousStrategy?.minPremium)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Max Investment', ['continuousStrategy', 'maxInvestment'], config.continuousStrategy?.maxInvestment)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Spawn Quantity Mode', ['continuousStrategy', 'spawnQuantityMode'], config.continuousStrategy?.spawnQuantityMode)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Max Profit %', ['continuousStrategy', 'maxProfit'], config.continuousStrategy?.maxProfit)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Right', ['continuousStrategy', 'right'], config.continuousStrategy?.right, 'text')}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Cooldown (sec)', ['continuousStrategy', 'cooldownSeconds'], config.continuousStrategy?.cooldownSeconds)}
-                      </Col>
-                    </Row>
-                    {renderConfigField('Log Enabled', ['continuousStrategy', 'logEnabled'], config.continuousStrategy?.logEnabled, 'boolean')}
-                  </Card.Body>
-                </Card>
-
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold">Sentiment Strategy</Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['sentimentStrategy', 'enabled'], config.sentimentStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        {renderConfigField('Average Threshold', ['sentimentStrategy', 'averageThreshold'], config.sentimentStrategy?.averageThreshold)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Target Price', ['sentimentStrategy', 'targetPrice'], config.sentimentStrategy?.targetPrice)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Order Quantity', ['sentimentStrategy', 'orderQuantity'], config.sentimentStrategy?.orderQuantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Sentiment', ['sentimentStrategy', 'sentiment'], config.sentimentStrategy?.sentiment, 'text')}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Loop Count', ['sentimentStrategy', 'loopCount'], config.sentimentStrategy?.loopCount)}
-                      </Col>
-                    </Row>
-                  </Card.Body>
-                </Card>
-
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold">Intermittent Strategy</Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['intermittentStrategy', 'enabled'], config.intermittentStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        {renderConfigField('Loop Count', ['intermittentStrategy', 'loopCount'], config.intermittentStrategy?.loopCount)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Target Price', ['intermittentStrategy', 'targetPrice'], config.intermittentStrategy?.targetPrice)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Quantity', ['intermittentStrategy', 'quantity'], config.intermittentStrategy?.quantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Threshold', ['intermittentStrategy', 'threshold'], config.intermittentStrategy?.threshold)}
-                      </Col>
-                    </Row>
-                    {renderConfigField('Log Enabled', ['intermittentStrategy', 'logEnabled'], config.intermittentStrategy?.logEnabled, 'boolean')}
-                  </Card.Body>
-                </Card>
-
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold">Rate of Change Strategy</Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['rateOfChangeStrategy', 'enabled'], config.rateOfChangeStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        {renderConfigField('Points Threshold', ['rateOfChangeStrategy', 'pointsThreshold'], config.rateOfChangeStrategy?.pointsThreshold)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Acceleration Threshold', ['rateOfChangeStrategy', 'accelerationThreshold'], config.rateOfChangeStrategy?.accelerationThreshold)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Quantity', ['rateOfChangeStrategy', 'quantity'], config.rateOfChangeStrategy?.quantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Data Points Window', ['rateOfChangeStrategy', 'numberOfDatapointsReceived'], config.rateOfChangeStrategy?.numberOfDatapointsReceived)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Target Price', ['rateOfChangeStrategy', 'targetPrice'], config.rateOfChangeStrategy?.targetPrice)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Stop Loss Price', ['rateOfChangeStrategy', 'stopLossPrice'], config.rateOfChangeStrategy?.stopLossPrice)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Max Hold Time (min)', ['rateOfChangeStrategy', 'maxHoldTimeMinutes'], config.rateOfChangeStrategy?.maxHoldTimeMinutes)}
-                      </Col>
-                    </Row>
-                    {renderConfigField('Log Enabled', ['rateOfChangeStrategy', 'logEnabled'], config.rateOfChangeStrategy?.logEnabled, 'boolean')}
-                  </Card.Body>
-                </Card>
-
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold">Gap Strategy</Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['gapStrategy', 'enabled'], config.gapStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        {renderConfigField('Points Threshold', ['gapStrategy', 'pointsThreshold'], config.gapStrategy?.pointsThreshold)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Data Points Window', ['gapStrategy', 'numberOfDatapointsReceived'], config.gapStrategy?.numberOfDatapointsReceived)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Quantity', ['gapStrategy', 'quantity'], config.gapStrategy?.quantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Target Price', ['gapStrategy', 'targetPrice'], config.gapStrategy?.targetPrice)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Stop Loss Price', ['gapStrategy', 'stopLossPrice'], config.gapStrategy?.stopLossPrice)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Max Hold Time (min)', ['gapStrategy', 'maxHoldTimeMinutes'], config.gapStrategy?.maxHoldTimeMinutes)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Gap Reversal Threshold', ['gapStrategy', 'gapReversalThreshold'], config.gapStrategy?.gapReversalThreshold)}
-                      </Col>
-                    </Row>
-                    {renderConfigField('Gap Reversal Mode', ['gapStrategy', 'gapReversalMode'], config.gapStrategy?.gapReversalMode, 'boolean')}
-                    {renderConfigField('Log Enabled', ['gapStrategy', 'logEnabled'], config.gapStrategy?.logEnabled, 'boolean')}
-                  </Card.Body>
-                </Card>
-
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold">Good Morning Strategy</Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['goodMorningStrategy', 'enabled'], config.goodMorningStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        {renderConfigField('Quantity', ['goodMorningStrategy', 'quantity'], config.goodMorningStrategy?.quantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Target Points', ['goodMorningStrategy', 'targetPoints'], config.goodMorningStrategy?.targetPoints)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Stop Loss Points', ['goodMorningStrategy', 'stopLossPoints'], config.goodMorningStrategy?.stopLossPoints)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Previous Close', ['goodMorningStrategy', 'previousClose'], config.goodMorningStrategy?.previousClose)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Snapshot Time', ['goodMorningStrategy', 'snapshotTime'], config.goodMorningStrategy?.snapshotTime, 'text')}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Confirm Time', ['goodMorningStrategy', 'confirmTime'], config.goodMorningStrategy?.confirmTime, 'text')}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Min Movement Points', ['goodMorningStrategy', 'minMovementPoints'], config.goodMorningStrategy?.minMovementPoints)}
-                      </Col>
-                    </Row>
-                    {renderConfigField('Log Enabled', ['goodMorningStrategy', 'logEnabled'], config.goodMorningStrategy?.logEnabled, 'boolean')}
-                  </Card.Body>
-                </Card>
-
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold">Good Morning Sensex Strategy</Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['goodMorningSensexStrategy', 'enabled'], config.goodMorningSensexStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        {renderConfigField('Quantity', ['goodMorningSensexStrategy', 'quantity'], config.goodMorningSensexStrategy?.quantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Target Points', ['goodMorningSensexStrategy', 'targetPoints'], config.goodMorningSensexStrategy?.targetPoints)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Stop Loss Points', ['goodMorningSensexStrategy', 'stopLossPoints'], config.goodMorningSensexStrategy?.stopLossPoints)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Previous Close', ['goodMorningSensexStrategy', 'previousClose'], config.goodMorningSensexStrategy?.previousClose)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Snapshot Time', ['goodMorningSensexStrategy', 'snapshotTime'], config.goodMorningSensexStrategy?.snapshotTime, 'text')}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Confirm Time', ['goodMorningSensexStrategy', 'confirmTime'], config.goodMorningSensexStrategy?.confirmTime, 'text')}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Min Movement Points', ['goodMorningSensexStrategy', 'minMovementPoints'], config.goodMorningSensexStrategy?.minMovementPoints)}
-                      </Col>
-                    </Row>
-                    {renderConfigField('Log Enabled', ['goodMorningSensexStrategy', 'logEnabled'], config.goodMorningSensexStrategy?.logEnabled, 'boolean')}
-                  </Card.Body>
-                </Card>
-
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold">Support/Resistance Strategy</Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['supportResistanceStrategy', 'enabled'], config.supportResistanceStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        {renderConfigField('Quantity', ['supportResistanceStrategy', 'quantity'], config.supportResistanceStrategy?.quantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('SL Distance', ['supportResistanceStrategy', 'slDistance'], config.supportResistanceStrategy?.slDistance)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Square-off Distance', ['supportResistanceStrategy', 'squareOffDistance'], config.supportResistanceStrategy?.squareOffDistance)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Max Levels', ['supportResistanceStrategy', 'maxLevels'], config.supportResistanceStrategy?.maxLevels)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Minimum Premium', ['supportResistanceStrategy', 'minPremium'], config.supportResistanceStrategy?.minPremium)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Max Investment', ['supportResistanceStrategy', 'maxInvestment'], config.supportResistanceStrategy?.maxInvestment)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Max Profit %', ['supportResistanceStrategy', 'maxProfit'], config.supportResistanceStrategy?.maxProfit)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Spawn Quantity Mode', ['supportResistanceStrategy', 'spawnQuantityMode'], config.supportResistanceStrategy?.spawnQuantityMode)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Cooldown (sec)', ['supportResistanceStrategy', 'cooldownSeconds'], config.supportResistanceStrategy?.cooldownSeconds)}
-                      </Col>
-                    </Row>
-                    {renderConfigField('Log Enabled', ['supportResistanceStrategy', 'logEnabled'], config.supportResistanceStrategy?.logEnabled, 'boolean')}
-                  </Card.Body>
-                </Card>
-
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold">Target Reach Strategy</Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['targetReachStrategy', 'enabled'], config.targetReachStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        {renderConfigField('Symbol', ['targetReachStrategy', 'symbol'], config.targetReachStrategy?.symbol, 'text')}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Strike', ['targetReachStrategy', 'strike'], config.targetReachStrategy?.strike)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Expiry', ['targetReachStrategy', 'expiry'], config.targetReachStrategy?.expiry, 'text')}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Option Type', ['targetReachStrategy', 'optionType'], config.targetReachStrategy?.optionType, 'text')}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Target Price', ['targetReachStrategy', 'targetPrice'], config.targetReachStrategy?.targetPrice)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Quantity', ['targetReachStrategy', 'quantity'], config.targetReachStrategy?.quantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Target Points', ['targetReachStrategy', 'targetPoints'], config.targetReachStrategy?.targetPoints)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Stop Loss Points', ['targetReachStrategy', 'stopLossPoints'], config.targetReachStrategy?.stopLossPoints)}
-                      </Col>
-                    </Row>
-                    {renderConfigField('Log Enabled', ['targetReachStrategy', 'logEnabled'], config.targetReachStrategy?.logEnabled, 'boolean')}
-                  </Card.Body>
-                </Card>
-
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold">Rule Based Strategy</Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['ruleBasedStrategy', 'enabled'], config.ruleBasedStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        {renderConfigField('Quantity', ['ruleBasedStrategy', 'quantity'], config.ruleBasedStrategy?.quantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Target', ['ruleBasedStrategy', 'target'], config.ruleBasedStrategy?.target)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Stop Loss', ['ruleBasedStrategy', 'stopLoss'], config.ruleBasedStrategy?.stopLoss)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Max Hold Time (min)', ['ruleBasedStrategy', 'maxHoldTimeMinutes'], config.ruleBasedStrategy?.maxHoldTimeMinutes)}
-                      </Col>
-                    </Row>
-                    <Form.Group className="mb-3">
-                      <Form.Label>{fieldLabel('Indicators (JSON)', ['ruleBasedStrategy', 'indicators'])}</Form.Label>
-                      <Form.Control
-                        as="textarea"
-                        rows={6}
-                        className="font-monospace"
-                        value={JSON.stringify(config.ruleBasedStrategy?.indicators ?? [], null, 2)}
-                        onChange={e => {
-                          try {
-                            const parsed = JSON.parse(e.target.value);
-                            setIndicatorsJsonError(null);
-                            updateConfigValue(['ruleBasedStrategy', 'indicators'], parsed);
-                          } catch {
-                            setIndicatorsJsonError('Invalid JSON — edits will not be saved until this is fixed.');
-                          }
-                        }}
-                      />
-                      {indicatorsJsonError && <div className="text-danger small mt-1">{indicatorsJsonError}</div>}
-                    </Form.Group>
-                    {renderConfigField('Log Enabled', ['ruleBasedStrategy', 'logEnabled'], config.ruleBasedStrategy?.logEnabled, 'boolean')}
-                  </Card.Body>
-                </Card>
-
-                <Card className="mb-3">
-                  <Card.Header className="fw-bold d-flex justify-content-between align-items-center">
-                    <span>Bulk PCR Strategy</span>
-                    <div ref={bulkPcrStatusRef} style={{ position: 'relative' }}>
-                          <Button
-                            size="sm"
-                            variant="outline-info"
-                            onClick={async () => {
-                              if (!showBulkPcrStatus && !bulkPcrTrades) {
-                                try {
-                                  const [openRes, closedRes] = await Promise.all([
-                                    fetch('/admin/trades/open?user=BulkPcrStrategy'),
-                                    fetch('/admin/trades/closed?user=BulkPcrStrategy'),
-                                  ]);
-                                  const [openData, closedData] = await Promise.all([openRes.json(), closedRes.json()]);
-                                  setBulkPcrTrades({
-                                    open: Array.isArray(openData) ? openData : [],
-                                    closed: Array.isArray(closedData) ? closedData : [],
-                                  });
-                                } catch {
-                                  setBulkPcrTrades({ open: [], closed: [] });
-                                }
-                              }
-                              setShowBulkPcrStatus(!showBulkPcrStatus);
-                            }}
-                            style={{ cursor: 'pointer' }}
-                          >
-                            Status
-                          </Button>
-                          {showBulkPcrStatus && bulkPcrTrades && (
-                            <div
-                              style={{
-                                position: 'absolute',
-                                top: '100%',
-                                right: 0,
-                                marginTop: '0.5rem',
-                                backgroundColor: '#fff',
-                                border: '1px solid #dee2e6',
-                                borderRadius: '0.25rem',
-                                boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-                                zIndex: 1000,
-                                padding: '1rem',
-                                minWidth: '300px',
-                              }}
-                            >
-                              {(() => {
-                                const today = new Date().toISOString().split('T')[0];
-                                const todaysClosed = (bulkPcrTrades.closed || []).filter(t => {
-                                  const dateStr = t.exitTime || t.closedAt || t.date;
-                                  if (!dateStr) return true; // Include if no date to avoid filtering everything
-                                  const tradeDate = new Date(dateStr);
-                                  if (isNaN(tradeDate.getTime())) return true;
-                                  return tradeDate.toISOString().split('T')[0] === today;
-                                });
-                                const todaysOpen = (bulkPcrTrades.open || []).filter(t => {
-                                  const dateStr = t.entryTime || t.openedAt || t.date;
-                                  if (!dateStr) return true; // Include if no date to avoid filtering everything
-                                  const tradeDate = new Date(dateStr);
-                                  if (isNaN(tradeDate.getTime())) return true;
-                                  return tradeDate.toISOString().split('T')[0] === today;
-                                });
-                                const realizedPnL = todaysClosed.reduce((s, t) => s + (t.realizedPnL || 0), 0);
-                                const unrealizedPnL = todaysOpen.reduce((s, t) => s + ((t.lastTradePrice - t.price) * t.quantity || 0), 0);
-                                const realizedColor = realizedPnL >= 0 ? 'text-success' : 'text-danger';
-                                const unrealizedColor = unrealizedPnL >= 0 ? 'text-success' : 'text-danger';
-                                return (
-                                  <div>
-                                    <div className="small text-muted mb-3 text-center">
-                                      As of: {new Date().toLocaleString()}
-                                    </div>
-                                    <div className="row mb-3 text-center">
-                                      <div className="col">
-                                        <div className="small text-muted">Realized P&L</div>
-                                        <div className={`fw-bold ${realizedColor}`} style={{ fontSize: '1.1rem' }}>
-                                          {realizedPnL >= 0 ? '+' : ''}₹{realizedPnL.toFixed(2)}
-                                        </div>
-                                      </div>
-                                      <div className="col">
-                                        <div className="small text-muted">Unrealized P&L</div>
-                                        <div className={`fw-bold ${unrealizedColor}`} style={{ fontSize: '1.1rem' }}>
-                                          {unrealizedPnL >= 0 ? '+' : ''}₹{unrealizedPnL.toFixed(2)}
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                          )}
-                        </div>
-                  </Card.Header>
-                  <Card.Body>
-                    {renderConfigField('Enabled', ['bulkPcrStrategy', 'enabled'], config.bulkPcrStrategy?.enabled, 'boolean')}
-                    <Row>
-                      <Col md={6}>
-                        <Form.Group className="mb-3">
-                          <Form.Label>{fieldLabel('Brokers', ['bulkPcrStrategy', 'brokers'])}</Form.Label>
-                          {(['zerodha', 'breeze'] as const).map(broker => (
-                            <Form.Check
-                              key={broker}
-                              type="checkbox"
-                              label={broker === 'zerodha' ? 'Zerodha' : 'Breeze'}
-                              checked={(config.bulkPcrStrategy?.brokers ?? []).includes(broker)}
+                {(() => {
+                  const strategyDefs: { configKey: string; title: string; headerExtra?: React.ReactNode; renderFields: () => React.ReactNode }[] = [
+                    {
+                      configKey: 'buySellStrategy',
+                      title: 'Buy-Sell Strategy',
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>{renderConfigField('Initial Quantity', ['buySellStrategy', 'initialQuantity'], config.buySellStrategy?.initialQuantity)}</Col>
+                            <Col md={6}>{renderConfigField('Increment Quantity', ['buySellStrategy', 'incrementQuantity'], config.buySellStrategy?.incrementQuantity)}</Col>
+                            <Col md={6}>{renderConfigField('Average Threshold', ['buySellStrategy', 'averageThreshold'], config.buySellStrategy?.averageThreshold)}</Col>
+                            <Col md={6}>{renderConfigField('Target Price', ['buySellStrategy', 'targetPrice'], config.buySellStrategy?.targetPrice)}</Col>
+                            <Col md={6}>{renderConfigField('Max Iteration Count', ['buySellStrategy', 'maxIterationCount'], config.buySellStrategy?.maxIterationCount)}</Col>
+                            <Col md={6}>{renderConfigField('Right', ['buySellStrategy', 'right'], config.buySellStrategy?.right, 'text')}</Col>
+                          </Row>
+                          {renderConfigField('Stop Enabled', ['buySellStrategy', 'stopEnabled'], config.buySellStrategy?.stopEnabled, 'boolean')}
+                          {renderConfigField('Log Enabled', ['buySellStrategy', 'logEnabled'], config.buySellStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                    {
+                      configKey: 'continuousStrategy',
+                      title: 'Continuous Strategy',
+                      headerExtra: (
+                        <Button
+                          size="sm"
+                          variant="outline-danger"
+                          onClick={e => { e.stopPropagation(); handleResetContinuousStrategy(); }}
+                        >
+                          Reset
+                        </Button>
+                      ),
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>{renderConfigField('Initial Quantity', ['continuousStrategy', 'initialQuantity'], config.continuousStrategy?.initialQuantity)}</Col>
+                            <Col md={6}>{renderConfigField('SL Distance', ['continuousStrategy', 'slDistance'], config.continuousStrategy?.slDistance)}</Col>
+                            <Col md={6}>{renderConfigField('Square-off Distance', ['continuousStrategy', 'squareOffDistance'], config.continuousStrategy?.squareOffDistance)}</Col>
+                            <Col md={6}>{renderConfigField('Minimum Premium', ['continuousStrategy', 'minPremium'], config.continuousStrategy?.minPremium)}</Col>
+                            <Col md={6}>{renderConfigField('Max Investment', ['continuousStrategy', 'maxInvestment'], config.continuousStrategy?.maxInvestment)}</Col>
+                            <Col md={6}>{renderConfigField('Spawn Quantity Mode', ['continuousStrategy', 'spawnQuantityMode'], config.continuousStrategy?.spawnQuantityMode)}</Col>
+                            <Col md={6}>{renderConfigField('Max Profit %', ['continuousStrategy', 'maxProfit'], config.continuousStrategy?.maxProfit)}</Col>
+                            <Col md={6}>{renderConfigField('Right', ['continuousStrategy', 'right'], config.continuousStrategy?.right, 'text')}</Col>
+                            <Col md={6}>{renderConfigField('Cooldown (sec)', ['continuousStrategy', 'cooldownSeconds'], config.continuousStrategy?.cooldownSeconds)}</Col>
+                          </Row>
+                          {renderConfigField('Log Enabled', ['continuousStrategy', 'logEnabled'], config.continuousStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                    {
+                      configKey: 'sentimentStrategy',
+                      title: 'Sentiment Strategy',
+                      renderFields: () => (
+                        <Row>
+                          <Col md={6}>{renderConfigField('Average Threshold', ['sentimentStrategy', 'averageThreshold'], config.sentimentStrategy?.averageThreshold)}</Col>
+                          <Col md={6}>{renderConfigField('Target Price', ['sentimentStrategy', 'targetPrice'], config.sentimentStrategy?.targetPrice)}</Col>
+                          <Col md={6}>{renderConfigField('Order Quantity', ['sentimentStrategy', 'orderQuantity'], config.sentimentStrategy?.orderQuantity)}</Col>
+                          <Col md={6}>{renderConfigField('Sentiment', ['sentimentStrategy', 'sentiment'], config.sentimentStrategy?.sentiment, 'text')}</Col>
+                          <Col md={6}>{renderConfigField('Loop Count', ['sentimentStrategy', 'loopCount'], config.sentimentStrategy?.loopCount)}</Col>
+                        </Row>
+                      ),
+                    },
+                    {
+                      configKey: 'intermittentStrategy',
+                      title: 'Intermittent Strategy',
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>{renderConfigField('Loop Count', ['intermittentStrategy', 'loopCount'], config.intermittentStrategy?.loopCount)}</Col>
+                            <Col md={6}>{renderConfigField('Target Price', ['intermittentStrategy', 'targetPrice'], config.intermittentStrategy?.targetPrice)}</Col>
+                            <Col md={6}>{renderConfigField('Quantity', ['intermittentStrategy', 'quantity'], config.intermittentStrategy?.quantity)}</Col>
+                            <Col md={6}>{renderConfigField('Threshold', ['intermittentStrategy', 'threshold'], config.intermittentStrategy?.threshold)}</Col>
+                          </Row>
+                          {renderConfigField('Log Enabled', ['intermittentStrategy', 'logEnabled'], config.intermittentStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                    {
+                      configKey: 'rateOfChangeStrategy',
+                      title: 'Rate of Change Strategy',
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>{renderConfigField('Points Threshold', ['rateOfChangeStrategy', 'pointsThreshold'], config.rateOfChangeStrategy?.pointsThreshold)}</Col>
+                            <Col md={6}>{renderConfigField('Acceleration Threshold', ['rateOfChangeStrategy', 'accelerationThreshold'], config.rateOfChangeStrategy?.accelerationThreshold)}</Col>
+                            <Col md={6}>{renderConfigField('Quantity', ['rateOfChangeStrategy', 'quantity'], config.rateOfChangeStrategy?.quantity)}</Col>
+                            <Col md={6}>{renderConfigField('Data Points Window', ['rateOfChangeStrategy', 'numberOfDatapointsReceived'], config.rateOfChangeStrategy?.numberOfDatapointsReceived)}</Col>
+                            <Col md={6}>{renderConfigField('Target Price', ['rateOfChangeStrategy', 'targetPrice'], config.rateOfChangeStrategy?.targetPrice)}</Col>
+                            <Col md={6}>{renderConfigField('Stop Loss Price', ['rateOfChangeStrategy', 'stopLossPrice'], config.rateOfChangeStrategy?.stopLossPrice)}</Col>
+                            <Col md={6}>{renderConfigField('Max Hold Time (min)', ['rateOfChangeStrategy', 'maxHoldTimeMinutes'], config.rateOfChangeStrategy?.maxHoldTimeMinutes)}</Col>
+                          </Row>
+                          {renderConfigField('Log Enabled', ['rateOfChangeStrategy', 'logEnabled'], config.rateOfChangeStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                    {
+                      configKey: 'gapStrategy',
+                      title: 'Gap Strategy',
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>{renderConfigField('Points Threshold', ['gapStrategy', 'pointsThreshold'], config.gapStrategy?.pointsThreshold)}</Col>
+                            <Col md={6}>{renderConfigField('Data Points Window', ['gapStrategy', 'numberOfDatapointsReceived'], config.gapStrategy?.numberOfDatapointsReceived)}</Col>
+                            <Col md={6}>{renderConfigField('Quantity', ['gapStrategy', 'quantity'], config.gapStrategy?.quantity)}</Col>
+                            <Col md={6}>{renderConfigField('Target Price', ['gapStrategy', 'targetPrice'], config.gapStrategy?.targetPrice)}</Col>
+                            <Col md={6}>{renderConfigField('Stop Loss Price', ['gapStrategy', 'stopLossPrice'], config.gapStrategy?.stopLossPrice)}</Col>
+                            <Col md={6}>{renderConfigField('Max Hold Time (min)', ['gapStrategy', 'maxHoldTimeMinutes'], config.gapStrategy?.maxHoldTimeMinutes)}</Col>
+                            <Col md={6}>{renderConfigField('Gap Reversal Threshold', ['gapStrategy', 'gapReversalThreshold'], config.gapStrategy?.gapReversalThreshold)}</Col>
+                          </Row>
+                          {renderConfigField('Gap Reversal Mode', ['gapStrategy', 'gapReversalMode'], config.gapStrategy?.gapReversalMode, 'boolean')}
+                          {renderConfigField('Log Enabled', ['gapStrategy', 'logEnabled'], config.gapStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                    {
+                      configKey: 'goodMorningStrategy',
+                      title: 'Good Morning Strategy',
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>{renderConfigField('Quantity', ['goodMorningStrategy', 'quantity'], config.goodMorningStrategy?.quantity)}</Col>
+                            <Col md={6}>{renderConfigField('Target Points', ['goodMorningStrategy', 'targetPoints'], config.goodMorningStrategy?.targetPoints)}</Col>
+                            <Col md={6}>{renderConfigField('Stop Loss Points', ['goodMorningStrategy', 'stopLossPoints'], config.goodMorningStrategy?.stopLossPoints)}</Col>
+                            <Col md={6}>{renderConfigField('Previous Close', ['goodMorningStrategy', 'previousClose'], config.goodMorningStrategy?.previousClose)}</Col>
+                            <Col md={6}>{renderConfigField('Snapshot Time', ['goodMorningStrategy', 'snapshotTime'], config.goodMorningStrategy?.snapshotTime, 'text')}</Col>
+                            <Col md={6}>{renderConfigField('Confirm Time', ['goodMorningStrategy', 'confirmTime'], config.goodMorningStrategy?.confirmTime, 'text')}</Col>
+                            <Col md={6}>{renderConfigField('Min Movement Points', ['goodMorningStrategy', 'minMovementPoints'], config.goodMorningStrategy?.minMovementPoints)}</Col>
+                          </Row>
+                          {renderConfigField('Log Enabled', ['goodMorningStrategy', 'logEnabled'], config.goodMorningStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                    {
+                      configKey: 'goodMorningSensexStrategy',
+                      title: 'Good Morning Sensex Strategy',
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>{renderConfigField('Quantity', ['goodMorningSensexStrategy', 'quantity'], config.goodMorningSensexStrategy?.quantity)}</Col>
+                            <Col md={6}>{renderConfigField('Target Points', ['goodMorningSensexStrategy', 'targetPoints'], config.goodMorningSensexStrategy?.targetPoints)}</Col>
+                            <Col md={6}>{renderConfigField('Stop Loss Points', ['goodMorningSensexStrategy', 'stopLossPoints'], config.goodMorningSensexStrategy?.stopLossPoints)}</Col>
+                            <Col md={6}>{renderConfigField('Previous Close', ['goodMorningSensexStrategy', 'previousClose'], config.goodMorningSensexStrategy?.previousClose)}</Col>
+                            <Col md={6}>{renderConfigField('Snapshot Time', ['goodMorningSensexStrategy', 'snapshotTime'], config.goodMorningSensexStrategy?.snapshotTime, 'text')}</Col>
+                            <Col md={6}>{renderConfigField('Confirm Time', ['goodMorningSensexStrategy', 'confirmTime'], config.goodMorningSensexStrategy?.confirmTime, 'text')}</Col>
+                            <Col md={6}>{renderConfigField('Min Movement Points', ['goodMorningSensexStrategy', 'minMovementPoints'], config.goodMorningSensexStrategy?.minMovementPoints)}</Col>
+                          </Row>
+                          {renderConfigField('Log Enabled', ['goodMorningSensexStrategy', 'logEnabled'], config.goodMorningSensexStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                    {
+                      configKey: 'supportResistanceStrategy',
+                      title: 'Support/Resistance Strategy',
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>{renderConfigField('Quantity', ['supportResistanceStrategy', 'quantity'], config.supportResistanceStrategy?.quantity)}</Col>
+                            <Col md={6}>{renderConfigField('SL Distance', ['supportResistanceStrategy', 'slDistance'], config.supportResistanceStrategy?.slDistance)}</Col>
+                            <Col md={6}>{renderConfigField('Square-off Distance', ['supportResistanceStrategy', 'squareOffDistance'], config.supportResistanceStrategy?.squareOffDistance)}</Col>
+                            <Col md={6}>{renderConfigField('Max Levels', ['supportResistanceStrategy', 'maxLevels'], config.supportResistanceStrategy?.maxLevels)}</Col>
+                            <Col md={6}>{renderConfigField('Minimum Premium', ['supportResistanceStrategy', 'minPremium'], config.supportResistanceStrategy?.minPremium)}</Col>
+                            <Col md={6}>{renderConfigField('Max Investment', ['supportResistanceStrategy', 'maxInvestment'], config.supportResistanceStrategy?.maxInvestment)}</Col>
+                            <Col md={6}>{renderConfigField('Max Profit %', ['supportResistanceStrategy', 'maxProfit'], config.supportResistanceStrategy?.maxProfit)}</Col>
+                            <Col md={6}>{renderConfigField('Spawn Quantity Mode', ['supportResistanceStrategy', 'spawnQuantityMode'], config.supportResistanceStrategy?.spawnQuantityMode)}</Col>
+                            <Col md={6}>{renderConfigField('Cooldown (sec)', ['supportResistanceStrategy', 'cooldownSeconds'], config.supportResistanceStrategy?.cooldownSeconds)}</Col>
+                          </Row>
+                          {renderConfigField('Log Enabled', ['supportResistanceStrategy', 'logEnabled'], config.supportResistanceStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                    {
+                      configKey: 'targetReachStrategy',
+                      title: 'Target Reach Strategy',
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>{renderConfigField('Symbol', ['targetReachStrategy', 'symbol'], config.targetReachStrategy?.symbol, 'text')}</Col>
+                            <Col md={6}>{renderConfigField('Strike', ['targetReachStrategy', 'strike'], config.targetReachStrategy?.strike)}</Col>
+                            <Col md={6}>{renderConfigField('Expiry', ['targetReachStrategy', 'expiry'], config.targetReachStrategy?.expiry, 'text')}</Col>
+                            <Col md={6}>{renderConfigField('Option Type', ['targetReachStrategy', 'optionType'], config.targetReachStrategy?.optionType, 'text')}</Col>
+                            <Col md={6}>{renderConfigField('Target Price', ['targetReachStrategy', 'targetPrice'], config.targetReachStrategy?.targetPrice)}</Col>
+                            <Col md={6}>{renderConfigField('Quantity', ['targetReachStrategy', 'quantity'], config.targetReachStrategy?.quantity)}</Col>
+                            <Col md={6}>{renderConfigField('Target Points', ['targetReachStrategy', 'targetPoints'], config.targetReachStrategy?.targetPoints)}</Col>
+                            <Col md={6}>{renderConfigField('Stop Loss Points', ['targetReachStrategy', 'stopLossPoints'], config.targetReachStrategy?.stopLossPoints)}</Col>
+                          </Row>
+                          {renderConfigField('Log Enabled', ['targetReachStrategy', 'logEnabled'], config.targetReachStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                    {
+                      configKey: 'ruleBasedStrategy',
+                      title: 'Rule Based Strategy',
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>{renderConfigField('Quantity', ['ruleBasedStrategy', 'quantity'], config.ruleBasedStrategy?.quantity)}</Col>
+                            <Col md={6}>{renderConfigField('Target', ['ruleBasedStrategy', 'target'], config.ruleBasedStrategy?.target)}</Col>
+                            <Col md={6}>{renderConfigField('Stop Loss', ['ruleBasedStrategy', 'stopLoss'], config.ruleBasedStrategy?.stopLoss)}</Col>
+                            <Col md={6}>{renderConfigField('Max Hold Time (min)', ['ruleBasedStrategy', 'maxHoldTimeMinutes'], config.ruleBasedStrategy?.maxHoldTimeMinutes)}</Col>
+                          </Row>
+                          <Form.Group className="mb-3">
+                            <Form.Label>{fieldLabel('Indicators (JSON)', ['ruleBasedStrategy', 'indicators'])}</Form.Label>
+                            <Form.Control
+                              as="textarea"
+                              rows={6}
+                              className="font-monospace"
+                              value={JSON.stringify(config.ruleBasedStrategy?.indicators ?? [], null, 2)}
                               onChange={e => {
-                                const current: string[] = config.bulkPcrStrategy?.brokers ?? [];
-                                const next = e.target.checked ? [...current, broker] : current.filter((b: string) => b !== broker);
-                                updateConfigValue(['bulkPcrStrategy', 'brokers'], next);
+                                try {
+                                  const parsed = JSON.parse(e.target.value);
+                                  setIndicatorsJsonError(null);
+                                  updateConfigValue(['ruleBasedStrategy', 'indicators'], parsed);
+                                } catch {
+                                  setIndicatorsJsonError('Invalid JSON — edits will not be saved until this is fixed.');
+                                }
                               }}
                             />
-                          ))}
-                        </Form.Group>
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Quantity', ['bulkPcrStrategy', 'quantity'], config.bulkPcrStrategy?.quantity)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Target Points', ['bulkPcrStrategy', 'targetPoints'], config.bulkPcrStrategy?.targetPoints)}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Right', ['bulkPcrStrategy', 'right'], config.bulkPcrStrategy?.right, 'text')}
-                      </Col>
-                      <Col md={6}>
-                        {renderConfigField('Max Investment', ['bulkPcrStrategy', 'maxInvestment'], config.bulkPcrStrategy?.maxInvestment)}
-                      </Col>
-                    </Row>
-                    {renderConfigField('Log Enabled', ['bulkPcrStrategy', 'logEnabled'], config.bulkPcrStrategy?.logEnabled, 'boolean')}
-                  </Card.Body>
-                </Card>
+                            {indicatorsJsonError && <div className="text-danger small mt-1">{indicatorsJsonError}</div>}
+                          </Form.Group>
+                          {renderConfigField('Log Enabled', ['ruleBasedStrategy', 'logEnabled'], config.ruleBasedStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                    {
+                      configKey: 'bulkPcrStrategy',
+                      title: 'Bulk PCR Strategy',
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>
+                              <Form.Group className="mb-3">
+                                <Form.Label>{fieldLabel('Brokers', ['bulkPcrStrategy', 'brokers'])}</Form.Label>
+                                {(['zerodha', 'breeze'] as const).map(broker => (
+                                  <Form.Check
+                                    key={broker}
+                                    type="checkbox"
+                                    label={broker === 'zerodha' ? 'Zerodha' : 'Breeze'}
+                                    checked={(config.bulkPcrStrategy?.brokers ?? []).includes(broker)}
+                                    onChange={e => {
+                                      const current: string[] = config.bulkPcrStrategy?.brokers ?? [];
+                                      const next = e.target.checked ? [...current, broker] : current.filter((b: string) => b !== broker);
+                                      updateConfigValue(['bulkPcrStrategy', 'brokers'], next);
+                                    }}
+                                  />
+                                ))}
+                              </Form.Group>
+                            </Col>
+                            <Col md={6}>{renderConfigField('Quantity', ['bulkPcrStrategy', 'quantity'], config.bulkPcrStrategy?.quantity)}</Col>
+                            <Col md={6}>{renderConfigField('Target Points', ['bulkPcrStrategy', 'targetPoints'], config.bulkPcrStrategy?.targetPoints)}</Col>
+                            <Col md={6}>{renderConfigField('Right', ['bulkPcrStrategy', 'right'], config.bulkPcrStrategy?.right, 'text')}</Col>
+                            <Col md={6}>{renderConfigField('Max Investment', ['bulkPcrStrategy', 'maxInvestment'], config.bulkPcrStrategy?.maxInvestment)}</Col>
+                          </Row>
+                          {renderConfigField('Log Enabled', ['bulkPcrStrategy', 'logEnabled'], config.bulkPcrStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                  ];
+
+                  const enabledDefs = strategyDefs.filter(d => config[d.configKey]?.enabled);
+                  const disabledDefs = strategyDefs.filter(d => !config[d.configKey]?.enabled);
+
+                  const renderAccordionItem = (def: typeof strategyDefs[number]) => {
+                    const pnl = STRATEGY_PNL_USER[def.configKey] ? strategyPnl[def.configKey] : undefined;
+                    return (
+                      <Accordion.Item eventKey={def.configKey} key={def.configKey}>
+                        <Accordion.Header>
+                          <div className="d-flex align-items-center justify-content-between flex-grow-1 me-3">
+                            <span className="fw-semibold">{def.title}</span>
+                            <div className="d-flex align-items-center gap-3">
+                              {pnl && (
+                                <div className="d-flex gap-3 small">
+                                  <span className={pnl.realized >= 0 ? 'text-success' : 'text-danger'}>
+                                    Realized: {pnl.realized >= 0 ? '+' : ''}₹{pnl.realized.toFixed(2)}
+                                  </span>
+                                  <span className={pnl.unrealized >= 0 ? 'text-success' : 'text-danger'}>
+                                    Unrealized: {pnl.unrealized >= 0 ? '+' : ''}₹{pnl.unrealized.toFixed(2)}
+                                  </span>
+                                </div>
+                              )}
+                              {def.headerExtra}
+                              <div onClick={e => e.stopPropagation()}>
+                                <Form.Check
+                                  type="switch"
+                                  label="Enabled"
+                                  checked={!!config[def.configKey]?.enabled}
+                                  onChange={e => updateConfigValue([def.configKey, 'enabled'], e.target.checked)}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </Accordion.Header>
+                        <Accordion.Body>{def.renderFields()}</Accordion.Body>
+                      </Accordion.Item>
+                    );
+                  };
+
+                  return (
+                    <>
+                      <Card className="mb-3">
+                        <Card.Header className="fw-bold">Enabled Strategies</Card.Header>
+                        <Card.Body>
+                          {enabledDefs.length === 0 ? (
+                            <p className="text-muted mb-0">No strategies are currently enabled.</p>
+                          ) : (
+                            <Accordion alwaysOpen>{enabledDefs.map(renderAccordionItem)}</Accordion>
+                          )}
+                        </Card.Body>
+                      </Card>
+
+                      <Card className="mb-3">
+                        <Card.Header className="fw-bold">Disabled Strategies</Card.Header>
+                        <Card.Body>
+                          {disabledDefs.length === 0 ? (
+                            <p className="text-muted mb-0">No strategies are currently disabled.</p>
+                          ) : (
+                            <Accordion alwaysOpen>{disabledDefs.map(renderAccordionItem)}</Accordion>
+                          )}
+                        </Card.Body>
+                      </Card>
+                    </>
+                  );
+                })()}
 
                 <div className="d-flex align-items-center gap-2">
                   <Button variant="primary" onClick={saveConfig}>Save Now</Button>
