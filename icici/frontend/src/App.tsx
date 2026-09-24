@@ -9,6 +9,8 @@ import TradingPage from './pages/TradingPage';
 import DemoTradingPage from './pages/DemoTradingPage';
 import AdminPage from './pages/AdminPage';
 import ProfilePage from './pages/ProfilePage';
+import PrivacyPolicyPage from './pages/PrivacyPolicyPage';
+import TermsAndConditionsPage from './pages/TermsAndConditionsPage';
 import { Spinner } from 'react-bootstrap';
 import './App.css';
 
@@ -63,6 +65,8 @@ export default function App() {
                 </RequireAdmin>
               }
             />
+            <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
+            <Route path="/terms-and-conditions" element={<TermsAndConditionsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>

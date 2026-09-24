@@ -185,7 +185,14 @@ export default function LoginPage() {
       </section>
 
       <footer className="landing-footer">
-        <span>© {new Date().getFullYear()} PropFirm Trading. All rights reserved.</span>
+        <div className="landing-footer-content">
+          <span>© {new Date().getFullYear()} PropFirm Trading. All rights reserved.</span>
+          <div className="landing-footer-links">
+            <a href="/privacy-policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+            <span className="divider">•</span>
+            <a href="/terms-and-conditions" target="_blank" rel="noopener noreferrer">Terms & Conditions</a>
+          </div>
+        </div>
       </footer>
     </div>
   );
