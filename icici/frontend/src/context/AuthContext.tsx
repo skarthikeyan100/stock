@@ -48,9 +48,11 @@ interface AuthState {
   loading: boolean;
   isLoggedIn: boolean;
   isAdmin: boolean;
+  termsAccepted: boolean;
   login: (credential: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
+  setTermsAccepted: (accepted: boolean) => void;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -58,6 +60,7 @@ const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [termsAccepted, setTermsAccepted] = useState(false);
 
   // Check session on mount
   useEffect(() => {
@@ -89,6 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     await fetch('/auth/logout', { method: 'POST' });
     setUser(null);
+    setTermsAccepted(false);
   }, []);
 
   // Re-fetches the session user - used after a background update (e.g. OCR
@@ -103,7 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isAdmin = user?.role === 'admin';
 
   return (
-    <AuthContext.Provider value={{ user, loading, isLoggedIn, isAdmin, login, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, loading, isLoggedIn, isAdmin, termsAccepted, login, logout, refreshUser, setTermsAccepted }}>
       {children}
     </AuthContext.Provider>
   );

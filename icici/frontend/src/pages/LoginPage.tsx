@@ -5,12 +5,12 @@ import { useAuth } from '../context/AuthContext';
 import { isMarketHours } from '../utils/marketHours';
 
 export default function LoginPage() {
-  const { login, isLoggedIn } = useAuth();
+  const { login, isLoggedIn, termsAccepted } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (isLoggedIn) navigate('/rules', { replace: true });
-  }, [isLoggedIn, navigate]);
+    if (isLoggedIn && !termsAccepted) navigate('/rules', { replace: true });
+  }, [isLoggedIn, termsAccepted, navigate]);
 
   return (
     <div className="landing-page">

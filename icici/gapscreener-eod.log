@@ -410,3 +410,74 @@ Found 7 row(s) from the morning run
 [gapScreenerOptionQuoteEod] dropping CIPLA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
 [gapScreenerOptionQuoteEod] dropping EICHERMOT: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
 No rows with a current Buy/Sell Recommendation found.
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 17 row(s) from the morning run
+
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 38 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+HDFCBANK -> HDFCBANK29SEP26P720 (token 109095)
+PNB -> PNB29SEP26P117 (token 102844)
+INFY -> INFY29SEP26P1000 (token 115766)
+VEDL -> VEDL29SEP26P265 (token 117604)
+HINDALCO -> HINDALCO29SEP26P980 (token 79054)
+GAIL -> GAIL29SEP26P170 (token 104132)
+BPCL -> BPCL29SEP26P310 (token 93580)
+ADANIPORTS -> ADANIPORTS29SEP26P1780 (token 53634)
+HINDUNILVR -> HINDUNILVR29SEP26P1920 (token 110586)
+HDFCAMC -> HDFCAMC29SEP26P2400 (token 108880)
+LT -> LT29SEP26P3850 (token 90325)
+AMBUJACEM -> AMBUJACEM29SEP26P385 (token 54290)
+NESTLEIND -> NESTLEIND29SEP26P1370 (token 96586)
+PIDILITIND -> PIDILITIND29SEP26P1540 (token 102202)
+GODREJCP -> GODREJCP29SEP26P870 (token 75799)
+MARUTI -> MARUTI29SEP26P12100 (token 93008)
+BAJAJHLDNG -> BAJAJHLDNG29SEP26P11200 (token 88508)
+
+Opening ANT websocket session and subscribing 17 option(s)...
+[15:25:15] [ANT.loadSession] ANT session loaded from file
+[15:25:15] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
+[15:25:15] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
+  "status": "Ok",
+  "message": "Success",
+  "result": [
+    {
+      "Status": "OK"
+    }
+  ]
+}
+[15:25:15] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
+[15:25:15] [ws.onopen] [AntWS] Connected, sending auth payload...
+[antBatchQuote] Subscribing to 17 option token(s)...
+[15:25:15] [AntWebSocket.subscribe] [AntWS] Subscribing: NFO|109095#NFO|102844#NFO|115766#NFO|117604#NFO|79054#NFO|104132#NFO|93580#NFO|53634#NFO|110586#NFO|108880#NFO|90325#NFO|54290#NFO|96586#NFO|102202#NFO|75799#NFO|93008#NFO|88508
+[15:25:15] [ws.onmessage] [AntWS] Connect ack: {
+  "t": "ck",
+  "s": "OK",
+  "uid": "924118_API"
+}
+[antBatchQuote] Unsubscribing and closing websocket...
+[15:25:21] [AntWebSocket.unsubscribe] [AntWS] Unsubscribing: NFO|109095#NFO|102844#NFO|115766#NFO|117604#NFO|79054#NFO|104132#NFO|93580#NFO|53634#NFO|110586#NFO|108880#NFO|90325#NFO|54290#NFO|96586#NFO|102202#NFO|75799#NFO|93008#NFO|88508
+[gapScreenerOptionQuoteEod] skipping HDFCBANK: no live tick received for HDFCBANK29SEP26P720 within 6000ms
+[gapScreenerOptionQuoteEod] skipping PNB: no live tick received for PNB29SEP26P117 within 6000ms
+[gapScreenerOptionQuoteEod] skipping INFY: no live tick received for INFY29SEP26P1000 within 6000ms
+[gapScreenerOptionQuoteEod] skipping VEDL: no live tick received for VEDL29SEP26P265 within 6000ms
+[gapScreenerOptionQuoteEod] skipping HINDALCO: no live tick received for HINDALCO29SEP26P980 within 6000ms
+[gapScreenerOptionQuoteEod] skipping GAIL: no live tick received for GAIL29SEP26P170 within 6000ms
+[gapScreenerOptionQuoteEod] skipping BPCL: no live tick received for BPCL29SEP26P310 within 6000ms
+[gapScreenerOptionQuoteEod] skipping ADANIPORTS: no live tick received for ADANIPORTS29SEP26P1780 within 6000ms
+[gapScreenerOptionQuoteEod] skipping HINDUNILVR: no live tick received for HINDUNILVR29SEP26P1920 within 6000ms
+[gapScreenerOptionQuoteEod] skipping HDFCAMC: no live tick received for HDFCAMC29SEP26P2400 within 6000ms
+[gapScreenerOptionQuoteEod] skipping LT: no live tick received for LT29SEP26P3850 within 6000ms
+[gapScreenerOptionQuoteEod] skipping AMBUJACEM: no live tick received for AMBUJACEM29SEP26P385 within 6000ms
+[gapScreenerOptionQuoteEod] skipping NESTLEIND: no live tick received for NESTLEIND29SEP26P1370 within 6000ms
+[gapScreenerOptionQuoteEod] skipping PIDILITIND: no live tick received for PIDILITIND29SEP26P1540 within 6000ms
+[gapScreenerOptionQuoteEod] skipping GODREJCP: no live tick received for GODREJCP29SEP26P870 within 6000ms
+[gapScreenerOptionQuoteEod] skipping MARUTI: no live tick received for MARUTI29SEP26P12100 within 6000ms
+[gapScreenerOptionQuoteEod] skipping BAJAJHLDNG: no live tick received for BAJAJHLDNG29SEP26P11200 within 6000ms
+
+Wrote 17 row(s) to /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv (0/17 with a new Result)

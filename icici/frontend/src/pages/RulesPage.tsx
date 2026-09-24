@@ -7,7 +7,7 @@ const WEEKLY_LOSS_PERCENT = 50;
 
 export default function RulesPage() {
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, logout, setTermsAccepted } = useAuth();
 
   const handleClose = async () => {
     await logout();
@@ -45,7 +45,10 @@ export default function RulesPage() {
               <Button
                 variant="primary"
                 size="lg"
-                onClick={() => navigate('/trade')}
+                onClick={() => {
+                  setTermsAccepted(true);
+                  navigate('/trade');
+                }}
               >
                 Accept &amp; Continue
               </Button>

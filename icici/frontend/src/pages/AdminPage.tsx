@@ -539,6 +539,17 @@ export default function AdminPage() {
     }
   };
 
+  const handleResetBulkPcrStrategy = async () => {
+    if (!confirm('Reset Bulk PCR Strategy? This clears its persisted per-broker state (including any broker stuck in manual-review/error) and re-arms a fresh entry from scratch. Only use this if you have independently confirmed every broker is actually flat - this does NOT square off any live position, it only clears the app\'s own tracking.')) return;
+    try {
+      const res = await fetch('/strategies/BulkPcrStrategy/reset');
+      if (!res.ok) throw new Error('Failed to reset strategy');
+    } catch (err) {
+      console.error('Reset strategy error:', err);
+      alert('Failed to reset strategy');
+    }
+  };
+
   if (loading) {
     return (
       <div className="d-flex justify-content-center align-items-center min-vh-100">
@@ -1387,6 +1398,15 @@ export default function AdminPage() {
                     {
                       configKey: 'bulkPcrStrategy',
                       title: 'Bulk PCR Strategy',
+                      headerExtra: (
+                        <Button
+                          size="sm"
+                          variant="outline-danger"
+                          onClick={e => { e.stopPropagation(); handleResetBulkPcrStrategy(); }}
+                        >
+                          Reset
+                        </Button>
+                      ),
                       renderFields: () => (
                         <>
                           <Row>
