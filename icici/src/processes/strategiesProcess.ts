@@ -85,6 +85,18 @@ type QueuedOrderEvent =
     | { kind: 'cancelled'; userId: string; notification: OrderCancelledNotification };
 const queuedOrderEvents: QueuedOrderEvent[] = [];
 
+// Gates the onFill/onCancelled listeners below (queue vs. dispatch
+// immediately) - deliberately separate from `ready` (which only gates
+// ticks). Real race found by code review: setting `ready = true` before the
+// replay loop finishes draining meant a brand-new live event arriving WHILE
+// the loop was still sequentially awaiting older queued events for that
+// exact same userId would dispatch immediately (ready was already true),
+// racing ahead of and potentially applying before an older queued event -
+// exactly the ordering this queuing exists to prevent. Only flips true once
+// the drain loop below has emptied queuedOrderEvents with nothing left, so
+// nothing dispatched outside the queue can ever run concurrently with it.
+let orderEventsReady = false;
+
 async function runReconcileOnce(): Promise<void> {
     if (reconciled) return;
     reconciled = true;
@@ -103,14 +115,27 @@ async function runReconcileOnce(): Promise<void> {
     ready = true;
     if (queuedOrderEvents.length > 0) {
         Log.log(`[strategies] Replaying ${queuedOrderEvents.length} order event(s) queued during reconcile`);
-        for (const event of queuedOrderEvents.splice(0)) {
+    }
+    // A while-loop, not a single splice-and-iterate pass: each await below
+    // is a real yield point (strategy.updateTrade/onOrderCancelled persist
+    // state), and a new live event for the same userId can still be queued
+    // during that window (the listeners below are gated on orderEventsReady,
+    // still false here) - draining until genuinely empty catches one
+    // appended mid-replay instead of leaving it for a dispatch that could
+    // race ahead of this loop once orderEventsReady flips.
+    while (queuedOrderEvents.length > 0) {
+        const event = queuedOrderEvents.shift()!;
+        try {
             if (event.kind === 'fill') {
-                onFill(event.userId, event.raw).catch((e) => Log.log('[strategies] queued onFill handler failed:', e));
+                await onFill(event.userId, event.raw);
             } else {
-                onOrderCancelled(event.userId, event.notification).catch((e) => Log.log('[strategies] queued onOrderCancelled handler failed:', e));
+                await onOrderCancelled(event.userId, event.notification);
             }
+        } catch (e) {
+            Log.log(`[strategies] queued ${event.kind} handler failed:`, e);
         }
     }
+    orderEventsReady = true;
     Log.log(`[strategies] Reconciled and ready - ${strategies.getList().length} strategies loaded.`);
 }
 
@@ -228,16 +253,17 @@ async function main() {
     await Mongo.init().catch((e) => Log.log('[strategies] Mongo.init failed (continuing without persistence):', e));
 
     OrderClient.getInstance().onFill((userId, trade) => {
-        // Gated on `ready` (set only once EVERY strategy's reconcile() call
-        // has finished), not `reconciled` (set true at the very start of
-        // runReconcileOnce, before the loop runs) - a fill for a strategy
-        // whose own reconcile() hasn't executed yet in that loop must still
-        // queue, not process against not-yet-restored state.
-        if (!ready) { queuedOrderEvents.push({ kind: 'fill', userId, raw: trade }); return; }
+        // Gated on `orderEventsReady` (set only once the queued-event drain
+        // loop has fully emptied), not `ready` (set as soon as every
+        // strategy's reconcile() finishes, BEFORE that drain loop runs) - a
+        // fill arriving while the drain loop is still sequentially awaiting
+        // older queued events must still queue behind them, not dispatch
+        // immediately and race ahead of an older event for the same order.
+        if (!orderEventsReady) { queuedOrderEvents.push({ kind: 'fill', userId, raw: trade }); return; }
         onFill(userId, trade).catch((e) => Log.log('[strategies] onFill handler failed:', e));
     });
     OrderClient.getInstance().onCancelled((userId, notification) => {
-        if (!ready) { queuedOrderEvents.push({ kind: 'cancelled', userId, notification }); return; }
+        if (!orderEventsReady) { queuedOrderEvents.push({ kind: 'cancelled', userId, notification }); return; }
         onOrderCancelled(userId, notification).catch((e) => Log.log('[strategies] onOrderCancelled handler failed:', e));
     });
     OrderClient.getInstance().connect();

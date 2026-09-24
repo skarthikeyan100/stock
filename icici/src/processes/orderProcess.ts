@@ -665,18 +665,54 @@ let pendingLoginReconcile = false;
 // null once nothing is in flight.
 let reconcileInFlight: Promise<void> | null = null;
 
+// True while a trailing coalesced reconcile has been requested but not yet
+// started - see startReconcile's comment.
+let reconcileQueued = false;
+
+async function reconcileAllBrokersOnce(logContext: string): Promise<void> {
+    Log.log(`[order] Running broker-position reconciliation (${logContext})`);
+    await Promise.all([
+        bookkeeping.reconcileZerodhaPositions().catch((e) => Log.log('[order] reconcileZerodhaPositions failed:', e)),
+        bookkeeping.reconcileAntPositions().catch((e) => Log.log('[order] reconcileAntPositions failed:', e)),
+        bookkeeping.reconcileBreezePositions().catch((e) => Log.log('[order] reconcileBreezePositions failed:', e)),
+    ]);
+}
+
 // Runs all three broker reconciles and tracks them via reconcileInFlight.
 // Fire-and-forget from the CALLER's point of view (doesn't await this) so
 // tick processing/IPC handling isn't blocked on slow broker calls - but any
 // concurrent reader that DOES await reconcileInFlight (see the IPC cases
 // above) waits for the real completion, not just for this function to return.
+//
+// Coalesces overlapping triggers instead of starting a fully independent
+// reconcile per call. Real race found by code review: a call that arrives
+// while one is already in flight (e.g. 3 broker OAuth callbacks firing
+// reloadSession within a few seconds of each other) would otherwise start
+// its own Promise.all, and whichever one happens to resolve FIRST nulls
+// reconcileInFlight while the other is still running - exactly the race
+// this mechanism exists to close. Simply ignoring the new trigger isn't
+// safe either: reloadSession updates that broker's session synchronously
+// before calling this, so an already-running reconcile may have already
+// made its broker API calls using the OLD session. Instead, queue exactly
+// one trailing run to start right after the current one finishes - this
+// also avoids repeating the "reconcile fired multiple times in quick
+// succession, re-deriving the same Mongo aggregate" pattern that caused the
+// original 2026-09-24 incident, since any number of triggers arriving
+// during one in-flight window collapse into a single trailing run.
 function startReconcile(logContext: string): void {
-    Log.log(`[order] Running broker-position reconciliation (${logContext})`);
-    reconcileInFlight = Promise.all([
-        bookkeeping.reconcileZerodhaPositions().catch((e) => Log.log('[order] reconcileZerodhaPositions failed:', e)),
-        bookkeeping.reconcileAntPositions().catch((e) => Log.log('[order] reconcileAntPositions failed:', e)),
-        bookkeeping.reconcileBreezePositions().catch((e) => Log.log('[order] reconcileBreezePositions failed:', e)),
-    ]).then(() => { reconcileInFlight = null; });
+    if (reconcileInFlight) {
+        reconcileQueued = true;
+        Log.log(`[order] Reconcile already in flight - queuing one trailing run for ${logContext}`);
+        return;
+    }
+    reconcileInFlight = (async () => {
+        await reconcileAllBrokersOnce(logContext);
+        while (reconcileQueued) {
+            reconcileQueued = false;
+            await reconcileAllBrokersOnce('trailing, coalesced');
+        }
+        reconcileInFlight = null;
+    })();
 }
 
 async function runPendingLoginReconcileIfDue(): Promise<void> {
