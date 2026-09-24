@@ -143,6 +143,15 @@ async function placeOrderWithPendingGuard(
     estimatedOrderValue: number | undefined,
     place: () => Promise<any>,
 ): Promise<OrderResponse> {
+    // See reconcileInFlight's comment on 'openTrades' below - this is the
+    // function that actually gates every real buy (buyIndex/antBuyIndex/
+    // breezeBuyIndex/chunkedBuyIndex/manualBuy/buyContract/antManualBuy/
+    // antPlaceCoverOrder all funnel through it), so it needs the same guard
+    // 'canPlaceOrder'/'squareOff'/'openTrades' already have - otherwise a buy
+    // arriving mid-reconcile can approve itself against still-incomplete
+    // bookkeeping.trades, reopening the exact doubled-quantity failure mode
+    // the reconcileInFlight mechanism exists to close.
+    if (reconcileInFlight) await reconcileInFlight;
     const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedOrderValue);
     if (!validation.allowed) {
         return { kind: 'response', id: req.id, ok: false, error: validation.reason };
@@ -218,6 +227,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // always knows it's closing a Breeze position regardless of
             // whatever the caller's bookkeeping.getUserBroker setting says.
             case 'breezeSquareOff': {
+                // See reconcileInFlight's comment on 'openTrades' below - same
+                // risk as 'squareOff'/'antSquareOff': squareOffOnBreeze
+                // resolves the position from bookkeeping.trades too.
+                if (reconcileInFlight) await reconcileInFlight;
                 const trade = await squareOffOnBreeze(req.userId, req.payload.tsym, req.payload.quantity);
                 return { kind: 'response', id: req.id, ok: true, result: trade };
             }
@@ -309,12 +322,23 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'chunkedSquareOff': {
+                // See reconcileInFlight's comment on 'openTrades' below -
+                // squareOffChunked's underlying executor.squareOff resolves
+                // from bookkeeping.trades same as the plain 'squareOff' case,
+                // and (unlike breezeSquareOff's live-broker fallback) throws
+                // outright on a miss, so a position genuinely open at the
+                // broker could otherwise be reported as needing manual
+                // review purely because reconcile hadn't finished yet.
+                if (reconcileInFlight) await reconcileInFlight;
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
                 const result = await squareOffChunked(executor, req.userId, req.payload.tsym, req.payload.quantity, 'NFO', req.payload.freezeQuantity);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
             case 'chunkedSquareOffLimit': {
+                // Same reasoning as 'chunkedSquareOff' above - this is
+                // BulkPcrStrategy's actual target-hit exit path.
+                if (reconcileInFlight) await reconcileInFlight;
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
                 const result = await squareOffLimitChunked(
                     executor,
@@ -350,6 +374,11 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'antSquareOff': {
+                // See reconcileInFlight's comment on 'openTrades' below - same
+                // risk as the plain 'squareOff' case above: resolving/sizing
+                // from bookkeeping.trades mid-reconcile could miss or
+                // mis-size the trade it's trying to close.
+                if (reconcileInFlight) await reconcileInFlight;
                 let { tsym, quantity, exchange, token } = req.payload;
                 if (!tsym && token) {
                     const trade = bookkeeping.trades.find((t) => t.token === String(token) && t.user === req.userId);

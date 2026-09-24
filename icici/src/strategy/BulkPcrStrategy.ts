@@ -561,6 +561,21 @@ export default class BulkPcrStrategy extends Strategy {
                 soldQty: 0,
                 soldValue: 0,
             });
+
+            if (isPastMarketClose()) {
+                // Same reasoning as the persisted 'selling' branch above: a
+                // crash between the buy fill and the first placeExitSell call
+                // (never persisted mid-flight, since 'buying' isn't a phase
+                // this.persistState() is called for) can leave a live open
+                // position with zero exit protection. If reconcile() itself
+                // is running after hours, placing now would hit a closed
+                // exchange and fail into phase='error' - defer instead; the
+                // next restart's reconcile() re-runs this exact branch during
+                // market hours and will place it then.
+                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: found open position ${brokerTrade.tsym} avg=${brokerTrade.price} qty=${brokerTrade.quantity} with no exit ever attempted, but market is currently closed - deferring exit placement to the next restart during market hours (NOT auto-placing now)`);
+                continue;
+            }
+
             Log.log(`[BulkPcrStrategy] [${broker}] reconcile: restored open position ${brokerTrade.tsym} avg=${brokerTrade.price} qty=${brokerTrade.quantity} - placing exit sell`);
             await this.placeExitSell(broker, brokerTrade.quantity);
         }

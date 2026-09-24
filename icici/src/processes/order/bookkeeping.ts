@@ -19,6 +19,24 @@ import { startOfWeek } from '../../util/weekWindow';
 // Strategy notification (Monitor.strategyMap) is replaced by fillListeners,
 // pushed out over the order<->strategies IPC socket by orderProcess.ts.
 
+// Breeze's underlying breezeconnect SDK calls have no configured HTTP
+// timeout anywhere (unlike ANT's ANT_HTTP_TIMEOUT_MS-bound axios instance or
+// kiteconnect's own default) - a hung/slow Breeze call inside
+// reconcileBreezePositions would otherwise never resolve, and since
+// orderProcess.ts's canPlaceOrder/squareOff/openTrades/placeOrderWithPendingGuard
+// all now await reconcileInFlight (see that file's comment), a stuck Breeze
+// reconcile would block every user's order placement AND square-off/
+// emergency-stop indefinitely, not just Breeze's own. Bounds the promise so
+// reconcileBreezePositions's existing catch-and-continue behavior (see below)
+// kicks in on a timeout too, same as a genuine rejection.
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 type FillListener = (userId: string, trade: Trade) => void;
 type PositionsChangedListener = () => void;
 type DrawdownBreachListener = (userId: string) => void;
@@ -756,8 +774,8 @@ class OrderBookkeeping {
     async reconcileBreezePositions(): Promise<void> {
         const restored: Trade[] = [];
         try {
-            if (!(await Breeze.getInstance().hasValidSession())) return;
-            const result = await Breeze.getInstance().getPortfolioPositions();
+            if (!(await withTimeout(Breeze.getInstance().hasValidSession(), 15000, 'Breeze hasValidSession'))) return;
+            const result = await withTimeout(Breeze.getInstance().getPortfolioPositions(), 15000, 'Breeze getPortfolioPositions');
             const rows = Array.isArray(result?.Success) ? result.Success : [];
             for (const p of rows) {
                 const optionType = p.right === 'Call' ? 'CE' : p.right === 'Put' ? 'PE' : undefined;

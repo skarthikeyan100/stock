@@ -121,7 +121,7 @@ strategies:
     stopLossPoints: 15
     logEnabled: true
   - type: BulkPcrStrategy
-    enabled: false
+    enabled: true
     broker: breeze
     quantity: 13975
     targetPoints: 2
