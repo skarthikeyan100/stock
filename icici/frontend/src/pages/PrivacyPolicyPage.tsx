@@ -23,7 +23,7 @@ export default function PrivacyPolicyPage() {
             PropFirm Trading Platform ("PropFirm", "we", "us", "our", or "Company") is committed to protecting your privacy and ensuring you have a positive experience on our website and platform. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our services.
           </p>
           <p>
-            PropFirm is a proprietary trading platform operated in compliance with Indian securities regulations and the guidelines set forth by the National Stock Exchange (NSE) and Securities and Exchange Board of India (SEBI).
+            PropFirm is a proprietary trading platform that provides capital and trading infrastructure to qualified traders. We facilitate your trades through authorized broker partners while maintaining strict confidentiality and security of your personal and financial information.
           </p>
         </section>
 
@@ -115,10 +115,9 @@ export default function PrivacyPolicyPage() {
           <h3>5.2 We May Share Your Data With:</h3>
           <ul>
             <li><strong>Broker Partners:</strong> ICICI Direct, Zerodha (Kite), Alice Blue (ANT) - to execute your trading orders and manage your positions</li>
-            <li><strong>NSE/Exchange:</strong> Trading and position data as required by regulations</li>
-            <li><strong>SEBI:</strong> Regulatory compliance data when required by law</li>
+            <li><strong>Bank Partners:</strong> For fund transfers, withdrawals, and verification purposes</li>
             <li><strong>Legal Authorities:</strong> When compelled by court order, subpoena, or legal process</li>
-            <li><strong>Compliance Partners:</strong> KYC verification services (masked identity data only)</li>
+            <li><strong>Compliance/KYC Partners:</strong> KYC verification services (masked identity data only)</li>
           </ul>
 
           <h3>5.3 Data Processing Agreements</h3>
@@ -144,9 +143,9 @@ export default function PrivacyPolicyPage() {
             To exercise any of these rights, please contact us at [support email]. We will respond to verified requests within 30 days.
           </p>
 
-          <h3>6.3 Regulatory Retention Requirements</h3>
+          <h3>6.3 Data Retention for Account History</h3>
           <p>
-            Certain data (trading records, identity verification documents, financial transactions) must be retained for minimum 7 years for compliance with SEBI and NSE regulations. We cannot delete this data even upon your request due to legal obligations.
+            Trading records and transaction history are retained for a minimum of 3 years for account reconciliation, dispute resolution, and audit purposes. This data may be requested during any account review or settlement dispute.
           </p>
         </section>
 

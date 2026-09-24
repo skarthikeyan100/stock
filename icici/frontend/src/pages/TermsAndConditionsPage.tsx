@@ -29,7 +29,7 @@ export default function TermsAndConditionsPage() {
 
           <h3>2.1 Platform Description</h3>
           <p>
-            PropFirm is a proprietary options trading platform that provides Indian traders access to automated options trading strategies on the NIFTY index. The platform operates in compliance with NSE (National Stock Exchange) regulations and SEBI (Securities and Exchange Board of India) guidelines.
+            PropFirm is a proprietary trading platform that provides qualified traders with capital and infrastructure to trade NIFTY index options. We partner with authorized brokers to execute trades on your behalf using your trading strategy. This is a profit-sharing arrangement where PropFirm and traders split the profits generated.
           </p>
 
           <h3>2.2 Eligibility Requirements</h3>
@@ -159,9 +159,9 @@ export default function TermsAndConditionsPage() {
           </p>
           <ul>
             <li>Your broker's account agreement and terms of service</li>
-            <li>NSE regulations and trading rules</li>
-            <li>Exchange-mandated position limits and circuit-breaker rules</li>
-            <li>Broker-specific trading halts and restrictions</li>
+            <li>Broker position limits and trading rules</li>
+            <li>Market-wide trading halts and circuit breaker rules</li>
+            <li>Broker-specific restrictions on order types or position sizing</li>
           </ul>
 
           <h3>6.3 Broker Account Ownership</h3>
@@ -312,21 +312,21 @@ export default function TermsAndConditionsPage() {
         </section>
 
         <section>
-          <h2>12. Regulatory Compliance</h2>
+          <h2>12. Compliance and Legal Authority</h2>
 
-          <h3>12.1 SEBI/NSE Compliance</h3>
+          <h3>12.1 Broker Compliance</h3>
           <p>
-            PropFirm operates in full compliance with SEBI regulations and NSE trading rules. All trades are executed through authorized, registered brokers and are subject to exchange regulations.
+            All trades are executed through authorized broker partners who are registered with relevant market authorities. PropFirm ensures that trading activities comply with broker partner requirements and market regulations.
           </p>
 
-          <h3>12.2 Regulatory Disclosures</h3>
+          <h3>12.2 Legal Authority Cooperation</h3>
           <p>
-            You authorize PropFirm to disclose your trading data, positions, and account information to SEBI, NSE, and other regulatory authorities as required by law.
+            You authorize PropFirm to disclose your trading data, positions, and account information to legal authorities, courts, or law enforcement agencies when compelled by valid legal process.
           </p>
 
-          <h3>12.3 AML/KYC Requirements</h3>
+          <h3>12.3 KYC Requirements</h3>
           <p>
-            PropFirm is committed to anti-money laundering (AML) compliance. Enhanced due diligence and monitoring may be conducted for high-value accounts or suspicious activity.
+            PropFirm requires complete and accurate Know Your Customer (KYC) information for account opening and ongoing compliance. You must provide valid identification and address verification. Enhanced verification may be requested for account security or dispute resolution purposes.
           </p>
         </section>
 
@@ -404,7 +404,7 @@ export default function TermsAndConditionsPage() {
         </section>
 
         <p className="policy-footer">
-          By accepting these Terms & Conditions during account registration, you confirm that you have read, understood, and agree to be bound by all provisions herein. These terms shall remain binding for the duration of your use of the Platform and for 3 years thereafter.
+          By accepting these Terms & Conditions during account registration, you confirm that you have read, understood, and agree to be bound by all provisions herein. This is a binding agreement between you and PropFirm for participation in our profit-sharing trading platform. These terms shall remain binding for the duration of your use of the Platform and survive account termination.
         </p>
       </Container>
     </div>
