@@ -31,28 +31,16 @@ const STRATEGY_PNL_USER: Record<string, string> = {
   bulkPcrStrategy: 'BulkPcrStrategy',
 };
 
-// Today's realized (closed trades) + unrealized (open trades, marked to last
-// trade price) P&L - same aggregation the Bulk PCR status popover used to do
-// for itself alone, now shared across every strategy's collapsed-row badge.
-function computeTodayPnl(open: any[], closed: any[]): { realized: number; unrealized: number } {
-  const today = new Date().toISOString().split('T')[0];
-  const todaysClosed = (closed || []).filter(t => {
-    const dateStr = t.exitTime || t.closedAt || t.date;
-    if (!dateStr) return true;
-    const tradeDate = new Date(dateStr);
-    if (isNaN(tradeDate.getTime())) return true;
-    return tradeDate.toISOString().split('T')[0] === today;
-  });
-  const todaysOpen = (open || []).filter(t => {
-    const dateStr = t.entryTime || t.openedAt || t.date;
-    if (!dateStr) return true;
-    const tradeDate = new Date(dateStr);
-    if (isNaN(tradeDate.getTime())) return true;
-    return tradeDate.toISOString().split('T')[0] === today;
-  });
-  const realized = todaysClosed.reduce((s, t) => s + (t.realizedPnL || 0), 0);
-  const unrealized = todaysOpen.reduce((s, t) => s + ((t.lastTradePrice - t.price) * t.quantity || 0), 0);
-  return { realized, unrealized };
+// Today's realized (closed trades, from a Mongo exitTime-bounded query) +
+// unrealized (currently-open trades, marked to last trade price and filtered
+// to those opened today - open positions have no historical/Mongo concept,
+// see /admin/trades/open's comment in server.ts, so "today's unrealized" is
+// just "currently open, opened today").
+function isToday(dateStr: string | undefined): boolean {
+  if (!dateStr) return true;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return true;
+  return d.toISOString().split('T')[0] === new Date().toISOString().split('T')[0];
 }
 
 // Pins the Actions column to the right edge of the horizontally-scrollable
@@ -124,8 +112,35 @@ export default function AdminPage() {
   const [tradesError, setTradesError] = useState<string | null>(null);
   const [pnlSummary, setPnlSummary] = useState<any>(null);
 
-  // Strategy Configuration tab - per-strategy Realized/Unrealized P&L badges
-  const [strategyPnl, setStrategyPnl] = useState<Record<string, { realized: number; unrealized: number }>>({});
+  // Strategy Configuration tab - per-strategy Status modal (fetched on demand
+  // when the Status button is clicked, not polled continuously).
+  const [strategyStatusModal, setStrategyStatusModal] = useState<{ configKey: string; title: string } | null>(null);
+  const [strategyStatusLoading, setStrategyStatusLoading] = useState(false);
+  const [strategyStatusData, setStrategyStatusData] = useState<{ realized: number; unrealized: number; openTrades: any[] } | null>(null);
+
+  const openStrategyStatus = async (configKey: string, title: string) => {
+    setStrategyStatusModal({ configKey, title });
+    setStrategyStatusData(null);
+    setStrategyStatusLoading(true);
+    try {
+      const pnlUser = STRATEGY_PNL_USER[configKey];
+      const today = resolveDateRange('day', '', '').from;
+      const [closedRes, openRes] = await Promise.all([
+        fetch(`/admin/trades/closed?user=${encodeURIComponent(pnlUser)}&from=${today}&to=${today}`),
+        fetch(`/admin/trades/open?user=${encodeURIComponent(pnlUser)}`),
+      ]);
+      const [closedData, openData] = await Promise.all([closedRes.json(), openRes.json()]);
+      const closedToday = Array.isArray(closedData) ? closedData : [];
+      const openToday = (Array.isArray(openData) ? openData : []).filter((t: any) => isToday(t.entryTime || t.openedAt || t.date));
+      const realized = closedToday.reduce((s: number, t: any) => s + (t.realizedPnL || 0), 0);
+      const unrealized = openToday.reduce((s: number, t: any) => s + ((t.lastTradePrice - t.price) * t.quantity || 0), 0);
+      setStrategyStatusData({ realized, unrealized, openTrades: openToday });
+    } catch {
+      setStrategyStatusData(null);
+    } finally {
+      setStrategyStatusLoading(false);
+    }
+  };
 
   const fetchAdminPayouts = () => {
     setPayoutsLoading(true);
@@ -181,33 +196,6 @@ export default function AdminPage() {
     const timer = setTimeout(loadTrades, 300);
     return () => clearTimeout(timer);
   }, [activeTab, tradeUser, tradeDateRange.from, tradeDateRange.to]);
-
-  // Refreshes every strategy's today's Realized/Unrealized P&L badge while the
-  // Strategy Configuration tab is open - same tab-scoped-polling convention
-  // the Trades/Payments/Users tabs already use above.
-  useEffect(() => {
-    if (activeTab !== 'config') return;
-    const fetchAllPnl = async () => {
-      const entries = await Promise.all(
-        Object.entries(STRATEGY_PNL_USER).map(async ([configKey, pnlUser]) => {
-          try {
-            const [openRes, closedRes] = await Promise.all([
-              fetch(`/admin/trades/open?user=${encodeURIComponent(pnlUser)}`),
-              fetch(`/admin/trades/closed?user=${encodeURIComponent(pnlUser)}`),
-            ]);
-            const [openData, closedData] = await Promise.all([openRes.json(), closedRes.json()]);
-            return [configKey, computeTodayPnl(Array.isArray(openData) ? openData : [], Array.isArray(closedData) ? closedData : [])] as const;
-          } catch {
-            return [configKey, { realized: 0, unrealized: 0 }] as const;
-          }
-        })
-      );
-      setStrategyPnl(Object.fromEntries(entries));
-    };
-    fetchAllPnl();
-    const interval = setInterval(fetchAllPnl, 20000);
-    return () => clearInterval(interval);
-  }, [activeTab]);
 
   // "Eligible" P&L (excludes forfeited profit) - only meaningful for a single
   // user, since forfeiture is checked against that user's investmentAmount.
@@ -1435,22 +1423,21 @@ export default function AdminPage() {
                   const disabledDefs = strategyDefs.filter(d => !config[d.configKey]?.enabled);
 
                   const renderAccordionItem = (def: typeof strategyDefs[number]) => {
-                    const pnl = STRATEGY_PNL_USER[def.configKey] ? strategyPnl[def.configKey] : undefined;
+                    const hasPnl = !!STRATEGY_PNL_USER[def.configKey];
                     return (
                       <Accordion.Item eventKey={def.configKey} key={def.configKey}>
                         <Accordion.Header>
                           <div className="d-flex align-items-center justify-content-between flex-grow-1 me-3">
                             <span className="fw-semibold">{def.title}</span>
                             <div className="d-flex align-items-center gap-3">
-                              {pnl && (
-                                <div className="d-flex gap-3 small">
-                                  <span className={pnl.realized >= 0 ? 'text-success' : 'text-danger'}>
-                                    Realized: {pnl.realized >= 0 ? '+' : ''}₹{pnl.realized.toFixed(2)}
-                                  </span>
-                                  <span className={pnl.unrealized >= 0 ? 'text-success' : 'text-danger'}>
-                                    Unrealized: {pnl.unrealized >= 0 ? '+' : ''}₹{pnl.unrealized.toFixed(2)}
-                                  </span>
-                                </div>
+                              {hasPnl && (
+                                <Button
+                                  size="sm"
+                                  variant="outline-secondary"
+                                  onClick={e => { e.stopPropagation(); openStrategyStatus(def.configKey, def.title); }}
+                                >
+                                  Status
+                                </Button>
                               )}
                               {def.headerExtra}
                               <div onClick={e => e.stopPropagation()}>
@@ -1501,6 +1488,57 @@ export default function AdminPage() {
                   <Button variant="secondary" onClick={fetchConfig}>Reset</Button>
                   <span className="text-muted small">Changes auto-save a moment after you stop typing.</span>
                 </div>
+
+                <Modal show={!!strategyStatusModal} onHide={() => setStrategyStatusModal(null)} centered>
+                  <Modal.Header closeButton>
+                    <Modal.Title>{strategyStatusModal?.title} - Status</Modal.Title>
+                  </Modal.Header>
+                  <Modal.Body>
+                    {strategyStatusLoading ? (
+                      <div className="text-center py-3"><Spinner animation="border" size="sm" /></div>
+                    ) : !strategyStatusData ? (
+                      <p className="text-center text-muted py-3 mb-0">Failed to load status.</p>
+                    ) : (
+                      <>
+                        <Row className="mb-3 text-center">
+                          <Col>
+                            <div className="small text-muted">Realized PnL (Today)</div>
+                            <div className={`fs-5 fw-bold ${strategyStatusData.realized >= 0 ? 'text-success' : 'text-danger'}`}>
+                              {strategyStatusData.realized >= 0 ? '+' : ''}₹{strategyStatusData.realized.toFixed(2)}
+                            </div>
+                          </Col>
+                          <Col>
+                            <div className="small text-muted">Unrealized PnL (Today)</div>
+                            <div className={`fs-5 fw-bold ${strategyStatusData.unrealized >= 0 ? 'text-success' : 'text-danger'}`}>
+                              {strategyStatusData.unrealized >= 0 ? '+' : ''}₹{strategyStatusData.unrealized.toFixed(2)}
+                            </div>
+                          </Col>
+                        </Row>
+                        {strategyStatusData.openTrades.length === 0 ? (
+                          <p className="text-center text-muted py-2 mb-0">No open positions today.</p>
+                        ) : (
+                          <Table striped hover responsive size="sm" className="mb-0">
+                            <thead>
+                              <tr><th>Contract</th><th>Qty</th><th>PnL</th></tr>
+                            </thead>
+                            <tbody>
+                              {strategyStatusData.openTrades.map((t: any, i: number) => {
+                                const tPnl = (t.lastTradePrice - t.price) * t.quantity || 0;
+                                return (
+                                  <tr key={i}>
+                                    <td>{t.tsym}</td>
+                                    <td>{t.quantity}</td>
+                                    <td className={tPnl >= 0 ? 'text-success' : 'text-danger'}>₹{tPnl.toFixed(2)}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </Table>
+                        )}
+                      </>
+                    )}
+                  </Modal.Body>
+                </Modal>
               </>
             ) : (
               <p className="text-center text-muted py-5">No configuration data available</p>
