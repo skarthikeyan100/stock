@@ -459,9 +459,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     // runPendingLoginReconcileIfDue() would see it still set and fire
                     // a redundant second reconcile right after this one.
                     pendingLoginReconcile = false;
-                    bookkeeping.reconcileZerodhaPositions().catch((e) => Log.log('[order] reloadSession: reconcileZerodhaPositions failed:', e));
-                    bookkeeping.reconcileAntPositions().catch((e) => Log.log('[order] reloadSession: reconcileAntPositions failed:', e));
-                    bookkeeping.reconcileBreezePositions().catch((e) => Log.log('[order] reloadSession: reconcileBreezePositions failed:', e));
+                    startReconcile('login');
                 } else {
                     pendingLoginReconcile = true;
                     Log.log('[order] reloadSession: before 09:10 - deferring broker-position reconciliation to first tick after 09:10');
@@ -652,27 +650,39 @@ async function loadUserLimits() {
 // instead of running inline inside the IPC handler.
 let pendingLoginReconcile = false;
 
-// Set for the duration of a deferred (first-tick-after-09:10) reconcile -
-// awaited by the 'openTrades' IPC handler below so a concurrent reader can't
-// observe bookkeeping.trades mid-reconcile and wrongly conclude nothing is
-// open. Real race found by code review: `strategies`' BulkPcrStrategy.reconcile()
-// independently defers to its OWN first tick after 09:10 (strategiesProcess.ts)
-// and queries this process's open trades over IPC right around that same
-// boundary - without this, that query could land in the gap between
-// pendingLoginReconcile firing and the (fire-and-forget, so onTick doesn't
-// block on slow broker calls) reconcile calls actually completing, silently
-// skipping restoration of a real open position. null once nothing is in flight.
+// Set for the duration of ANY broker-position reconcile (login-triggered,
+// immediate or deferred) - awaited by the 'openTrades'/'canPlaceOrder'/
+// 'squareOff' IPC handlers above so a concurrent reader can't observe
+// bookkeeping.trades mid-reconcile and wrongly conclude nothing is open (or
+// approve a duplicate entry). Real races found by code review:
+// (1) `strategies`' BulkPcrStrategy.reconcile() independently defers to its
+// OWN first tick after 09:10 (strategiesProcess.ts) and queries this
+// process's open trades over IPC right around that same boundary; (2) a
+// mid-day broker relogin (reloadSession below, isPastReconcileTime() already
+// true) fires the same three reconcile calls fire-and-forget too - without
+// this covering that path as well, a concurrent reader could land in the
+// exact same gap a relogin causes, not just the deferred-at-09:10 case.
+// null once nothing is in flight.
 let reconcileInFlight: Promise<void> | null = null;
+
+// Runs all three broker reconciles and tracks them via reconcileInFlight.
+// Fire-and-forget from the CALLER's point of view (doesn't await this) so
+// tick processing/IPC handling isn't blocked on slow broker calls - but any
+// concurrent reader that DOES await reconcileInFlight (see the IPC cases
+// above) waits for the real completion, not just for this function to return.
+function startReconcile(logContext: string): void {
+    Log.log(`[order] Running broker-position reconciliation (${logContext})`);
+    reconcileInFlight = Promise.all([
+        bookkeeping.reconcileZerodhaPositions().catch((e) => Log.log('[order] reconcileZerodhaPositions failed:', e)),
+        bookkeeping.reconcileAntPositions().catch((e) => Log.log('[order] reconcileAntPositions failed:', e)),
+        bookkeeping.reconcileBreezePositions().catch((e) => Log.log('[order] reconcileBreezePositions failed:', e)),
+    ]).then(() => { reconcileInFlight = null; });
+}
 
 async function runPendingLoginReconcileIfDue(): Promise<void> {
     if (!pendingLoginReconcile || !isPastReconcileTime()) return;
     pendingLoginReconcile = false;
-    Log.log('[order] Running login-triggered broker-position reconciliation (first tick after 09:10)');
-    reconcileInFlight = Promise.all([
-        bookkeeping.reconcileZerodhaPositions().catch((e) => Log.log('[order] deferred reconcileZerodhaPositions failed:', e)),
-        bookkeeping.reconcileAntPositions().catch((e) => Log.log('[order] deferred reconcileAntPositions failed:', e)),
-        bookkeeping.reconcileBreezePositions().catch((e) => Log.log('[order] deferred reconcileBreezePositions failed:', e)),
-    ]).then(() => { reconcileInFlight = null; });
+    startReconcile('first tick after 09:10');
 }
 
 // Only useGTT=false trades ever end up in exitMonitor's watch list (see

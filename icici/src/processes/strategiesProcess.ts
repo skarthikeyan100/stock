@@ -69,6 +69,22 @@ let ready = false;
 // start/login, whatever time that happens to be.
 let reconciled = false;
 
+// Fill/cancelled notifications (OrderClient.onFill/onCancelled, wired in
+// main() before strategies.initialize()/reconcile() ever run) that arrive
+// before `reconciled` is true. Real gap found by code review: deferring
+// reconcile() to "the first tick after 09:10" can leave this window open for
+// hours (a restart well before market open), not the few seconds it used to
+// take when reconcile() ran synchronously at startup - during that window a
+// strategy's per-position state (e.g. BulkPcrStrategy's `this.positions`)
+// isn't populated yet, so onFill/onOrderCancelled would silently no-op on a
+// genuine event instead of acting on it. Queued here and replayed, in
+// original arrival order (a fill and a cancel for the same order can
+// interleave), once runReconcileOnce() actually populates that state.
+type QueuedOrderEvent =
+    | { kind: 'fill'; userId: string; raw: any }
+    | { kind: 'cancelled'; userId: string; notification: OrderCancelledNotification };
+const queuedOrderEvents: QueuedOrderEvent[] = [];
+
 async function runReconcileOnce(): Promise<void> {
     if (reconciled) return;
     reconciled = true;
@@ -85,6 +101,16 @@ async function runReconcileOnce(): Promise<void> {
         }
     }
     ready = true;
+    if (queuedOrderEvents.length > 0) {
+        Log.log(`[strategies] Replaying ${queuedOrderEvents.length} order event(s) queued during reconcile`);
+        for (const event of queuedOrderEvents.splice(0)) {
+            if (event.kind === 'fill') {
+                onFill(event.userId, event.raw).catch((e) => Log.log('[strategies] queued onFill handler failed:', e));
+            } else {
+                onOrderCancelled(event.userId, event.notification).catch((e) => Log.log('[strategies] queued onOrderCancelled handler failed:', e));
+            }
+        }
+    }
     Log.log(`[strategies] Reconciled and ready - ${strategies.getList().length} strategies loaded.`);
 }
 
@@ -202,9 +228,16 @@ async function main() {
     await Mongo.init().catch((e) => Log.log('[strategies] Mongo.init failed (continuing without persistence):', e));
 
     OrderClient.getInstance().onFill((userId, trade) => {
+        // Gated on `ready` (set only once EVERY strategy's reconcile() call
+        // has finished), not `reconciled` (set true at the very start of
+        // runReconcileOnce, before the loop runs) - a fill for a strategy
+        // whose own reconcile() hasn't executed yet in that loop must still
+        // queue, not process against not-yet-restored state.
+        if (!ready) { queuedOrderEvents.push({ kind: 'fill', userId, raw: trade }); return; }
         onFill(userId, trade).catch((e) => Log.log('[strategies] onFill handler failed:', e));
     });
     OrderClient.getInstance().onCancelled((userId, notification) => {
+        if (!ready) { queuedOrderEvents.push({ kind: 'cancelled', userId, notification }); return; }
         onOrderCancelled(userId, notification).catch((e) => Log.log('[strategies] onOrderCancelled handler failed:', e));
     });
     OrderClient.getInstance().connect();
