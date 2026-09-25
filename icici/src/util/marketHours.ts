@@ -56,7 +56,7 @@ export function isPastReconcileTime(): boolean {
 }
 
 const TRADING_WINDOW_START_HOUR = 9;
-const TRADING_WINDOW_START_MINUTE = 14;
+const TRADING_WINDOW_START_MINUTE = 10;
 
 const pad = (n: number) => n.toString().padStart(2, '0');
 export const TRADING_WINDOW_LABEL =
