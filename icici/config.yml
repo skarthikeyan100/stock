@@ -54,7 +54,7 @@ strategies:
     maxHoldTimeMinutes: 30
     logEnabled: true
   - type: GapStrategy
-    enabled: false
+    enabled: true
     pointsThreshold: 20
     numberOfDatapointsReceived: 50
     quantity: 65
@@ -121,7 +121,7 @@ strategies:
     stopLossPoints: 15
     logEnabled: true
   - type: BulkPcrStrategy
-    enabled: true
+    enabled: false
     broker: breeze
     quantity: 13975
     targetPoints: 2
