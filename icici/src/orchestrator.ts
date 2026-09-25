@@ -9,6 +9,18 @@ import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+// NOTE: do NOT force IPv4 globally here (e.g. via NODE_OPTIONS=--dns-result-
+// order=ipv4first) - tried that 2026-09-25 to fix Kite's IPv4-only IP
+// allowlist rejecting our IPv6 address, but it broke Breeze/ICICI in the same
+// process: a Breeze order that filled fine minutes earlier (over whatever
+// family was default, almost certainly IPv6 - this machine's public IPv4 is
+// NAT'd/CGNAT and not the one ICICI has on file) started failing with
+// "IP address used does not match with the static IP declared when this API
+// key was created" the moment IPv4 was forced process-wide. Kite and Breeze
+// apparently have opposite requirements, so the fix has to be scoped to only
+// Kite's hostname - see src/processes/order/kiteDns.ts, applied in
+// orderProcess.ts (the only process that calls api.kite.trade).
+
 // The parent. Spawns data/order/strategies/frontend as sibling processes and
 // wires their transports:
 //   - data.stdout  -> strategies.stdin AND frontend.stdin AND order.stdin  (tick feed)

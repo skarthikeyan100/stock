@@ -43,13 +43,59 @@ echo
 # tail line indefinitely instead of processing it - confirmed live, this is not
 # optional. fflush() calls below are kept as defense-in-depth on the output side.
 tail $TAIL_OPTS "$LOG_FILE" | awk -W interactive '
-    # Only lines logged from inside BulkPcrStrategy itself - matches on the
+    # Shared by both buyChunked'\''-line branches below: extracts the leading
+    # "[HH:MM:SS]" into the global `ts`, then strips the "[buyChunked] "/
+    # "[order] "/"buyChunked: " prefixes common to both. Each branch still
+    # does its own remaining substitution ("chunk N/M filled " vs nothing)
+    # since that part genuinely differs between the two log-line shapes.
+    function stripBuyChunkedPrefix(line,    close_b) {
+        ts = "??:??:??"
+        if (substr(line, 1, 1) == "[") {
+            close_b = index(line, "] ")
+            if (close_b > 0) { ts = substr(line, 2, close_b - 2); line = substr(line, close_b + 2) }
+        }
+        sub(/^\[buyChunked\] /, "", line)
+        sub(/^\[order\] /, "", line)
+        sub(/^buyChunked: /, "", line)
+        return line
+    }
+
+    # Lines logged from inside BulkPcrStrategy itself (matches on the
     # [Class.method] call-site tag Log.log adds, so it also catches the one
-    # "reset" line that does not repeat "[BulkPcrStrategy]" in its own message text.
-    index($0, "[BulkPcrStrategy.") == 0 { next }
+    # "reset" line that does not repeat "[BulkPcrStrategy]" in its own message
+    # text), PLUS buyChunked'\''s own per-chunk progress lines scoped to this
+    # strategy via its "for BulkPcrStrategy" suffix - buyChunked is shared
+    # infra (other strategies use it too), logged from the [order] process
+    # rather than from inside BulkPcrStrategy, so it needs its own match here
+    # and its own formatting below (the exit/sell side already gets one line
+    # per fill straight from BulkPcrStrategy.updateTrade; the entry/buy side
+    # only calls buyChunked once and gets a single aggregate result back, so
+    # this is the only place per-chunk buy progress is visible at all).
+    index($0, "[BulkPcrStrategy.") == 0 && !(index($0, "buyChunked:") > 0 && index($0, "for BulkPcrStrategy") > 0) { next }
 
     {
         line = $0
+
+        if (index(line, "buyChunked:") > 0 && index(line, "drift-cancelled") > 0 && index(line, "for BulkPcrStrategy") > 0) {
+            line = stripBuyChunkedPrefix(line)
+            # No trailing-space requirement here (unlike the BUY-fill branch
+            # below) - this message reads "...for BulkPcrStrategy. Zerodha
+            # order..." (a period right after, not a space), so a pattern
+            # requiring " for BulkPcrStrategy " would never match.
+            sub(/ for BulkPcrStrategy/, "", line)
+            print ts "  DRIFT CANCEL: " line
+            fflush()
+            next
+        }
+
+        if (index(line, "buyChunked:") > 0 && index(line, "for BulkPcrStrategy") > 0) {
+            line = stripBuyChunkedPrefix(line)
+            sub(/ chunk [0-9]+\/[0-9]+ filled /, " ", line)
+            sub(/ for BulkPcrStrategy /, " ", line)
+            print ts "  BUY fill: " line
+            fflush()
+            next
+        }
 
         # --- extract "[HH:MM:SS]" timestamp -----------------------------
         ts = "??:??:??"

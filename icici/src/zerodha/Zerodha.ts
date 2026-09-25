@@ -281,7 +281,12 @@ class Zerodha {
     // Polls order history until the fill (average_price) is known - Kite has no
     // bracket-order support anymore (SEBI discontinued BO/CO in 2021), so callers
     // need the real fill price before they can attach a GTT target/stop-loss.
-    async getFillPrice(orderId: string, maxAttempts = 12, intervalMs = 5000): Promise<number> {
+    async getFillPrice(
+        orderId: string,
+        maxAttempts = 12,
+        intervalMs = 5000,
+        driftCheck?: { limitPrice: number; driftPoints: number; getLtp: () => Promise<number> }
+    ): Promise<number> {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             const history = await this.kc.getOrderHistory(orderId);
             const latest = history[history.length - 1];
@@ -291,6 +296,79 @@ class Zerodha {
             }
             if (latest?.status === 'REJECTED' || latest?.status === 'CANCELLED') {
                 throw new Error(`Zerodha order ${orderId} ${latest.status}`);
+            }
+
+            // Skip the drift check on the very first attempt: the resting
+            // limit price (buyPrice) was itself computed from a quote that
+            // can already be up to 10s stale (getMarketableZerodhaPrice's
+            // cache), so comparing it against a freshly-fetched LTP
+            // immediately after placement can flag "drift" that's really
+            // just cache staleness at placement time, not real movement
+            // since the order started resting - confirmed via code review.
+            // Give it at least one real poll interval to actually rest first.
+            if (driftCheck && attempt > 0) {
+                // Guard the LTP fetch itself - it's a real network call (ANT quote
+                // API), and a transient failure here (e.g. AliceBlue's documented
+                // rate-limit 429) must not abort the whole wait/cancel/fill flow.
+                // Skip just this one drift check and keep polling normally.
+                let ltp: number | undefined;
+                try {
+                    ltp = await driftCheck.getLtp();
+                } catch (e) {
+                    Log.log(`[Zerodha] Drift-check LTP fetch failed for order ${orderId} - skipping this check, will retry next poll:`, e);
+                }
+                const drift = ltp !== undefined ? ltp - driftCheck.limitPrice : -Infinity; // one-directional, mirrors LegManager.checkRefillDrift
+                if (drift > driftCheck.driftPoints) {
+                    let cancelFailed = false;
+                    try {
+                        await this.cancelOrder(orderId);
+                        Log.log(`[Zerodha] Cancelled order ${orderId} - price drifted ${drift.toFixed(2)} above limit ${driftCheck.limitPrice} (threshold ${driftCheck.driftPoints})`);
+                    } catch (e) {
+                        cancelFailed = true;
+                        Log.log(`[Zerodha] Failed to cancel order ${orderId} after drift detected - re-checking status:`, e);
+                    }
+                    // Re-check status regardless of whether cancel succeeded or
+                    // failed - a cancel can legitimately succeed after a PARTIAL
+                    // fill (Kite cancels just the remaining unfilled qty, which is
+                    // normal, not an error) just as easily as it can fail because
+                    // the order fully filled in the race window (the LTP fetch
+                    // above is a real network round-trip, so that window isn't
+                    // negligible). Either way, don't silently discard quantity
+                    // that genuinely filled at the broker (confirmed via code
+                    // review - the original version threw driftCancelled
+                    // unconditionally here, in both the cancel-succeeded and
+                    // cancel-failed cases, which would have silently lost a fill).
+                    const recheck = await this.kc.getOrderHistory(orderId);
+                    const recheckLatest = recheck[recheck.length - 1];
+                    if (recheckLatest?.status === 'COMPLETE' && recheckLatest.average_price) {
+                        Log.log(`[Zerodha] Order ${orderId} actually filled fully during the drift-cancel race - using real fill price ${recheckLatest.average_price}`);
+                        return recheckLatest.average_price;
+                    }
+                    // Trust the recheck's own filled_quantity regardless of
+                    // whether our cancel call itself succeeded - it reflects
+                    // the broker's true state as of this recheck either way.
+                    // (A prior version zeroed this out when cancelFailed,
+                    // which discarded a real, already-observed partial fill -
+                    // fixed per code review.) If cancel failed, the order may
+                    // still be resting live at the broker and able to fill
+                    // further after we stop watching it here - flag that
+                    // distinctly so it's visible in logs/monitoring, even
+                    // though the actual handling (record what we know, then
+                    // stop watching) matches this same function's pre-existing
+                    // timeout-cancel-failure precedent just above.
+                    const filledQuantity = Number(recheckLatest?.filled_quantity ?? 0);
+                    const averagePrice = Number(recheckLatest?.average_price ?? 0);
+                    if (cancelFailed) {
+                        Log.log(`[Zerodha] Order ${orderId} may still be resting live at the broker after a failed drift-cancel - filled_quantity as of recheck: ${filledQuantity}`);
+                    }
+                    throw Object.assign(
+                        new Error(
+                            `Zerodha order ${orderId} cancelled - price drifted ${drift.toFixed(2)} points above limit ${driftCheck.limitPrice} (threshold ${driftCheck.driftPoints})` +
+                                (filledQuantity > 0 ? ` (partial fill ${filledQuantity} @ ${averagePrice} before cancel)` : '')
+                        ),
+                        { driftCancelled: true, filledQuantity, averagePrice }
+                    );
+                }
             }
 
             await new Promise((resolve) => setTimeout(resolve, intervalMs));

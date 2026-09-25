@@ -363,20 +363,59 @@ export async function buyResolvedOnZerodha(request: BuyRequest): Promise<Trade> 
     // naturally reuses one ANT quote fetch across the whole chunk batch
     // instead of one per chunk.
     const buyPrice = await getMarketableZerodhaPrice(request.instrumentId, exchange, 'BUY');
-    const { orderId } = await zerodha.placeLimitBuyOption(request.tradingSymbol, request.quantity, buyPrice, exchange);
-    const entryPrice = await zerodha.getFillPrice(orderId);
+    // Shared by the full-fill path below and the partial-fill-on-drift-cancel
+    // path in the catch block - both build an identical Trade shape, differing
+    // only in quantity/price.
+    const buildTrade = (quantity: number, price: number, orderId: string): Trade => {
+        const trade = new Trade();
+        trade.tsym = request.tradingSymbol;
+        trade.token = request.instrumentId;
+        trade.quantity = quantity;
+        trade.price = price;
+        trade.lastTradePrice = price;
+        trade.action = 'Buy';
+        trade.status = 'COMPLETE';
+        trade.user = request.userId;
+        trade.broker = 'zerodha';
+        trade.brokerOrderId = orderId;
+        return trade;
+    };
 
-    const trade = new Trade();
-    trade.tsym = request.tradingSymbol;
-    trade.token = request.instrumentId;
-    trade.quantity = request.quantity;
-    trade.price = entryPrice;
-    trade.lastTradePrice = entryPrice;
-    trade.action = 'Buy';
-    trade.status = 'COMPLETE';
-    trade.user = request.userId;
-    trade.broker = 'zerodha';
-    trade.brokerOrderId = orderId;
+    const { orderId } = await zerodha.placeLimitBuyOption(request.tradingSymbol, request.quantity, buyPrice, exchange);
+    let entryPrice: number;
+    try {
+        entryPrice = await zerodha.getFillPrice(
+            orderId,
+            undefined,
+            undefined,
+            request.driftCancelPoints !== undefined
+                ? {
+                      limitPrice: buyPrice,
+                      driftPoints: request.driftCancelPoints,
+                      // Bypass getMarketableZerodhaPrice's 10s cache deliberately -
+                      // drift check needs a fresh LTP every poll, not a stale one.
+                      getLtp: () => ANT.getInstance().getQuote(exchange, request.instrumentId),
+                  }
+                : undefined
+        );
+    } catch (e: any) {
+        // A drift-cancel can carry a genuine partial fill (Kite cancelled only
+        // the remaining unfilled qty - see Zerodha.getFillPrice's driftCheck
+        // block). That quantity is real money at the broker and must be
+        // recorded the same way every other successful chunk is (finalizeEntry
+        // -> bookkeeping.recordFill), or it becomes an untracked position with
+        // no exit sizing for it (the exact gap flagged in code review). Still
+        // rethrow afterward so buyChunked knows to stop placing further chunks
+        // - the error already carries filledQuantity/averagePrice for
+        // buyChunked to fold into its own running total.
+        if (e?.driftCancelled && e.filledQuantity > 0) {
+            const partialTrade = buildTrade(e.filledQuantity, e.averagePrice, orderId);
+            await finalizeEntry(partialTrade, request.userId, exchange, request.targetPoints ?? 0, request.stopLossPoints ?? 0);
+        }
+        throw e;
+    }
+
+    const trade = buildTrade(request.quantity, entryPrice, orderId);
 
     await finalizeEntry(trade, request.userId, exchange, request.targetPoints ?? 0, request.stopLossPoints ?? 0);
     return trade;

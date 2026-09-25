@@ -248,7 +248,8 @@ export default class BulkPcrStrategy extends Strategy {
         });
 
         try {
-            const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, { right, quantity, niftyLtp, broker });
+            const chunkDriftCancelPoints = this.cfg().chunkDriftCancelPoints ?? 10;
+            const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, { right, quantity, niftyLtp, broker, driftCancelPoints: chunkDriftCancelPoints });
             const pos = this.positions.get(broker)!;
             pos.heldTsym = result.tsym;
             pos.heldToken = String(result.token);

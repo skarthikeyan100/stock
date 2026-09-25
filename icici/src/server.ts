@@ -15,12 +15,18 @@ console.log = console.error;
 // a variable that's already set.
 import 'dotenv/config';
 
-import dns from 'dns';
-// This host is dual-stack; Node prefers IPv6 by default for outbound requests,
-// which bypasses Zerodha/Kite's IPv4-only IP allowlist. Force IPv4 first so
-// calls to api.kite.trade (OAuth token exchange happens in this process) go
-// out on the whitelisted IPv4 address.
-dns.setDefaultResultOrder('ipv4first');
+// This host is dual-stack; Node's Happy-Eyeballs connection logic prefers
+// IPv6 when both are available, which bypasses Kite's IPv4-only order-
+// placement allowlist (OAuth token exchange happens in this process).
+// dns.setDefaultResultOrder('ipv4first') looks like the fix but does NOT
+// actually change the connected family (confirmed live in orderProcess.ts -
+// see kiteDns.ts's comment); forcing IPv4 process-wide also broke Breeze
+// (session generation/trade list/positions also happen in this process -
+// see Breeze.getInstance() calls below), whose registered "static IP" is
+// apparently the IPv6 address. So this is scoped to just Kite's hostname,
+// same as orderProcess.ts.
+import { installKiteIpv4Override } from './processes/order/kiteDns';
+installKiteIpv4Override();
 
 import Log from './util/Log';
 import express from 'express';

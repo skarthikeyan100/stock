@@ -3,12 +3,17 @@
 // other module loads, mirroring strategiesProcess.ts/dataProcess.ts.
 console.log = console.error;
 
-import dns from 'dns';
-// This host is dual-stack; Node prefers IPv6 by default for outbound requests,
-// which bypasses Zerodha/Kite's IPv4-only IP allowlist. Force IPv4 first for
-// every process that calls api.kite.trade - `order` is the one that actually
-// places Zerodha orders (see src/kiteconnect.d.ts / Zerodha.ts).
-dns.setDefaultResultOrder('ipv4first');
+// This host is dual-stack and Node's Happy-Eyeballs connection logic prefers
+// IPv6 when both are available, which bypasses Kite's IPv4-only order-
+// placement allowlist. dns.setDefaultResultOrder('ipv4first') looks like the
+// fix but does NOT actually change the connected family (confirmed live -
+// autoSelectFamily doesn't honor it); forcing IPv4 process-wide (via
+// NODE_OPTIONS) does work but broke Breeze, whose registered "static IP" is
+// apparently the IPv6 address, not IPv4 - see orchestrator.ts's note. So the
+// override is scoped to just Kite's hostname (see kiteDns.ts) - `order` is
+// the only process that calls api.kite.trade, so it's installed here only.
+import { installKiteIpv4Override } from './order/kiteDns';
+installKiteIpv4Override();
 
 import net from 'net';
 import fs from 'fs';
@@ -311,6 +316,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                                 instrumentId: commonToken,
                                 quantity: req.payload.quantity,
                                 exchange: contract.exchange,
+                                driftCancelPoints: req.payload.driftCancelPoints,
                             },
                             req.payload.freezeQuantity
                         );

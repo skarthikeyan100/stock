@@ -125,9 +125,9 @@ strategies:
     broker: breeze
     quantity: 13975
     targetPoints: 2
+    chunkDriftCancelPoints: 10
     right: none
     maxInvestment: 3000000
     logEnabled: true
     brokers:
       - zerodha
-      - breeze

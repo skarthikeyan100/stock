@@ -66,8 +66,23 @@ export async function buyChunked(
             const trade = await executor.buy({ ...request, quantity: chunks[i] });
             filledQty += trade.quantity;
             filledValue += trade.quantity * trade.price;
-            Log.log(`[order] buyChunked: chunk ${i + 1}/${chunks.length} filled qty=${trade.quantity} @ ${trade.price} for ${request.userId}`);
+            Log.log(`[order] buyChunked: ${request.tradingSymbol} chunk ${i + 1}/${chunks.length} filled qty=${trade.quantity} @ ${trade.price} for ${request.userId} (bought ${filledQty}/${request.quantity})`);
         } catch (e: any) {
+            if (e?.driftCancelled) {
+                // Fold in any partial fill THIS chunk contributed before being
+                // cancelled (zerodhaExecutor.ts already recorded it via
+                // finalizeEntry/bookkeeping - this is just keeping buyChunked's
+                // own running total in sync so the caller sizes its exit sell
+                // for what's actually held, not less).
+                if (e.filledQuantity > 0) {
+                    filledQty += e.filledQuantity;
+                    filledValue += e.filledQuantity * e.averagePrice;
+                }
+                if (filledQty > 0) {
+                    Log.log(`[order] buyChunked: ${request.tradingSymbol} chunk ${i + 1}/${chunks.length} drift-cancelled - keeping reduced fill ${filledQty}/${request.quantity} for ${request.userId}. ${e.message}`);
+                    return { quantity: filledQty, avgPrice: filledValue / filledQty };
+                }
+            }
             throw new Error(
                 `buyChunked: chunk ${i + 1}/${chunks.length} failed after filling ${filledQty}/${request.quantity} - ` +
                     `${request.quantity - filledQty} qty NOT placed. Manual review required. Underlying error: ${e?.message ?? e}`

@@ -28,6 +28,11 @@ export interface BuyRequest {
     // it self-monitors every leg's target/adverse-level thresholds itself).
     targetPoints?: number;
     stopLossPoints?: number;
+    // Zerodha-only (for now): when set, each chunk's resting limit buy is
+    // cancelled early if live LTP drifts this many points above that chunk's
+    // own limit price, rather than waiting out getFillPrice's full timeout.
+    // Omitted (or any other broker) = today's unmodified timeout-only behavior.
+    driftCancelPoints?: number;
 }
 
 export interface BrokerPosition {

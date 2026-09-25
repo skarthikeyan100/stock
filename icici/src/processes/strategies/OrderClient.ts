@@ -273,7 +273,7 @@ class OrderClient {
     // place independent orders on several brokers at once (BulkPcrStrategy's
     // multi-broker support). Omitted by every other caller, which keeps
     // today's per-userId resolution unchanged.
-    async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number; broker?: 'zerodha' | 'ant' | 'breeze' }): Promise<any> {
+    async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number; broker?: 'zerodha' | 'ant' | 'breeze'; driftCancelPoints?: number }): Promise<any> {
         const res = await this.request('chunkedBuyIndex', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
         if (!res.ok) throw new Error(res.error);
         return res.result;
