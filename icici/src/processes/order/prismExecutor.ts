@@ -120,8 +120,70 @@ export async function sellContract(userId: string, contract: string, quantity: n
 // exitCoverOrder/getOrderFillPrice for the Shoonya/Noren mechanics);
 // everything else here wraps the already-working functions above.
 
+// Prism's buyContract()/sellContract() helpers above place a LIMIT order at
+// the exact quoted LTP (no marketable buffer, unlike ANT's ltp*1.01) and then
+// unconditionally treat it as filled after a flat 2s delay - no broker-side
+// fill check at all (see prism.ts's _placeOrderWithForce, which always
+// returns status ORDERED regardless of what actually happened at the
+// broker). That's a real risk for BulkPcrStrategy's auto-arm entry
+// specifically: it immediately rests a real SELL LIMIT for whatever
+// buyOnPrism reports as "held" (placeExitSell), so an unverified "fill" that
+// never actually happened would place a genuinely naked sell the moment that
+// exit crosses the market, with nothing anywhere noticing. Polls the actual
+// order status (same getOrderStatus the sell-leg pending tracker already
+// uses) before trusting a fill; cancels and fails closed (throws, so
+// enterOnBroker marks that broker's position phase='error' instead of
+// proceeding to place an exit sell) if it never confirms.
+// Fewer, more widely-spaced polls than a naive 1-2s loop would use - each
+// poll is its own get_orderbook call (getOrderStatus has no shared-snapshot
+// param here, unlike pollPendingPrismLimitOrders' batched poll), running
+// concurrently with that same 15s-interval poller - this project has already
+// hit a live broker-API rate limit from exactly this kind of redundant
+// back-to-back call pattern (see chunkedOrder.ts/pendingPrismLimitOrders.ts's
+// own throttle comments).
+const BUY_FILL_POLL_ATTEMPTS = 6;
+const BUY_FILL_POLL_DELAY_MS = 2500;
+
+async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userId: string): Promise<number> {
+    const prism = Prism.getInstance();
+    for (let attempt = 1; attempt <= BUY_FILL_POLL_ATTEMPTS; attempt++) {
+        const { status, fillPrice } = await prism.getOrderStatus(orderId);
+        if (status === 'COMPLETE') {
+            if (!fillPrice) throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) reported COMPLETE but no fill price - manual review required`);
+            return fillPrice;
+        }
+        if (status === 'REJECTED' || status === 'CANCELED' || status === 'CANCELLED') {
+            throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) ${status} - not filled`);
+        }
+        if (attempt < BUY_FILL_POLL_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, BUY_FILL_POLL_DELAY_MS));
+    }
+    try {
+        await Prism.getInstance().cancelOrder(orderId);
+        Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - cancelled`);
+    } catch (e) {
+        Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill and cancel ALSO failed - re-checking status before giving up (may have just filled):`, e);
+    }
+    // Re-check status AFTER the cancel attempt, rather than assuming "not
+    // filled" the moment polling ran out - the order can genuinely fill in
+    // the race window between the last poll above and this cancel call (or
+    // the cancel call can itself fail precisely BECAUSE the order just
+    // completed). Throwing unconditionally here would silently orphan a real
+    // fill: recordFill would never run, so the position would be live and
+    // unprotected at the broker with no exit ever placed, invisible to
+    // reconcile() too since it only inspects local bookkeeping state, never
+    // live broker state - the exact "stuck position, no exit" failure class
+    // this whole fill-verification path exists to prevent.
+    const finalCheck = await Prism.getInstance().getOrderStatus(orderId);
+    if (finalCheck.status === 'COMPLETE') {
+        if (!finalCheck.fillPrice) throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window but reported no fill price - manual review required`);
+        Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window - treating as filled at ${finalCheck.fillPrice}`);
+        return finalCheck.fillPrice;
+    }
+    throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - treating as not filled`);
+}
+
 export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
-    const { userId, tradingSymbol, quantity, stopLossPoints } = request;
+    const { userId, tradingSymbol, instrumentId, quantity, stopLossPoints, exchange } = request;
     if (stopLossPoints && stopLossPoints > 0) {
         Log.log(`[order] Buying (Prism) ${tradingSymbol} qty=${quantity} for ${userId} via cover order (sl=${stopLossPoints})`);
         const response = await Prism.getInstance().placeCoverOrder(tradingSymbol, quantity, stopLossPoints);
@@ -152,8 +214,30 @@ export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
         await bookkeeping.recordFill(trade);
         return trade;
     }
-    // No protection requested - plain order, unchanged existing path.
-    return buyContract(userId, tradingSymbol, quantity);
+    // No protection requested - verified single order (NOT the shared
+    // buyContract() helper above, which has no fill check - see
+    // waitForPrismBuyFill's comment).
+    Log.log(`[order] Buying (Prism) ${tradingSymbol} qty=${quantity} for ${userId} via verified limit order`);
+    const prism = Prism.getInstance();
+    const quote = await prism.getStockOptionQuote(tradingSymbol);
+    const limitPrice = quote.ltp;
+    const { orderId } = await prism.placeLimitBuyBare(tradingSymbol, instrumentId, quantity, limitPrice, userId, (exchange as 'NFO' | 'BFO') ?? 'NFO');
+    const fillPrice = await waitForPrismBuyFill(orderId, tradingSymbol, userId);
+
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.token = instrumentId;
+    trade.quantity = quantity;
+    trade.price = fillPrice;
+    trade.lastTradePrice = fillPrice;
+    trade.action = 'Buy';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+    trade.broker = 'prism';
+    trade.brokerOrderId = orderId;
+
+    await bookkeeping.recordFill(trade);
+    return trade;
 }
 
 export async function squareOffOnPrism(userId: string, tsym: string, quantity: number): Promise<Trade> {

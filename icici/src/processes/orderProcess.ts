@@ -883,12 +883,23 @@ async function main() {
     // matters, and each pending-order poller self-heals its own tracking
     // within 15s regardless of whether the cancel here succeeded.
     async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: string, tsym: string): Promise<void> {
-        const pending = [
-            ...findPendingZerodhaOrdersForSymbol(userId, tsym),
-            ...findPendingBreezeOrdersForSymbol(userId, tsym),
-            ...findPendingAntOrdersForSymbol(userId, tsym),
-            ...findPendingPrismOrdersForSymbol(userId, tsym),
-        ].filter((o) => o.action === 'Sell');
+        // Selects ONLY the tracker for executor.brokerName, not all four
+        // merged together - BulkPcrAutoStartStrategy can now hold simultaneous
+        // ant+prism positions on the identical tsym (both Noren/Omnesys-family
+        // contract-symbol formats) under the same userId. Merging every
+        // tracker's matches by tsym alone (as this used to) would hand a
+        // Prism-tracked order id to antExecutor.cancelOrder() (or vice versa)
+        // whenever both brokers happened to have a resting sell on the same
+        // symbol at once - a foreign order id sent to the wrong broker's
+        // cancel API, silently relying on that broker's API to reject it
+        // rather than on correct routing.
+        const pendingByBroker: Record<string, { orderId: string; action: string }[]> = {
+            zerodha: findPendingZerodhaOrdersForSymbol(userId, tsym),
+            breeze: findPendingBreezeOrdersForSymbol(userId, tsym),
+            ant: findPendingAntOrdersForSymbol(userId, tsym),
+            prism: findPendingPrismOrdersForSymbol(userId, tsym),
+        };
+        const pending = (pendingByBroker[executor.brokerName] ?? []).filter((o) => o.action === 'Sell');
         for (const order of pending) {
             try {
                 await executor.cancelOrder(order.orderId);

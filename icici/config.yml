@@ -138,6 +138,7 @@ strategies:
       - '11:35'
       - '12:35'
     quantity: 1340
+    targetPoints: 2
     brokers:
       - ant
       - prism

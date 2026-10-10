@@ -710,6 +710,31 @@ export default class Prism {
         return { orderId: response.norenordno };
     }
 
+    // Places a single LIMIT buy at a caller-chosen price and returns as soon
+    // as it's accepted by the broker - does NOT wait for a fill, same shape
+    // as placeLimitSellBare above. Used by prismExecutor.buyOnPrism's plain
+    // path, which polls getOrderStatus itself afterward rather than trusting
+    // buyContract's flat-delay "placed == filled" assumption - see
+    // waitForPrismBuyFill's comment in prismExecutor.ts for why that
+    // assumption is unsafe for BulkPcrStrategy's auto-arm entry.
+    placeLimitBuyBare = async (contract: string, token: string, qty: number, price: number, user?: string, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> => {
+        const order = {
+            "trantype": 'B',
+            "prd": "M",
+            "exch": exchange,
+            "tsym": contract,
+            "qty": qty,
+            "prctyp": "LMT",
+            "prc": price,
+        };
+        Log.log('[Order] Bare Prism limit buy ', contract, ' qty: ', qty, ' price: ', price, ' for ', user);
+        const response = await this._placeOrderWithForce(order, user);
+        if (!response?.norenordno) {
+            throw new Error(`placeLimitBuyBare: no order id returned for ${contract}`);
+        }
+        return { orderId: response.norenordno };
+    }
+
     // One get_orderbook fetch - exposed separately from getOrderStatus so a
     // caller polling several orders at once (pendingPrismLimitOrders.ts) can
     // fetch it ONCE per poll tick and match every pending order against that

@@ -17,6 +17,7 @@ import BulkPcrStrategy from './BulkPcrStrategy';
 //                                          once per day
 //   quantity: 1340                      - written onto BulkPcrStrategy's own
 //                                          config block when armed
+//   targetPoints: 2                     - same
 //   brokers: ['ant', 'prism']            - same
 //
 // Same "fire at most once per configured HH:mm slot per day" shape as
@@ -107,11 +108,12 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         const cfg = this.cfg();
         const bulkPcrCfg = configService.getStrategyConfig('BulkPcrStrategy');
         bulkPcrCfg.quantity = cfg.quantity;
+        bulkPcrCfg.targetPoints = cfg.targetPoints;
         bulkPcrCfg.brokers = cfg.brokers;
         bulkPcrCfg.enabled = true;
         configService.writeConfig(configService.getConfig());
         strategies.syncFromConfig();
 
-        Log.log(`[BulkPcrAutoStart] ${timeStr} slot: armed BulkPcrStrategy (quantity=${cfg.quantity}, brokers=${JSON.stringify(cfg.brokers)})`);
+        Log.log(`[BulkPcrAutoStart] ${timeStr} slot: armed BulkPcrStrategy (quantity=${cfg.quantity}, targetPoints=${cfg.targetPoints}, brokers=${JSON.stringify(cfg.brokers)})`);
     }
 }
