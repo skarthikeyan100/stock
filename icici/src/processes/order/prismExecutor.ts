@@ -5,6 +5,7 @@ import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { BuyRequest, BrokerPosition } from './BrokerExecutor';
+import { trackPendingPrismLimitOrder } from './pendingPrismLimitOrders';
 
 // Prism/Shoonya's contract-by-price-range order path - the secondary/legacy
 // broker path (Zerodha is primary, see zerodhaExecutor.ts). `Prism.getInstance()`
@@ -178,6 +179,16 @@ export async function squareOffOnPrism(userId: string, tsym: string, quantity: n
         return trade;
     }
     return sellContract(userId, tsym, quantity);
+}
+
+// Returns immediately with {orderId} - fill arrives later via
+// pollPendingPrismLimitOrders. Mirrors placeLimitSellBareOnAnt exactly -
+// BulkPcrStrategy's target-hit exit on Prism.
+export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+    Log.log(`[order] Bare Prism limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
+    const { orderId } = await Prism.getInstance().placeLimitSellBare(tradingSymbol, instrumentId, quantity, price, userId, exchange);
+    trackPendingPrismLimitOrder({ orderId, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell' });
+    return { orderId };
 }
 
 export async function cancelOrderOnPrism(orderId: string): Promise<void> {

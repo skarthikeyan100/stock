@@ -684,6 +684,65 @@ export default class Prism {
         return { filledQty };
     }
 
+    // Places a single resting LIMIT sell at a caller-chosen price and
+    // returns as soon as it's accepted by the broker - does NOT wait for a
+    // fill, unlike sellContract above (which loops over splitQty chunks and
+    // assumes each one fills before moving to the next). Mirrors
+    // placeLimitSellBareOnAnt's shape exactly - needed for
+    // BulkPcrStrategy's target-hit exit (a caller-locked price, tracked to
+    // completion later via pendingPrismLimitOrders.ts's poller), which
+    // can't use sellContract's blocking-per-chunk assumption.
+    placeLimitSellBare = async (contract: string, token: string, qty: number, price: number, user?: string, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> => {
+        const order = {
+            "trantype": 'S',
+            "prd": "M",
+            "exch": exchange,
+            "tsym": contract,
+            "qty": qty,
+            "prctyp": "LMT",
+            "prc": price,
+        };
+        Log.log('[Order] Bare Prism limit sell ', contract, ' qty: ', qty, ' price: ', price, ' for ', user);
+        const response = await this._placeOrderWithForce(order, user);
+        if (!response?.norenordno) {
+            throw new Error(`placeLimitSellBare: no order id returned for ${contract}`);
+        }
+        return { orderId: response.norenordno };
+    }
+
+    // One get_orderbook fetch - exposed separately from getOrderStatus so a
+    // caller polling several orders at once (pendingPrismLimitOrders.ts) can
+    // fetch it ONCE per poll tick and match every pending order against that
+    // single snapshot, instead of refetching the whole orderbook per order
+    // (BulkPcrStrategy's freeze-quantity chunking can leave several resting
+    // chunks per broker - this project has already hit a live broker-API
+    // rate limit from exactly this kind of redundant back-to-back call
+    // pattern, see chunkedOrder.ts's own throttle comment).
+    getOrderBook = async (): Promise<any[]> => {
+        return (await NorenRestApi.get_orderbook()) ?? [];
+    }
+
+    // Single-shot order-status check, mirroring ANT.getOrderStatus's shape
+    // exactly (one get_orderbook poll, not getOrderFillPrice's own
+    // multi-attempt retry loop) - needed by pendingPrismLimitOrders.ts's
+    // interval poller, which already provides its own retry-over-time via
+    // repeated calls. Field names (avgprc/flprc/avgPrice) reuse the same
+    // unconfirmed-live fallback chain getOrderFillPrice already needed.
+    // `orders`, when supplied, is a pre-fetched getOrderBook() snapshot to
+    // match against instead of fetching again - see getOrderBook's comment.
+    getOrderStatus = async (orderNo: string, orders?: any[]): Promise<{ status: string; fillPrice?: number }> => {
+        const list = orders ?? (await this.getOrderBook());
+        const match = list.find((o) => o.norenordno === orderNo);
+        if (!match) return { status: 'PENDING' };
+        if (match.status === 'COMPLETE') {
+            const fillPrice = match.avgprc ?? match.flprc ?? match.avgPrice;
+            return { status: 'COMPLETE', fillPrice: fillPrice ? Number(fillPrice) : undefined };
+        }
+        if (match.status === 'REJECTED' || match.status === 'CANCELED' || match.status === 'CANCELLED') {
+            return { status: match.status };
+        }
+        return { status: 'PENDING' };
+    }
 
     getContractByPriceRange = async( right: string): Promise<string> => {
         const ltp = this.niftyQuote?.ltp || (await this.getNiftyQuote()).ltp

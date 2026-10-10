@@ -64,8 +64,9 @@ export interface BrokerExecutor {
     // bookkeeping.recordFill -> onFill -> strategy.updateTrade path. instrumentId
     // is the broker-agnostic token (ANT commonToken) already carried on Trade.token
     // for this position, needed by the pending-order tracker for the eventual fill.
-    // Not implemented for every broker (e.g. Prism) - callers must check for its
-    // presence before use.
+    // Optional on the interface for callers that can't assume it (a future
+    // broker executor need not implement it) - every current executor
+    // (Zerodha, ANT, Breeze, Prism) does implement it as of this writing.
     squareOffLimit?(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: Exchange, limitPrice: number): Promise<{ orderId: string }>;
 
     cancelOrder(orderId: string): Promise<void>;

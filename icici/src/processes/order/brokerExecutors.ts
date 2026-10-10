@@ -95,6 +95,9 @@ export const PrismExecutor: BrokerExecutor = {
     squareOff: (userId, tradingSymbol, quantity, _exchange) =>
         prismExecutor.squareOffOnPrism(userId, tradingSymbol, quantity),
 
+    squareOffLimit: (userId, tradingSymbol, instrumentId, quantity, exchange, limitPrice) =>
+        prismExecutor.placeLimitSellBareOnPrism(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as 'NFO' | 'BFO'),
+
     cancelOrder: (orderId) => prismExecutor.cancelOrderOnPrism(orderId),
 
     getFillPrice: (orderId) => prismExecutor.getFillPriceOnPrism(orderId),
@@ -107,20 +110,19 @@ export const PrismExecutor: BrokerExecutor = {
 // Resolves a user's configured broker to its BrokerExecutor - replaces the
 // repeated `bookkeeping.getUserBroker(userId) === 'ant' ? antExecutor.X(...)
 // : zerodhaExecutor.X(...)` branch that used to live at every orderProcess.ts
-// IPC handler. Deliberately mirrors getUserBroker's own 'zerodha' | 'ant' |
-// 'breeze' scope exactly - Prism was never part of that per-user broker
-// selection (it has its own separate 'buyContract'/'sellContract' IPC
-// actions, unchanged by this) and isn't reachable from here; PrismExecutor is
-// exported above for direct use instead.
-// `brokerOverride` lets a single call bypass per-userId resolution entirely -
-// needed by BulkPcrStrategy's multi-broker support, where one strategy
-// identity places independent full-quantity orders on several brokers at
-// once, so no single per-userId broker can describe "which broker this
-// specific call is for." Every other caller omits it and gets today's
-// per-userId behavior unchanged.
-export function getBrokerExecutor(userId: string, brokerOverride?: 'zerodha' | 'ant' | 'breeze'): BrokerExecutor {
+// IPC handler. Per-userId resolution (bookkeeping.getUserBroker) is still
+// 'zerodha' | 'ant' | 'breeze' only - Prism has its own separate
+// 'buyContract'/'sellContract' IPC actions and isn't a per-user broker
+// choice. `brokerOverride` widens to also accept 'prism', letting a single
+// call bypass per-userId resolution entirely - needed by BulkPcrStrategy's
+// multi-broker support, where one strategy identity places independent
+// full-quantity orders on several brokers at once, so no single per-userId
+// broker can describe "which broker this specific call is for." Every other
+// caller omits it and gets today's per-userId behavior unchanged.
+export function getBrokerExecutor(userId: string, brokerOverride?: 'zerodha' | 'ant' | 'breeze' | 'prism'): BrokerExecutor {
     const broker = brokerOverride ?? bookkeeping.getUserBroker(userId);
     if (broker === 'ant') return AntExecutor;
     if (broker === 'breeze') return BreezeExecutor;
+    if (broker === 'prism') return PrismExecutor;
     return ZerodhaExecutor;
 }

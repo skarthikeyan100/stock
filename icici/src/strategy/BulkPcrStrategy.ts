@@ -13,11 +13,11 @@ const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses arou
 
 const STATE_COLLECTION = 'bulkPcrStrategyState';
 
-// chunkedBuyIndex/chunkedSquareOffLimit (orderProcess.ts) only support these
-// two brokers today - 'ant' is deliberately not in this union yet (see
-// getBrokerExecutor's brokerOverride type); adding it would need its own
-// contract-resolution/pricing branch in orderProcess.ts first.
-type BrokerName = 'zerodha' | 'breeze';
+// chunkedBuyIndex/chunkedSquareOffLimit (orderProcess.ts) support all four
+// brokers - ant and prism were added alongside BulkPcrAutoStartStrategy
+// (the scheduled auto-arm wrapper) to let that wrapper run this strategy
+// against ant/prism instead of zerodha/breeze.
+type BrokerName = 'zerodha' | 'breeze' | 'ant' | 'prism';
 
 interface BrokerPosition {
     phase: 'buying' | 'selling' | 'error' | 'done';
@@ -582,6 +582,31 @@ export default class BulkPcrStrategy extends Strategy {
         }
 
         if (anyRestored) this.phase = 'running';
+    }
+
+    // Exposes the outer one-shot reentrancy gate to callers outside this
+    // class (BulkPcrAutoStartStrategy, the scheduled auto-arm wrapper) that
+    // need to know "is a cycle actively in flight right now" before
+    // deciding to re-arm. phase='done' (finished, waiting to be reset) and
+    // phase='idle' (never run / already reset) both correctly report false -
+    // both are safe states to re-arm from.
+    isRunning(): boolean {
+        return this.phase === 'running';
+    }
+
+    // isRunning() alone can't tell a healthy in-flight cycle apart from a
+    // permanently stuck one: once any configured broker's position enters
+    // phase='error' (a failed chunked buy or failed limit-sell placement),
+    // the outer phase can never reach 'done' (requires EVERY broker 'done')
+    // and reconcile() re-forces it back to 'running' on every restart too -
+    // so isRunning() stays true indefinitely until a human calls reset()
+    // after the manual review the 'error' phase already demands (see
+    // enterOnBroker/placeExitSellAtTargetPrice's "manual review required"
+    // logging). Exposed so BulkPcrAutoStartStrategy can log this case
+    // distinctly from an ordinary "already running - skipping" line, which
+    // otherwise looks identical for both.
+    hasBrokerError(): boolean {
+        return Array.from(this.positions.values()).some((p) => p.phase === 'error');
     }
 
     reset(): void {

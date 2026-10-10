@@ -26,6 +26,7 @@ import bookkeeping from './order/bookkeeping';
 import { buyIndexOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, cancelOrderOnZerodha, getContractByPriceRangeOnZerodha } from './order/zerodhaExecutor';
 import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingZerodhaOrdersForSymbol, onCancelled as onPendingZerodhaCancelled } from './order/pendingLimitOrders';
 import { pollPendingAntLimitOrders, loadPendingAntLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingAntOrdersForSymbol } from './order/pendingAntLimitOrders';
+import { pollPendingPrismLimitOrders, loadPendingPrismLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingPrismOrdersForSymbol } from './order/pendingPrismLimitOrders';
 import * as antExecutor from './order/antExecutor';
 import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
 import { pollPendingBreezeLimitOrders, loadPendingBreezeLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, onCancelled as onPendingBreezeCancelled } from './order/breezePendingLimitOrders';
@@ -34,6 +35,7 @@ import BreezeContractMaster from '../breeze/BreezeContractMaster';
 import Breeze from '../breeze/Breeze';
 import ZerodhaContractMaster from '../zerodha/ZerodhaContractMaster';
 import AntContractMaster from '../ant/AntContractMaster';
+import PrismContractMaster from '../prism/PrismContractMaster';
 import BreezeOrderNotifyStream from '../breeze/BreezeOrderNotifyStream';
 import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
@@ -324,7 +326,71 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     });
                 }
 
-                return { kind: 'response', id: req.id, ok: false, error: `chunkedBuyIndex: broker '${executor.brokerName}' not yet supported (breeze/zerodha only)` };
+                if (executor.brokerName === 'ant') {
+                    // AntContractMaster resolves directly (no separate
+                    // commonToken-resolution step like the zerodha branch
+                    // above needs - ANT's own token IS the live-tick token
+                    // here, since this order executes on ANT itself).
+                    const niftyLtp = req.payload.niftyLtp;
+                    if (!Number.isFinite(niftyLtp)) {
+                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (ant): niftyLtp is required and must be a finite number' };
+                    }
+                    const contract = AntContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
+                    const atmStrike = Math.round(niftyLtp / 50) * 50;
+                    const estimatedPrice = await antExecutor.estimateOptionPrice('NIFTY', atmStrike, optionType);
+                    const estimatedOrderValue = req.payload.quantity * estimatedPrice;
+
+                    return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
+                        const result = await buyChunked(
+                            executor,
+                            {
+                                userId: req.userId,
+                                tradingSymbol: contract.tradingSymbol,
+                                instrumentId: contract.token,
+                                quantity: req.payload.quantity,
+                                exchange: contract.exch as 'NFO' | 'BFO',
+                                driftCancelPoints: req.payload.driftCancelPoints,
+                            },
+                            req.payload.freezeQuantity
+                        );
+                        return { tsym: contract.tradingSymbol, token: contract.token, ...result };
+                    });
+                }
+
+                if (executor.brokerName === 'prism') {
+                    // PrismContractMaster has no live-tick concept of its own -
+                    // this order's fill/exit still flows through bookkeeping
+                    // keyed by this tsym/token like every other broker. Pricing
+                    // estimate reuses ANT (same reasoning as the zerodha/ant
+                    // branches above - Prism has no reliable live quote path of
+                    // its own wired in here).
+                    const niftyLtp = req.payload.niftyLtp;
+                    if (!Number.isFinite(niftyLtp)) {
+                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (prism): niftyLtp is required and must be a finite number' };
+                    }
+                    const contract = PrismContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
+                    const atmStrike = Math.round(niftyLtp / 50) * 50;
+                    const estimatedPrice = await antExecutor.estimateOptionPrice('NIFTY', atmStrike, optionType);
+                    const estimatedOrderValue = req.payload.quantity * estimatedPrice;
+
+                    return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
+                        const result = await buyChunked(
+                            executor,
+                            {
+                                userId: req.userId,
+                                tradingSymbol: contract.tradingSymbol,
+                                instrumentId: contract.token,
+                                quantity: req.payload.quantity,
+                                exchange: 'NFO',
+                                driftCancelPoints: req.payload.driftCancelPoints,
+                            },
+                            req.payload.freezeQuantity
+                        );
+                        return { tsym: contract.tradingSymbol, token: contract.token, ...result };
+                    });
+                }
+
+                return { kind: 'response', id: req.id, ok: false, error: `chunkedBuyIndex: broker '${executor.brokerName}' not yet supported (breeze/zerodha/ant/prism only)` };
             }
 
             case 'chunkedSquareOff': {
@@ -802,6 +868,7 @@ async function main() {
     await loadPendingLimitOrdersFromMongo();
     await loadPendingBreezeLimitOrdersFromMongo();
     await loadPendingAntLimitOrdersFromMongo();
+    await loadPendingPrismLimitOrdersFromMongo();
 
     // Cancels any resting limit-sell order(s) tracked for this user+tsym
     // before a force-close path market-sells the same still-open quantity -
@@ -820,6 +887,7 @@ async function main() {
             ...findPendingZerodhaOrdersForSymbol(userId, tsym),
             ...findPendingBreezeOrdersForSymbol(userId, tsym),
             ...findPendingAntOrdersForSymbol(userId, tsym),
+            ...findPendingPrismOrdersForSymbol(userId, tsym),
         ].filter((o) => o.action === 'Sell');
         for (const order of pending) {
             try {
@@ -844,11 +912,22 @@ async function main() {
     // Trade has no `exchange` field, so 'NFO' is passed literally - every trade
     // reaching this loop is a NIFTY/NFO option, matching the pre-existing
     // (implicit, default-'NFO') behavior of both branches this replaces.
+    //
+    // Resolved via trade.broker (falling back to the per-user default only
+    // when a trade has none) rather than getBrokerExecutor(user) alone -
+    // bookkeeping.getUserBroker(user) only ever resolves one broker per user
+    // and can never return 'prism', so a BulkPcrStrategy position opened on
+    // ant/prism (BulkPcrAutoStartStrategy's multi-broker fan-out) would
+    // otherwise force-close against whatever stale single broker the user's
+    // settings/config.yml happen to say, missing the real resting order
+    // entirely - the same "stuck position with no exit" failure mode this
+    // project already took a live loss from.
     bookkeeping.onDrawdownBreach(async (user) => {
         for (const trade of bookkeeping.trades.filter((t) => t.user === user)) {
             try {
-                await cancelAnyRestingLimitSell(getBrokerExecutor(user), user, trade.tsym);
-                await getBrokerExecutor(user).squareOff(user, trade.tsym, trade.quantity, 'NFO');
+                const executor = getBrokerExecutor(user, trade.broker);
+                await cancelAnyRestingLimitSell(executor, user, trade.tsym);
+                await executor.squareOff(user, trade.tsym, trade.quantity, 'NFO');
             } catch (e) {
                 Log.log('[order] Auto-squareoff on drawdown breach failed for', trade.tsym, e);
             }
@@ -863,6 +942,7 @@ async function main() {
     setInterval(() => pollPendingLimitOrders().catch((e) => Log.log('[order] pollPendingLimitOrders failed:', e)), 15_000);
     setInterval(() => pollPendingBreezeLimitOrders().catch((e) => Log.log('[order] pollPendingBreezeLimitOrders failed:', e)), 15_000);
     setInterval(() => pollPendingAntLimitOrders().catch((e) => Log.log('[order] pollPendingAntLimitOrders failed:', e)), 15_000);
+    setInterval(() => pollPendingPrismLimitOrders().catch((e) => Log.log('[order] pollPendingPrismLimitOrders failed:', e)), 15_000);
     // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
     // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than
     // event-driven since there's no fill/tick event marking "expiry day
@@ -878,8 +958,8 @@ async function main() {
             if (expirySquareOffInFlight.has(key)) continue;
             expirySquareOffInFlight.add(key);
             // Routed via getBrokerExecutor (see the drawdown-breach handler's comment
-            // above for why) instead of a hand-rolled ant/else-zerodha branch.
-            const executor = getBrokerExecutor(trade.user);
+            // above for why), resolved via trade.broker for the same reason.
+            const executor = getBrokerExecutor(trade.user, trade.broker);
             const squareOff = cancelAnyRestingLimitSell(executor, trade.user, trade.tsym)
                 .then(() => executor.squareOff(trade.user, trade.tsym, trade.quantity, 'NFO'));
             squareOff

@@ -16,6 +16,7 @@ import SupportResistanceStrategy from './SupportResistanceStrategy';
 import TargetReachStrategy from './TargetReachStrategy';
 import ContinuousStrategy from './ContinuousStrategy';
 import BulkPcrStrategy from './BulkPcrStrategy';
+import BulkPcrAutoStartStrategy from './BulkPcrAutoStartStrategy';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 
 const STRATEGY_REGISTRY = new Map<string, new (userId?: string) => Strategy>();
@@ -35,6 +36,7 @@ STRATEGY_REGISTRY.set('SupportResistanceStrategy', SupportResistanceStrategy);
 STRATEGY_REGISTRY.set('TargetReachStrategy', TargetReachStrategy);
 STRATEGY_REGISTRY.set('ContinuousStrategy', ContinuousStrategy);
 STRATEGY_REGISTRY.set('BulkPcrStrategy', BulkPcrStrategy);
+STRATEGY_REGISTRY.set('BulkPcrAutoStartStrategy', BulkPcrAutoStartStrategy);
 
 export function createStrategy(config: StrategyInstanceConfig): Strategy | null {
     const StrategyClass = STRATEGY_REGISTRY.get(config.type);

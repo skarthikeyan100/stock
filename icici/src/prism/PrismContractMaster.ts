@@ -72,6 +72,25 @@ class PrismContractMaster {
         }
         return { token: row.token, tradingSymbol: row.tradingSymbol };
     }
+
+    // Per-index strike step, mirroring ZerodhaContractMaster's STRIKE_STEP map -
+    // only NIFTY is wired into any current caller (orderProcess.ts's
+    // chunkedBuyIndex prism branch hardcodes 'NIFTY'), but findATMOption's
+    // public signature accepts any symbol, so a future BANKNIFTY/SENSEX
+    // caller must round to that index's real step, not silently round to
+    // NIFTY's and resolve the wrong (or no) strike.
+    private static readonly STRIKE_STEP: Record<string, number> = { NIFTY: 50, BANKNIFTY: 100, FINNIFTY: 50, SENSEX: 100 };
+
+    // ATM-by-LTP lookup, mirroring ZerodhaContractMaster.findATMOption: round
+    // to the nearest strike step for this symbol and delegate to the
+    // exact-strike resolver above. Added for BulkPcrAutoStartStrategy's
+    // prism support - BulkPcrStrategy only ever resolves by current spot
+    // LTP, not an exact strike.
+    findATMOption(underlyingLtp: number, optionType: 'CE' | 'PE', symbol: string = 'NIFTY'): { token: string; tradingSymbol: string } {
+        const strikeStep = PrismContractMaster.STRIKE_STEP[symbol] ?? 50;
+        const atmStrike = Math.round(underlyingLtp / strikeStep) * strikeStep;
+        return this.findNearestExpiryOption(symbol, atmStrike, optionType);
+    }
 }
 
 export default PrismContractMaster;

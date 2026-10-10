@@ -10,8 +10,10 @@ never auto-re-enables — see `strategies.ts:66-93`).
 **Only strategies with a `config.yml` block are actually armable today**:
 `SentimentStrategy`, `ContinuousStrategy`, `RateOfChangeStrategy`, `GapStrategy`,
 `RuleBasedStrategy`, `GoodMorningStrategy`, `GoodMorningSensexStrategy`,
-`SupportResistanceStrategy`, `TargetReachStrategy`, `BulkPcrStrategy` — all
-currently `enabled: false`. The rest (`BiDirectionStrategy`, `DiffStrategy`,
+`SupportResistanceStrategy`, `TargetReachStrategy`, `BulkPcrStrategy`,
+`BulkPcrAutoStartStrategy` — all `enabled: false` except
+`BulkPcrAutoStartStrategy` (its job is to arm `BulkPcrStrategy` on a
+schedule — see below). The rest (`BiDirectionStrategy`, `DiffStrategy`,
 `PivotStrategy`, `HighLotStrategy`, `Minutes5Decision`, `TestStrategy`) are
 registered in `StrategyFactory.ts`'s `STRATEGY_REGISTRY` but have no config
 block, so they never get instantiated by `Strategies.initialize()` — legacy/
@@ -21,13 +23,17 @@ populate). `ORBPrevious.ts` isn't even in the factory registry — an
 unfinished stub (`process()` body fully commented out).
 
 **Gotcha:** a strategy's `broker:` key in `config.yml` (seen on
-`ContinuousStrategy`, `SupportResistanceStrategy`, `BulkPcrStrategy`) is
-**not read by any strategy code** — grep confirms no `cfg.broker` reference
+`ContinuousStrategy`, `SupportResistanceStrategy`) is **not read by any
+strategy code** — grep confirms no `cfg.broker` reference for those two
 anywhere in `src/strategy/`. The actual broker used for a given user's orders
 is resolved per-user at order-placement time via
 `bookkeeping.getUserBroker(user)` (`src/processes/order/bookkeeping.ts:138-140`,
-defaults to `'zerodha'`). Don't infer which broker a strategy will actually
-trade on from its config block alone — check the user's broker setting.
+defaults to `'zerodha'`). **`BulkPcrStrategy` is the one exception**: it does
+read its own `brokers`/`broker` config keys directly (`configuredBrokers()`)
+rather than going through per-user resolution, since it fans out to every
+configured broker independently rather than picking one. For every other
+strategy, don't infer which broker it will actually trade on from its config
+block alone — check the user's broker setting.
 
 ## Shared infrastructure
 
@@ -107,7 +113,7 @@ lifecycle so the owning strategy only needs to supply entry-trigger logic.
 
 ## Strategy reference
 
-### BulkPcrStrategy (`BulkPcrStrategy.ts`) — config: active, `enabled: false`
+### BulkPcrStrategy (`BulkPcrStrategy.ts`) — config: `enabled: false` (armed by `BulkPcrAutoStartStrategy`, see below)
 **Entry**: one-shot. On the first `NiftyQuote` tick while `enabled` and in
 time-range and `phase === 'idle'` (`processNiftyQuote`, `BulkPcrStrategy.ts:140`),
 resolves direction either from config `right` (call/put) or, if `'none'`
@@ -137,14 +143,48 @@ another run).
 **Restart safety**: `reconcile()` (`:266`) distinguishes a persisted
 `'selling'` phase (an exit is already resting — never re-place it, would
 oversell) from `'error'` (manual review required, never auto-place an exit).
-**Broker**: `getMonitorConfig()` returns `null` (self-monitored) — designed
-around Breeze specifically (code comments: "Breeze doesn't support
-[GTT/bracket] anyway"), though `config.yml`'s own `broker: zerodha` field is
-unread by the code (see broker gotcha above) — actual broker is whatever the
-user's `bookkeeping.getUserBroker` resolves to.
-**Config keys** (`config.yml`): `enabled`, `broker` (informational only),
-`quantity`, `targetPoints`, `right` (`call`/`put`/`none`), `maxInvestment`,
-`logEnabled`.
+**Broker**: `getMonitorConfig()` returns `null` (self-monitored — no
+GTT/bracket). Multi-broker fan-out via config `brokers: [...]` (falls back to
+the legacy single `broker:` field if `brokers` is empty/absent) — runs each
+configured broker's full buy→exit lifecycle independently
+(`configuredBrokers()`, `enterOnBroker()`). `BrokerName` supports all four:
+`zerodha`, `breeze`, `ant`, `prism` — `ant`/`prism` support (contract
+resolution + pricing branches in `orderProcess.ts`'s `chunkedBuyIndex`, and a
+real `squareOffLimit` implementation added for Prism, which previously had
+none) was added alongside `BulkPcrAutoStartStrategy` below.
+**Config keys** (`config.yml`): `enabled`, `broker` (legacy single-broker
+fallback), `brokers` (preferred, multi-broker array), `quantity`,
+`targetPoints`, `chunkDriftCancelPoints`, `right` (`call`/`put`/`none`),
+`maxInvestment`, `logEnabled`.
+**`isRunning()`**: exposes `phase === 'running'` externally — used by
+`BulkPcrAutoStartStrategy` to decide whether a scheduled re-arm should be
+skipped.
+
+### BulkPcrAutoStartStrategy (`BulkPcrAutoStartStrategy.ts`) — config: active, `enabled: true`
+Scheduled auto-arm wrapper around `BulkPcrStrategy` — doesn't place any
+orders itself, only flips `BulkPcrStrategy`'s own `config.yml` block and
+`enabled` flag. At each configured `times` HH:mm slot (default
+`['10:35', '11:35', '12:35']`), attempted at most once per day per slot
+(mirrors `GoodMorningStrategy`'s snapshot/confirm late-window-skip pattern,
+`LATE_WINDOW_MINUTES = 5`):
+1. Looks up the live `BulkPcrStrategy` instance via
+   `strategies.getByUserId('BulkPcrStrategy')`.
+2. If `target.isRunning()`, skips this slot (logs and moves on — the next
+   scheduled slot will try again).
+3. Otherwise calls `target.reset()` (clears any stale `phase='done'`/
+   `positions` from a previous cycle), writes this wrapper's own `quantity`/
+   `brokers` onto `BulkPcrStrategy`'s `config.yml` block along with
+   `enabled: true`, and calls `strategies.syncFromConfig()` so the live
+   instance picks up `enabled` immediately. Every other `BulkPcrStrategy`
+   config key (`targetPoints`, `chunkDriftCancelPoints`, `right`,
+   `maxInvestment`, `logEnabled`) is left exactly as already set in its own
+   block — only `quantity`/`brokers`/`enabled` are overwritten.
+**Config keys** (`config.yml`): `enabled`, `times` (array of `HH:mm`
+strings), `quantity`, `brokers` (array, written onto `BulkPcrStrategy`'s own
+config when armed).
+**Requires** `BulkPcrStrategy` to be present (even if `enabled: false`) in
+`config.yml` — this wrapper only arms an existing instance, it never creates
+one.
 
 ### ContinuousStrategy (`ContinuousStrategy.ts`)
 **Entry ("T1")**: `processNiftyQuote` (`:222`) gates on enabled/time-in-range
