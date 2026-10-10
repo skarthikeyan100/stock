@@ -763,8 +763,19 @@ export default class Prism {
             const fillPrice = match.avgprc ?? match.flprc ?? match.avgPrice;
             return { status: 'COMPLETE', fillPrice: fillPrice ? Number(fillPrice) : undefined };
         }
-        if (match.status === 'REJECTED' || match.status === 'CANCELED' || match.status === 'CANCELLED') {
-            return { status: match.status };
+        // Accept both spellings seen across Shoonya/Finvasia's own
+        // documentation for a rejection ('REJECTED' per the official FAQ's
+        // enum, 'REJECT' per the ShoonyaApi-py README's own sample response -
+        // the two contradict each other and neither has been confirmed
+        // against this specific account's live API yet) and both spellings
+        // for a cancellation ('CANCELLED'/'CANCELED'), normalizing to one
+        // canonical string either way so callers never need their own
+        // spelling table.
+        if (match.status === 'REJECTED' || match.status === 'REJECT') {
+            return { status: 'REJECTED' };
+        }
+        if (match.status === 'CANCELED' || match.status === 'CANCELLED') {
+            return { status: 'CANCELLED' };
         }
         return { status: 'PENDING' };
     }
@@ -999,20 +1010,34 @@ export default class Prism {
     getOrderFillPrice = async (orderNo: string, requestedPrice: number, maxAttempts = 12, intervalMs = 5000): Promise<number> => {
         if (MOCK_BROKER) return requestedPrice;
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            let match: any;
             try {
                 const orders: any[] = await NorenRestApi.get_orderbook() ?? [];
-                const match = orders.find((o) => o.norenordno === orderNo);
-                if (match && (match.status === 'COMPLETE' || match.status === 'REJECTED' || match.status === 'CANCELED')) {
-                    if (match.status !== 'COMPLETE') {
-                        throw new Error(`Prism cover order ${orderNo} ended ${match.status}: ${JSON.stringify(match)}`);
-                    }
-                    const fillPrice = match.avgprc ?? match.flprc ?? match.avgPrice;
-                    if (fillPrice) return Number(fillPrice);
-                    Log.log(`[Order] Cover order ${orderNo} COMPLETE but no recognizable fill-price field - using requested price ${requestedPrice}:`, match);
-                    return requestedPrice;
-                }
+                match = orders.find((o) => o.norenordno === orderNo);
             } catch (e) {
                 Log.log(`[Order] getOrderFillPrice poll attempt ${attempt + 1}/${maxAttempts} failed for ${orderNo}:`, e);
+                await delay(intervalMs);
+                continue;
+            }
+            // Deliberately outside the try/catch above - this throw must
+            // propagate to the caller, not get caught by the fetch's own
+            // catch and logged as a transient polling failure. That exact
+            // bug existed here before: a genuinely REJECTED/CANCELLED order
+            // threw inside the try, was swallowed by the catch below it,
+            // and this function silently retried for the full timeout before
+            // falling back to `return requestedPrice` - trusting a broker
+            // rejection as if it had filled at the requested price. Found via
+            // code-review while widening the REJECT/REJECTED and
+            // CANCELED/CANCELLED spelling match below (see getOrderStatus's
+            // comment above for that ambiguity).
+            if (match && (match.status === 'REJECTED' || match.status === 'REJECT' || match.status === 'CANCELED' || match.status === 'CANCELLED')) {
+                throw new Error(`Prism cover order ${orderNo} ended ${match.status}: ${JSON.stringify(match)}`);
+            }
+            if (match && match.status === 'COMPLETE') {
+                const fillPrice = match.avgprc ?? match.flprc ?? match.avgPrice;
+                if (fillPrice) return Number(fillPrice);
+                Log.log(`[Order] Cover order ${orderNo} COMPLETE but no recognizable fill-price field - using requested price ${requestedPrice}:`, match);
+                return requestedPrice;
             }
             await delay(intervalMs);
         }
