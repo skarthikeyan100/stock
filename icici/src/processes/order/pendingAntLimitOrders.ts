@@ -3,6 +3,7 @@ import ANT from '../../ant/ANT';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import Mongo from '../../tools/mongo';
+import { isPastMarketClose } from '../../util/marketHours';
 
 // Mirrors pendingLimitOrders.ts (Zerodha) exactly, for ANT limit orders
 // placed via placeLimitSellBareOnAnt (antExecutor.ts) - BulkPcrStrategy's
@@ -25,6 +26,11 @@ interface PendingAntLimitOrder {
 }
 
 const pending = new Map<string, PendingAntLimitOrder>();
+
+// See pendingLimitOrders.ts's cancelledListeners for why this exists.
+type CancelledListener = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: 'ant', orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
+const cancelledListeners: CancelledListener[] = [];
+export function onCancelled(listener: CancelledListener): void { cancelledListeners.push(listener); }
 
 // See pendingLimitOrders.ts's findPendingOrdersForSymbol for why this exists.
 export function findPendingOrdersForSymbol(userId: string, tradingSymbol: string): PendingAntLimitOrder[] {
@@ -101,7 +107,24 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                 Log.log(`[order] Pending ANT limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
             } else if (status === 'REJECTED' || status === 'CANCELLED') {
                 untrackPendingAntLimitOrder(orderId);
-                Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status}`);
+                // ANT has no separate EOD-expiry status either (same gap as
+                // Kite - see pendingLimitOrders.ts's matching comment): an
+                // unfilled DAY order auto-cancelled at exchange close reports
+                // back as plain 'CANCELLED', indistinguishable from a genuine
+                // same-day cancel. Defer firing the listener past market
+                // close to avoid driving BulkPcrStrategy.onOrderCancelled's
+                // immediate re-placement attempt against a closed exchange
+                // (live incident 2026-09-24) - let tomorrow's reconcile()
+                // handle it instead.
+                if (status === 'CANCELLED' && isPastMarketClose()) {
+                    Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close - leaving re-placement to tomorrow's reconcile()`);
+                } else {
+                    const reason = status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
+                    for (const listener of cancelledListeners) {
+                        listener(order.userId, order.tradingSymbol, order.instrumentId, order.quantity, order.exchange, order.action, 'ant', orderId, reason);
+                    }
+                    Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status}`);
+                }
             }
             // else: still pending, leave in map for the next poll
         } catch (e) {

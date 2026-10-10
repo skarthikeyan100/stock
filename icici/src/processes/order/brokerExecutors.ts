@@ -67,7 +67,7 @@ export const AntExecutor: BrokerExecutor = {
     squareOffLimit: (userId, tradingSymbol, instrumentId, quantity, exchange, limitPrice) =>
         antExecutor.placeLimitSellBareOnAnt(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as 'NFO' | 'BFO'),
 
-    cancelOrder: (orderId) => ANT.getInstance().cancelOrder(orderId),
+    cancelOrder: (orderId) => antExecutor.cancelOrderOnAnt(orderId),
 
     getFillPrice: (orderId) => ANT.getInstance().getFillPrice(orderId),
 

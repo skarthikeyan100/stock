@@ -5,7 +5,7 @@ import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { BuyRequest, BrokerPosition } from './BrokerExecutor';
-import { trackPendingPrismLimitOrder } from './pendingPrismLimitOrders';
+import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder } from './pendingPrismLimitOrders';
 
 // Prism/Shoonya's contract-by-price-range order path - the secondary/legacy
 // broker path (Zerodha is primary, see zerodhaExecutor.ts). `Prism.getInstance()`
@@ -275,8 +275,15 @@ export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: s
     return { orderId };
 }
 
+// Untracks immediately after cancelling - mirrors zerodhaExecutor.cancelOrderOnZerodha.
+// Without this, the next pollPendingPrismLimitOrders tick would independently
+// discover the same order CANCELLED and fire the cancelled-listener chain,
+// re-placing a brand new resting sell for the quantity the caller just
+// cancelled specifically to avoid double-selling (e.g. cancelAnyRestingLimitSell
+// ahead of a force-close).
 export async function cancelOrderOnPrism(orderId: string): Promise<void> {
     await Prism.getInstance().cancelOrder(orderId);
+    untrackPendingPrismLimitOrder(orderId);
 }
 
 export async function getFillPriceOnPrism(orderId: string): Promise<number> {

@@ -7,7 +7,7 @@ import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
 import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
-import { trackPendingBreezeLimitOrder } from './breezePendingLimitOrders';
+import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder } from './breezePendingLimitOrders';
 import { roundToTick } from '../../zerodha/Zerodha';
 
 // ICICI Breeze execution, mirroring zerodhaExecutor.ts/antExecutor.ts's shape.
@@ -298,8 +298,15 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
     }
 }
 
+// Untracks immediately after cancelling - mirrors zerodhaExecutor.cancelOrderOnZerodha.
+// Without this, the next pollPendingBreezeLimitOrders tick would independently
+// discover the same order cancelled/rejected and fire the cancelled-listener
+// chain, re-placing a brand new resting sell for the quantity the caller just
+// cancelled specifically to avoid double-selling (e.g. cancelAnyRestingLimitSell
+// ahead of a force-close).
 export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
     await Breeze.getInstance().cancelOrder('NFO', orderId);
+    untrackPendingBreezeLimitOrder(orderId);
 }
 
 // Generic BrokerExecutor.buy() path: instrumentId is a Breeze FnoRecord.token

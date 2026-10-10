@@ -3,6 +3,7 @@ import Prism from '../../prism';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import Mongo from '../../tools/mongo';
+import { isPastMarketClose } from '../../util/marketHours';
 
 // Mirrors pendingAntLimitOrders.ts exactly, for Prism limit orders placed
 // via placeLimitSellBareOnPrism (prismExecutor.ts) - BulkPcrStrategy's
@@ -21,6 +22,11 @@ interface PendingPrismLimitOrder {
 }
 
 const pending = new Map<string, PendingPrismLimitOrder>();
+
+// See pendingLimitOrders.ts's cancelledListeners for why this exists.
+type CancelledListener = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: 'prism', orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
+const cancelledListeners: CancelledListener[] = [];
+export function onCancelled(listener: CancelledListener): void { cancelledListeners.push(listener); }
 
 // See pendingLimitOrders.ts's findPendingOrdersForSymbol for why this exists.
 export function findPendingOrdersForSymbol(userId: string, tradingSymbol: string): PendingPrismLimitOrder[] {
@@ -105,7 +111,25 @@ export async function pollPendingPrismLimitOrders(): Promise<void> {
                 Log.log(`[order] Pending Prism limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
             } else if (status === 'REJECTED' || status === 'CANCELLED' || status === 'CANCELED') {
                 untrackPendingPrismLimitOrder(orderId);
-                Log.log(`[order] Pending Prism limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status}`);
+                // Prism/Shoonya has no separate EOD-expiry status either
+                // (same gap as Kite/ANT - see pendingLimitOrders.ts's
+                // matching comment): an unfilled DAY order auto-cancelled at
+                // exchange close reports back as plain 'CANCELLED'/'CANCELED',
+                // indistinguishable from a genuine same-day cancel. Defer
+                // firing the listener past market close to avoid driving
+                // BulkPcrStrategy.onOrderCancelled's immediate re-placement
+                // attempt against a closed exchange (live incident
+                // 2026-09-24) - let tomorrow's reconcile() handle it instead.
+                const isCancelled = status === 'CANCELLED' || status === 'CANCELED';
+                if (isCancelled && isPastMarketClose()) {
+                    Log.log(`[order] Pending Prism limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close - leaving re-placement to tomorrow's reconcile()`);
+                } else {
+                    const reason = status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
+                    for (const listener of cancelledListeners) {
+                        listener(order.userId, order.tradingSymbol, order.instrumentId, order.quantity, order.exchange, order.action, 'prism', orderId, reason);
+                    }
+                    Log.log(`[order] Pending Prism limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status}`);
+                }
             }
             // else: still pending, leave in map for the next poll
         } catch (e) {

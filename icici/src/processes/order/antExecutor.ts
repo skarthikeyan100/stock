@@ -9,7 +9,7 @@ import { CALL } from '../../constants';
 import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
-import { trackPendingAntLimitOrder } from './pendingAntLimitOrders';
+import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder } from './pendingAntLimitOrders';
 
 // AliceBlue/ANT execution, mirroring zerodhaExecutor.ts's shape and the same
 // per-user useGTT gating (bookkeeping.getUserUseGTT) - but the actual
@@ -377,6 +377,18 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
     });
     trackPendingAntLimitOrder({ orderId: orderNo, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell' });
     return { orderId: orderNo };
+}
+
+// Cancels a resting ANT limit order (e.g. cancelAnyRestingLimitSell ahead of
+// a force-close) and untracks it immediately - mirrors
+// zerodhaExecutor.cancelOrderOnZerodha. Without the untrack, the next
+// pollPendingAntLimitOrders tick would independently discover the same
+// order CANCELLED and fire the cancelled-listener chain, re-placing a brand
+// new resting sell for the quantity the caller just cancelled specifically
+// to avoid double-selling ahead of its own force-close.
+export async function cancelOrderOnAnt(orderId: string): Promise<void> {
+    await ANT.getInstance().cancelOrder(orderId);
+    untrackPendingAntLimitOrder(orderId);
 }
 
 export async function squareOffOnAnt(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {

@@ -107,7 +107,7 @@ export interface OrderCancelledNotification {
     quantity: number;        // qty that was resting in the cancelled/rejected order
     exchange: 'NFO' | 'BFO';
     action: 'Buy' | 'Sell';
-    broker: 'zerodha' | 'breeze';
+    broker: 'zerodha' | 'breeze' | 'ant' | 'prism';
     orderId: string;
     reason: 'CANCELLED' | 'REJECTED';
 }
