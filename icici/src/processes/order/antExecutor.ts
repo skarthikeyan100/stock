@@ -380,14 +380,26 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
 }
 
 // Cancels a resting ANT limit order (e.g. cancelAnyRestingLimitSell ahead of
-// a force-close) and untracks it immediately - mirrors
-// zerodhaExecutor.cancelOrderOnZerodha. Without the untrack, the next
-// pollPendingAntLimitOrders tick would independently discover the same
-// order CANCELLED and fire the cancelled-listener chain, re-placing a brand
-// new resting sell for the quantity the caller just cancelled specifically
-// to avoid double-selling ahead of its own force-close.
+// a force-close) and untracks it - mirrors zerodhaExecutor.cancelOrderOnZerodha.
+// Without the untrack, the next pollPendingAntLimitOrders tick would
+// independently discover the same order CANCELLED and fire the
+// cancelled-listener chain, re-placing a brand new resting sell for the
+// quantity the caller just cancelled specifically to avoid double-selling
+// ahead of its own force-close.
+//
+// But untracking unconditionally reopens a different race: the order can
+// genuinely fill at the exchange in the gap between our last poll and this
+// cancel call (or the broker can ack the cancel even though it just filled).
+// Re-check status before untracking - if it actually completed, leave it
+// tracked so the next pollPendingAntLimitOrders tick records the fill via
+// its normal path instead of this function silently discarding it.
 export async function cancelOrderOnAnt(orderId: string): Promise<void> {
     await ANT.getInstance().cancelOrder(orderId);
+    const { status } = await ANT.getInstance().getOrderStatus(orderId);
+    if (status === 'COMPLETE') {
+        Log.log(`[order] cancelOrderOnAnt: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
+        return;
+    }
     untrackPendingAntLimitOrder(orderId);
 }
 

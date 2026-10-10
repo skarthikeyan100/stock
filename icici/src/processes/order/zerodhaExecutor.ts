@@ -520,12 +520,26 @@ export async function placeLimitSellBareOnZerodha(userId: string, tradingSymbol:
 
 // Cancels a resting limit order (e.g. ContinuousStrategy's root-refill drift-cancel
 // check) and stops pollPendingLimitOrders from continuing to poll it.
+//
+// Re-checks status before untracking (mirrors the same addition in
+// antExecutor.cancelOrderOnAnt/prismExecutor.cancelOrderOnPrism/
+// breezeExecutor.cancelOrderOnBreeze) - the order can genuinely fill in the
+// gap between our last poll and this cancel call, or the broker can ack the
+// cancel even though it just filled. Untracking unconditionally in that case
+// would silently drop the fill (pollPendingLimitOrders would never see it
+// again to call bookkeeping.recordFill).
 export async function cancelOrderOnZerodha(orderId: string): Promise<void> {
     const zerodha = Zerodha.getInstance();
     if (!(await zerodha.hasValidSession())) {
         throw new Error('Zerodha session not active - complete /kite/login first.');
     }
     await zerodha.cancelOrder(orderId);
+    const history = await zerodha.getKiteConnect().getOrderHistory(orderId);
+    const latest = history[history.length - 1];
+    if (latest?.status === 'COMPLETE') {
+        Log.log(`[order] cancelOrderOnZerodha: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
+        return;
+    }
     untrackPendingLimitOrder(orderId);
 }
 

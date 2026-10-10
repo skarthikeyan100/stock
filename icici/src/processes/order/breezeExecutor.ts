@@ -298,14 +298,30 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
     }
 }
 
-// Untracks immediately after cancelling - mirrors zerodhaExecutor.cancelOrderOnZerodha.
-// Without this, the next pollPendingBreezeLimitOrders tick would independently
-// discover the same order cancelled/rejected and fire the cancelled-listener
-// chain, re-placing a brand new resting sell for the quantity the caller just
-// cancelled specifically to avoid double-selling (e.g. cancelAnyRestingLimitSell
-// ahead of a force-close).
+// Cancels and untracks - mirrors zerodhaExecutor.cancelOrderOnZerodha.
+// Without the untrack, the next pollPendingBreezeLimitOrders tick would
+// independently discover the same order cancelled/rejected and fire the
+// cancelled-listener chain, re-placing a brand new resting sell for the
+// quantity the caller just cancelled specifically to avoid double-selling
+// (e.g. cancelAnyRestingLimitSell ahead of a force-close).
+//
+// But untracking unconditionally reopens a different race: the order can
+// genuinely fill in the gap between our last poll and this cancel call (or
+// the broker can ack the cancel even though it just filled). Re-check status
+// before untracking - if it actually completed, leave it tracked so the next
+// pollPendingBreezeLimitOrders tick records the fill via its normal path
+// instead of this function silently discarding it. (A no-op for callers
+// whose orderId was never in the pending map, e.g. squareOffOnBreeze's own
+// retry loop below - that path already has its own separate cancel-failure
+// recheck.)
 export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
     await Breeze.getInstance().cancelOrder('NFO', orderId);
+    const result = await Breeze.getInstance().getOrderDetail('NFO', orderId);
+    const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
+    if (record && Number(record.average_price) > 0) {
+        Log.log(`[order] cancelOrderOnBreeze: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
+        return;
+    }
     untrackPendingBreezeLimitOrder(orderId);
 }
 
