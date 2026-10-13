@@ -45,7 +45,19 @@ export async function cancelOrderWithFillRecheck(params: {
         // Error handling (full stack, not just toString()) applies.
         Log.log(`[order] ${params.label}: cancel failed for ${params.orderId} - re-checking status:`, e);
     }
-    if (await params.isFilled()) {
+    // isFilled() is itself a real network call and can fail independently of
+    // the cancel above - if it does, don't let that failure silently replace
+    // cancelError (confirmed via code review: the original version let an
+    // isFilled() throw propagate directly, masking why the cancel itself
+    // actually failed). Treat an unconfirmable status as "not filled" rather
+    // than risk a false OrderAlreadyFilledError with no positive evidence.
+    let filled = false;
+    try {
+        filled = await params.isFilled();
+    } catch (e) {
+        Log.log(`[order] ${params.label}: status recheck failed for ${params.orderId} (treating as not confirmed filled):`, e);
+    }
+    if (filled) {
         Log.log(`[order] ${params.label}: ${params.orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
         throw new OrderAlreadyFilledError(params.orderId);
     }
