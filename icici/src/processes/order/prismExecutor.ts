@@ -4,7 +4,7 @@ import indexMap from '../../nse_index';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
-import { BuyRequest, BrokerPosition, OrderAlreadyFilledError } from './BrokerExecutor';
+import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck } from './BrokerExecutor';
 import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder } from './pendingPrismLimitOrders';
 
 // Prism/Shoonya's contract-by-price-range order path - the secondary/legacy
@@ -280,34 +280,18 @@ export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: s
 // independently discover the same order CANCELLED and fire the
 // cancelled-listener chain, re-placing a brand new resting sell for the
 // quantity the caller just cancelled specifically to avoid double-selling
-// (e.g. cancelAnyRestingLimitSell ahead of a force-close).
-//
-// But untracking unconditionally reopens a different race: the order can
-// genuinely fill in the gap between our last poll and this cancel call (or
-// the broker can ack the cancel even though it just filled). Re-check status
-// before untracking - if it actually completed, throw OrderAlreadyFilledError
-// (not a plain Error) rather than returning normally, REGARDLESS of whether
-// the cancel call itself succeeded or failed - so a caller like
-// cancelAnyRestingLimitSell can tell "already closed, don't force-close
-// again" apart from a genuine cancel failure that still leaves the position
-// open (confirmed via code review of breezeExecutor.ts's equivalent:
-// swallowing this unconditionally is exactly what let a force-close caller
-// double-sell an already-filled position).
+// (e.g. cancelAnyRestingLimitSell ahead of a force-close). See
+// cancelOrderWithFillRecheck's own comment (BrokerExecutor.ts) for why
+// untracking isn't unconditional.
 export async function cancelOrderOnPrism(orderId: string): Promise<void> {
-    let cancelError: unknown;
-    try {
-        await Prism.getInstance().cancelOrder(orderId);
-    } catch (e) {
-        cancelError = e;
-        Log.log(`[order] cancelOrderOnPrism: cancel failed for ${orderId} - re-checking status:`, e);
-    }
-    const { status } = await Prism.getInstance().getOrderStatus(orderId);
-    if (status === 'COMPLETE') {
-        Log.log(`[order] cancelOrderOnPrism: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
-        throw new OrderAlreadyFilledError(orderId);
-    }
-    if (cancelError) throw cancelError;
-    untrackPendingPrismLimitOrder(orderId);
+    const prism = Prism.getInstance();
+    await cancelOrderWithFillRecheck({
+        orderId,
+        label: 'cancelOrderOnPrism',
+        cancel: () => prism.cancelOrder(orderId),
+        isFilled: async () => (await prism.getOrderStatus(orderId)).status === 'COMPLETE',
+        untrack: () => untrackPendingPrismLimitOrder(orderId),
+    });
 }
 
 export async function getFillPriceOnPrism(orderId: string): Promise<number> {

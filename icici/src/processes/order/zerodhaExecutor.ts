@@ -11,7 +11,7 @@ import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingLimitOrder, untrackPendingLimitOrder } from './pendingLimitOrders';
-import { BuyRequest, OrderAlreadyFilledError } from './BrokerExecutor';
+import { BuyRequest, cancelOrderWithFillRecheck } from './BrokerExecutor';
 
 // Zerodha is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -514,38 +514,28 @@ export async function placeLimitSellBareOnZerodha(userId: string, tradingSymbol:
 //
 // Re-checks status before untracking (mirrors the same addition in
 // antExecutor.cancelOrderOnAnt/prismExecutor.cancelOrderOnPrism/
-// breezeExecutor.cancelOrderOnBreeze) - the order can genuinely fill in the
-// gap between our last poll and this cancel call, or the broker can ack the
-// cancel even though it just filled. Untracking unconditionally in that case
-// would silently drop the fill (pollPendingLimitOrders would never see it
-// again to call bookkeeping.recordFill). On a confirmed fill, throws
-// OrderAlreadyFilledError (not a plain Error) rather than returning normally,
-// REGARDLESS of whether the cancel call itself succeeded or failed - so a
-// caller like cancelAnyRestingLimitSell can tell "already closed, don't
-// force-close again" apart from a genuine cancel failure that still leaves
-// the position open (confirmed via code review of breezeExecutor.ts's
-// equivalent: swallowing this unconditionally is exactly what let a
-// force-close caller double-sell an already-filled position).
+// breezeExecutor.cancelOrderOnBreeze, all via the shared
+// cancelOrderWithFillRecheck - see its own comment in BrokerExecutor.ts) -
+// the order can genuinely fill in the gap between our last poll and this
+// cancel call, or the broker can ack the cancel even though it just filled.
+// Untracking unconditionally in that case would silently drop the fill
+// (pollPendingLimitOrders would never see it again to call
+// bookkeeping.recordFill).
 export async function cancelOrderOnZerodha(orderId: string): Promise<void> {
     const zerodha = Zerodha.getInstance();
     if (!(await zerodha.hasValidSession())) {
         throw new Error('Zerodha session not active - complete /kite/login first.');
     }
-    let cancelError: unknown;
-    try {
-        await zerodha.cancelOrder(orderId);
-    } catch (e) {
-        cancelError = e;
-        Log.log(`[order] cancelOrderOnZerodha: cancel failed for ${orderId} - re-checking status:`, e);
-    }
-    const history = await zerodha.getKiteConnect().getOrderHistory(orderId);
-    const latest = history[history.length - 1];
-    if (latest?.status === 'COMPLETE') {
-        Log.log(`[order] cancelOrderOnZerodha: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
-        throw new OrderAlreadyFilledError(orderId);
-    }
-    if (cancelError) throw cancelError;
-    untrackPendingLimitOrder(orderId);
+    await cancelOrderWithFillRecheck({
+        orderId,
+        label: 'cancelOrderOnZerodha',
+        cancel: () => zerodha.cancelOrder(orderId),
+        isFilled: async () => {
+            const history = await zerodha.getKiteConnect().getOrderHistory(orderId);
+            return history[history.length - 1]?.status === 'COMPLETE';
+        },
+        untrack: () => untrackPendingLimitOrder(orderId),
+    });
 }
 
 // Zerodha-side premium-range strike lookup (mirrors Prism.getContractByPriceRange's

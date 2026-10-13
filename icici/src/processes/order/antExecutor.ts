@@ -1,6 +1,6 @@
 import Log from '../../util/Log';
 import ANT from '../../ant/ANT';
-import { OrderAlreadyFilledError } from './BrokerExecutor';
+import { cancelOrderWithFillRecheck } from './BrokerExecutor';
 import { roundToTick } from '../../zerodha/Zerodha';
 import AntOrderNotifyStream from '../../ant/AntOrderNotifyStream';
 import AntContractMaster from '../../ant/AntContractMaster';
@@ -386,34 +386,17 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
 // independently discover the same order CANCELLED and fire the
 // cancelled-listener chain, re-placing a brand new resting sell for the
 // quantity the caller just cancelled specifically to avoid double-selling
-// ahead of its own force-close.
-//
-// But untracking unconditionally reopens a different race: the order can
-// genuinely fill at the exchange in the gap between our last poll and this
-// cancel call (or the broker can ack the cancel even though it just filled).
-// Re-check status before untracking - if it actually completed, throw
-// OrderAlreadyFilledError (not a plain Error) rather than returning normally,
-// REGARDLESS of whether the cancel call itself succeeded or failed - so a
-// caller like cancelAnyRestingLimitSell can tell "already closed, don't
-// force-close again" apart from a genuine cancel failure that still leaves
-// the position open (confirmed via code review of breezeExecutor.ts's
-// equivalent: swallowing this unconditionally is exactly what let a
-// force-close caller double-sell an already-filled position).
+// ahead of its own force-close. See cancelOrderWithFillRecheck's own comment
+// (BrokerExecutor.ts) for why untracking isn't unconditional.
 export async function cancelOrderOnAnt(orderId: string): Promise<void> {
-    let cancelError: unknown;
-    try {
-        await ANT.getInstance().cancelOrder(orderId);
-    } catch (e) {
-        cancelError = e;
-        Log.log(`[order] cancelOrderOnAnt: cancel failed for ${orderId} - re-checking status:`, e);
-    }
-    const { status } = await ANT.getInstance().getOrderStatus(orderId);
-    if (status === 'COMPLETE') {
-        Log.log(`[order] cancelOrderOnAnt: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
-        throw new OrderAlreadyFilledError(orderId);
-    }
-    if (cancelError) throw cancelError;
-    untrackPendingAntLimitOrder(orderId);
+    const ant = ANT.getInstance();
+    await cancelOrderWithFillRecheck({
+        orderId,
+        label: 'cancelOrderOnAnt',
+        cancel: () => ant.cancelOrder(orderId),
+        isFilled: async () => (await ant.getOrderStatus(orderId)).status === 'COMPLETE',
+        untrack: () => untrackPendingAntLimitOrder(orderId),
+    });
 }
 
 export async function squareOffOnAnt(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {

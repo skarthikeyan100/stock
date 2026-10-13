@@ -1,4 +1,5 @@
 import { Trade } from '../../model/model';
+import Log from '../../util/Log';
 
 export type Exchange = 'NFO' | 'BFO' | 'NSE'; // NSE added for Breeze cash-equity orders
 
@@ -16,6 +17,40 @@ export class OrderAlreadyFilledError extends Error {
         super(`Order ${orderId} already filled`);
         this.name = 'OrderAlreadyFilledError';
     }
+}
+
+// Shared cancel-then-recheck implementation for every broker's cancelOrderOnX
+// (zerodhaExecutor/antExecutor/prismExecutor/breezeExecutor) - factored out
+// after the same fix (always recheck status regardless of cancel
+// success/failure; throw OrderAlreadyFilledError on a confirmed fill rather
+// than swallowing or returning normally) had to be applied to all four
+// independently, and two real regressions (cancel-failed+filled swallowed;
+// cancel-succeeded+filled not surfaced) slipped through on one file before
+// being caught by review and only then backported to the others. Each
+// broker still owns its own cancel/isFilled/untrack calls (the actual
+// broker API shapes genuinely differ), just not the control flow around them.
+export async function cancelOrderWithFillRecheck(params: {
+    orderId: string;
+    label: string; // e.g. 'cancelOrderOnAnt' - only used for log lines
+    cancel: () => Promise<void>;
+    isFilled: () => Promise<boolean>;
+    untrack: () => void;
+}): Promise<void> {
+    let cancelError: unknown;
+    try {
+        await params.cancel();
+    } catch (e) {
+        cancelError = e;
+        // Two args (not interpolated into the message) so Log.log's own
+        // Error handling (full stack, not just toString()) applies.
+        Log.log(`[order] ${params.label}: cancel failed for ${params.orderId} - re-checking status:`, e);
+    }
+    if (await params.isFilled()) {
+        Log.log(`[order] ${params.label}: ${params.orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
+        throw new OrderAlreadyFilledError(params.orderId);
+    }
+    if (cancelError) throw cancelError;
+    params.untrack();
 }
 
 // Broker-agnostic order-placement contract - see zerodhaExecutor.ts,

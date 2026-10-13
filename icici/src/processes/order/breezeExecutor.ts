@@ -5,7 +5,7 @@ import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
-import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange, OrderAlreadyFilledError } from './BrokerExecutor';
+import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange, cancelOrderWithFillRecheck } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder } from './breezePendingLimitOrders';
 import { roundToTick } from '../../zerodha/Zerodha';
@@ -303,43 +303,27 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
 // independently discover the same order cancelled/rejected and fire the
 // cancelled-listener chain, re-placing a brand new resting sell for the
 // quantity the caller just cancelled specifically to avoid double-selling
-// (e.g. cancelAnyRestingLimitSell ahead of a force-close).
-//
-// But untracking unconditionally reopens a different race: the order can
-// genuinely fill in the gap between our last poll and this cancel call (or
-// the broker can ack the cancel even though it just filled). Re-check status
-// before untracking - if it actually completed, throw rather than returning
-// normally, REGARDLESS of whether the cancel call itself succeeded or
-// failed: squareOffOnBreeze's own retry loop below calls this directly (not
-// through the generic executor.cancelOrder dispatch) and depends on
-// catching a throw here to run its own independent fill-check +
-// recordSellFill instead of looping into a fresh sell for a quantity that
-// already closed. Two versions of this fix got this wrong before landing
-// here (confirmed via code review): one swallowed the cancel-FAILED+filled
-// case, the other still returned normally on the cancel-SUCCEEDED+filled
-// case (the broker can ack the cancel even though it just filled - called
-// out above) - both are the exact same double-sell, just on different
-// branches. Thrown as OrderAlreadyFilledError specifically (not the raw
-// cancelError) so the generic executor.cancelOrder caller
-// (cancelAnyRestingLimitSell) can tell "already closed, don't force-close
-// again" apart from a genuine cancel failure that still leaves the position
-// open and in need of a force-close.
+// (e.g. cancelAnyRestingLimitSell ahead of a force-close). See
+// cancelOrderWithFillRecheck's own comment (BrokerExecutor.ts) for why
+// untracking isn't unconditional, and why a confirmed fill always throws
+// regardless of whether the cancel call itself succeeded or failed -
+// squareOffOnBreeze's own retry loop below calls this directly (not through
+// the generic executor.cancelOrder dispatch) and depends on that throw to
+// run its own independent fill-check + recordSellFill instead of looping
+// into a fresh sell for a quantity that already closed.
 export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
-    let cancelError: unknown;
-    try {
-        await Breeze.getInstance().cancelOrder('NFO', orderId);
-    } catch (e) {
-        cancelError = e;
-        Log.log(`[order] cancelOrderOnBreeze: cancel failed for ${orderId} - re-checking status:`, e);
-    }
-    const result = await Breeze.getInstance().getOrderDetail('NFO', orderId);
-    const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
-    if (record && Number(record.average_price) > 0) {
-        Log.log(`[order] cancelOrderOnBreeze: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
-        throw new OrderAlreadyFilledError(orderId);
-    }
-    if (cancelError) throw cancelError;
-    untrackPendingBreezeLimitOrder(orderId);
+    const breeze = Breeze.getInstance();
+    await cancelOrderWithFillRecheck({
+        orderId,
+        label: 'cancelOrderOnBreeze',
+        cancel: () => breeze.cancelOrder('NFO', orderId),
+        isFilled: async () => {
+            const result = await breeze.getOrderDetail('NFO', orderId);
+            const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
+            return !!record && Number(record.average_price) > 0;
+        },
+        untrack: () => untrackPendingBreezeLimitOrder(orderId),
+    });
 }
 
 // Generic BrokerExecutor.buy() path: instrumentId is a Breeze FnoRecord.token
