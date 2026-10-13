@@ -296,14 +296,21 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                         // call (orderProcess.ts) or the regular 15s
                         // pollPendingBreezeLimitOrders tick independently
                         // reconciles this same already-tracked order's fill.
+                        let lateFillPrice: number;
                         try {
-                            const lateFillPrice = await Breeze.getInstance().getFillPrice('NFO', orderId, 3, 2000);
-                            Log.log(`[order] Square-off order ${orderId} confirmed already filled at ${lateFillPrice} during cancel - using it, not retrying`);
-                            return await recordSellFill(orderId, lateFillPrice);
+                            lateFillPrice = await Breeze.getInstance().getFillPrice('NFO', orderId, 3, 2000);
                         } catch (fillPriceErr) {
+                            // Deliberately NOT wrapping the recordSellFill call
+                            // below in this same catch (confirmed via code
+                            // review) - a bookkeeping/Mongo failure there is a
+                            // different problem than a price-fetch failure,
+                            // and would otherwise get misreported under this
+                            // "fetching its price failed" message.
                             Log.log(`[order] Square-off order ${orderId} confirmed already filled but fetching its price failed after retries - not retrying a fresh sell (would double-sell); leaving for the next reconcile cycle:`, fillPriceErr);
                             throw fillPriceErr;
                         }
+                        Log.log(`[order] Square-off order ${orderId} confirmed already filled at ${lateFillPrice} during cancel - using it, not retrying`);
+                        return await recordSellFill(orderId, lateFillPrice);
                     }
                     // A cancel can legitimately fail for an unrelated reason
                     // too - Breeze gives no way to tell "already filled" apart
