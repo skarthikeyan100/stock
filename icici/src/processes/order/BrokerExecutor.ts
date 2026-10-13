@@ -46,16 +46,23 @@ export async function cancelOrderWithFillRecheck(params: {
         Log.log(`[order] ${params.label}: cancel failed for ${params.orderId} - re-checking status:`, e);
     }
     // isFilled() is itself a real network call and can fail independently of
-    // the cancel above - if it does, don't let that failure silently replace
-    // cancelError (confirmed via code review: the original version let an
-    // isFilled() throw propagate directly, masking why the cancel itself
-    // actually failed). Treat an unconfirmable status as "not filled" rather
-    // than risk a false OrderAlreadyFilledError with no positive evidence.
-    let filled = false;
+    // the cancel above. Two things must both be true to reach untrack() at
+    // the bottom: the recheck must have POSITIVELY confirmed "not filled"
+    // (not merely failed to confirm either way), and the cancel must not
+    // have failed either. If isFilled() throws, rethrow immediately instead
+    // of falling through - confirmed via code review (two rounds): an
+    // earlier version defaulted the unconfirmed case to "not filled" and let
+    // it reach untrack() unconditionally, silently dropping tracking of an
+    // order whose actual status was never established; before that, an even
+    // earlier version let the isFilled() throw silently replace cancelError.
+    // Prioritize cancelError when both calls failed - it's the more specific,
+    // more actionable of the two for diagnosing a live incident.
+    let filled: boolean;
     try {
         filled = await params.isFilled();
     } catch (e) {
-        Log.log(`[order] ${params.label}: status recheck failed for ${params.orderId} (treating as not confirmed filled):`, e);
+        Log.log(`[order] ${params.label}: status recheck failed for ${params.orderId} - leaving tracked, status unconfirmed:`, e);
+        throw cancelError ?? e;
     }
     if (filled) {
         Log.log(`[order] ${params.label}: ${params.orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
