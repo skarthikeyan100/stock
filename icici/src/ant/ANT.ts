@@ -58,6 +58,22 @@ class ANT {
     // resting order) is still fetched fresh.
     private static readonly QUOTE_CACHE_TTL_MS = 5000;
     private quoteCache = new Map<string, { price: number; fetchedAt: number }>();
+    private lastQuoteCacheSweepAt = 0;
+    // ANT is a long-lived singleton (one process runs all day via `npm run
+    // processes`), and distinct (exchange,token) pairs get queried as
+    // strategies roll through different strikes/expiries over the day - so
+    // entries that are overwritten only on re-query of the SAME key would
+    // otherwise accumulate forever. Sweep out anything past its TTL every
+    // time it's been a while since the last sweep, rather than adding a
+    // separate timer.
+    private sweepQuoteCache(): void {
+        const now = Date.now();
+        if (now - this.lastQuoteCacheSweepAt < ANT.QUOTE_CACHE_TTL_MS) return;
+        this.lastQuoteCacheSweepAt = now;
+        for (const [key, entry] of this.quoteCache) {
+            if (now - entry.fetchedAt >= ANT.QUOTE_CACHE_TTL_MS) this.quoteCache.delete(key);
+        }
+    }
 
     private constructor() {
         this.loadSession();
@@ -346,6 +362,7 @@ class ANT {
     // getMarketableZerodhaPrice's own now-removed cache for exactly this
     // reason before this method grew its own cache.
     async getQuote(exchange: string, token: string, opts?: { skipCache?: boolean }): Promise<number> {
+        this.sweepQuoteCache();
         const key = `${exchange}:${token}`;
         if (!opts?.skipCache) {
             const cached = this.quoteCache.get(key);

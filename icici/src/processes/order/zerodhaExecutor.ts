@@ -347,10 +347,10 @@ export async function buyResolvedOnZerodha(request: BuyRequest): Promise<Trade> 
     // Zerodha-broker users.
     const exchange = request.exchange as 'NFO' | 'BFO';
     Log.log(`[order] Buying ${request.tradingSymbol} qty=${request.quantity} for ${request.userId} (BrokerExecutor.buy)`);
-    // getMarketableZerodhaPrice's TTL cache means a chunked buy (buyChunked
-    // calling this once per chunk, same request.instrumentId every time)
-    // naturally reuses one ANT quote fetch across the whole chunk batch
-    // instead of one per chunk.
+    // ANT.getQuote's own TTL cache means a chunked buy (buyChunked calling
+    // this once per chunk, same request.instrumentId every time) naturally
+    // reuses one ANT quote fetch across the whole chunk batch instead of one
+    // per chunk.
     const buyPrice = await getMarketableZerodhaPrice(request.instrumentId, exchange, 'BUY');
     // Shared by the full-fill path below and the partial-fill-on-drift-cancel
     // path in the catch block - both build an identical Trade shape, differing

@@ -300,8 +300,8 @@ class Zerodha {
 
             // Skip the drift check on the very first attempt: the resting
             // limit price (buyPrice) was itself computed from a quote that
-            // can already be up to 10s stale (getMarketableZerodhaPrice's
-            // cache), so comparing it against a freshly-fetched LTP
+            // can already be up to 5s stale (ANT.getQuote's own cache - see
+            // its comment), so comparing it against a freshly-fetched LTP
             // immediately after placement can flag "drift" that's really
             // just cache staleness at placement time, not real movement
             // since the order started resting - confirmed via code review.
