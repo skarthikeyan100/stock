@@ -44,6 +44,21 @@ class ANT {
         this.lastOhlcCallAt = Date.now();
     }
 
+    // getQuote cache, keyed by `${exchange}:${token}`. Confirmed live
+    // 2026-10-13: a single BulkPcrStrategy entry attempt calls getQuote
+    // twice for the SAME contract ~1-2s apart (once in
+    // antExecutor.estimateOptionPrice for sizing, once again in
+    // antExecutor.enterPosition to price the limit order) - exactly the
+    // "1-2 rapid sequential calls" pattern that trips AliceBlue's OHLC 429
+    // (see OHLC_MIN_GAP_MS's comment above). throttleOhlc's 1200ms min-gap
+    // only spaces those two calls out, it doesn't stop them from both firing -
+    // caching the result for a few seconds removes the redundant second call
+    // entirely instead of just surviving its rate-limit consequences. TTL is
+    // short enough that a price several seconds later (e.g. a retried/
+    // resting order) is still fetched fresh.
+    private static readonly QUOTE_CACHE_TTL_MS = 5000;
+    private quoteCache = new Map<string, { price: number; fetchedAt: number }>();
+
     private constructor() {
         this.loadSession();
     }
@@ -321,14 +336,30 @@ class ANT {
     // Live LTP for a specific instrument - needed because ANT rejects MARKET
     // orders for Bracket Orders (confirmed live: "Market orders are not
     // allowed"), so a BO entry needs a LIMIT price computed from the current
-    // quote.
-    async getQuote(exchange: string, token: string): Promise<number> {
+    // quote. Short-TTL cached by default (see quoteCache's comment) so
+    // repeated calls for the same contract within one entry attempt collapse
+    // to one HTTP call instead of tripping AliceBlue's OHLC rate limit.
+    //
+    // skipCache=true forces a fresh fetch - needed by any caller that must
+    // detect real price movement rather than reuse a recent snapshot, e.g.
+    // zerodhaExecutor.ts's drift-cancel poll, which deliberately bypassed
+    // getMarketableZerodhaPrice's own now-removed cache for exactly this
+    // reason before this method grew its own cache.
+    async getQuote(exchange: string, token: string, opts?: { skipCache?: boolean }): Promise<number> {
+        const key = `${exchange}:${token}`;
+        if (!opts?.skipCache) {
+            const cached = this.quoteCache.get(key);
+            if (cached && Date.now() - cached.fetchedAt < ANT.QUOTE_CACHE_TTL_MS) return cached.price;
+        }
+
         const resp = await this.postOhlc([{ exchange, token }]);
         const ltp = resp.data?.result?.[0]?.ltp;
         if (ltp == null) {
             throw new Error(`ANT getQuote failed for ${exchange}|${token}: ${JSON.stringify(resp.data)}`);
         }
-        return Number(ltp);
+        const price = Number(ltp);
+        this.quoteCache.set(key, { price, fetchedAt: Date.now() });
+        return price;
     }
 
     // Batched sibling of getQuote - same endpoint, but sends every requested

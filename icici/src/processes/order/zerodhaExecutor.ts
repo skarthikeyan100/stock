@@ -39,27 +39,16 @@ import { BuyRequest } from './BrokerExecutor';
 // doesn't grant this), so ANT.getQuote is the pricing reference instead -
 // the same "confirmed live" primitive ANT's own bracket-order entries
 // already use to price their marketable limit (see ANT.ts's getQuote
-// comment). A short TTL cache means a CHUNKED order's several calls for the
-// SAME contract (all placed within a couple of seconds of each other, see
-// chunkedOrder.ts) reuse one fetch instead of hitting AliceBlue's
-// rate-limited OHLC endpoint (429 after 1-2 rapid sequential calls,
-// confirmed live elsewhere in this codebase) once per chunk.
-const REFERENCE_PRICE_TTL_MS = 10_000;
-const referencePriceCache = new Map<string, { price: number; fetchedAt: number }>();
-
+// comment). ANT.getQuote itself short-TTL-caches by exchange+token now (see
+// its own comment), so a CHUNKED order's several calls for the SAME contract
+// already collapse to one HTTP call there - no separate cache needed here.
 async function getMarketableZerodhaPrice(antToken: string, exchange: 'NFO' | 'BFO', direction: 'BUY' | 'SELL'): Promise<number> {
-    const key = `${antToken}:${direction}`;
-    const cached = referencePriceCache.get(key);
-    if (cached && Date.now() - cached.fetchedAt < REFERENCE_PRICE_TTL_MS) return cached.price;
-
     const ltp = await ANT.getInstance().getQuote(exchange, antToken);
     // 1% buffer beyond LTP - mirrors antExecutor.ts's enterPosition BO pricing
     // convention exactly (same rationale: aggressive enough to fill
     // immediately, not a resting order waiting for a specific price).
     const buffered = direction === 'BUY' ? ltp * 1.01 : ltp * 0.99;
-    const price = roundToTick(buffered);
-    referencePriceCache.set(key, { price, fetchedAt: Date.now() });
-    return price;
+    return roundToTick(buffered);
 }
 
 // Shared by every entry path (index-ATM and manual/strike/contract): computes
@@ -392,9 +381,11 @@ export async function buyResolvedOnZerodha(request: BuyRequest): Promise<Trade> 
                 ? {
                       limitPrice: buyPrice,
                       driftPoints: request.driftCancelPoints,
-                      // Bypass getMarketableZerodhaPrice's 10s cache deliberately -
-                      // drift check needs a fresh LTP every poll, not a stale one.
-                      getLtp: () => ANT.getInstance().getQuote(exchange, request.instrumentId),
+                      // skipCache: true - drift check needs a fresh LTP every
+                      // poll, not ANT.getQuote's own cached snapshot (see its
+                      // comment); otherwise this could compare the resting
+                      // limit price against the exact same quote that set it.
+                      getLtp: () => ANT.getInstance().getQuote(exchange, request.instrumentId, { skipCache: true }),
                   }
                 : undefined
         );
