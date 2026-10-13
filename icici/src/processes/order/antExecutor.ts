@@ -75,13 +75,22 @@ export async function enterPosition(
             stopLossPoints,
         }));
     } else {
-        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order`);
+        // Confirmed live 2026-10-12: AliceBlue now rejects MARKET orders on
+        // this plain (non-bracket) regular-order path too, with the same
+        // "EC965 Market orders are not allowed" the bracket branch above
+        // already worked around - not just a bracket-specific restriction.
+        // Same fix: a marketable LIMIT 1% above LTP, fills immediately like
+        // a market order would from the caller's point of view.
+        const ltp = await ant.getQuote(exchange, instrumentId);
+        const limitPrice = roundToTick(ltp * 1.01);
+        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order (ltp=${ltp} limit=${limitPrice})`);
         ({ orderNo } = await ant.placeOrder({
             exchange,
             instrumentId,
             tradingSymbol,
             quantity,
             transactionType: 'BUY',
+            price: limitPrice,
         }));
     }
 
@@ -394,7 +403,10 @@ export async function cancelOrderOnAnt(orderId: string): Promise<void> {
         orderId,
         label: 'cancelOrderOnAnt',
         cancel: () => ant.cancelOrder(orderId),
-        isFilled: async () => (await ant.getOrderStatus(orderId)).status === 'COMPLETE',
+        isFilled: async () => {
+            const result = await ant.getOrderStatus(orderId);
+            return { filledQuantity: result.filledQuantity ?? 0, terminal: result.status !== 'PENDING' };
+        },
         untrack: () => untrackPendingAntLimitOrder(orderId),
     });
 }
@@ -427,14 +439,23 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
             Log.log(`[order] Square-off ${tsym} qty=${quantity} for ${userId} via ANT exitBracketOrder (${existing.antOrderNo}, ${orderComplexity})`);
             await ant.exitBracketOrder(existing.antOrderNo, orderComplexity);
         } else {
-            Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId} via ANT regular order`);
+            // Same EC965 "Market orders are not allowed" fix as enterPosition's
+            // regular-order BUY branch above - confirmed live 2026-10-12 that
+            // AliceBlue rejects a blind MARKET order here too. A marketable
+            // LIMIT 1% BELOW LTP (selling, so the marketable direction is down,
+            // not up like the BUY side) fills immediately like a market sell
+            // would, but with a real price floor instead of none.
             const instrumentId = existing?.token ?? '';
+            const ltp = await ant.getQuote(exchange, instrumentId);
+            const limitPrice = roundToTick(ltp * 0.99);
+            Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId} via ANT regular order (ltp=${ltp} limit=${limitPrice})`);
             const { orderNo } = await ant.placeOrder({
                 exchange,
                 instrumentId,
                 tradingSymbol: tsym,
                 quantity,
                 transactionType: 'SELL',
+                price: limitPrice,
             });
             squareOffOrderNo = orderNo;
         }

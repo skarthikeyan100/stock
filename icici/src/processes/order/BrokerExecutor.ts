@@ -12,10 +12,24 @@ export type Exchange = 'NFO' | 'BFO' | 'NSE'; // NSE added for Breeze cash-equit
 // which must skip a subsequent force-close squareOff for an already-filled
 // position instead of double-selling it - can tell the two apart without
 // string-matching an error message.
+// filledQuantity is the actual confirmed-filled quantity as of the status
+// recheck - NOT necessarily the order's full original quantity. A resting
+// sell/buy can partially fill before the remainder is cancelled (Zerodha
+// reports this as a 'CANCELLED' history record with a nonzero
+// filled_quantity; AliceBlue/Breeze equivalently via filledQuantity/
+// quantity-pending-cancelled), and a caller that assumes "already filled"
+// always means "the whole order" will silently either double-sell the
+// genuinely-still-open remainder or drop the real partial fill from
+// bookkeeping entirely - see gaps.md's "Partial-fill accounting" entry for
+// the full incident history. Every caller of this error MUST use
+// filledQuantity, never the order's own requested quantity, to decide how
+// much is actually closed.
 export class OrderAlreadyFilledError extends Error {
-    constructor(orderId: string) {
-        super(`Order ${orderId} already filled`);
+    readonly filledQuantity: number;
+    constructor(orderId: string, filledQuantity: number) {
+        super(`Order ${orderId} already filled (qty=${filledQuantity})`);
         this.name = 'OrderAlreadyFilledError';
+        this.filledQuantity = filledQuantity;
     }
 }
 
@@ -33,7 +47,27 @@ export async function cancelOrderWithFillRecheck(params: {
     orderId: string;
     label: string; // e.g. 'cancelOrderOnAnt' - only used for log lines
     cancel: () => Promise<void>;
-    isFilled: () => Promise<boolean>;
+    // Actual confirmed-filled quantity as of the recheck (0 = not filled at
+    // all) - NOT a boolean. A partial fill (some quantity filled, the rest
+    // genuinely cancelled) must return that partial number, not collapse it
+    // to true/false - see OrderAlreadyFilledError's own comment for why.
+    //
+    // terminal: whether the order has reached a FINAL state at the broker
+    // (COMPLETE, or CANCELLED/REJECTED with nothing still resting) as of
+    // this same recheck - i.e. no further fills are possible without a new
+    // order. This is load-bearing specifically when cancel() itself FAILED
+    // (see below): a cancel() call failing does NOT by itself mean the
+    // order reached a terminal state - it can just as easily mean the
+    // cancel API call failed for an unrelated/transient reason (network,
+    // rate-limit, auth) while the order is still genuinely resting at the
+    // broker, able to fill further after this function returns. Confirmed
+    // via code review: an earlier version treated ANY confirmed partial
+    // fill (filledQuantity > 0) as proof the unfilled remainder was gone,
+    // regardless of whether cancel() actually succeeded - which let a
+    // caller (e.g. squareOffOnBreeze) place a brand-new order for that same
+    // "remainder" while the ORIGINAL order was still live for it too,
+    // risking a double-sell if both eventually fill.
+    isFilled: () => Promise<{ filledQuantity: number; terminal: boolean }>;
     untrack: () => void;
 }): Promise<void> {
     let cancelFailed = false;
@@ -59,16 +93,28 @@ export async function cancelOrderWithFillRecheck(params: {
     // earlier version let the isFilled() throw silently replace cancelError.
     // Prioritize cancelError when both calls failed - it's the more specific,
     // more actionable of the two for diagnosing a live incident.
-    let filled: boolean;
+    let filledQuantity: number;
+    let terminal: boolean;
     try {
-        filled = await params.isFilled();
+        ({ filledQuantity, terminal } = await params.isFilled());
     } catch (e) {
         Log.log(`[order] ${params.label}: status recheck failed for ${params.orderId} - leaving tracked, status unconfirmed:`, e);
         throw cancelFailed ? cancelError : e;
     }
-    if (filled) {
-        Log.log(`[order] ${params.label}: ${params.orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
-        throw new OrderAlreadyFilledError(params.orderId);
+    // Ambiguous case: cancel() failed AND the recheck shows the order is
+    // still genuinely open (not terminal) - we cannot tell whether the
+    // unfilled remainder is gone or still resting live, so we must not let
+    // the caller treat this as resolved either way (not "safely closed" via
+    // OrderAlreadyFilledError, not "safely untracked"). Surface the original
+    // cancel failure and leave the order tracked so the next poll/attempt
+    // re-evaluates it, instead of guessing.
+    if (cancelFailed && !terminal) {
+        Log.log(`[order] ${params.label}: cancel failed for ${params.orderId} and it's still open at the broker (filled so far: ${filledQuantity}) - leaving tracked, NOT treating the remainder as resolved`);
+        throw cancelError;
+    }
+    if (filledQuantity > 0) {
+        Log.log(`[order] ${params.label}: ${params.orderId} filled (qty=${filledQuantity}) in the cancel race window - leaving tracked so the next poll records the fill`);
+        throw new OrderAlreadyFilledError(params.orderId, filledQuantity);
     }
     if (cancelFailed) throw cancelError;
     params.untrack();

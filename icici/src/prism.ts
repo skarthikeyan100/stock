@@ -755,13 +755,23 @@ export default class Prism {
     // unconfirmed-live fallback chain getOrderFillPrice already needed.
     // `orders`, when supplied, is a pre-fetched getOrderBook() snapshot to
     // match against instead of fetching again - see getOrderBook's comment.
-    getOrderStatus = async (orderNo: string, orders?: any[]): Promise<{ status: string; fillPrice?: number }> => {
+    //
+    // filledQuantity: Noren/Shoonya's own order-book record carries
+    // `fillshares` as the cumulative filled quantity separately from
+    // `status` - the same field monitor.ts's `isCompleted` check and
+    // bookkeeping.ts already trust elsewhere in this codebase (not newly
+    // discovered here, just not previously wired into getOrderStatus). This
+    // means a partial-fill-then-cancel record (status CANCELED/CANCELLED
+    // with nonzero fillshares) is no longer indistinguishable from a true
+    // non-fill - see gaps.md's "Partial-fill accounting" entry.
+    getOrderStatus = async (orderNo: string, orders?: any[]): Promise<{ status: string; fillPrice?: number; filledQuantity?: number }> => {
         const list = orders ?? (await this.getOrderBook());
         const match = list.find((o) => o.norenordno === orderNo);
-        if (!match) return { status: 'PENDING' };
+        if (!match) return { status: 'PENDING', filledQuantity: 0 };
+        const filledQuantity = Number(match.fillshares ?? 0);
         if (match.status === 'COMPLETE') {
             const fillPrice = match.avgprc ?? match.flprc ?? match.avgPrice;
-            return { status: 'COMPLETE', fillPrice: fillPrice ? Number(fillPrice) : undefined };
+            return { status: 'COMPLETE', fillPrice: fillPrice ? Number(fillPrice) : undefined, filledQuantity };
         }
         // Accept both spellings seen across Shoonya/Finvasia's own
         // documentation for a rejection ('REJECTED' per the official FAQ's
@@ -772,12 +782,12 @@ export default class Prism {
         // canonical string either way so callers never need their own
         // spelling table.
         if (match.status === 'REJECTED' || match.status === 'REJECT') {
-            return { status: 'REJECTED' };
+            return { status: 'REJECTED', filledQuantity };
         }
         if (match.status === 'CANCELED' || match.status === 'CANCELLED') {
-            return { status: 'CANCELLED' };
+            return { status: 'CANCELLED', filledQuantity };
         }
-        return { status: 'PENDING' };
+        return { status: 'PENDING', filledQuantity };
     }
 
     getContractByPriceRange = async( right: string): Promise<string> => {

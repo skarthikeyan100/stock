@@ -719,7 +719,16 @@ class ANT {
     // resting order once per interval tick rather than blocking until it
     // fills, mirroring Zerodha.getOrderHistory's role in pollPendingLimitOrders.
     // Same field/shape caveats as getFillPrice above.
-    async getOrderStatus(orderNo: string): Promise<{ status: string; fillPrice?: number }> {
+    //
+    // filledQuantity: confirmed live 2026-10-13 against a real order
+    // (brokerOrderId 26101300128081) that AliceBlue's history record carries
+    // filledQuantity/pendingQuantity/cancelledQuantity as separate fields
+    // from orderStatus - so a partial-fill-then-cancel comes back as a
+    // 'CANCELED'/'CANCELLED' record with a nonzero filledQuantity, not
+    // "not filled" (see gaps.md's "Partial-fill accounting" entry, now
+    // resolved for ANT). Returned alongside status rather than folded into
+    // the boolean callers used to derive from status alone.
+    async getOrderStatus(orderNo: string): Promise<{ status: string; fillPrice?: number; filledQuantity?: number }> {
         const resp = await axios.post(
             'https://a3.aliceblueonline.com/open-api/od/v1/orders/history',
             { brokerOrderId: orderNo },
@@ -729,11 +738,15 @@ class ANT {
         const completed = records.find((r) => r.orderStatus === 'COMPLETE');
         if (completed) {
             const fillPrice = completed.averageTradedPrice ?? completed.averagePrice ?? completed.avgPrice;
-            return { status: 'COMPLETE', fillPrice: fillPrice ? Number(fillPrice) : undefined };
+            return {
+                status: 'COMPLETE',
+                fillPrice: fillPrice ? Number(fillPrice) : undefined,
+                filledQuantity: Number(completed.filledQuantity ?? completed.quantity ?? 0),
+            };
         }
         const rejected = records.find((r) => ANT.isTerminalRejectOrCancel(r.orderStatus));
-        if (rejected) return { status: ANT.canonicalStatus(rejected.orderStatus) };
-        return { status: 'PENDING' };
+        if (rejected) return { status: ANT.canonicalStatus(rejected.orderStatus), filledQuantity: Number(rejected.filledQuantity ?? 0) };
+        return { status: 'PENDING', filledQuantity: 0 };
     }
 }
 

@@ -42,14 +42,17 @@ import { roundToTick } from '../../zerodha/Zerodha';
 // field-mapping is unverified as of writing (see BreezeOrderNotifyStream.ts's
 // header caveat) - safe to ship ahead of that confirmation specifically
 // because of this fallback.
-async function waitForBreezeFill(orderId: string, notifyTimeoutMs = 30000, restMaxAttempts = 12, restIntervalMs = 5000): Promise<number> {
+// cancelOnTimeout: forwarded to Breeze.getFillPrice's REST fallback - pass
+// false when the caller (squareOffOnBreeze) already cancels the order itself
+// right after this throws, to avoid a redundant double-cancel each retry.
+async function waitForBreezeFill(orderId: string, notifyTimeoutMs = 30000, restMaxAttempts = 12, restIntervalMs = 5000, cancelOnTimeout = true): Promise<number> {
     try {
         const price = await BreezeOrderNotifyStream.getInstance().waitForFill(orderId, notifyTimeoutMs);
         Log.log(`[order] Breeze order ${orderId} filled at ${price} via order-notify push`);
         return price;
     } catch (waitErr) {
         Log.log(`[order] waitForFill failed for Breeze order ${orderId} - falling back to REST fill check:`, waitErr);
-        const price = await Breeze.getInstance().getFillPrice('NFO', orderId, restMaxAttempts, restIntervalMs);
+        const price = await Breeze.getInstance().getFillPrice('NFO', orderId, restMaxAttempts, restIntervalMs, cancelOnTimeout);
         Log.log(`[order] REST fallback confirmed fill for Breeze order ${orderId} at ${price} (order-notify push was missed)`);
         return price;
     }
@@ -245,57 +248,98 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
         // OrderClient.chunkedSquareOff/chunkedBuyIndex now use a 15-minute
         // IPC timeout instead of the 90s default every other (single-order)
         // request type keeps - see OrderClient.ts's CHUNKED_ORDER_TIMEOUT_MS.
-        const recordSellFill = async (orderId: string, exitPrice: number): Promise<Trade> => {
+        // Records one confirmed fill (full or partial) and folds it into the
+        // running totals below - NOT necessarily the outer `quantity`
+        // parameter. A resting sell can genuinely partially fill before its
+        // remainder is cancelled (confirmed live field shape - see
+        // getBreezeOrderFillInfo's comment); recording the full requested
+        // quantity for a partial fill would silently book MORE as sold than
+        // actually happened, leaving a real residual position untracked and
+        // unclosable - see gaps.md's "Partial-fill accounting" entry. Each
+        // call here represents one broker fill event, same as a normal
+        // multi-chunk fill sequence.
+        const buildSellTrade = (orderId: string, exitPrice: number, filledQty: number): Trade => {
             const trade = new Trade();
             trade.tsym = tsym;
             trade.token = contract.token;
-            trade.quantity = quantity;
+            trade.quantity = filledQty;
             trade.price = exitPrice;
             trade.action = 'Sell';
             trade.status = 'COMPLETE';
             trade.user = userId;
             trade.broker = 'breeze';
             trade.brokerOrderId = orderId;
-            await bookkeeping.recordFill(trade);
             return trade;
+        };
+        const recordSellFill = async (orderId: string, exitPrice: number, filledQty: number): Promise<void> => {
+            await bookkeeping.recordFill(buildSellTrade(orderId, exitPrice, filledQty));
         };
 
         const maxAttempts = 4;
         let lastErr: unknown;
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        // remainingQty shrinks only on a BROKER-CONFIRMED partial fill (via
+        // OrderAlreadyFilledError.filledQuantity below) - every attempt
+        // places a fresh order for whatever's still genuinely unsold, so a
+        // multi-attempt partial sequence (e.g. 2 partial fills then a full
+        // fill of the remainder) is folded into one correct total instead of
+        // over/under-selling across attempts.
+        let remainingQty = quantity;
+        let stuck = false; // a resting order we could neither cancel nor confirm closed - stop, don't risk a double-order
+        let totalFilledQty = 0;
+        let totalFilledValue = 0;
+        let lastOrderId = '';
+        for (let attempt = 1; attempt <= maxAttempts && remainingQty > 0 && !stuck; attempt++) {
             const { bestBid } = await getOptionQuote(contract);
-            Log.log(`[order] Squaring off ${tsym} qty=${quantity} @ ${bestBid} (limit, attempt ${attempt}/${maxAttempts}) for ${userId} via Breeze`);
-            const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, bestBid);
+            Log.log(`[order] Squaring off ${tsym} qty=${remainingQty}/${quantity} @ ${bestBid} (limit, attempt ${attempt}/${maxAttempts}) for ${userId} via Breeze`);
+            const { orderId } = await placeLimitOptionOrder(contract, 'sell', remainingQty, bestBid);
+            lastOrderId = orderId;
             try {
-                const exitPrice = await waitForBreezeFill(orderId, 8000, 1, 7000);
-                return await recordSellFill(orderId, exitPrice);
+                const exitPrice = await waitForBreezeFill(orderId, 8000, 1, 7000, false);
+                await recordSellFill(orderId, exitPrice, remainingQty);
+                totalFilledQty += remainingQty;
+                totalFilledValue += remainingQty * exitPrice;
+                remainingQty = 0;
+                break;
             } catch (e) {
                 lastErr = e;
-                Log.log(`[order] Square-off attempt ${attempt}/${maxAttempts} for ${tsym} did not fill - cancelling stale order and re-pricing:`, e);
+                Log.log(`[order] Square-off attempt ${attempt}/${maxAttempts} for ${tsym} did not fully fill - cancelling stale order and re-pricing:`, e);
                 try {
                     await cancelOrderOnBreeze(orderId);
+                    // Cancel succeeded with no OrderAlreadyFilledError thrown -
+                    // cancelOrderWithFillRecheck's own recheck positively
+                    // confirmed 0 filled, so remainingQty is unchanged and the
+                    // next attempt re-prices the SAME full remaining quantity.
                 } catch (cancelErr) {
                     if (cancelErr instanceof OrderAlreadyFilledError) {
                         // cancelOrderOnBreeze's own recheck already positively
-                        // confirmed this order filled (average_price > 0) -
-                        // it just doesn't carry the price itself. Retry
-                        // fetching it rather than giving up after one flaky
-                        // call: we already KNOW it's filled, so a getFillPrice
-                        // hiccup here must not fall through to placing a
-                        // fresh sell for an already-closed quantity (confirmed
-                        // via code review: the single-attempt, 0-retry fetch
-                        // below is appropriate ONLY for the "not actually
-                        // confirmed" case right below it, not this one).
+                        // confirmed this order filled - cancelErr.filledQuantity
+                        // is the real amount (may be LESS than remainingQty, a
+                        // genuine partial fill whose rest got cancelled). It
+                        // just doesn't carry the price itself. Retry fetching
+                        // it rather than giving up after one flaky call: we
+                        // already KNOW it's filled, so a getFillPrice hiccup
+                        // here must not fall through to placing a fresh sell
+                        // for a quantity that includes the already-sold part
+                        // (confirmed via code review: the single-attempt,
+                        // 0-retry fetch below is appropriate ONLY for the "not
+                        // actually confirmed" case right below it, not this one).
                         //
                         // If even the retries fail, don't fall through to the
                         // outer loop's next attempt either (that's still the
                         // same double-sell this whole branch exists to avoid)
                         // - surface the failure instead. bookkeeping.trades
-                        // stays (harmlessly) stale until either the next
-                        // force-close cycle's own cancelAnyRestingLimitSell
-                        // call (orderProcess.ts) or the regular 15s
-                        // pollPendingBreezeLimitOrders tick independently
-                        // reconciles this same already-tracked order's fill.
+                        // stays (harmlessly) stale until the next full
+                        // position reconcile (reconcileBreezePositions, run
+                        // at order-process startup and on a Breeze re-login)
+                        // picks it up - NOT pollPendingBreezeLimitOrders,
+                        // which never learns about this order in the first
+                        // place: placeLimitOptionOrder (used here) never
+                        // calls trackPendingBreezeLimitOrder, only
+                        // placeLimitBuyBareOnBreeze/placeLimitSellBareOnBreeze
+                        // do (confirmed via code review - an earlier version
+                        // of this comment wrongly claimed that poller as a
+                        // safety net for this specific order).
+                        const filledQty = cancelErr.filledQuantity;
                         let lateFillPrice: number;
                         try {
                             lateFillPrice = await Breeze.getInstance().getFillPrice('NFO', orderId, 3, 2000);
@@ -306,33 +350,130 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                             // different problem than a price-fetch failure,
                             // and would otherwise get misreported under this
                             // "fetching its price failed" message.
-                            Log.log(`[order] Square-off order ${orderId} confirmed already filled but fetching its price failed after retries - not retrying a fresh sell (would double-sell); leaving for the next reconcile cycle:`, fillPriceErr);
+                            Log.log(`[order] Square-off order ${orderId} confirmed already filled (qty=${filledQty}) but fetching its price failed after retries - not retrying a fresh sell (would double-sell); leaving for the next reconcile cycle:`, fillPriceErr);
                             throw fillPriceErr;
                         }
-                        Log.log(`[order] Square-off order ${orderId} confirmed already filled at ${lateFillPrice} during cancel - using it, not retrying`);
-                        return await recordSellFill(orderId, lateFillPrice);
+                        Log.log(`[order] Square-off order ${orderId} confirmed already filled qty=${filledQty} at ${lateFillPrice} during cancel - recording it${filledQty < remainingQty ? ' and retrying the genuine remainder' : ''}`);
+                        await recordSellFill(orderId, lateFillPrice, filledQty);
+                        totalFilledQty += filledQty;
+                        totalFilledValue += filledQty * lateFillPrice;
+                        remainingQty -= filledQty;
+                        continue;
                     }
                     // A cancel can legitimately fail for an unrelated reason
                     // too - Breeze gives no way to tell "already filled" apart
                     // from any other cancel failure in that case (unlike the
                     // branch above, cancelOrderOnBreeze's own recheck did NOT
-                    // confirm a fill here). Check for an actual fill before
-                    // looping into a fresh sell, or a late fill plus a new
-                    // order would sell the same position twice.
+                    // confirm a fill here). Check for an actual fill (and its
+                    // real quantity, not just its price) before looping into a
+                    // fresh sell, or a late fill plus a new order would sell
+                    // part of the same position twice.
                     try {
-                        const lateFillPrice = await Breeze.getInstance().getFillPrice('NFO', orderId, 1, 0);
-                        Log.log(`[order] Square-off order ${orderId} actually filled at ${lateFillPrice} just as cancel was attempted - using it, not retrying`);
-                        return await recordSellFill(orderId, lateFillPrice);
+                        const fillInfo = await getBreezeOrderFillInfo(orderId);
+                        if (!fillInfo) throw new Error('could not confirm order status');
+                        if (!fillInfo.terminal) {
+                            // Cancel failed AND this order is STILL genuinely
+                            // resting (pending_quantity > 0) - true whether it
+                            // has filled 0 or partially so far. We don't know
+                            // whether it'll fill further or eventually get
+                            // cancelled on its own. Placing a fresh order for
+                            // "the remainder" here (even when filledQuantity
+                            // is currently 0) would risk TWO live orders for
+                            // the same quantity (this one, still resting,
+                            // plus a new one) - a double-sell if both fill.
+                            // Confirmed via code review: an earlier version
+                            // only reached this branch when filledQuantity>0,
+                            // so a still-resting, zero-fill-so-far order fell
+                            // through to the catch below instead, which
+                            // treated it as "safe to place a fresh order" -
+                            // exactly the double-order risk this branch
+                            // exists to prevent. Record whatever's already
+                            // confirmed filled (real money, must not be
+                            // dropped) and stop placing new orders; surface
+                            // the stuck order for manual review instead of
+                            // guessing further.
+                            if (fillInfo.filledQuantity > 0) {
+                                await recordSellFill(orderId, fillInfo.avgPrice, fillInfo.filledQuantity);
+                                totalFilledQty += fillInfo.filledQuantity;
+                                totalFilledValue += fillInfo.filledQuantity * fillInfo.avgPrice;
+                                remainingQty -= fillInfo.filledQuantity;
+                            }
+                            lastErr = new Error(
+                                `order ${orderId} would not cancel and is still resting live at the broker (filled so far: ${fillInfo.filledQuantity}/${remainingQty + fillInfo.filledQuantity}) - stopping rather than risk a double-sell with a fresh order`
+                            );
+                            Log.log(`[order] Square-off for ${tsym}: ${(lastErr as Error).message}`);
+                            stuck = true;
+                            break;
+                        }
+                        if (fillInfo.filledQuantity <= 0) throw new Error('not filled');
+                        Log.log(`[order] Square-off order ${orderId} actually filled qty=${fillInfo.filledQuantity} at ${fillInfo.avgPrice} just as cancel was attempted - recording it${fillInfo.filledQuantity < remainingQty ? ' and retrying the genuine remainder' : ''}`);
+                        await recordSellFill(orderId, fillInfo.avgPrice, fillInfo.filledQuantity);
+                        totalFilledQty += fillInfo.filledQuantity;
+                        totalFilledValue += fillInfo.filledQuantity * fillInfo.avgPrice;
+                        remainingQty -= fillInfo.filledQuantity;
                     } catch {
                         Log.log(`[order] Failed to cancel stale square-off order ${orderId} (and it did not actually fill):`, cancelErr);
                     }
                 }
             }
         }
-        throw new Error(`Square-off for ${tsym} failed to fill after ${maxAttempts} re-priced attempts: ${lastErr instanceof Error ? lastErr.message : lastErr}`);
+        if (remainingQty > 0) {
+            throw Object.assign(
+                new Error(
+                    `Square-off for ${tsym} failed to fill after ${maxAttempts} re-priced attempts - sold ${totalFilledQty}/${quantity}, ${remainingQty} still open: ${lastErr instanceof Error ? lastErr.message : lastErr}`
+                ),
+                { filledQuantity: totalFilledQty, averagePrice: totalFilledQty > 0 ? totalFilledValue / totalFilledQty : 0 }
+            );
+        }
+        // Summary only - NOT re-recorded via bookkeeping.recordFill (every
+        // partial/full fill above was already recorded as it happened); this
+        // is purely the return value callers like squareOffChunked use to
+        // fold this call's total into their own running total.
+        return buildSellTrade(lastOrderId, totalFilledValue / totalFilledQty, totalFilledQty);
     } finally {
         bookkeeping.pendingSquareOffs.delete(pendingKey);
     }
+}
+
+// Breeze's own getOrderDetail record carries quantity/pending_quantity/
+// cancelled_quantity as separate fields from status (confirmed live
+// 2026-09-17 - see the raw sample in Breeze.getFillPrice's own comment), so
+// the actual filled amount is always quantity - pending - cancelled,
+// correct for a full fill (pending=cancelled=0), a genuine partial fill
+// still resting (pending>0), and a partial-fill-then-cancelled order
+// (cancelled>0) alike - unlike the old `average_price > 0` check (still
+// true for ANY nonzero fill, partial or full), this tells the two apart.
+// Shared by cancelOrderOnBreeze's isFilled below and squareOffOnBreeze's
+// own cancel-failed-but-filled fallback branch, which need the same
+// quantity+price pair together rather than isFilled's quantity-only view.
+// terminal = pending_quantity === 0, i.e. nothing is still resting at the
+// broker for this order - either the whole thing filled, or whatever didn't
+// fill was genuinely cancelled/rejected. false means the order (or some
+// part of it) is STILL LIVE and can fill further - callers must not treat
+// filledQuantity as "the rest is safely gone" in that case (see
+// cancelOrderWithFillRecheck's own terminal comment for why).
+async function getBreezeOrderFillInfo(orderId: string): Promise<{ filledQuantity: number; avgPrice: number; terminal: boolean } | undefined> {
+    const result = await Breeze.getInstance().getOrderDetail('NFO', orderId);
+    const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
+    if (!record) return undefined;
+    // An order REJECTED outright (never rested at all) was never seen live
+    // for this field combination, so don't trust quantity math alone to
+    // derive filledQuantity for it (confirmed via code review: a rejected
+    // order could plausibly report pending_quantity=0/cancelled_quantity=0
+    // just like a genuinely fully-filled one, which would compute
+    // filledQuantity as the FULL requested quantity - wrongly treating a
+    // rejection as a complete fill). average_price is the one field
+    // Breeze.getFillPrice already trusts as the fill signal - a rejection
+    // never populates it, so gate on that too, not quantity arithmetic
+    // alone.
+    if (record.status && /rejected/i.test(String(record.status))) {
+        return { filledQuantity: 0, avgPrice: 0, terminal: true };
+    }
+    const quantity = Number(record.quantity ?? 0);
+    const pending = Number(record.pending_quantity ?? 0);
+    const cancelled = Number(record.cancelled_quantity ?? 0);
+    const avgPrice = Number(record.average_price ?? 0);
+    return { filledQuantity: avgPrice > 0 ? Math.max(0, quantity - pending - cancelled) : 0, avgPrice, terminal: pending === 0 };
 }
 
 // Cancels and untracks - mirrors zerodhaExecutor.cancelOrderOnZerodha.
@@ -355,9 +496,8 @@ export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
         label: 'cancelOrderOnBreeze',
         cancel: () => breeze.cancelOrder('NFO', orderId),
         isFilled: async () => {
-            const result = await breeze.getOrderDetail('NFO', orderId);
-            const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
-            return !!record && Number(record.average_price) > 0;
+            const info = await getBreezeOrderFillInfo(orderId);
+            return { filledQuantity: info?.filledQuantity ?? 0, terminal: info?.terminal ?? false };
         },
         untrack: () => untrackPendingBreezeLimitOrder(orderId),
     });

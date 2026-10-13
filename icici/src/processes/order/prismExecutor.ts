@@ -289,7 +289,10 @@ export async function cancelOrderOnPrism(orderId: string): Promise<void> {
         orderId,
         label: 'cancelOrderOnPrism',
         cancel: () => prism.cancelOrder(orderId),
-        isFilled: async () => (await prism.getOrderStatus(orderId)).status === 'COMPLETE',
+        isFilled: async () => {
+            const result = await prism.getOrderStatus(orderId);
+            return { filledQuantity: result.filledQuantity ?? 0, terminal: result.status !== 'PENDING' };
+        },
         untrack: () => untrackPendingPrismLimitOrder(orderId),
     });
 }

@@ -530,9 +530,24 @@ export async function cancelOrderOnZerodha(orderId: string): Promise<void> {
         orderId,
         label: 'cancelOrderOnZerodha',
         cancel: () => zerodha.cancelOrder(orderId),
+        // filled_quantity reflects the broker's true cumulative filled amount
+        // regardless of the order's final status - correct for both a full
+        // COMPLETE fill AND a partial-fill-then-CANCELLED record (confirmed
+        // live elsewhere in this file - see Zerodha.getFillPrice's own
+        // driftCheck recheck, which already trusts this same field). Checking
+        // status === 'COMPLETE' alone (the old version) returned false for a
+        // genuine partial fill, since Kite reports that as 'CANCELLED' - see
+        // gaps.md's "Partial-fill accounting" entry. terminal mirrors
+        // Zerodha.getFillPrice's own terminal-status check - COMPLETE/
+        // CANCELLED/REJECTED are all final, anything else (OPEN etc.) means
+        // the order can still fill further.
         isFilled: async () => {
             const history = await zerodha.getKiteConnect().getOrderHistory(orderId);
-            return history[history.length - 1]?.status === 'COMPLETE';
+            const latest = history[history.length - 1];
+            return {
+                filledQuantity: Number(latest?.filled_quantity ?? 0),
+                terminal: latest?.status === 'COMPLETE' || latest?.status === 'CANCELLED' || latest?.status === 'REJECTED',
+            };
         },
         untrack: () => untrackPendingLimitOrder(orderId),
     });

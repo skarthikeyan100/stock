@@ -467,18 +467,65 @@ class Breeze {
     // {"order_id":"...","status":"Ordered","average_price":"0","action":"Sell",
     //  "quantity":"65","price":"143.5","expiry_date":"22-Sep-2026","right":"Call",
     //  "strike_price":23300,"pending_quantity":"65","cancelled_quantity":"0", ...}
-    async getFillPrice(exchangeCode: string, orderId: string, maxAttempts = 12, intervalMs = 5000): Promise<number> {
+    //
+    // Requires pending_quantity === 0 in addition to average_price > 0 -
+    // average_price alone also goes nonzero for a genuine PARTIAL fill
+    // (pending_quantity still > 0, the rest still resting), which the old
+    // `price > 0` check alone would have returned as if it were the whole
+    // order's fill price - every caller of getFillPrice assumes the quantity
+    // it asked for is what filled, so resolving early on a partial silently
+    // misrecords bookkeeping quantity (overstates a buy, or understates a
+    // sell's true remainder) - see gaps.md's "Partial-fill accounting" entry.
+    // A caller that specifically needs to recognize + record a genuine
+    // partial fill (e.g. cancelOrderOnBreeze's post-cancel recheck) uses
+    // breezeExecutor.ts's getBreezeOrderFillInfo instead, not this function.
+    // cancelOnTimeout defaults to true (every direct caller wants an
+    // unfilled/stuck order cleaned up automatically) - pass false when the
+    // caller already owns cancellation itself right after this throws (e.g.
+    // squareOffOnBreeze's retry loop, which immediately calls
+    // cancelOrderOnBreeze on any getFillPrice failure) to avoid a redundant
+    // double-cancel-and-recheck round trip and the confusing log sequence
+    // that produces.
+    async getFillPrice(exchangeCode: string, orderId: string, maxAttempts = 12, intervalMs = 5000, cancelOnTimeout = true): Promise<number> {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             const result = await this.getOrderDetail(exchangeCode, orderId);
             const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
             const price = Number(record?.average_price);
-            if (price > 0) {
+            if (price > 0 && Number(record?.pending_quantity ?? 0) === 0) {
                 return price;
             }
             if (record?.status && /rejected|cancelled/i.test(String(record.status))) {
                 throw new Error(`Breeze order ${orderId} ${record.status}`);
             }
             await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
+        // Give up waiting - but an order left resting at the broker after we
+        // stop watching it is an orphan, same risk Zerodha.getFillPrice's own
+        // timeout branch guards against. Best-effort - if this fails (already
+        // filled/cancelled in the interim), the timeout error below still
+        // surfaces either way.
+        if (cancelOnTimeout) {
+            try {
+                await this.cancelOrder(exchangeCode, orderId);
+                Log.log(`[Breeze] Cancelled unfilled/partially-filled order ${orderId} after fill-price timeout`);
+            } catch (e) {
+                // A cancel can fail specifically BECAUSE the order just fully
+                // filled in this exact race window (last poll saw it still
+                // open, then it completed before this cancel call landed) -
+                // confirmed via code review: unconditionally throwing "did
+                // not fill" afterward would silently drop a real, live,
+                // paid-for fill from bookkeeping (money spent, no tracked
+                // position, no target/SL) instead of surfacing it. One more
+                // check before giving up.
+                Log.log(`[Breeze] Failed to cancel order ${orderId} after fill-price timeout - re-checking status:`, e);
+                const recheck = await this.getOrderDetail(exchangeCode, orderId);
+                const recheckRecord = Array.isArray(recheck?.Success) ? recheck.Success[0] : recheck?.Success;
+                const recheckPrice = Number(recheckRecord?.average_price);
+                if (recheckPrice > 0 && Number(recheckRecord?.pending_quantity ?? 0) === 0) {
+                    Log.log(`[Breeze] Order ${orderId} actually filled fully at ${recheckPrice} during the timeout-cancel race - using it instead of discarding it`);
+                    return recheckPrice;
+                }
+            }
         }
         throw new Error(`Breeze order ${orderId} did not fill within timeout`);
     }

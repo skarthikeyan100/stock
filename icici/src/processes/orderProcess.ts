@@ -4,16 +4,18 @@
 console.log = console.error;
 
 // This host is dual-stack and Node's Happy-Eyeballs connection logic prefers
-// IPv6 when both are available, which bypasses Kite's IPv4-only order-
-// placement allowlist. dns.setDefaultResultOrder('ipv4first') looks like the
-// fix but does NOT actually change the connected family (confirmed live -
-// autoSelectFamily doesn't honor it); forcing IPv4 process-wide (via
-// NODE_OPTIONS) does work but broke Breeze, whose registered "static IP" is
-// apparently the IPv6 address, not IPv4 - see orchestrator.ts's note. So the
-// override is scoped to just Kite's hostname (see kiteDns.ts) - `order` is
-// the only process that calls api.kite.trade, so it's installed here only.
-import { installKiteIpv4Override } from './order/kiteDns';
-installKiteIpv4Override();
+// IPv6 when both are available, which bypasses Kite's AND AliceBlue/ANT's
+// IPv4-only order-placement allowlists. dns.setDefaultResultOrder('ipv4first')
+// looks like the fix but does NOT actually change the connected family
+// (confirmed live - autoSelectFamily doesn't honor it); forcing IPv4
+// process-wide (via NODE_OPTIONS) does work but broke Breeze, whose
+// registered "static IP" is apparently the IPv6 address, not IPv4 - see
+// orchestrator.ts's note. So the override is scoped to just the specific
+// hostnames that need it (see kiteDns.ts) - `order` is the only process that
+// calls api.kite.trade (Zerodha) AND the one that places/cancels/exits ANT
+// orders via a3.aliceblueonline.com, so it's installed here.
+import { installIpv4OnlyHostOverride } from './order/kiteDns';
+installIpv4OnlyHostOverride();
 
 import net from 'net';
 import fs from 'fs';
@@ -929,8 +931,15 @@ async function main() {
                 Log.log(`[order] cancelAnyRestingLimitSell: cancelled resting limit sell ${order.orderId} for ${tsym} (${userId}) ahead of a force-close`);
             } catch (e) {
                 if (e instanceof OrderAlreadyFilledError) {
-                    alreadyFilledQty += order.quantity;
-                    Log.log(`[order] cancelAnyRestingLimitSell: ${order.orderId} (${tsym}, ${userId}) already filled qty=${order.quantity} - excluding from force-close`);
+                    // e.filledQuantity is the broker-confirmed actual fill -
+                    // may be LESS than order.quantity (a genuine partial fill
+                    // whose remainder was cancelled, not filled). Using
+                    // order.quantity here would wrongly exclude that
+                    // still-open remainder from the force-close below,
+                    // leaving it unprotected - see gaps.md's "Partial-fill
+                    // accounting" entry.
+                    alreadyFilledQty += e.filledQuantity;
+                    Log.log(`[order] cancelAnyRestingLimitSell: ${order.orderId} (${tsym}, ${userId}) already filled qty=${e.filledQuantity}/${order.quantity} - excluding filled portion from force-close`);
                 } else {
                     Log.log(`[order] cancelAnyRestingLimitSell: cancel failed for ${order.orderId} (${tsym}, ${userId}) - proceeding with force-close anyway:`, e);
                 }

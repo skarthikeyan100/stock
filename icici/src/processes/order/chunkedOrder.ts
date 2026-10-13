@@ -111,6 +111,17 @@ export async function squareOffChunked(
             filledValue += trade.quantity * trade.price;
             Log.log(`[order] squareOffChunked: chunk ${i + 1}/${chunks.length} filled qty=${trade.quantity} @ ${trade.price} for ${userId}`);
         } catch (e: any) {
+            // Fold in any partial fill THIS chunk contributed before giving
+            // up (e.g. squareOffOnBreeze's own cancel-retry loop throws with
+            // filledQuantity/averagePrice when it sold part of the chunk but
+            // couldn't close the rest - see its own comment) - mirrors
+            // buyChunked's identical handling above, so the error message
+            // reports what's actually still open at the broker rather than
+            // understating it by this chunk's already-sold portion.
+            if (e?.filledQuantity > 0) {
+                filledQty += e.filledQuantity;
+                filledValue += e.filledQuantity * e.averagePrice;
+            }
             throw new Error(
                 `squareOffChunked: chunk ${i + 1}/${chunks.length} failed after selling ${filledQty}/${quantity} - ` +
                     `${quantity - filledQty} qty NOT sold. Manual review required. Underlying error: ${e?.message ?? e}`

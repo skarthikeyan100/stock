@@ -83,7 +83,21 @@ class BreezeOrderNotifyStream {
         }
 
         const status = data.orderStatus;
-        if (status === 'Executed' || status === 'Partially Executed') {
+        // Only 'Executed' (the whole order's quantity filled) resolves this
+        // wait - 'Partially Executed' must NOT, even if averageExecutedRate
+        // already carries a plausible price for the filled-so-far portion.
+        // waitForFill's only contract is "the full requested quantity filled
+        // at this price"; resolving early on a partial would make every
+        // caller (breezeExecutor.ts's waitForBreezeFill) record the FULL
+        // requested quantity at a partial fill's price - silently
+        // overstating a buy or understating a sell's genuine remainder, the
+        // same class of bug as gaps.md's "Partial-fill accounting" entry.
+        // A partial push just means keep waiting for the terminal one
+        // (Executed, or Rejected/Cancelled/Expired for whatever's left) -
+        // the caller's own cancel-then-recheck path (cancelOrderOnBreeze's
+        // getBreezeOrderFillInfo) is what correctly captures a partial fill
+        // when the remainder is eventually cancelled instead of completing.
+        if (status === 'Executed') {
             const fillPrice = Number(data.averageExecutedRate);
             // Confirmed live 2026-09-18: a real "Executed" push resolved with
             // averageExecutedRate=117705646 - the field name is right (matches
@@ -104,13 +118,14 @@ class BreezeOrderNotifyStream {
                 clearTimeout(pending.timer);
                 this.pending.delete(String(orderId));
                 pending.resolve(fillPrice);
-            } else if (status === 'Executed') {
+            } else {
                 Log.log(`[BreezeOrderNotifyStream] Executed push for order ${orderId} carried an implausible averageExecutedRate (${data.averageExecutedRate}) - rejecting to force the REST fallback instead of recording a wrong price.`);
                 clearTimeout(pending.timer);
                 this.pending.delete(String(orderId));
                 pending.reject(new Error(`Breeze order ${orderId} push carried an implausible fill price (${data.averageExecutedRate})`));
             }
-            // Partially Executed with no plausible rate yet - keep waiting for the next push.
+        } else if (status === 'Partially Executed') {
+            Log.log(`[BreezeOrderNotifyStream] Partially Executed push for order ${orderId} - not yet the full fill, waiting for a terminal push`);
         } else if (status === 'Rejected' || status === 'Cancelled' || status === 'Expired') {
             clearTimeout(pending.timer);
             this.pending.delete(String(orderId));
