@@ -2,6 +2,22 @@ import { Trade } from '../../model/model';
 
 export type Exchange = 'NFO' | 'BFO' | 'NSE'; // NSE added for Breeze cash-equity orders
 
+// Thrown by every broker's cancelOrderOnX (zerodhaExecutor.ts, antExecutor.ts,
+// prismExecutor.ts, breezeExecutor.ts) specifically when a post-cancel status
+// recheck confirms the order actually filled, regardless of whether the
+// broker's own cancel call succeeded or failed. A distinct type (not a plain
+// Error) so a caller that must react differently to "already filled" than to
+// a genuine cancel failure - e.g. orderProcess.ts's cancelAnyRestingLimitSell,
+// which must skip a subsequent force-close squareOff for an already-filled
+// position instead of double-selling it - can tell the two apart without
+// string-matching an error message.
+export class OrderAlreadyFilledError extends Error {
+    constructor(orderId: string) {
+        super(`Order ${orderId} already filled`);
+        this.name = 'OrderAlreadyFilledError';
+    }
+}
+
 // Broker-agnostic order-placement contract - see zerodhaExecutor.ts,
 // antExecutor.ts, prismExecutor.ts for the concrete implementations, and
 // getBrokerExecutor() (bookkeeping.ts) for how a user's configured broker
@@ -69,6 +85,13 @@ export interface BrokerExecutor {
     // (Zerodha, ANT, Breeze, Prism) does implement it as of this writing.
     squareOffLimit?(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: Exchange, limitPrice: number): Promise<{ orderId: string }>;
 
+    // Each broker's cancelOrderOnX implementation throws OrderAlreadyFilledError
+    // (not a plain Error) specifically when its post-cancel status recheck
+    // confirms the order actually filled, regardless of whether the broker's
+    // own cancel call itself succeeded or failed - callers that must not then
+    // also force-close the same quantity (e.g. cancelAnyRestingLimitSell)
+    // check for this type to tell "already closed, don't touch again" apart
+    // from a genuine cancel failure that still leaves the position open.
     cancelOrder(orderId: string): Promise<void>;
 
     getFillPrice(orderId: string): Promise<number>;

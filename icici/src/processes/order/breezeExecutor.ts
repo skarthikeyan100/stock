@@ -5,7 +5,7 @@ import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
-import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange } from './BrokerExecutor';
+import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange, OrderAlreadyFilledError } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder } from './breezePendingLimitOrders';
 import { roundToTick } from '../../zerodha/Zerodha';
@@ -319,10 +319,11 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
 // case, the other still returned normally on the cancel-SUCCEEDED+filled
 // case (the broker can ack the cancel even though it just filled - called
 // out above) - both are the exact same double-sell, just on different
-// branches. The generic executor.cancelOrder caller (cancelAnyRestingLimitSell)
-// already tolerates an exception here identically to a normal return (it
-// just logs either way and continues), so always throwing on a confirmed
-// fill doesn't change anything for it.
+// branches. Thrown as OrderAlreadyFilledError specifically (not the raw
+// cancelError) so the generic executor.cancelOrder caller
+// (cancelAnyRestingLimitSell) can tell "already closed, don't force-close
+// again" apart from a genuine cancel failure that still leaves the position
+// open and in need of a force-close.
 export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
     let cancelError: unknown;
     try {
@@ -335,7 +336,7 @@ export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
     const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
     if (record && Number(record.average_price) > 0) {
         Log.log(`[order] cancelOrderOnBreeze: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
-        throw cancelError ?? new Error(`cancelOrderOnBreeze: ${orderId} already filled, cancel is moot`);
+        throw new OrderAlreadyFilledError(orderId);
     }
     if (cancelError) throw cancelError;
     untrackPendingBreezeLimitOrder(orderId);

@@ -41,7 +41,7 @@ import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
 import * as prismExecutor from './order/prismExecutor';
 import { getBrokerExecutor } from './order/brokerExecutors';
-import { BrokerExecutor } from './order/BrokerExecutor';
+import { BrokerExecutor, OrderAlreadyFilledError } from './order/BrokerExecutor';
 import Zerodha from '../zerodha/Zerodha';
 import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
@@ -886,11 +886,20 @@ async function main() {
     // replaced). Without this, a drawdown-breach or expiry-day force-close
     // firing while that resting order is still live would place a SECOND,
     // independent sell for the same quantity - an oversell if both filled.
-    // Best-effort: a cancel failing (already filled, already gone) is not
-    // itself an error - the force-close square-off below is what actually
-    // matters, and each pending-order poller self-heals its own tracking
-    // within 15s regardless of whether the cancel here succeeded.
-    async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: string, tsym: string): Promise<void> {
+    //
+    // Returns true if ANY resting order for this tsym was confirmed already
+    // filled during cancellation (each broker's cancelOrderOnX throws
+    // OrderAlreadyFilledError specifically for this - see BrokerExecutor.ts)
+    // - callers MUST then skip the force-close square-off entirely for this
+    // trade rather than "proceeding anyway", or they double-sell a position
+    // that's already closed (confirmed via code review: this used to log
+    // and proceed to force-close unconditionally on ANY cancel outcome,
+    // including a confirmed fill). A cancel failing for any OTHER reason
+    // (already gone, genuinely still open, network hiccup) is not itself
+    // treated as a reason to skip - the pending-order poller self-heals its
+    // own tracking within 15s regardless, and the force-close below is
+    // still the right thing to attempt.
+    async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: string, tsym: string): Promise<boolean> {
         // Selects ONLY the tracker for executor.brokerName, not all four
         // merged together - BulkPcrAutoStartStrategy can now hold simultaneous
         // ant+prism positions on the identical tsym (both Noren/Omnesys-family
@@ -908,14 +917,21 @@ async function main() {
             prism: findPendingPrismOrdersForSymbol(userId, tsym),
         };
         const pending = (pendingByBroker[executor.brokerName] ?? []).filter((o) => o.action === 'Sell');
+        let alreadyFilled = false;
         for (const order of pending) {
             try {
                 await executor.cancelOrder(order.orderId);
                 Log.log(`[order] cancelAnyRestingLimitSell: cancelled resting limit sell ${order.orderId} for ${tsym} (${userId}) ahead of a force-close`);
             } catch (e) {
-                Log.log(`[order] cancelAnyRestingLimitSell: cancel failed for ${order.orderId} (${tsym}, ${userId}) - proceeding with force-close anyway:`, e);
+                if (e instanceof OrderAlreadyFilledError) {
+                    alreadyFilled = true;
+                    Log.log(`[order] cancelAnyRestingLimitSell: ${order.orderId} (${tsym}, ${userId}) already filled - skipping force-close for this trade`);
+                } else {
+                    Log.log(`[order] cancelAnyRestingLimitSell: cancel failed for ${order.orderId} (${tsym}, ${userId}) - proceeding with force-close anyway:`, e);
+                }
             }
         }
+        return alreadyFilled;
     }
 
     // Auto-squareoff on daily/weekly drawdown breach (see bookkeeping.ts's
@@ -945,7 +961,8 @@ async function main() {
         for (const trade of bookkeeping.trades.filter((t) => t.user === user)) {
             try {
                 const executor = getBrokerExecutor(user, trade.broker);
-                await cancelAnyRestingLimitSell(executor, user, trade.tsym);
+                const alreadyFilled = await cancelAnyRestingLimitSell(executor, user, trade.tsym);
+                if (alreadyFilled) continue; // see cancelAnyRestingLimitSell's comment - would double-sell
                 await executor.squareOff(user, trade.tsym, trade.quantity, 'NFO');
             } catch (e) {
                 Log.log('[order] Auto-squareoff on drawdown breach failed for', trade.tsym, e);
@@ -980,7 +997,11 @@ async function main() {
             // above for why), resolved via trade.broker for the same reason.
             const executor = getBrokerExecutor(trade.user, trade.broker);
             const squareOff = cancelAnyRestingLimitSell(executor, trade.user, trade.tsym)
-                .then(() => executor.squareOff(trade.user, trade.tsym, trade.quantity, 'NFO'));
+                .then((alreadyFilled) => {
+                    // see cancelAnyRestingLimitSell's comment - would double-sell
+                    if (alreadyFilled) return;
+                    return executor.squareOff(trade.user, trade.tsym, trade.quantity, 'NFO');
+                });
             squareOff
                 .catch((e) => Log.log('[order] Expiry-day auto-squareoff failed for', trade.tsym, e))
                 .finally(() => expirySquareOffInFlight.delete(key));

@@ -11,7 +11,7 @@ import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingLimitOrder, untrackPendingLimitOrder } from './pendingLimitOrders';
-import { BuyRequest } from './BrokerExecutor';
+import { BuyRequest, OrderAlreadyFilledError } from './BrokerExecutor';
 
 // Zerodha is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -518,30 +518,33 @@ export async function placeLimitSellBareOnZerodha(userId: string, tradingSymbol:
 // gap between our last poll and this cancel call, or the broker can ack the
 // cancel even though it just filled. Untracking unconditionally in that case
 // would silently drop the fill (pollPendingLimitOrders would never see it
-// again to call bookkeeping.recordFill).
+// again to call bookkeeping.recordFill). On a confirmed fill, throws
+// OrderAlreadyFilledError (not a plain Error) rather than returning normally,
+// REGARDLESS of whether the cancel call itself succeeded or failed - so a
+// caller like cancelAnyRestingLimitSell can tell "already closed, don't
+// force-close again" apart from a genuine cancel failure that still leaves
+// the position open (confirmed via code review of breezeExecutor.ts's
+// equivalent: swallowing this unconditionally is exactly what let a
+// force-close caller double-sell an already-filled position).
 export async function cancelOrderOnZerodha(orderId: string): Promise<void> {
     const zerodha = Zerodha.getInstance();
     if (!(await zerodha.hasValidSession())) {
         throw new Error('Zerodha session not active - complete /kite/login first.');
     }
+    let cancelError: unknown;
     try {
         await zerodha.cancelOrder(orderId);
     } catch (e) {
-        // Re-check status below regardless of whether the cancel itself
-        // succeeded or failed (mirrors Zerodha.getFillPrice's drift-cancel
-        // recheck) - a common real cause of a rejected cancel is the order
-        // having already filled at the broker, which the recheck below must
-        // still catch so the fill isn't silently dropped (confirmed via code
-        // review: the original version let this throw propagate past the
-        // recheck entirely).
+        cancelError = e;
         Log.log(`[order] cancelOrderOnZerodha: cancel failed for ${orderId} - re-checking status:`, e);
     }
     const history = await zerodha.getKiteConnect().getOrderHistory(orderId);
     const latest = history[history.length - 1];
     if (latest?.status === 'COMPLETE') {
         Log.log(`[order] cancelOrderOnZerodha: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
-        return;
+        throw new OrderAlreadyFilledError(orderId);
     }
+    if (cancelError) throw cancelError;
     untrackPendingLimitOrder(orderId);
 }
 
