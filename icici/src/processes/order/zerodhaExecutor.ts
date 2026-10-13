@@ -524,7 +524,18 @@ export async function cancelOrderOnZerodha(orderId: string): Promise<void> {
     if (!(await zerodha.hasValidSession())) {
         throw new Error('Zerodha session not active - complete /kite/login first.');
     }
-    await zerodha.cancelOrder(orderId);
+    try {
+        await zerodha.cancelOrder(orderId);
+    } catch (e) {
+        // Re-check status below regardless of whether the cancel itself
+        // succeeded or failed (mirrors Zerodha.getFillPrice's drift-cancel
+        // recheck) - a common real cause of a rejected cancel is the order
+        // having already filled at the broker, which the recheck below must
+        // still catch so the fill isn't silently dropped (confirmed via code
+        // review: the original version let this throw propagate past the
+        // recheck entirely).
+        Log.log(`[order] cancelOrderOnZerodha: cancel failed for ${orderId} - re-checking status:`, e);
+    }
     const history = await zerodha.getKiteConnect().getOrderHistory(orderId);
     const latest = history[history.length - 1];
     if (latest?.status === 'COMPLETE') {

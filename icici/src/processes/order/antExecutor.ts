@@ -394,7 +394,18 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
 // tracked so the next pollPendingAntLimitOrders tick records the fill via
 // its normal path instead of this function silently discarding it.
 export async function cancelOrderOnAnt(orderId: string): Promise<void> {
-    await ANT.getInstance().cancelOrder(orderId);
+    try {
+        await ANT.getInstance().cancelOrder(orderId);
+    } catch (e) {
+        // Re-check status below regardless of whether the cancel itself
+        // succeeded or failed (mirrors Zerodha.getFillPrice's drift-cancel
+        // recheck) - a common real cause of a rejected cancel is the order
+        // having already filled at the broker, which the recheck below must
+        // still catch so the fill isn't silently dropped (confirmed via code
+        // review: the original version let this throw propagate past the
+        // recheck entirely).
+        Log.log(`[order] cancelOrderOnAnt: cancel failed for ${orderId} - re-checking status:`, e);
+    }
     const { status } = await ANT.getInstance().getOrderStatus(orderId);
     if (status === 'COMPLETE') {
         Log.log(`[order] cancelOrderOnAnt: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);

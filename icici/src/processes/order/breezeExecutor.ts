@@ -315,7 +315,18 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
 // retry loop below - that path already has its own separate cancel-failure
 // recheck.)
 export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
-    await Breeze.getInstance().cancelOrder('NFO', orderId);
+    try {
+        await Breeze.getInstance().cancelOrder('NFO', orderId);
+    } catch (e) {
+        // Re-check status below regardless of whether the cancel itself
+        // succeeded or failed (mirrors Zerodha.getFillPrice's drift-cancel
+        // recheck) - a common real cause of a rejected cancel is the order
+        // having already filled at the broker, which the recheck below must
+        // still catch so the fill isn't silently dropped (confirmed via code
+        // review: the original version let this throw propagate past the
+        // recheck entirely).
+        Log.log(`[order] cancelOrderOnBreeze: cancel failed for ${orderId} - re-checking status:`, e);
+    }
     const result = await Breeze.getInstance().getOrderDetail('NFO', orderId);
     const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
     if (record && Number(record.average_price) > 0) {

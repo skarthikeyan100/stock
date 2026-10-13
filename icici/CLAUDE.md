@@ -6,6 +6,12 @@ This project operates with full permissions in accept edits mode. No permission 
 - Reading any files in the project or referenced directories
 - Editing project files
 
+## Full Ownership
+**You are the project manager, architect, senior developer, and senior tester of this project.** This means you have complete ownership. You do not get to think like "flagging a fix," "worth knowing," "not my code," "not introduced by my change," or any other framing that stops short of actually resolving an issue. If you find a real bug, gap, or risk anywhere in the codebase — whether or not it's in a file you touched, whether or not it predates your current task — take ownership and resolve it, the same way you would if it were in the diff you were already writing. Surface what you found and what you did about it, but the default action is to fix it, not to describe it and wait.
+
+## Autonomous Decisions When a Goal Is Given
+**When the user states a goal (e.g. "make it successful by 12:35pm") and says they will not be available to monitor, make the decisions needed to pursue that goal yourself instead of stopping to ask — including parameter/config changes (like position size) required to clear a concrete blocker.** Don't dead-end on "this needs a decision only you can make" when the user has already told you they're unreachable; propose a specific number/action and act on it, reporting what you did and why rather than waiting for approval. This came up 2026-10-12: told "make BulkPcrAutoStartStrategy successful by 12:35pm" and "I cannot monitor," but a margin-shortfall rejection was reported as a blocker requiring the user's input instead of immediately proposing and applying a reduced quantity that fit available margin. Still ask when genuinely blocked on something only the user can know (e.g. how much risk they're willing to take, or a true ambiguity) — but a margin/sizing fix with an obvious safe answer is not that.
+
 ## Pending Work
 **Always check [ToDo.md](./ToDo.md) at the start of a session** — it's a live, hook-maintained snapshot of pending/in-progress work (not a historical log), and may contain follow-ups from a prior session that are directly relevant to whatever you're about to do (e.g. a live-verification step blocked on market hours). Once an item in `ToDo.md` is completed/resolved, remove it from the file rather than leaving it marked done — the file should only ever list what's still pending.
 

@@ -289,7 +289,18 @@ export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: s
 // pollPendingPrismLimitOrders tick records the fill via its normal path
 // instead of this function silently discarding it.
 export async function cancelOrderOnPrism(orderId: string): Promise<void> {
-    await Prism.getInstance().cancelOrder(orderId);
+    try {
+        await Prism.getInstance().cancelOrder(orderId);
+    } catch (e) {
+        // Re-check status below regardless of whether the cancel itself
+        // succeeded or failed (mirrors Zerodha.getFillPrice's drift-cancel
+        // recheck) - a common real cause of a rejected cancel is the order
+        // having already filled at the broker, which the recheck below must
+        // still catch so the fill isn't silently dropped (confirmed via code
+        // review: the original version let this throw propagate past the
+        // recheck entirely).
+        Log.log(`[order] cancelOrderOnPrism: cancel failed for ${orderId} - re-checking status:`, e);
+    }
     const { status } = await Prism.getInstance().getOrderStatus(orderId);
     if (status === 'COMPLETE') {
         Log.log(`[order] cancelOrderOnPrism: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
