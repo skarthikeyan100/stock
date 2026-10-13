@@ -36,10 +36,12 @@ export async function cancelOrderWithFillRecheck(params: {
     isFilled: () => Promise<boolean>;
     untrack: () => void;
 }): Promise<void> {
+    let cancelFailed = false;
     let cancelError: unknown;
     try {
         await params.cancel();
     } catch (e) {
+        cancelFailed = true;
         cancelError = e;
         // Two args (not interpolated into the message) so Log.log's own
         // Error handling (full stack, not just toString()) applies.
@@ -62,13 +64,13 @@ export async function cancelOrderWithFillRecheck(params: {
         filled = await params.isFilled();
     } catch (e) {
         Log.log(`[order] ${params.label}: status recheck failed for ${params.orderId} - leaving tracked, status unconfirmed:`, e);
-        throw cancelError ?? e;
+        throw cancelFailed ? cancelError : e;
     }
     if (filled) {
         Log.log(`[order] ${params.label}: ${params.orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
         throw new OrderAlreadyFilledError(params.orderId);
     }
-    if (cancelError) throw cancelError;
+    if (cancelFailed) throw cancelError;
     params.untrack();
 }
 
