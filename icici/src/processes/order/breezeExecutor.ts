@@ -308,22 +308,21 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
 // But untracking unconditionally reopens a different race: the order can
 // genuinely fill in the gap between our last poll and this cancel call (or
 // the broker can ack the cancel even though it just filled). Re-check status
-// before untracking - if it actually completed, leave it tracked so the next
-// pollPendingBreezeLimitOrders tick records the fill via its normal path
-// instead of this function silently discarding it.
-//
-// This only applies to the cancel-SUCCEEDED path. On cancel failure, rethrow
-// (after logging the recheck for diagnostic context) rather than swallowing:
-// squareOffOnBreeze's own retry loop below calls this directly (not through
-// the generic executor.cancelOrder dispatch) and depends on catching that
-// throw to run its own independent fill-check + recordSellFill. Swallowing
-// it here instead (confirmed via code review - an earlier version of this
-// fix did exactly that) skipped squareOffOnBreeze's recheck entirely and let
-// it place a brand new sell for a quantity that had already closed - the
-// exact double-sell this whole recheck exists to prevent. The generic
-// executor.cancelOrder caller (cancelAnyRestingLimitSell) already tolerates
-// an exception here the same way it tolerated the pre-fix behavior, so
-// rethrowing doesn't reintroduce anything for it.
+// before untracking - if it actually completed, throw rather than returning
+// normally, REGARDLESS of whether the cancel call itself succeeded or
+// failed: squareOffOnBreeze's own retry loop below calls this directly (not
+// through the generic executor.cancelOrder dispatch) and depends on
+// catching a throw here to run its own independent fill-check +
+// recordSellFill instead of looping into a fresh sell for a quantity that
+// already closed. Two versions of this fix got this wrong before landing
+// here (confirmed via code review): one swallowed the cancel-FAILED+filled
+// case, the other still returned normally on the cancel-SUCCEEDED+filled
+// case (the broker can ack the cancel even though it just filled - called
+// out above) - both are the exact same double-sell, just on different
+// branches. The generic executor.cancelOrder caller (cancelAnyRestingLimitSell)
+// already tolerates an exception here identically to a normal return (it
+// just logs either way and continues), so always throwing on a confirmed
+// fill doesn't change anything for it.
 export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
     let cancelError: unknown;
     try {
@@ -334,11 +333,11 @@ export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
     }
     const result = await Breeze.getInstance().getOrderDetail('NFO', orderId);
     const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
-    if (cancelError) throw cancelError;
     if (record && Number(record.average_price) > 0) {
         Log.log(`[order] cancelOrderOnBreeze: ${orderId} filled in the cancel race window - leaving tracked so the next poll records the fill`);
-        return;
+        throw cancelError ?? new Error(`cancelOrderOnBreeze: ${orderId} already filled, cancel is moot`);
     }
+    if (cancelError) throw cancelError;
     untrackPendingBreezeLimitOrder(orderId);
 }
 
