@@ -5,7 +5,7 @@ import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
-import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange, cancelOrderWithFillRecheck } from './BrokerExecutor';
+import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange, cancelOrderWithFillRecheck, OrderAlreadyFilledError } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder } from './breezePendingLimitOrders';
 import { roundToTick } from '../../zerodha/Zerodha';
@@ -275,13 +275,28 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                 try {
                     await cancelOrderOnBreeze(orderId);
                 } catch (cancelErr) {
-                    // A cancel can legitimately fail because the order already
-                    // filled in the gap between our short wait timing out and
-                    // this cancel call - a real exchange race, not hypothetical
-                    // (Breeze gives no way to tell "already filled" apart from
-                    // any other cancel failure up front). Check for an actual
-                    // fill before looping into a fresh sell, or a late fill
-                    // plus a new order would sell the same position twice.
+                    if (cancelErr instanceof OrderAlreadyFilledError) {
+                        // cancelOrderOnBreeze's own recheck already positively
+                        // confirmed this order filled (average_price > 0) -
+                        // it just doesn't carry the price itself. Retry
+                        // fetching it rather than giving up after one flaky
+                        // call: we already KNOW it's filled, so a getFillPrice
+                        // hiccup here must not fall through to placing a
+                        // fresh sell for an already-closed quantity (confirmed
+                        // via code review: the single-attempt, 0-retry fetch
+                        // below is appropriate ONLY for the "not actually
+                        // confirmed" case right below it, not this one).
+                        const lateFillPrice = await Breeze.getInstance().getFillPrice('NFO', orderId, 3, 2000);
+                        Log.log(`[order] Square-off order ${orderId} confirmed already filled at ${lateFillPrice} during cancel - using it, not retrying`);
+                        return await recordSellFill(orderId, lateFillPrice);
+                    }
+                    // A cancel can legitimately fail for an unrelated reason
+                    // too - Breeze gives no way to tell "already filled" apart
+                    // from any other cancel failure in that case (unlike the
+                    // branch above, cancelOrderOnBreeze's own recheck did NOT
+                    // confirm a fill here). Check for an actual fill before
+                    // looping into a fresh sell, or a late fill plus a new
+                    // order would sell the same position twice.
                     try {
                         const lateFillPrice = await Breeze.getInstance().getFillPrice('NFO', orderId, 1, 0);
                         Log.log(`[order] Square-off order ${orderId} actually filled at ${lateFillPrice} just as cancel was attempted - using it, not retrying`);
