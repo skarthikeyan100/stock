@@ -286,9 +286,24 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                         // via code review: the single-attempt, 0-retry fetch
                         // below is appropriate ONLY for the "not actually
                         // confirmed" case right below it, not this one).
-                        const lateFillPrice = await Breeze.getInstance().getFillPrice('NFO', orderId, 3, 2000);
-                        Log.log(`[order] Square-off order ${orderId} confirmed already filled at ${lateFillPrice} during cancel - using it, not retrying`);
-                        return await recordSellFill(orderId, lateFillPrice);
+                        //
+                        // If even the retries fail, don't fall through to the
+                        // outer loop's next attempt either (that's still the
+                        // same double-sell this whole branch exists to avoid)
+                        // - surface the failure instead. bookkeeping.trades
+                        // stays (harmlessly) stale until either the next
+                        // force-close cycle's own cancelAnyRestingLimitSell
+                        // call (orderProcess.ts) or the regular 15s
+                        // pollPendingBreezeLimitOrders tick independently
+                        // reconciles this same already-tracked order's fill.
+                        try {
+                            const lateFillPrice = await Breeze.getInstance().getFillPrice('NFO', orderId, 3, 2000);
+                            Log.log(`[order] Square-off order ${orderId} confirmed already filled at ${lateFillPrice} during cancel - using it, not retrying`);
+                            return await recordSellFill(orderId, lateFillPrice);
+                        } catch (fillPriceErr) {
+                            Log.log(`[order] Square-off order ${orderId} confirmed already filled but fetching its price failed after retries - not retrying a fresh sell (would double-sell); leaving for the next reconcile cycle:`, fillPriceErr);
+                            throw fillPriceErr;
+                        }
                     }
                     // A cancel can legitimately fail for an unrelated reason
                     // too - Breeze gives no way to tell "already filled" apart
