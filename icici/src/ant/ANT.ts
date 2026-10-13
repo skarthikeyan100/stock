@@ -612,7 +612,29 @@ class ANT {
         }
     }
 
-    // Polls order history until the order is COMPLETE (or REJECTED/CANCELLED),
+    // A terminal-rejected/cancelled record's orderStatus string, per
+    // AliceBlue's REST orders/history endpoint. Confirmed live 2026-10-13:
+    // a broker-side cancel comes back spelled 'CANCELED' (one L, American
+    // spelling) - NOT 'CANCELLED' - so matching only the two-L spelling let
+    // a genuinely cancelled order keep reading as PENDING forever (both
+    // getFillPrice and getOrderStatus below looped/timed out instead of
+    // recognizing the terminal state). Matches both spellings defensively.
+    // Not private: AntOrderNotifyStream.ts's push-feed handler needs the same
+    // check and must not duplicate it inline - a future third spelling fixed
+    // here only would otherwise silently miss that file.
+    static isTerminalRejectOrCancel(status: string): boolean {
+        return status === 'REJECTED' || status === 'CANCELLED' || status === 'CANCELED';
+    }
+
+    // Canonicalizes whatever spelling AliceBlue used to the one every
+    // downstream caller already checks for ('CANCELLED', two Ls) - so
+    // getOrderStatus's caller (pendingAntLimitOrders.ts) doesn't also need
+    // to know about the 'CANCELED' variant. REJECTED passes through as-is.
+    private static canonicalStatus(status: string): string {
+        return status === 'CANCELED' ? 'CANCELLED' : status;
+    }
+
+    // Polls order history until the order is COMPLETE (or REJECTED/CANCELED),
     // mirroring Zerodha.getFillPrice's poll/timeout shape. Confirmed live:
     // `result` is an array of order-state-transition records (PENDING/OPEN/
     // COMPLETE/...), NOT chronologically ordered (COMPLETE was observed first
@@ -636,7 +658,7 @@ class ANT {
                 }
                 return Number(fillPrice);
             }
-            const rejected = records.find((r) => r.orderStatus === 'REJECTED' || r.orderStatus === 'CANCELLED');
+            const rejected = records.find((r) => ANT.isTerminalRejectOrCancel(r.orderStatus));
             if (rejected) {
                 throw new Error(`ANT order ${orderNo} ${rejected.orderStatus}: ${JSON.stringify(rejected)}`);
             }
@@ -661,8 +683,8 @@ class ANT {
             const fillPrice = completed.averageTradedPrice ?? completed.averagePrice ?? completed.avgPrice;
             return { status: 'COMPLETE', fillPrice: fillPrice ? Number(fillPrice) : undefined };
         }
-        const rejected = records.find((r) => r.orderStatus === 'REJECTED' || r.orderStatus === 'CANCELLED');
-        if (rejected) return { status: rejected.orderStatus };
+        const rejected = records.find((r) => ANT.isTerminalRejectOrCancel(r.orderStatus));
+        if (rejected) return { status: ANT.canonicalStatus(rejected.orderStatus) };
         return { status: 'PENDING' };
     }
 }

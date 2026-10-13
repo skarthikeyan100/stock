@@ -185,7 +185,7 @@ class AntOrderNotifyStream {
             } else {
                 pending.resolve(Number(fillPrice));
             }
-        } else if (status === 'REJECTED' || status === 'CANCELLED') {
+        } else if (ANT.isTerminalRejectOrCancel(status)) {
             clearTimeout(pending.timer);
             this.pending.delete(String(orderNo));
             const reason = data.rejreason ? ` (${data.rejreason})` : '';
