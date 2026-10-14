@@ -89,7 +89,7 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
 
     for (const [orderId, order] of pending) {
         try {
-            const { status, fillPrice } = await ant.getOrderStatus(orderId);
+            const { status, fillPrice, filledQuantity } = await ant.getOrderStatus(orderId);
             // A square-off or re-price may have taken this order off the book while the status call was in
             // flight. Acting on that stale status could re-place a sell for quantity already sold.
             if (!pending.has(orderId)) continue;
@@ -134,9 +134,31 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                 if (status === 'CANCELLED' && isPastMarketClose()) {
                     Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close - leaving re-placement to tomorrow's reconcile()`);
                 } else {
+                    // A partly filled order: book what did fill, and report only the unfilled rest so the
+                    // listener doesn't re-place the full quantity.
+                    let remaining = order.quantity;
+                    if (order.action === 'Sell' && (filledQuantity ?? 0) > 0) {
+                        const book = await ant.getFilledFromTradeBook(orderId);
+                        const partial = new Trade();
+                        partial.tsym = order.tradingSymbol;
+                        partial.token = order.instrumentId;
+                        partial.quantity = book.quantity;
+                        partial.price = book.avgPrice;
+                        partial.lastTradePrice = book.avgPrice;
+                        partial.action = 'Sell';
+                        partial.status = 'COMPLETE';
+                        partial.user = order.userId;
+                        partial.broker = 'ant';
+                        partial.brokerOrderId = orderId;
+                        await bookkeeping.recordFill(partial);
+                        remaining = order.quantity - book.quantity;
+                        Log.log(`[order] Pending ANT sell ${orderId} (${order.tradingSymbol}) cancelled after ${book.quantity} filled - reporting ${remaining} unfilled`);
+                    }
                     const reason = status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
-                    for (const listener of cancelledListeners) {
-                        listener(order.userId, order.tradingSymbol, order.instrumentId, order.quantity, order.exchange, order.action, 'ant', orderId, reason);
+                    if (remaining > 0) {
+                        for (const listener of cancelledListeners) {
+                            listener(order.userId, order.tradingSymbol, order.instrumentId, remaining, order.exchange, order.action, 'ant', orderId, reason);
+                        }
                     }
                     Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status}`);
                 }

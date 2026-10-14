@@ -542,7 +542,13 @@ class OrderBookkeeping {
             }
             this.processedFillIds.add(tradeEvent.brokerOrderId);
         }
-        await this._processTradeEvent(tradeEvent);
+        try {
+            await this._processTradeEvent(tradeEvent);
+        } catch (e) {
+            // Not booked: release the id so a retry is processed instead of silently dropped as a duplicate.
+            if (tradeEvent.brokerOrderId) this.processedFillIds.delete(tradeEvent.brokerOrderId);
+            throw e;
+        }
         for (const l of this.fillListeners) l(tradeEvent.user || 'Default', tradeEvent);
     }
 

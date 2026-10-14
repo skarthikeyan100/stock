@@ -49,7 +49,7 @@ async function resolveUnconfirmedAntBuy(
 ): Promise<{ quantity: number; avgPrice: number }> {
     const manualReview = (why: string) =>
         new Error(`ANT order ${orderNo} fill status unresolved (${why}) - manual review required. Poll error: ${pollErr?.message ?? pollErr}`);
-    const terminal = (st: string) => st === 'COMPLETE' || st === 'CANCELLED' || st === 'REJECTED';
+    const terminal = isTerminalOrderStatus;
 
     let before: { quantity: number; avgPrice: number } | null = null;
     try {
@@ -551,6 +551,11 @@ export async function cancelOrderOnAnt(orderId: string): Promise<void> {
     });
 }
 
+// Terminal order states: nothing further can fill. The one predicate for every exit and entry path.
+function isTerminalOrderStatus(status: string): boolean {
+    return status === 'COMPLETE' || status === 'CANCELLED' || status === 'REJECTED';
+}
+
 // Books a sell order's fills from the broker's trade book. Shared by every path that closes out a sell.
 async function bookSellFills(orderId: string, userId: string, tsym: string): Promise<number> {
     const book = await ANT.getInstance().getFilledFromTradeBook(orderId);
@@ -575,7 +580,7 @@ async function bookSellFills(orderId: string, userId: string, tsym: string): Pro
 // the position could then still be sold twice - or if the trade book disagrees with the order status.
 async function cancelRestingSellForExit(orderId: string, userId: string, tsym: string, prev?: PendingAntLimitOrder): Promise<number> {
     const ant = ANT.getInstance();
-    const isTerminal = (st: string) => st === 'COMPLETE' || st === 'CANCELLED' || st === 'REJECTED';
+    const isTerminal = isTerminalOrderStatus;
     // Off the poller's book first: once the cancel goes through, a poller still tracking the order would fire
     // the cancelled listeners and re-place a sell. Re-tracked below only if the cancel isn't confirmed.
     untrackPendingAntLimitOrder(orderId);
@@ -653,7 +658,11 @@ async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number,
             await new Promise((resolve) => setTimeout(resolve, 2000));
             st = await ANT.getInstance().getOrderStatus(order.orderId).catch(() => null);
         }
-        if (!st) throw new Error(`exit ${order.orderId} status unreadable`);
+        if (!st) {
+            Log.log(`[order] re-price: status of ${order.orderId} unreadable, checking again in 60s`);
+            scheduleExitRecheck(order, attempt, lastLimit);
+            return;
+        }
         if (st.status === 'COMPLETE') {
             const booked = await bookSellFills(order.orderId, order.userId, order.tradingSymbol);
             if (!(booked > 0)) throw new Error(`exit ${order.orderId} COMPLETE but the trade book shows no fill - manual review`);
@@ -673,14 +682,7 @@ async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number,
             Log.log(`[order] re-price: ${order.tradingSymbol} (${order.userId}) fully sold by the resting sell - nothing to re-place`);
             return;
         }
-        try {
-            await placeReplacementExit(order, remaining, lastLimit, attempt);
-        } catch (placeErr: any) {
-            // The resting sell is already cancelled, so nothing protects this quantity. Retry the placement
-            // on a later check rather than give up: the check re-reads the order and open quantity first.
-            Log.log(`[order] ALERT: re-placing exit for ${order.tradingSymbol} (${order.userId}) failed - position unprotected, retrying in 60s: ${placeErr?.message ?? placeErr}`);
-            scheduleExitRecheck(order, attempt, lastLimit);
-        }
+        await placeReplacementExit(order, remaining, lastLimit, attempt);
     } catch (e: any) {
         Log.log(`[order] ALERT: re-price of exit for ${order.tradingSymbol} (${order.userId}) failed - position may be unprotected: ${e?.message ?? e}`);
     } finally {
@@ -690,29 +692,20 @@ async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number,
 
 async function placeReplacementExit(order: PendingAntLimitOrder, remaining: number, lastLimit: number, attempt: number): Promise<void> {
     const ant = ANT.getInstance();
-    // No live quote: keep moving down from the last limit rather than stop.
-    const ltp = await safeAntQuote(order.exchange, order.instrumentId, EXIT_QUOTE_RETRY_MS, true);
     // No live quote: hold the last limit rather than stepping down again on every check (a quote outage
     // would otherwise compound the discount with no floor).
+    const ltp = await safeAntQuote(order.exchange, order.instrumentId, EXIT_QUOTE_RETRY_MS, true);
     const limit = roundToTick(ltp > 0 ? ltp * 0.99 : lastLimit);
-    let orderNo = '';
-    for (let i = 0; i <= EXIT_PLACE_RETRIES; i++) {
-        try {
-            ({ orderNo } = await ant.placeOrder({
-                exchange: order.exchange,
-                instrumentId: order.instrumentId,
-                tradingSymbol: order.tradingSymbol,
-                quantity: remaining,
-                transactionType: 'SELL',
-                price: limit,
-            }));
-            break;
-        } catch (e: any) {
-            if (i === EXIT_PLACE_RETRIES) throw e;
-            Log.log(`[order] re-price: placing replacement sell for ${order.tradingSymbol} failed (attempt ${i + 1}), retrying: ${e?.message ?? e}`);
-            await new Promise((resolve) => setTimeout(resolve, 5000));
-        }
-    }
+    // Not retried: a placement that timed out may already have been accepted by the broker, and placing again
+    // would sell the same quantity twice. The error propagates to the caller's alert.
+    const { orderNo } = await ant.placeOrder({
+        exchange: order.exchange,
+        instrumentId: order.instrumentId,
+        tradingSymbol: order.tradingSymbol,
+        quantity: remaining,
+        transactionType: 'SELL',
+        price: limit,
+    });
     const next: PendingAntLimitOrder = { orderId: orderNo, userId: order.userId, tradingSymbol: order.tradingSymbol, instrumentId: order.instrumentId, quantity: remaining, exchange: order.exchange, action: 'Sell' };
     trackPendingAntLimitOrder(next);
     Log.log(`[order] re-price ${attempt + 1}: ${order.tradingSymbol} (${order.userId}) ${remaining} re-placed as ${orderNo} at ${limit} (ltp=${ltp})`);
