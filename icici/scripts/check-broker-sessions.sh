@@ -82,6 +82,14 @@ ant_ws=$(ws_status "\[AntDataStream\] Connected and streaming" '\[AntDataStream\
 breeze_ws=$(ws_status "\[BreezeDataStream\] Connected and streaming" '\[BreezeDataStream\].*(disconnected|connect_error)')
 zerodha_ws="N/A (no live tick stream for this broker)"
 
+# The status helpers above run in $(...) subshells, so their `fail` increments
+# never reach this shell. Count failures from the computed values instead.
+fail=0
+for status in "$ant_session" "$zerodha_session" "$breeze_session" \
+              "$ant_token" "$zerodha_token" "$breeze_token" "$ant_ws" "$breeze_ws"; do
+    case "$status" in FAIL*) fail=$((fail+1));; esac
+done
+
 print_row() {
     printf '%-10s | %-28s | %-40s | %-42s\n' "$1" "$2" "$3" "$4"
 }
