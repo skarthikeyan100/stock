@@ -1,5 +1,7 @@
 import Log from '../util/Log';
 import moment from 'moment';
+import * as fs from 'fs';
+import * as path from 'path';
 import { Strategy } from './strategy';
 import { NiftyQuote, OptionQuote } from '../model/model';
 import configService from '../prism/ConfigService';
@@ -80,7 +82,42 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         }
     }
 
+    // Slots already armed today, persisted so a process restart can't re-arm a slot that already ran
+    // (live 2026-10-14: a restart at 11:39 re-armed the 11:35 slot and bought again).
+    private armedSlotsFile = path.join(__dirname, '../../.bulkpcr_armed_slots.json');
+
+    private loadArmedSlots(): Set<string> {
+        try {
+            return new Set(JSON.parse(fs.readFileSync(this.armedSlotsFile, 'utf8')) as string[]);
+        } catch {
+            return new Set<string>();
+        }
+    }
+
+    // Returns false if the record could not be written. The caller must then not arm: arming without the
+    // record would let a restart re-arm this slot.
+    private recordArmedSlot(key: string): boolean {
+        const today = moment().format('YYYY-MM-DD');
+        const keep = [...this.loadArmedSlots()].filter((k) => k.startsWith(today));
+        keep.push(key);
+        try {
+            fs.writeFileSync(this.armedSlotsFile, JSON.stringify(keep));
+            return true;
+        } catch (e: any) {
+            Log.log(`[BulkPcrAutoStart] ALERT: could not persist armed slot ${key} - NOT arming: ${e?.message ?? e}`);
+            return false;
+        }
+    }
+
     private async attemptStart(timeStr: string): Promise<void> {
+        const slotKey = `${moment().format('YYYY-MM-DD')} ${timeStr}`;
+        if (this.loadArmedSlots().has(slotKey)) {
+            Log.log(`[BulkPcrAutoStart] ${timeStr} slot already attempted earlier today - skipping (process restart does not re-attempt it)`);
+            return;
+        }
+        // Recorded on every attempt, including ones skipped below (still running, no target): a restart
+        // inside the late window must not turn a skipped slot into a fresh arm.
+        if (!this.recordArmedSlot(slotKey)) return;
         const target = strategies.getByUserId('BulkPcrStrategy') as BulkPcrStrategy | undefined;
         if (!target) {
             Log.log('[BulkPcrAutoStart] BulkPcrStrategy instance not found - is it present (even if disabled) in config.yml?');

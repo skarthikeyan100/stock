@@ -38,10 +38,24 @@ class ANT {
     private static readonly OHLC_RETRY_DELAY_MS = 1500;
     private lastOhlcCallAt = 0;
 
-    private async throttleOhlc(): Promise<void> {
-        const wait = this.lastOhlcCallAt + ANT.OHLC_MIN_GAP_MS - Date.now();
-        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-        this.lastOhlcCallAt = Date.now();
+    private ohlcChain: Promise<void> = Promise.resolve();
+
+    private throttleOhlc(): Promise<void> {
+        const slot = this.ohlcChain.then(async () => {
+            const wait = this.lastOhlcCallAt + ANT.OHLC_MIN_GAP_MS - Date.now();
+            if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+            this.lastOhlcCallAt = Date.now();
+        });
+        this.ohlcChain = slot.catch(() => undefined);
+        return slot;
+    }
+
+    // Wait the server asked for on a 429 (Retry-After, seconds), capped. null if absent.
+    static retryAfterMs(e: any, capMs = 30000): number | null {
+        const raw = e?.response?.headers?.['retry-after'];
+        const secs = Number(raw);
+        if (!raw || !Number.isFinite(secs) || secs < 0) return null;
+        return Math.min(secs * 1000, capMs);
     }
 
     // getQuote cache, keyed by `${exchange}:${token}`. Confirmed live
@@ -328,25 +342,30 @@ class ANT {
     // OHLC_RETRY_DELAY_MS; any other failure (or a second 429) propagates to
     // the caller, which already has its own fail-safe (see antExecutor.ts's
     // safeAntQuote, which retries 429s itself and returns 0 for any other failure).
-    private async postOhlc(payload: { exchange: string; token: string }[]): Promise<any> {
-        await this.throttleOhlc();
-        try {
-            return await axios.post(
-                'https://a3.aliceblueonline.com/open-api/od/ChartAPIService/chart/get/multi/ohlc',
-                payload,
-                { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
-            );
-        } catch (e: any) {
-            if (e?.response?.status !== 429) throw e;
-            Log.log('[ANT] OHLC endpoint rate-limited (429), retrying once after backoff');
-            await new Promise((resolve) => setTimeout(resolve, ANT.OHLC_RETRY_DELAY_MS));
+    // The only 429 retry layer for OHLC quotes. Each retry waits max(Retry-After capped at 3s,
+    // that retry's delay). Default [1500] = one retry after 1.5s. Callers choose their own schedule
+    // via getQuote's retryDelaysMs (entry sizing uses a longer one, exits a shorter one).
+    private async postOhlc(payload: { exchange: string; token: string }[], retryDelaysMs: number[] = [ANT.OHLC_RETRY_DELAY_MS]): Promise<any> {
+        let lastErr: any = null;
+        for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+            if (attempt > 0) {
+                const waitMs = Math.max(ANT.retryAfterMs(lastErr, 3000) ?? 0, retryDelaysMs[attempt - 1]);
+                Log.log(`[ANT] OHLC endpoint rate-limited (429), retry ${attempt}/${retryDelaysMs.length} in ${waitMs}ms`);
+                await new Promise((resolve) => setTimeout(resolve, waitMs));
+            }
             await this.throttleOhlc();
-            return await axios.post(
-                'https://a3.aliceblueonline.com/open-api/od/ChartAPIService/chart/get/multi/ohlc',
-                payload,
-                { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
-            );
+            try {
+                return await axios.post(
+                    'https://a3.aliceblueonline.com/open-api/od/ChartAPIService/chart/get/multi/ohlc',
+                    payload,
+                    { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+                );
+            } catch (e: any) {
+                if (e?.response?.status !== 429) throw e;
+                lastErr = e;
+            }
         }
+        throw lastErr ?? new Error(`ANT OHLC: no attempt made for ${payload.map((x) => x.token).join(',')}`);
     }
 
     // Live LTP for a specific instrument - needed because ANT rejects MARKET
@@ -361,7 +380,7 @@ class ANT {
     // zerodhaExecutor.ts's drift-cancel poll, which deliberately bypassed
     // getMarketableZerodhaPrice's own now-removed cache for exactly this
     // reason before this method grew its own cache.
-    async getQuote(exchange: string, token: string, opts?: { skipCache?: boolean }): Promise<number> {
+    async getQuote(exchange: string, token: string, opts?: { skipCache?: boolean; retryDelaysMs?: number[] }): Promise<number> {
         this.sweepQuoteCache();
         const key = `${exchange}:${token}`;
         if (!opts?.skipCache) {
@@ -369,15 +388,19 @@ class ANT {
             if (cached && Date.now() - cached.fetchedAt < ANT.QUOTE_CACHE_TTL_MS) return cached.price;
         }
 
-        const resp = await this.postOhlc([{ exchange, token }]);
+        const resp = await this.postOhlc([{ exchange, token }], opts?.retryDelaysMs);
         const ltp = resp.data?.result?.[0]?.ltp;
         if (ltp == null) {
             throw new Error(`ANT getQuote failed for ${exchange}|${token}: ${JSON.stringify(resp.data)}`);
         }
         const price = Number(ltp);
+        // Throws on a zero or non-numeric LTP. Callers must treat that as "no usable price": a 0 or NaN
+        // limit price would be sent to the broker. (zerodhaExecutor's getMarketableZerodhaPrice and the drift
+        // getLtp used to receive 0 here; they now receive this exception and fail the order.)
+        if (!(price > 0)) throw new Error(`ANT getQuote unusable ltp for ${exchange}|${token}: ${JSON.stringify(ltp)}`);
         // Only cache a usable price: a cached 0 would be re-served to every caller for the
         // whole TTL, including the retries meant to get past it.
-        if (price > 0) this.quoteCache.set(key, { price, fetchedAt: Date.now() });
+        this.quoteCache.set(key, { price, fetchedAt: Date.now() });
         return price;
     }
 

@@ -10,7 +10,7 @@ import { CALL } from '../../constants';
 import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
-import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder } from './pendingAntLimitOrders';
+import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, PendingAntLimitOrder } from './pendingAntLimitOrders';
 
 // AliceBlue/ANT execution, mirroring zerodhaExecutor.ts's shape and the same
 // per-user useGTT gating (bookkeeping.getUserUseGTT) - but the actual
@@ -108,6 +108,44 @@ async function resolveUnconfirmedAntBuy(
     return after;
 }
 
+// A sizing quote is reused for entry only while it's this fresh; past that, quote again.
+const KNOWN_LTP_MAX_AGE_MS = 5000;
+
+// Entry price. A buy that was already sized quoted once: if that quote failed, refuse now rather
+// than running the backoff a second time. An explicit-quantity buy quotes here, with the full backoff.
+async function entryLtp(known: { ltp: number; atMs: number } | undefined, exch: string, token: string): Promise<number> {
+    if (known === undefined) return requireAntLtp(exch, token);
+    if (known.ltp > 0 && Date.now() - known.atMs < KNOWN_LTP_MAX_AGE_MS) return known.ltp;
+    if (known.ltp > 0) return requireAntLtp(exch, token); // usable but stale: one fresh quote
+    throw new Error(`ANT quote unavailable for ${token} - order not placed`);
+}
+
+// Sizing quote for an unsized manual buy. Cache bypassed so the timestamp is honest, and the same
+// price is the entry price (see entryLtp). A 0 means the quote failed after its backoff.
+async function sizingQuote(exch: string, token: string): Promise<{ ltp: number; atMs: number }> {
+    const ltp = await safeAntQuote(exch, token, SAFE_QUOTE_BACKOFF_MS, true);
+    return { ltp, atMs: Date.now() };
+}
+
+// Both manual-buy branches (contract and strike) size and enter the same way.
+async function enterManualBuy(req: ManualBuyRequest, tsym: string, token: string, exch: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number): Promise<Trade> {
+    const sized = req.quantity != null ? undefined : await sizingQuote(exch, token);
+    const quantity = sizeManualBuyOrRefuse(req, tsym, sized?.ltp);
+    return enterPosition(req.userId, tsym, token, quantity, exch, targetPoints, stopLossPoints, 'bracket', sized);
+}
+
+// An unsized buy needs a price to size from. Without one, refuse: the entry also needs a limit price,
+// so a quote outage blocks it either way. The one-lot default (resolveManualBuyQuantity) only applies when
+// a price is known but no investment amount is set.
+function sizeManualBuyOrRefuse(req: ManualBuyRequest, tsym: string, price: number | undefined): number {
+    const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, tsym, price ?? 0, req.quantity);
+    if (req.quantity == null && !((price ?? 0) > 0)
+        && bookkeeping.getUserContext(req.userId).investmentMode === 'investmentAmount') {
+        throw new Error(`Manual buy ${tsym}: no ANT price to size an investment-amount order - not placed`);
+    }
+    return quantity;
+}
+
 export async function enterPosition(
     userId: string,
     tradingSymbol: string,
@@ -116,7 +154,8 @@ export async function enterPosition(
     exchange: 'NFO' | 'BFO',
     targetPoints: number,
     stopLossPoints: number,
-    orderMode: 'bracket' | 'cover' = 'bracket'
+    orderMode: 'bracket' | 'cover' = 'bracket',
+    knownLtp?: { ltp: number; atMs: number }
 ): Promise<Trade> {
     const ant = ANT.getInstance();
     const useCover = orderMode === 'cover';
@@ -138,7 +177,7 @@ export async function enterPosition(
         // ("Market orders are not allowed") - needs a LIMIT price. Priced
         // slightly above the current LTP (a marketable limit) so it fills
         // immediately like a market buy would.
-        const ltp = await ant.getQuote(exchange, instrumentId);
+        const ltp = await entryLtp(knownLtp, exchange, instrumentId);
         const limitPrice = roundToTick(ltp * 1.01);
         Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT bracket order (ltp=${ltp} limit=${limitPrice} target=${targetPoints} sl=${stopLossPoints})`);
         ({ orderNo } = await ant.placeBracketOrder({
@@ -158,7 +197,7 @@ export async function enterPosition(
         // already worked around - not just a bracket-specific restriction.
         // Same fix: a marketable LIMIT 1% above LTP, fills immediately like
         // a market order would from the caller's point of view.
-        const ltp = await ant.getQuote(exchange, instrumentId);
+        const ltp = await entryLtp(knownLtp, exchange, instrumentId);
         const limitPrice = roundToTick(ltp * 1.01);
         Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order (ltp=${ltp} limit=${limitPrice})`);
         ({ orderNo } = await ant.placeOrder({
@@ -304,39 +343,34 @@ export interface ManualBuyRequest {
     stopLossPoints?: number;
 }
 
-// Backoff between quote attempts after the first. ANT's OHLC endpoint rate-limits bursts
-// (429); ANT.postOhlc's own single 1.5s retry was not enough live (2026-10-14 10:56: two
-// 429s, price fell to 0, and the quantity -1 sizing refused the order).
+// Quote retry schedules (ms between attempts after the first). Only HTTP 429 is retried, by
+// ANT.postOhlc - the single retry loop; the callers below only choose the schedule. Other errors
+// return immediately. A zero or unusable LTP is never returned as a price (getQuote throws).
+// Entry sizing uses the full schedule; exits use one short retry so a stop-loss isn't stuck behind it.
 const SAFE_QUOTE_BACKOFF_MS = [3000, 6000, 10000];
+// Exit path: one quick retry only. A stop-loss must not sit behind the entry-grade backoff.
+const EXIT_QUOTE_RETRY_MS = [1500];
+// Exit fallback floor when no live quote exists: 3% below the trigger tick's LTP (a live quote gets 1%).
+const EXIT_FALLBACK_FLOOR_FACTOR = 0.97;
 
-// Returns 0 (not a guessed price) when no usable quote can be had - sizing then refuses the
-// order. Only a 429 is retried; a session or 4xx error returns at once rather than stalling
-// the entry for the full backoff. Retries bypass the quote cache.
-// Quote fetch for sizing purposes only - never throws, returns 0 (which
-// bookkeeping.resolveManualBuyQuantity treats as "no price available, use
-// 1 lot") on any failure, so a temporary ANT hiccup never blocks a manual
-// buy that doesn't otherwise depend on ANT (e.g. Zerodha-executed orders).
-async function safeAntQuote(exch: 'NFO' | 'BFO', token: string): Promise<number> {
-    for (let attempt = 0; attempt <= SAFE_QUOTE_BACKOFF_MS.length; attempt++) {
-        try {
-            const ltp = await ANT.getInstance().getQuote(exch, token, { skipCache: attempt > 0 });
-            // A real zero (no trades today) is an answer, not a rate limit - retrying can't change it.
-            if (ltp > 0) return ltp;
-            Log.log(`[order] ANT quote returned ${ltp} for ${token} - no price`);
-            return 0;
-        } catch (e: any) {
-            if (e?.response?.status !== 429) {
-                Log.log('[order] ANT quote fetch failed (not rate-limited, not retrying):', e);
-                return 0;
-            }
-            Log.log(`[order] ANT quote attempt ${attempt + 1} rate-limited for ${token}`);
-        }
-        if (attempt < SAFE_QUOTE_BACKOFF_MS.length) {
-            await new Promise((resolve) => setTimeout(resolve, SAFE_QUOTE_BACKOFF_MS[attempt]));
-        }
+// Returns 0 (never throws) when no usable quote could be had. Sizing and exits use this.
+async function safeAntQuote(exch: string, token: string, retryDelaysMs: number[] = SAFE_QUOTE_BACKOFF_MS, skipCache = false): Promise<number> {
+    try {
+        // getQuote refuses a non-positive LTP, so anything it returns is usable.
+        return await ANT.getInstance().getQuote(exch, token, { retryDelaysMs, skipCache });
+    } catch (e: any) {
+        // Status and message only - the raw axios error carries the request headers, including the session token.
+        Log.log(`[order] ANT quote unavailable for ${token}: ${e?.response?.status ?? ''} ${e?.message ?? e} (returning 0 - no price)`);
+        return 0;
     }
-    Log.log(`[order] ANT quote unavailable for ${token} after ${SAFE_QUOTE_BACKOFF_MS.length + 1} attempts (returning 0 - no price)`);
-    return 0;
+}
+
+// For order-placing paths: a limit price derived from a missing or zero quote would send an
+// order at price 0 (a free buy, or a sell at 0), so refuse before anything reaches the broker.
+async function requireAntLtp(exch: string, token: string, retryDelaysMs: number[] = SAFE_QUOTE_BACKOFF_MS): Promise<number> {
+    const ltp = await safeAntQuote(exch, token, retryDelaysMs);
+    if (!(ltp > 0)) throw new Error(`ANT quote unavailable for ${token} - order not placed`);
+    return ltp;
 }
 
 // Live price estimate for investment-amount-based manual-buy sizing,
@@ -418,7 +452,7 @@ export async function estimateOptionPricesBatch(
             byKey.set(`${c.strike}_${c.optionType}`, { premium: side.ltp, antToken: side.token });
         }
     } catch (e) {
-        Log.log('[order] Option chain fetch for batch price estimate failed:', e);
+        Log.log(`[order] Option chain fetch for batch price estimate failed: ${e?.response?.status ?? ''} ${e?.message ?? e}`);
     }
     return byKey;
 }
@@ -436,9 +470,7 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
             strike: canonical.strike,
             optionType: canonical.optionType,
         });
-        const price = await safeAntQuote(resolved.exch as 'NFO' | 'BFO', resolved.token);
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity);
-        return enterPosition(req.userId, resolved.tradingSymbol, resolved.token, quantity, resolved.exch as 'NFO' | 'BFO', targetPoints, stopLossPoints);
+        return enterManualBuy(req, resolved.tradingSymbol, resolved.token, resolved.exch as 'NFO' | 'BFO', targetPoints, stopLossPoints);
     }
 
     if (!req.right) throw new Error('manualBuy requires either contract or right');
@@ -448,9 +480,7 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
     if (req.strikePrice) {
         const optionType = req.right === CALL ? 'CE' : 'PE';
         const contract = AntContractMaster.getInstance().findATMOption(req.strikePrice, optionType, index);
-        const price = await safeAntQuote(contract.exch as 'NFO' | 'BFO', contract.token);
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity);
-        return enterPosition(req.userId, contract.tradingSymbol, contract.token, quantity, contract.exch as 'NFO' | 'BFO', targetPoints, stopLossPoints);
+        return enterManualBuy(req, contract.tradingSymbol, contract.token, contract.exch as 'NFO' | 'BFO', targetPoints, stopLossPoints);
     }
 
     const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
@@ -521,7 +551,175 @@ export async function cancelOrderOnAnt(orderId: string): Promise<void> {
     });
 }
 
-export async function squareOffOnAnt(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+// Books a sell order's fills from the broker's trade book. Shared by every path that closes out a sell.
+async function bookSellFills(orderId: string, userId: string, tsym: string): Promise<number> {
+    const book = await ANT.getInstance().getFilledFromTradeBook(orderId);
+    if (book.quantity > 0) {
+        const sold = new Trade();
+        sold.tsym = tsym;
+        sold.quantity = book.quantity;
+        sold.price = book.avgPrice;
+        sold.lastTradePrice = book.avgPrice;
+        sold.action = 'Sell';
+        sold.status = 'COMPLETE';
+        sold.user = userId;
+        sold.broker = 'ant';
+        sold.brokerOrderId = orderId;
+        await bookkeeping.recordFill(sold);
+    }
+    return book.quantity;
+}
+
+// Cancels a resting sell so a stop-loss can exit the position, then books what that sell had already filled.
+// Returns the filled quantity. Throws (for manual review) if the broker can't confirm the order is terminal -
+// the position could then still be sold twice - or if the trade book disagrees with the order status.
+async function cancelRestingSellForExit(orderId: string, userId: string, tsym: string, prev?: PendingAntLimitOrder): Promise<number> {
+    const ant = ANT.getInstance();
+    const isTerminal = (st: string) => st === 'COMPLETE' || st === 'CANCELLED' || st === 'REJECTED';
+    // Off the poller's book first: once the cancel goes through, a poller still tracking the order would fire
+    // the cancelled listeners and re-place a sell. Re-tracked below only if the cancel isn't confirmed.
+    untrackPendingAntLimitOrder(orderId);
+    let st: { status: string; filledQuantity?: number };
+    try {
+        try {
+            await ant.cancelOrder(orderId);
+        } catch (e: any) {
+            // Often means the sell filled first; the status check below decides.
+            Log.log(`[order] cancel of resting sell ${orderId} for ${tsym} returned: ${e?.message ?? e}`);
+        }
+        st = await ant.getOrderStatus(orderId);
+        for (let i = 0; i < 10 && !isTerminal(st.status); i++) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            st = await ant.getOrderStatus(orderId);
+        }
+    } catch (e) {
+        if (prev) trackPendingAntLimitOrder(prev);
+        throw e;
+    }
+    if (!isTerminal(st.status)) {
+        if (prev) trackPendingAntLimitOrder(prev);
+        throw new Error(`Stop-loss for ${tsym}: resting sell ${orderId} not confirmed cancelled (status ${st.status}) - manual review required`);
+    }
+    let sold: number;
+    try {
+        sold = await bookSellFills(orderId, userId, tsym);
+    } catch (e: any) {
+        Log.log(`[order] ALERT: resting sell ${orderId} for ${tsym} (${userId}) is cancelled but its fills could not be read: ${e?.message ?? e} - check the broker`);
+        throw e;
+    }
+    if ((st.filledQuantity ?? 0) > sold) {
+        Log.log(`[order] ALERT: resting sell ${orderId} for ${tsym} (${userId}) shows ${st.filledQuantity} filled but the trade book has ${sold} - manual review required`);
+        throw new Error(`Resting sell ${orderId} for ${tsym}: broker status ${st.filledQuantity} filled, trade book ${sold} - not exiting until reconciled`);
+    }
+    Log.log(`[order] resting sell ${orderId} for ${tsym} (${userId}) ${st.status}: ${sold} already sold`);
+    return sold;
+}
+
+// Open quantity still held for this position, per bookkeeping. Booked fills (including a cancelled
+// sell's partial) have already reduced it, so it is the source of truth for what's left to exit.
+function openQuantity(userId: string, tsym: string): number {
+    return bookkeeping.getOpenTrades(userId).filter((t) => t.tsym === tsym).reduce((sum, t) => sum + t.quantity, 0);
+}
+
+// An exit sell that wasn't confirmed filled is re-checked after a minute (immediately when the caller
+// already waited). A COMPLETE fill is booked; a still-open or dead sell is cancelled and what's left is
+// re-placed at live LTP, then checked again, up to a limit.
+const EXIT_RECHECK_MS = 60000;
+const EXIT_MAX_REPRICES = 10;
+const EXIT_PLACE_RETRIES = 3;
+
+function scheduleExitRecheck(order: PendingAntLimitOrder, attempt: number, lastLimit: number, delayMs = EXIT_RECHECK_MS): void {
+    setTimeout(() => {
+        void recheckUnfilledExit(order, attempt, lastLimit);
+    }, delayMs);
+}
+
+async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number, lastLimit: number): Promise<void> {
+    const key = `${order.userId}:${order.tradingSymbol}`;
+    // One exit operation per position at a time: a square-off or another re-price in flight would race this one.
+    if (bookkeeping.pendingSquareOffs.has(key)) {
+        scheduleExitRecheck(order, attempt, lastLimit, 5000);
+        return;
+    }
+    bookkeeping.pendingSquareOffs.add(key);
+    try {
+        if (attempt >= EXIT_MAX_REPRICES) {
+            // Leave the last sell resting; it is still live protection.
+            Log.log(`[order] ALERT: exit ${order.orderId} for ${order.tradingSymbol} (${order.userId}) not filled after ${attempt} re-prices - still resting, manual action required`);
+            return;
+        }
+        let st = await ANT.getInstance().getOrderStatus(order.orderId).catch(() => null);
+        for (let i = 0; !st && i < 2; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            st = await ANT.getInstance().getOrderStatus(order.orderId).catch(() => null);
+        }
+        if (!st) throw new Error(`exit ${order.orderId} status unreadable`);
+        if (st.status === 'COMPLETE') {
+            const booked = await bookSellFills(order.orderId, order.userId, order.tradingSymbol);
+            if (!(booked > 0)) throw new Error(`exit ${order.orderId} COMPLETE but the trade book shows no fill - manual review`);
+            untrackPendingAntLimitOrder(order.orderId);
+            return;
+        }
+        try {
+            await cancelRestingSellForExit(order.orderId, order.userId, order.tradingSymbol, order);
+        } catch (cancelErr: any) {
+            // The sell is re-tracked when its cancel isn't confirmed, so the next check picks it up again.
+            Log.log(`[order] re-price: cancel of ${order.orderId} for ${order.tradingSymbol} not confirmed, checking again in 60s: ${cancelErr?.message ?? cancelErr}`);
+            scheduleExitRecheck(order, attempt, lastLimit);
+            return;
+        }
+        const remaining = openQuantity(order.userId, order.tradingSymbol);
+        if (remaining <= 0) {
+            Log.log(`[order] re-price: ${order.tradingSymbol} (${order.userId}) fully sold by the resting sell - nothing to re-place`);
+            return;
+        }
+        try {
+            await placeReplacementExit(order, remaining, lastLimit, attempt);
+        } catch (placeErr: any) {
+            // The resting sell is already cancelled, so nothing protects this quantity. Retry the placement
+            // on a later check rather than give up: the check re-reads the order and open quantity first.
+            Log.log(`[order] ALERT: re-placing exit for ${order.tradingSymbol} (${order.userId}) failed - position unprotected, retrying in 60s: ${placeErr?.message ?? placeErr}`);
+            scheduleExitRecheck(order, attempt, lastLimit);
+        }
+    } catch (e: any) {
+        Log.log(`[order] ALERT: re-price of exit for ${order.tradingSymbol} (${order.userId}) failed - position may be unprotected: ${e?.message ?? e}`);
+    } finally {
+        bookkeeping.pendingSquareOffs.delete(key);
+    }
+}
+
+async function placeReplacementExit(order: PendingAntLimitOrder, remaining: number, lastLimit: number, attempt: number): Promise<void> {
+    const ant = ANT.getInstance();
+    // No live quote: keep moving down from the last limit rather than stop.
+    const ltp = await safeAntQuote(order.exchange, order.instrumentId, EXIT_QUOTE_RETRY_MS, true);
+    // No live quote: hold the last limit rather than stepping down again on every check (a quote outage
+    // would otherwise compound the discount with no floor).
+    const limit = roundToTick(ltp > 0 ? ltp * 0.99 : lastLimit);
+    let orderNo = '';
+    for (let i = 0; i <= EXIT_PLACE_RETRIES; i++) {
+        try {
+            ({ orderNo } = await ant.placeOrder({
+                exchange: order.exchange,
+                instrumentId: order.instrumentId,
+                tradingSymbol: order.tradingSymbol,
+                quantity: remaining,
+                transactionType: 'SELL',
+                price: limit,
+            }));
+            break;
+        } catch (e: any) {
+            if (i === EXIT_PLACE_RETRIES) throw e;
+            Log.log(`[order] re-price: placing replacement sell for ${order.tradingSymbol} failed (attempt ${i + 1}), retrying: ${e?.message ?? e}`);
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+        }
+    }
+    const next: PendingAntLimitOrder = { orderId: orderNo, userId: order.userId, tradingSymbol: order.tradingSymbol, instrumentId: order.instrumentId, quantity: remaining, exchange: order.exchange, action: 'Sell' };
+    trackPendingAntLimitOrder(next);
+    Log.log(`[order] re-price ${attempt + 1}: ${order.tradingSymbol} (${order.userId}) ${remaining} re-placed as ${orderNo} at ${limit} (ltp=${ltp})`);
+    scheduleExitRecheck(next, attempt + 1, limit);
+}
+
+export async function squareOffOnAnt(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO', triggerLtp?: number): Promise<Trade> {
     // In-flight guard: set synchronously (no await between the check and the
     // add) so two near-simultaneous callers - e.g. a manual /prism/squareoff
     // request and exitMonitor's auto-triggered exit for the same trade - can
@@ -537,10 +735,42 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
     bookkeeping.pendingSquareOffs.add(pendingKey);
 
     try {
+        // Stop-loss takes precedence over a resting exit sell (typically BulkPcr's profit target): cancel
+        // each one, book whatever it already sold, and exit only what's left.
+        if (!(quantity > 0)) throw new Error(`Square-off for ${tsym}: invalid quantity ${quantity}`);
+        const restingSells = pendingAntSellsFor(userId, tsym);
+        // Fail before touching a resting sell if the exit can't be placed at all (no instrument token).
+        const openForCheck = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
+        if (restingSells.length > 0 && !openForCheck?.antOrderNo && !(openForCheck?.token)) {
+            throw new Error(`Square-off for ${tsym}: no instrument token - resting exit left untouched, manual action required`);
+        }
+        // In parallel: each cancel's wait is bounded, so the total wait is one poll window, not one per sell.
+        const cancels = await Promise.allSettled(restingSells.map((r) => cancelRestingSellForExit(r.orderId, userId, tsym, r)));
+        const failed = cancels.find((c) => c.status === 'rejected') as PromiseRejectedResult | undefined;
+        if (failed) throw failed.reason;
+        // What's still held is the smaller of the request and what bookkeeping shows open after the fills above.
+        quantity = Math.min(quantity, openQuantity(userId, tsym));
+        if (quantity <= 0) {
+            if (restingSells.length === 0) {
+                throw new Error(`Square-off for ${tsym}: nothing open in bookkeeping and no resting exit - not placing an order; check the broker`);
+            }
+            Log.log(`[order] squareOffOnAnt: resting sells already closed all of ${tsym} for ${userId} - nothing left to exit`);
+            const done = new Trade();
+            done.tsym = tsym;
+            done.quantity = 0;
+            done.price = 0;
+            done.action = 'Sell';
+            done.status = 'COMPLETE';
+            done.user = userId;
+            done.broker = 'ant';
+            return done;
+        }
         const ant = ANT.getInstance();
         const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
 
         let squareOffOrderNo: string | undefined;
+        let placedExit: PendingAntLimitOrder | undefined;
+        let placedLimit = 0;
         if (existing?.antOrderNo) {
             // Only bracket-order trades carry a target leg (see enterPosition) -
             // a cover-order trade has none, so its absence distinguishes 'CO'
@@ -556,9 +786,19 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
             // not up like the BUY side) fills immediately like a market sell
             // would, but with a real price floor instead of none.
             const instrumentId = existing?.token ?? '';
-            const ltp = await ant.getQuote(exchange, instrumentId);
-            const limitPrice = roundToTick(ltp * 0.99);
-            Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId} via ANT regular order (ltp=${ltp} limit=${limitPrice})`);
+            if (!instrumentId) throw new Error(`Square-off for ${tsym}: no instrument token - exit NOT placed, manual action required`);
+            let limitPrice: number;
+            const liveLtp = await safeAntQuote(exchange, instrumentId, EXIT_QUOTE_RETRY_MS, true);
+            if (liveLtp > 0) {
+                limitPrice = roundToTick(liveLtp * 0.99);
+                Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId} via ANT regular order (ltp=${liveLtp} limit=${limitPrice})`);
+            } else if (triggerLtp && triggerLtp > 0) {
+                // No live quote: the trigger tick's LTP, floored lower than a live exit would be.
+                limitPrice = roundToTick(triggerLtp * EXIT_FALLBACK_FLOOR_FACTOR);
+                Log.log(`[order] EXIT FALLBACK: no live ANT quote for ${tsym} - selling ${quantity} at floor ${limitPrice} from trigger LTP ${triggerLtp} for ${userId}`);
+            } else {
+                throw new Error(`Square-off for ${tsym}: no live quote and no trigger price - exit NOT placed, manual action required`);
+            }
             const { orderNo } = await ant.placeOrder({
                 exchange,
                 instrumentId,
@@ -568,6 +808,10 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
                 price: limitPrice,
             });
             squareOffOrderNo = orderNo;
+            // Tracked so the pending-order poller books the fill if this wait misses it - same as a bare limit sell.
+            placedExit = { orderId: orderNo, userId, tradingSymbol: tsym, instrumentId, quantity, exchange, action: 'Sell' };
+            placedLimit = limitPrice;
+            trackPendingAntLimitOrder(placedExit);
         }
 
         const trade = new Trade();
@@ -578,12 +822,32 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
         trade.user = userId;
         trade.broker = 'ant';
         if (squareOffOrderNo) {
+            const exitOrderNo = squareOffOrderNo;
+            let confirmed = true;
             try {
-                trade.price = await AntOrderNotifyStream.getInstance().waitForFill(squareOffOrderNo);
+                trade.price = await AntOrderNotifyStream.getInstance().waitForFill(exitOrderNo);
             } catch (e) {
-                Log.log('[order] squareOffOnAnt: waitForFill failed, falling back to last-seen price:', e);
-                trade.price = existing?.lastTradePrice ?? existing?.price ?? 0;
+                // Not confirmed by the push. Ask the broker once - never record a sale on a guessed price.
+                const st = await ANT.getInstance().getOrderStatus(exitOrderNo).catch(() => null);
+                if (st?.status === 'COMPLETE' && st.fillPrice && st.fillPrice > 0) {
+                    Log.log(`[order] squareOffOnAnt: push missed but broker confirms COMPLETE for ${exitOrderNo} at ${st.fillPrice}`);
+                    trade.price = st.fillPrice;
+                } else {
+                    confirmed = false;
+                }
             }
+            if (!confirmed) {
+                // Not recorded as sold. The re-price chain takes over (it cancels and re-places, or the poller
+                // books the fill). Not thrown: the exit monitor would otherwise place a second sell alongside it.
+                Log.log(`[order] ALERT: exit ${exitOrderNo} for ${tsym} (${userId}) fill not confirmed - re-pricing at live LTP, not recorded as sold`);
+                trade.status = 'PENDING';
+                if (placedExit) scheduleExitRecheck(placedExit, 0, placedLimit, 0);
+                return trade;
+            }
+            // Booked below: untrack first so the poller doesn't book the same fill, and carry the order id
+            // so recordFill's own dedupe catches a fill the poller already booked.
+            untrackPendingAntLimitOrder(exitOrderNo);
+            trade.brokerOrderId = exitOrderNo;
         } else {
             // exitBracketOrder path (existing?.antOrderNo) - no separate orderNo to poll a fill price for.
             trade.price = existing?.lastTradePrice ?? existing?.price ?? 0;
@@ -601,7 +865,7 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
 
 // exitMonitor calls this when a useGTT=false ANT trade crosses target/SL.
 exitMonitor.onExit('ant', async (trade: Trade, exchange: 'NFO' | 'BFO') => {
-    await squareOffOnAnt(trade.user, trade.tsym, trade.quantity, exchange);
+    await squareOffOnAnt(trade.user, trade.tsym, trade.quantity, exchange, trade.lastTradePrice);
 });
 
 // Entry point for the gap-screener cover-order flow (GapScreenerCoverOrder.ts) -

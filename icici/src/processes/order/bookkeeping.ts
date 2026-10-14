@@ -221,7 +221,7 @@ class OrderBookkeeping {
     // one lot if they have any headroom at all), and everyone else falls
     // back to a single lot - unchanged from the prior default behavior.
     resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number): number {
-        if (explicitQuantity !== undefined) return explicitQuantity;
+        if (explicitQuantity != null) return explicitQuantity;
         const lotSize = this.getInstrumentLotSize(tsym);
         const ctx = this.getUserContext(userId);
         if (ctx.investmentMode === 'investmentAmount' && ctx.availableAmount > 0 && price > 0) {

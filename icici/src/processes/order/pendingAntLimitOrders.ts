@@ -15,7 +15,7 @@ import { isPastMarketClose } from '../../util/marketHours';
 // Zerodha's/Breeze's pending trackers.
 const PENDING_COLLECTION = 'pendingAntLimitOrders';
 
-interface PendingAntLimitOrder {
+export interface PendingAntLimitOrder {
     orderId: string;
     userId: string;
     tradingSymbol: string;
@@ -42,6 +42,10 @@ export function trackPendingAntLimitOrder(order: PendingAntLimitOrder): void {
     Mongo.getInstance()?.db.collection(PENDING_COLLECTION)
         .replaceOne({ orderId: order.orderId }, order, { upsert: true })
         .catch((e) => Log.log('[order] pendingAntLimitOrders: Mongo persist failed for', order.orderId, e));
+}
+
+export function pendingAntSellsFor(userId: string, tradingSymbol: string): PendingAntLimitOrder[] {
+    return findPendingOrdersForSymbol(userId, tradingSymbol).filter((o) => o.action === 'Sell');
 }
 
 export function untrackPendingAntLimitOrder(orderId: string): void {
@@ -86,24 +90,35 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
     for (const [orderId, order] of pending) {
         try {
             const { status, fillPrice } = await ant.getOrderStatus(orderId);
+            // A square-off or re-price may have taken this order off the book while the status call was in
+            // flight. Acting on that stale status could re-place a sell for quantity already sold.
+            if (!pending.has(orderId)) continue;
             if (status === 'COMPLETE') {
-                untrackPendingAntLimitOrder(orderId);
-                if (!fillPrice) {
-                    Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) COMPLETE but no fill price reported - manual review required`);
-                    continue;
+                // No price on a COMPLETE record: take the fill from the trade book rather than dropping it.
+                let price = fillPrice;
+                let quantity = order.quantity;
+                if (!price) {
+                    const book = await ant.getFilledFromTradeBook(orderId);
+                    if (!(book.quantity > 0 && book.avgPrice > 0)) {
+                        Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) COMPLETE with no fill price or trade-book fill - manual review required`);
+                        continue;
+                    }
+                    price = book.avgPrice;
+                    quantity = book.quantity;
                 }
                 const trade = new Trade();
                 trade.tsym = order.tradingSymbol;
                 trade.token = order.instrumentId;
-                trade.quantity = order.quantity;
-                trade.price = fillPrice;
-                trade.lastTradePrice = fillPrice;
+                trade.quantity = quantity;
+                trade.price = price;
+                trade.lastTradePrice = price;
                 trade.action = order.action;
                 trade.status = 'COMPLETE';
                 trade.user = order.userId;
                 trade.broker = 'ant';
                 trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
+                untrackPendingAntLimitOrder(orderId); // only once booked - a failed read above leaves it to retry
                 Log.log(`[order] Pending ANT limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
             } else if (status === 'REJECTED' || status === 'CANCELLED') {
                 untrackPendingAntLimitOrder(orderId);
