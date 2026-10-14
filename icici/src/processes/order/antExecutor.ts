@@ -10,7 +10,7 @@ import { CALL } from '../../constants';
 import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
-import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, PendingAntLimitOrder } from './pendingAntLimitOrders';
+import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder } from './pendingAntLimitOrders';
 
 // AliceBlue/ANT execution, mirroring zerodhaExecutor.ts's shape and the same
 // per-user useGTT gating (bookkeeping.getUserUseGTT) - but the actual
@@ -648,6 +648,10 @@ async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number,
     }
     bookkeeping.pendingSquareOffs.add(key);
     try {
+        if (!isPendingAntOrder(order.orderId)) {
+            Log.log(`[order] re-price: ${order.orderId} (${order.tradingSymbol}, ${order.userId}) is no longer tracked - leaving it to the poller and listeners`);
+            return;
+        }
         if (attempt >= EXIT_MAX_REPRICES) {
             // Leave the last sell resting; it is still live protection.
             Log.log(`[order] ALERT: exit ${order.orderId} for ${order.tradingSymbol} (${order.userId}) not filled after ${attempt} re-prices - still resting, manual action required`);
@@ -660,7 +664,7 @@ async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number,
         }
         if (!st) {
             Log.log(`[order] re-price: status of ${order.orderId} unreadable, checking again in 60s`);
-            scheduleExitRecheck(order, attempt, lastLimit);
+            scheduleExitRecheck(order, attempt + 1, lastLimit);
             return;
         }
         if (st.status === 'COMPLETE') {

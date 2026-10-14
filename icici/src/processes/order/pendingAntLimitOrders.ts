@@ -48,6 +48,10 @@ export function pendingAntSellsFor(userId: string, tradingSymbol: string): Pendi
     return findPendingOrdersForSymbol(userId, tradingSymbol).filter((o) => o.action === 'Sell');
 }
 
+export function isPendingAntOrder(orderId: string): boolean {
+    return pending.has(orderId);
+}
+
 export function untrackPendingAntLimitOrder(orderId: string): void {
     pending.delete(orderId);
     Mongo.getInstance()?.db.collection(PENDING_COLLECTION).deleteOne({ orderId })
@@ -121,24 +125,16 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                 untrackPendingAntLimitOrder(orderId); // only once booked - a failed read above leaves it to retry
                 Log.log(`[order] Pending ANT limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
             } else if (status === 'REJECTED' || status === 'CANCELLED') {
-                untrackPendingAntLimitOrder(orderId);
-                // ANT has no separate EOD-expiry status either (same gap as
-                // Kite - see pendingLimitOrders.ts's matching comment): an
-                // unfilled DAY order auto-cancelled at exchange close reports
-                // back as plain 'CANCELLED', indistinguishable from a genuine
-                // same-day cancel. Defer firing the listener past market
-                // close to avoid driving BulkPcrStrategy.onOrderCancelled's
-                // immediate re-placement attempt against a closed exchange
-                // (live incident 2026-09-24) - let tomorrow's reconcile()
-                // handle it instead.
-                if (status === 'CANCELLED' && isPastMarketClose()) {
-                    Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close - leaving re-placement to tomorrow's reconcile()`);
-                } else {
-                    // A partly filled order: book what did fill, and report only the unfilled rest so the
-                    // listener doesn't re-place the full quantity.
-                    let remaining = order.quantity;
-                    if (order.action === 'Sell' && (filledQuantity ?? 0) > 0) {
-                        const book = await ant.getFilledFromTradeBook(orderId);
+                // Book any partial fill BEFORE taking the order off the book. If the book read or the booking
+                // throws, the order stays tracked and the next poll retries it - nothing is lost.
+                let remaining = order.quantity;
+                if (order.action === 'Sell' && (filledQuantity ?? 0) > 0) {
+                    const book = await ant.getFilledFromTradeBook(orderId);
+                    // The status shows fills the trade book doesn't have yet: wait for the book, don't guess.
+                    if (book.quantity < (filledQuantity ?? 0)) {
+                        throw new Error(`cancelled sell ${orderId}: status shows ${filledQuantity} filled, trade book ${book.quantity} - retrying on next poll`);
+                    }
+                    if (book.quantity > 0) {
                         const partial = new Trade();
                         partial.tsym = order.tradingSymbol;
                         partial.token = order.instrumentId;
@@ -151,14 +147,21 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                         partial.broker = 'ant';
                         partial.brokerOrderId = orderId;
                         await bookkeeping.recordFill(partial);
-                        remaining = order.quantity - book.quantity;
-                        Log.log(`[order] Pending ANT sell ${orderId} (${order.tradingSymbol}) cancelled after ${book.quantity} filled - reporting ${remaining} unfilled`);
                     }
+                    remaining = order.quantity - book.quantity;
+                    Log.log(`[order] Pending ANT sell ${orderId} (${order.tradingSymbol}) cancelled after ${book.quantity} filled - ${remaining} unfilled`);
+                }
+                untrackPendingAntLimitOrder(orderId);
+                // ANT has no separate EOD-expiry status either (same gap as Kite - see pendingLimitOrders.ts):
+                // an unfilled DAY order auto-cancelled at exchange close reports back as plain 'CANCELLED'.
+                // Defer the listener past market close to avoid re-placing against a closed exchange
+                // (live incident 2026-09-24) - tomorrow's reconcile() handles it. Fills are already booked above.
+                if (status === 'CANCELLED' && isPastMarketClose()) {
+                    Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close - leaving re-placement to tomorrow's reconcile()`);
+                } else if (remaining > 0) {
                     const reason = status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
-                    if (remaining > 0) {
-                        for (const listener of cancelledListeners) {
-                            listener(order.userId, order.tradingSymbol, order.instrumentId, remaining, order.exchange, order.action, 'ant', orderId, reason);
-                        }
+                    for (const listener of cancelledListeners) {
+                        listener(order.userId, order.tradingSymbol, order.instrumentId, remaining, order.exchange, order.action, 'ant', orderId, reason);
                     }
                     Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status}`);
                 }
