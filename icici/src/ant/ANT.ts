@@ -691,13 +691,26 @@ class ANT {
     // `averageTradedPrice` (confirmed live), populated only on the COMPLETE
     // record.
     async getFillPrice(orderNo: string, maxAttempts = 12, intervalMs = 5000): Promise<number> {
+        // Headers built once, outside the retry loop: an absent/expired session throws
+        // here and must fail fast rather than be retried as if it were a network blip.
+        const headers = this.orderHistoryHeaders();
+        let lastPollError: unknown = null;
+        let anyPollSucceeded = false;
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            const resp = await axios.post(
-                'https://a3.aliceblueonline.com/open-api/od/v1/orders/history',
-                { brokerOrderId: orderNo },
-                { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
-            );
-            const records: any[] = resp.data?.result ?? [];
+            const isLast = attempt === maxAttempts - 1;
+            let records: any[];
+            try {
+                records = await this.postOrderHistory(orderNo, headers);
+                anyPollSucceeded = true;
+            } catch (pollErr: any) {
+                if (!ANT.isTransientPollError(pollErr)) throw pollErr;
+                // A transient error on one poll must not abort the loop - the order may
+                // well have filled and the next poll would see it.
+                lastPollError = pollErr;
+                Log.log(`[ANT.getFillPrice] poll ${attempt + 1}/${maxAttempts} for ${orderNo} transient error, retrying: ${pollErr?.message ?? pollErr}`);
+                if (!isLast) await new Promise((resolve) => setTimeout(resolve, intervalMs));
+                continue;
+            }
             const completed = records.find((r) => r.orderStatus === 'COMPLETE');
             if (completed) {
                 const fillPrice = completed.averageTradedPrice ?? completed.averagePrice ?? completed.avgPrice;
@@ -710,9 +723,76 @@ class ANT {
             if (rejected) {
                 throw new Error(`ANT order ${orderNo} ${rejected.orderStatus}: ${JSON.stringify(rejected)}`);
             }
-            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            if (!isLast) await new Promise((resolve) => setTimeout(resolve, intervalMs));
         }
-        throw new Error(`ANT order ${orderNo} did not complete within ${maxAttempts * intervalMs}ms`);
+        // Only claim UNKNOWN when no poll ever reached the broker. If some polls succeeded
+        // and showed a non-terminal status, the order is known to be open, not unknown.
+        const unknown = !anyPollSucceeded && lastPollError
+            ? ` - fill status UNKNOWN (no poll succeeded), last poll error: ${(lastPollError as any)?.message ?? lastPollError}`
+            : '';
+        throw new Error(`ANT order ${orderNo} did not complete within ${maxAttempts * intervalMs}ms${unknown}`);
+    }
+
+    // Shared by getFillPrice and getOrderStatus so the endpoint, headers and response
+    // shape live in one place.
+    private orderHistoryHeaders(): Record<string, string> {
+        return { ...this.authHeader(), 'Content-Type': 'application/json' };
+    }
+
+    private async postOrderHistory(orderNo: string, headers: Record<string, string>): Promise<any[]> {
+        const resp = await axios.post(
+            'https://a3.aliceblueonline.com/open-api/od/v1/orders/history',
+            { brokerOrderId: orderNo },
+            { headers }
+        );
+        // A 200 carrying an error envelope is not "no records yet" - surface it so an
+        // invalid session can't masquerade as a pending order.
+        const envelopeStatus = resp.data?.status;
+        if (envelopeStatus !== undefined && envelopeStatus !== 'Ok') {
+            const envelopeErr: any = new Error(`ANT orders/history not Ok for ${orderNo}: ${JSON.stringify(resp.data)}`);
+            envelopeErr.nonTransient = true;
+            throw envelopeErr;
+        }
+        return resp.data?.result ?? [];
+    }
+
+    // Transient = no HTTP response at all (ECONNRESET, timeout, DNS), or 5xx/408/429.
+    // Any other status (401/403 auth, 4xx) is a real answer and must fail fast.
+    private static isTransientPollError(e: any): boolean {
+        if (e?.nonTransient) return false;
+        if (e?.response) {
+            const status = e.response.status;
+            return status >= 500 || status === 408 || status === 429;
+        }
+        // No HTTP response: only genuine network-level codes count. Anything else (a
+        // programming error, a non-network throw) must surface immediately, not be retried.
+        return ['ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'EPIPE'].includes(e?.code);
+    }
+
+    // Fill source for when the order-history poll could not confirm a fill. The trade book
+    // lists each execution with filledQuantity/tradedPrice keyed by brokerOrderId (confirmed
+    // live 2026-10-14, order 26101400059996 - one row per fill). Quantity 0 means no fill is
+    // listed. Throws on lookup failure on purpose: a caller must never read a failed lookup
+    // as "nothing filled" and record 0 over a possibly-filled order.
+    async getFilledFromTradeBook(orderNo: string): Promise<{ quantity: number; avgPrice: number }> {
+        if (!this.userSession) throw new Error('No active session. Please login first.');
+        const tradesResp = await axios.get(
+            'https://a3.aliceblueonline.com/open-api/od/v1/orders/trades',
+            { headers: { 'Authorization': `Bearer ${this.userSession}` } }
+        );
+        if (tradesResp.data?.status !== 'Ok') {
+            throw new Error(`ANT trade book not Ok: ${JSON.stringify(tradesResp.data)}`);
+        }
+        const trades: any[] = tradesResp.data.result ?? [];
+        let qty = 0;
+        let value = 0;
+        for (const t of trades) {
+            if (String(t.brokerOrderId) !== String(orderNo)) continue;
+            const q = Number(t.filledQuantity ?? 0);
+            qty += q;
+            value += q * Number(t.tradedPrice ?? 0);
+        }
+        return { quantity: qty, avgPrice: qty > 0 ? value / qty : 0 };
     }
 
     // Single-shot status check (no retry loop) - for a poller that checks a
@@ -729,12 +809,22 @@ class ANT {
     // resolved for ANT). Returned alongside status rather than folded into
     // the boolean callers used to derive from status alone.
     async getOrderStatus(orderNo: string): Promise<{ status: string; fillPrice?: number; filledQuantity?: number }> {
-        const resp = await axios.post(
-            'https://a3.aliceblueonline.com/open-api/od/v1/orders/history',
-            { brokerOrderId: orderNo },
-            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
-        );
-        const records: any[] = resp.data?.result ?? [];
+        // Up to 3 attempts for transient transport errors - this feeds the cancel
+        // recheck, where a single reset would leave the caller unable to tell whether
+        // the resting order filled.
+        const headers = this.orderHistoryHeaders();
+        const maxAttempts = 3;
+        let records: any[] = [];
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            try {
+                records = await this.postOrderHistory(orderNo, headers);
+                break;
+            } catch (e: any) {
+                if (!ANT.isTransientPollError(e) || attempt === maxAttempts - 1) throw e;
+                Log.log(`[ANT.getOrderStatus] attempt ${attempt + 1}/${maxAttempts} for ${orderNo} transient error, retrying: ${e?.message ?? e}`);
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+            }
+        }
         const completed = records.find((r) => r.orderStatus === 'COMPLETE');
         if (completed) {
             const fillPrice = completed.averageTradedPrice ?? completed.averagePrice ?? completed.avgPrice;

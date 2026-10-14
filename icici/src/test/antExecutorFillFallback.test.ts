@@ -56,6 +56,22 @@ class MockAnt {
         if (this.getFillPriceResult instanceof Error) throw this.getFillPriceResult;
         return this.getFillPriceResult;
     }
+
+    // Trade-book fill for the unconfirmed-buy resolver. Default: nothing filled.
+    tradeBookFill: { quantity: number; avgPrice: number } = { quantity: 0, avgPrice: 0 };
+    cancelCalls: string[] = [];
+
+    async getFilledFromTradeBook(_orderNo: string): Promise<{ quantity: number; avgPrice: number }> {
+        return this.tradeBookFill;
+    }
+
+    async cancelOrder(orderNo: string): Promise<void> {
+        this.cancelCalls.push(orderNo);
+    }
+
+    async getOrderStatus(_orderNo: string): Promise<{ status: string; filledQuantity: number }> {
+        return { status: 'CANCELLED', filledQuantity: this.tradeBookFill.quantity };
+    }
 }
 
 class MockNotifyStream {

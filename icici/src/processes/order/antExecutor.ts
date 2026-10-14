@@ -31,6 +31,83 @@ import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder } from './pendin
 // documentation, which disagrees with itself in places - NOT yet verified
 // against a live response. See the plan's verification section.
 
+// Resolves a BUY whose fill the order-history poll could not confirm (transport errors,
+// or a timeout). Returns what is actually held. Never guesses:
+//  - a full fill in the trade book is recorded as is;
+//  - otherwise the resting order is cancelled (only when mayCancel - a bracket/cover parent
+//    is left to the broker, cancelling it would also drop its protection legs), the cancel is
+//    waited on until the order is terminal, and the trade book is re-read;
+//  - any inability to establish the outcome throws for manual review, with the order id.
+// Quantity 0 is returned only when the broker confirms nothing filled; the original poll
+// error is then rethrown so the caller reports the failure as before.
+async function resolveUnconfirmedAntBuy(
+    ant: ANT,
+    orderNo: string,
+    requested: number,
+    mayCancel: boolean,
+    pollErr: any
+): Promise<{ quantity: number; avgPrice: number }> {
+    const manualReview = (why: string) =>
+        new Error(`ANT order ${orderNo} fill status unresolved (${why}) - manual review required. Poll error: ${pollErr?.message ?? pollErr}`);
+    const terminal = (st: string) => st === 'COMPLETE' || st === 'CANCELLED' || st === 'REJECTED';
+
+    let before: { quantity: number; avgPrice: number } | null = null;
+    try {
+        before = await ant.getFilledFromTradeBook(orderNo);
+    } catch (e: any) {
+        Log.log(`[order] trade-book lookup failed for ${orderNo} before cancel: ${e?.message ?? e}`);
+    }
+    if (before && before.quantity === requested) return before;
+
+    if (!mayCancel) {
+        throw manualReview(`bracket/cover parent, not auto-cancelled; trade book shows ${before?.quantity ?? 'unknown'}/${requested}`);
+    }
+
+    // Fill quantity as order history reports it. Used to catch a trade book that lags or
+    // lists nothing for an order history already shows as partially filled.
+    let statusFilledQty = 0;
+    let cancelErr: any = null;
+    try {
+        await ant.cancelOrder(orderNo);
+    } catch (e) {
+        cancelErr = e;
+    }
+    if (cancelErr) {
+        // Cancel didn't go through: the order is dead only if its status is terminal.
+        const status = await ant.getOrderStatus(orderNo).catch(() => null);
+        if (!status || !terminal(status.status)) {
+            throw manualReview(`cancel failed: ${cancelErr?.message ?? cancelErr}, order not terminal`);
+        }
+        statusFilledQty = status.filledQuantity ?? 0;
+    } else {
+        // Cancel accepted, but fills can still be in flight until the broker reports the
+        // order terminal. Read the trade book only after that, never mid-cancel.
+        let settled = false;
+        for (let i = 0; i < 10 && !settled; i++) {
+            const status = await ant.getOrderStatus(orderNo).catch(() => null);
+            settled = !!status && terminal(status.status);
+            if (settled) statusFilledQty = status!.filledQuantity ?? 0;
+            else await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+        if (!settled) throw manualReview('cancel accepted but order never reached a terminal status');
+    }
+
+    let after: { quantity: number; avgPrice: number };
+    try {
+        after = await ant.getFilledFromTradeBook(orderNo);
+    } catch (e: any) {
+        throw manualReview(`order cancelled but trade-book read failed: ${e?.message ?? e}`);
+    }
+    if (after.quantity === 0) {
+        if (statusFilledQty > 0) {
+            throw manualReview(`order history reports ${statusFilledQty} filled but trade book lists none`);
+        }
+        Log.log(`[order] ANT order ${orderNo} confirmed unfilled after cancel`);
+        throw pollErr;
+    }
+    return after;
+}
+
 export async function enterPosition(
     userId: string,
     tradingSymbol: string,
@@ -113,19 +190,30 @@ export async function enterPosition(
     // find a COMPLETE fill do we treat the order as genuinely not filled and
     // let the error propagate, exactly as before.
     let entryPrice: number;
+    let filledQuantity = quantity;
     try {
         entryPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo);
         Log.log(`[order] Filled ${tradingSymbol} at ${entryPrice} for ${userId}`);
     } catch (waitErr) {
         Log.log(`[order] waitForFill failed for ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
-        entryPrice = await ant.getFillPrice(orderNo);
-        Log.log(`[order] REST fallback confirmed fill for ${tradingSymbol} at ${entryPrice} for ${userId} (order-notify push was missed)`);
+        try {
+            entryPrice = await ant.getFillPrice(orderNo);
+            Log.log(`[order] REST fallback confirmed fill for ${tradingSymbol} at ${entryPrice} for ${userId} (order-notify push was missed)`);
+        } catch (fallbackErr: any) {
+            // The history poll could not confirm a fill, so the order may still be resting
+            // at the broker. Resolve the real outcome before recording anything.
+            const parentIsBrokerBracketOrCover = useCover || useBracket;
+            const resolved = await resolveUnconfirmedAntBuy(ant, orderNo, quantity, !parentIsBrokerBracketOrCover, fallbackErr);
+            entryPrice = resolved.avgPrice;
+            filledQuantity = resolved.quantity;
+            Log.log(`[order] unconfirmed ANT buy ${orderNo} resolved: ${filledQuantity}/${quantity} filled @ ${entryPrice} for ${userId}`);
+        }
     }
 
     const trade = new Trade();
     trade.tsym = tradingSymbol;
     trade.token = instrumentId;
-    trade.quantity = quantity;
+    trade.quantity = filledQuantity;
     trade.price = entryPrice;
     trade.lastTradePrice = entryPrice;
     trade.action = 'Buy';
