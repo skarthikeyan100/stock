@@ -155,6 +155,24 @@ async function connectBreezeOrderNotifyIfSessionValid(context: string): Promise<
 // previously pendingUsers was never cleared on this path, so a single failed
 // order (broker rejection, network error, waitForFill timeout) permanently
 // blocked that user's future orders until process restart.
+// chunkedBuyIndex's quantity: -1 convention - "spend whatever maxInvestment
+// headroom is left" instead of a fixed quantity. Resolved here, once a
+// broker-specific price estimate exists, rather than in BulkPcrStrategy
+// itself (which never sees per-broker pricing - see chunkedBuyIndex's
+// payload). Returns a lot-aligned quantity, or an error string when there's
+// no headroom (or the computed quantity would be 0 for some other reason),
+// so callers can respond with ok:false instead of placing a zero-quantity
+// order.
+function resolveChunkedBuyQuantity(req: OrderRequest, pricePerUnit: number, tsym: string): { quantity: number; error?: undefined } | { quantity?: undefined; error: string } {
+    if (req.payload.quantity !== -1) return { quantity: req.payload.quantity };
+    const lotSize = bookkeeping.getInstrumentLotSize(tsym);
+    const quantity = bookkeeping.resolveMaxInvestmentQuantity(req.userId, pricePerUnit, lotSize);
+    if (quantity <= 0) {
+        return { error: `chunkedBuyIndex: quantity=-1 but no available investment headroom to size an order from (maxInvestment=${bookkeeping.getUserMaxInvestment(req.userId)}, current=${bookkeeping.getCurrentInvestment(req.userId)}, price=${pricePerUnit})` };
+    }
+    return { quantity };
+}
+
 async function placeOrderWithPendingGuard(
     req: OrderRequest,
     estimatedOrderValue: number | undefined,
@@ -281,7 +299,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     }
                     const contract = await BreezeContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
                     const buyPrice = await getMarketableBreezeBuyPrice(contract);
-                    const estimatedOrderValue = req.payload.quantity * buyPrice;
+                    const resolvedQty = resolveChunkedBuyQuantity(req, buyPrice, tsymFor(contract));
+                    if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
+                    const quantity = resolvedQty.quantity;
+                    const estimatedOrderValue = quantity * buyPrice;
 
                     return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
                         const result = await buyChunked(
@@ -290,7 +311,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                                 userId: req.userId,
                                 tradingSymbol: tsymFor(contract),
                                 instrumentId: contract.token,
-                                quantity: req.payload.quantity,
+                                quantity,
                                 exchange: 'NFO',
                             },
                             req.payload.freezeQuantity
@@ -317,7 +338,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     // own rounding - needed here only for the pre-trade price estimate.
                     const atmStrike = Math.round(niftyLtp / 50) * 50;
                     const estimatedPrice = await antExecutor.estimateOptionPrice('NIFTY', atmStrike, optionType);
-                    const estimatedOrderValue = req.payload.quantity * estimatedPrice;
+                    const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol);
+                    if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
+                    const quantity = resolvedQty.quantity;
+                    const estimatedOrderValue = quantity * estimatedPrice;
 
                     return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
                         const result = await buyChunked(
@@ -326,7 +350,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                                 userId: req.userId,
                                 tradingSymbol: contract.tradingSymbol,
                                 instrumentId: commonToken,
-                                quantity: req.payload.quantity,
+                                quantity,
                                 exchange: contract.exchange,
                                 driftCancelPoints: req.payload.driftCancelPoints,
                             },
@@ -348,7 +372,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     const contract = AntContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
                     const atmStrike = Math.round(niftyLtp / 50) * 50;
                     const estimatedPrice = await antExecutor.estimateOptionPrice('NIFTY', atmStrike, optionType);
-                    const estimatedOrderValue = req.payload.quantity * estimatedPrice;
+                    const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol);
+                    if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
+                    const quantity = resolvedQty.quantity;
+                    const estimatedOrderValue = quantity * estimatedPrice;
 
                     return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
                         const result = await buyChunked(
@@ -357,7 +384,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                                 userId: req.userId,
                                 tradingSymbol: contract.tradingSymbol,
                                 instrumentId: contract.token,
-                                quantity: req.payload.quantity,
+                                quantity,
                                 exchange: contract.exch as 'NFO' | 'BFO',
                                 driftCancelPoints: req.payload.driftCancelPoints,
                             },
@@ -381,7 +408,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     const contract = PrismContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
                     const atmStrike = Math.round(niftyLtp / 50) * 50;
                     const estimatedPrice = await antExecutor.estimateOptionPrice('NIFTY', atmStrike, optionType);
-                    const estimatedOrderValue = req.payload.quantity * estimatedPrice;
+                    const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol);
+                    if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
+                    const quantity = resolvedQty.quantity;
+                    const estimatedOrderValue = quantity * estimatedPrice;
 
                     return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
                         const result = await buyChunked(
@@ -390,7 +420,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                                 userId: req.userId,
                                 tradingSymbol: contract.tradingSymbol,
                                 instrumentId: contract.token,
-                                quantity: req.payload.quantity,
+                                quantity,
                                 exchange: 'NFO',
                                 driftCancelPoints: req.payload.driftCancelPoints,
                             },

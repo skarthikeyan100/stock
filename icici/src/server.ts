@@ -16,17 +16,19 @@ console.log = console.error;
 import 'dotenv/config';
 
 // This host is dual-stack; Node's Happy-Eyeballs connection logic prefers
-// IPv6 when both are available, which bypasses Kite's IPv4-only order-
-// placement allowlist (OAuth token exchange happens in this process).
+// IPv6 when both are available, which bypasses Kite's AND AliceBlue/ANT's
+// IPv4-only order-placement allowlists (OAuth token exchange for both happens
+// in this process, plus ANT's own REST quote/trade/position reads used by
+// this process's /broker/ant/* and /ant/* routes).
 // dns.setDefaultResultOrder('ipv4first') looks like the fix but does NOT
 // actually change the connected family (confirmed live in orderProcess.ts -
 // see kiteDns.ts's comment); forcing IPv4 process-wide also broke Breeze
 // (session generation/trade list/positions also happen in this process -
 // see Breeze.getInstance() calls below), whose registered "static IP" is
-// apparently the IPv6 address. So this is scoped to just Kite's hostname,
-// same as orderProcess.ts.
-import { installKiteIpv4Override } from './processes/order/kiteDns';
-installKiteIpv4Override();
+// apparently the IPv6 address. So this is scoped to just the specific
+// hostnames that need it, same as orderProcess.ts.
+import { installIpv4OnlyHostOverride } from './processes/order/kiteDns';
+installIpv4OnlyHostOverride();
 
 import Log from './util/Log';
 import express from 'express';

@@ -16,7 +16,9 @@ import BulkPcrStrategy from './BulkPcrStrategy';
 //   times: ['10:35', '11:35', '12:35']  - HH:mm slots, each attempted at most
 //                                          once per day
 //   quantity: 1340                      - written onto BulkPcrStrategy's own
-//                                          config block when armed
+//                                          config block when armed; -1 means
+//                                          "size from maxInvestment" (see
+//                                          BulkPcrStrategy.ts's header comment)
 //   targetPoints: 2                     - same
 //   brokers: ['ant', 'prism']            - same
 //

@@ -9,7 +9,19 @@ import { roundToTick } from '../zerodha/Zerodha';
 import MomentumSignal from './MomentumSignal';
 import { isPastMarketClose } from '../util/marketHours';
 
-const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot - no recheck-throttle needed here (one-shot)
+const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
+
+// Minimum gap between resolveEntryRight attempts (PCR option-chain fetch +
+// momentum's ATM subscribe/unsubscribe round trip). NiftyQuote ticks arrive
+// several times a second, and without this throttle a momentum/PCR
+// disagreement (which retries "on the next tick" by design) hammers ANT's
+// getOptionChainPCR/OHLC endpoints at that same multi-per-second rate -
+// live incident 2026-10-12: ~2-3 attempts/sec for several minutes 429'd
+// AliceBlue's OHLC endpoint, which then made the real chunkedBuyIndex entry
+// (once PCR/momentum finally agreed) fail outright with the same 429,
+// landing the broker position in phase='error' for no reason other than
+// this strategy's own call volume.
+const ENTRY_ATTEMPT_THROTTLE_MS = 10_000;
 
 const STATE_COLLECTION = 'bulkPcrStrategyState';
 
@@ -55,7 +67,11 @@ function isStillWithinSameTradingSession(epochMs: number): boolean {
 }
 
 // One-shot large block order: buys a total quantity (config `quantity`,
-// default 13975 = 215 lots x 65) of a NIFTY option independently and in
+// default 13975 = 215 lots x 65 - or -1, meaning "size it from maxInvestment
+// instead of a fixed number": resolveChunkedBuyQuantity/
+// resolveMaxInvestmentQuantity in orderProcess.ts/bookkeeping.ts compute the
+// largest lot-aligned quantity that fits under `maxInvestment` once that
+// broker's option premium is known) of a NIFTY option independently and in
 // FULL on every configured broker (config `brokers: [zerodha, breeze]`,
 // falling back to a single legacy `broker:` field) - not a split of one
 // pooled quantity. One PCR-driven direction decision drives every broker's
@@ -106,6 +122,7 @@ export default class BulkPcrStrategy extends Strategy {
     private positions = new Map<BrokerName, BrokerPosition>();
     private momentum = new MomentumSignal();
     private lastGateLog = new Map<string, number>();
+    private lastEntryAttemptTime = 0;
 
     receive(oldStats, newStats) {}
 
@@ -194,6 +211,11 @@ export default class BulkPcrStrategy extends Strategy {
         if (!this.enabled) { this.logGateOnce('disabled'); return; }
         if (this.phase !== 'idle') { this.logGateOnce(`entry already in progress or done (phase=${this.phase})`); return; }
         if (!this.isTimeInRange()) { this.logGateOnce('outside time window'); return; }
+
+        const now = Date.now();
+        if (now - this.lastEntryAttemptTime < ENTRY_ATTEMPT_THROTTLE_MS) return; // see ENTRY_ATTEMPT_THROTTLE_MS comment
+        this.lastEntryAttemptTime = now;
+
         this.logGateOnce('gates clear - attempting entry');
 
         // Reentrancy guard set synchronously here, BEFORE the PCR/momentum
@@ -236,6 +258,13 @@ export default class BulkPcrStrategy extends Strategy {
     // earlier one already reserved its own share of the same cap - this is
     // the capital gate working as designed, not a bug, but easy to be
     // surprised by if `maxInvestment` was only ever sized for one broker.
+    // With `quantity: -1` this gets sharper: each broker's chunkedBuyIndex
+    // independently computes "max quantity for the FULL maxInvestment" (see
+    // bookkeeping.resolveMaxInvestmentQuantity), so 2+ concurrently-entering
+    // brokers can together request well over maxInvestment before either's
+    // fill lands and reduces the other's headroom - see that method's
+    // comment. Only safe today because config.yml's `brokers` list is a
+    // single entry.
     private async enterOnBroker(broker: BrokerName, right: string, quantity: number, niftyLtp: number): Promise<void> {
         this.positions.set(broker, {
             phase: 'buying',

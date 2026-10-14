@@ -1,0 +1,1238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>GapScreener Scripts Documentation</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap">
+    <style>
+        /* Design Plan
+           Layout: Sidebar navigation + main content panel for technical docs
+           Color tokens: slate grays with green accent for code/success
+           Type: Inter for UI, Fira Code for code blocks
+        */
+
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f8fafc;
+            --bg-tertiary: #f1f5f9;
+            --bg-code: #0f172a;
+            --fg-primary: #1e293b;
+            --fg-secondary: #64748b;
+            --fg-tertiary: #94a3b8;
+            --border: #e2e8f0;
+            --border-light: #f1f5f9;
+            --accent: #10b981;
+            --accent-light: #d1fae5;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --info: #3b82f6;
+            --code-fg: #e2e8f0;
+            --code-keyword: #a3e635;
+            --code-string: #86efac;
+            --code-number: #fbbf24;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                --bg-primary: #0f172a;
+                --bg-secondary: #1e293b;
+                --bg-tertiary: #334155;
+                --bg-code: #1e293b;
+                --fg-primary: #f1f5f9;
+                --fg-secondary: #cbd5e1;
+                --fg-tertiary: #94a3b8;
+                --border: #334155;
+                --border-light: #1e293b;
+                --accent: #10b981;
+                --accent-light: #064e3b;
+                --error: #f87171;
+                --warning: #fcd34d;
+                --info: #60a5fa;
+                --code-fg: #e2e8f0;
+                --code-keyword: #a3e635;
+                --code-string: #86efac;
+                --code-number: #fbbf24;
+                color-scheme: dark;
+            }
+        }
+
+        :root[data-theme="dark"] {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-tertiary: #334155;
+            --bg-code: #1e293b;
+            --fg-primary: #f1f5f9;
+            --fg-secondary: #cbd5e1;
+            --fg-tertiary: #94a3b8;
+            --border: #334155;
+            --border-light: #1e293b;
+            --accent: #10b981;
+            --accent-light: #064e3b;
+            --error: #f87171;
+            --warning: #fcd34d;
+            --info: #60a5fa;
+            --code-fg: #e2e8f0;
+            --code-keyword: #a3e635;
+            --code-string: #86efac;
+            --code-number: #fbbf24;
+            color-scheme: dark;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg-primary);
+            color: var(--fg-primary);
+            line-height: 1.6;
+            padding: 0 16px;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            gap: 32px;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding-block: env(safe-area-inset-top, 16px) env(safe-area-inset-bottom, 16px);
+            min-height: 100vh;
+        }
+
+        /* Navigation Sidebar */
+        nav {
+            position: sticky;
+            top: env(safe-area-inset-top, 16px);
+            height: fit-content;
+        }
+
+        nav h3 {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--fg-tertiary);
+            margin-bottom: 12px;
+        }
+
+        nav ul {
+            list-style: none;
+        }
+
+        nav li {
+            margin-bottom: 4px;
+        }
+
+        nav a {
+            display: block;
+            padding: 8px 12px;
+            color: var(--fg-secondary);
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 14px;
+            transition: all 150ms ease;
+            border-left: 2px solid transparent;
+        }
+
+        nav a:hover {
+            color: var(--accent);
+            background: var(--bg-tertiary);
+        }
+
+        nav a.active {
+            color: var(--accent);
+            background: var(--accent-light);
+            border-left-color: var(--accent);
+            font-weight: 500;
+        }
+
+        /* Main Content */
+        main {
+            padding-bottom: 48px;
+        }
+
+        .page-title {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: var(--fg-primary);
+        }
+
+        .page-subtitle {
+            font-size: 16px;
+            color: var(--fg-secondary);
+            margin-bottom: 32px;
+            max-width: 65ch;
+        }
+
+        section {
+            margin-bottom: 48px;
+            scroll-margin-top: calc(env(safe-area-inset-top, 0px) + 16px);
+        }
+
+        h2 {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            color: var(--fg-primary);
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        h3 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--fg-primary);
+            margin-top: 24px;
+        }
+
+        h4 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 16px;
+            margin-bottom: 8px;
+            color: var(--fg-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        p {
+            margin-bottom: 12px;
+            color: var(--fg-secondary);
+            max-width: 65ch;
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 150ms ease;
+        }
+
+        a:hover {
+            border-bottom-color: var(--accent);
+        }
+
+        /* Code Blocks */
+        pre {
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+            overflow-x: auto;
+            margin-bottom: 16px;
+            font-family: 'Fira Code', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        code {
+            color: var(--code-fg);
+        }
+
+        pre code {
+            font-size: 13px;
+        }
+
+        /* Inline code */
+        p code, li code, h4 code {
+            background: var(--bg-tertiary);
+            color: var(--accent);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Fira Code', monospace;
+            font-size: 12px;
+        }
+
+        /* Cards and Info Boxes */
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        .card h4 {
+            margin-top: 0;
+            color: var(--fg-primary);
+            text-transform: none;
+            letter-spacing: normal;
+            font-size: 14px;
+        }
+
+        .info-box {
+            display: flex;
+            gap: 12px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            border-left: 4px solid;
+        }
+
+        .info-box.note {
+            background: var(--info);
+            background: color-mix(in srgb, var(--info) 10%, transparent);
+            border-left-color: var(--info);
+        }
+
+        .info-box.warning {
+            background: var(--warning);
+            background: color-mix(in srgb, var(--warning) 10%, transparent);
+            border-left-color: var(--warning);
+        }
+
+        .info-box.important {
+            background: var(--error);
+            background: color-mix(in srgb, var(--error) 10%, transparent);
+            border-left-color: var(--error);
+        }
+
+        .info-box.success {
+            background: var(--accent);
+            background: color-mix(in srgb, var(--accent) 10%, transparent);
+            border-left-color: var(--accent);
+        }
+
+        .info-box p {
+            margin: 0;
+            color: var(--fg-primary);
+            font-size: 14px;
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+
+        thead {
+            background: var(--bg-tertiary);
+        }
+
+        th {
+            text-align: left;
+            padding: 12px;
+            font-weight: 600;
+            color: var(--fg-primary);
+            border-bottom: 2px solid var(--border);
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+            color: var(--fg-secondary);
+        }
+
+        tbody tr:hover {
+            background: var(--bg-secondary);
+        }
+
+        /* Lists */
+        ul, ol {
+            margin-left: 24px;
+            margin-bottom: 16px;
+        }
+
+        li {
+            margin-bottom: 8px;
+            color: var(--fg-secondary);
+        }
+
+        /* Flow Diagram */
+        .flow-diagram {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 24px;
+            font-size: 13px;
+        }
+
+        .flow-step {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: 'Fira Code', monospace;
+        }
+
+        .flow-step-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            background: var(--accent);
+            color: white;
+            border-radius: 50%;
+            flex-shrink: 0;
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .flow-arrow {
+            text-align: center;
+            color: var(--fg-tertiary);
+            font-size: 12px;
+        }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .container {
+                grid-template-columns: 1fr;
+                gap: 24px;
+            }
+
+            nav {
+                position: relative;
+                top: 0;
+            }
+
+            .page-title {
+                font-size: 24px;
+            }
+
+            h2 {
+                font-size: 20px;
+            }
+        }
+
+        /* Utility classes */
+        .text-muted {
+            color: var(--fg-tertiary);
+            font-size: 13px;
+        }
+
+        .highlight {
+            background: var(--accent-light);
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: var(--fg-primary);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-right: 8px;
+            margin-bottom: 8px;
+        }
+
+        .badge.required {
+            background: color-mix(in srgb, var(--error) 20%, transparent);
+            color: var(--error);
+        }
+
+        .badge.optional {
+            background: color-mix(in srgb, var(--info) 20%, transparent);
+            color: var(--info);
+        }
+
+        .badge.live {
+            background: color-mix(in srgb, var(--accent) 20%, transparent);
+            color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Sidebar Navigation -->
+        <nav>
+            <h3>Documentation</h3>
+            <ul>
+                <li><a href="#overview" class="nav-link">Overview</a></li>
+                <li><a href="#morning-pipeline" class="nav-link">Morning Pipeline</a></li>
+                <li><a href="#eod-pipeline" class="nav-link">EOD Pipeline</a></li>
+                <li><a href="#monitoring" class="nav-link">Live Monitoring</a></li>
+                <li><a href="#scripts" class="nav-link">Scripts Reference</a></li>
+                <li><a href="#technical-details" class="nav-link">Technical Details</a></li>
+                <li><a href="#configuration" class="nav-link">Configuration</a></li>
+                <li><a href="#troubleshooting" class="nav-link">Troubleshooting</a></li>
+            </ul>
+        </nav>
+
+        <!-- Main Content -->
+        <main>
+            <h1 class="page-title">GapScreener Scripts</h1>
+            <p class="page-subtitle">Comprehensive guide to gap-screener trading pipeline scripts. Includes morning CSV generation, option quoting, EOD analysis, and real-time trade monitoring.</p>
+
+            <!-- Overview Section -->
+            <section id="overview">
+                <h2>Overview</h2>
+                <p>The GapScreener system is a two-phase daily trading pipeline designed to identify and execute gap-trading opportunities in index options. It operates in three stages:</p>
+
+                <div class="info-box success">
+                    <p><strong>Purpose:</strong> Automatically discover gap-up/gap-down opportunities in stocks, resolve nearest out-of-the-money options, and track intraday performance versus expected outcomes.</p>
+                </div>
+
+                <h3>Key Components</h3>
+                <ul>
+                    <li><strong>Gap Screener (External):</strong> Chartink-based daily screener at <code>/home/karthikeyan/tools/ohlc</code> identifies gap candidates</li>
+                    <li><strong>Option Resolution:</strong> Resolves nearest OTM contracts from local NFO contract master (no network calls)</li>
+                    <li><strong>Quote Collection:</strong> Batches live quotes via ANT websocket for speed and efficiency</li>
+                    <li><strong>EOD Analysis:</strong> Validates trades against expected outcomes (option profit or directional breakout)</li>
+                    <li><strong>Live Monitoring:</strong> Bash-based real-time log parser for trade tracking</li>
+                </ul>
+
+                <h3>Daily Workflow</h3>
+                <div class="flow-diagram">
+                    <div class="flow-step">
+                        <div class="flow-step-number">1</div>
+                        <span><strong>Morning (Pre-market):</strong> Run <code>./scripts/gapscreener-morning.sh</code></span>
+                    </div>
+                    <div class="flow-arrow">↓</div>
+                    <div class="flow-step">
+                        <div class="flow-step-number">2</div>
+                        <span><strong>Market Hours:</strong> Monitor trades with <code>./scripts/monitor-gap.sh</code></span>
+                    </div>
+                    <div class="flow-arrow">↓</div>
+                    <div class="flow-step">
+                        <div class="flow-step-number">3</div>
+                        <span><strong>EOD (After 3:30pm):</strong> Run <code>./scripts/gapscreener-eod.sh</code></span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Morning Pipeline -->
+            <section id="morning-pipeline">
+                <h2>Morning Pipeline</h2>
+                <p>The morning phase generates the day's gap-screener CSV, resolves option contracts, fetches live quotes, and optionally places cover orders.</p>
+
+                <h3>Script: gapscreener-morning.sh</h3>
+                <div class="card">
+                    <h4>Location & Invocation</h4>
+                    <pre><code>./scripts/gapscreener-morning.sh
+# Runs from repo root, spawns 3 npm scripts in sequence</code></pre>
+                    <h4 style="margin-top: 16px;">Execution Flow</h4>
+                    <p>This script orchestrates three sequential steps:</p>
+                    <ol>
+                        <li><code>npm run gapscreener:generate</code> – Generate gap-screener CSV</li>
+                        <li><code>npm run gapscreener:start</code> – Resolve options and fetch morning quotes</li>
+                        <li><code>npm run gapscreener:coverorder</code> – Place cover orders (config-gated, optional)</li>
+                    </ol>
+                </div>
+
+                <h3>Step 1: Generate Screener CSV</h3>
+                <div class="card">
+                    <h4>npm run gapscreener:generate</h4>
+                    <p><span class="badge required">Required</span></p>
+                    <p>Invokes the external Chartink screener project at <code>/home/karthikeyan/tools/ohlc</code> and copies its output CSV locally.</p>
+
+                    <h4>Input</h4>
+                    <p>Runs the external screener project (no CLI args).</p>
+
+                    <h4>Output File</h4>
+                    <p><code>src/tools/gapscreener/gap-screener.csv</code> with columns:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Column</th>
+                                <th>Type</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Symbol</td>
+                                <td>string</td>
+                                <td>Stock symbol (e.g., RELIANCE, INFY)</td>
+                            </tr>
+                            <tr>
+                                <td>Name</td>
+                                <td>string</td>
+                                <td>Company name</td>
+                            </tr>
+                            <tr>
+                                <td>LTP</td>
+                                <td>number</td>
+                                <td>Current stock price at scan time</td>
+                            </tr>
+                            <tr>
+                                <td>Recommendation</td>
+                                <td>Buy | Sell | (blank)</td>
+                                <td>Gap direction identified by screener</td>
+                            </tr>
+                            <tr>
+                                <td>1st15m High</td>
+                                <td>number</td>
+                                <td>First 15-minute candle high</td>
+                            </tr>
+                            <tr>
+                                <td>1st15m Low</td>
+                                <td>number</td>
+                                <td>First 15-minute candle low</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h3>Step 2: Start – Option Resolution & Morning Quotes</h3>
+                <div class="card">
+                    <h4>npm run gapscreener:start</h4>
+                    <p><span class="badge required">Required</span></p>
+                    <p>Reads gap-screener.csv, resolves nearest OTM option contract for each recommendation, and fetches live morning prices via ANT websocket.</p>
+
+                    <h4>Option Resolution Logic</h4>
+                    <ul>
+                        <li><strong>For Buy recommendation:</strong> Nearest Call (CE) strike <em>above</em> current spot</li>
+                        <li><strong>For Sell recommendation:</strong> Nearest Put (PE) strike <em>below</em> current spot</li>
+                        <li><strong>Resolution source:</strong> Local NFO contract-master JSON (no network calls; instant)</li>
+                    </ul>
+
+                    <h4>Quote Collection</h4>
+                    <p>Batches all resolved option tokens into a single ANT websocket subscription (via <code>src/tools/AntBatchQuote.ts</code>) to fetch live prices efficiently:</p>
+                    <pre><code>Subscribes: token1, token2, ...
+Waits for: First live tick for each
+Returns: Map of token → LTP
+Timeout: 3000ms (QUOTE_WAIT_MS)</code></pre>
+
+                    <h4>Output File</h4>
+                    <p><code>src/tools/gapscreener/gap_screener_option_quote.csv</code> with columns:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Column</th>
+                                <th>Type</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>ANT Stock Code</td>
+                                <td>string</td>
+                                <td>Stock symbol from gap-screener.csv</td>
+                            </tr>
+                            <tr>
+                                <td>Stock Name</td>
+                                <td>string</td>
+                                <td>Company name</td>
+                            </tr>
+                            <tr>
+                                <td>Option Quote</td>
+                                <td>number</td>
+                                <td>Morning purchase price from live quote</td>
+                            </tr>
+                            <tr>
+                                <td>Option Contract</td>
+                                <td>string</td>
+                                <td>Trading symbol (e.g., RELIANCE25OCT1100CE)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h3>Step 3: Cover Order (Optional)</h3>
+                <div class="card">
+                    <h4>npm run gapscreener:coverorder</h4>
+                    <p><span class="badge optional">Optional</span></p>
+                    <p>Reads the morning-generated <code>gap_screener_option_quote.csv</code> and places ANT cover orders for each resolved contract.</p>
+
+                    <div class="info-box important">
+                        <p><strong>Warning:</strong> <code>ANT.placeCoverOrder</code> has <strong>never been confirmed</strong> against a live AliceBlue response. Do not enable <code>settings.gapScreenerCoverOrderEnabled</code> against a real account without live testing in isolation first.</p>
+                    </div>
+
+                    <h4>Config Gate</h4>
+                    <p>This step is a safe no-op unless <code>settings.gapScreenerCoverOrderEnabled: true</code> in <code>config.yml</code>.</p>
+
+                    <h4>Parameters (from config.yml)</h4>
+                    <ul>
+                        <li><code>settings.gapScreenerCoverOrderEnabled</code> – Enable/disable this step</li>
+                        <li><code>settings.gapScreenerUserId</code> – User ID for order placement</li>
+                        <li><code>settings.gapScreenerQuantity</code> – Lot size per contract</li>
+                        <li><code>settings.gapScreenerStopLossPoints</code> – Stop-loss distance in points</li>
+                    </ul>
+                </div>
+            </section>
+
+            <!-- EOD Pipeline -->
+            <section id="eod-pipeline">
+                <h2>EOD Pipeline</h2>
+                <p>The end-of-day phase evaluates each morning's trade against expected outcomes and validates whether the gap trade was successful.</p>
+
+                <h3>Script: gapscreener-eod.sh</h3>
+                <div class="card">
+                    <h4>Location & Invocation</h4>
+                    <pre><code>./scripts/gapscreener-eod.sh
+# Runs from repo root, spawns 1 npm script</code></pre>
+                    <h4 style="margin-top: 16px;">Timing</h4>
+                    <p>Run <strong>after 3:30pm IST</strong> (after NSE/NFO market close). Earlier runs will fail because AliceBlue's websocket stops streaming ticks once the exchange session ends.</p>
+                </div>
+
+                <h3>npm run gapscreener:end – EOD Analysis</h3>
+                <div class="card">
+                    <h4>Inputs</h4>
+                    <ul>
+                        <li><code>src/tools/gapscreener/gap_screener_option_quote.csv</code> – Output from morning's <code>gapscreener:start</code></li>
+                        <li><code>src/tools/gapscreener/gap-screener.csv</code> – Original gap-screener CSV (stock 1st15m levels)</li>
+                    </ul>
+
+                    <h4>Processing Steps</h4>
+                    <ol>
+                        <li>Re-resolve each morning row's exact contract (using <code>AntContractMaster.findByTradingSymbol</code>, not a fresh nearest-OTM calculation)</li>
+                        <li>Fetch the contract's EOD live price via:
+                            <ul>
+                                <li><strong>Before 3:30pm:</strong> ANT websocket batch subscribe (same as morning)</li>
+                                <li><strong>After 3:30pm:</strong> ANT REST <code>getScripQuote</code> (one token at a time, 1s apart)</li>
+                            </ul>
+                        </li>
+                        <li>Join each row against <code>gap-screener.csv</code> to fetch stock LTP and 1st15m candle levels</li>
+                        <li>Evaluate success criteria</li>
+                        <li>Write back to CSV with EOD columns</li>
+                    </ol>
+
+                    <h4>Success Criteria</h4>
+                    <p>A trade is marked <strong>Result = true</strong> if <em>either</em> condition holds:</p>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Condition</th>
+                                <th>Buy (CE)</th>
+                                <th>Sell (PE)</th>
+                                <th>Rationale</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Option Profit</strong></td>
+                                <td>EOD Quote > Morning Quote</td>
+                                <td>EOD Quote > Morning Quote</td>
+                                <td>Direct option price appreciation</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Stock Breakout</strong></td>
+                                <td>Stock LTP > 1st15m High</td>
+                                <td>Stock LTP < 1st15m Low</td>
+                                <td>Underlying confirmed the expected direction intraday (even if option retraced)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <h4>Output Columns (appended to gap_screener_option_quote.csv)</h4>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Column</th>
+                                <th>Type</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Option Quote EOD</td>
+                                <td>number</td>
+                                <td>Live option price at EOD</td>
+                            </tr>
+                            <tr>
+                                <td>Stock LTP</td>
+                                <td>number</td>
+                                <td>Stock price at EOD (from gap-screener.csv)</td>
+                            </tr>
+                            <tr>
+                                <td>1st15m High</td>
+                                <td>number</td>
+                                <td>First 15-minute candle high (from gap-screener.csv)</td>
+                            </tr>
+                            <tr>
+                                <td>1st15m Low</td>
+                                <td>number</td>
+                                <td>First 15-minute candle low (from gap-screener.csv)</td>
+                            </tr>
+                            <tr>
+                                <td>Result</td>
+                                <td>true | false</td>
+                                <td>Trade success based on criteria above</td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div class="info-box note">
+                        <p><strong>Data Cleanup:</strong> If a stock's recommendation is removed/changed in gap-screener.csv after the morning run, that entire row is dropped from the EOD output. The CSV should only reflect stocks with current recommendations.</p>
+                    </div>
+
+                    <h4>Error Handling</h4>
+                    <p>If a contract's EOD quote cannot be fetched (websocket timeout, REST error, post-session), the script logs a warning and skips that row.</p>
+                </div>
+            </section>
+
+            <!-- Monitoring -->
+            <section id="monitoring">
+                <h2>Live Monitoring</h2>
+                <p>Real-time trade activity monitoring without needing to parse the raw orchestrator.log by hand.</p>
+
+                <h3>Script: monitor-gap.sh</h3>
+                <div class="card">
+                    <h4>Location & Invocation</h4>
+                    <pre><code>./scripts/monitor-gap.sh        # Watch only new activity from now
+./scripts/monitor-gap.sh -a     # Replay all activity + follow new</code></pre>
+
+                    <h4>Purpose</h4>
+                    <p>Tails <code>orchestrator.log</code> in real-time and prints a human-readable narrative of GapStrategy's daily flow:</p>
+                    <ul>
+                        <li>Gap check and PCR alignment logic</li>
+                        <li>Buy entry execution</li>
+                        <li>Live tick-by-tick P&L updates</li>
+                        <li>Exit triggers (target, stop-loss, timeout)</li>
+                        <li>GTT placement and fill events (order-side actors)</li>
+                    </ul>
+
+                    <h4>Why a Bash Script?</h4>
+                    <p>Unlike BulkPcrStrategy (which logs everything from its own class), GapStrategy's flow is distributed across multiple actors:</p>
+                    <ul>
+                        <li>Zerodha's GTT placement → <code>Zerodha.placeTargetStopLossGTT</code></li>
+                        <li>Fill notifications → <code>OrderBookkeeping._processTradeEvent</code></li>
+                        <li>Poll-detected close → <code>pollGttFills</code></li>
+                        <li>GapStrategy's own logic → <code>GapStrategy.ts</code> / <code>GapContract.ts</code></li>
+                    </ul>
+                    <p>This script correlates lines from different actors by tracking the held contract symbol, filtering out noise, and highlighting critical events.</p>
+
+                    <h4>Technology</h4>
+                    <p><strong>Pure bash + awk (mawk-compatible):</strong> No Node/tsc build, no network calls, zero ongoing cost. Runs forever in a terminal.</p>
+                </div>
+
+                <h3>Usage Examples</h3>
+                <div class="card">
+                    <h4>Watch New Activity Only</h4>
+                    <pre><code>$ ./scripts/monitor-gap.sh
+Watching orchestrator.log for GapStrategy activity... (Ctrl-C to stop)
+(orchestrator.log is truncated on every process restart - this keeps following it)
+
+09:16:33  Analyzing RELIANCE PE PCR = 0.89
+09:16:45  Buying RELIANCE25OCT1100CE qty=1 for GapStrategy
+09:17:02  Filled: Bought RELIANCE25OCT1100CE @ 45.50
+09:17:15  [Gap] RELIANCE25OCT1100CE points=2.15 P&L=2.15
+09:18:30  [Gap] RELIANCE25OCT1100CE points=-1.05 P&L=-1.05
+...GTT places at 3:15pm...
+15:15:40  *** GTT placed: order_id=12345 ***
+15:42:30  *** TRIGGERED: GTT order 12345 ***
+15:43:05  Selling RELIANCE25OCT1100CE qty=1
+15:43:22  *** Sell confirmed (GTT) ***</code></pre>
+
+                    <h4>Replay Entire Log + Follow New</h4>
+                    <pre><code>$ ./scripts/monitor-gap.sh --all
+Replaying all existing GapStrategy activity in orchestrator.log, then following...
+(orchestrator.log is truncated on every process restart - this keeps following it)
+
+[All previous activity from today...]
+
+[Then follows new lines in real-time...]</code></pre>
+                </div>
+
+                <h3>Log Message Filters</h3>
+                <p>The script tracks and displays:</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Filter</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>[GapStrategy]</code> / <code>[GapContract]</code></td>
+                            <td>All GapStrategy-owned logic</td>
+                        </tr>
+                        <tr>
+                            <td><code>mentions GapStrategy</code></td>
+                            <td>Any log line mentioning "GapStrategy" by name</td>
+                        </tr>
+                        <tr>
+                            <td>Held contract symbol</td>
+                            <td>Any line mentioning the currently-tracked option contract (even from order-side actors)</td>
+                        </tr>
+                        <tr>
+                            <td><code>Zerodha.placeTargetStopLossGTT</code> near GTT placement</td>
+                            <td>Broker's GTT target/stop-loss setup</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Output Formatting</h3>
+                <p>Key events are highlighted with <code>***</code> markers:</p>
+                <ul>
+                    <li><strong>TRIGGERED:</strong> GTT execution confirmed</li>
+                    <li><strong>executeTrade failed:</strong> Order placement error</li>
+                    <li><strong>Sell confirmed:</strong> Position closed</li>
+                    <li><strong>Outcome=:</strong> P&L summary (win/loss/timeout)</li>
+                    <li><strong>GTT poll:</strong> Poll-detected GTT status change</li>
+                    <li><strong>Decision:</strong> Technical analysis decision</li>
+                    <li><strong>TIMEOUT:</strong> Timeout-triggered exit</li>
+                </ul>
+
+                <div class="info-box note">
+                    <p><strong>Note:</strong> <code>orchestrator.log</code> is truncated on every process restart (when <code>npm run processes</code> is restarted). The script uses <code>tail -F</code> (follow across truncate) so it keeps working through restarts.</p>
+                </div>
+            </section>
+
+            <!-- Scripts Reference -->
+            <section id="scripts">
+                <h2>Scripts Reference</h2>
+                <p>Complete reference for all GapScreener-related npm scripts and shell scripts.</p>
+
+                <h3>NPM Scripts (in package.json)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Script</th>
+                            <th>Description</th>
+                            <th>Input Files</th>
+                            <th>Output Files</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>gapscreener:generate</code></td>
+                            <td>Run external Chartink screener, copy output locally</td>
+                            <td>External project at <code>/home/karthikeyan/tools/ohlc</code></td>
+                            <td><code>src/tools/gapscreener/gap-screener.csv</code></td>
+                        </tr>
+                        <tr>
+                            <td><code>gapscreener:start</code></td>
+                            <td>Resolve options, fetch morning quotes</td>
+                            <td><code>gap-screener.csv</code>, NFO contract master</td>
+                            <td><code>gap_screener_option_quote.csv</code></td>
+                        </tr>
+                        <tr>
+                            <td><code>gapscreener:end</code></td>
+                            <td>Fetch EOD quotes, validate trades</td>
+                            <td><code>gap_screener_option_quote.csv</code>, <code>gap-screener.csv</code></td>
+                            <td><code>gap_screener_option_quote.csv</code> (updated)</td>
+                        </tr>
+                        <tr>
+                            <td><code>gapscreener:coverorder</code></td>
+                            <td>Place cover orders (config-gated)</td>
+                            <td><code>gap_screener_option_quote.csv</code>, config.yml</td>
+                            <td>None (orders placed directly to broker)</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Shell Scripts (in scripts/ directory)</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Script</th>
+                            <th>Invocation</th>
+                            <th>Description</th>
+                            <th>When to Run</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>gapscreener-morning.sh</code></td>
+                            <td><code>./scripts/gapscreener-morning.sh</code></td>
+                            <td>Orchestrates generate → start → coverorder</td>
+                            <td>Pre-market (9:00-9:15 IST)</td>
+                        </tr>
+                        <tr>
+                            <td><code>gapscreener-eod.sh</code></td>
+                            <td><code>./scripts/gapscreener-eod.sh</code></td>
+                            <td>Runs gapscreener:end</td>
+                            <td>Post-market (after 3:30pm IST)</td>
+                        </tr>
+                        <tr>
+                            <td><code>monitor-gap.sh</code></td>
+                            <td><code>./scripts/monitor-gap.sh</code> or <code>./scripts/monitor-gap.sh -a</code></td>
+                            <td>Real-time GapStrategy activity monitoring</td>
+                            <td>During trading hours (any time)</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Running Individual npm Scripts</h3>
+                <pre><code># Run from repo root
+npm run gapscreener:generate
+npm run gapscreener:start
+npm run gapscreener:end
+npm run gapscreener:coverorder</code></pre>
+            </section>
+
+            <!-- Technical Details -->
+            <section id="technical-details">
+                <h2>Technical Details</h2>
+                <p>In-depth information on implementation, dependencies, and integration points.</p>
+
+                <h3>Contract Resolution Strategy</h3>
+                <div class="card">
+                    <h4>Why Local Contract Master?</h4>
+                    <p>AliceBlue's REST option-chain endpoint was confirmed live to return stale data (ltp=0, oi=0) for liquid names while the ANT mobile app showed real prices. The solution: local NFO contract-master JSON files.</p>
+
+                    <h4>Data Files</h4>
+                    <ul>
+                        <li><code>data/ant/NFO_contract.json</code> – NFO (stock options) contract master (~18MB)</li>
+                        <li><code>data/ant/BFO_contract.json</code> – BFO (index options) contract master (~34MB)</li>
+                        <li>Source: Official AliceBlue v2 format from <code>https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/</code></li>
+                        <li>Re-download if stale (monthly advisable)</li>
+                    </ul>
+
+                    <h4>Resolution Logic</h4>
+                    <pre><code>// For Buy recommendation (CE):
+const candidates = allOptions
+    .filter(o => o.optionType === 'CE')
+    .filter(o => o.strike > spotPrice)
+    .sort((a, b) => a.strike - b.strike);
+const nearestOtm = candidates[0];  // Smallest strike above spot
+
+// For Sell recommendation (PE):
+const candidates = allOptions
+    .filter(o => o.optionType === 'PE')
+    .filter(o => o.strike < spotPrice)
+    .sort((a, b) => b.strike - a.strike);
+const nearestOtm = candidates[0];  // Largest strike below spot</code></pre>
+                </div>
+
+                <h3>Quote Collection: AntBatchQuote</h3>
+                <div class="card">
+                    <h4>Problem</h4>
+                    <p>Early iterations called ANT's REST OHLC endpoint once per symbol in a loop. Result: 429 (rate limit) errors.</p>
+
+                    <h4>Solution: Batch Websocket Subscribe</h4>
+                    <p>Shared helper <code>src/tools/AntBatchQuote.ts</code> subscribes to <strong>all resolved tokens at once</strong> via ANT's websocket, waits for first tick from each, then unsubscribes. Single websocket session, one roundtrip, parallel delivery.</p>
+
+                    <h4>Interface</h4>
+                    <pre><code>// In GapScreenerOptionQuote.ts:
+const pending = [
+    { token: '12345', tradingSymbol: 'RELIANCE25OCT1100CE' },
+    { token: '12346', tradingSymbol: 'INFY25OCT1500CE' },
+    // ...
+];
+const quotes = await collectLiveQuotes(
+    pending.map(p => p.token)
+);
+// returns: Map<token, ltp>
+const reliance_ltp = quotes.get('12345');  // 45.50</code></pre>
+
+                    <h4>Timeout</h4>
+                    <p>Default: 3000ms (QUOTE_WAIT_MS). If a token hasn't ticked within this window, it's skipped with a warning.</p>
+                </div>
+
+                <h3>POST-MARKET Quote Fetching</h3>
+                <div class="card">
+                    <h4>The Problem</h4>
+                    <p>AliceBlue's websocket only streams ticks during live market hours. After 3:30pm, subscribing times out with no data.</p>
+
+                    <h4>The Solution</h4>
+                    <p>In <code>GapScreenerOptionQuoteEod.ts</code>:</p>
+                    <ul>
+                        <li><strong>Before 3:30pm:</strong> Use websocket batch subscribe (same as morning)</li>
+                        <li><strong>After 3:30pm:</strong> Fall back to ANT REST <code>getScripQuote</code> (ScripDetails endpoint, not OHLC)</li>
+                        <li><strong>Polling rate:</strong> One token at a time, 1s apart (respect rate limits)</li>
+                    </ul>
+
+                    <p><em>Important:</em> Use ScripDetails endpoint (returns post-close LTP), not OHLC (returns null post-close).</p>
+
+                    <h4>Code Path</h4>
+                    <pre><code>// In GapScreenerOptionQuoteEod.ts:
+const now = new Date();
+const hours = now.getHours();
+const minutes = now.getMinutes();
+
+if (hours >= 15 && minutes >= 30) {
+    // Post-market: use REST ScripDetails
+    for (const token of tokens) {
+        const quote = await ant.getScripQuote(token);
+        quotes.set(token, quote.ltp);
+        await sleep(1000);  // 1s per call
+    }
+} else {
+    // Intraday: use websocket batch
+    const quotes = await collectLiveQuotes(tokens);
+}</code></pre>
+                </div>
+
+                <h3>CSV File Locations</h3>
+                <div class="info-box note">
+                    <p><strong>Critical Detail:</strong> All paths are <strong>anchored to process.cwd()</strong> (always the repo root when npm scripts or wrapper shell scripts run), <strong>NOT</strong> <code>__dirname</code>. In the compiled dist/ output, <code>__dirname</code> would be <code>dist/tools/gapscreener/</code>, putting CSVs in the build tree instead of alongside their source. This is why <code>process.cwd()</code> is used explicitly.</p>
+                </div>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Path</th>
+                            <th>Role</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Gap Screener CSV</td>
+                            <td><code>src/tools/gapscreener/gap-screener.csv</code></td>
+                            <td>Input to morning option resolution; used in EOD for stock levels</td>
+                        </tr>
+                        <tr>
+                            <td>Option Quote CSV</td>
+                            <td><code>src/tools/gapscreener/gap_screener_option_quote.csv</code></td>
+                            <td>Output from morning; input to EOD; final analysis output</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Configuration -->
+            <section id="configuration">
+                <h2>Configuration</h2>
+                <p>Settings and configuration options in <code>config.yml</code>.</p>
+
+                <h3>GapScreener Settings</h3>
+                <div class="card">
+                    <h4>Cover Order (config-gated)</h4>
+                    <pre><code>settings:
+  gapScreenerCoverOrderEnabled: false  # Set to true ONLY after live testing
+  gapScreenerUserId: "USER123"         # User for order placement
+  gapScreenerQuantity: 1               # Lot size per contract
+  gapScreenerStopLossPoints: 10        # SL distance in points</code></pre>
+
+                    <h4>GapStrategy Itself (not gapscreener)</h4>
+                    <p>GapStrategy has its own config under <code>strategy.gap</code>:</p>
+                    <pre><code>strategy:
+  gap:
+    enabled: true
+    maxHoldTimeMinutes: 60          # Timeout exit after this many minutes
+    logEnabled: true                 # Log P&L updates
+    minPCRThreshold: 0.85            # Skip entry if PCR below this
+    pcr_window_points: 300           # Points either side for PCR calc</code></pre>
+                </div>
+            </section>
+
+            <!-- Troubleshooting -->
+            <section id="troubleshooting">
+                <h2>Troubleshooting</h2>
+
+                <h3>gapscreener:generate Fails</h3>
+                <div class="card">
+                    <h4>Problem</h4>
+                    <p><code>Error: ENOENT ... /home/karthikeyan/tools/ohlc</code></p>
+                    <h4>Solution</h4>
+                    <p>External screener project not found or not set up. Verify:</p>
+                    <pre><code>ls -la /home/karthikeyan/tools/ohlc/
+npm run start  # from that directory, does it work?</code></pre>
+                </div>
+
+                <h3>gapscreener:start – No Options Found</h3>
+                <div class="card">
+                    <h4>Problem</h4>
+                    <p><code>skipping SYMBOL: no CE/PE contract found in NFO contract master</code></p>
+                    <h4>Solution</h4>
+                    <ul>
+                        <li>NFO contract-master JSON is stale. Re-download from <code>https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/</code></li>
+                        <li>Verify file exists: <code>ls -la data/ant/NFO_contract.json</code></li>
+                        <li>Check file size (~18MB). If smaller, download was incomplete.</li>
+                    </ul>
+                </div>
+
+                <h3>gapscreener:start – Quote Timeouts</h3>
+                <div class="card">
+                    <h4>Problem</h4>
+                    <p><code>skipping SYMBOL: no live tick received for CONTRACT within 3000ms</code></p>
+                    <h4>Cause</h4>
+                    <p>ANT websocket never subscribed, or market data is not flowing.</p>
+                    <h4>Solution</h4>
+                    <ul>
+                        <li>Verify ANT session is active: <code>GET /ant/connect</code> (starts websocket) before running gapscreener:start</li>
+                        <li>Check orchestrator.log for ANT connection errors</li>
+                        <li>Verify market hours (NSE/NFO 9:15-15:30 IST)</li>
+                    </ul>
+                </div>
+
+                <h3>gapscreener:end – Fails After 3:30pm</h3>
+                <div class="card">
+                    <h4>Problem</h4>
+                    <p>Timeouts or errors when running after market close.</p>
+                    <h4>Cause</h4>
+                    <p>Websocket subscribe doesn't work post-market. Script should have fallen back to REST, but may be failing to authenticate or fetch.</p>
+                    <h4>Solution</h4>
+                    <ul>
+                        <li>Ensure script is using ScripDetails endpoint (not OHLC)</li>
+                        <li>Verify ANT session token is still valid: <code>GET /ant/token</code></li>
+                        <li>Check orchestrator.log for ANT REST call errors</li>
+                    </ul>
+                </div>
+
+                <h3>monitor-gap.sh – No Output</h3>
+                <div class="card">
+                    <h4>Problem</h4>
+                    <p>Script starts but prints nothing even though GapStrategy is active.</p>
+                    <h4>Solution</h4>
+                    <ul>
+                        <li>Verify orchestrator.log exists and is being written: <code>tail -f orchestrator.log</code></li>
+                        <li>Verify <code>npm run processes</code> is running (check <code>ps aux | grep orchestrator</code>)</li>
+                        <li>Try <code>./scripts/monitor-gap.sh -a</code> to replay all activity (may reveal if log is old)</li>
+                    </ul>
+                </div>
+
+                <h3>CSV Files Not Found</h3>
+                <div class="card">
+                    <h4>Problem</h4>
+                    <p><code>Error: gap-screener.csv not found at ...</code></p>
+                    <h4>Cause</h4>
+                    <p>Script was run from wrong directory (not repo root), or previous step failed without warning.</p>
+                    <h4>Solution</h4>
+                    <ul>
+                        <li>Always run from repo root: <code>cd /home/karthikeyan/work/icici && ./scripts/gapscreener-morning.sh</code></li>
+                        <li>Check that previous script in the pipeline ran successfully (check console output)</li>
+                        <li>Verify files exist: <code>ls -la src/tools/gapscreener/*.csv</code></li>
+                    </ul>
+                </div>
+
+                <h3>Cover Order Warnings</h3>
+                <div class="card">
+                    <h4>Important Reminder</h4>
+                    <div class="info-box important">
+                        <p><code>ANT.placeCoverOrder</code> has <strong>never been confirmed against a live AliceBlue response</strong>. Do not enable <code>settings.gapScreenerCoverOrderEnabled</code> against a real account without:</p>
+                        <ol>
+                            <li>Thorough live testing in a sandbox/demo account first</li>
+                            <li>Confirming the actual API endpoint and response format against AliceBlue docs</li>
+                            <li>Verifying a test order goes through and behaves as expected</li>
+                        </ol>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Footer -->
+            <div style="margin-top: 64px; padding-top: 32px; border-top: 1px solid var(--border);">
+                <p class="text-muted">Last updated: October 2026. See CLAUDE.md and strategies.md in the repo root for broader architecture and strategy documentation.</p>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Smooth scroll and active nav link tracking
+        document.querySelectorAll('a.nav-link').forEach(link => {
+            link.addEventListener('click', (e) => {
+                // Update active state
+                document.querySelectorAll('a.nav-link').forEach(l => l.classList.remove('active'));
+                link.classList.add('active');
+            });
+        });
+
+        // Set active link on page load based on hash or first section
+        function updateActiveLink() {
+            const hash = window.location.hash || '#overview';
+            const links = document.querySelectorAll('a.nav-link');
+            links.forEach(link => {
+                if (link.getAttribute('href') === hash) {
+                    link.classList.add('active');
+                } else {
+                    link.classList.remove('active');
+                }
+            });
+        }
+
+        window.addEventListener('hashchange', updateActiveLink);
+        document.addEventListener('DOMContentLoaded', updateActiveLink);
+    </script>
+</body>
+</html>

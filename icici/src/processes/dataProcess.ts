@@ -3,6 +3,16 @@
 // stderr first, before any other module (which may log at import time) loads.
 console.log = console.error;
 
+// This host is dual-stack; Node's Happy-Eyeballs connection logic prefers
+// IPv6 when both are available, which bypasses AliceBlue/ANT's IPv4-only
+// allowlist for a3.aliceblueonline.com - AntDataStream.connect() ->
+// AntSession.prepareWsSession()'s createWsSess call hits that same host to
+// set up the tick WebSocket's session, so this process needs the override
+// too (see kiteDns.ts's comment for the full root-cause writeup and why this
+// is scoped to specific hostnames rather than forced process-wide).
+import { installIpv4OnlyHostOverride } from './order/kiteDns';
+installIpv4OnlyHostOverride();
+
 import Log from '../util/Log';
 import Mongo from '../tools/mongo';
 import AntDataStream from './data/AntDataStream';

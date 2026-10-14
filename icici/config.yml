@@ -123,22 +123,20 @@ strategies:
   - type: BulkPcrStrategy
     enabled: false
     broker: breeze
-    quantity: 13975
+    quantity: -1
     targetPoints: 2
     chunkDriftCancelPoints: 10
     right: none
-    maxInvestment: 3000000
+    maxInvestment: 100000
     logEnabled: true
-    brokers:
-      - zerodha
+    brokers: &ref_0
+      - ant
   - type: BulkPcrAutoStartStrategy
     enabled: true
     times:
       - '10:35'
       - '11:35'
       - '12:35'
-    quantity: 1340
+    quantity: -1
     targetPoints: 2
-    brokers:
-      - ant
-      - prism
+    brokers: *ref_0

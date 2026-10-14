@@ -481,3 +481,389 @@ Opening ANT websocket session and subscribing 17 option(s)...
 [gapScreenerOptionQuoteEod] skipping BAJAJHLDNG: no live tick received for BAJAJHLDNG29SEP26P11200 within 6000ms
 
 Wrote 17 row(s) to /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv (0/17 with a new Result)
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 8 row(s) from the morning run
+
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 39 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+TATASTEEL -> TATASTEEL29SEP26C190 (token 153806)
+AXISBANK -> AXISBANK29SEP26C1220 (token 56314)
+COALINDIA -> COALINDIA29SEP26C430 (token 96925)
+CIPLA -> CIPLA29SEP26C1420 (token 96657)
+CHOLAFIN -> CHOLAFIN29SEP26P1660 (token 62711)
+JSWSTEEL -> JSWSTEEL29SEP26C1300 (token 86803)
+ASIANPAINT -> ASIANPAINT29SEP26C2440 (token 85607)
+GRASIM -> GRASIM29SEP26C3200 (token 107437)
+
+Opening ANT websocket session and subscribing 8 option(s)...
+[15:25:12] [ANT.loadSession] ANT session loaded from file
+[15:25:12] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
+[15:25:12] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
+  "status": "Ok",
+  "message": "Success",
+  "result": [
+    {
+      "Status": "OK"
+    }
+  ]
+}
+[15:25:12] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
+[15:25:12] [ws.onopen] [AntWS] Connected, sending auth payload...
+[antBatchQuote] Subscribing to 8 option token(s)...
+[15:25:12] [AntWebSocket.subscribe] [AntWS] Subscribing: NFO|153806#NFO|56314#NFO|96925#NFO|96657#NFO|62711#NFO|86803#NFO|85607#NFO|107437
+[15:25:12] [ws.onmessage] [AntWS] Connect ack: {
+  "t": "ck",
+  "s": "OK",
+  "uid": "924118_API"
+}
+[antBatchQuote]   tick NFO|153806 lp=0.91
+[antBatchQuote]   tick NFO|56314 lp=9.55
+[antBatchQuote]   tick NFO|96925 lp=0.80
+[antBatchQuote]   tick NFO|96657 lp=3.30
+[antBatchQuote]   tick NFO|62711 lp=13.50
+[antBatchQuote]   tick NFO|86803 lp=2.80
+[antBatchQuote]   tick NFO|85607 lp=19.30
+[antBatchQuote]   tick NFO|107437 lp=5.40
+[antBatchQuote]   tick NFO|85607 lp=(none)
+[antBatchQuote]   tick NFO|62711 lp=(none)
+[antBatchQuote]   tick NFO|85607 lp=(none)
+[antBatchQuote]   tick NFO|85607 lp=(none)
+[antBatchQuote]   tick NFO|107437 lp=(none)
+[antBatchQuote]   tick NFO|62711 lp=13.05
+[antBatchQuote]   tick NFO|107437 lp=(none)
+[antBatchQuote]   tick NFO|85607 lp=(none)
+[antBatchQuote]   tick NFO|85607 lp=(none)
+[antBatchQuote] Unsubscribing and closing websocket...
+[15:25:18] [AntWebSocket.unsubscribe] [AntWS] Unsubscribing: NFO|153806#NFO|56314#NFO|96925#NFO|96657#NFO|62711#NFO|86803#NFO|85607#NFO|107437
+TATASTEEL -> TATASTEEL29SEP26C190 = 0.91 (bought 1.55); stock Buy LTP 189 vs 1st15m High 189 / Low 188, result=false
+AXISBANK -> AXISBANK29SEP26C1220 = 9.55 (bought 5.25); stock Buy LTP 1203 vs 1st15m High 1198 / Low 1192, result=true
+COALINDIA -> COALINDIA29SEP26C430 = 0.8 (bought 1); stock Buy LTP 425 vs 1st15m High 424 / Low 421, result=true
+CIPLA -> CIPLA29SEP26C1420 = 3.3 (bought 10.35); stock Buy LTP 1416 vs 1st15m High 1407 / Low 1396, result=true
+CHOLAFIN -> CHOLAFIN29SEP26P1660 = 13.05 (bought 19.05); stock Sell LTP 1662 vs 1st15m High 1682 / Low 1667, result=true
+JSWSTEEL -> JSWSTEEL29SEP26C1300 = 2.8 (bought 5.3); stock Buy LTP 1284 vs 1st15m High 1282 / Low 1279, result=true
+ASIANPAINT -> ASIANPAINT29SEP26C2440 = 19.3 (bought 14.2); stock Buy LTP 2421 vs 1st15m High 2414 / Low 2399, result=true
+GRASIM -> GRASIM29SEP26C3200 = 5.4 (bought 12.95); stock Buy LTP 3186 vs 1st15m High 3182 / Low 3168, result=true
+
+Wrote 8 row(s) to /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv (8/8 with a new Result)
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 8 row(s) from the morning run
+
+[gapScreenerOptionQuoteEod] dropping TATASTEEL: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping AXISBANK: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping COALINDIA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CIPLA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CHOLAFIN: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping ASIANPAINT: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping GRASIM: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 43 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+JSWSTEEL -> JSWSTEEL29SEP26C1300 (token 86803)
+
+Opening ANT websocket session and subscribing 1 option(s)...
+Fatal error: ANT userSession not available. Complete OAuth login first (/ant/login).
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 8 row(s) from the morning run
+
+[gapScreenerOptionQuoteEod] dropping TATASTEEL: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping AXISBANK: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping COALINDIA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CIPLA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CHOLAFIN: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping ASIANPAINT: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping GRASIM: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 45 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+JSWSTEEL -> JSWSTEEL29SEP26C1300 (token 86803)
+
+Opening ANT websocket session and subscribing 1 option(s)...
+Fatal error: ANT userSession not available. Complete OAuth login first (/ant/login).
+npm notice
+npm notice New major version of npm available! 10.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 8 row(s) from the morning run
+
+[gapScreenerOptionQuoteEod] dropping TATASTEEL: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping AXISBANK: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping COALINDIA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CIPLA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CHOLAFIN: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping ASIANPAINT: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping GRASIM: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 49 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+JSWSTEEL -> JSWSTEEL29SEP26C1300 (token 86803)
+
+Opening ANT websocket session and subscribing 1 option(s)...
+Fatal error: ANT userSession not available. Complete OAuth login first (/ant/login).
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 8 row(s) from the morning run
+
+[gapScreenerOptionQuoteEod] dropping TATASTEEL: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping AXISBANK: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping COALINDIA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CIPLA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CHOLAFIN: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping ASIANPAINT: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping GRASIM: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 50 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+JSWSTEEL -> JSWSTEEL29SEP26C1300 (token 86803)
+
+Opening ANT websocket session and subscribing 1 option(s)...
+Fatal error: ANT userSession not available. Complete OAuth login first (/ant/login).
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 8 row(s) from the morning run
+
+[gapScreenerOptionQuoteEod] dropping TATASTEEL: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping COALINDIA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CIPLA: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping CHOLAFIN: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping JSWSTEEL: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[gapScreenerOptionQuoteEod] dropping GRASIM: no Buy/Sell Recommendation in /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 53 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+AXISBANK -> AXISBANK29SEP26C1220 (token 56314)
+ASIANPAINT -> ASIANPAINT29SEP26C2440 (token 85607)
+
+Opening ANT websocket session and subscribing 2 option(s)...
+Fatal error: ANT userSession not available. Complete OAuth login first (/ant/login).
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 11 row(s) from the morning run
+
+[AntContractMaster] WARNING: /home/karthikeyan/work/icici/data/ant/NFO_contract.json is 56 days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)
+TATASTEEL -> TATASTEEL27OCT26C180 (token 112889)
+IRFC -> IRFC27OCT26C78 (token 85037)
+HINDZINC -> HINDZINC27OCT26C560 (token 79766)
+JINDALSTEL -> JINDALSTEL27OCT26C1040 (token 86043)
+JSWSTEEL -> JSWSTEEL27OCT26C1200 (token 86988)
+MAZDOCK -> MAZDOCK27OCT26C2100 (token 93844)
+NESTLEIND -> NESTLEIND27OCT26C1360 (token 96715)
+POLYCAB -> POLYCAB27OCT26C8600 (token 104269)
+HDFCAMC -> HDFCAMC27OCT26C2400 (token 78186)
+SIEMENS -> SIEMENS27OCT26C3700 (token 109435)
+ABB -> ABB27OCT26C7000 (token 52882)
+
+Opening ANT websocket session and subscribing 11 option(s)...
+[15:25:12] [ANT.loadSession] ANT session loaded from file
+[15:25:12] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
+[15:25:13] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
+  "status": "Ok",
+  "message": "Success",
+  "result": [
+    {
+      "Status": "OK"
+    }
+  ]
+}
+[15:25:13] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
+[15:25:13] [ws.onopen] [AntWS] Connected, sending auth payload...
+[antBatchQuote] Subscribing to 11 option token(s)...
+[15:25:13] [AntWebSocket.subscribe] [AntWS] Subscribing: NFO|112889#NFO|85037#NFO|79766#NFO|86043#NFO|86988#NFO|93844#NFO|96715#NFO|104269#NFO|78186#NFO|109435#NFO|52882
+[15:25:13] [ws.onmessage] [AntWS] Connect ack: {
+  "t": "ck",
+  "s": "OK",
+  "uid": "924118_API"
+}
+[antBatchQuote]   tick NFO|112889 lp=1.63
+[antBatchQuote]   tick NFO|85037 lp=1.64
+[antBatchQuote]   tick NFO|79766 lp=9.30
+[antBatchQuote]   tick NFO|86043 lp=16.85
+[antBatchQuote]   tick NFO|86988 lp=14.80
+[antBatchQuote]   tick NFO|93844 lp=30.25
+[antBatchQuote]   tick NFO|96715 lp=17.50
+[antBatchQuote]   tick NFO|104269 lp=147.35
+[antBatchQuote]   tick NFO|78186 lp=23.20
+[antBatchQuote]   tick NFO|109435 lp=70.00
+[antBatchQuote]   tick NFO|52882 lp=135.00
+[antBatchQuote]   tick NFO|109435 lp=(none)
+[antBatchQuote]   tick NFO|112889 lp=1.66
+[antBatchQuote]   tick NFO|109435 lp=(none)
+[antBatchQuote]   tick NFO|78186 lp=(none)
+[antBatchQuote]   tick NFO|109435 lp=(none)
+[antBatchQuote]   tick NFO|96715 lp=(none)
+[antBatchQuote]   tick NFO|78186 lp=(none)
+[antBatchQuote]   tick NFO|109435 lp=(none)
+[antBatchQuote]   tick NFO|93844 lp=30.40
+[antBatchQuote]   tick NFO|112889 lp=(none)
+[antBatchQuote] Unsubscribing and closing websocket...
+[15:25:19] [AntWebSocket.unsubscribe] [AntWS] Unsubscribing: NFO|112889#NFO|85037#NFO|79766#NFO|86043#NFO|86988#NFO|93844#NFO|96715#NFO|104269#NFO|78186#NFO|109435#NFO|52882
+TATASTEEL -> TATASTEEL27OCT26C180 = 1.66 (bought 2.65); stock Buy LTP 176 vs 1st15m High 176 / Low 174, result=false
+IRFC -> IRFC27OCT26C78 = 1.64 (bought 1.59); stock Buy LTP 77 vs 1st15m High 76 / Low 75, result=true
+HINDZINC -> HINDZINC27OCT26C560 = 9.3 (bought 13); stock Buy LTP 558 vs 1st15m High 554 / Low 546, result=true
+JINDALSTEL -> JINDALSTEL27OCT26C1040 = 16.85 (bought 27.25); stock Buy LTP 1038 vs 1st15m High 1034 / Low 1024, result=true
+JSWSTEEL -> JSWSTEEL27OCT26C1200 = 14.8 (bought 20); stock Buy LTP 1185 vs 1st15m High 1180 / Low 1172, result=true
+MAZDOCK -> MAZDOCK27OCT26C2100 = 30.4 (bought 50); stock Buy LTP 2062 vs 1st15m High 2050 / Low 2020, result=true
+NESTLEIND -> NESTLEIND27OCT26C1360 = 17.5 (bought 23.7); stock Buy LTP 1340 vs 1st15m High 1339 / Low 1330, result=true
+POLYCAB -> POLYCAB27OCT26C8600 = 147.35 (bought 165); stock Buy LTP 8421 vs 1st15m High 8417 / Low 8296, result=true
+HDFCAMC -> HDFCAMC27OCT26C2400 = 23.2 (bought 29.3); stock Buy LTP 2300 vs 1st15m High 2298 / Low 2270, result=true
+SIEMENS -> SIEMENS27OCT26C3700 = 70 (bought 88.35); stock Buy LTP 3697 vs 1st15m High 3692 / Low 3620, result=true
+ABB -> ABB27OCT26C7000 = 135 (bought 158.7); stock Buy LTP 6912 vs 1st15m High 6901 / Low 6822, result=true
+
+Wrote 11 row(s) to /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv (11/11 with a new Result)
+
+> icici@1.0.0 gapscreener:end
+> tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js
+
+=== Gap-Screener Option Quote - End of Day ===
+Morning CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv
+Screener CSV: /home/karthikeyan/work/icici/src/tools/gapscreener/gap-screener.csv
+
+Found 18 row(s) from the morning run
+
+WIPRO -> WIPRO27OCT26C170 (token 118719)
+IRFC -> IRFC27OCT26C80 (token 85039)
+CANBK -> CANBK27OCT26C120 (token 62356)
+INFY -> INFY27OCT26C1080 (token 83451)
+TCS -> TCS27OCT26C2240 (token 113229)
+ITC -> ITC27OCT26C265 (token 85654)
+HINDALCO -> HINDALCO27OCT26C920 (token 79157)
+ONGC -> ONGC27OCT26C225 (token 99592)
+TECHM -> TECHM27OCT26C1520 (token 113805)
+ADANIENT -> ADANIENT27OCT26C2700 (token 53410)
+HDFCLIFE -> HDFCLIFE27OCT26C570 (token 78700)
+VBL -> VBL27OCT26C460 (token 117461)
+HINDZINC -> HINDZINC27OCT26C560 (token 79766)
+HINDUNILVR -> HINDUNILVR27OCT26C1880 (token 79539)
+LTM -> LTM27OCT26C4200 (token 90927)
+CIPLA -> CIPLA27OCT26C1320 (token 65196)
+GRASIM -> GRASIM27OCT26C2920 (token 77207)
+ULTRACEMCO -> ULTRACEMCO27OCT26C10600 (token 38312)
+
+Opening ANT websocket session and subscribing 18 option(s)...
+[15:25:14] [ANT.loadSession] ANT session loaded from file
+[15:25:14] [AntSession.prepareWsSession] [AntSession] Creating WS session (createWsSess)...
+[15:25:15] [AntSession.prepareWsSession] [AntSession] createWsSess response: {
+  "status": "Ok",
+  "message": "Success",
+  "result": [
+    {
+      "Status": "OK"
+    }
+  ]
+}
+[15:25:15] [AntSession.prepareWsSession] [AntSession] WS session prepared successfully
+[15:25:15] [ws.onopen] [AntWS] Connected, sending auth payload...
+[antBatchQuote] Subscribing to 18 option token(s)...
+[15:25:15] [AntWebSocket.subscribe] [AntWS] Subscribing: NFO|118719#NFO|85039#NFO|62356#NFO|83451#NFO|113229#NFO|85654#NFO|79157#NFO|99592#NFO|113805#NFO|53410#NFO|78700#NFO|117461#NFO|79766#NFO|79539#NFO|90927#NFO|65196#NFO|77207#NFO|38312
+[15:25:15] [ws.onmessage] [AntWS] Connect ack: {
+  "t": "ck",
+  "s": "OK",
+  "uid": "924118_API"
+}
+[antBatchQuote]   tick NFO|118719 lp=4.11
+[antBatchQuote]   tick NFO|85039 lp=1.67
+[antBatchQuote]   tick NFO|62356 lp=3.52
+[antBatchQuote]   tick NFO|83451 lp=24.80
+[antBatchQuote]   tick NFO|113229 lp=59.60
+[antBatchQuote]   tick NFO|85654 lp=2.60
+[antBatchQuote]   tick NFO|79157 lp=11.10
+[antBatchQuote]   tick NFO|99592 lp=1.96
+[antBatchQuote]   tick NFO|113805 lp=45.90
+[antBatchQuote]   tick NFO|53410 lp=59.10
+[antBatchQuote]   tick NFO|78700 lp=7.85
+[antBatchQuote]   tick NFO|117461 lp=3.60
+[antBatchQuote]   tick NFO|79766 lp=9.25
+[antBatchQuote]   tick NFO|79539 lp=28.90
+[antBatchQuote]   tick NFO|90927 lp=130.95
+[antBatchQuote]   tick NFO|65196 lp=29.70
+[antBatchQuote]   tick NFO|77207 lp=46.50
+[antBatchQuote]   tick NFO|38312 lp=292.15
+[antBatchQuote]   tick NFO|90927 lp=(none)
+[antBatchQuote]   tick NFO|83451 lp=(none)
+[antBatchQuote]   tick NFO|118719 lp=(none)
+[antBatchQuote]   tick NFO|38312 lp=(none)
+[antBatchQuote]   tick NFO|38312 lp=(none)
+[antBatchQuote]   tick NFO|83451 lp=(none)
+[antBatchQuote]   tick NFO|79539 lp=(none)
+[antBatchQuote]   tick NFO|90927 lp=(none)
+[antBatchQuote]   tick NFO|38312 lp=(none)
+[antBatchQuote]   tick NFO|99592 lp=(none)
+[antBatchQuote]   tick NFO|83451 lp=(none)
+[antBatchQuote]   tick NFO|118719 lp=(none)
+[antBatchQuote]   tick NFO|79539 lp=(none)
+[antBatchQuote]   tick NFO|79157 lp=(none)
+[antBatchQuote]   tick NFO|62356 lp=(none)
+[antBatchQuote]   tick NFO|38312 lp=(none)
+[antBatchQuote]   tick NFO|85654 lp=2.55
+[antBatchQuote]   tick NFO|85039 lp=1.66
+[antBatchQuote]   tick NFO|83451 lp=(none)
+[antBatchQuote]   tick NFO|79539 lp=(none)
+[antBatchQuote]   tick NFO|118719 lp=(none)
+[antBatchQuote]   tick NFO|90927 lp=(none)
+[antBatchQuote]   tick NFO|118719 lp=(none)
+[antBatchQuote]   tick NFO|65196 lp=(none)
+[antBatchQuote]   tick NFO|113229 lp=(none)
+[antBatchQuote]   tick NFO|79766 lp=9.20
+[antBatchQuote]   tick NFO|38312 lp=(none)
+[antBatchQuote]   tick NFO|83451 lp=(none)
+[antBatchQuote]   tick NFO|38312 lp=(none)
+[antBatchQuote]   tick NFO|113229 lp=(none)
+[antBatchQuote]   tick NFO|118719 lp=(none)
+[antBatchQuote] Unsubscribing and closing websocket...
+[15:25:21] [AntWebSocket.unsubscribe] [AntWS] Unsubscribing: NFO|118719#NFO|85039#NFO|62356#NFO|83451#NFO|113229#NFO|85654#NFO|79157#NFO|99592#NFO|113805#NFO|53410#NFO|78700#NFO|117461#NFO|79766#NFO|79539#NFO|90927#NFO|65196#NFO|77207#NFO|38312
+WIPRO -> WIPRO27OCT26C170 = 4.11 (bought 3.23); stock Buy LTP 167 vs 1st15m High 166 / Low 163, result=true
+IRFC -> IRFC27OCT26C80 = 1.66 (bought 1.4); stock Buy LTP 79 vs 1st15m High 79 / Low 78, result=true
+CANBK -> CANBK27OCT26C120 = 3.52 (bought 3.2); stock Buy LTP 119 vs 1st15m High 119 / Low 118, result=true
+INFY -> INFY27OCT26C1080 = 24.8 (bought 17.55); stock Buy LTP 1042 vs 1st15m High 1040 / Low 1027, result=true
+TCS -> TCS27OCT26C2240 = 59.6 (bought 49.05); stock Buy LTP 2236 vs 1st15m High 2223 / Low 2160, result=true
+ITC -> ITC27OCT26C265 = 2.55 (bought 2.4); stock Buy LTP 260 vs 1st15m High 259 / Low 257, result=true
+HINDALCO -> HINDALCO27OCT26C920 = 11.1 (bought 10.45); stock Buy LTP 897 vs 1st15m High 890 / Low 883, result=true
+ONGC -> ONGC27OCT26C225 = 1.96 (bought 1.87); stock Buy LTP 221 vs 1st15m High 221 / Low 219, result=true
+TECHM -> TECHM27OCT26C1520 = 45.9 (bought 36.3); stock Buy LTP 1517 vs 1st15m High 1508 / Low 1482, result=true
+ADANIENT -> ADANIENT27OCT26C2700 = 59.1 (bought 54.5); stock Buy LTP 2675 vs 1st15m High 2658 / Low 2613, result=true
+HDFCLIFE -> HDFCLIFE27OCT26C570 = 7.85 (bought 10.3); stock Buy LTP 566 vs 1st15m High 561 / Low 557, result=true
+VBL -> VBL27OCT26C460 = 3.6 (bought 4.25); stock Buy LTP 441 vs 1st15m High 438 / Low 435, result=true
+HINDZINC -> HINDZINC27OCT26C560 = 9.2 (bought 9.15); stock Buy LTP 549 vs 1st15m High 548 / Low 543, result=true
+HINDUNILVR -> HINDUNILVR27OCT26C1880 = 28.9 (bought 15.8); stock Buy LTP 1843 vs 1st15m High 1837 / Low 1819, result=true
+LTM -> LTM27OCT26C4200 = 130.95 (bought 97.25); stock Buy LTP 4143 vs 1st15m High 4132 / Low 4060, result=true
+CIPLA -> CIPLA27OCT26C1320 = 29.7 (bought 26.95); stock Buy LTP 1318 vs 1st15m High 1316 / Low 1303, result=true
+GRASIM -> GRASIM27OCT26C2920 = 46.5 (bought 34.25); stock Buy LTP 2884 vs 1st15m High 2881 / Low 2855, result=true
+ULTRACEMCO -> ULTRACEMCO27OCT26C10600 = 292.15 (bought 191.4); stock Buy LTP 10580 vs 1st15m High 10574 / Low 10473, result=true
+
+Wrote 18 row(s) to /home/karthikeyan/work/icici/src/tools/gapscreener/gap_screener_option_quote.csv (18/18 with a new Result)

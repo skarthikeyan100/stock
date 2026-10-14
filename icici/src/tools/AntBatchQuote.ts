@@ -12,6 +12,16 @@
  * subscribe/collect/unsubscribe logic isn't duplicated between the two.
  */
 
+// Installed here (rather than per-caller) since this module and its two
+// gapscreener callers run as standalone `node`/npm-script invocations outside
+// the orchestrator's order/data/server processes, which otherwise install
+// this for every a3.aliceblueonline.com call. Without it, Happy-Eyeballs on
+// this dual-stack host can resolve the same ANT REST calls below over IPv6
+// and hit AliceBlue's IPv4-only allowlist (see kiteDns.ts's comment for the
+// full root-cause writeup).
+import { installIpv4OnlyHostOverride } from '../processes/order/kiteDns';
+installIpv4OnlyHostOverride();
+
 import ANT from '../ant/ANT';
 import AntSession from '../ant/AntSession';
 import AntWebSocket from '../ant/AntWebSocket';

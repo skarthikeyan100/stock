@@ -231,6 +231,42 @@ class OrderBookkeeping {
         return lotSize;
     }
 
+    // Used by chunkedBuyIndex (orderProcess.ts) when a caller passes
+    // quantity: -1, meaning "spend whatever investment headroom is left" -
+    // mirrors resolveManualBuyQuantity's lot-sizing-from-available-capital
+    // math above, but driven by maxInvestment/getCurrentInvestment (the cap
+    // BulkPcrStrategy-style pseudo-users actually use - see canPlaceOrder's
+    // 'BulkPcrStrategy' branch) rather than investmentAmount/availableAmount,
+    // which only real per-user accounts have configured. Nets out
+    // pendingValue() too (not just confirmed trades), same as canPlaceOrder's
+    // own check, so a second broker's chunkedBuyIndex call that happens to
+    // run its own price-fetch after the first one's markPending has already
+    // landed sees reduced headroom instead of recomputing against the full,
+    // not-yet-debited cap. This narrows but does NOT close the race for
+    // config.yml's multi-broker case (BulkPcrStrategy.enterOnBroker fires
+    // every configured broker's chunkedBuyIndex concurrently via
+    // Promise.allSettled) - two brokers whose own async price-fetches
+    // (antExecutor.estimateOptionPrice / getMarketableBreezeBuyPrice) are
+    // both in flight before either reaches markPending can still each
+    // compute against the same full, undebited headroom and together
+    // request up to ~2x maxInvestment; canPlaceOrder's post-hoc ratchet
+    // check only blocks a THIRD broker's order once pending+current has
+    // already reached the cap, it does not shrink an in-flight one. Safe
+    // today because config.yml's `brokers` list for BulkPcrStrategy /
+    // BulkPcrAutoStartStrategy has exactly one entry (ant) - revisit this if
+    // quantity: -1 is ever combined with 2+ configured brokers.
+    // Returns 0 (never negative, never a fraction of a lot) when there's no
+    // headroom left or the price/lotSize inputs are non-positive, so callers
+    // can treat 0 as "nothing to buy" uniformly instead of special-casing
+    // negative/NaN.
+    resolveMaxInvestmentQuantity(user: string, pricePerUnit: number, lotSize: number): number {
+        if (!(pricePerUnit > 0) || !(lotSize > 0)) return 0;
+        const available = this.getUserMaxInvestment(user) - this.getCurrentInvestment(user) - this.pendingValue(user);
+        if (available <= 0) return 0;
+        const lots = Math.floor(available / (pricePerUnit * lotSize));
+        return lots * lotSize;
+    }
+
     getTradedLots(user: string): number {
         return this.trades
             .filter((t) => t.user === user)
