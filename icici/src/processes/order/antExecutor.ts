@@ -304,17 +304,39 @@ export interface ManualBuyRequest {
     stopLossPoints?: number;
 }
 
+// Backoff between quote attempts after the first. ANT's OHLC endpoint rate-limits bursts
+// (429); ANT.postOhlc's own single 1.5s retry was not enough live (2026-10-14 10:56: two
+// 429s, price fell to 0, and the quantity -1 sizing refused the order).
+const SAFE_QUOTE_BACKOFF_MS = [3000, 6000, 10000];
+
+// Returns 0 (not a guessed price) when no usable quote can be had - sizing then refuses the
+// order. Only a 429 is retried; a session or 4xx error returns at once rather than stalling
+// the entry for the full backoff. Retries bypass the quote cache.
 // Quote fetch for sizing purposes only - never throws, returns 0 (which
 // bookkeeping.resolveManualBuyQuantity treats as "no price available, use
 // 1 lot") on any failure, so a temporary ANT hiccup never blocks a manual
 // buy that doesn't otherwise depend on ANT (e.g. Zerodha-executed orders).
 async function safeAntQuote(exch: 'NFO' | 'BFO', token: string): Promise<number> {
-    try {
-        return await ANT.getInstance().getQuote(exch, token);
-    } catch (e) {
-        Log.log('[order] ANT quote fetch failed (falling back to 1-lot sizing):', e);
-        return 0;
+    for (let attempt = 0; attempt <= SAFE_QUOTE_BACKOFF_MS.length; attempt++) {
+        try {
+            const ltp = await ANT.getInstance().getQuote(exch, token, { skipCache: attempt > 0 });
+            // A real zero (no trades today) is an answer, not a rate limit - retrying can't change it.
+            if (ltp > 0) return ltp;
+            Log.log(`[order] ANT quote returned ${ltp} for ${token} - no price`);
+            return 0;
+        } catch (e: any) {
+            if (e?.response?.status !== 429) {
+                Log.log('[order] ANT quote fetch failed (not rate-limited, not retrying):', e);
+                return 0;
+            }
+            Log.log(`[order] ANT quote attempt ${attempt + 1} rate-limited for ${token}`);
+        }
+        if (attempt < SAFE_QUOTE_BACKOFF_MS.length) {
+            await new Promise((resolve) => setTimeout(resolve, SAFE_QUOTE_BACKOFF_MS[attempt]));
+        }
     }
+    Log.log(`[order] ANT quote unavailable for ${token} after ${SAFE_QUOTE_BACKOFF_MS.length + 1} attempts (returning 0 - no price)`);
+    return 0;
 }
 
 // Live price estimate for investment-amount-based manual-buy sizing,

@@ -327,7 +327,7 @@ class ANT {
     // rather than duplicated in each. A 429 is retried exactly once after
     // OHLC_RETRY_DELAY_MS; any other failure (or a second 429) propagates to
     // the caller, which already has its own fail-safe (see antExecutor.ts's
-    // safeAntQuote, which falls back to 1-lot sizing on any thrown error).
+    // safeAntQuote, which retries 429s itself and returns 0 for any other failure).
     private async postOhlc(payload: { exchange: string; token: string }[]): Promise<any> {
         await this.throttleOhlc();
         try {
@@ -375,7 +375,9 @@ class ANT {
             throw new Error(`ANT getQuote failed for ${exchange}|${token}: ${JSON.stringify(resp.data)}`);
         }
         const price = Number(ltp);
-        this.quoteCache.set(key, { price, fetchedAt: Date.now() });
+        // Only cache a usable price: a cached 0 would be re-served to every caller for the
+        // whole TTL, including the retries meant to get past it.
+        if (price > 0) this.quoteCache.set(key, { price, fetchedAt: Date.now() });
         return price;
     }
 
