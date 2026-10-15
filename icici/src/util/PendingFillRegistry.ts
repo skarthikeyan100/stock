@@ -47,12 +47,4 @@ export default class PendingFillRegistry<T> {
             this.pending.set(key, { resolve, reject, timer });
         });
     }
-
-    // For a caller that needs to drop a wait early (e.g. the order is no longer relevant).
-    cancel(key: string): void {
-        const pending = this.pending.get(key);
-        if (!pending) return;
-        clearTimeout(pending.timer);
-        this.pending.delete(key);
-    }
 }
