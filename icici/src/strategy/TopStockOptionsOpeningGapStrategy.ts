@@ -34,6 +34,20 @@ interface RankedStock {
 
 export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     private phase: 'idle' | 'running' | 'done' = 'idle';
+    private tradingDay: string | null = null;
+
+    // phase alone has no day boundary - once it reaches 'done' on day N it
+    // stays 'done' forever in a long-lived process (npm run processes has no
+    // nightly restart), since processNiftyQuote's `phase !== 'idle'` guard
+    // short-circuits before hasFiredToday() (which IS day-scoped) is ever
+    // consulted again. Mirrors BulkPcrAutoStartStrategy's resetIfNewDay().
+    private resetIfNewDay(now: moment.Moment) {
+        const today = now.format('YYYY-MM-DD');
+        if (this.tradingDay !== today) {
+            this.tradingDay = today;
+            this.phase = 'idle';
+        }
+    }
 
     // In-memory `phase` alone only prevents re-firing within one process
     // lifetime - a dev-mode hot restart (tsc-watch) or any crash/restart
@@ -86,6 +100,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
 
     async processNiftyQuote(quote: NiftyQuote) {
         if (!this.enabled) return;
+        this.resetIfNewDay(moment());
         if (this.phase !== 'idle') return;
         if (!this.isTimeInRange()) return;
         if (this.hasFiredToday()) {

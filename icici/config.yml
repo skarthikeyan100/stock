@@ -144,6 +144,7 @@ strategies:
     brokers: *ref_0
   - type: TopStockOptionsOpeningGapStrategy
     enabled: false
+    broker: ant
     rankStart: 3
     rankCount: 5
     slPercent: 30
