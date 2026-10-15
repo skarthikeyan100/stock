@@ -135,7 +135,9 @@ strategies:
     enabled: true
     times:
       - '10:35'
+      - '11:05'
       - '11:35'
+      - '12:05'
       - '12:35'
     quantity: -1
     targetPoints: 2

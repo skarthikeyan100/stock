@@ -348,6 +348,18 @@ export interface ManualBuyRequest {
 // return immediately. A zero or unusable LTP is never returned as a price (getQuote throws).
 // Entry sizing uses the full schedule; exits use one short retry so a stop-loss isn't stuck behind it.
 const SAFE_QUOTE_BACKOFF_MS = [3000, 6000, 10000];
+// estimateOptionPrice's sizing path (quantity=-1, "size from maxInvestment") gets a longer
+// budget than ordinary entry sizing: live incident 2026-10-15 - a transient AliceBlue OHLC
+// 429 outlasted the standard 3-attempt/~19s schedule, exhausting it with price still 0 and
+// failing a BulkPcrAutoStartStrategy slot that would have gone through fine a few seconds
+// later. Not time-critical the way an order placement is, so the extra wait is cheap insurance.
+// Tradeoff noted on review: this ~43s max sits inside orderProcess.ts's ORDER_IPC_TIMEOUT_MS
+// (default 90s), leaving less margin for the chunked buy that follows to also complete within
+// that same window during a bad OHLC-degradation day. Left as is deliberately - the schedule
+// exists specifically to survive a degradation that outlasts the old ~19s budget, and a chunked
+// buy normally completes in a few seconds (confirmed live), so this is headroom traded for
+// resilience, not a correctness bug.
+const SIZING_ESTIMATE_BACKOFF_MS = [3000, 5000, 8000, 12000, 15000];
 // Exit path: one quick retry only. A stop-loss must not sit behind the entry-grade backoff.
 const EXIT_QUOTE_RETRY_MS = [1500];
 // Exit fallback floor when no live quote exists: 3% below the trigger tick's LTP (a live quote gets 1%).
@@ -382,7 +394,7 @@ export async function estimateOptionPrice(symbol: string, strike: number, option
     try {
         const exch = symbol === 'SENSEX' ? 'BFO' : 'NFO';
         const resolved = AntContractMaster.getInstance().findNearestExpiryOption({ symbol, exch, strike, optionType });
-        return await safeAntQuote(resolved.exch as 'NFO' | 'BFO', resolved.token);
+        return await safeAntQuote(resolved.exch as 'NFO' | 'BFO', resolved.token, SIZING_ESTIMATE_BACKOFF_MS);
     } catch (e) {
         Log.log('[order] Contract resolution for price estimate failed (falling back to 1-lot sizing):', e);
         return 0;
@@ -631,19 +643,31 @@ function openQuantity(userId: string, tsym: string): number {
 // re-placed at live LTP, then checked again, up to a limit.
 const EXIT_RECHECK_MS = 60000;
 const EXIT_MAX_REPRICES = 10;
-const EXIT_PLACE_RETRIES = 3;
+// A separate cap for consecutive unreadable-status checks, so a run of read failures (network
+// blips, nothing to do with the sell itself) can't silently eat into the re-price budget above
+// and trigger its "not filled after N re-prices" alert without a single re-price ever happening.
+const EXIT_MAX_UNREADABLE_STATUS = 10;
+// Found on review: before unreadableStatusCount was split out as its own counter, a persistent
+// cancel-failure loop (which never advanced `attempt` either, before or after that split) could
+// incidentally still trip EXIT_MAX_REPRICES if unreadable-status rounds happened to be mixed in,
+// since those used to share the same counter. Splitting the counters removed that accidental
+// escape hatch, leaving a genuinely stuck "cancel never succeeds" loop with no cap of its own at
+// all - a resting, unprotected position could re-check forever with no alert ever firing. Giving
+// cancel failures their own explicit bounded cap closes this rather than relying on an
+// unreadable-status coincidence.
+const EXIT_MAX_CANCEL_FAILURES = 10;
 
-function scheduleExitRecheck(order: PendingAntLimitOrder, attempt: number, lastLimit: number, delayMs = EXIT_RECHECK_MS): void {
+function scheduleExitRecheck(order: PendingAntLimitOrder, attempt: number, lastLimit: number, delayMs = EXIT_RECHECK_MS, unreadableStatusCount = 0, cancelFailureCount = 0): void {
     setTimeout(() => {
-        void recheckUnfilledExit(order, attempt, lastLimit);
+        void recheckUnfilledExit(order, attempt, lastLimit, unreadableStatusCount, cancelFailureCount);
     }, delayMs);
 }
 
-async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number, lastLimit: number): Promise<void> {
+async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number, lastLimit: number, unreadableStatusCount = 0, cancelFailureCount = 0): Promise<void> {
     const key = `${order.userId}:${order.tradingSymbol}`;
     // One exit operation per position at a time: a square-off or another re-price in flight would race this one.
     if (bookkeeping.pendingSquareOffs.has(key)) {
-        scheduleExitRecheck(order, attempt, lastLimit, 5000);
+        scheduleExitRecheck(order, attempt, lastLimit, 5000, unreadableStatusCount, cancelFailureCount);
         return;
     }
     bookkeeping.pendingSquareOffs.add(key);
@@ -663,8 +687,13 @@ async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number,
             st = await ANT.getInstance().getOrderStatus(order.orderId).catch(() => null);
         }
         if (!st) {
+            const nextUnreadableCount = unreadableStatusCount + 1;
+            if (nextUnreadableCount >= EXIT_MAX_UNREADABLE_STATUS) {
+                Log.log(`[order] ALERT: exit ${order.orderId} for ${order.tradingSymbol} (${order.userId}) status unreadable ${nextUnreadableCount} times in a row - still resting, manual action required`);
+                return;
+            }
             Log.log(`[order] re-price: status of ${order.orderId} unreadable, checking again in 60s`);
-            scheduleExitRecheck(order, attempt + 1, lastLimit);
+            scheduleExitRecheck(order, attempt, lastLimit, EXIT_RECHECK_MS, nextUnreadableCount, cancelFailureCount);
             return;
         }
         if (st.status === 'COMPLETE') {
@@ -676,9 +705,18 @@ async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number,
         try {
             await cancelRestingSellForExit(order.orderId, order.userId, order.tradingSymbol, order);
         } catch (cancelErr: any) {
+            const nextCancelFailureCount = cancelFailureCount + 1;
+            if (nextCancelFailureCount >= EXIT_MAX_CANCEL_FAILURES) {
+                Log.log(`[order] ALERT: exit ${order.orderId} for ${order.tradingSymbol} (${order.userId}) cancel failed ${nextCancelFailureCount} times in a row - still resting, manual action required: ${cancelErr?.message ?? cancelErr}`);
+                return;
+            }
             // The sell is re-tracked when its cancel isn't confirmed, so the next check picks it up again.
             Log.log(`[order] re-price: cancel of ${order.orderId} for ${order.tradingSymbol} not confirmed, checking again in 60s: ${cancelErr?.message ?? cancelErr}`);
-            scheduleExitRecheck(order, attempt, lastLimit);
+            // `st` was read successfully just above (that's how we got here at all), so the
+            // unreadable-status streak is over - reset to 0 rather than carrying the stale count
+            // forward. Otherwise a handful of old, long-resolved read failures could combine with
+            // a later, unrelated one to trip the alert despite no actual streak.
+            scheduleExitRecheck(order, attempt, lastLimit, EXIT_RECHECK_MS, 0, nextCancelFailureCount);
             return;
         }
         const remaining = openQuantity(order.userId, order.tradingSymbol);

@@ -2,6 +2,7 @@ import Log from '../util/Log';
 import Breeze from './Breeze';
 import myEmitter from '../tools/emitter';
 import configService from '../prism/ConfigService';
+import TtlBuffer from '../util/TtlBuffer';
 
 // Push-based order-fill notification, mirroring AntOrderNotifyStream.ts's
 // role (replacing/supplementing Breeze.getFillPrice's REST polling of
@@ -41,6 +42,12 @@ class BreezeOrderNotifyStream {
     private connected = false;
     private pending = new Map<string, PendingFill>(); // keyed by orderId (best-guess: orderReference)
 
+    // Terminal pushes that arrived with no waiter yet registered - mirrors the identical fix
+    // in AntOrderNotifyStream.ts (confirmed live 2026-10-15: a push can arrive before the REST
+    // placeOrder call that hands the caller this orderId even returns, so a waitForFill
+    // registered after the fact would otherwise never see a push that already happened).
+    private recentTerminalPushes = new TtlBuffer<{ fillPrice?: number; error?: Error }>(20000);
+
     static getInstance(): BreezeOrderNotifyStream {
         if (!BreezeOrderNotifyStream.instance) {
             BreezeOrderNotifyStream.instance = new BreezeOrderNotifyStream();
@@ -76,11 +83,7 @@ class BreezeOrderNotifyStream {
             Log.log('[BreezeOrderNotifyStream] Order notification with no recognizable order id field - raw:', JSON.stringify(data));
             return;
         }
-        const pending = this.pending.get(String(orderId));
-        if (!pending) {
-            Log.log(`[BreezeOrderNotifyStream] Push for order ${orderId} - not one we're waiting on (or field-mapping mismatch)`);
-            return;
-        }
+        const key = String(orderId);
 
         const status = data.orderStatus;
         // Only 'Executed' (the whole order's quantity filled) resolves this
@@ -97,6 +100,7 @@ class BreezeOrderNotifyStream {
         // the caller's own cancel-then-recheck path (cancelOrderOnBreeze's
         // getBreezeOrderFillInfo) is what correctly captures a partial fill
         // when the remainder is eventually cancelled instead of completing.
+        let outcome: { fillPrice?: number; error?: Error } | null = null;
         if (status === 'Executed') {
             const fillPrice = Number(data.averageExecutedRate);
             // Confirmed live 2026-09-18: a real "Executed" push resolved with
@@ -115,28 +119,45 @@ class BreezeOrderNotifyStream {
             const minPrice = cfg?.minPrice ?? 0;
             const maxPrice = cfg?.maxPrice ?? Number.MAX_SAFE_INTEGER;
             if (fillPrice > 0 && fillPrice >= minPrice && fillPrice <= maxPrice) {
-                clearTimeout(pending.timer);
-                this.pending.delete(String(orderId));
-                pending.resolve(fillPrice);
+                outcome = { fillPrice };
             } else {
                 Log.log(`[BreezeOrderNotifyStream] Executed push for order ${orderId} carried an implausible averageExecutedRate (${data.averageExecutedRate}) - rejecting to force the REST fallback instead of recording a wrong price.`);
-                clearTimeout(pending.timer);
-                this.pending.delete(String(orderId));
-                pending.reject(new Error(`Breeze order ${orderId} push carried an implausible fill price (${data.averageExecutedRate})`));
+                outcome = { error: new Error(`Breeze order ${orderId} push carried an implausible fill price (${data.averageExecutedRate})`) };
             }
         } else if (status === 'Partially Executed') {
             Log.log(`[BreezeOrderNotifyStream] Partially Executed push for order ${orderId} - not yet the full fill, waiting for a terminal push`);
+            return;
         } else if (status === 'Rejected' || status === 'Cancelled' || status === 'Expired') {
-            clearTimeout(pending.timer);
-            this.pending.delete(String(orderId));
-            pending.reject(new Error(`Breeze order ${orderId} ${status}`));
+            outcome = { error: new Error(`Breeze order ${orderId} ${status}`) };
+        } else {
+            return;
         }
+
+        const pending = this.pending.get(key);
+        if (pending) {
+            clearTimeout(pending.timer);
+            this.pending.delete(key);
+            if (outcome.error) pending.reject(outcome.error); else pending.resolve(outcome.fillPrice!);
+            return;
+        }
+
+        // BUG FIX 2026-10-15: no waiter registered yet - the REST placeOrder call that will
+        // hand the caller this orderId may not have returned yet (confirmed live for the
+        // identical ANT case - see AntOrderNotifyStream.ts's handleMessage). Buffer the
+        // outcome so a waitForFill registered moments later still sees it, instead of
+        // dropping a push nobody was listening for yet and always falling back to REST.
+        Log.log(`[BreezeOrderNotifyStream] Push for order ${orderId} - no waiter registered yet, buffering`);
+        this.recentTerminalPushes.set(key, outcome);
     }
 
     // Resolves on this order's Executed push, or rejects on
     // Rejected/Cancelled/Expired/timeout - caller (breezeExecutor.ts) falls
     // back to Breeze.getFillPrice's REST polling on any rejection here.
     waitForFill(orderId: string, timeoutMs = 30000): Promise<number> {
+        const buffered = this.recentTerminalPushes.take(orderId);
+        if (buffered) {
+            return buffered.error ? Promise.reject(buffered.error) : Promise.resolve(buffered.fillPrice!);
+        }
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pending.delete(orderId);

@@ -833,7 +833,7 @@ class ANT {
     // "not filled" (see gaps.md's "Partial-fill accounting" entry, now
     // resolved for ANT). Returned alongside status rather than folded into
     // the boolean callers used to derive from status alone.
-    async getOrderStatus(orderNo: string): Promise<{ status: string; fillPrice?: number; filledQuantity?: number }> {
+    async getOrderStatus(orderNo: string): Promise<{ status: string; fillPrice?: number; filledQuantity?: number; rejectReason?: string }> {
         // Up to 3 attempts for transient transport errors - this feeds the cancel
         // recheck, where a single reset would leave the caller unable to tell whether
         // the resting order filled.
@@ -860,7 +860,15 @@ class ANT {
             };
         }
         const rejected = records.find((r) => ANT.isTerminalRejectOrCancel(r.orderStatus));
-        if (rejected) return { status: ANT.canonicalStatus(rejected.orderStatus), filledQuantity: Number(rejected.filledQuantity ?? 0) };
+        if (rejected) {
+            // rejreason carries the broker's actual remark (e.g. a margin-shortfall message) -
+            // confirmed present on order-history/WS-push records (see AntOrderNotifyStream.ts).
+            // Without surfacing it, a caller re-placing on REJECTED has no way to tell a
+            // transient broker hiccup apart from a rejection that will never succeed by retrying
+            // unchanged (e.g. the position no longer exists to cover a sell against).
+            const rejectReason = rejected.rejreason || rejected.remarks || undefined;
+            return { status: ANT.canonicalStatus(rejected.orderStatus), filledQuantity: Number(rejected.filledQuantity ?? 0), rejectReason };
+        }
         return { status: 'PENDING', filledQuantity: 0 };
     }
 }

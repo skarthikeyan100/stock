@@ -28,7 +28,7 @@ export interface PendingAntLimitOrder {
 const pending = new Map<string, PendingAntLimitOrder>();
 
 // See pendingLimitOrders.ts's cancelledListeners for why this exists.
-type CancelledListener = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: 'ant', orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
+type CancelledListener = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: 'ant', orderId: string, reason: 'CANCELLED' | 'REJECTED', rejectReason?: string) => void;
 const cancelledListeners: CancelledListener[] = [];
 export function onCancelled(listener: CancelledListener): void { cancelledListeners.push(listener); }
 
@@ -93,7 +93,7 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
 
     for (const [orderId, order] of pending) {
         try {
-            const { status, fillPrice, filledQuantity } = await ant.getOrderStatus(orderId);
+            const { status, fillPrice, filledQuantity, rejectReason } = await ant.getOrderStatus(orderId);
             // A square-off or re-price may have taken this order off the book while the status call was in
             // flight. Acting on that stale status could re-place a sell for quantity already sold.
             if (!pending.has(orderId)) continue;
@@ -161,9 +161,9 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                 } else if (remaining > 0) {
                     const reason = status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
                     for (const listener of cancelledListeners) {
-                        listener(order.userId, order.tradingSymbol, order.instrumentId, remaining, order.exchange, order.action, 'ant', orderId, reason);
+                        listener(order.userId, order.tradingSymbol, order.instrumentId, remaining, order.exchange, order.action, 'ant', orderId, reason, rejectReason);
                     }
-                    Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status}`);
+                    Log.log(`[order] Pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status}${rejectReason ? ` (${rejectReason})` : ''}`);
                 }
             }
             // else: still pending, leave in map for the next poll

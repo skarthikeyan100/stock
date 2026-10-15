@@ -9,6 +9,7 @@ build/
 .ant_session.json
 .zerodha_session.json
 .breeze_session.json
+.bulkpcr_armed_slots.json
 
 # Log files
 *.log

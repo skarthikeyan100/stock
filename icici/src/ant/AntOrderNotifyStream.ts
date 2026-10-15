@@ -2,6 +2,7 @@ import WebSocket from 'ws';
 import axiosModule from 'axios';
 import Log from '../util/Log';
 import { isPastMarketClose } from '../util/marketHours';
+import TtlBuffer from '../util/TtlBuffer';
 import ANT from './ANT';
 
 const axios = axiosModule.create();
@@ -65,6 +66,12 @@ class AntOrderNotifyStream {
 
     private pending = new Map<string, PendingFill>(); // keyed by brokerOrderId
 
+    // Terminal pushes that arrived with no waiter yet registered - see handleMessage's
+    // 2026-10-15 bug-fix comment. Short TTL: this only needs to bridge the gap between a push
+    // arriving and the REST placeOrder call returning (observed live as near-instant, well
+    // under a second), not to survive indefinitely.
+    private recentTerminalPushes = new TtlBuffer<{ fillPrice?: number; error?: Error }>(20000);
+
     static getInstance(): AntOrderNotifyStream {
         if (!AntOrderNotifyStream.instance) {
             AntOrderNotifyStream.instance = new AntOrderNotifyStream();
@@ -80,7 +87,17 @@ class AntOrderNotifyStream {
             { headers: { Authorization: `Bearer ${session}` } }
         );
         Log.log('[AntOrderNotify] createWsToken response:', JSON.stringify(resp.data));
-        const token = resp.data?.result?.orderToken ?? resp.data?.orderToken ?? resp.data?.result;
+        // BUG FIX 2026-10-15: AliceBlue's documented response wraps the token in a one-element
+        // ARRAY - {"result":[{"orderToken":"..."}]} - confirmed live today. The old fallback
+        // chain (result?.orderToken ?? ... ?? result) never found the string on an array (arrays
+        // have no .orderToken property) and fell all the way through to `result` itself - the
+        // array object - which then got JSON.stringify'd straight into the subscribe payload as
+        // a malformed orderToken on every single connection. AliceBlue silently never recognized
+        // it, never marked a session active, and closed the socket every ~5 minutes as "Session
+        // inactive" (confirmed via the close-code/reason logging added alongside this fix) -
+        // explaining a 100% order-notify push-miss rate (not even the subscribe ack ever arrived).
+        const result = resp.data?.result;
+        const token = (Array.isArray(result) ? result[0]?.orderToken : result?.orderToken) ?? resp.data?.orderToken;
         if (!token) throw new Error(`ANT createWsToken failed: ${JSON.stringify(resp.data)}`);
         return token;
     }
@@ -119,11 +136,16 @@ class AntOrderNotifyStream {
         };
 
         this.ws.onerror = (event) => {
-            Log.log('[AntOrderNotify] WebSocket error:', event);
+            Log.log('[AntOrderNotify] WebSocket error:', (event as any)?.message ?? event);
         };
 
-        this.ws.onclose = () => {
-            Log.log('[AntOrderNotify] WebSocket closed');
+        // code/reason diagnostic (2026-10-15): the close event carries both, but the handler
+        // previously discarded them entirely, leaving no way to tell a clean idle-timeout close
+        // apart from an abnormal one - added while investigating a 100% order-notify push-miss
+        // rate (zero raw messages ever received, not even the subscribe ack) alongside a steady
+        // ~5-minute close/reconnect cycle all afternoon.
+        this.ws.onclose = (event: any) => {
+            Log.log(`[AntOrderNotify] WebSocket closed (code=${event?.code ?? 'unknown'}, reason=${event?.reason || 'none'}, wasClean=${event?.wasClean ?? 'unknown'})`);
             this.connected = false;
             if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
             if (this.manualDisconnect) return;
@@ -164,33 +186,49 @@ class AntOrderNotifyStream {
         // types (subscribe ack {"status":"Ok"}, etc) are ignored here.
         if (data.t && data.t !== 'om') return;
 
-        // norenordno is the confirmed field per AliceBlue's docs; the other
-        // names are defensive fallbacks in case behavior differs live.
+        // norenordno is the confirmed field per AliceBlue's docs (and confirmed live
+        // 2026-10-15 to equal the REST brokerOrderId exactly) - the other names are
+        // defensive fallbacks in case behavior differs live.
         const orderNo = data.norenordno ?? data.brokerOrderId ?? data.orderNo;
         if (!orderNo) return;
-        const pending = this.pending.get(String(orderNo));
-        if (!pending) return;
+        const key = String(orderNo);
 
         const status = data.status ?? data.orderStatus;
+        let outcome: { fillPrice?: number; error?: Error } | null = null;
         if (status === 'COMPLETE') {
-            // Noren convention (matches Shoonya's fill messages elsewhere in
-            // this repo - bookkeeping.updateTradeFromPrismMessage): flprc is
-            // the fill price. Not yet confirmed for ANT's own 'om' messages
-            // specifically since the documented example was a rejection.
+            // Noren convention (matches Shoonya's fill messages elsewhere in this repo -
+            // bookkeeping.updateTradeFromPrismMessage): flprc is the fill price - confirmed
+            // live 2026-10-15 against a real fill push.
             const fillPrice = data.flprc ?? data.averageTradedPrice ?? data.avgprc;
-            clearTimeout(pending.timer);
-            this.pending.delete(String(orderNo));
-            if (!fillPrice) {
-                pending.reject(new Error(`ANT order ${orderNo} COMPLETE but no recognizable fill-price field: ${raw}`));
-            } else {
-                pending.resolve(Number(fillPrice));
-            }
+            outcome = fillPrice
+                ? { fillPrice: Number(fillPrice) }
+                : { error: new Error(`ANT order ${orderNo} COMPLETE but no recognizable fill-price field: ${raw}`) };
         } else if (ANT.isTerminalRejectOrCancel(status)) {
-            clearTimeout(pending.timer);
-            this.pending.delete(String(orderNo));
             const reason = data.rejreason ? ` (${data.rejreason})` : '';
-            pending.reject(new Error(`ANT order ${orderNo} ${status}${reason}: ${raw}`));
+            outcome = { error: new Error(`ANT order ${orderNo} ${status}${reason}: ${raw}`) };
+        } else {
+            return; // intermediate state (OPEN/PENDING/TRIGGER_PENDING/...) - nothing to resolve yet
         }
+
+        const pending = this.pending.get(key);
+        if (pending) {
+            clearTimeout(pending.timer);
+            this.pending.delete(key);
+            if (outcome.error) pending.reject(outcome.error); else pending.resolve(outcome.fillPrice!);
+            return;
+        }
+
+        // BUG FIX 2026-10-15 (confirmed live): no waiter is registered yet. This is NOT
+        // necessarily "nobody cares about this order" - the REST placeOrder/placeBracketOrder
+        // call that will hand enterPosition this exact orderNo may not have returned yet.
+        // Confirmed live: a real bracket buy's COMPLETE fill push arrived and was logged
+        // BEFORE placeBracketOrder's own REST response (which is what enterPosition needs
+        // before it can call waitForFill(orderNo) at all) - the push was silently dropped
+        // here every time, and every entry fell back to the 60s REST poll regardless of the
+        // WS otherwise working correctly end to end. Buffer the outcome briefly so a
+        // waitForFill registered moments later still sees it.
+        Log.log(`[AntOrderNotify] Terminal push for order ${orderNo} - no waiter registered yet, buffering`);
+        this.recentTerminalPushes.set(key, outcome);
         // Any other status (OPEN/PENDING/TRIGGER_PENDING/...) is an
         // intermediate state - keep waiting.
     }
@@ -198,6 +236,13 @@ class AntOrderNotifyStream {
     // Resolves as soon as this order's COMPLETE push arrives, or rejects on
     // REJECTED/CANCELLED/timeout - no REST polling involved.
     waitForFill(orderNo: string, timeoutMs = 60000): Promise<number> {
+        // See handleMessage's 2026-10-15 bug-fix comment: the push can genuinely arrive before
+        // this is even called. Check the buffer first rather than always registering a fresh
+        // wait that a past push can never satisfy.
+        const buffered = this.recentTerminalPushes.take(orderNo);
+        if (buffered) {
+            return buffered.error ? Promise.reject(buffered.error) : Promise.resolve(buffered.fillPrice!);
+        }
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pending.delete(orderNo);

@@ -23,6 +23,32 @@ const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses arou
 // this strategy's own call volume.
 const ENTRY_ATTEMPT_THROTTLE_MS = 10_000;
 
+// onOrderCancelled's re-placement cap/backoff (live incident 2026-10-15 - see BrokerPosition's
+// exitRejectCount comment). A rejection whose broker-supplied reason looks like a margin/
+// shortfall problem is never retried at all: it means there's nothing left to sell against
+// (e.g. the position was already closed outside the app), and resubmitting the identical
+// order will only be rejected identically forever.
+// Counts RE-PLACEMENTS after the original (non-retry) placement, not total placements -
+// exitRejectCount increments once per rejection and is checked with `>`, so rejections 1-5 each
+// still get a retry (5 re-placements total) and rejection 6 is what stops it. "6 total
+// placements of this exit" (the original plus 5 retries) is the same behavior described a
+// different way, not a bug - flagged twice on review as apparently off-by-one, so spelling it
+// out here to save a third look.
+const MAX_EXIT_REJECT_RETRIES = 5;
+const EXIT_REJECT_RETRY_DELAY_MS = 5000;
+// Rejections more than this far apart don't count as the same streak - narrowed on review:
+// a bare "insufficient" or "margin" match was broad enough to catch an unrelated transient
+// rejection (e.g. a liquidity/order-book message) on its very first occurrence and stop retrying
+// forever. Requiring "margin" together with a shortfall/insufficiency word is a closer match to
+// the actual broker wording this guards against ("insufficient margin" / "margin shortfall").
+// FIX (found on re-review): the first version used `[^a-z]{0,20}` for the gap between the two
+// words, which excludes ANY letter - so ordinary English phrasing with connector words in
+// between ("Margin is insufficient", "Not enough margin to cover order") never matched at all.
+// `.{0,30}` (any character) fixes this; `enough`/`short` added to catch "not enough margin"
+// phrasing specifically.
+const MARGIN_SHORTFALL_REASON_PATTERN = /margin.{0,30}(shortfall|insufficient|exceed|short)|(?:shortfall|insufficient|exceed|short|enough).{0,30}margin/i;
+const EXIT_REJECT_STREAK_RESET_MS = 120_000;
+
 const STATE_COLLECTION = 'bulkPcrStrategyState';
 
 // chunkedBuyIndex/chunkedSquareOffLimit (orderProcess.ts) support all four
@@ -45,6 +71,24 @@ interface BrokerPosition {
     // order, which the exchange cancels/expires unfilled at EOD regardless of
     // what this app believes - see reconcile()'s use of this field.
     sellPlacedAt?: number;
+    // Consecutive REJECTED re-placements, reset on a non-rejected cancellation or once the gap
+    // since the last rejection exceeds EXIT_REJECT_STREAK_RESET_MS. Live incident 2026-10-15: a
+    // position that had already been closed manually, outside this app, had its stale resting
+    // exit resumed by reconcile() and then re-placed identically on every REJECTED response with
+    // no cap - see onOrderCancelled's use of this field.
+    //
+    // KNOWN LIMITATION (found on review): this counts rejections per BROKER POSITION, not per
+    // resting-sell chunk (chunkedSquareOffLimit can split a large exit into several concurrently-
+    // resting orders - see Haiku-fixes.md's/ToDo.md's "chunk ownership" gap, which this doesn't
+    // solve). A handful of independent, one-off transient rejections spread across different
+    // chunks could still add up and trip the cap even though no single chunk failed repeatedly.
+    // The time-window reset below (exitLastRejectAt) narrows this - rejections more than
+    // EXIT_REJECT_STREAK_RESET_MS apart never accumulate - but doesn't fully solve it for
+    // rejections that land close together across different chunks. A real fix needs a stable
+    // per-chunk identity threaded through re-placement, which doesn't exist anywhere in this
+    // codebase yet.
+    exitRejectCount?: number;
+    exitLastRejectAt?: number;
 }
 
 interface PersistedState {
@@ -265,7 +309,7 @@ export default class BulkPcrStrategy extends Strategy {
     // fill lands and reduces the other's headroom - see that method's
     // comment. Only safe today because config.yml's `brokers` list is a
     // single entry.
-    private async enterOnBroker(broker: BrokerName, right: string, quantity: number, niftyLtp: number): Promise<void> {
+    private async enterOnBroker(broker: BrokerName, right: string, quantity: number, niftyLtp: number, isRetry: boolean = false): Promise<void> {
         this.positions.set(broker, {
             phase: 'buying',
             heldTsym: null,
@@ -285,7 +329,37 @@ export default class BulkPcrStrategy extends Strategy {
             pos.entryAvg = result.avgPrice;
             Log.log(`[BulkPcrStrategy] [${broker}] Entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
             await this.placeExitSell(broker, result.quantity);
-        } catch (e) {
+        } catch (e: any) {
+            // Distinguish "nothing was bought" from a real broker-order-level problem, and
+            // auto-retry only the former - a persistent/ambiguous failure still needs the same
+            // manual review as before. Two safe-to-retry shapes seen live, both meaning no
+            // broker order resulted in any fill at all:
+            //  - sizing/pricing failed before any order was placed at all
+            //    (resolveChunkedBuyQuantity, orderProcess.ts - this exact message, thrown
+            //    BEFORE placeOrderWithPendingGuard ever runs) - live incident 2026-10-15, an
+            //    ANT OHLC 429 outlasted the sizing quote's retry budget.
+            //  - an order WAS placed but resolveUnconfirmedAntBuy (antExecutor.ts) cancelled it
+            //    and confirmed via the trade book that it filled 0 - buyChunked (chunkedOrder.ts)
+            //    wraps this as "failed after filling 0/<requested>" - live incident 2026-10-15,
+            //    the 12:35 slot's order never got a fill before the order-notify AND REST-fallback
+            //    polls both timed out, and was genuinely unfilled when cancelled.
+            // Explicitly EXCLUDED: resolveUnconfirmedAntBuy's own ambiguous-outcome throws all
+            // contain "fill status unresolved" (cancel failed, bracket/cover parent left
+            // untouched, trade-book read failed, etc.) - those must stay a hard stop, and so must
+            // any partial fill ("failed after filling N/<requested>" with N>0 - there's a real,
+            // unmonitored position at stake then, not nothing). One retry only (isRetry).
+            const message = typeof e?.message === 'string' ? e.message : '';
+            const ambiguousOutcome = message.includes('fill status unresolved');
+            const nothingWasBought = !ambiguousOutcome && (
+                message.includes('no available investment headroom to size an order from')
+                || /failed after filling 0\//.test(message)
+            );
+            if (nothingWasBought && !isRetry) {
+                Log.log(`[BulkPcrStrategy] [${broker}] Chunked entry failed with nothing bought - retrying once in 10s: ${message || e}`);
+                await new Promise((resolve) => setTimeout(resolve, 10000));
+                await this.enterOnBroker(broker, right, quantity, niftyLtp, true);
+                return;
+            }
             Log.log(`[BulkPcrStrategy] [${broker}] Chunked entry failed - manual review required:`, e);
             const pos = this.positions.get(broker);
             if (pos) pos.phase = 'error';
@@ -404,19 +478,34 @@ export default class BulkPcrStrategy extends Strategy {
         const allDone = brokers.every((b) => this.positions.get(b)?.phase === 'done');
         if (!allDone) return; // other broker(s) still buying/selling/erroring - wait for them
 
-        // Durable self-disable - mirrors GoodMorningStrategy.ts's exact
-        // pattern (configService.writeConfig), since an in-memory-only
-        // this.enabled = false would be silently overwritten back to
-        // config.yml's static enabled: true on the next restart
-        // (StrategyFactory.createStrategy always does
-        // strategy.enabled = config.enabled after construction).
+        this.durablyDisable('Cycle complete on every configured broker');
+    };
+
+    // Durable self-disable - mirrors GoodMorningStrategy.ts's exact pattern
+    // (configService.writeConfig), since an in-memory-only this.enabled = false
+    // would be silently overwritten back to config.yml's static enabled: true
+    // on the next restart (StrategyFactory.createStrategy always does
+    // strategy.enabled = config.enabled after construction). Shared by
+    // updateTrade (every broker's exit filled normally) and reconcile (a
+    // restart discovers every broker was already fully closed at the broker -
+    // see reconcile's 2026-10-15 bug-fix comment: without this, a position
+    // closed outside the app left this.phase stuck at 'running' forever,
+    // since nothing else would ever flip it to 'done').
+    private durablyDisable(reason: string): void {
+        // Found on review: reconcile()'s own allBrokersDone check and updateTrade's allDone check
+        // can both observe "every broker done" and both call this - reconcile() awaits network
+        // calls per broker with nothing excluding a fill notification from landing mid-loop. Both
+        // calls were already idempotent (same end state either way), but this guard skips the
+        // redundant config write and avoids a second, confusing "already fully closed at the
+        // broker on restart" log line for what was actually just a normal fill.
+        if (this.phase === 'done') return;
         const liveCfg = configService.getStrategyConfig('BulkPcrStrategy');
         liveCfg.enabled = false;
         configService.writeConfig(configService.getConfig());
         this.enabled = false; // stop in-memory immediately too - config.yml only gets re-read on next restart
         this.phase = 'done';
-        Log.log('[BulkPcrStrategy] Cycle complete on every configured broker - durably disabled. Flip enabled: true in config.yml manually to arm another run.');
-    };
+        Log.log(`[BulkPcrStrategy] ${reason} - durably disabled. Flip enabled: true in config.yml manually to arm another run.`);
+    }
 
     // Called when a resting limit order (e.g. an exit sell) is cancelled/rejected,
     // typically because a DAY-validity order expires unfilled at end of session.
@@ -432,7 +521,48 @@ export default class BulkPcrStrategy extends Strategy {
             return;
         }
 
-        Log.log(`[BulkPcrStrategy] [${broker}] Order cancelled: ${notification.tradingSymbol} qty=${notification.quantity} (${notification.reason}) - re-placing resting sell`);
+        const rejectReason: string | undefined = notification.rejectReason;
+        if (notification.reason === 'REJECTED') {
+            const now = Date.now();
+            // Found on review: a streak of well-separated, one-off rejections (e.g. from
+            // different resting chunks, each failing for its own unrelated transient reason)
+            // must not accumulate toward the cap the same way a tight, genuinely-stuck loop
+            // would (the actual 2026-10-15 incident: 4 rejections in under 30s). Reset the
+            // streak if the gap since the last rejection is too large to plausibly be the same
+            // problem - see BrokerPosition.exitRejectCount's comment for the remaining gap this
+            // doesn't fully close (no per-chunk identity exists to solve it precisely).
+            const withinStreak = pos.exitLastRejectAt != null && now - pos.exitLastRejectAt <= EXIT_REJECT_STREAK_RESET_MS;
+            pos.exitRejectCount = (withinStreak ? pos.exitRejectCount ?? 0 : 0) + 1;
+            pos.exitLastRejectAt = now;
+
+            if (rejectReason && MARGIN_SHORTFALL_REASON_PATTERN.test(rejectReason)) {
+                // A margin/shortfall rejection means there's nothing left to sell against -
+                // most likely the position was already closed outside the app (see the
+                // 2026-10-15 incident this guards against). Retrying would just repeat the
+                // same rejection forever.
+                Log.log(`[BulkPcrStrategy] [${broker}] Exit sell for ${notification.tradingSymbol} REJECTED (${rejectReason}) - looks like a margin/shortfall rejection, likely because the position is already closed at the broker. NOT re-placing - manual review required.`);
+                pos.phase = 'error';
+                this.persistState();
+                return;
+            }
+
+            if (pos.exitRejectCount > MAX_EXIT_REJECT_RETRIES) {
+                Log.log(`[BulkPcrStrategy] [${broker}] Exit sell for ${notification.tradingSymbol} REJECTED ${pos.exitRejectCount} times in a row (${rejectReason ?? 'no reason given'}) - giving up on auto re-placement. Manual review required.`);
+                pos.phase = 'error';
+                this.persistState();
+                return;
+            }
+        } else {
+            pos.exitRejectCount = 0; // a plain (non-rejected) cancellation, e.g. EOD expiry - not a rejection streak
+            pos.exitLastRejectAt = undefined;
+        }
+
+        Log.log(`[BulkPcrStrategy] [${broker}] Order cancelled: ${notification.tradingSymbol} qty=${notification.quantity} (${notification.reason}${rejectReason ? `: ${rejectReason}` : ''}) - re-placing resting sell`);
+        if ((pos.exitRejectCount ?? 0) > 1) {
+            // Back off before resubmitting a repeat rejection, instead of tight-looping
+            // identical orders (2026-10-15: 4 resubmissions in under 30s with no delay).
+            await new Promise((resolve) => setTimeout(resolve, EXIT_REJECT_RETRY_DELAY_MS));
+        }
         await this.placeExitSellAtTargetPrice(broker, notification.quantity, false);
     };
 
@@ -513,6 +643,35 @@ export default class BulkPcrStrategy extends Strategy {
                 // Detected here rather than trusted, and re-placed for the
                 // remaining unsold quantity (soldQty/soldValue preserved, not
                 // reset).
+                //
+                // Before any of that: confirm the position is still genuinely open at the
+                // broker at all. Live incident 2026-10-15 - a position that had already been
+                // squared off manually, outside this app, had its stale 'selling' state
+                // resumed here purely from this persisted Mongo doc with no broker
+                // confirmation, then (once the resting sell was rejected as a naked short with
+                // no position to cover it) looped re-placing the identical doomed sell forever.
+                // getOpenTrades is the same broker-truth signal the 'buying'/never-attempted
+                // branch below already trusts - reused here rather than adding a second
+                // broker-facing path. A failed query can't confirm either way, so it does NOT
+                // treat the position as closed - that would be worse than the bug it's fixing.
+                const openTrades = await getOpenTradesOnce();
+                const matchingOpenTrade = openTrades?.find((t: any) => t.broker === broker && t.tsym === persistedPos.heldTsym);
+                const stillOpenAtBroker = openTrades === undefined || matchingOpenTrade != null;
+                if (!stillOpenAtBroker) {
+                    Log.log(`[BulkPcrStrategy] [${broker}] reconcile: persisted exit state for ${persistedPos.heldTsym} says 'selling', but no matching open position was found at the broker - treating it as already closed and clearing the stale exit state (NOT resuming fill-watch or re-placing)`);
+                    this.positions.set(broker, { ...persistedPos, phase: 'done' });
+                    anyRestored = true;
+                    this.persistState();
+                    continue;
+                }
+
+                // Considered on review: unlike the previous-trading-day branch below, this one
+                // places no new order - it only resumes the poller's watch on a sell that's
+                // ALREADY resting at the broker at whatever quantity it was given when placed.
+                // The quantity-clamp fix below (liveOpenQty) exists because THAT branch chooses a
+                // fresh quantity to place; there's nothing to clamp here since no placement
+                // decision is made in this branch at all. A stale soldQty/targetQuantity here
+                // only affects bookkeeping of a fill already in flight, not a new order size.
                 const placedSameDay = persistedPos.sellPlacedAt != null && isStillWithinSameTradingSession(persistedPos.sellPlacedAt);
                 if (placedSameDay) {
                     this.positions.set(broker, { ...persistedPos });
@@ -538,7 +697,19 @@ export default class BulkPcrStrategy extends Strategy {
                     continue;
                 }
 
-                const remaining = persistedPos.targetQuantity - persistedPos.soldQty;
+                let remaining = persistedPos.targetQuantity - persistedPos.soldQty;
+                // BUG FIX 2026-10-15 (found on review): stillOpenAtBroker above only checks
+                // WHETHER a position exists, not whether its quantity still covers the persisted
+                // "remaining" amount. A partial manual sell outside the app between restarts
+                // (e.g. targetQuantity=100, soldQty=40 persisted, but the user manually sold 30
+                // of the remaining 60 at the broker) would otherwise re-place a sell for the
+                // stale 60 - a naked short for the 30 that's no longer held. Clamp to whatever
+                // the broker actually still shows open for this exact (broker, tsym).
+                const liveOpenQty = matchingOpenTrade?.quantity;
+                if (liveOpenQty != null && liveOpenQty < remaining) {
+                    Log.log(`[BulkPcrStrategy] [${broker}] reconcile: persisted remaining qty=${remaining} for ${persistedPos.heldTsym} exceeds what the broker actually shows open (${liveOpenQty}) - some may have been sold outside the app; clamping to ${liveOpenQty}`);
+                    remaining = liveOpenQty;
+                }
                 Log.log(`[BulkPcrStrategy] [${broker}] reconcile: persisted limit-sell exit for ${persistedPos.heldTsym} was placed on a previous trading day (sellPlacedAt=${persistedPos.sellPlacedAt ?? 'unset'}) - DAY-order validity means it has certainly expired unfilled at the broker; re-placing exit for remaining qty=${remaining}`);
                 this.positions.set(broker, { ...persistedPos });
                 anyRestored = true;
@@ -610,7 +781,19 @@ export default class BulkPcrStrategy extends Strategy {
             await this.placeExitSell(broker, brokerTrade.quantity);
         }
 
-        if (anyRestored) this.phase = 'running';
+        // BUG FIX 2026-10-15 (found on review): blindly setting 'running' whenever anyRestored
+        // overrode the stillOpenAtBroker branch's per-broker phase='done' - nothing else would
+        // ever flip the outer phase back to 'done' (that normally only happens via updateTrade's
+        // allDone check, which this restart path never reaches), so isRunning() would report
+        // true FOREVER and hasBrokerError() would report false (the broker position is 'done',
+        // not 'error') - a silent, permanent hang invisible to BulkPcrAutoStartStrategy, which
+        // has no way to tell it apart from a healthy in-progress cycle.
+        const allBrokersDone = anyRestored && brokers.every((b) => this.positions.get(b)?.phase === 'done');
+        if (allBrokersDone) {
+            this.durablyDisable('reconcile: every configured broker was already fully closed at the broker on restart');
+        } else if (anyRestored) {
+            this.phase = 'running';
+        }
     }
 
     // Exposes the outer one-shot reentrancy gate to callers outside this

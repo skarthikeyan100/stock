@@ -110,6 +110,10 @@ export interface OrderCancelledNotification {
     broker: 'zerodha' | 'breeze' | 'ant' | 'prism';
     orderId: string;
     reason: 'CANCELLED' | 'REJECTED';
+    // The broker's own rejection remark (e.g. a margin-shortfall message), when available.
+    // Only populated on the ANT path today (AliceBlue's rejreason field) - other brokers'
+    // pending-order pollers don't yet surface an equivalent.
+    rejectReason?: string;
 }
 
 export type OrderMessage = OrderRequest | OrderResponse | FillNotification | PositionsChangedNotification | OrderCancelledNotification;

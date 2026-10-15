@@ -94,8 +94,8 @@ onPendingBreezeCancelled((userId, tradingSymbol, antToken, quantity, exchange, a
     broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken: antToken, quantity, exchange, action, broker, orderId, reason });
 });
 
-onPendingAntCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason) => {
-    broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason });
+onPendingAntCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason) => {
+    broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason });
 });
 
 onPendingPrismCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason) => {
