@@ -386,6 +386,38 @@ sell — no fill confirmation). Explicit code comment: "no stop loss - monitor
 manually". Caps concurrent trades at `tradesCount` (10). Legacy/prototype —
 not part of the current live strategy set.
 
+### TopStockOptionsOpeningGapStrategy (`TopStockOptionsOpeningGapStrategy.ts`) — config: `enabled: false`
+**Entry**: one-shot per day, fires once within a short morning window
+(`isTimeInRange()` override, 10:10–10:35 IST — after `gapscreener-morning.sh`'s
+10:05 cron refresh of `src/tools/gapscreener/gap-screener.csv`, before
+`BulkPcrAutoStartStrategy`'s 10:35 slot). Reads that CSV (must have today's
+mtime, else skipped), ranks Nifty-100 stocks by `|Gap %|` descending, takes
+the configured rank window (default ranks 3–7, i.e. `rankStart: 3`,
+`rankCount: 5`), and for each one buys the nearest-ATM CE (gap up) or PE
+(gap down) option — one leg per stock, isolated via `Promise.allSettled` so
+one stock's contract-resolution/order failure doesn't abort the others.
+**Contract resolution**: uses `AntContractMaster.findNearestStrikeOption`
+(not `findATMOption` - its strike-rounding step only covers NIFTY/SENSEX,
+defaulting to a flat 50 for everything else, which almost never matches a
+real listed strike for an individual stock) to pick the strike nearest to
+the stock's `Latest Open` from the real listed strikes for the nearest
+expiry.
+**Sizing/exit**: 1 lot (`lots` config, default 1) per leg, SL/target set as
+`slPercent`/`targetPercent` (default 30%/50%) of the option's entry LTP,
+placed via `antExecutor.enterPosition('bracket', ...)` — exit is entirely
+broker-owned (ANT bracket order), unlike `BulkPcrStrategy`'s self-managed
+limit-sell exit; `getMonitorConfig()` returns `null` and
+`canHandleOptionQuote()` is always `false` accordingly.
+**Restart safety**: a `.topStockOptionsOpeningGap_firedToday.json` marker
+(same pattern as `BulkPcrAutoStartStrategy`'s `.bulkpcr_armed_slots.json`,
+written *before* `executeTrade()` runs) prevents a process restart inside
+the trading window from re-entering all legs a second time the same day.
+**Config keys** (`config.yml`): `enabled`, `rankStart`, `rankCount`,
+`slPercent`, `targetPercent`, `lots`, `logEnabled`. Ships `enabled: false` —
+this places real option orders across up to `rankCount` stocks at once; a
+dry run of the log output (rank selection, resolved contracts, computed
+SL/target) should be reviewed before flipping it on.
+
 ### BiDirectionStrategy, DiffStrategy, PivotStrategy, HighLotStrategy, TestStrategy
 Legacy/early-prototype strategies registered in `StrategyFactory.ts` but with
 no `config.yml` block, so `Strategies.initialize()` never instantiates them —

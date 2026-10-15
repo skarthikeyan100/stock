@@ -122,6 +122,44 @@ class AntContractMaster {
     return this.findNearestExpiryOption({ symbol, exch, strike: atmStrike, optionType, expiryOffset: 0 });
   }
 
+  // ATM-by-nearest-listed-strike resolution for symbols with no sane fixed
+  // strike step (individual stocks - unlike NIFTY/SENSEX's flat 50/100,
+  // strike increments vary wildly by price band, e.g. 2.5/5/10/20/50/100,
+  // so findATMOption's STRIKE_STEP-rounding approach almost never lands on
+  // a real listed strike). Instead picks whichever actually-listed strike
+  // (for the nearest expiry >= today) is closest to referencePrice. Used by
+  // TopStockOptionsOpeningGapStrategy.
+  findNearestStrikeOption(symbol: string, optionType: string, referencePrice: number, exch: string = 'NFO'): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
+    const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
+    const todayStartUtc = Math.floor(Date.now() / 86400000) * 86400000;
+
+    const candidates = cache.filter(
+      (r) => r.Symbol === symbol && r.Exch === exch && r['Option Type'] === optionType && parseInt(r['Expiry Date']) >= todayStartUtc
+    );
+    if (candidates.length === 0) {
+      throw new Error(`No ${symbol} ${exch} ${optionType} contract found for any strike (nearest expiry)`);
+    }
+    const nearestExpiry = Math.min(...candidates.map((r) => parseInt(r['Expiry Date'])));
+    const atNearestExpiry = candidates.filter((r) => parseInt(r['Expiry Date']) === nearestExpiry);
+
+    let best = atNearestExpiry[0];
+    let bestDiff = Math.abs(Number(best['Strike Price']) - referencePrice);
+    for (const r of atNearestExpiry) {
+      const diff = Math.abs(Number(r['Strike Price']) - referencePrice);
+      if (diff < bestDiff) {
+        best = r;
+        bestDiff = diff;
+      }
+    }
+
+    return {
+      token: best.Token,
+      exch: best.Exch,
+      tradingSymbol: best['Trading Symbol'] || best.Trading || '',
+      lotSize: best['Lot Size'],
+    };
+  }
+
   // Exact (symbol, strike, expiry, optionType) resolution, expiry given as a
   // date string (not epoch-ms) - mirrors ZerodhaContractMaster.findExactOption's
   // caller contract. Converts internally to findOption's epoch-ms comparison.
