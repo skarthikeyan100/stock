@@ -2,7 +2,7 @@ import Log from '../util/Log';
 import Breeze from './Breeze';
 import myEmitter from '../tools/emitter';
 import configService from '../prism/ConfigService';
-import TtlBuffer from '../util/TtlBuffer';
+import PendingFillRegistry from '../util/PendingFillRegistry';
 
 // Push-based order-fill notification, mirroring AntOrderNotifyStream.ts's
 // role (replacing/supplementing Breeze.getFillPrice's REST polling of
@@ -31,22 +31,17 @@ import TtlBuffer from '../util/TtlBuffer';
 // Needs live confirmation before being trusted as the primary fill path -
 // see ToDo.md.
 
-interface PendingFill {
-    resolve: (price: number) => void;
-    reject: (err: Error) => void;
-    timer: NodeJS.Timeout;
-}
-
 class BreezeOrderNotifyStream {
     private static instance: BreezeOrderNotifyStream;
     private connected = false;
-    private pending = new Map<string, PendingFill>(); // keyed by orderId (best-guess: orderReference)
 
-    // Terminal pushes that arrived with no waiter yet registered - mirrors the identical fix
-    // in AntOrderNotifyStream.ts (confirmed live 2026-10-15: a push can arrive before the REST
-    // placeOrder call that hands the caller this orderId even returns, so a waitForFill
-    // registered after the fact would otherwise never see a push that already happened).
-    private recentTerminalPushes = new TtlBuffer<{ fillPrice?: number; error?: Error }>(20000);
+    // Keyed by orderId (best-guess: orderReference). Handles both settling an already-registered
+    // waitForFill call and buffering a terminal push that arrived with no waiter registered yet -
+    // mirrors the identical fix in AntOrderNotifyStream.ts (confirmed live 2026-10-15 there: a
+    // push can arrive before the REST placeOrder call that hands the caller this orderId even
+    // returns, so a waitForFill registered after the fact would otherwise never see a push that
+    // already happened).
+    private fills = new PendingFillRegistry<number>(20000);
 
     static getInstance(): BreezeOrderNotifyStream {
         if (!BreezeOrderNotifyStream.instance) {
@@ -130,41 +125,29 @@ class BreezeOrderNotifyStream {
         } else if (status === 'Rejected' || status === 'Cancelled' || status === 'Expired') {
             outcome = { error: new Error(`Breeze order ${orderId} ${status}`) };
         } else {
+            // Found on review: restructuring to classify status before the pending-waiter lookup
+            // silently dropped the old diagnostic log for this combination (unrecognized status,
+            // whether or not a waiter is registered) - the raw payload is still logged
+            // unconditionally above, but this specific note (which flagged a field-mapping
+            // mismatch or an unhandled new status) is worth keeping for the same reason it
+            // existed before.
+            Log.log(`[BreezeOrderNotifyStream] Push for order ${orderId} has an unrecognized status (${status ?? 'none'}) - not one of Executed/Partially Executed/Rejected/Cancelled/Expired`);
             return;
         }
 
-        const pending = this.pending.get(key);
-        if (pending) {
-            clearTimeout(pending.timer);
-            this.pending.delete(key);
-            if (outcome.error) pending.reject(outcome.error); else pending.resolve(outcome.fillPrice!);
-            return;
-        }
-
-        // BUG FIX 2026-10-15: no waiter registered yet - the REST placeOrder call that will
-        // hand the caller this orderId may not have returned yet (confirmed live for the
-        // identical ANT case - see AntOrderNotifyStream.ts's handleMessage). Buffer the
-        // outcome so a waitForFill registered moments later still sees it, instead of
-        // dropping a push nobody was listening for yet and always falling back to REST.
-        Log.log(`[BreezeOrderNotifyStream] Push for order ${orderId} - no waiter registered yet, buffering`);
-        this.recentTerminalPushes.set(key, outcome);
+        // BUG FIX 2026-10-15: settle() resolves an already-registered waiter, or buffers the
+        // outcome if the REST placeOrder call that will hand the caller this orderId hasn't
+        // returned yet (confirmed live for the identical ANT case - see
+        // AntOrderNotifyStream.ts's handleMessage) - instead of dropping a push nobody was
+        // listening for yet and always falling back to REST.
+        this.fills.settle(key, { value: outcome.fillPrice, error: outcome.error });
     }
 
     // Resolves on this order's Executed push, or rejects on
     // Rejected/Cancelled/Expired/timeout - caller (breezeExecutor.ts) falls
     // back to Breeze.getFillPrice's REST polling on any rejection here.
     waitForFill(orderId: string, timeoutMs = 30000): Promise<number> {
-        const buffered = this.recentTerminalPushes.take(orderId);
-        if (buffered) {
-            return buffered.error ? Promise.reject(buffered.error) : Promise.resolve(buffered.fillPrice!);
-        }
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.pending.delete(orderId);
-                reject(new Error(`Breeze order ${orderId} did not complete within ${timeoutMs}ms (order-notify)`));
-            }, timeoutMs);
-            this.pending.set(orderId, { resolve, reject, timer });
-        });
+        return this.fills.wait(orderId, timeoutMs, () => new Error(`Breeze order ${orderId} did not complete within ${timeoutMs}ms (order-notify)`));
     }
 
     disconnect(): void {

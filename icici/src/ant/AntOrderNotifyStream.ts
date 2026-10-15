@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import axiosModule from 'axios';
 import Log from '../util/Log';
 import { isPastMarketClose } from '../util/marketHours';
-import TtlBuffer from '../util/TtlBuffer';
+import PendingFillRegistry from '../util/PendingFillRegistry';
 import ANT from './ANT';
 
 const axios = axiosModule.create();
@@ -30,29 +30,24 @@ const axios = axiosModule.create();
 //      "ret":"DAY","dscqty":"0","trantype":"B","exch":"NSE","tsym":"MRF-EQ",
 //      "status":"REJECTED","reporttype":"Rejected"}
 //     The order id is norenordno, not brokerOrderId (a different field name
-//     for the same concept than the REST orders/history endpoint uses). Fill
-//     price/quantity fields (flprc/fillshares) aren't shown in the
-//     documented REJECTED example (nothing to fill) but follow the same
-//     Noren convention as Shoonya's fill messages elsewhere in this repo.
-//     NOT yet verified against a live push (market closed) - handleMessage
-//     still logs every raw message and falls back to a few alternate field
-//     names, so this can be corrected quickly once verified live.
+//     for the same concept than the REST orders/history endpoint uses) -
+//     CONFIRMED live 2026-10-15 to be the exact same value as the REST
+//     brokerOrderId for a real bracket order (buy, SL leg and target leg all
+//     matched correctly by string equality). flprc (fill price) and
+//     fillshares (fill quantity) are also confirmed live on the COMPLETE/Fill
+//     push.
 //
-// BIGGEST UNVERIFIED ASSUMPTION: waitForFill() is keyed by the brokerOrderId
-// ANT.placeOrder/placeBracketOrder returns from the REST placeorder call, but
-// the WS push reports the order under norenordno instead. These are assumed
-// to be the same underlying value under two different field names (both are
-// broker order-number strings in a similar date-prefixed numeric format,
-// e.g. REST: "26082100061654" / doc's WS example: "24070600000744") - if
-// that assumption is wrong, waitForFill will never see a match and will
-// always time out. Confirm this by comparing a real REST brokerOrderId
-// against the norenordno reported for the same order once the market reopens.
-
-interface PendingFill {
-    resolve: (price: number) => void;
-    reject: (err: Error) => void;
-    timer: NodeJS.Timeout;
-}
+// CONFIRMED live 2026-10-15 (previously this session's biggest unverified
+// assumption): waitForFill() is keyed by the same brokerOrderId
+// ANT.placeOrder/placeBracketOrder returns from the REST placeorder call, and
+// the WS push's norenordno is exactly that same string - a real order's
+// push matched by plain string equality. What was actually broken (and is
+// now fixed) was two separate bugs: getWsToken() mis-unwrapping AliceBlue's
+// array-wrapped token response (sent a malformed subscribe payload on every
+// connection, so no push - not even the subscribe ack - was ever received),
+// and a race where a push can arrive before the REST call that hands the
+// caller this orderNo even returns (see handleMessage's PendingFillRegistry
+// use below).
 
 class AntOrderNotifyStream {
     private static instance: AntOrderNotifyStream;
@@ -64,13 +59,10 @@ class AntOrderNotifyStream {
     private readonly MAX_RECONNECT_DELAY_MS = 30000;
     private manualDisconnect = false;
 
-    private pending = new Map<string, PendingFill>(); // keyed by brokerOrderId
-
-    // Terminal pushes that arrived with no waiter yet registered - see handleMessage's
-    // 2026-10-15 bug-fix comment. Short TTL: this only needs to bridge the gap between a push
-    // arriving and the REST placeOrder call returning (observed live as near-instant, well
-    // under a second), not to survive indefinitely.
-    private recentTerminalPushes = new TtlBuffer<{ fillPrice?: number; error?: Error }>(20000);
+    // Keyed by brokerOrderId. Handles both settling an already-registered waitForFill call and
+    // buffering a terminal push that arrived with no waiter registered yet - see this file's
+    // header comment and PendingFillRegistry.ts's own header for why both cases are real.
+    private fills = new PendingFillRegistry<number>(20000);
 
     static getInstance(): AntOrderNotifyStream {
         if (!AntOrderNotifyStream.instance) {
@@ -210,46 +202,19 @@ class AntOrderNotifyStream {
             return; // intermediate state (OPEN/PENDING/TRIGGER_PENDING/...) - nothing to resolve yet
         }
 
-        const pending = this.pending.get(key);
-        if (pending) {
-            clearTimeout(pending.timer);
-            this.pending.delete(key);
-            if (outcome.error) pending.reject(outcome.error); else pending.resolve(outcome.fillPrice!);
-            return;
-        }
-
-        // BUG FIX 2026-10-15 (confirmed live): no waiter is registered yet. This is NOT
-        // necessarily "nobody cares about this order" - the REST placeOrder/placeBracketOrder
-        // call that will hand enterPosition this exact orderNo may not have returned yet.
-        // Confirmed live: a real bracket buy's COMPLETE fill push arrived and was logged
-        // BEFORE placeBracketOrder's own REST response (which is what enterPosition needs
-        // before it can call waitForFill(orderNo) at all) - the push was silently dropped
-        // here every time, and every entry fell back to the 60s REST poll regardless of the
-        // WS otherwise working correctly end to end. Buffer the outcome briefly so a
-        // waitForFill registered moments later still sees it.
-        Log.log(`[AntOrderNotify] Terminal push for order ${orderNo} - no waiter registered yet, buffering`);
-        this.recentTerminalPushes.set(key, outcome);
-        // Any other status (OPEN/PENDING/TRIGGER_PENDING/...) is an
-        // intermediate state - keep waiting.
+        // BUG FIX 2026-10-15 (confirmed live): settle() resolves an already-registered waiter,
+        // or buffers the outcome if the REST placeOrder/placeBracketOrder call that will hand
+        // enterPosition this exact orderNo hasn't returned yet (confirmed live: a real bracket
+        // buy's COMPLETE fill push arrived and was logged BEFORE placeBracketOrder's own REST
+        // response - the push was silently dropped every time before this fix, and every entry
+        // fell back to the 60s REST poll regardless of the WS otherwise working correctly).
+        this.fills.settle(key, { value: outcome.fillPrice, error: outcome.error });
     }
 
     // Resolves as soon as this order's COMPLETE push arrives, or rejects on
     // REJECTED/CANCELLED/timeout - no REST polling involved.
     waitForFill(orderNo: string, timeoutMs = 60000): Promise<number> {
-        // See handleMessage's 2026-10-15 bug-fix comment: the push can genuinely arrive before
-        // this is even called. Check the buffer first rather than always registering a fresh
-        // wait that a past push can never satisfy.
-        const buffered = this.recentTerminalPushes.take(orderNo);
-        if (buffered) {
-            return buffered.error ? Promise.reject(buffered.error) : Promise.resolve(buffered.fillPrice!);
-        }
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.pending.delete(orderNo);
-                reject(new Error(`ANT order ${orderNo} did not complete within ${timeoutMs}ms (order-notify)`));
-            }, timeoutMs);
-            this.pending.set(orderNo, { resolve, reject, timer });
-        });
+        return this.fills.wait(orderNo, timeoutMs, () => new Error(`ANT order ${orderNo} did not complete within ${timeoutMs}ms (order-notify)`));
     }
 
     disconnect(): void {

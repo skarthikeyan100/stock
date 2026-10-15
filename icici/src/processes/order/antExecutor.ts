@@ -657,17 +657,29 @@ const EXIT_MAX_UNREADABLE_STATUS = 10;
 // unreadable-status coincidence.
 const EXIT_MAX_CANCEL_FAILURES = 10;
 
-function scheduleExitRecheck(order: PendingAntLimitOrder, attempt: number, lastLimit: number, delayMs = EXIT_RECHECK_MS, unreadableStatusCount = 0, cancelFailureCount = 0): void {
+// Found on review: three independent, same-typed counters (attempt/unreadableStatusCount/
+// cancelFailureCount) threaded as bare positional numbers risked a silent transposition if a
+// future edit added a fourth or reordered a call - no compiler error would catch passing one
+// count where another is expected. Bundled into one named-fields object instead.
+interface ExitRecheckCounters {
+    attempt: number;
+    unreadableStatusCount: number;
+    cancelFailureCount: number;
+}
+const INITIAL_EXIT_RECHECK_COUNTERS: ExitRecheckCounters = { attempt: 0, unreadableStatusCount: 0, cancelFailureCount: 0 };
+
+function scheduleExitRecheck(order: PendingAntLimitOrder, counters: ExitRecheckCounters, lastLimit: number, delayMs = EXIT_RECHECK_MS): void {
     setTimeout(() => {
-        void recheckUnfilledExit(order, attempt, lastLimit, unreadableStatusCount, cancelFailureCount);
+        void recheckUnfilledExit(order, counters, lastLimit);
     }, delayMs);
 }
 
-async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number, lastLimit: number, unreadableStatusCount = 0, cancelFailureCount = 0): Promise<void> {
+async function recheckUnfilledExit(order: PendingAntLimitOrder, counters: ExitRecheckCounters, lastLimit: number): Promise<void> {
+    const { attempt, unreadableStatusCount, cancelFailureCount } = counters;
     const key = `${order.userId}:${order.tradingSymbol}`;
     // One exit operation per position at a time: a square-off or another re-price in flight would race this one.
     if (bookkeeping.pendingSquareOffs.has(key)) {
-        scheduleExitRecheck(order, attempt, lastLimit, 5000, unreadableStatusCount, cancelFailureCount);
+        scheduleExitRecheck(order, counters, lastLimit, 5000);
         return;
     }
     bookkeeping.pendingSquareOffs.add(key);
@@ -693,7 +705,7 @@ async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number,
                 return;
             }
             Log.log(`[order] re-price: status of ${order.orderId} unreadable, checking again in 60s`);
-            scheduleExitRecheck(order, attempt, lastLimit, EXIT_RECHECK_MS, nextUnreadableCount, cancelFailureCount);
+            scheduleExitRecheck(order, { attempt, unreadableStatusCount: nextUnreadableCount, cancelFailureCount }, lastLimit);
             return;
         }
         if (st.status === 'COMPLETE') {
@@ -716,7 +728,7 @@ async function recheckUnfilledExit(order: PendingAntLimitOrder, attempt: number,
             // unreadable-status streak is over - reset to 0 rather than carrying the stale count
             // forward. Otherwise a handful of old, long-resolved read failures could combine with
             // a later, unrelated one to trip the alert despite no actual streak.
-            scheduleExitRecheck(order, attempt, lastLimit, EXIT_RECHECK_MS, 0, nextCancelFailureCount);
+            scheduleExitRecheck(order, { attempt, unreadableStatusCount: 0, cancelFailureCount: nextCancelFailureCount }, lastLimit);
             return;
         }
         const remaining = openQuantity(order.userId, order.tradingSymbol);
@@ -751,7 +763,7 @@ async function placeReplacementExit(order: PendingAntLimitOrder, remaining: numb
     const next: PendingAntLimitOrder = { orderId: orderNo, userId: order.userId, tradingSymbol: order.tradingSymbol, instrumentId: order.instrumentId, quantity: remaining, exchange: order.exchange, action: 'Sell' };
     trackPendingAntLimitOrder(next);
     Log.log(`[order] re-price ${attempt + 1}: ${order.tradingSymbol} (${order.userId}) ${remaining} re-placed as ${orderNo} at ${limit} (ltp=${ltp})`);
-    scheduleExitRecheck(next, attempt + 1, limit);
+    scheduleExitRecheck(next, { attempt: attempt + 1, unreadableStatusCount: 0, cancelFailureCount: 0 }, limit);
 }
 
 export async function squareOffOnAnt(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO', triggerLtp?: number): Promise<Trade> {
@@ -876,7 +888,7 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
                 // books the fill). Not thrown: the exit monitor would otherwise place a second sell alongside it.
                 Log.log(`[order] ALERT: exit ${exitOrderNo} for ${tsym} (${userId}) fill not confirmed - re-pricing at live LTP, not recorded as sold`);
                 trade.status = 'PENDING';
-                if (placedExit) scheduleExitRecheck(placedExit, 0, placedLimit, 0);
+                if (placedExit) scheduleExitRecheck(placedExit, INITIAL_EXIT_RECHECK_COUNTERS, placedLimit, 0);
                 return trade;
             }
             // Booked below: untrack first so the poller doesn't book the same fill, and carry the order id
