@@ -105,7 +105,15 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
             // for this one tick.
             Log.log(`[${this.userId}] executeTrade failed: ${e?.message ?? e}`);
         } finally {
-            this.phase = 'done';
+            // Re-derive from the persisted marker, not a blind 'done': executeTrade
+            // returns early (no throw) for a retryable skip too (missing/stale CSV,
+            // invalid config, empty rank window) without ever calling
+            // recordFiredToday(). Forcing 'done' here regardless would drop every
+            // later tick for the rest of the window even once e.g. a late cron run's
+            // CSV becomes fresh - defeating the window's entire reason to exist.
+            // Only a successful recordFiredToday() (i.e. legs were actually
+            // attempted) should stop further retries this window.
+            this.phase = this.hasFiredToday() ? 'done' : 'idle';
         }
     }
 
