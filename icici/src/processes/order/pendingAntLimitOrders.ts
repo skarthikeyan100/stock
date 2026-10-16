@@ -201,18 +201,43 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                     // a BUY with no position yet may still fill and then needs its exit, and a failed or
                     // non-Ok positions call tells us nothing. The strict flag makes a non-Ok envelope throw
                     // instead of reading as "no positions". ALERT once per order to avoid per-poll noise.
+                    // The positions check reads the singleton ANT session, which belongs to ONE user. It can only
+                    // prove anything about this order when that session is the order's own account.
                     let provablyGone = false;
                     try {
                         const positions = await ant.getPositions({ strict: true });
                         const stillOpen = (positions || []).some((p: any) =>
                             (p.tradingSymbol ?? p.tsym ?? p.symbol) === order.tradingSymbol && Number(p.netQty ?? p.netqty ?? 0) !== 0
                         );
-                        provablyGone = order.action === 'Sell' && !stillOpen;
-                        if (provablyGone) {
+                        const sessionOwnsOrder = ant.getUserId() === order.userId;
+                        if (order.action === 'Sell' && !stillOpen && sessionOwnsOrder) {
+                            // The sell may have FILLED while history was unavailable, and the fill-booking path
+                            // above never ran. Book whatever the trade book shows before dropping it. A book read
+                            // that throws leaves the order tracked (caught below) and it is retried next poll.
+                            const book = await ant.getFilledFromTradeBook(orderId);
+                            if (book.quantity > 0 && book.avgPrice > 0) {
+                                const trade = new Trade();
+                                trade.tsym = order.tradingSymbol;
+                                trade.token = order.instrumentId;
+                                trade.quantity = book.quantity;
+                                trade.price = book.avgPrice;
+                                trade.lastTradePrice = book.avgPrice;
+                                trade.action = order.action;
+                                trade.status = 'COMPLETE';
+                                trade.user = order.userId;
+                                trade.broker = 'ant';
+                                trade.brokerOrderId = orderId;
+                                await bookkeeping.recordFill(trade);
+                                Log.log(`[order] pending ANT sell ${orderId} (${order.tradingSymbol}, ${order.userId}) not verifiable via order history - booked ${book.quantity} @ ${book.avgPrice} from the trade book`);
+                            }
                             Log.log(`[order] pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) unverifiable via order history ${order.unverifiableCount} times in a row (likely too old for AliceBlue's order-book endpoint) and no open position exists - dropping stale tracking entry.`);
+                            // Only now, after any fill is booked, may the order leave tracking.
+                            provablyGone = true;
                         } else if (!order.giveUpAlerted) {
                             order.giveUpAlerted = true;
-                            Log.log(`[order] ALERT: pending ANT ${order.action} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) unverifiable via order history ${order.unverifiableCount} times in a row and ${stillOpen ? 'a position IS open at the broker' : 'no position is open yet'} - KEPT in tracking, manual review required.`);
+                            const why = !sessionOwnsOrder ? 'the ANT session belongs to another account, so the position check cannot verify it'
+                                : stillOpen ? 'a position IS open at the broker' : 'no position is open yet';
+                            Log.log(`[order] ALERT: pending ANT ${order.action} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) unverifiable via order history ${order.unverifiableCount} times in a row and ${why} - KEPT in tracking, manual review required.`);
                         }
                     } catch (posErr: any) {
                         if (!order.giveUpAlerted) {

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import Log from '../util/Log';
 
 interface ContractRecord {
   Symbol: string;
@@ -95,9 +96,18 @@ class AntContractMaster {
   // courtesy, since a delisted/renamed symbol could otherwise go unnoticed.
   private loadNSE(): EquityRecord[] {
     if (!this.nseCache) {
-      this.checkStaleness(this.NSE_PATH);
-      const data = JSON.parse(fs.readFileSync(this.NSE_PATH, 'utf-8'));
-      this.nseCache = data.NSE || [];
+      // Missing/unreadable file (e.g. a fresh checkout - the NSE master is gitignored) degrades to an
+      // empty table, cached, with one ALERT. Otherwise every findEquityToken call re-throws, which
+      // aborts the whole universe loop instead of skipping the symbols.
+      try {
+        this.checkStaleness(this.NSE_PATH);
+        const data = JSON.parse(fs.readFileSync(this.NSE_PATH, 'utf-8'));
+        this.nseCache = data.NSE || [];
+      } catch (e: any) {
+        Log.log(`[AntContractMaster] ALERT: NSE equity contract master unavailable at ${this.NSE_PATH} (${e?.message ?? e}) - equity token lookups will return nothing until it is downloaded`);
+        this.nseCache = [];
+        this.nseBysymbol = new Map();
+      }
       // Built once per process lifetime, not per lookup - ~9900 equity rows,
       // a linear scan per symbol (as findNearestStrikeOption does for options)
       // would be wasteful for a 100-symbol batch called once per trading day.
