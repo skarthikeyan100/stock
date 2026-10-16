@@ -1,21 +1,15 @@
 import Log from '../util/Log';
 import { MOCK_BROKER } from '../constants';
-import { NiftyQuote, OptionQuote, Trade } from '../model/model';
+import { NiftyQuote, OptionQuote } from '../model/model';
 import configService from '../prism/ConfigService';
 import AntContractMaster from '../ant/AntContractMaster';
 import ANT from '../ant/ANT';
-import { enterPosition, placeLimitSellBareOnAnt } from '../processes/order/antExecutor';
+import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
-import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import { parse } from 'csv-parse/sync';
 import fs from 'fs';
 import path from 'path';
 import moment from 'moment';
-
-// Same pattern BulkPcrStrategy.ts uses for its own identically-named local
-// constant - not exported from there, so duplicated here rather than adding
-// a cross-strategy coupling for one regex.
-const MARGIN_SHORTFALL_REASON_PATTERN = /margin.{0,30}(shortfall|insufficient|exceed|short)|(?:shortfall|insufficient|exceed|short|enough).{0,30}margin/i;
 
 // Anchored to process.cwd() (always the repo root for every entry point
 // that runs this strategy), NOT __dirname - same reasoning as
@@ -39,16 +33,8 @@ interface RankedStock {
 }
 
 export default class TopStockOptionsOpeningGapStrategy extends Strategy {
-    private static readonly MAX_EXIT_RETRIES = 3;
-    private static readonly EXIT_RETRY_DELAY_MS = 3000;
-
     private phase: 'idle' | 'running' | 'done' = 'idle';
     private tradingDay: string | null = null;
-
-    // Tracks each leg's resting target sell by token, so onOrderCancelled
-    // (re-place on a cancelled/rejected exit) and updateTrade (clear on an
-    // actual fill) can find the right leg - see both below.
-    private activeLegs = new Map<string, { tradingSymbol: string; exchange: 'NFO' | 'BFO'; targetPrice: number; retryCount: number }>();
 
     // phase alone has no day boundary - once it reaches 'done' on day N it
     // stays 'done' forever in a long-lived process (npm run processes has no
@@ -147,7 +133,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     }
 
     canHandleOptionQuote(quote: OptionQuote): boolean {
-        return false; // exit delegated to ANT's broker-side bracket order
+        return false; // exit is a plain resting target-only limit sell, placed once right after entry - no quote-driven monitoring needed
     }
 
     processOptionQuote(quote: OptionQuote) {
@@ -155,7 +141,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     }
 
     getMonitorConfig() {
-        return null; // exit handled per-leg inside enterPosition's bracket order
+        return null; // exit is a separately-placed resting limit sell per leg, not a GTT/bracket order
     }
 
     reset(): void {
@@ -315,50 +301,41 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
 
             // ANT/AliceBlue has no broker-native target-only order type
             // (placeBracketOrder requires both legs, placeCoverOrder is
-            // SL-only) - 'target-only' tells enterPosition to place a plain
-            // buy (still the full waitForFill/REST-fallback/
-            // resolveUnconfirmedAntBuy fill-confirmation chain, just with no
-            // broker-side bracket/cover legs) and set trade.targetPrice
-            // itself BEFORE its own bookkeeping.recordFill, so the persisted
-            // raw Mongo Buy doc correctly carries targetPrice for
-            // restart-restore. This strategy is listed in exitMonitor.ts's
-            // SELF_MANAGED_STRATEGY_TYPES, so exitMonitor never auto-triggers
-            // on it (at entry OR after a restart's reconcileFromTrades) - the
-            // resting target-only sell placed below is the sole actual exit,
-            // and onOrderCancelled below re-places it if the broker cancels
-            // it before it fills.
-            const trade = await enterPosition(
-                this.userId,
-                contract.tradingSymbol,
-                contract.token,
+            // SL-only), so this is just buy, wait for the real fill, then
+            // place a separate resting target-only limit sell - nothing more
+            // (no re-place-on-cancel, no reconcile: kept deliberately simple
+            // per this strategy's single-shot, single-order-per-leg shape).
+            //
+            // Routed through OrderClient/IPC into the `order` process rather
+            // than calling antExecutor.ts directly - this strategy runs in
+            // the separate `strategies` process, where antExecutor.ts's
+            // bookkeeping.ts/exitMonitor.ts/pendingAntLimitOrders.ts
+            // singletons are disconnected shadow copies that nothing else in
+            // the app ever reads from.
+            const trade = await OrderClient.getInstance().antBuyTargetOnly(this.userId, {
+                tradingSymbol: contract.tradingSymbol,
+                instrumentId: contract.token,
                 quantity,
-                contract.exch as 'NFO' | 'BFO',
+                exchange: contract.exch as 'NFO' | 'BFO',
                 targetPoints,
-                0,
-                'target-only',
-                { ltp, atMs: Date.now() }
-            );
+                knownLtp: { ltp, atMs: Date.now() },
+            });
 
             // Sized from the ACTUAL fill price/quantity, not the pre-trade
-            // ltp used above for leverage/targetPercent sizing - a plain
-            // resting LIMIT sell the broker fills whenever the target is hit,
-            // no quote subscription/monitoring needed on our side. Tracked in
-            // activeLegs so onOrderCancelled/updateTrade below can find it
-            // again by token.
-            this.activeLegs.set(trade.token, {
-                tradingSymbol: trade.tsym,
-                exchange: contract.exch as 'NFO' | 'BFO',
-                targetPrice: trade.targetPrice,
-                retryCount: 0,
-            });
+            // ltp used above for leverage/targetPercent sizing.
             try {
-                await placeLimitSellBareOnAnt(this.userId, trade.tsym, trade.token, trade.quantity, trade.targetPrice, contract.exch as 'NFO' | 'BFO');
+                await OrderClient.getInstance().antPlaceLimitSellBare(this.userId, {
+                    tradingSymbol: trade.tsym,
+                    instrumentId: trade.token,
+                    quantity: trade.quantity,
+                    price: trade.targetPrice,
+                    exchange: contract.exch as 'NFO' | 'BFO',
+                });
             } catch (sellErr: any) {
                 // The buy already filled and is live (recorded in bookkeeping)
                 // with no resting exit order and no stop-loss of any kind -
                 // distinct from "never entered" so an operator scanning logs
                 // doesn't mistake this for a no-op skip.
-                this.activeLegs.delete(trade.token);
                 Log.log(`[${this.userId}] ALERT: ${stock.symbol} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} FILLED but target sell placement failed - position is LIVE and UNPROTECTED: ${sellErr?.message ?? sellErr}`);
                 throw sellErr;
             }
@@ -369,61 +346,5 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
             throw e;
         }
     }
-
-    // Fills for this strategy's exit sells arrive here asynchronously (see
-    // strategiesProcess.ts's onFill -> strategy.updateTrade dispatch) -
-    // clears the leg out of activeLegs once its target sell actually fills,
-    // so a later, unrelated cancellation notification for the same token
-    // (there shouldn't be one, but see onOrderCancelled's own guard) can't
-    // find a stale entry and try to re-place an already-closed leg.
-    updateTrade = async (trade: Trade): Promise<void> => {
-        if (trade.action === 'Sell' && trade.token && this.activeLegs.has(trade.token)) {
-            this.activeLegs.delete(trade.token);
-            Log.log(`[${this.userId}] ${trade.tsym} target sell filled qty=${trade.quantity} @ ${trade.price} - leg closed`);
-        }
-    };
-
-    // Called when the resting target sell placed above (placeLimitSellBareOnAnt)
-    // is cancelled/rejected before it fills - e.g. a DAY-validity order
-    // expiring unfilled at end of session, or a transient broker-side reject.
-    // Without this, that leg's position (bought with no stop-loss by design)
-    // would be left live and completely unprotected for the rest of the day
-    // with no automatic recovery. Mirrors BulkPcrStrategy.onOrderCancelled's
-    // margin-shortfall/retry-cap shape, simplified for a single ungrouped
-    // order per leg (this strategy never chunks).
-    onOrderCancelled = async (notification: OrderCancelledNotification): Promise<void> => {
-        if (notification.action !== 'Sell') return;
-        const leg = this.activeLegs.get(notification.instrumentToken);
-        if (!leg || leg.tradingSymbol !== notification.tradingSymbol) return;
-
-        if (notification.reason === 'REJECTED' && notification.rejectReason && MARGIN_SHORTFALL_REASON_PATTERN.test(notification.rejectReason)) {
-            // Nothing left to sell against - most likely the position was
-            // already closed outside the app. Retrying would just repeat the
-            // same rejection forever.
-            this.activeLegs.delete(notification.instrumentToken);
-            Log.log(`[${this.userId}] ALERT: ${notification.tradingSymbol} exit sell REJECTED (${notification.rejectReason}) - looks like a margin/shortfall rejection, likely because the position is already closed at the broker. NOT re-placing - manual review required.`);
-            return;
-        }
-
-        leg.retryCount++;
-        if (leg.retryCount > TopStockOptionsOpeningGapStrategy.MAX_EXIT_RETRIES) {
-            this.activeLegs.delete(notification.instrumentToken);
-            Log.log(`[${this.userId}] ALERT: ${notification.tradingSymbol} exit sell cancelled/rejected ${leg.retryCount} times in a row - giving up on auto re-placement. Position is LIVE and UNPROTECTED - manual review required.`);
-            return;
-        }
-
-        Log.log(`[${this.userId}] ${notification.tradingSymbol} exit sell ${notification.reason}${notification.rejectReason ? `: ${notification.rejectReason}` : ''} (qty=${notification.quantity}) - re-placing at target=${leg.targetPrice} (attempt ${leg.retryCount})`);
-        if (leg.retryCount > 1) {
-            // Back off before resubmitting a repeat rejection instead of
-            // tight-looping identical orders - same lesson BulkPcrStrategy's
-            // own retry cap was added for (2026-10-15 incident).
-            await new Promise((resolve) => setTimeout(resolve, TopStockOptionsOpeningGapStrategy.EXIT_RETRY_DELAY_MS));
-        }
-        try {
-            await placeLimitSellBareOnAnt(this.userId, notification.tradingSymbol, notification.instrumentToken, notification.quantity, leg.targetPrice, notification.exchange);
-        } catch (e: any) {
-            Log.log(`[${this.userId}] ALERT: ${notification.tradingSymbol} re-place of cancelled exit sell FAILED - position is LIVE and UNPROTECTED: ${e?.message ?? e}`);
-        }
-    };
 
 }

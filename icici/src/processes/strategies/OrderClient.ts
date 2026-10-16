@@ -2,6 +2,7 @@ import net from 'net';
 import Log from '../../util/Log';
 import { writeJsonLine, readJsonLines } from '../../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderRequestType, OrderResponse, FillNotification, OrderCancelledNotification } from '../../ipc/orderProtocol';
+import { Trade } from '../../model/model';
 
 // The strategies process's only path to broker execution - no Prism/Zerodha
 // dependency lives here at all, by design (see plan). Connects to `order`'s
@@ -311,6 +312,21 @@ class OrderClient {
     async antSetTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number): Promise<void> {
         const res = await this.request('antSetTargetStopLoss', userId, { token, targetPoints, stopLossPoints });
         if (!res.ok) throw new Error(res.error);
+    }
+
+    // ANT-specific (see orderProtocol.ts's comment) - plain buy, no broker-side
+    // bracket/cover, waits for the real fill inside `order` and returns the
+    // resulting Trade (targetPrice already set from targetPoints).
+    async antBuyTargetOnly(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; targetPoints: number; knownLtp?: { ltp: number; atMs: number } }): Promise<Trade> {
+        const res = await this.request('antBuyTargetOnly', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async antPlaceLimitSellBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
+        const res = await this.request('antPlaceLimitSellBare', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
     }
 
     async reloadSession(userId = 'Default'): Promise<void> {

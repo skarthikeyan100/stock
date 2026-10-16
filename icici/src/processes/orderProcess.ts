@@ -507,6 +507,25 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true };
             }
 
+            // See orderProtocol.ts's comment on these two request types - ANT-
+            // specific, not broker-generic, because TopStockOptionsOpeningGapStrategy
+            // (the only caller) runs in the `strategies` process and needs these
+            // to actually execute inside `order`, where antExecutor.ts's
+            // singletons live.
+            case 'antBuyTargetOnly': {
+                const { tradingSymbol, instrumentId, quantity, exchange, targetPoints, knownLtp } = req.payload;
+                const estimatedValue = knownLtp?.ltp && quantity ? knownLtp.ltp * quantity : undefined;
+                return placeOrderWithPendingGuard(req, estimatedValue, () =>
+                    antExecutor.enterPosition(req.userId, tradingSymbol, instrumentId, quantity, exchange, targetPoints, 0, 'target-only', knownLtp),
+                );
+            }
+
+            case 'antPlaceLimitSellBare': {
+                const { tradingSymbol, instrumentId, quantity, price, exchange } = req.payload;
+                const result = await antExecutor.placeLimitSellBareOnAnt(req.userId, tradingSymbol, instrumentId, quantity, price, exchange);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
             case 'buyContract': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return placeOrderWithPendingGuard(req, estimatedValue, () =>

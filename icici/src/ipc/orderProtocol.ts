@@ -62,7 +62,18 @@ export type OrderRequestType =
     // LIMIT-priced counterpart of chunkedSquareOff - places resting sells at
     // a caller-chosen price instead of squareOffChunked's immediate market/
     // current-bid exit (see chunkedOrder.ts's squareOffLimitChunked).
-    | 'chunkedSquareOffLimit';
+    | 'chunkedSquareOffLimit'
+    // ANT-specific (not broker-generic like the 'Bare' family above, which
+    // has no ant branch) - used by TopStockOptionsOpeningGapStrategy, which
+    // runs in the separate `strategies` process and so cannot call
+    // antExecutor.ts's enterPosition/placeLimitSellBareOnAnt directly (those
+    // rely on bookkeeping.ts/exitMonitor.ts/pendingAntLimitOrders.ts
+    // singletons that only do anything useful inside `order`). Plain buy,
+    // no bracket/cover/target broker-side - target is recorded on the Trade
+    // and the caller places its own separate resting sell via
+    // 'antPlaceLimitSellBare' right after.
+    | 'antBuyTargetOnly'
+    | 'antPlaceLimitSellBare';
 
 export interface OrderRequest {
     kind: 'request';
