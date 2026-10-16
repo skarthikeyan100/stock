@@ -125,6 +125,7 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
         try {
             const { status, fillPrice, filledQuantity, rejectReason } = await ant.getOrderStatus(orderId);
             order.unverifiableCount = 0; // a successful history lookup means this order IS findable - clear any earlier non-transient streak
+            order.flatNoFillCount = 0; // ...and the flat-no-fill streak is broken by a verifiable poll too
             // A square-off or re-price may have taken this order off the book while the status call was in
             // flight. Acting on that stale status could re-place a sell for quantity already sold.
             if (!pending.has(orderId)) continue;
@@ -223,7 +224,12 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                             // above never ran. Book whatever the trade book shows before dropping it. A book read
                             // that throws leaves the order tracked (caught below) and it is retried next poll.
                             const book = await ant.getFilledFromTradeBook(orderId);
-                            if (book.quantity > 0 && book.avgPrice > 0) {
+                            if (book.quantity > 0 && !(book.avgPrice > 0)) {
+                                // Quantity without a price is an incomplete book read - same rule as the cancel path:
+                                // retry, never book a zero price and never count it as "no fill".
+                                throw new Error(`sell ${orderId}: trade book shows ${book.quantity} with no average price - retrying on next poll`);
+                            }
+                            if (book.quantity > 0) {
                                 await bookkeeping.recordFill(buildAntFillTrade(order, orderId, book.quantity, book.avgPrice, order.action));
                                 Log.log(`[order] pending ANT sell ${orderId} (${order.tradingSymbol}, ${order.userId}) not verifiable via order history - booked ${book.quantity} @ ${book.avgPrice} from the trade book`);
                                 dropOrder = true;
@@ -232,11 +238,19 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                                 // position. Only drop after several consecutive polls agree, so a lagging book can't
                                 // hide a real fill.
                                 order.flatNoFillCount = (order.flatNoFillCount ?? 0) + 1;
-                                if (order.flatNoFillCount >= FLAT_NO_FILL_CONFIRM_POLLS) dropOrder = true;
+                                if (order.flatNoFillCount >= FLAT_NO_FILL_CONFIRM_POLLS) {
+                                    dropOrder = true;
+                                } else {
+                                    Log.log(`[order] pending ANT sell ${orderId} (${order.tradingSymbol}, ${order.userId}) flat at the broker with no trade-book fill yet (${order.flatNoFillCount}/${FLAT_NO_FILL_CONFIRM_POLLS}) - waiting for the book to confirm`);
+                                }
                             }
+                        } else {
+                            order.flatNoFillCount = 0; // the streak is only "consecutive" while the sell is flat
                         }
                         if (dropOrder) {
                             Log.log(`[order] pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) unverifiable via order history ${order.unverifiableCount} times in a row (likely too old for AliceBlue's order-book endpoint) and no open position exists - dropping stale tracking entry.`);
+                        } else if (order.action === 'Sell' && !stillOpen) {
+                            // Still in the no-fill confirmation window - not an alert yet.
                         } else if (!order.giveUpAlerted) {
                             order.giveUpAlerted = true;
                             const why = stillOpen ? 'a position IS open at the broker'
