@@ -234,7 +234,22 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     // it's included here up front rather than waiting for the same finding.
     private durablyDisable(reason: string): void {
         if (!this.enabled) return;
-        const liveCfg = configService.getStrategyConfig('TopStockOptionsOpeningGapStrategy');
+        // Not configService.getStrategyConfig(type) - that returns only the
+        // FIRST config.yml entry of this type, regardless of userId. config.yml
+        // can configure multiple instances of this strategy under distinct
+        // userId values (see firedTodayFile's own comment above), and a second
+        // instance's durablyDisable must mutate ITS OWN entry, not silently
+        // disable whichever entry happens to be listed first. Same (cfg.userId
+        // || type) === userId convention exitMonitor.ts's isSelfManagedTradeUser
+        // already uses for the identical type-vs-instance distinction.
+        const liveCfg = configService.getConfig().strategies?.find(
+            (s) => s.type === 'TopStockOptionsOpeningGapStrategy' && (s.userId || s.type) === this.userId
+        );
+        if (!liveCfg) {
+            Log.log(`[${this.userId}] ALERT: durablyDisable could not find this instance's own config.yml entry - NOT persisted, flip enabled: false manually.`);
+            this.enabled = false;
+            return;
+        }
         liveCfg.enabled = false;
         configService.writeConfig(configService.getConfig());
         this.enabled = false;
@@ -287,6 +302,16 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                 Log.log(`[${this.userId}] ${stock.symbol} targetPct clamped ${rawTargetPercent.toFixed(2)} -> ${targetPercent} (leverage=${leverageFactor.toFixed(2)})`);
             }
             const targetPoints = ltp * (targetPercent / 100);
+            if (targetPoints <= 0) {
+                // A malformed/zero/negative 'Latest Open' in gap-screener.csv
+                // (parseFloat('0') passes the !isNaN filter in executeTrade)
+                // would otherwise reach enterPosition's 'target-only' branch
+                // with targetPoints<=0, which it silently treats as "no
+                // target" and never sets trade.targetPrice - leaving the
+                // later antPlaceLimitSellBare call placing a sell with an
+                // undefined price. Fail this leg before any order is placed.
+                throw new Error(`invalid targetPoints ${targetPoints} for ${contract.tradingSymbol} (latestOpen=${stock.latestOpen}, ltp=${ltp})`);
+            }
             const lotSize = parseInt(contract.lotSize, 10);
             if (!lotSize || lotSize <= 0) {
                 throw new Error(`invalid lotSize ${contract.lotSize} for ${contract.tradingSymbol}`);
