@@ -625,6 +625,20 @@ export default class BulkPcrStrategy extends Strategy {
     // whatever quantity is confirmed still open as the tree's root leg, and from
     // then on the tree (not the simple +2 sell) owns this position's exit. Steps
     // run in this exact order for crash-safety - see each step's comment.
+    // Shared revert for every handOff abort path (contract-master miss, adoptRootLeg
+    // throw, a fill caught during the cancel race) - the exit sell is no longer resting
+    // (cancelled in handOff's own step 2) and nothing has adopted this quantity, so the
+    // position must get a fresh exit sell to stay protected. Reverting to 'selling'
+    // (not leaving it in whatever phase handOff left it in) also lets the normal
+    // 'selling'-phase updateTrade fill accumulation correctly absorb any delayed
+    // fill-record for a chunk that filled during the cancel race.
+    private async revertHandOffAndReplaceExit(broker: BrokerName, pos: BrokerPosition, remaining: number): Promise<void> {
+        pos.phase = 'selling';
+        pos.adopting = false;
+        this.persistState();
+        await this.placeExitSellAtTargetPrice(broker, remaining, false);
+    }
+
     private async handOff(broker: BrokerName): Promise<void> {
         const pos = this.positions.get(broker);
         if (!pos) return;
@@ -658,7 +672,10 @@ export default class BulkPcrStrategy extends Strategy {
             // dry-run touch real position state - preview only.
             if (hedgeDryRun) {
                 const previewRemaining = pos.targetQuantity - pos.soldQty;
-                Log.log(`[BulkPcrStrategy] [${broker}] [DRYRUN] would hand off ${pos.heldTsym} to the hedge tree now (slDistance crossed): would cancel the resting sell and adopt qty~${previewRemaining} @ ${pos.entryAvg} as the tree's root leg. NOT touching the real resting sell - it stays live and this position stays tracked as 'selling'.`);
+                // Throttled (logGateOnce, 5 min) - unlike the real path, dry-run never
+                // flips pos.phase away from 'selling', so a sustained adverse move re-enters
+                // this branch on every qualifying option tick with nothing else to stop it.
+                this.logGateOnce(`[${broker}] [DRYRUN] would hand off ${pos.heldTsym} to the hedge tree now (slDistance crossed): would cancel the resting sell and adopt qty~${previewRemaining} @ ${pos.entryAvg} as the tree's root leg. NOT touching the real resting sell - it stays live and this position stays tracked as 'selling'.`);
                 pos.adopting = false;
                 return;
             }
@@ -710,6 +727,26 @@ export default class BulkPcrStrategy extends Strategy {
                 return;
             }
 
+            // 4b. A fill WAS caught during the cancel race (filledQty > 0). The order is
+            // deliberately left tracked by cancelAnyRestingLimitSell/BrokerExecutor.ts for
+            // this exact case ("leaving tracked so the next poll records the fill") - that
+            // delayed fill will arrive later as an ordinary Sell trade for this same
+            // tsym/token. If we adopted the tree NOW, that late Sell would reach updateTrade
+            // with phase='tree' and get routed to legManager.handleFillOrExternalSell, which
+            // has no notion of "this is a small leftover chunk, not a full close" - it would
+            // treat it as an external close of the ENTIRE freshly-adopted root leg (using the
+            // leg's full totalQuantity, not the trade's quantity), wrongly marking the tree
+            // closed while the real remaining position sits open and untracked. Avoid the
+            // whole hazard: don't adopt this tick. Re-place the exit sell for `remaining`
+            // under the ORDINARY 'selling' phase instead - its normal soldQty accumulation in
+            // updateTrade correctly absorbs the delayed fill-record when it arrives. Hand-off
+            // retries on a later tick once the race has fully settled (filledQty back to 0).
+            if (filledQty > 0) {
+                Log.log(`[BulkPcrStrategy] [${broker}] Hand-off: ${filledQty} filled during the cancel race for ${pos.heldTsym} - not adopting this tick (that fill will land as an ordinary Sell shortly); re-placing exit sell for the remaining ${remaining}, will retry hand-off later`);
+                await this.revertHandOffAndReplaceExit(broker, pos, remaining);
+                return;
+            }
+
             // 5. Persist phase='tree' BEFORE adopting (crash-safety rule - see the comment
             // on BrokerPosition.phase and reconcile()'s 'tree' branch): a crash after this
             // point restores from open trades (the root is still open at the broker,
@@ -728,11 +765,8 @@ export default class BulkPcrStrategy extends Strategy {
             // the mistake.
             const m = AntContractMaster.getInstance().findByToken(pos.heldToken!);
             if (!m) {
-                pos.phase = 'selling';
-                pos.adopting = false;
-                this.persistState();
                 Log.log(`[BulkPcrStrategy] [${broker}] ALERT: adoptRootLeg aborted for ${pos.heldTsym} - no contract-master entry for token ${pos.heldToken} (can't determine CALL/PUT) - re-placing exit sell`);
-                await this.placeExitSellAtTargetPrice(broker, remaining, false);
+                await this.revertHandOffAndReplaceExit(broker, pos, remaining);
                 return;
             }
             const right = m.optionType === 'PE' ? PUT : CALL;
@@ -742,14 +776,8 @@ export default class BulkPcrStrategy extends Strategy {
                     right, entryPrice: pos.entryAvg, quantity: remaining,
                 });
             } catch (e) {
-                // Revert: the exit sell is no longer resting (cancelled in step 2) and
-                // nothing adopted it, so the position must get a fresh exit sell to stay
-                // protected - re-placing it also flips phase back to 'selling'.
-                pos.phase = 'selling';
-                pos.adopting = false;
-                this.persistState();
                 Log.log(`[BulkPcrStrategy] [${broker}] ALERT: adoptRootLeg failed for ${pos.heldTsym} - re-placing exit sell:`, e);
-                await this.placeExitSellAtTargetPrice(broker, remaining, false);
+                await this.revertHandOffAndReplaceExit(broker, pos, remaining);
                 return;
             }
 
