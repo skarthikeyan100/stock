@@ -73,7 +73,16 @@ export type OrderRequestType =
     // and the caller places its own separate resting sell via
     // 'antPlaceLimitSellBare' right after.
     | 'antBuyTargetOnly'
-    | 'antPlaceLimitSellBare';
+    | 'antPlaceLimitSellBare'
+    // ANT bare ops for BulkPcrStrategy's hedge tree (LegManager via
+    // antLegOps.ts) - see orderProcess.ts's case comments for why these are
+    // ANT-specific rather than routed through the broker-generic 'Bare'
+    // family above (BulkPcr trades the hedge tree on ANT only, and ANT has
+    // no contract-by-price-range lookup of its own).
+    | 'antBuyContractBare'
+    | 'antSquareOffBare'
+    | 'antCancelOrderBare'
+    | 'cancelRestingLimitSells';
 
 export interface OrderRequest {
     kind: 'request';

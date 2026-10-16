@@ -8,6 +8,10 @@ import { Strategy } from './strategy';
 import { roundToTick } from '../zerodha/Zerodha';
 import MomentumSignal from './MomentumSignal';
 import { isPastMarketClose } from '../util/marketHours';
+import { LegManager, LegManagerConfig } from './LegManager';
+import { antLegOps } from './antLegOps';
+import AntContractMaster from '../ant/AntContractMaster';
+import { watchToken, unwatchToken } from '../processes/strategies/tokenRouter';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
 
@@ -58,13 +62,29 @@ const STATE_COLLECTION = 'bulkPcrStrategyState';
 type BrokerName = 'zerodha' | 'breeze' | 'ant' | 'prism';
 
 interface BrokerPosition {
-    phase: 'buying' | 'selling' | 'error' | 'done';
+    // 'tree' = hand-off to the hedge LegManager tree has happened (or is in the
+    // process of happening) - see handOff/hedgeCfg/the file header's hedge-tree note.
+    phase: 'buying' | 'selling' | 'error' | 'done' | 'tree';
     heldTsym: string | null;
     heldToken: string | null;
     entryAvg: number;
     targetQuantity: number;
     soldQty: number;
     soldValue: number;
+    // True while handOff() is in flight for this broker - set synchronously before
+    // any await (race guard: a second concurrent tick must not start a second
+    // hand-off). NOT persisted - a restart mid-hand-off is handled by the
+    // crash-safety rule in handOff's own comment (phase='selling' vs phase='tree'
+    // tells reconcile() which side of the race it landed on), not by this flag.
+    adopting?: boolean;
+    // Cost basis of the adopted root leg (entryAvg * remaining quantity at the
+    // moment of hand-off) - feeds hedgeCfg()'s maxInvestment (root cost +
+    // hedgeMaxInvestment budget). Only ever set once, at hand-off.
+    rootCost?: number;
+    // Consecutive hand-off cancel failures (NOT "already filled" - a genuine cancel
+    // failure, retried with backoff). NOT persisted - resets to 0 across a restart,
+    // same as exitRejectCount's in-memory-only streak tracking.
+    handoffRetryCount?: number;
     // Epoch ms when phase last transitioned to 'selling' - lets reconcile()
     // tell a genuinely still-resting exit apart from one that's certainly
     // gone: every resting sell chunk placed by chunkedSquareOffLimit is a DAY
@@ -172,10 +192,93 @@ export default class BulkPcrStrategy extends Strategy {
     // re-resolves against are current.
     private lastNiftyQuote: NiftyQuote | null = null;
 
+    // Hedge tree infrastructure (see file header's "hedge tree" note and handOff below).
+    // v1 only supports a single 'ant' broker for hedging - see hedgeCfg's startup guard.
+    // Private LegManager, NOT ContinuousStrategy - ContinuousStrategy has its own T1 entry
+    // gating this strategy doesn't want, and its LegManager wiring defaults to the
+    // Zerodha/Breeze-only 'Bare' IPCs, which can't route BulkPcr's ANT-held root. `ops:
+    // antLegOps` is what makes this instance trade the tree on ANT instead.
+    private legManager: LegManager = new LegManager({
+        userId: this.userId,
+        ownerType: 'BulkPcrStrategy',
+        strategyRef: this,
+        getConfig: () => this.hedgeCfg(),
+        getLastUnderlyingLtp: () => this.lastNiftyQuote?.ltp ?? 0,
+        // BulkPcrStrategy keeps no realized P&L of its own distinct from a broker
+        // position's soldValue/soldQty bookkeeping - log only.
+        recordOutcome: (outcome, pnl) => Log.log(`[BulkPcrStrategy] hedge leg outcome: ${outcome} pnl=${Math.round(pnl)}`),
+        ops: antLegOps,
+        // Deliberately NOT resolved eagerly here (`this.hedgeCfg().hedgeDryRun` at
+        // construction time): dryRun lives inside LegManagerConfig itself (see
+        // hedgeCfg below) and LegManager reads it live via getConfig() on every op,
+        // so toggling hedgeDryRun in config.yml takes effect on the next tick, not
+        // only on the next restart. Also sidesteps a field-initializer-order trap:
+        // calling this.hedgeCfg() here (before hedgeLoggedMultiBrokerWarning's own
+        // field initializer below has run) would get its one-time ALERT dedupe
+        // flag clobbered back to false immediately after.
+        onSpawnBuyError: (e: any) => {
+            const message = typeof e?.message === 'string' ? e.message : String(e);
+            if (message.includes('[HEDGE_UNCONFIRMED]')) this.treeError = true;
+        },
+    });
+    // Set when a hedge-tree buy's fill confirmation is lost (order may still be live at
+    // the broker - never safe to retry). Once set, the tree stops spawning new levels and
+    // logs loudly on every tick until a human resolves it - see processOptionQuote.
+    private treeError = false;
+    // EOD force-close one-shot guard for an open hedge tree - see processNiftyQuote.
+    private eodDone = false;
+
     receive(oldStats, newStats) {}
 
+    // LegManagerConfig derived from config.yml's BulkPcrStrategy block, plus the
+    // dynamic maxInvestment budget (root cost at the moment of hand-off +
+    // hedgeMaxInvestment) and refillEnabled: false (ANT's buyLimit bare op isn't
+    // wired up - see antLegOps.ts's buyLimit).
+    private hedgeLoggedMultiBrokerWarning = false;
+
+    private hedgeCfg(): LegManagerConfig & { hedgeEnabled: boolean; hedgeDryRun: boolean } {
+        const cfg = this.cfg();
+        const rootCost = this.positions.get('ant')?.rootCost ?? 0;
+        // v1 only supports a single 'ant' broker for hedging (antLegOps.ts is ANT-only,
+        // and hedge hand-off is keyed off this.positions.get('ant') throughout) - force
+        // hedgeEnabled false rather than hedge only the 'ant' leg of a multi-broker
+        // config while silently leaving other brokers' positions unhedged.
+        const brokers = this.configuredBrokers();
+        const multiBrokerConfigured = !(brokers.length === 1 && brokers[0] === 'ant');
+        if (cfg.hedgeEnabled === true && multiBrokerConfigured && !this.hedgeLoggedMultiBrokerWarning) {
+            this.hedgeLoggedMultiBrokerWarning = true;
+            Log.log(`[BulkPcrStrategy] ALERT: hedgeEnabled is true but brokers=[${brokers.join(', ')}] is not just ['ant'] - hedging is ANT-only (v1); forcing hedgeEnabled: false`);
+        }
+        return {
+            hedgeEnabled: cfg.hedgeEnabled === true && !multiBrokerConfigured,
+            hedgeDryRun: cfg.hedgeDryRun === true,
+            slDistance: cfg.slDistance ?? 10,
+            squareOffDistance: cfg.squareOffDistance ?? 50,
+            maxLevels: cfg.maxLevels ?? 4,
+            hedgeStartLevel: cfg.hedgeStartLevel ?? 1,
+            spawnQuantityMode: cfg.spawnQuantityMode ?? '1',
+            averageQuantityMode: cfg.averageQuantityMode ?? 'same',
+            postAverageTargetDistance: cfg.postAverageTargetDistance ?? 1,
+            minPremium: cfg.minPremium ?? 100,
+            maxInvestment: rootCost + (cfg.hedgeMaxInvestment ?? 100000),
+            refillEnabled: false,
+            // Read live by LegManager.currentOps() on every op - see LegManagerConfig.dryRun's comment.
+            dryRun: cfg.hedgeDryRun === true,
+        };
+    }
+
+    // Not configService.getStrategyConfig(type) - that returns only the FIRST
+    // config.yml entry of this type, regardless of userId. config.yml can
+    // configure multiple instances of this strategy under distinct userId
+    // values, and each instance must read its OWN block, not silently inherit
+    // whichever instance's block happens to be listed first. Same (cfg.userId
+    // || type) === userId convention exitMonitor.ts's isSelfManagedTradeUser
+    // and durablyDisable below already use for the identical type-vs-instance
+    // distinction.
     private cfg() {
-        return configService.getStrategyConfig('BulkPcrStrategy');
+        return configService.getConfig().strategies?.find(
+            (s) => s.type === 'BulkPcrStrategy' && (s.userId || s.type) === this.userId
+        ) ?? { type: 'BulkPcrStrategy', enabled: false };
     }
 
     // `brokers: [zerodha, breeze]` (new, multi-broker) takes priority when
@@ -257,6 +360,23 @@ export default class BulkPcrStrategy extends Strategy {
 
     async processNiftyQuote(quote: NiftyQuote): Promise<void> {
         this.lastNiftyQuote = quote;
+
+        // EOD force-close for an open hedge tree - checked before the phase==='idle'
+        // gate below, since by the time a tree exists the outer phase is already
+        // 'running' (set once any broker's entry starts) and would otherwise return
+        // before this ever runs. One-shot per day via eodDone; a NIFTY tick after
+        // 15:15 is frequent enough that this doesn't need its own interval poll.
+        const antPos = this.positions.get('ant');
+        if (antPos?.phase === 'tree' && !this.eodDone) {
+            const now = new Date();
+            const pastEodCutoff = now.getHours() > 15 || (now.getHours() === 15 && now.getMinutes() >= 15);
+            if (pastEodCutoff) {
+                this.eodDone = true;
+                Log.log('[BulkPcrStrategy] EOD cutoff reached with an open hedge tree - force-closing all legs');
+                await this.legManager.closeAll();
+            }
+        }
+
         if (!this.enabled) { this.logGateOnce('disabled'); return; }
         if (this.phase !== 'idle') { this.logGateOnce(`entry already in progress or done (phase=${this.phase})`); return; }
         if (!this.isTimeInRange()) { this.logGateOnce('outside time window'); return; }
@@ -438,6 +558,14 @@ export default class BulkPcrStrategy extends Strategy {
                 broker,
             });
             Log.log(`[BulkPcrStrategy] [${broker}] Limit sell chunks resting for ${pos.heldTsym} @ ${targetPrice} - waiting for fills`);
+            // Watch the held token so its option ticks reach processOptionQuote's
+            // slDistance check below - without this, a hedge-eligible position's
+            // adverse move is never observed (tokenRouter only routes ticks for
+            // watched/registered tokens). Only needed when hedging is actually
+            // configured, and only for 'ant' (hedgeCfg's v1 single-broker guard).
+            if (broker === 'ant' && this.hedgeCfg().hedgeEnabled && pos.heldToken) {
+                watchToken(pos.heldToken, this);
+            }
         } catch (e) {
             Log.log(`[BulkPcrStrategy] [${broker}] Chunked limit-sell placement failed - manual review required:`, e);
             pos.phase = 'error';
@@ -455,20 +583,137 @@ export default class BulkPcrStrategy extends Strategy {
         await this.placeExitSellAtTargetPrice(broker, quantity, true);
     }
 
-    // Momentum-only tick consumer - this strategy has no live-tick "confirm
-    // target" gate of its own (see file header), so the only option ticks it
-    // ever needs are the ATM CE/PE legs MomentumSignal itself subscribes to
-    // for a one-shot direction reading. Mirrors ContinuousStrategy's exact
-    // wiring.
+    // Momentum-only tick consumer PLUS (when hedgeEnabled) the hedge tree's own
+    // LegManager-tracked tokens, and the held ANT root's own token while it's
+    // resting on its +2 sell (needed to observe the slDistance adverse-move
+    // trigger that starts a hand-off). Mirrors ContinuousStrategy's momentum
+    // wiring, extended for the hedge tree - see file header's hedge-tree note.
     canHandleOptionQuote(quote: OptionQuote): boolean {
-        return this.momentum.isTracking(String(quote.token));
+        const token = String(quote.token);
+        if (this.momentum.isTracking(token)) return true;
+        if (this.legManager.canHandle(token)) return true;
+        const pos = this.positions.get('ant');
+        return !!pos && pos.phase === 'selling' && !pos.adopting && pos.heldToken === token && this.hedgeCfg().hedgeEnabled;
     }
 
     async processOptionQuote(quote: OptionQuote): Promise<void> {
-        if (this.momentum.isTracking(String(quote.token))) {
+        const token = String(quote.token);
+        if (this.momentum.isTracking(token)) {
             this.momentum.onTick(quote);
+            return;
+        }
+        if (!this.hedgeCfg().hedgeEnabled) return;
+        const pos = this.positions.get('ant');
+        if (!pos) return;
+        if (pos.phase === 'tree') {
+            if (this.treeError) {
+                Log.log('[BulkPcrStrategy] ALERT: hedge buy unconfirmed on a previous spawn - manual review required, not spawning further');
+                return;
+            }
+            await this.legManager.onOptionTick(token, quote.ltp);
+            if (this.legManager.isIdle()) this.durablyDisable('hedge tree closed');
+            return;
+        }
+        if (pos.phase === 'selling' && !pos.adopting && token === pos.heldToken
+            && quote.ltp <= pos.entryAvg - this.hedgeCfg().slDistance) {
+            await this.handOff('ant');
         }
     }
+
+    // Hands the ANT root position off to the hedge LegManager tree once it moves
+    // slDistance points against entry - cancels the resting +2 exit sell, adopts
+    // whatever quantity is confirmed still open as the tree's root leg, and from
+    // then on the tree (not the simple +2 sell) owns this position's exit. Steps
+    // run in this exact order for crash-safety - see each step's comment.
+    private async handOff(broker: BrokerName): Promise<void> {
+        const pos = this.positions.get(broker);
+        if (!pos) return;
+        // 1. Race guard, synchronous, before any await - a second concurrent tick
+        // (or a second slDistance-crossing tick arriving before this resolves)
+        // must not start a second hand-off.
+        if (pos.adopting) return;
+        pos.adopting = true;
+
+        try {
+            const hedgeDryRun = this.hedgeCfg().hedgeDryRun;
+            // 2. Cancel the resting +2 exit sell before adopting anything - the tree's
+            // own onOptionTick (slDistance/square-off/target) becomes the sole exit
+            // from here on; a stray fill of the old +2 sell during/after adoption
+            // would silently reduce the tree's root quantity out from under it.
+            let filledQty = 0;
+            if (hedgeDryRun) {
+                Log.log(`[BulkPcrStrategy] [${broker}] [DRYRUN] would cancel resting sell for ${pos.heldTsym}`);
+            } else {
+                const r = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym: pos.heldTsym! });
+                if (r.cancelFailed) {
+                    // 3. Cancel failed for a reason other than "already filled" - the resting
+                    // sell's true state is unknown. Never adopt on this outcome (see
+                    // antLegOps.ts/LegBrokerOps.ts's header for why a naked, un-exited
+                    // position is worse than a late hand-off). Retry with backoff, capped.
+                    pos.adopting = false;
+                    pos.handoffRetryCount = (pos.handoffRetryCount ?? 0) + 1;
+                    const MAX_HANDOFF_RETRIES = 5;
+                    if (pos.handoffRetryCount > MAX_HANDOFF_RETRIES) {
+                        Log.log(`[BulkPcrStrategy] [${broker}] Hand-off cancel failed ${pos.handoffRetryCount} times in a row for ${pos.heldTsym} - giving up, manual review required`);
+                        return;
+                    }
+                    Log.log(`[BulkPcrStrategy] [${broker}] Hand-off: cancel of resting sell failed for ${pos.heldTsym} (attempt ${pos.handoffRetryCount}/${MAX_HANDOFF_RETRIES}) - retrying in 10s`);
+                    setTimeout(() => {
+                        this.handOff(broker).catch((e) => Log.log(`[BulkPcrStrategy] [${broker}] Hand-off retry failed:`, e));
+                    }, 10_000);
+                    return;
+                }
+                pos.handoffRetryCount = 0;
+                filledQty = r.filledQty;
+            }
+
+            // 4. The exit may have completed during the cancel race (fully filled
+            // before/while it was being cancelled) - nothing left to adopt.
+            const remaining = pos.targetQuantity - filledQty;
+            if (remaining <= 0) {
+                pos.adopting = false;
+                Log.log(`[BulkPcrStrategy] [${broker}] Hand-off: exit completed during the cancel race for ${pos.heldTsym} - nothing to adopt`);
+                return;
+            }
+
+            // 5. Persist phase='tree' BEFORE adopting (crash-safety rule - see the comment
+            // on BrokerPosition.phase and reconcile()'s 'tree' branch): a crash after this
+            // point restores from open trades (the root is still open at the broker,
+            // reconcile's 'tree' branch calls legManager.restoreFromOpenTrades); a crash
+            // BEFORE this point leaves phase='selling', so reconcile() re-places the exit
+            // sell as it already does today.
+            pos.phase = 'tree';
+            pos.rootCost = pos.entryAvg * remaining;
+            this.persistState();
+
+            // 6. Adopt the remainder as the tree's root leg.
+            const m = AntContractMaster.getInstance().findByToken(pos.heldToken!);
+            const right = m?.optionType === 'PE' ? PUT : CALL;
+            try {
+                await this.legManager.adoptRootLeg({
+                    tsym: pos.heldTsym!, token: pos.heldToken!, strike: m?.strike ?? 0, exchange: 'NFO',
+                    right, entryPrice: pos.entryAvg, quantity: remaining,
+                });
+            } catch (e) {
+                // Revert: the exit sell is no longer resting (cancelled in step 2) and
+                // nothing adopted it, so the position must get a fresh exit sell to stay
+                // protected - re-placing it also flips phase back to 'selling'.
+                pos.phase = 'selling';
+                pos.adopting = false;
+                this.persistState();
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: adoptRootLeg failed for ${pos.heldTsym} - re-placing exit sell:`, e);
+                await this.placeExitSellAtTargetPrice(broker, remaining, false);
+                return;
+            }
+
+            pos.adopting = false;
+            Log.log(`[BulkPcrStrategy] [${broker}] Hand-off: adopted root ${pos.heldTsym} qty=${remaining} entry=${pos.entryAvg}`);
+        } catch (e) {
+            pos.adopting = false;
+            Log.log(`[BulkPcrStrategy] [${broker}] Hand-off failed unexpectedly for ${pos.heldTsym}:`, e);
+        }
+    }
+
 
     // Fills for a broker's exit round-trip back here asynchronously, one
     // chunk at a time, potentially far apart - a resting limit sell only
@@ -482,7 +727,15 @@ export default class BulkPcrStrategy extends Strategy {
         const broker = trade.broker as BrokerName | undefined;
         if (!broker) return; // untagged fill - can't attribute to a broker position, ignore defensively
         const pos = this.positions.get(broker);
-        if (!pos || pos.phase !== 'selling') return;
+        if (!pos) return;
+
+        if (pos.phase === 'tree' && broker === 'ant') {
+            await this.legManager.handleFillOrExternalSell(trade);
+            if (this.legManager.isIdle()) this.durablyDisable('hedge tree closed');
+            return;
+        }
+
+        if (pos.phase !== 'selling') return;
         if (trade.action !== 'Sell' || trade.tsym !== pos.heldTsym) return;
 
         pos.soldQty += trade.quantity;
@@ -521,6 +774,10 @@ export default class BulkPcrStrategy extends Strategy {
         // redundant config write and avoids a second, confusing "already fully closed at the
         // broker on restart" log line for what was actually just a normal fill.
         if (this.phase === 'done') return;
+        // Unwatch the ANT position's held token - a no-op if it was never watched
+        // (hedging disabled, or this call isn't the hedge-tree completion path).
+        const antPos = this.positions.get('ant');
+        if (antPos?.heldToken) unwatchToken(antPos.heldToken, this);
         const liveCfg = configService.getStrategyConfig('BulkPcrStrategy');
         liveCfg.enabled = false;
         configService.writeConfig(configService.getConfig());
@@ -637,6 +894,33 @@ export default class BulkPcrStrategy extends Strategy {
 
         for (const broker of brokers) {
             const persistedPos = persisted?.positions?.[broker];
+
+            if (persistedPos?.phase === 'tree') {
+                // A hedge tree was open when this process last shut down - rebuild it from
+                // the broker's open trades + legLineage (LegManager.restoreFromOpenTrades),
+                // never from the persisted snapshot's own leg data (which doesn't exist -
+                // only the root's rootCost is persisted). Never calls placeExitSell: the
+                // tree itself (once restored) is the sole exit, same as a live tree's normal
+                // onOptionTick-driven sells.
+                const openTrades = await getOpenTradesOnce();
+                if (openTrades === undefined) {
+                    // Fail closed - same reasoning as the never-attempted-exit branch below:
+                    // can't confirm what's actually open at the broker, so don't guess.
+                    this.positions.set(broker, { ...persistedPos, phase: 'error' });
+                    anyRestored = true;
+                    this.persistState();
+                    Log.log(`[BulkPcrStrategy] [${broker}] reconcile: order query exhausted retries while an open hedge tree needed restoring - failing closed, manual review required`);
+                    continue;
+                }
+                const antTrades = openTrades.filter((t: any) => t.broker === 'ant');
+                await this.legManager.restoreFromOpenTrades(antTrades);
+                this.positions.set(broker, { ...persistedPos, phase: 'tree', heldTsym: null, heldToken: null, entryAvg: 0, targetQuantity: 0, soldQty: 0, soldValue: 0 });
+                anyRestored = true;
+                if (isPastMarketClose()) {
+                    Log.log(`[BulkPcrStrategy] [${broker}] reconcile: ALERT - open hedge tree restored after market close, manual action may be needed (no orders will be placed now)`);
+                }
+                continue;
+            }
 
             if (persistedPos?.phase === 'selling') {
                 // A limit-sell exit was already resting for this broker when

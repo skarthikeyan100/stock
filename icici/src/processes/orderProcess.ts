@@ -201,6 +201,82 @@ async function placeOrderWithPendingGuard(
     }
 }
 
+// Cancels any resting limit-sell order(s) tracked for this user+tsym before a
+// force-close path market-sells the same still-open quantity - added
+// 2026-09-22 alongside chunkedSquareOffLimit (BulkPcrStrategy's target-hit
+// exit, which now leaves a limit sell resting indefinitely instead of
+// filling near-instantly like the old market order it replaced). Without
+// this, a drawdown-breach or expiry-day force-close firing while that
+// resting order is still live would place a SECOND, independent sell for the
+// same quantity - an oversell if both filled. Module-scoped (not nested
+// inside main()) so handleRequest's 'cancelRestingLimitSells' IPC case
+// (BulkPcrStrategy's hedge hand-off, see antLegOps.ts) can call it too.
+//
+// Returns filledQty: the TOTAL quantity, across every resting Sell order
+// found for this tsym, that was confirmed already filled during cancellation
+// (each broker's cancelOrderOnX throws OrderAlreadyFilledError specifically
+// for this - see BrokerExecutor.ts). Per-order, not a single yes/no for the
+// whole tsym (confirmed via code review: an earlier version collapsed this
+// to one boolean, which meant ONE filled chunk of a multi-chunk
+// squareOffLimitChunked position - see chunkedOrder.ts - made the caller
+// skip the force-close for the ENTIRE trade, leaving any OTHER still-open
+// chunk unprotected). Callers MUST subtract filledQty from trade.quantity
+// before calling squareOff, and skip it entirely only if that leaves nothing
+// left - never "proceed anyway" with the stale pre-fill trade.quantity, or
+// they double-sell the portion that already closed.
+//
+// Returns cancelFailed: true if any cancel attempt failed for a reason OTHER
+// than "already filled" (already gone, genuinely still open, network
+// hiccup). A cancel failing for that reason means the resting order's true
+// state is unknown - the pending-order poller self-heals its own tracking
+// within 15s regardless, so the drawdown-breach/expiry-squareoff force-close
+// paths below still proceed anyway for that order's quantity, but
+// BulkPcrStrategy's hedge hand-off (cancelRestingLimitSells's caller) must
+// NOT adopt the root leg on a failed cancel - see BulkPcrStrategy.ts's
+// handOff.
+async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: string, tsym: string): Promise<{ filledQty: number; cancelFailed: boolean }> {
+    // Selects ONLY the tracker for executor.brokerName, not all four merged
+    // together - BulkPcrAutoStartStrategy can now hold simultaneous
+    // ant+prism positions on the identical tsym (both Noren/Omnesys-family
+    // contract-symbol formats) under the same userId. Merging every
+    // tracker's matches by tsym alone (as this used to) would hand a
+    // Prism-tracked order id to antExecutor.cancelOrder() (or vice versa)
+    // whenever both brokers happened to have a resting sell on the same
+    // symbol at once - a foreign order id sent to the wrong broker's cancel
+    // API, silently relying on that broker's API to reject it rather than on
+    // correct routing.
+    const pendingByBroker: Record<string, { orderId: string; action: string; quantity: number }[]> = {
+        zerodha: findPendingZerodhaOrdersForSymbol(userId, tsym),
+        breeze: findPendingBreezeOrdersForSymbol(userId, tsym),
+        ant: findPendingAntOrdersForSymbol(userId, tsym),
+        prism: findPendingPrismOrdersForSymbol(userId, tsym),
+    };
+    const pending = (pendingByBroker[executor.brokerName] ?? []).filter((o) => o.action === 'Sell');
+    let filledQty = 0;
+    let cancelFailed = false;
+    for (const order of pending) {
+        try {
+            await executor.cancelOrder(order.orderId);
+            Log.log(`[order] cancelAnyRestingLimitSell: cancelled resting limit sell ${order.orderId} for ${tsym} (${userId}) ahead of a force-close`);
+        } catch (e) {
+            if (e instanceof OrderAlreadyFilledError) {
+                // e.filledQuantity is the broker-confirmed actual fill - may
+                // be LESS than order.quantity (a genuine partial fill whose
+                // remainder was cancelled, not filled). Using order.quantity
+                // here would wrongly exclude that still-open remainder from
+                // the force-close below, leaving it unprotected - see
+                // gaps.md's "Partial-fill accounting" entry.
+                filledQty += e.filledQuantity;
+                Log.log(`[order] cancelAnyRestingLimitSell: ${order.orderId} (${tsym}, ${userId}) already filled qty=${e.filledQuantity}/${order.quantity} - excluding filled portion from force-close`);
+            } else {
+                cancelFailed = true;
+                Log.log(`[order] cancelAnyRestingLimitSell: cancel failed for ${order.orderId} (${tsym}, ${userId}) - proceeding with force-close anyway:`, e);
+            }
+        }
+    }
+    return { filledQty, cancelFailed };
+}
+
 async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     try {
         switch (req.type) {
@@ -513,16 +589,50 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // to actually execute inside `order`, where antExecutor.ts's
             // singletons live.
             case 'antBuyTargetOnly': {
-                const { tradingSymbol, instrumentId, quantity, exchange, targetPoints, knownLtp } = req.payload;
-                const estimatedValue = knownLtp?.ltp && quantity ? knownLtp.ltp * quantity : undefined;
-                return placeOrderWithPendingGuard(req, estimatedValue, () =>
-                    antExecutor.enterPosition(req.userId, tradingSymbol, instrumentId, quantity, exchange, targetPoints, 0, 'target-only', knownLtp),
+                const { tradingSymbol, instrumentId, quantity, exchange, underlyingOpen, marketProtectionPercent } = req.payload;
+                // No pre-trade option LTP any more, so no value estimate (same as 'buyIndex').
+                return placeOrderWithPendingGuard(req, undefined, () =>
+                    antExecutor.enterPosition(req.userId, tradingSymbol, instrumentId, quantity, exchange, 0, 0, 'target-only', undefined,
+                        { underlyingOpen, marketProtectionPercent: String(marketProtectionPercent) }),
                 );
             }
 
             case 'antPlaceLimitSellBare': {
                 const { tradingSymbol, instrumentId, quantity, price, exchange } = req.payload;
                 const result = await antExecutor.placeLimitSellBareOnAnt(req.userId, tradingSymbol, instrumentId, quantity, price, exchange);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            // ANT-specific bare ops for BulkPcrStrategy's hedge tree (LegManager via
+            // antLegOps.ts) - BulkPcr trades on ANT, so the Zerodha/Breeze-only
+            // getContractByPriceRangeBare/buyContractBare/etc 'Bare' family above can't
+            // be reused for it (see antLegOps.ts's header comment).
+            case 'antBuyContractBare': {
+                const { tradingSymbol, instrumentId, quantity, exchange } = req.payload;
+                return placeOrderWithPendingGuard(req, undefined, () =>
+                    antExecutor.enterPosition(req.userId, tradingSymbol, instrumentId, quantity, exchange, 0, 0, 'target-only'),
+                );
+            }
+
+            case 'antSquareOffBare': {
+                const { tradingSymbol, quantity, exchange } = req.payload;
+                const result = await antExecutor.squareOffOnAnt(req.userId, tradingSymbol, quantity, exchange);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'antCancelOrderBare': {
+                await antExecutor.cancelOrderOnAnt(req.payload.orderId);
+                return { kind: 'response', id: req.id, ok: true };
+            }
+
+            // ANT only (BulkPcrStrategy's hedge tree is ANT-only - see antLegOps.ts) -
+            // cancels any resting limit sell(s) for this tsym ahead of a hand-off to
+            // the hedge tree, same closure the drawdown-breach/expiry-squareoff paths
+            // below use, just forced onto the ANT executor regardless of this user's
+            // configured default broker.
+            case 'cancelRestingLimitSells': {
+                const executor = getBrokerExecutor(req.userId, 'ant');
+                const result = await cancelAnyRestingLimitSell(executor, req.userId, req.payload.tsym);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -929,73 +1039,10 @@ async function main() {
     await loadPendingAntLimitOrdersFromMongo();
     await loadPendingPrismLimitOrdersFromMongo();
 
-    // Cancels any resting limit-sell order(s) tracked for this user+tsym
-    // before a force-close path market-sells the same still-open quantity -
-    // added 2026-09-22 alongside chunkedSquareOffLimit (BulkPcrStrategy's
-    // target-hit exit, which now leaves a limit sell resting indefinitely
-    // instead of filling near-instantly like the old market order it
-    // replaced). Without this, a drawdown-breach or expiry-day force-close
-    // firing while that resting order is still live would place a SECOND,
-    // independent sell for the same quantity - an oversell if both filled.
-    //
-    // Returns the TOTAL quantity, across every resting Sell order found for
-    // this tsym, that was confirmed already filled during cancellation (each
-    // broker's cancelOrderOnX throws OrderAlreadyFilledError specifically for
-    // this - see BrokerExecutor.ts). Per-order, not a single yes/no for the
-    // whole tsym (confirmed via code review: an earlier version collapsed
-    // this to one boolean, which meant ONE filled chunk of a multi-chunk
-    // squareOffLimitChunked position - see chunkedOrder.ts - made the caller
-    // skip the force-close for the ENTIRE trade, leaving any OTHER still-open
-    // chunk unprotected). Callers MUST subtract this from trade.quantity
-    // before calling squareOff, and skip it entirely only if that leaves
-    // nothing left - never "proceed anyway" with the stale pre-fill
-    // trade.quantity, or they double-sell the portion that already closed.
-    // A cancel failing for any OTHER reason (already gone, genuinely still
-    // open, network hiccup) is not itself treated as filled - the
-    // pending-order poller self-heals its own tracking within 15s
-    // regardless, and the force-close below is still the right thing to
-    // attempt for that order's quantity.
-    async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: string, tsym: string): Promise<number> {
-        // Selects ONLY the tracker for executor.brokerName, not all four
-        // merged together - BulkPcrAutoStartStrategy can now hold simultaneous
-        // ant+prism positions on the identical tsym (both Noren/Omnesys-family
-        // contract-symbol formats) under the same userId. Merging every
-        // tracker's matches by tsym alone (as this used to) would hand a
-        // Prism-tracked order id to antExecutor.cancelOrder() (or vice versa)
-        // whenever both brokers happened to have a resting sell on the same
-        // symbol at once - a foreign order id sent to the wrong broker's
-        // cancel API, silently relying on that broker's API to reject it
-        // rather than on correct routing.
-        const pendingByBroker: Record<string, { orderId: string; action: string; quantity: number }[]> = {
-            zerodha: findPendingZerodhaOrdersForSymbol(userId, tsym),
-            breeze: findPendingBreezeOrdersForSymbol(userId, tsym),
-            ant: findPendingAntOrdersForSymbol(userId, tsym),
-            prism: findPendingPrismOrdersForSymbol(userId, tsym),
-        };
-        const pending = (pendingByBroker[executor.brokerName] ?? []).filter((o) => o.action === 'Sell');
-        let alreadyFilledQty = 0;
-        for (const order of pending) {
-            try {
-                await executor.cancelOrder(order.orderId);
-                Log.log(`[order] cancelAnyRestingLimitSell: cancelled resting limit sell ${order.orderId} for ${tsym} (${userId}) ahead of a force-close`);
-            } catch (e) {
-                if (e instanceof OrderAlreadyFilledError) {
-                    // e.filledQuantity is the broker-confirmed actual fill -
-                    // may be LESS than order.quantity (a genuine partial fill
-                    // whose remainder was cancelled, not filled). Using
-                    // order.quantity here would wrongly exclude that
-                    // still-open remainder from the force-close below,
-                    // leaving it unprotected - see gaps.md's "Partial-fill
-                    // accounting" entry.
-                    alreadyFilledQty += e.filledQuantity;
-                    Log.log(`[order] cancelAnyRestingLimitSell: ${order.orderId} (${tsym}, ${userId}) already filled qty=${e.filledQuantity}/${order.quantity} - excluding filled portion from force-close`);
-                } else {
-                    Log.log(`[order] cancelAnyRestingLimitSell: cancel failed for ${order.orderId} (${tsym}, ${userId}) - proceeding with force-close anyway:`, e);
-                }
-            }
-        }
-        return alreadyFilledQty;
-    }
+    // cancelAnyRestingLimitSell is now module-scoped (see its definition above
+    // handleRequest) so both this drawdown-breach handler and
+    // handleRequest's 'cancelRestingLimitSells' IPC case (BulkPcrStrategy's
+    // hedge hand-off) can call it.
 
     // Auto-squareoff on daily/weekly drawdown breach (see bookkeeping.ts's
     // isDailyDrawdownBreached/isWeeklyDrawdownBreached, checked after every
@@ -1024,7 +1071,7 @@ async function main() {
         for (const trade of bookkeeping.trades.filter((t) => t.user === user)) {
             try {
                 const executor = getBrokerExecutor(user, trade.broker);
-                const alreadyFilledQty = await cancelAnyRestingLimitSell(executor, user, trade.tsym);
+                const { filledQty: alreadyFilledQty } = await cancelAnyRestingLimitSell(executor, user, trade.tsym);
                 const remainingQty = trade.quantity - alreadyFilledQty;
                 if (remainingQty <= 0) continue; // see cancelAnyRestingLimitSell's comment - would double-sell
                 await executor.squareOff(user, trade.tsym, remainingQty, 'NFO');
@@ -1061,7 +1108,7 @@ async function main() {
             // above for why), resolved via trade.broker for the same reason.
             const executor = getBrokerExecutor(trade.user, trade.broker);
             const squareOff = cancelAnyRestingLimitSell(executor, trade.user, trade.tsym)
-                .then((alreadyFilledQty) => {
+                .then(({ filledQty: alreadyFilledQty }) => {
                     const remainingQty = trade.quantity - alreadyFilledQty;
                     // see cancelAnyRestingLimitSell's comment - would double-sell
                     if (remainingQty <= 0) return;

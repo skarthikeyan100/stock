@@ -2,11 +2,11 @@ import crypto from 'crypto';
 import Log from '../util/Log';
 import { CALL, PUT, DEFAULT_MAX_INVESTMENT } from '../constants';
 import { Trade } from '../model/model';
-import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
 import { watchToken, unwatchToken, registerTrade } from '../processes/strategies/tokenRouter';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
+import { LegBrokerOps, defaultLegOps, dryRunOps } from './LegBrokerOps';
 
 // Extracted from ContinuousStrategy.ts (2026-09-11) so the same loss-driven
 // hedge-spawn/averaging/refill/maxProfit leg lifecycle can be reused by
@@ -107,6 +107,18 @@ export interface LegManagerConfig {
     // default to wasAveraged=false, a harmless default for a brand-new
     // strategy with no restore history to preserve).
     initialQuantity?: number;
+    // false blocks target-hit re-entry (placeRefill) for every leg, root and
+    // nested alike - used by BulkPcrStrategy's hedge tree, where antLegOps's
+    // buyLimit is unimplemented (ANT has no resting-limit-buy bare op wired
+    // up for this path). Unset/true preserves today's refill behavior.
+    refillEnabled?: boolean;
+    // Read LIVE on every ops call (via this.currentOps(), not resolved once at
+    // construction) so toggling this in config.yml takes effect on the next tick,
+    // not only on the next process restart - unlike `ops` itself, which is a
+    // one-time wiring choice (which broker's bare-IPC family to use), dryRun is a
+    // runtime safety toggle an operator may need to flip while the process is
+    // already running (e.g. pausing real hedge-leg orders mid-investigation).
+    dryRun?: boolean;
 }
 
 export interface LegManagerDeps {
@@ -116,9 +128,19 @@ export interface LegManagerDeps {
     getConfig: () => LegManagerConfig;
     getLastUnderlyingLtp: () => number;
     recordOutcome: (outcome: 'win' | 'loss' | 'timeout', pnl: number) => void;
+    ops?: LegBrokerOps; // default: defaultLegOps (today's Zerodha/Breeze 'Bare' IPCs)
+    // Called from trySpawnLevel's catch with the raw error whenever a hedge-spawn buy
+    // fails - lets an owning strategy notice a '[HEDGE_UNCONFIRMED]'-prefixed error
+    // (antLegOps.ts's buy: the fill wait timed out, so the order may still be live -
+    // never safe to retry) and flip its own manual-review flag. Every other spawn
+    // failure (pickContract/capitalCheck/ordinary buy rejection) already self-heals by
+    // freeing the slot for retry on the next qualifying tick - this hook exists only
+    // for the one failure mode that must NOT self-heal.
+    onSpawnBuyError?: (e: any) => void;
 }
 
 export class LegManager {
+    private rawOps: LegBrokerOps;
     private legsByToken: Map<string, Leg> = new Map();
     private pendingReEntries: Map<string, PendingReEntry> = new Map(); // keyed by token
     private deferredRootRefill: PendingReEntry | null = null;
@@ -149,7 +171,17 @@ export class LegManager {
     // and both buy - landing on the same strike/token.
     private opLock: Promise<any> = Promise.resolve();
 
-    constructor(private deps: LegManagerDeps) {}
+    constructor(private deps: LegManagerDeps) {
+        this.rawOps = deps.ops ?? defaultLegOps;
+    }
+
+    // Resolved fresh on every call site (not cached) - LegManagerConfig.dryRun is
+    // read live from deps.getConfig() so toggling it in config.yml takes effect on
+    // the very next op, not only after a process restart. See
+    // LegManagerConfig.dryRun's comment.
+    private currentOps(): LegBrokerOps {
+        return this.deps.getConfig().dryRun ? dryRunOps(this.rawOps) : this.rawOps;
+    }
 
     private withOpLock<T>(fn: () => Promise<T>): Promise<T> {
         const result = this.opLock.then(fn, fn);
@@ -288,14 +320,20 @@ export class LegManager {
             if (leg.status !== 'OPEN') continue; // already closing (this call, or a previous tick's)
             leg.status = 'CLOSING'; // synchronous, before any await
             const ltp = leg.lastLtp ?? leg.avgPrice;
+            // Deleted BEFORE the sell await (not after) - see handleFillOrExternalSell's
+            // "Sell fills" comment. An ANT fill-notify push for this exact sell can be
+            // delivered by the order-notify socket WHILE this await is pending; deleting
+            // only after it resolves leaves a window where handleFillOrExternalSell sees
+            // the leg still tracked and double-counts this same fill as an "external" sell.
+            this.legsByToken.delete(leg.token);
             try {
-                await OrderClient.getInstance().sellContractBare(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+                await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
             } catch (e) {
-                leg.status = 'OPEN'; // still live at broker - retry next tick
+                this.legsByToken.set(leg.token, leg); // still live at broker - put back for retry
+                leg.status = 'OPEN';
                 Log.log(`[${this.deps.ownerType}] Max-profit mass close sell failed, leg remains open for retry:`, e);
                 continue;
             }
-            this.legsByToken.delete(leg.token);
             const pnl = (ltp - leg.avgPrice) * leg.totalQuantity;
             // Per-leg sign, independent of the aggregate trigger - a hedge leg individually
             // at a loss is still correctly tagged 'loss' even during an aggregate-profit close.
@@ -307,7 +345,7 @@ export class LegManager {
             this.pendingReEntries.delete(token); // synchronous, before any await
             unwatchToken(token, this.deps.strategyRef);
             try {
-                await OrderClient.getInstance().cancelOrderBare(this.deps.userId, intent.orderId);
+                await this.currentOps().cancel(this.deps.userId, intent.orderId);
                 Log.log(`[${this.deps.ownerType}] Max-profit: pending re-entry cancelled: ${intent.tsym}`);
             } catch (e) {
                 Log.log(`[${this.deps.ownerType}] Max-profit: pending re-entry cancel failed:`, e);
@@ -382,17 +420,15 @@ export class LegManager {
         return this.withOpLock(async () => {
             const optionType = params.right === CALL ? 'CE' : 'PE';
             const excludeStrikes = Array.from(this.openStrikesFor(params.right));
-            const contract = await OrderClient.getInstance().getContractByPriceRangeBare(
-                this.deps.userId, params.underlyingLtp, optionType, params.minPremium, 'NIFTY', excludeStrikes
-            );
+            const contract = await this.currentOps().pickContract(this.deps.userId, params.underlyingLtp, optionType, params.minPremium, excludeStrikes);
             if (!(await this.capitalCheck(params.quantity, contract.premium, params.entryLabel))) {
                 return null;
             }
             // ANT token, not Zerodha's instrumentToken - live option ticks are keyed by
             // ANT's own token (OptionQuote.fromAnt), so this leg's tick subscription and
             // canHandle matching (both keyed off this token) must use it too.
-            const trade: Trade = await OrderClient.getInstance().buyContractBare(
-                this.deps.userId, contract.tradingSymbol, String(contract.antToken), params.quantity, contract.exchange, contract.premium
+            const trade: Trade = await this.currentOps().buy(
+                this.deps.userId, contract.tradingSymbol, contract.token, params.quantity, contract.exchange, contract.premium
             );
             // Defense-in-depth: the buy already executed on the broker by this
             // point, so this can't prevent a duplicate order - only stop it from
@@ -415,6 +451,47 @@ export class LegManager {
             this.logLegStatus(leg);
             return leg;
         });
+    }
+
+    // Adopts an ALREADY-OPEN broker position (e.g. BulkPcrStrategy's root call/put,
+    // bought outside LegManager, whose own resting exit sell was just cancelled) as
+    // this instance's root leg, instead of buying a fresh one. No order is placed
+    // here - the position is already live at the broker; this only starts tracking
+    // it. Throws if the token is already tracked (never silently merges - same
+    // guard as openRootLeg/restoreFromOpenTrades's duplicate-token checks).
+    async adoptRootLeg(p: {
+        tsym: string;
+        token: string;
+        strike: number;
+        exchange: 'NFO' | 'BFO';
+        right: string; // CALL | PUT
+        entryPrice: number;
+        quantity: number;
+    }): Promise<Leg> {
+        return this.withOpLock(async () => {
+            if (this.legsByToken.has(p.token)) {
+                throw new Error('adoptRootLeg: token already tracked');
+            }
+            const leg: Leg = {
+                legId: this.nextLegId(), token: p.token, tsym: p.tsym, strike: p.strike, exchange: p.exchange,
+                right: p.right, entryPrice: p.entryPrice, quantity: p.quantity, isRoot: true,
+                parentLegId: null, parentLevel: null, childByLevel: new Map(), status: 'OPEN',
+                avgPrice: p.entryPrice, totalQuantity: p.quantity, averagedLevels: new Set(),
+                legRef: crypto.randomUUID(), parentLegRef: null,
+            };
+            this.legsByToken.set(p.token, leg);
+            if (!this.deps.getConfig().dryRun) {
+                this.persistLegLineage(leg);
+                registerTrade(p.token, this.deps.strategyRef);
+            }
+            this.logLegStatus(leg);
+            return leg;
+        });
+    }
+
+    // Public wrapper for EOD force-close - see BulkPcrStrategy.ts's EOD hook.
+    async closeAll(): Promise<void> {
+        await this.closeAllLegsAndCancelReEntries();
     }
 
     // Handles every option tick for a token this instance is tracking (an
@@ -451,14 +528,17 @@ export class LegManager {
         const target = this.targetFor(leg, cfg, D);
         if (ltp >= target) {
             leg.status = 'CLOSING'; // synchronous, before any await - blocks re-entry into this branch for concurrent ticks
+            // Deleted BEFORE the sell await - see closeAllLegsAndCancelReEntries's
+            // identical comment for why (ANT fill-notify race with handleFillOrExternalSell).
+            this.legsByToken.delete(leg.token);
             try {
-                await OrderClient.getInstance().sellContractBare(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+                await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
             } catch (e) {
-                leg.status = 'OPEN'; // sell never reached the broker - leg is still live there, keep tracking it for retry
+                this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
+                leg.status = 'OPEN';
                 Log.log(`[${this.deps.ownerType}] Target-hit sell failed, leg remains open for retry:`, e);
                 return;
             }
-            this.legsByToken.delete(leg.token);
             const pnl = (ltp - leg.avgPrice) * leg.totalQuantity;
             this.recordOutcome('win', pnl);
             Log.log(`[${this.deps.ownerType}] Target hit (${leg.isRoot ? 'root' : 'nested'}): ${leg.tsym} pnl=${Math.round(pnl)}`);
@@ -468,7 +548,7 @@ export class LegManager {
                 await this.maybePromoteDeferredRootRefill();
             }
 
-            const eligible = leg.isRoot || this.isParentAlive(leg.parentLegId);
+            const eligible = cfg.refillEnabled !== false && (leg.isRoot || this.isParentAlive(leg.parentLegId));
             if (eligible) {
                 const intent: PendingReEntry = {
                     token: leg.token, tsym: leg.tsym, exchange: leg.exchange, strike: leg.strike,
@@ -503,14 +583,17 @@ export class LegManager {
         const squareOffDistance = cfg.squareOffDistance ?? 50; // default preserves the old 5*slDistance(10)=50 behavior
         if (adverseMove >= squareOffDistance) {
             leg.status = 'CLOSING'; // synchronous, before any await - blocks re-entry into this branch for concurrent ticks
+            // Deleted BEFORE the sell await - see closeAllLegsAndCancelReEntries's
+            // identical comment for why (ANT fill-notify race with handleFillOrExternalSell).
+            this.legsByToken.delete(leg.token);
             try {
-                await OrderClient.getInstance().sellContractBare(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+                await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
             } catch (e) {
-                leg.status = 'OPEN'; // sell never reached the broker - leg is still live there, keep tracking it for retry
+                this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
+                leg.status = 'OPEN';
                 Log.log(`[${this.deps.ownerType}] Square-off sell failed, leg remains open for retry:`, e);
                 return;
             }
-            this.legsByToken.delete(leg.token);
             const pnl = (ltp - leg.avgPrice) * leg.totalQuantity;
             this.recordOutcome('loss', pnl);
             Log.log(`[${this.deps.ownerType}] Square-off (${leg.isRoot ? 'root' : 'nested'}): ${leg.tsym} pnl=${Math.round(pnl)}`);
@@ -576,16 +659,14 @@ export class LegManager {
                 // cancel them first so capitalCheck below sees the freed capital.
                 await this.cancelChildRefills(leg, level);
                 const excludeStrikes = Array.from(this.openStrikesFor(oppositeRight));
-                const contract = await OrderClient.getInstance().getContractByPriceRangeBare(
-                    this.deps.userId, underlyingLtp, optionType, cfg.minPremium ?? 100, 'NIFTY', excludeStrikes
-                );
+                const contract = await this.currentOps().pickContract(this.deps.userId, underlyingLtp, optionType, cfg.minPremium ?? 100, excludeStrikes);
                 if (!(await this.capitalCheck(spawnQty, contract.premium, `Level ${level} spawn (${leg.tsym})`))) {
                     leg.childByLevel.delete(level); // free the slot regardless - harmless even though the capital gate (now tripped) means it won't actually be retried
                     return;
                 }
                 // ANT token, not Zerodha's instrumentToken - see openRootLeg's comment.
-                const trade: Trade = await OrderClient.getInstance().buyContractBare(
-                    this.deps.userId, contract.tradingSymbol, String(contract.antToken), spawnQty, contract.exchange, contract.premium
+                const trade: Trade = await this.currentOps().buy(
+                    this.deps.userId, contract.tradingSymbol, contract.token, spawnQty, contract.exchange, contract.premium
                 );
                 const childLegId = this.nextLegId();
                 const childLeg: Leg = {
@@ -601,9 +682,10 @@ export class LegManager {
                 Log.log(`[${this.deps.ownerType}] Level ${level} spawn: ${trade.tsym} qty=${trade.quantity} entry=${trade.price} (parent ${leg.tsym})`);
                 this.logLegStatus(childLeg);
             });
-        } catch (e) {
+        } catch (e: any) {
             leg.childByLevel.delete(level); // spawn failed - free the slot so it can retry
             Log.log(`[${this.deps.ownerType}] Level ${level} spawn failed:`, e);
+            this.deps.onSpawnBuyError?.(e);
         }
     }
 
@@ -637,9 +719,7 @@ export class LegManager {
                     leg.averagedLevels.delete(level); // free the slot regardless - harmless even though the capital gate (now tripped) means it won't actually be retried
                     return;
                 }
-                const trade: Trade = await OrderClient.getInstance().buyContractBare(
-                    this.deps.userId, leg.tsym, leg.token, addQty, leg.exchange, ltp
-                );
+                const trade: Trade = await this.currentOps().buy(this.deps.userId, leg.tsym, leg.token, addQty, leg.exchange, ltp);
                 leg.avgPrice = (leg.avgPrice * leg.totalQuantity + trade.price * trade.quantity) / (leg.totalQuantity + trade.quantity);
                 leg.totalQuantity += trade.quantity;
                 Log.log(`[${this.deps.ownerType}] Level ${level} average: ${leg.tsym} +qty=${trade.quantity} @ ${trade.price} -> totalQty=${leg.totalQuantity} avg=${leg.avgPrice.toFixed(2)} (${leg.tsym})`);
@@ -702,7 +782,7 @@ export class LegManager {
             this.pendingReEntries.delete(token);
             unwatchToken(token, this.deps.strategyRef);
             try {
-                await OrderClient.getInstance().cancelOrderBare(this.deps.userId, intent.orderId);
+                await this.currentOps().cancel(this.deps.userId, intent.orderId);
                 Log.log(`[${this.deps.ownerType}] Pending refill at level ${intent.parentLevel} cancelled (parent ${leg.tsym}): ${intent.tsym}`);
             } catch (e) {
                 Log.log(`[${this.deps.ownerType}] Child refill cancel failed:`, e);
@@ -723,8 +803,8 @@ export class LegManager {
                 if (!(await this.capitalCheck(intent.quantity, intent.limitPrice, context))) {
                     return false; // capital gate tripped - gone for good, root and nested alike, no retry
                 }
-                const { orderId } = await OrderClient.getInstance().placeLimitBuyBare(
-                    this.deps.userId, intent.tsym, intent.token, intent.quantity, intent.limitPrice, intent.exchange
+                const { orderId } = await this.currentOps().buyLimit(
+                    this.deps.userId, intent.tsym, intent.token, intent.quantity, intent.exchange, intent.limitPrice
                 );
                 intent.orderId = orderId;
                 this.pendingReEntries.set(intent.token, intent);
@@ -765,7 +845,7 @@ export class LegManager {
         this.pendingReEntries.delete(token); // synchronous, before any await - same pattern as leg-close paths
         unwatchToken(token, this.deps.strategyRef);
         try {
-            await OrderClient.getInstance().cancelOrderBare(this.deps.userId, intent.orderId);
+            await this.currentOps().cancel(this.deps.userId, intent.orderId);
             Log.log(`[${this.deps.ownerType}] Root refill cancelled - LTP drifted ${(ltp - intent.limitPrice).toFixed(2)} above limit ${intent.limitPrice}: ${intent.tsym}`);
         } catch (e) {
             Log.log(`[${this.deps.ownerType}] Root refill cancel failed:`, e);

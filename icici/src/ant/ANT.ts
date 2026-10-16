@@ -421,6 +421,32 @@ class ANT {
         return map;
     }
 
+    // Batched today's-open + previous-close fetch - same OHLC endpoint as
+    // getQuotes (confirmed live 2026-10-16: the raw response already carries
+    // `open` and `close` per row alongside `ltp`/`tk` - `close` here is
+    // confirmed to be the PREVIOUS trading day's close, not a running
+    // intraday value, by live inspection: e.g. RELIANCE returned
+    // ltp=open=1198.6 with close=1215 while NIFTY was still trading near its
+    // own open, i.e. `close` sat apart from the live ltp/open pair exactly as
+    // a fixed prior-day anchor would). A separate method from getQuotes
+    // rather than extending its return shape, so existing callers (option
+    // premium lookups, which only ever need ltp) are unaffected. Used by
+    // TopStockOptionsOpeningGapStrategy to compute each stock's own gap %
+    // directly from ANT instead of the external Chartink/Yahoo screener.
+    async getOpenAndPrevClose(requests: { exchange: string; token: string }[]): Promise<Map<string, { open: number; prevClose: number }>> {
+        if (requests.length === 0) return new Map();
+        const resp = await this.postOhlc(requests.map((r) => ({ exchange: r.exchange, token: r.token })));
+        const map = new Map<string, { open: number; prevClose: number }>();
+        for (const row of resp.data?.result ?? []) {
+            if (row?.tk == null || row?.open == null || row?.close == null) continue;
+            const open = Number(row.open);
+            const prevClose = Number(row.close);
+            if (!(open > 0) || !(prevClose > 0)) continue; // same "no usable price" guard as getQuote
+            map.set(String(row.tk), { open, prevClose });
+        }
+        return map;
+    }
+
     // Per-scrip quote via AliceBlue's older ScripDetails endpoint (different
     // host/API family from the OHLC endpoint above, and a different auth
     // header shape - "Bearer <USERID> <userSession>" rather than just
@@ -536,6 +562,7 @@ class ANT {
         quantity: number;
         transactionType: 'BUY' | 'SELL';
         price?: number; // omitted/0 => MARKET
+        marketProtectionPercent?: string; // only meaningful when price is omitted (MARKET)
     }): Promise<{ orderNo: string }> {
         const body = [{
             exchange: params.exchange,
@@ -548,6 +575,7 @@ class ANT {
             price: params.price ?? 0,
             orderComplexity: 'REGULAR',
             validity: 'DAY',
+            ...(params.marketProtectionPercent && !params.price ? { marketProtectionPercent: params.marketProtectionPercent } : {}),
         }];
         Log.log('[ANT] placeOrder request:', JSON.stringify(body));
         const resp = await axios.post(

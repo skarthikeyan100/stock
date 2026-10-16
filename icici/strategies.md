@@ -388,35 +388,51 @@ not part of the current live strategy set.
 
 ### TopStockOptionsOpeningGapStrategy (`TopStockOptionsOpeningGapStrategy.ts`) — config: `enabled: false`
 **Entry**: one-shot per day, fires once within a short morning window
-(`isTimeInRange()` override, 10:10–10:35 IST — after `gapscreener-morning.sh`'s
-10:05 cron refresh of `src/tools/gapscreener/gap-screener.csv`, before
-`BulkPcrAutoStartStrategy`'s 10:35 slot). Reads that CSV (must have today's
-mtime, else skipped), ranks Nifty-100 stocks by `|Gap %|` descending, takes
-the configured rank window (default ranks 3–7, i.e. `rankStart: 3`,
-`rankCount: 5`), and for each one buys the nearest-ATM CE (gap up) or PE
-(gap down) option — one leg per stock, isolated via `Promise.allSettled` so
-one stock's contract-resolution/order failure doesn't abort the others.
+(`isTimeInRange()` override, 9:10–9:20 IST — right as NSE's pre-open
+equilibrium price settles, well clear of `BulkPcrAutoStartStrategy`'s 10:35
+earliest slot). Gap is computed live, not from any CSV: one batched ANT OHLC
+call (`getOpenAndPrevClose`) over a static Nifty-100 universe
+(`data/nifty100_symbols.txt`, snapshotted from NSE's index-constituent CSVs —
+re-run the fetch by hand every few months to refresh it; not wired to a
+cron), ranks by `|Gap %|` descending, takes the configured rank window
+(default ranks 3–7, i.e. `rankStart: 3`, `rankCount: 5`), and for each one
+buys the nearest-strike CE (gap up) or PE (gap down) option — one leg per
+stock, isolated via `Promise.allSettled` so one stock's contract-resolution/
+order failure doesn't abort the others.
 **Contract resolution**: uses `AntContractMaster.findNearestStrikeOption`
 (not `findATMOption` - its strike-rounding step only covers NIFTY/SENSEX,
 defaulting to a flat 50 for everything else, which almost never matches a
 real listed strike for an individual stock) to pick the strike nearest to
 the stock's `Latest Open` from the real listed strikes for the nearest
 expiry.
-**Sizing/exit**: 1 lot (`lots` config, default 1) per leg, SL/target set as
-`slPercent`/`targetPercent` (default 30%/50%) of the option's entry LTP,
-placed via `antExecutor.enterPosition('bracket', ...)` — exit is entirely
-broker-owned (ANT bracket order), unlike `BulkPcrStrategy`'s self-managed
-limit-sell exit; `getMonitorConfig()` returns `null` and
+**Entry/exit**: 1 lot (`lots` config, default 1) per leg, bought at MARKET
+with AliceBlue's `marketProtectionPercent` (`marketProtectionPercent` config,
+default 5) instead of a pre-trade-LTP marketable limit — this drops the
+second (pre-buy) OHLC call entirely, cutting the ANT-throttled gap between
+ranking and the first buy to well under a second. If ANT rejects the
+MARKET+protection order (`EC965`/"Market orders are not allowed"),
+`antExecutor.enterPosition` falls back to a marketable LIMIT priced off
+`ANT.getScripQuote` (not OHLC-throttled). The resting target-only exit is a
+separate limit sell placed after the real fill, at
+`min(0.005 * stockOpen, fillPrice)` points above the fill price (0.5 assumed
+delta × 1% of the underlying's open, capped at 100% of the premium paid) —
+exit is self-managed (one resting limit sell per leg, no re-place-on-cancel,
+no reconcile), not broker-owned; `getMonitorConfig()` returns `null` and
 `canHandleOptionQuote()` is always `false` accordingly.
-**Restart safety**: a `.topStockOptionsOpeningGap_firedToday.json` marker
-(same pattern as `BulkPcrAutoStartStrategy`'s `.bulkpcr_armed_slots.json`,
-written *before* `executeTrade()` runs) prevents a process restart inside
-the trading window from re-entering all legs a second time the same day.
+**Fire-and-forget**: `executeTrade()` dispatches every leg's buy+fill-wait+
+sell and returns immediately once all buys are in flight; per-leg
+aggregation (entered-count logging, `durablyDisable`) happens in the
+background via a detached `Promise.allSettled(...).then(...)`.
+**Restart safety**: a `.topStockOptionsOpeningGap_firedToday.<userId>.json`
+marker (namespaced by `userId`, same pattern as `BulkPcrAutoStartStrategy`'s
+`.bulkpcr_armed_slots.json`, written *before* any leg is dispatched)
+prevents a process restart inside the trading window from re-entering all
+legs a second time the same day.
 **Config keys** (`config.yml`): `enabled`, `rankStart`, `rankCount`,
-`slPercent`, `targetPercent`, `lots`, `logEnabled`. Ships `enabled: false` —
+`marketProtectionPercent`, `lots`, `logEnabled`. Ships `enabled: false` —
 this places real option orders across up to `rankCount` stocks at once; a
-dry run of the log output (rank selection, resolved contracts, computed
-SL/target) should be reviewed before flipping it on.
+dry run of the log output (rank selection, resolved contracts) should be
+reviewed before flipping it on.
 
 ### BiDirectionStrategy, DiffStrategy, PivotStrategy, HighLotStrategy, TestStrategy
 Legacy/early-prototype strategies registered in `StrategyFactory.ts` but with

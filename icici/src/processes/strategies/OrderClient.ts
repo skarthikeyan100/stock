@@ -314,10 +314,11 @@ class OrderClient {
         if (!res.ok) throw new Error(res.error);
     }
 
-    // ANT-specific (see orderProtocol.ts's comment) - plain buy, no broker-side
-    // bracket/cover, waits for the real fill inside `order` and returns the
-    // resulting Trade (targetPrice already set from targetPoints).
-    async antBuyTargetOnly(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; targetPoints: number; knownLtp?: { ltp: number; atMs: number } }): Promise<Trade> {
+    // ANT-specific (see orderProtocol.ts's comment) - plain MARKET buy (with
+    // market protection), no broker-side bracket/cover, waits for the real
+    // fill inside `order` and returns the resulting Trade (targetPrice set
+    // after the real fill from underlyingOpen).
+    async antBuyTargetOnly(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; underlyingOpen: number; marketProtectionPercent: number }): Promise<Trade> {
         const res = await this.request('antBuyTargetOnly', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
@@ -325,6 +326,31 @@ class OrderClient {
 
     async antPlaceLimitSellBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
         const res = await this.request('antPlaceLimitSellBare', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    // ANT bare ops for BulkPcrStrategy's hedge tree (antLegOps.ts) - see
+    // orderProtocol.ts's comment.
+    async antBuyContractBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+        const res = await this.request('antBuyContractBare', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async antSquareOffBare(userId: string, payload: { tradingSymbol: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+        const res = await this.request('antSquareOffBare', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async antCancelOrderBare(userId: string, orderId: string): Promise<void> {
+        const res = await this.request('antCancelOrderBare', userId, { orderId });
+        if (!res.ok) throw new Error(res.error);
+    }
+
+    async cancelRestingLimitSells(userId: string, payload: { tsym: string }): Promise<{ filledQty: number; cancelFailed: boolean }> {
+        const res = await this.request('cancelRestingLimitSells', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }

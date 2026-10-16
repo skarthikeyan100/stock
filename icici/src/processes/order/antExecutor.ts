@@ -155,8 +155,21 @@ export async function enterPosition(
     targetPoints: number,
     stopLossPoints: number,
     orderMode: 'bracket' | 'cover' | 'target-only' = 'bracket',
-    knownLtp?: { ltp: number; atMs: number }
+    knownLtp?: { ltp: number; atMs: number },
+    marketEntry?: { underlyingOpen: number; marketProtectionPercent: string }
 ): Promise<Trade> {
+    if (marketEntry && !(marketEntry.underlyingOpen > 0)) {
+        throw new Error(`enterPosition ${tradingSymbol}: invalid underlyingOpen ${marketEntry.underlyingOpen} - order not placed`);
+    }
+    // marketEntry only makes sense for the plain (non-bracket/cover) MARKET-buy path -
+    // a caller passing it together with orderMode 'bracket'/'cover' would have
+    // marketEntry silently ignored below (useCover/useBracket are checked first in the
+    // if/else-if chain), which could look like MARKET+protection was used when it
+    // wasn't. Fail loudly instead of silently picking the other branch.
+    if (marketEntry && orderMode !== 'target-only') {
+        throw new Error(`enterPosition ${tradingSymbol}: marketEntry is only supported with orderMode 'target-only' (got '${orderMode}') - order not placed`);
+    }
+
     const ant = ANT.getInstance();
     const useCover = orderMode === 'cover';
     const useBracket = !useCover && targetPoints > 0 && stopLossPoints > 0 && bookkeeping.getUserUseGTT(userId);
@@ -190,6 +203,25 @@ export async function enterPosition(
             targetPoints,
             stopLossPoints,
         }));
+    } else if (marketEntry) {
+        // MARKET + market protection: no pre-trade LTP needed (skips entryLtp -> throttled OHLC quote).
+        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT MARKET order (protection=${marketEntry.marketProtectionPercent}%)`);
+        try {
+            ({ orderNo } = await ant.placeOrder({
+                exchange, instrumentId, tradingSymbol, quantity, transactionType: 'BUY',
+                marketProtectionPercent: marketEntry.marketProtectionPercent,
+            }));
+        } catch (e: any) {
+            // Fall back ONLY on the known broker rejection of MARKET orders. Any other error (timeout, network)
+            // may mean the order was actually accepted, so re-placing could double-buy: rethrow those.
+            const detail = `${e?.message ?? ''} ${JSON.stringify(e?.response?.data ?? '')}`;
+            if (!/EC965|Market orders are not allowed/i.test(detail)) throw e;
+            Log.log(`[order] ALERT: ANT rejected MARKET+protection for ${tradingSymbol} (${detail.slice(0, 200)}) - falling back to marketable LIMIT via ScripDetails quote`);
+            const ltp = await ant.getScripQuote(exchange, instrumentId);
+            if (!(ltp > 0)) throw new Error(`ANT fallback quote unusable for ${tradingSymbol} - order not placed`);
+            const limitPrice = roundToTick(ltp * 1.01);
+            ({ orderNo } = await ant.placeOrder({ exchange, instrumentId, tradingSymbol, quantity, transactionType: 'BUY', price: limitPrice }));
+        }
     } else {
         // Confirmed live 2026-10-12: AliceBlue now rejects MARKET orders on
         // this plain (non-bracket) regular-order path too, with the same
@@ -290,7 +322,7 @@ export async function enterPosition(
         } else {
             Log.log(`[order] useGTT=false for ${userId} but trade has no token (${trade.tsym}) - exit will not be monitored`);
         }
-    } else if (orderMode === 'target-only' && targetPoints > 0) {
+    } else if (orderMode === 'target-only' && (targetPoints > 0 || marketEntry)) {
         // Explicit opt-in only - gated on orderMode, not just "targetPoints>0
         // && stopLossPoints<=0", so this doesn't silently change behavior for
         // any OTHER existing/future caller of enterPosition that happens to
@@ -308,9 +340,30 @@ export async function enterPosition(
         // exitMonitor's own hitTarget trigger fire a SECOND, competing
         // square-off once ltp crosses targetPrice, racing the caller's
         // already-resting order.
-        trade.targetPoints = targetPoints;
-        trade.targetPrice = roundToTick(entryPrice + targetPoints);
-        if (trade.token) exitMonitor.registerTrade(trade, exchange, 'ant', true);
+        //
+        // marketEntry callers pass no pre-trade targetPoints (no pre-trade option
+        // LTP is fetched any more) - the target is instead sized here from the
+        // real fill price: 0.5 delta x 1% of the underlying's open, capped at 100%
+        // of the premium actually paid.
+        //
+        // entryPrice<=0 guard: resolveUnconfirmedAntBuy's trade-book fallback (above)
+        // is documented elsewhere as an unverified best-guess shape - if it ever
+        // returns avgPrice=0 for a nonzero filledQuantity, computing a target from it
+        // would set targetPrice=0 and leave the caller (e.g.
+        // TopStockOptionsOpeningGapStrategy.enterLeg) to place a live resting SELL at
+        // price 0. Skip setting a target entirely in that case (same "no target"
+        // outcome the old targetPoints<=0 path already produced) and ALERT instead -
+        // the caller must check trade.targetPrice before placing its own resting sell.
+        if (marketEntry && !(entryPrice > 0)) {
+            Log.log(`[order] ALERT: ${tradingSymbol} resolved entryPrice=${entryPrice} for ${userId} - buy filled but price is unusable; skipping target so no sell is placed at a bad price. Position is LIVE and UNPROTECTED - manual review required.`);
+        } else {
+            const effectiveTargetPoints = marketEntry
+                ? Math.min(0.005 * marketEntry.underlyingOpen, entryPrice)
+                : targetPoints;
+            trade.targetPoints = effectiveTargetPoints;
+            trade.targetPrice = roundToTick(entryPrice + effectiveTargetPoints);
+            if (trade.token) exitMonitor.registerTrade(trade, exchange, 'ant', true);
+        }
     }
 
     await bookkeeping.recordFill(trade);
