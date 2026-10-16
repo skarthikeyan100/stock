@@ -636,14 +636,39 @@ export default class BulkPcrStrategy extends Strategy {
 
         try {
             const hedgeDryRun = this.hedgeCfg().hedgeDryRun;
+            // DRY RUN: preview only - touches NOTHING real. Deliberately does not cancel
+            // the real resting sell, does not flip pos.phase, and does not call
+            // legManager.adoptRootLeg. The real resting +2 sell stays exactly as it is,
+            // still the position's sole real protection, still tracked by this
+            // strategy's normal 'selling'-phase updateTrade accumulation.
+            //
+            // Found on review: an earlier version let dry-run skip ONLY the real cancel
+            // call but still flip pos.phase='tree' and really call adoptRootLeg (so the
+            // tree's Leg existed in memory for real). Once that happened, LegManager's
+            // OWN target/square-off/onOptionTick logic ran for real against that leg -
+            // dryRunOps fakes the SELL (no broker order, logs only) but LegManager still
+            // deletes the leg from legsByToken as if the fake sell succeeded. The real
+            // resting sell, never cancelled, is still live at the broker; if the leg was
+            // deleted by a simulated square-off/target-hit first, a later REAL fill of
+            // that still-resting order arrives to a handleFillOrExternalSell call that
+            // finds no leg (already "closed" in the simulation) and silently drops it -
+            // isIdle() then reads true, durablyDisable fires, and the strategy stops
+            // watching a position that is still genuinely open at the broker, with
+            // pos.phase stuck at 'tree' masking that anything is wrong. Never let
+            // dry-run touch real position state - preview only.
+            if (hedgeDryRun) {
+                const previewRemaining = pos.targetQuantity - pos.soldQty;
+                Log.log(`[BulkPcrStrategy] [${broker}] [DRYRUN] would hand off ${pos.heldTsym} to the hedge tree now (slDistance crossed): would cancel the resting sell and adopt qty~${previewRemaining} @ ${pos.entryAvg} as the tree's root leg. NOT touching the real resting sell - it stays live and this position stays tracked as 'selling'.`);
+                pos.adopting = false;
+                return;
+            }
+
             // 2. Cancel the resting +2 exit sell before adopting anything - the tree's
             // own onOptionTick (slDistance/square-off/target) becomes the sole exit
             // from here on; a stray fill of the old +2 sell during/after adoption
             // would silently reduce the tree's root quantity out from under it.
             let filledQty = 0;
-            if (hedgeDryRun) {
-                Log.log(`[BulkPcrStrategy] [${broker}] [DRYRUN] would cancel resting sell for ${pos.heldTsym}`);
-            } else {
+            {
                 const r = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym: pos.heldTsym! });
                 if (r.cancelFailed) {
                     // 3. Cancel failed for a reason other than "already filled" - the resting
@@ -668,8 +693,17 @@ export default class BulkPcrStrategy extends Strategy {
             }
 
             // 4. The exit may have completed during the cancel race (fully filled
-            // before/while it was being cancelled) - nothing left to adopt.
-            const remaining = pos.targetQuantity - filledQty;
+            // before/while it was being cancelled) - nothing left to adopt. Subtract
+            // BOTH pos.soldQty (chunks already booked via updateTrade's normal fill
+            // accumulation, from BEFORE this cancel call even ran - e.g. an earlier
+            // resting chunk of a multi-chunk exit that filled minutes ago) AND
+            // filledQty (a fill caught DURING this exact cancel call, via
+            // OrderAlreadyFilledError) - cancelAnyRestingLimitSell's filledQty only
+            // ever reports the latter. Omitting pos.soldQty would overstate what's
+            // still actually held and adopt more quantity into the tree than the
+            // broker shows open - an oversell/naked-short once the tree tries to
+            // sell it.
+            const remaining = pos.targetQuantity - pos.soldQty - filledQty;
             if (remaining <= 0) {
                 pos.adopting = false;
                 Log.log(`[BulkPcrStrategy] [${broker}] Hand-off: exit completed during the cancel race for ${pos.heldTsym} - nothing to adopt`);
@@ -686,12 +720,25 @@ export default class BulkPcrStrategy extends Strategy {
             pos.rootCost = pos.entryAvg * remaining;
             this.persistState();
 
-            // 6. Adopt the remainder as the tree's root leg.
+            // 6. Adopt the remainder as the tree's root leg. A contract-master miss here
+            // must fail loudly, not silently default to CALL - trySpawnLevel's
+            // oppositeRight hedge-spawn direction is computed FROM this leg's `right`,
+            // so a wrong default would buy a hedge in the SAME direction as the root
+            // (doubling exposure) instead of the opposite one, with nothing to reveal
+            // the mistake.
             const m = AntContractMaster.getInstance().findByToken(pos.heldToken!);
-            const right = m?.optionType === 'PE' ? PUT : CALL;
+            if (!m) {
+                pos.phase = 'selling';
+                pos.adopting = false;
+                this.persistState();
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: adoptRootLeg aborted for ${pos.heldTsym} - no contract-master entry for token ${pos.heldToken} (can't determine CALL/PUT) - re-placing exit sell`);
+                await this.placeExitSellAtTargetPrice(broker, remaining, false);
+                return;
+            }
+            const right = m.optionType === 'PE' ? PUT : CALL;
             try {
                 await this.legManager.adoptRootLeg({
-                    tsym: pos.heldTsym!, token: pos.heldToken!, strike: m?.strike ?? 0, exchange: 'NFO',
+                    tsym: pos.heldTsym!, token: pos.heldToken!, strike: m.strike, exchange: 'NFO',
                     right, entryPrice: pos.entryAvg, quantity: remaining,
                 });
             } catch (e) {
@@ -778,7 +825,18 @@ export default class BulkPcrStrategy extends Strategy {
         // (hedging disabled, or this call isn't the hedge-tree completion path).
         const antPos = this.positions.get('ant');
         if (antPos?.heldToken) unwatchToken(antPos.heldToken, this);
-        const liveCfg = configService.getStrategyConfig('BulkPcrStrategy');
+        // Not configService.getStrategyConfig(type) - see cfg()'s comment above for why;
+        // this call site was missed when that fix landed. A second instance under a
+        // different userId must disable ITS OWN entry, not whichever is listed first.
+        const liveCfg = configService.getConfig().strategies?.find(
+            (s) => s.type === 'BulkPcrStrategy' && (s.userId || s.type) === this.userId
+        );
+        if (!liveCfg) {
+            Log.log(`[BulkPcrStrategy] ALERT: durablyDisable could not find this instance's own config.yml entry - NOT persisted, flip enabled: false manually.`);
+            this.enabled = false;
+            this.phase = 'done';
+            return;
+        }
         liveCfg.enabled = false;
         configService.writeConfig(configService.getConfig());
         this.enabled = false; // stop in-memory immediately too - config.yml only gets re-read on next restart

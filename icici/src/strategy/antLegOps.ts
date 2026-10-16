@@ -60,12 +60,19 @@ async function buy(userId: string, tradingSymbol: string, token: string, quantit
         return await OrderClient.getInstance().antBuyContractBare(userId, { tradingSymbol, instrumentId: token, quantity, exchange });
     } catch (e: any) {
         const message = typeof e?.message === 'string' ? e.message : String(e);
-        if (message.includes('did not complete within')) {
-            // The fill wait timed out - the order may still be live at the broker.
-            // Never safe to retry (double-buy risk) or silently swallow (an
-            // unmonitored live position). Rethrown with a distinguishing prefix so
-            // the caller (LegManager's trySpawnLevel -> deps.onSpawnBuyError) can
-            // flag this tree for manual review instead of treating it as an
+        // "fill status unresolved" is resolveUnconfirmedAntBuy's (antExecutor.ts)
+        // actual thrown message for every genuinely ambiguous outcome - a timed-out
+        // waitForFill is caught INSIDE enterPosition and falls through to a REST
+        // fallback / resolveUnconfirmedAntBuy first, so "did not complete within"
+        // (waitForFill's own internal message) never reaches this catch; checking
+        // for it here never matched and let an ambiguous fill retry as an ordinary
+        // spawn failure - exactly the double-buy risk this check exists to prevent.
+        if (message.includes('fill status unresolved')) {
+            // The order's true fill outcome could not be confirmed - it may still be
+            // live at the broker. Never safe to retry (double-buy risk) or silently
+            // swallow (an unmonitored live position). Rethrown with a distinguishing
+            // prefix so the caller (LegManager's trySpawnLevel -> deps.onSpawnBuyError)
+            // can flag this tree for manual review instead of treating it as an
             // ordinary, retryable spawn failure.
             Log.log(`[antLegOps] ALERT: buy for ${tradingSymbol} qty=${quantity} unconfirmed - manual review needed (order may be live at the broker): ${message}`);
             throw new Error(`[HEDGE_UNCONFIRMED] ${message}`);
