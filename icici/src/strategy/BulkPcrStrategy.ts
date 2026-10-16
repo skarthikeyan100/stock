@@ -167,6 +167,10 @@ export default class BulkPcrStrategy extends Strategy {
     private momentum = new MomentumSignal();
     private lastGateLog = new Map<string, number>();
     private lastEntryAttemptTime = 0;
+    // Most recent NIFTY tick seen by processNiftyQuote. enterOnBroker's one-shot retry reads
+    // this (not the stale quote captured at the first attempt) so the direction and LTP it
+    // re-resolves against are current.
+    private lastNiftyQuote: NiftyQuote | null = null;
 
     receive(oldStats, newStats) {}
 
@@ -252,6 +256,7 @@ export default class BulkPcrStrategy extends Strategy {
     }
 
     async processNiftyQuote(quote: NiftyQuote): Promise<void> {
+        this.lastNiftyQuote = quote;
         if (!this.enabled) { this.logGateOnce('disabled'); return; }
         if (this.phase !== 'idle') { this.logGateOnce(`entry already in progress or done (phase=${this.phase})`); return; }
         if (!this.isTimeInRange()) { this.logGateOnce('outside time window'); return; }
@@ -357,7 +362,24 @@ export default class BulkPcrStrategy extends Strategy {
             if (nothingWasBought && !isRetry) {
                 Log.log(`[BulkPcrStrategy] [${broker}] Chunked entry failed with nothing bought - retrying once in 10s: ${message || e}`);
                 await new Promise((resolve) => setTimeout(resolve, 10000));
-                await this.enterOnBroker(broker, right, quantity, niftyLtp, true);
+                // The first attempt's PCR read and LTP are stale by now (the order-notify wait,
+                // cancel and 10s sleep can be ~2 min). Re-resolve direction and use the latest
+                // tick's LTP. Proceed with whatever direction is confirmed now, even if it
+                // differs from the original - the first order was confirmed cancelled-unfilled,
+                // so there is no position in the old direction to unwind.
+                const latest = this.lastNiftyQuote;
+                const retryRight = latest ? await this.resolveEntryRight(latest, this.cfg().right !== 'none' ? this.cfg().right : undefined) : null;
+                if (latest == null || retryRight == null) {
+                    Log.log(`[BulkPcrStrategy] [${broker}] Retry aborted: no confirmed direction on re-resolution - manual review required`);
+                    const pos = this.positions.get(broker);
+                    if (pos) pos.phase = 'error';
+                    this.persistState();
+                    return;
+                }
+                if (retryRight !== right) {
+                    Log.log(`[BulkPcrStrategy] [${broker}] Direction changed on retry: ${right} -> ${retryRight}`);
+                }
+                await this.enterOnBroker(broker, retryRight, quantity, latest.ltp, true);
                 return;
             }
             Log.log(`[BulkPcrStrategy] [${broker}] Chunked entry failed - manual review required:`, e);
