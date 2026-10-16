@@ -767,30 +767,42 @@ export default class BulkPcrStrategy extends Strategy {
             // reconcile's 'tree' branch calls legManager.restoreFromOpenTrades); a crash
             // BEFORE this point leaves phase='selling', so reconcile() re-places the exit
             // sell as it already does today.
+            //
+            // 6. Adopt the remainder as the tree's root leg. Everything from here through a
+            // successful adoptRootLeg is ONE try/catch - any failure in this window (a
+            // contract-master miss, findByToken itself throwing on a corrupt/unreadable
+            // contract-master file, adoptRootLeg rejecting, or anything else) must revert
+            // phase back to 'selling' and re-place the exit sell the SAME way, because the
+            // resting sell was already cancelled in step 2 and nothing has adopted this
+            // quantity yet - any failure here leaves a real, naked, un-exited position if
+            // not revert-and-replaced. Earlier versions handled only the two failure modes
+            // anticipated in advance (contract-master returning undefined, adoptRootLeg
+            // rejecting) with their own early-return branches, leaving a THIRD path (anything
+            // else throwing synchronously in this window, e.g. findByToken's file read/parse
+            // itself throwing instead of returning undefined) to fall through to the outer
+            // catch below, which only clears pos.adopting and logs - never reverting phase or
+            // replacing the exit - exactly the orphaned-position failure mode this whole
+            // function exists to prevent.
             pos.phase = 'tree';
             pos.rootCost = pos.entryAvg * remaining;
             this.persistState();
-
-            // 6. Adopt the remainder as the tree's root leg. A contract-master miss here
-            // must fail loudly, not silently default to CALL - trySpawnLevel's
-            // oppositeRight hedge-spawn direction is computed FROM this leg's `right`,
-            // so a wrong default would buy a hedge in the SAME direction as the root
-            // (doubling exposure) instead of the opposite one, with nothing to reveal
-            // the mistake.
-            const m = AntContractMaster.getInstance().findByToken(pos.heldToken!);
-            if (!m) {
-                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: adoptRootLeg aborted for ${pos.heldTsym} - no contract-master entry for token ${pos.heldToken} (can't determine CALL/PUT) - re-placing exit sell`);
-                await this.revertHandOffAndReplaceExit(broker, pos, remaining);
-                return;
-            }
-            const right = m.optionType === 'PE' ? PUT : CALL;
             try {
+                // A contract-master miss must fail loudly, not silently default to CALL -
+                // trySpawnLevel's oppositeRight hedge-spawn direction is computed FROM this
+                // leg's `right`, so a wrong default would buy a hedge in the SAME direction
+                // as the root (doubling exposure) instead of the opposite one, with nothing
+                // to reveal the mistake.
+                const m = AntContractMaster.getInstance().findByToken(pos.heldToken!);
+                if (!m) {
+                    throw new Error(`no contract-master entry for token ${pos.heldToken} (can't determine CALL/PUT)`);
+                }
+                const right = m.optionType === 'PE' ? PUT : CALL;
                 await this.legManager.adoptRootLeg({
                     tsym: pos.heldTsym!, token: pos.heldToken!, strike: m.strike, exchange: 'NFO',
                     right, entryPrice: pos.entryAvg, quantity: remaining,
                 });
             } catch (e) {
-                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: adoptRootLeg failed for ${pos.heldTsym} - re-placing exit sell:`, e);
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: adopting ${pos.heldTsym} into the hedge tree failed - re-placing exit sell:`, e);
                 await this.revertHandOffAndReplaceExit(broker, pos, remaining);
                 return;
             }
@@ -798,8 +810,20 @@ export default class BulkPcrStrategy extends Strategy {
             pos.adopting = false;
             Log.log(`[BulkPcrStrategy] [${broker}] Hand-off: adopted root ${pos.heldTsym} qty=${remaining} entry=${pos.entryAvg}`);
         } catch (e) {
-            pos.adopting = false;
-            Log.log(`[BulkPcrStrategy] [${broker}] Hand-off failed unexpectedly for ${pos.heldTsym}:`, e);
+            // Reached only for a failure BEFORE phase was ever flipped to 'tree' (the cancel
+            // call itself, or anything synchronous before it) - pos.phase is still whatever
+            // it was (normally 'selling', with the original resting sell already cancelled
+            // in step 2 if we got that far). Re-place the exit sell here too, for the same
+            // reason the inner catch above does - a naked, un-exited position is never an
+            // acceptable outcome of a failed hand-off attempt.
+            Log.log(`[BulkPcrStrategy] [${broker}] Hand-off failed unexpectedly for ${pos.heldTsym} - re-placing exit sell:`, e);
+            const remaining = pos.targetQuantity - pos.soldQty;
+            if (remaining > 0) {
+                await this.revertHandOffAndReplaceExit(broker, pos, remaining).catch((e2) =>
+                    Log.log(`[BulkPcrStrategy] [${broker}] ALERT: exit-sell re-placement after a failed hand-off also failed for ${pos.heldTsym} - manual review required:`, e2));
+            } else {
+                pos.adopting = false;
+            }
         }
     }
 
