@@ -143,11 +143,9 @@ strategies:
     targetPoints: 2
     brokers: *ref_0
   - type: TopStockOptionsOpeningGapStrategy
-    enabled: false
+    enabled: true
     broker: ant
     rankStart: 3
     rankCount: 5
-    slPercent: 30
-    targetPercent: 50
     lots: 1
     logEnabled: true

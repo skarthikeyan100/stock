@@ -154,7 +154,7 @@ export async function enterPosition(
     exchange: 'NFO' | 'BFO',
     targetPoints: number,
     stopLossPoints: number,
-    orderMode: 'bracket' | 'cover' = 'bracket',
+    orderMode: 'bracket' | 'cover' | 'target-only' = 'bracket',
     knownLtp?: { ltp: number; atMs: number }
 ): Promise<Trade> {
     const ant = ANT.getInstance();
@@ -290,6 +290,27 @@ export async function enterPosition(
         } else {
             Log.log(`[order] useGTT=false for ${userId} but trade has no token (${trade.tsym}) - exit will not be monitored`);
         }
+    } else if (orderMode === 'target-only' && targetPoints > 0) {
+        // Explicit opt-in only - gated on orderMode, not just "targetPoints>0
+        // && stopLossPoints<=0", so this doesn't silently change behavior for
+        // any OTHER existing/future caller of enterPosition that happens to
+        // pass that same point combination without meaning it (e.g. a
+        // per-user stopLossPriceDiff=0 config through the generic
+        // AntExecutor.buy path) - only a caller that explicitly asks for
+        // 'target-only' gets this.
+        //
+        // The caller (e.g. TopStockOptionsOpeningGapStrategy) places its OWN
+        // separate resting exit order right after this call returns - that
+        // resting order is the sole actual exit, so record targetPoints/
+        // targetPrice (restore-time ground truth per restoreOpenTradesForTsym's
+        // documented invariant) BEFORE recordFill below, and register
+        // watch-only only: an active (non-watch-only) registration would let
+        // exitMonitor's own hitTarget trigger fire a SECOND, competing
+        // square-off once ltp crosses targetPrice, racing the caller's
+        // already-resting order.
+        trade.targetPoints = targetPoints;
+        trade.targetPrice = roundToTick(entryPrice + targetPoints);
+        if (trade.token) exitMonitor.registerTrade(trade, exchange, 'ant', true);
     }
 
     await bookkeeping.recordFill(trade);

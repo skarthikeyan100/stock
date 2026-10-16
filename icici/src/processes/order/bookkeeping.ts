@@ -726,14 +726,23 @@ class OrderBookkeeping {
     // already captured them. Split per-user (not just per-tsym) - see that
     // function's own comment for why that split matters once more than one
     // app user can share a broker.
-    // This app only trades NIFTY index options - the broker account can (and,
-    // per the 2026-09-03 incident, does) also carry unrelated stock-option/
-    // other-index positions placed outside the app (e.g. AMBER, BANKNIFTY).
-    // Restoring those into bookkeeping.trades would hand them to exitMonitor/
-    // strategies as if this app were managing their target/SL, which it never
-    // set. Scope every broker restore to plain NIFTY options only.
-    private static isNiftyOption(tsym: string | undefined): boolean {
-        return typeof tsym === 'string' && tsym.startsWith('NIFTY') && (tsym.endsWith('CE') || tsym.endsWith('PE'));
+    // Was NIFTY-only ("this app only trades NIFTY index options") until
+    // TopStockOptionsOpeningGapStrategy started trading individual stock
+    // options over ANT too - a hardcoded NIFTY-prefix filter here silently
+    // excluded every one of its positions from reconcileAntPositions,
+    // dropping them from bookkeeping.trades on any order-process restart (and
+    // from restoreOpenTradesForTsym's resulting Mongo-event processing, which
+    // is what feeds the realized-P&L bookkeeping on the eventual exit fill).
+    // Broadened to any option contract (CE/PE), relying on
+    // restoreOpenTradesForTsym's own per-tsym Mongo lookup (below) - not this
+    // filter - as the real guard against the 2026-09-03 incident (unrelated
+    // stock-option/other-index positions placed outside the app, e.g. AMBER,
+    // BANKNIFTY): a tsym with no matching app-originated Buy doc in Mongo
+    // restores nothing and just logs a WARNING (restoreOpenTradesForTsym's
+    // `restored.length === 0` branch), so broadening the candidate set here
+    // doesn't let a genuinely foreign broker position back in.
+    private static isOptionContract(tsym: string | undefined): boolean {
+        return typeof tsym === 'string' && (tsym.endsWith('CE') || tsym.endsWith('PE'));
     }
 
     private mergeRestored(restored: Trade[]): void {
@@ -765,7 +774,7 @@ class OrderBookkeeping {
         const restored: Trade[] = [];
         try {
             const positions = await Zerodha.getInstance().getPositions();
-            const open = (positions?.net || []).filter((p: any) => p.quantity !== 0 && OrderBookkeeping.isNiftyOption(p.tradingsymbol));
+            const open = (positions?.net || []).filter((p: any) => p.quantity !== 0 && OrderBookkeeping.isOptionContract(p.tradingsymbol));
             for (const p of open) {
                 restored.push(...(await this.restoreOpenTradesForTsym(p.tradingsymbol, p.quantity, p.instrument_token != null ? String(p.instrument_token) : undefined, 'zerodha')));
             }
@@ -789,7 +798,7 @@ class OrderBookkeeping {
         try {
             const positions = await ANT.getInstance().getPositions();
             const list = Array.isArray(positions) ? positions : [];
-            const open = list.filter((p: any) => Number(p.netQty ?? p.netqty ?? 0) !== 0 && OrderBookkeeping.isNiftyOption(p.tradingSymbol ?? p.tsym ?? p.symbol));
+            const open = list.filter((p: any) => Number(p.netQty ?? p.netqty ?? 0) !== 0 && OrderBookkeeping.isOptionContract(p.tradingSymbol ?? p.tsym ?? p.symbol));
             for (const p of open) {
                 const tsym = p.tradingSymbol ?? p.tsym ?? p.symbol;
                 const qty = Number(p.netQty ?? p.netqty);
@@ -824,7 +833,7 @@ class OrderBookkeeping {
                 if (!optionType) continue;
                 const tsym = `${p.stock_code}${p.strike_price}${optionType}`;
                 const qty = Number(p.quantity ?? 0);
-                if (qty === 0 || !OrderBookkeeping.isNiftyOption(tsym)) continue;
+                if (qty === 0 || !OrderBookkeeping.isOptionContract(tsym)) continue;
                 restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, undefined, 'breeze')));
             }
         } catch (e) {

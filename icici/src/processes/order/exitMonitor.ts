@@ -108,7 +108,21 @@ export function onPriceUpdate(listener: PriceUpdateListener): void {
 // plain fs.watch-backed singleton per process (already used elsewhere in
 // this same `order` process, e.g. bookkeeping.ts/zerodhaExecutor.ts), not an
 // IPC call into the separate `strategies` process.
-const SELF_MANAGED_STRATEGY_TYPES = ['BulkPcrStrategy'];
+// TopStockOptionsOpeningGapStrategy added here for the identical reason -
+// its legs are entered via enterPosition's 'target-only' orderMode (no
+// broker bracket/cover), with the strategy itself placing a separate resting
+// target sell as the sole exit. Without this entry, reconcileFromTrades()
+// would re-register such a trade as ACTIVE on any order-process restart
+// (its watchOnly heuristic there only recognizes gttTriggerId/antOrderNo/
+// prismCoverOrderNo, none of which a plain-order target-only trade carries),
+// letting exitMonitor fire a second, competing squareOffOnAnt once price
+// crosses targetPrice - racing the already-resting limit sell from
+// placeLimitSellBareOnAnt. Being in this list also makes entry-time's own
+// watch-only registerTrade call a no-op (registerTrade's self-managed gate
+// below fires before the watchOnly check either way) - accepted trade-off:
+// this strategy's trade.lastTradePrice won't refresh off live ticks, in
+// exchange for the restart-reconcile safety this list exists for.
+const SELF_MANAGED_STRATEGY_TYPES = ['BulkPcrStrategy', 'TopStockOptionsOpeningGapStrategy'];
 
 function isSelfManagedTradeUser(userId: string): boolean {
     return SELF_MANAGED_STRATEGY_TYPES.some((type) => {
