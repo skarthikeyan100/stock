@@ -125,10 +125,17 @@ export function onPriceUpdate(listener: PriceUpdateListener): void {
 const SELF_MANAGED_STRATEGY_TYPES = ['BulkPcrStrategy', 'TopStockOptionsOpeningGapStrategy'];
 
 function isSelfManagedTradeUser(userId: string): boolean {
-    return SELF_MANAGED_STRATEGY_TYPES.some((type) => {
-        const cfg = configService.getStrategyConfig(type);
-        return (cfg.userId || type) === userId;
-    });
+    // Not configService.getStrategyConfig(type) per type - that returns only
+    // the FIRST config.yml entry of that type, regardless of userId. config.yml
+    // can configure multiple instances of a listed type under distinct userId
+    // values (e.g. TopStockOptionsOpeningGapStrategy's own firedTodayFile
+    // comment anticipates this), and a getStrategyConfig(type)-based check
+    // would only ever recognize the first such instance as self-managed,
+    // leaving a second instance's trades wrongly actively watched - racing
+    // its own resting exit order exactly like the 2026-09-24 gap this list
+    // exists to prevent. Scan every config.yml entry of a listed type instead.
+    const strategies = configService.getConfig().strategies ?? [];
+    return strategies.some((cfg) => SELF_MANAGED_STRATEGY_TYPES.includes(cfg.type) && (cfg.userId || cfg.type) === userId);
 }
 
 export function registerTrade(trade: Trade, exchange: 'NFO' | 'BFO', broker: Broker, watchOnly = false): void {

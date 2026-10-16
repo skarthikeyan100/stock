@@ -302,7 +302,9 @@ class ANT {
         }
     }
 
-    async getPositions(): Promise<any> {
+    // strict=true: a non-Ok envelope throws instead of returning [], for callers (the
+    // unverifiable-order give-up path) that would otherwise read "couldn't fetch" as "no positions".
+    async getPositions(opts?: { strict?: boolean }): Promise<any> {
         try {
             if (!this.userSession) {
                 throw new Error('No active session. Please login first.');
@@ -317,6 +319,9 @@ class ANT {
             Log.log('ANT Positions response:', posResp.data?.status);
             if (posResp.data?.status === 'Ok' && posResp.data?.result) {
                 return posResp.data.result;
+            }
+            if (opts?.strict) {
+                throw new Error(`ANT positions not Ok: ${JSON.stringify(posResp.data).slice(0, 200)}`);
             }
             return [];
         } catch (e: any) {

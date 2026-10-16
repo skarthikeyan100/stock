@@ -146,6 +146,6 @@ strategies:
     enabled: true
     broker: ant
     rankStart: 3
-    rankCount: 5
+    rankCount: 3
     lots: 1
     logEnabled: true

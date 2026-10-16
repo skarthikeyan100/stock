@@ -23,6 +23,14 @@ export interface PendingAntLimitOrder {
     quantity: number;
     exchange: 'NFO' | 'BFO';
     action: 'Buy' | 'Sell';
+    // In-memory only (not persisted to Mongo - a restart gets a fresh count,
+    // which is fine, it just re-runs the same give-up check a bit later).
+    // Counts consecutive non-transient (order-not-found-in-history) poll
+    // failures - see pollPendingAntLimitOrders's use of this below.
+    unverifiableCount?: number;
+    // Set once the give-up fallback has ALERTed for this order, so a buy/unknown order that
+    // stays tracked doesn't re-log the same ALERT on every poll.
+    giveUpAlerted?: boolean;
 }
 
 const pending = new Map<string, PendingAntLimitOrder>();
@@ -94,6 +102,7 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
     for (const [orderId, order] of pending) {
         try {
             const { status, fillPrice, filledQuantity, rejectReason } = await ant.getOrderStatus(orderId);
+            order.unverifiableCount = 0; // a successful history lookup means this order IS findable - clear any earlier non-transient streak
             // A square-off or re-price may have taken this order off the book while the status call was in
             // flight. Acting on that stale status could re-place a sell for quantity already sold.
             if (!pending.has(orderId)) continue;
@@ -167,7 +176,54 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                 }
             }
             // else: still pending, leave in map for the next poll
-        } catch (e) {
+        } catch (e: any) {
+            // AliceBlue's orders/history endpoint only covers the current trading
+            // day - confirmed live 2026-10-16: a 2-day-old resting sell polled
+            // every 15s, every single poll throwing "ANT orders/history not Ok...
+            // EC915 Failed to retrieve the order book" (postOrderHistory's
+            // envelope check, e.nonTransient=true). That order can NEVER be
+            // confirmed this way - without a give-up path, this just logs
+            // identical noise forever. After a few consecutive non-transient
+            // failures, fall back to live broker positions as ground truth:
+            // if the underlying contract isn't open at all, the order is
+            // provably no longer live (filled/cancelled/expired some other way)
+            // and safe to drop; if a position IS still open, dropping the
+            // tracking entry doesn't lose anything either - this specific
+            // order id was never going to resolve via history regardless, so
+            // continuing to poll it contributes nothing - but it's logged as
+            // an ALERT instead of a silent drop so it still gets manual review.
+            if (e?.nonTransient) {
+                order.unverifiableCount = (order.unverifiableCount ?? 0) + 1;
+                const UNVERIFIABLE_GIVE_UP_AFTER = 3;
+                if (order.unverifiableCount >= UNVERIFIABLE_GIVE_UP_AFTER) {
+                    // Drop ONLY a SELL whose contract is provably flat at the broker (the sell is gone:
+                    // filled or cancelled). Everything else stays tracked and is re-checked next poll:
+                    // a BUY with no position yet may still fill and then needs its exit, and a failed or
+                    // non-Ok positions call tells us nothing. The strict flag makes a non-Ok envelope throw
+                    // instead of reading as "no positions". ALERT once per order to avoid per-poll noise.
+                    let provablyGone = false;
+                    try {
+                        const positions = await ant.getPositions({ strict: true });
+                        const stillOpen = (positions || []).some((p: any) =>
+                            (p.tradingSymbol ?? p.tsym ?? p.symbol) === order.tradingSymbol && Number(p.netQty ?? p.netqty ?? 0) !== 0
+                        );
+                        provablyGone = order.action === 'Sell' && !stillOpen;
+                        if (provablyGone) {
+                            Log.log(`[order] pending ANT limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) unverifiable via order history ${order.unverifiableCount} times in a row (likely too old for AliceBlue's order-book endpoint) and no open position exists - dropping stale tracking entry.`);
+                        } else if (!order.giveUpAlerted) {
+                            order.giveUpAlerted = true;
+                            Log.log(`[order] ALERT: pending ANT ${order.action} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) unverifiable via order history ${order.unverifiableCount} times in a row and ${stillOpen ? 'a position IS open at the broker' : 'no position is open yet'} - KEPT in tracking, manual review required.`);
+                        }
+                    } catch (posErr: any) {
+                        if (!order.giveUpAlerted) {
+                            order.giveUpAlerted = true;
+                            Log.log(`[order] ALERT: pending ANT ${order.action} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) unverifiable via order history and the position-check fallback failed - KEPT in tracking, will retry, manual review required: ${posErr?.message ?? posErr}`);
+                        }
+                    }
+                    if (provablyGone) untrackPendingAntLimitOrder(orderId);
+                    continue;
+                }
+            }
             Log.log('[order] pollPendingAntLimitOrders: failed to poll order', orderId, e);
         }
     }

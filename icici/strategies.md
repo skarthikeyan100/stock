@@ -395,7 +395,7 @@ call (`getOpenAndPrevClose`) over a static Nifty-100 universe
 (`data/nifty100_symbols.txt`, snapshotted from NSE's index-constituent CSVs —
 re-run the fetch by hand every few months to refresh it; not wired to a
 cron), ranks by `|Gap %|` descending, takes the configured rank window
-(default ranks 3–7, i.e. `rankStart: 3`, `rankCount: 5`), and for each one
+(default ranks 3–5, i.e. `rankStart: 3`, `rankCount: 3`), and for each one
 buys the nearest-strike CE (gap up) or PE (gap down) option — one leg per
 stock, isolated via `Promise.allSettled` so one stock's contract-resolution/
 order failure doesn't abort the others.
@@ -414,7 +414,7 @@ MARKET+protection order (`EC965`/"Market orders are not allowed"),
 `antExecutor.enterPosition` falls back to a marketable LIMIT priced off
 `ANT.getScripQuote` (not OHLC-throttled). The resting target-only exit is a
 separate limit sell placed after the real fill, at
-`min(0.005 * stockOpen, fillPrice)` points above the fill price (0.5 assumed
+`min(0.0025 * stockOpen, fillPrice)` points above the fill price (0.25 assumed
 delta × 1% of the underlying's open, capped at 100% of the premium paid) —
 exit is self-managed (one resting limit sell per leg, no re-place-on-cancel,
 no reconcile), not broker-owned; `getMonitorConfig()` returns `null` and

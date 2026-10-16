@@ -26,6 +26,9 @@ build/
 *.swo
 *.iml
 
+# ANT contract masters (large, re-downloaded from v2api.aliceblueonline.com/restpy/static/contract_master/V2/)
+data/ant/*_contract.json*
+
 # Temporary/generated files
 tmp/
 .tmp/

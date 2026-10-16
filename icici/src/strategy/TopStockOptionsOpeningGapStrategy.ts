@@ -194,7 +194,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
             (s) => s.type === 'TopStockOptionsOpeningGapStrategy' && (s.userId || s.type) === this.userId
         ) ?? { type: 'TopStockOptionsOpeningGapStrategy', enabled: false };
         const rankStart: number = config.rankStart ?? 3;
-        const rankCount: number = config.rankCount ?? 5;
+        const rankCount: number = config.rankCount ?? 3;
         const lots: number = config.lots ?? 1;
         const logEnabled: boolean = config.logEnabled ?? true;
         const marketProtectionPercent: number = config.marketProtectionPercent ?? 5;
@@ -438,7 +438,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                 return { entered: true };
             }
 
-            Log.log(`[${this.userId}] TRADED ${stock.symbol} ${optionType} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} target=${trade.targetPrice} (leverage=${(stock.latestOpen / trade.price).toFixed(2)})`);
+            Log.log(`[${this.userId}] TRADED ${stock.symbol} ${optionType} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} target=${trade.targetPrice}`);
             return { entered: true };
         } catch (e) {
             Log.log(`[${this.userId}] ${stock.symbol} leg failed: ${e?.message ?? e}`);

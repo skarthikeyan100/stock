@@ -18,13 +18,23 @@ interface IndexToken {
   token: string;
 }
 
+interface EquityRecord {
+  Symbol: string;
+  Token: string;
+  'Group Name': string;
+  Exch: string;
+}
+
 class AntContractMaster {
   private static instance: AntContractMaster;
   private nfoCache: ContractRecord[] | null = null;
   private bfoCache: ContractRecord[] | null = null;
+  private nseCache: EquityRecord[] | null = null;
+  private nseBysymbol: Map<string, EquityRecord> | null = null;
 
   private readonly NFO_PATH = path.join(__dirname, '../../data/ant/NFO_contract.json');
   private readonly BFO_PATH = path.join(__dirname, '../../data/ant/BFO_contract.json');
+  private readonly NSE_PATH = path.join(__dirname, '../../data/ant/NSE_contract.json');
 
   private readonly STALE_THRESHOLD_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
   private warnedStale = new Set<string>();
@@ -76,6 +86,41 @@ class AntContractMaster {
       this.bfoCache = data.BFO || [];
     }
     return this.bfoCache;
+  }
+
+  // NSE cash-segment (equity) contract master - unlike NFO/BFO, no expiry
+  // concept, so no staleness-driven missing-contract risk the way a stale
+  // options file silently routes into the wrong expiry (see checkStaleness's
+  // comment on that 2026-10-13 incident) - still warned the same way as a
+  // courtesy, since a delisted/renamed symbol could otherwise go unnoticed.
+  private loadNSE(): EquityRecord[] {
+    if (!this.nseCache) {
+      this.checkStaleness(this.NSE_PATH);
+      const data = JSON.parse(fs.readFileSync(this.NSE_PATH, 'utf-8'));
+      this.nseCache = data.NSE || [];
+      // Built once per process lifetime, not per lookup - ~9900 equity rows,
+      // a linear scan per symbol (as findNearestStrikeOption does for options)
+      // would be wasteful for a 100-symbol batch called once per trading day.
+      this.nseBysymbol = new Map();
+      for (const r of this.nseCache) {
+        if (r['Group Name'] === 'EQ' && !this.nseBysymbol.has(r.Symbol)) this.nseBysymbol.set(r.Symbol, r);
+      }
+    }
+    return this.nseCache;
+  }
+
+  // Resolves a plain NSE equity symbol (e.g. 'RELIANCE') to its ANT-native
+  // cash-segment token - used by TopStockOptionsOpeningGapStrategy to fetch
+  // each stock's own today's-open/prev-close directly from ANT instead of
+  // the external Chartink/Yahoo-Finance screener. 'Group Name' === 'EQ'
+  // filters out other listed instrument types sharing the same symbol
+  // (rights/warrants/etc) - confirmed live: AliceBlue's NSE contract master
+  // lists more than one row for some symbols, EQ is the plain equity line.
+  findEquityToken(symbol: string): { token: string; exch: 'NSE' } | undefined {
+    this.loadNSE();
+    const record = this.nseBysymbol!.get(symbol);
+    if (!record) return undefined;
+    return { token: record.Token, exch: 'NSE' };
   }
 
   findOption(params: {

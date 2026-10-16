@@ -343,7 +343,7 @@ export async function enterPosition(
         //
         // marketEntry callers pass no pre-trade targetPoints (no pre-trade option
         // LTP is fetched any more) - the target is instead sized here from the
-        // real fill price: 0.5 delta x 1% of the underlying's open, capped at 100%
+        // real fill price: 0.25 delta x 1% of the underlying's open, capped at 100%
         // of the premium actually paid.
         //
         // entryPrice<=0 guard: resolveUnconfirmedAntBuy's trade-book fallback (above)
@@ -358,7 +358,7 @@ export async function enterPosition(
             Log.log(`[order] ALERT: ${tradingSymbol} resolved entryPrice=${entryPrice} for ${userId} - buy filled but price is unusable; skipping target so no sell is placed at a bad price. Position is LIVE and UNPROTECTED - manual review required.`);
         } else {
             const effectiveTargetPoints = marketEntry
-                ? Math.min(0.005 * marketEntry.underlyingOpen, entryPrice)
+                ? Math.min(0.0025 * marketEntry.underlyingOpen, entryPrice)
                 : targetPoints;
             trade.targetPoints = effectiveTargetPoints;
             trade.targetPrice = roundToTick(entryPrice + effectiveTargetPoints);
