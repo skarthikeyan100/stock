@@ -634,9 +634,19 @@ export default class BulkPcrStrategy extends Strategy {
     // fill-record for a chunk that filled during the cancel race.
     private async revertHandOffAndReplaceExit(broker: BrokerName, pos: BrokerPosition, remaining: number): Promise<void> {
         pos.phase = 'selling';
-        pos.adopting = false;
         this.persistState();
+        // pos.adopting stays true across this await (cleared only after it resolves) -
+        // option ticks are dispatched fire-and-forget with no per-token serialization
+        // (strategiesProcess.ts), so clearing it before the new exit sell is actually
+        // resting would let a second concurrent tick for the same still-adverse price
+        // re-enter handOff, see "nothing to cancel" (the old order is already gone, the
+        // new one not yet placed), and adopt the FULL remaining quantity into the tree
+        // while this call is simultaneously placing a fresh resting sell for that same
+        // quantity - double-tracked, oversell risk either way. placeExitSellAtTargetPrice
+        // catches its own errors internally (sets phase='error', never rethrows), so no
+        // try/finally is needed here to guarantee this still runs.
         await this.placeExitSellAtTargetPrice(broker, remaining, false);
+        pos.adopting = false;
     }
 
     private async handOff(broker: BrokerName): Promise<void> {
@@ -671,11 +681,15 @@ export default class BulkPcrStrategy extends Strategy {
             // pos.phase stuck at 'tree' masking that anything is wrong. Never let
             // dry-run touch real position state - preview only.
             if (hedgeDryRun) {
-                const previewRemaining = pos.targetQuantity - pos.soldQty;
-                // Throttled (logGateOnce, 5 min) - unlike the real path, dry-run never
-                // flips pos.phase away from 'selling', so a sustained adverse move re-enters
-                // this branch on every qualifying option tick with nothing else to stop it.
-                this.logGateOnce(`[${broker}] [DRYRUN] would hand off ${pos.heldTsym} to the hedge tree now (slDistance crossed): would cancel the resting sell and adopt qty~${previewRemaining} @ ${pos.entryAvg} as the tree's root leg. NOT touching the real resting sell - it stays live and this position stays tracked as 'selling'.`);
+                // Throttled (logGateOnce, 5 min) on a key that EXCLUDES previewRemaining/
+                // entryAvg - unlike the real path, dry-run never flips pos.phase away from
+                // 'selling', so a sustained adverse move re-enters this branch on every
+                // qualifying option tick with nothing else to stop it. logGateOnce's
+                // throttle is keyed by the exact string it's given and logs that same
+                // string, so a key that embeds a value which can itself change between
+                // ticks (e.g. previewRemaining, if an earlier resting chunk fills) would
+                // mint a fresh key - and bypass the throttle - on every change.
+                this.logGateOnce(`[${broker}] DRYRUN would hand off ${pos.heldTsym} to the hedge tree now (slDistance crossed) - would cancel the resting sell and adopt the remaining qty as the tree's root leg. NOT touching the real resting sell - it stays live and this position stays tracked as 'selling'.`);
                 pos.adopting = false;
                 return;
             }
