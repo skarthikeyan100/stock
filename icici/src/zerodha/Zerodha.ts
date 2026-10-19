@@ -387,6 +387,29 @@ class Zerodha {
         } catch (e) {
             Log.log(`[Zerodha] Failed to cancel unfilled order ${orderId} after fill-price timeout:`, e);
         }
+        // Re-check regardless of the cancel's outcome: the order may have filled in the race window
+        // (cancel then fails "already filled"), and reporting "did not fill" makes the caller retry the
+        // same buy/sell - a double fill (2026-10-19: ContinuousStrategy sold a PE leg twice, leaving a
+        // naked short). A partial fill is surfaced the same way the drift-cancel path does.
+        try {
+            const recheck = await this.kc.getOrderHistory(orderId);
+            const recheckLatest = recheck[recheck.length - 1];
+            if (recheckLatest?.status === 'COMPLETE' && recheckLatest.average_price) {
+                Log.log(`[Zerodha] Order ${orderId} actually filled fully during the timeout-cancel race - using real fill price ${recheckLatest.average_price}`);
+                return recheckLatest.average_price;
+            }
+            const filledQuantity = Number(recheckLatest?.filled_quantity ?? 0);
+            if (filledQuantity > 0) {
+                const averagePrice = Number(recheckLatest?.average_price ?? 0);
+                throw Object.assign(
+                    new Error(`Zerodha order ${orderId} only partially filled within timeout (${filledQuantity} @ ${averagePrice}), remainder cancelled`),
+                    { timeoutPartial: true, filledQuantity, averagePrice }
+                );
+            }
+        } catch (e: any) {
+            if (e?.timeoutPartial) throw e;
+            Log.log(`[Zerodha] Post-timeout status re-check failed for order ${orderId}:`, e);
+        }
         throw new Error(`Zerodha order ${orderId} did not fill within timeout`);
     }
 
