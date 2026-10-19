@@ -617,6 +617,7 @@ export default class BulkPcrStrategy extends Strategy {
                 right: pos.right, quantity: pos.entryQuantity, niftyLtp, broker: 'ant',
                 driftCancelPoints: this.cfg().chunkDriftCancelPoints ?? 10,
             });
+            if (pos.heldToken && pos.heldToken !== String(result.token)) unwatchTokenOnSource('ant', pos.heldToken, this); // re-buy rolled to a new contract
             pos.heldTsym = result.tsym;
             pos.heldToken = String(result.token);
             pos.entryAvg = result.avgPrice;
@@ -687,23 +688,25 @@ export default class BulkPcrStrategy extends Strategy {
         } finally {
             pos.squaringOff = false;
         }
+        // Book the cancel-window fills first (even if another chunk's cancel failed): they are sold.
+        // They filled at the resting limit price, so that prices them for the logged average.
+        const exitPrice = pos.entryAvg + (this.cfg().targetPoints ?? 2);
+        pos.soldQty += cancelResult.filledQty;
+        pos.soldValue += cancelResult.filledQty * exitPrice;
+        this.persistState();
         if (cancelResult.cancelFailed) {
             pos.phase = 'error';
             Log.log(`[BulkPcrStrategy] [ant] ALERT: EOD force-close of ${tsym} aborted, resting sell cancel failed - manual review required`);
             this.persistState();
             return;
         }
-        // Book the cancel-window fills and persist BEFORE the market sell, so a restart mid-close
-        // cannot re-size an exit for quantity that is already sold. Their price is unknown, so
-        // soldValue (used only for the logged average) is not adjusted.
-        pos.soldQty += cancelResult.filledQty;
-        this.persistState();
         const remaining = pos.targetQuantity - pos.soldQty;
         try {
             if (remaining > 0) {
                 await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: 'NFO' });
             }
-            pos.phase = 'done';
+            // A fill notification may already have completed the slot via updateTrade/onSlotSoldOut.
+            if (pos.phase === 'selling') pos.phase = 'done';
             Log.log(`[BulkPcrStrategy] [ant] EOD force-close: ${tsym} squared off qty=${Math.max(remaining, 0)}`);
         } catch (e) {
             pos.phase = 'error';
