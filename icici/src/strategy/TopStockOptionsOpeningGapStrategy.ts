@@ -183,6 +183,17 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     }
 
     private async executeTrade() {
+        // Stage timings (ms) go to the log unconditionally, not behind logEnabled -
+        // Log.log's own HH:mm:ss prefix is second-resolution, so sub-second
+        // latency is only visible through these explicit millisecond laps.
+        const tStart = Date.now();
+        let tLap = tStart;
+        const lap = (stage: string) => {
+            const now = Date.now();
+            Log.log(`[${this.userId}] timing ${stage}: +${now - tLap}ms (total ${now - tStart}ms)`);
+            tLap = now;
+        };
+
         // Not configService.getStrategyConfig(type) - that returns only the FIRST
         // config.yml entry of this type, regardless of userId. Same (cfg.userId ||
         // type) === userId convention durablyDisable below (and
@@ -211,6 +222,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
             if (resolved) equityTokens.push({ symbol, token: resolved.token });
             else Log.log(`[${this.userId}] ${symbol} has no NSE equity token in the contract master, skipping`);
         }
+        lap(`universe+token resolve (${equityTokens.length}/${universe.length})`);
         if (equityTokens.length === 0) {
             Log.log(`[${this.userId}] no stock(s) resolved to an NSE equity token, skipping`);
             return;
@@ -223,6 +235,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
         const ohlcMap = await ANT.getInstance().getOpenAndPrevClose(
             equityTokens.map((e) => ({ exchange: 'NSE', token: e.token }))
         );
+        lap('ohlc fetch (ANT batch)');
 
         const ranked: RankedStock[] = equityTokens
             .map(({ symbol, token }) => {
@@ -233,6 +246,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
             })
             .filter((r): r is RankedStock => r !== null)
             .sort((a, b) => Math.abs(b.gapPct) - Math.abs(a.gapPct));
+        lap(`rank (${ranked.length} usable)`);
         if (ranked.length === 0) {
             Log.log(`[${this.userId}] no stock(s) had usable open/prevClose data yet (${equityTokens.length} token(s) queried) - skipping, will retry next tick within the window`);
             return;
@@ -277,6 +291,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                 Log.log(`[${this.userId}] ${stock.symbol} contract resolution failed: ${e?.message ?? e}`);
             }
         }
+        lap(`contract resolve (${resolvedLegs.length}/${selected.length})`);
         if (resolvedLegs.length === 0) {
             Log.log(`[${this.userId}] no stock(s) resolved to a contract, skipping`);
             return;
@@ -292,13 +307,16 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
         // order attempts below, so this still fully guards against a restart
         // re-entering the same legs.
         if (!this.recordFiredToday()) return; // ALERT already logged inside recordFiredToday
+        lap('record fired-today');
 
         // Fire-and-forget: dispatch every leg (buy -> own fill -> own target sell) and return immediately.
         // recordFiredToday() above is already persisted, so processNiftyQuote's finally sees 'done' and a
         // restart cannot re-enter these legs. Aggregation/durablyDisable happen in the background.
+        const tDispatch = Date.now();
         const legPromises = resolvedLegs.map(({ stock, optionType, contract }) =>
             this.enterLeg(stock, optionType, contract, lots, logEnabled, marketProtectionPercent));
         void Promise.allSettled(legPromises).then((results) => {
+            Log.log(`[${this.userId}] timing all ${selected.length} leg(s) settled: ${Date.now() - tDispatch}ms after dispatch (total ${Date.now() - tStart}ms since executeTrade start)`);
             // Counts by whether the buy actually filled (enterLeg's `entered`
             // flag), not by Promise.allSettled's fulfilled/rejected alone - a leg
             // whose buy filled but whose resting-sell placement then failed
@@ -378,6 +396,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                 throw new Error(`invalid lotSize ${contract.lotSize} for ${contract.tradingSymbol}`);
             }
             const quantity = lotSize * lots;
+            const tLeg = Date.now();
 
             if (logEnabled) {
                 Log.log(`[${this.userId}] ${stock.symbol} gap=${stock.gapPct}% dir=${optionType} ` +
@@ -409,15 +428,17 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                 underlyingOpen: stock.latestOpen,
                 marketProtectionPercent,
             });
+            const buyMs = Date.now() - tLeg;
 
             // Sized from the ACTUAL fill price/quantity, not any pre-trade estimate.
             // trade.targetPrice can come back unset (antExecutor's entryPrice<=0 guard) if
             // the fill price itself was unusable - never place a resting sell at a
             // falsy/zero price in that case; antExecutor already logged the ALERT.
             if (!(trade.targetPrice > 0)) {
-                Log.log(`[${this.userId}] ALERT: ${stock.symbol} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} FILLED but has no usable target price - skipping sell placement, position is LIVE and UNPROTECTED`);
+                Log.log(`[${this.userId}] ALERT: ${stock.symbol} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} FILLED but has no usable target price - skipping sell placement, position is LIVE and UNPROTECTED (buy=${buyMs}ms)`);
                 return { entered: true };
             }
+            const tSell = Date.now();
             try {
                 await OrderClient.getInstance().antPlaceLimitSellBare(this.userId, {
                     tradingSymbol: trade.tsym,
@@ -427,6 +448,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                     exchange: contract.exch as 'NFO' | 'BFO',
                 });
             } catch (sellErr: any) {
+                const sellMs = Date.now() - tSell;
                 // The buy already filled and is live (recorded in bookkeeping)
                 // with no resting exit order and no stop-loss of any kind -
                 // distinct from "never entered" so an operator scanning logs
@@ -434,11 +456,11 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                 // true), not thrown - a live, already-executed trade must
                 // never be miscounted as "failed to enter" by the caller,
                 // which would leave durablyDisable thinking nothing traded.
-                Log.log(`[${this.userId}] ALERT: ${stock.symbol} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} FILLED but target sell placement failed - position is LIVE and UNPROTECTED: ${sellErr?.message ?? sellErr}`);
+                Log.log(`[${this.userId}] ALERT: ${stock.symbol} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} FILLED but target sell placement failed - position is LIVE and UNPROTECTED (buy=${buyMs}ms sell=${sellMs}ms): ${sellErr?.message ?? sellErr}`);
                 return { entered: true };
             }
 
-            Log.log(`[${this.userId}] TRADED ${stock.symbol} ${optionType} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} target=${trade.targetPrice}`);
+            Log.log(`[${this.userId}] TRADED ${stock.symbol} ${optionType} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} target=${trade.targetPrice} (buy=${buyMs}ms sell=${Date.now() - tSell}ms leg=${Date.now() - tLeg}ms)`);
             return { entered: true };
         } catch (e) {
             Log.log(`[${this.userId}] ${stock.symbol} leg failed: ${e?.message ?? e}`);
