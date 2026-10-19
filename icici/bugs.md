@@ -1,5 +1,28 @@
 # Known Bugs
 
+## 2026-10-19 - ContinuousStrategy max-profit mass close does not actually close at the broker (live loss ~Rs 40k, naked short)
+
+Observed live on Zerodha (`ContinuousStrategy`, expiry-day NIFTY weeklies). After a `Max-profit close`
+the strategy's ledger showed every leg closed, but the broker still held positions the strategy did not
+track, including a **naked short** (`NIFTY26O1923050PE` -130, which should never exist) and a 325-lot
+untracked long (`NIFTY26O1923000CE`, avg 90.9, closed manually at 33.81 for about -Rs 18,500).
+
+Causes found (all trust the strategy's own quantities instead of the broker's):
+- **Sell quantity not clamped to the broker's net position.** `closeAllLegsAndCancelReEntries` and the
+  other Zerodha sell paths (`squareOffOnZerodha`, `marketSellBareOnZerodha`, `placeLimitSellBareOnZerodha`)
+  sell the leg's tracked `totalQuantity` and retry on failure. A retry after an earlier sell had already
+  filled, or a tracked quantity that counted a buy that never filled, sells more than is held -> short.
+- **Cancel-vs-fill race on resting refill buys.** `cancelChildRefills` cancels a resting refill limit buy
+  when it spawns a deeper level, but the refill may already have filled. The fill is then not credited to
+  any leg, so it stays at the broker as an untracked long (130 + 195 on 23000 CE).
+- **Timeout cancel reported "did not fill" for a fill that landed in the race window** (`Zerodha.getFillPrice`),
+  so callers retried the same buy/sell. Fixed in 67d78f3 (re-reads the order after the timeout cancel).
+- **`maxProfitTripped` is in-memory only.** A restart clears it, so a strategy that mass-closed for max
+  profit starts trading again (observed 10:46 and 10:48 the same day). Not persisted anywhere.
+
+Status: sell guard (never place a Zerodha sell larger than the sellable broker position), a broker-truth check
+when cancelling refills, and persisting the max-profit stop are NOT done yet; planned after the 12:05 BulkPcr slot.
+
 ## Codebase-wide audit findings (2026-08-28)
 
 5-agent parallel audit covering streaming pipeline, order execution/risk management,
