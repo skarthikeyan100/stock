@@ -50,7 +50,7 @@ This is a Node.js/TypeScript-based options trading platform built for automated 
 - Strategy statistics
 
 ### Learning & Implementation
-**See [learning.md](./learning.md)** for detailed learning materials on:
+**See [learnings.md](./learnings.md)** for detailed learning materials on:
 - ANT (Alice Blue) OAuth authentication implementation
 - Architecture and design patterns used
 - Code examples and usage patterns
