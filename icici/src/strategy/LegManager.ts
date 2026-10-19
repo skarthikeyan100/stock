@@ -96,6 +96,7 @@ export interface LegManagerConfig {
     spawnQuantityMode?: string | number;
     averageQuantityMode?: 'same' | 'multiplied';
     postAverageTargetDistance?: number; // default 1
+    targetDistance?: number; // first-level (un-averaged) target = avg + this; default slDistance
     marketSentiment?: string;
     refillCancelDistance?: number; // default 50
     minPremium?: number; // default 100
@@ -396,10 +397,11 @@ export class LegManager {
     // instead of bailing early. marketSentiment is off (falls back to
     // postAverageTargetDistance) when unset, empty, or the literal 'none'.
     private targetFor(leg: Leg, cfg: LegManagerConfig, D: number): number {
-        if (leg.averagedLevels.size === 0) return leg.avgPrice + D;
+        const firstLevelTarget = cfg.targetDistance ?? D;
+        if (leg.averagedLevels.size === 0) return leg.avgPrice + firstLevelTarget;
         const sentiment = (cfg.marketSentiment && cfg.marketSentiment !== 'none') ? cfg.marketSentiment : undefined;
         const sentimentAligned = (sentiment === 'up' && leg.right === CALL) || (sentiment === 'down' && leg.right === PUT);
-        const postAverageTarget = sentimentAligned ? D : (cfg.postAverageTargetDistance ?? 1);
+        const postAverageTarget = sentimentAligned ? firstLevelTarget : (cfg.postAverageTargetDistance ?? 1);
         return leg.avgPrice + postAverageTarget;
     }
 

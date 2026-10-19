@@ -230,7 +230,9 @@ export default class ContinuousStrategy extends Strategy {
         const cfg = this.cfg();
         if (!this.enabled) { this.logGateOnce('disabled'); return; }
         if (!this.isTimeInRange()) { this.logGateOnce('outside time window'); return; }
-        if (this.ordered) { this.logGateOnce('entry already in progress or an open leg exists (no broker order implied)'); return; }
+        // isIdle() too: a tick landing between a target-hit leg's deletion and its refill's registration
+        // can clear `ordered`, and a new entry would then stack on top of the resting refill.
+        if (this.ordered || !this.legManager.isIdle()) { this.logGateOnce('entry already in progress or an open leg exists (no broker order implied)'); return; }
         if (!this.isCooldownElapsed(cfg.cooldownSeconds ?? 60)) { this.logGateOnce('cooldown not elapsed'); return; }
         this.logGateOnce('all T1 gates clear - attempting entry');
 

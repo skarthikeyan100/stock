@@ -24,12 +24,13 @@ strategies:
     sentiment: put
     loopCount: 1
   - type: ContinuousStrategy
-    enabled: false
-    broker: breeze
+    enabled: true
+    broker: kite
     initialQuantity: 65
     slDistance: 10
+    targetDistance: 5
     squareOffDistance: 500
-    postAverageTargetDistance: 1
+    postAverageTargetDistance: 2
     minPremium: 50
     maxInvestment: 200000
     maxProfit: 1
