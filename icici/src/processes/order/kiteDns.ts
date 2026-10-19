@@ -36,7 +36,10 @@ import dns from 'dns';
 // WebSocket, a different host, already working fine over whatever family
 // it currently connects with) or ant.aliceblueonline.com (OAuth login,
 // unaffected so far - narrow it further here if that one breaks too).
-const IPV4_ONLY_HOSTS = new Set(['api.kite.trade', 'a3.aliceblueonline.com']);
+const IPV4_ONLY_HOSTS = new Set(['api.kite.trade', 'a3.aliceblueonline.com', 'api.icicidirect.com']);
+// api.icicidirect.com (Breeze) added 2026-10-19: Breeze's outbound IPv6 was a rotating
+// temporary privacy address that no longer matched the API key's registered static IP, so
+// orders were denied. Forced to IPv4 (183.83.189.115) - register that IP in ICICI's portal.
 
 export function installIpv4OnlyHostOverride(): void {
     const originalLookup = dns.lookup;

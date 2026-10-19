@@ -81,17 +81,45 @@ function expiryToIso(expiryDate: string): string {
 }
 
 export async function getOptionQuote(record: FnoRecord): Promise<{ bestBid: number; bestAsk: number; ltp: number }> {
-    const result = await Breeze.getInstance().getQuotes({
-        stockCode: record.shortName,
-        exchangeCode: 'NFO',
-        productType: 'options',
-        expiryDate: expiryToIso(record.expiryDate),
-        right: record.optionType === 'CE' ? 'call' : 'put',
-        strikePrice: record.strikePrice,
-    });
-    const q = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
-    if (!q) throw new Error(`No quote available for ${tsymFor(record)}`);
-    return { bestBid: Number(q.best_bid_price), bestAsk: Number(q.best_offer_price), ltp: Number(q.ltp) };
+    try {
+        const result = await Breeze.getInstance().getQuotes({
+            stockCode: record.shortName,
+            exchangeCode: 'NFO',
+            productType: 'options',
+            expiryDate: expiryToIso(record.expiryDate),
+            right: record.optionType === 'CE' ? 'call' : 'put',
+            strikePrice: record.strikePrice,
+        });
+        const q = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
+        if (!q) throw new Error(`No quote available for ${tsymFor(record)}`);
+        const bestBid = Number(q.best_bid_price);
+        const bestAsk = Number(q.best_offer_price);
+        // A zero/NaN side is unusable as a limit price (ICICI rejects price 0), so treat
+        // it the same as a failed call and fall through to the ANT-priced fallback.
+        if (bestBid > 0 && bestAsk > 0) return { bestBid, bestAsk, ltp: Number(q.ltp) };
+        throw new Error(`Breeze quote for ${tsymFor(record)} has no bid/ask (bid=${q.best_bid_price}, ask=${q.best_offer_price})`);
+    } catch (e: any) {
+        // Breeze's contract-quote endpoint intermittently returns a generic nginx error page
+        // (seen live 2026-09-23 and 2026-10-19) while the rest of its API keeps working. Every
+        // caller here (buy at ask, sell at bid, square-off retries) needs a marketable limit, so
+        // price off ANT's option-chain LTP with the same 5% buffer as the Zerodha path instead
+        // of failing the entry/exit outright. Placement itself still goes through Breeze.
+        Log.log(`[order] Breeze option quote failed for ${tsymFor(record)} (${String(e?.message ?? e).slice(0, 120)}) - falling back to ANT-priced bid/ask`);
+        // ANT's option chain covers only NIFTY's nearest expiry - for anything else a strike
+        // match would silently price a different contract, so surface the original failure.
+        const nearest = record.shortName === 'NIFTY'
+            ? await BreezeContractMaster.getInstance().findNearestExpiryOption(Number(record.strikePrice), record.optionType as 'CE' | 'PE', 'NIFTY').catch(() => undefined)
+            : undefined;
+        if (!nearest || nearest.expiryDate !== record.expiryDate) throw e;
+        const strike = Number(record.strikePrice);
+        const data = (await estimateOptionPricesBatch('NIFTY', [{ strike, optionType: record.optionType }])).get(`${strike}_${record.optionType}`);
+        if (!data || !(data.premium > 0)) throw new Error(`No Breeze quote and no ANT price estimate available for ${tsymFor(record)}`);
+        return {
+            bestBid: Math.max(0.05, roundToTick(data.premium * 0.95)),
+            bestAsk: roundToTick(data.premium * 1.05),
+            ltp: data.premium,
+        };
+    }
 }
 
 // Breeze's own getQuotes has been observed live 2026-09-23 returning a
