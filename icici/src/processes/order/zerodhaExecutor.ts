@@ -45,10 +45,11 @@ import { BuyRequest, cancelOrderWithFillRecheck } from './BrokerExecutor';
 async function getMarketableZerodhaPrice(antToken: string, exchange: 'NFO' | 'BFO', direction: 'BUY' | 'SELL'): Promise<number> {
     const ltp = await ANT.getInstance().getQuote(exchange, antToken);
     // Buffer beyond LTP: aggressive enough to fill immediately, not a resting order waiting for a
-    // specific price. 3% (was 1%): ANT's quote lags a fast-moving expiry-day option by tens of seconds, and
-    // a limit priced off the stale LTP missed (buys 'did not fill within timeout', 2026-10-19 ContinuousStrategy).
-    // Zerodha fills a marketable limit at the best available price, so a wider cap costs no extra slippage.
-    const buffered = direction === 'BUY' ? ltp * 1.03 : ltp * 0.97;
+    // specific price. 5% (was 1%, then 3%): ANT's REST quote lags a fast-moving expiry-day option by 3-4 points
+    // (an 88 quote vs a 91 market at 12:30 on 2026-10-19), so even a 3% cap sat below the ask and 'did not fill
+    // within timeout' about once a minute. Zerodha fills a marketable limit at the best available price, so a wider
+    // cap costs no extra slippage.
+    const buffered = direction === 'BUY' ? ltp * 1.05 : ltp * 0.95;
     return roundToTick(buffered);
 }
 
