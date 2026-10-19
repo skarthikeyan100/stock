@@ -128,6 +128,7 @@ strategies:
     chunkDriftCancelPoints: 10
     right: none
     maxInvestment: 100000
+    slDistance: 10
     logEnabled: true
     brokers: &ref_0
       - ant
@@ -139,11 +140,15 @@ strategies:
       - '11:35'
       - '12:05'
       - '12:35'
+      - '13:05'
+      - '13:35'
+      - '14:00'
+      - '14:35'
     quantity: -1
     targetPoints: 2
     brokers: *ref_0
   - type: TopStockOptionsOpeningGapStrategy
-    enabled: true
+    enabled: false
     broker: ant
     rankStart: 3
     rankCount: 3

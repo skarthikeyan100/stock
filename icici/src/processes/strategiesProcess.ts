@@ -13,6 +13,7 @@ import { STRATEGIES_SOCKET_PATH, StrategiesRequest, StrategiesResponse } from '.
 import strategies from '../strategy/strategies';
 import OrderClient from './strategies/OrderClient';
 import { registerTrade, unregisterTrade, routeOptionTick } from './strategies/tokenRouter';
+import { BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
 import { subscribeToken, unsubscribeToken } from './strategies/DataClient';
 import * as niftyQuoteHistory from './strategies/niftyQuoteHistory';
 import * as niftyCandleBuilder from './strategies/niftyCandleBuilder';
@@ -35,10 +36,14 @@ async function onFill(userId: string, raw: any) {
         Log.log('[strategies] Fill for unknown strategy userId:', userId);
         return;
     }
+    // The fill's own broker decides the feed its token belongs to; the strategy's config `broker:`
+    // key is only a fallback for untagged fills (a BulkPcr ANT pair under `broker: breeze` would
+    // otherwise subscribe an ANT token on the Breeze feed).
+    const feed = trade.broker ? BROKER_TO_FEED_SOURCE[trade.broker] : undefined;
     if (trade.action === 'Buy' && trade.token) {
-        registerTrade(trade.token, strategy);
+        registerTrade(trade.token, strategy, feed);
     } else if (trade.action === 'Sell' && trade.token) {
-        unregisterTrade(trade.token, strategy);
+        unregisterTrade(trade.token, strategy, feed);
     }
     await strategy.updateTrade(trade);
 }

@@ -85,8 +85,7 @@ export function unwatchTokenOnSource(source: FeedSource, token: string, strategy
     if (refCount(k) === 0) unsubscribeToken(token, source);
 }
 
-export function registerTrade(token: string, strategy: Strategy): void {
-    const source = resolveSource(strategy);
+export function registerTrade(token: string, strategy: Strategy, source: FeedSource = resolveSource(strategy)): void {
     const k = key(source, token);
     if (!tradeHolders.has(k)) tradeHolders.set(k, new Set());
     const set = tradeHolders.get(k)!;
@@ -95,8 +94,7 @@ export function registerTrade(token: string, strategy: Strategy): void {
     if (refCount(k) === 1) subscribeToken(token, source);
 }
 
-export function unregisterTrade(token: string, strategy: Strategy): void {
-    const source = resolveSource(strategy);
+export function unregisterTrade(token: string, strategy: Strategy, source: FeedSource = resolveSource(strategy)): void {
     const k = key(source, token);
     const set = tradeHolders.get(k);
     if (!set?.has(strategy)) return;

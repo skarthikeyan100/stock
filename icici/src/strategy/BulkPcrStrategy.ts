@@ -8,7 +8,7 @@ import { Strategy } from './strategy';
 import { roundToTick } from '../zerodha/Zerodha';
 import MomentumSignal from './MomentumSignal';
 import { isPastMarketClose } from '../util/marketHours';
-import { watchToken, unwatchToken } from '../processes/strategies/tokenRouter';
+import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
 
@@ -516,7 +516,7 @@ export default class BulkPcrStrategy extends Strategy {
             // them for the slDistance check that opens the opposite side (tokenRouter only routes
             // ticks for watched/registered tokens).
             if (broker === 'ant' && pos.heldToken) {
-                watchToken(pos.heldToken, this);
+                watchTokenOnSource('ant', pos.heldToken, this); // ANT token: always the ANT feed, whatever config's broker: key says
             }
         } catch (e) {
             Log.log(`[BulkPcrStrategy] [${broker}] Chunked limit-sell placement failed - manual review required:`, e);
@@ -675,29 +675,39 @@ export default class BulkPcrStrategy extends Strategy {
     // open. The resting-order cancellations and fills that follow are ignored (see onOrderCancelled).
     private async eodSquareOff(pos: BrokerPosition): Promise<void> {
         const tsym = pos.heldTsym!;
-        // Snapshot before any await; updateTrade is gated off below, so the only fills counted on top
-        // of this are the cancel's own filledQty (no double count).
-        const soldBeforeClose = pos.soldQty;
-        let remaining = 0;
+        let cancelResult: { filledQty: number; cancelFailed: boolean };
+        // updateTrade ignores fills only across the cancel: its filledQty is the single count for
+        // chunks that filled during it (counting them via updateTrade as well would double-count).
         pos.squaringOff = true;
         try {
-            const r = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym });
-            if (r.cancelFailed) throw new Error('cancel of resting sell failed - not squaring off');
-            // filledQty = chunks that filled during the cancel itself; they are sold already.
-            remaining = pos.targetQuantity - soldBeforeClose - r.filledQty;
-            // The cancel's fills are now accounted for. Re-open updateTrade before the square-off so that
-            // fills from the market sell itself, including partial fills before a throw, are counted.
+            cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym });
+        } catch (e) {
+            cancelResult = { filledQty: 0, cancelFailed: true };
+            Log.log(`[BulkPcrStrategy] [ant] EOD cancel request failed for ${tsym}:`, e);
+        } finally {
             pos.squaringOff = false;
+        }
+        if (cancelResult.cancelFailed) {
+            pos.phase = 'error';
+            Log.log(`[BulkPcrStrategy] [ant] ALERT: EOD force-close of ${tsym} aborted, resting sell cancel failed - manual review required`);
+            this.persistState();
+            return;
+        }
+        // Book the cancel-window fills and persist BEFORE the market sell, so a restart mid-close
+        // cannot re-size an exit for quantity that is already sold. Their price is unknown, so
+        // soldValue (used only for the logged average) is not adjusted.
+        pos.soldQty += cancelResult.filledQty;
+        this.persistState();
+        const remaining = pos.targetQuantity - pos.soldQty;
+        try {
             if (remaining > 0) {
                 await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: 'NFO' });
             }
             pos.phase = 'done';
-            Log.log(`[BulkPcrStrategy] [ant] EOD force-close: ${tsym} squared off qty=${remaining}`);
+            Log.log(`[BulkPcrStrategy] [ant] EOD force-close: ${tsym} squared off qty=${Math.max(remaining, 0)}`);
         } catch (e) {
             pos.phase = 'error';
-            Log.log(`[BulkPcrStrategy] [ant] ALERT: EOD force-close failed for ${tsym} - manual review required:`, e);
-        } finally {
-            pos.squaringOff = false;
+            Log.log(`[BulkPcrStrategy] [ant] ALERT: EOD square-off failed for ${tsym} - manual review required:`, e);
         }
         this.persistState();
     }
@@ -769,7 +779,7 @@ export default class BulkPcrStrategy extends Strategy {
         if (this.phase === 'done') return;
         // Unwatch every ANT slot's held token - a no-op for any that was never watched.
         for (const slot of this.antSlots()) {
-            if (slot.heldToken) unwatchToken(slot.heldToken, this);
+            if (slot.heldToken) unwatchTokenOnSource('ant', slot.heldToken, this);
         }
         // Not configService.getStrategyConfig(type) - see cfg()'s comment above for why;
         // this call site was missed when that fix landed. A second instance under a

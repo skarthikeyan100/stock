@@ -29,6 +29,7 @@ const STRATEGY_PNL_USER: Record<string, string> = {
   supportResistanceStrategy: 'SupportResistanceStrategy',
   targetReachStrategy: 'TargetReachStrategy',
   bulkPcrStrategy: 'BulkPcrStrategy',
+  topStockOptionsOpeningGapStrategy: 'TopStockOptionsOpeningGapStrategy',
 };
 
 // Today's realized (closed trades, from a Mongo exitTime-bounded query) +
@@ -550,6 +551,17 @@ export default function AdminPage() {
     }
   };
 
+  const handleResetTopStockOptionsOpeningGapStrategy = async () => {
+    if (!confirm("Reset Top Stock Options Opening Gap Strategy? This only clears the in-memory phase tracking - it does NOT clear today's already-fired record or re-enable the strategy if it durably disabled itself after entering. If it already traded today, flip Enabled back on above and this will still skip until tomorrow (same-day re-entry is blocked by a separate on-disk marker, not this reset). Only use this if you understand the current state.")) return;
+    try {
+      const res = await fetch('/strategies/TopStockOptionsOpeningGapStrategy/reset');
+      if (!res.ok) throw new Error('Failed to reset strategy');
+    } catch (err) {
+      console.error('Reset strategy error:', err);
+      alert('Failed to reset strategy');
+    }
+  };
+
   if (loading) {
     return (
       <div className="d-flex justify-content-center align-items-center min-vh-100">
@@ -686,6 +698,13 @@ export default function AdminPage() {
     'bulkPcrStrategy.right': { description: 'Fixed entry direction, or auto-resolve from PCR (put/call OI ratio) when left as none.', values: "'call', 'put', or 'none' for PCR-based auto-resolve." },
     'bulkPcrStrategy.maxInvestment': { description: 'Reference figure for total capital this block order deploys (quantity × price). This is a per-account cap shared across every broker checked above, not per broker - with 2 brokers checked, both run under the same combined limit, so size this for the FULL combined exposure (roughly 2× a single-broker figure) or one broker can get rejected while the other succeeds.', values: 'Integer, in ₹.' },
     'bulkPcrStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
+
+    'topStockOptionsOpeningGapStrategy.enabled': { description: 'Turn this one-shot strategy on/off. It durably disables itself (writes enabled: false back to config.yml) once at least one leg actually enters on a trading day - flip back on manually to arm another run.', values: 'On/Off.' },
+    'topStockOptionsOpeningGapStrategy.broker': { description: 'Broker this strategy trades on.', values: "'ant' (only broker currently wired up for this strategy)." },
+    'topStockOptionsOpeningGapStrategy.rankStart': { description: "Rank (by |gap %|, 1 = biggest gap) of the first stock in the window of gap-screener candidates this strategy trades.", values: 'Integer ≥ 1, e.g. 3 to skip the 2 biggest gappers.' },
+    'topStockOptionsOpeningGapStrategy.rankCount': { description: 'How many consecutively-ranked stocks (starting at Rank Start) this strategy enters a leg for.', values: 'Integer ≥ 1, e.g. 5.' },
+    'topStockOptionsOpeningGapStrategy.lots': { description: 'Lot multiplier applied to each leg\'s own instrument lot size.', values: 'Integer, e.g. 1.' },
+    'topStockOptionsOpeningGapStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
   };
 
   // Adds a hover ⓘ icon next to a field's label showing its FIELD_HELP entry
@@ -1434,6 +1453,30 @@ export default function AdminPage() {
                             <Col md={6}>{renderConfigField('Max Investment', ['bulkPcrStrategy', 'maxInvestment'], config.bulkPcrStrategy?.maxInvestment)}</Col>
                           </Row>
                           {renderConfigField('Log Enabled', ['bulkPcrStrategy', 'logEnabled'], config.bulkPcrStrategy?.logEnabled, 'boolean')}
+                        </>
+                      ),
+                    },
+                    {
+                      configKey: 'topStockOptionsOpeningGapStrategy',
+                      title: 'Top Stock Options Opening Gap Strategy',
+                      headerExtra: (
+                        <Button
+                          size="sm"
+                          variant="outline-danger"
+                          onClick={e => { e.stopPropagation(); handleResetTopStockOptionsOpeningGapStrategy(); }}
+                        >
+                          Reset
+                        </Button>
+                      ),
+                      renderFields: () => (
+                        <>
+                          <Row>
+                            <Col md={6}>{renderConfigField('Broker', ['topStockOptionsOpeningGapStrategy', 'broker'], config.topStockOptionsOpeningGapStrategy?.broker, 'text')}</Col>
+                            <Col md={6}>{renderConfigField('Rank Start', ['topStockOptionsOpeningGapStrategy', 'rankStart'], config.topStockOptionsOpeningGapStrategy?.rankStart)}</Col>
+                            <Col md={6}>{renderConfigField('Rank Count', ['topStockOptionsOpeningGapStrategy', 'rankCount'], config.topStockOptionsOpeningGapStrategy?.rankCount)}</Col>
+                            <Col md={6}>{renderConfigField('Lots', ['topStockOptionsOpeningGapStrategy', 'lots'], config.topStockOptionsOpeningGapStrategy?.lots)}</Col>
+                          </Row>
+                          {renderConfigField('Log Enabled', ['topStockOptionsOpeningGapStrategy', 'logEnabled'], config.topStockOptionsOpeningGapStrategy?.logEnabled, 'boolean')}
                         </>
                       ),
                     },
