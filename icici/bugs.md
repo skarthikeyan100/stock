@@ -20,8 +20,11 @@ Causes found (all trust the strategy's own quantities instead of the broker's):
 - **`maxProfitTripped` is in-memory only.** A restart clears it, so a strategy that mass-closed for max
   profit starts trading again (observed 10:46 and 10:48 the same day). Not persisted anywhere.
 
-Status: sell guard (never place a Zerodha sell larger than the sellable broker position), a broker-truth check
-when cancelling refills, and persisting the max-profit stop are NOT done yet; planned after the 12:05 BulkPcr slot.
+Status: FIXED in e004108 - `Zerodha.placeLimitSellOption` now refuses/clamps any sell larger than the sellable broker
+quantity (min of net position and order-implied net, minus resting sells; per-contract in-flight lock), and a superseded
+refill that filled before its cancel is sold straight back (`LegManager.cancelChildRefills`). Timeout-cancel race fixed in
+67d78f3. NOT done: persisting `maxProfitTripped` across restarts (a restart still re-enables trading); the same never-short
+guard for ANT/Breeze/Prism sell paths (ANT clamps to bookkeeping, not the broker).
 
 ## Codebase-wide audit findings (2026-08-28)
 
