@@ -786,8 +786,22 @@ export class LegManager {
             try {
                 await this.currentOps().cancel(this.deps.userId, intent.orderId);
                 Log.log(`[${this.deps.ownerType}] Pending refill at level ${intent.parentLevel} cancelled (parent ${leg.tsym}): ${intent.tsym}`);
-            } catch (e) {
-                Log.log(`[${this.deps.ownerType}] Child refill cancel failed:`, e);
+            } catch (e: any) {
+                // The refill filled before the cancel landed (OrderAlreadyFilledError carries the real filled
+                // quantity). This refill was just superseded - its intent is already deleted above, so nothing
+                // tracks the quantity it bought; left alone it is an orphaned long (2026-10-19: 130 + 195 lots
+                // of 23000 CE). Sell it straight back.
+                const filledQty = e?.name === 'OrderAlreadyFilledError' ? Number(e.filledQuantity ?? 0) : 0;
+                if (filledQty > 0) {
+                    Log.log(`[${this.deps.ownerType}] ALERT: superseded refill ${intent.orderId} (${intent.tsym}) had already filled ${filledQty} - selling it back so it is not left untracked`);
+                    try {
+                        await this.currentOps().sell(this.deps.userId, intent.tsym, intent.token, filledQty, intent.exchange);
+                    } catch (sellErr) {
+                        Log.log(`[${this.deps.ownerType}] ALERT: could not sell back the filled superseded refill (${intent.tsym} qty=${filledQty}) - UNTRACKED POSITION, manual action required:`, sellErr);
+                    }
+                } else {
+                    Log.log(`[${this.deps.ownerType}] Child refill cancel failed:`, e);
+                }
             }
         }
     }

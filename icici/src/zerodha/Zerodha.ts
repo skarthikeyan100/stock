@@ -260,22 +260,67 @@ class Zerodha {
     // order fills at - see BulkPcrStrategy's target-hit exit (2026-09-22
     // incident: a MARKET square-off filled below entry on a stray tick that
     // never reflected a real tradable price).
+    // Contracts with a sell currently between its sellable-quantity check and the broker accepting the order.
+    private sellsInFlight = new Set<string>();
+
+    // NEVER-SHORT GUARD. How many of `tradingSymbol` can still be sold without going net short:
+    // the lower of the broker's net position and the net implied by today's orders (overnight qty +
+    // filled buys - filled sells; covers a position update that lags a fill), minus quantity already
+    // resting in open sells. 2026-10-19: strategies sold their tracked quantity again on retries and
+    // mass closes while earlier sells had already filled, leaving a naked short (see bugs.md).
+    async getSellableQuantity(tradingSymbol: string): Promise<number> {
+        const positions = await (this.kc as any).getPositions();
+        const pos = (positions?.net ?? []).find((p: any) => p.tradingsymbol === tradingSymbol);
+        const positionNet = Number(pos?.quantity ?? 0);
+        const orders: any[] = await this.kc.getOrders();
+        let ordersNet = Number(pos?.overnight_quantity ?? 0);
+        let openSells = 0;
+        for (const o of orders) {
+            if (o.tradingsymbol !== tradingSymbol) continue;
+            const filled = Number(o.filled_quantity ?? 0);
+            ordersNet += o.transaction_type === 'BUY' ? filled : -filled;
+            if (o.transaction_type === 'SELL' && (o.status === 'OPEN' || o.status === 'TRIGGER PENDING')) {
+                openSells += Math.max(0, Number(o.quantity ?? 0) - filled);
+            }
+        }
+        return Math.min(positionNet, ordersNet) - openSells;
+    }
+
     async placeLimitSellOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
         }
-        Log.log(`[Zerodha] Placing NRML limit sell: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
-        const response = await this.kc.placeOrder('regular', {
-            exchange,
-            tradingsymbol: tradingSymbol,
-            transaction_type: 'SELL',
-            quantity,
-            product: 'NRML',
-            order_type: 'LIMIT',
-            price,
-        });
-        Log.log(`[Zerodha] Limit sell order placed: ${response.order_id}`);
-        return { orderId: response.order_id };
+        // Held from the check until the broker has accepted the order (so it shows up as an open sell
+        // for the next check): two concurrent sells for one contract can never both pass.
+        if (this.sellsInFlight.has(tradingSymbol)) {
+            throw new Error(`NEVER-SHORT GUARD: another sell for ${tradingSymbol} is in flight - refusing a concurrent sell`);
+        }
+        this.sellsInFlight.add(tradingSymbol);
+        try {
+            const sellable = await this.getSellableQuantity(tradingSymbol);
+            if (sellable <= 0) {
+                Log.log(`[Zerodha] ALERT: NEVER-SHORT GUARD refused a sell of ${quantity} ${tradingSymbol} - nothing sellable (sellable=${sellable}); the caller's position tracking is out of sync with the broker`);
+                throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${tradingSymbol} (sellable=${sellable}) - refusing to sell ${quantity}`);
+            }
+            if (quantity > sellable) {
+                Log.log(`[Zerodha] ALERT: NEVER-SHORT GUARD clamped a sell of ${tradingSymbol} from ${quantity} to ${sellable} - the caller's position tracking is out of sync with the broker`);
+                quantity = sellable;
+            }
+            Log.log(`[Zerodha] Placing NRML limit sell: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
+            const response = await this.kc.placeOrder('regular', {
+                exchange,
+                tradingsymbol: tradingSymbol,
+                transaction_type: 'SELL',
+                quantity,
+                product: 'NRML',
+                order_type: 'LIMIT',
+                price,
+            });
+            Log.log(`[Zerodha] Limit sell order placed: ${response.order_id}`);
+            return { orderId: response.order_id };
+        } finally {
+            this.sellsInFlight.delete(tradingSymbol);
+        }
     }
 
     // Polls order history until the fill (average_price) is known - Kite has no
