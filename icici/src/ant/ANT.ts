@@ -482,6 +482,32 @@ class ANT {
         return Number(ltp);
     }
 
+    // Live (uncached) ScripDetails quote with the best bid/ask, for pricing marketable limits. getQuote's OHLC
+    // endpoint ran a minute or more behind on a fast expiry-day option (54 quoted vs a 65 ask on 2026-10-19),
+    // so a limit priced off it never reached the ask. bid/ask are 0 when a side is empty or the market is closed.
+    async getLiveQuote(exchange: string, token: string): Promise<{ ltp: number; bid: number; ask: number }> {
+        if (!this.userSession || !this.userId) {
+            throw new Error('No active session. Please login first.');
+        }
+        const resp = await axios.post(
+            'https://ant.aliceblueonline.com/rest/AliceBlueAPIService/api/ScripDetails/getScripQuoteDetails',
+            { exch: exchange, symbol: String(token) },
+            {
+                headers: {
+                    'X-SAS-Version': '2.0',
+                    Authorization: `Bearer ${this.userId.toUpperCase()} ${this.userSession}`,
+                },
+            }
+        );
+        const ltp = Number(resp.data?.LTP);
+        if (!(ltp > 0)) {
+            throw new Error(`ANT getLiveQuote unusable LTP for ${exchange}|${token}: ${JSON.stringify(resp.data).slice(0, 200)}`);
+        }
+        const bid = Number(resp.data?.BRate);
+        const ask = Number(resp.data?.SRate);
+        return { ltp, bid: bid > 0 ? bid : 0, ask: ask > 0 ? ask : 0 };
+    }
+
     // Shared by getOptionChainPCR/getOptionChain - both need the same
     // nearest-expiry option chain raw rows (v2, obrest/optionChain). Field
     // shape confirmed live: getUnderlyingExp -> result[0].underlying_expiry[]

@@ -43,7 +43,17 @@ import { BuyRequest, cancelOrderWithFillRecheck } from './BrokerExecutor';
 // its own comment), so a CHUNKED order's several calls for the SAME contract
 // already collapse to one HTTP call there - no separate cache needed here.
 async function getMarketableZerodhaPrice(antToken: string, exchange: 'NFO' | 'BFO', direction: 'BUY' | 'SELL'): Promise<number> {
-    const ltp = await ANT.getInstance().getQuote(exchange, antToken);
+    // Live bid/ask first (the cached OHLC getQuote lags a fast option by a minute or more - see
+    // ANT.getLiveQuote); fall back to getQuote if the live call fails (e.g. a 429).
+    let ltp: number;
+    try {
+        const live = await ANT.getInstance().getLiveQuote(exchange, antToken);
+        // The price a taker actually crosses: the ask for a buy, the bid for a sell (never worse than LTP).
+        ltp = direction === 'BUY' ? Math.max(live.ltp, live.ask) : (live.bid > 0 ? Math.min(live.ltp, live.bid) : live.ltp);
+    } catch (e) {
+        Log.log(`[order] getMarketableZerodhaPrice: live quote failed for ${exchange}|${antToken}, falling back to cached getQuote:`, e);
+        ltp = await ANT.getInstance().getQuote(exchange, antToken);
+    }
     // Buffer beyond LTP: aggressive enough to fill immediately, not a resting order waiting for a
     // specific price. 5% (was 1%, then 3%): ANT's REST quote lags a fast-moving expiry-day option by 3-4 points
     // (an 88 quote vs a 91 market at 12:30 on 2026-10-19), so even a 3% cap sat below the ask and 'did not fill
