@@ -24,7 +24,7 @@ strategies:
     sentiment: put
     loopCount: 1
   - type: ContinuousStrategy
-    enabled: true
+    enabled: false
     broker: kite
     initialQuantity: 260
     slDistance: 10
@@ -34,7 +34,7 @@ strategies:
     minPremium: 50
     maxInvestment: 200000
     maxProfit: 4
-    maxLoss: 4
+    maxLoss: 6
     spawnQuantityMode: '1'
     averageQuantityMode: same
     right: none
