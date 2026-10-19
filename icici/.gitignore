@@ -10,6 +10,12 @@ build/
 .zerodha_session.json
 .breeze_session.json
 .bulkpcr_armed_slots.json
+# Catch-all for any other broker session/token/credential file (not just the names above)
+.*_session*.json
+*_session*.json
+*token*.json
+*.token
+*credentials*.json
 
 # Log files
 *.log
