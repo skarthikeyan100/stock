@@ -126,23 +126,31 @@ race (concurrent ticks both seeing `phase='idle'` and firing duplicate buys).
 lots × 65) placed via `chunkedBuyIndex` (`:164`), which auto-splits across
 NIFTY's exchange freeze-quantity cap (1755) and only returns once every chunk
 fills.
-**Exit (CURRENT behavior, changed this session)**: `placeExitSell()` (`:183`)
-places a resting **LIMIT** sell — chunked via `chunkedSquareOffLimit` — at
-`entryAvg + targetPoints` **immediately once the chunked buy completes**,
-with **no stop-loss** (holds indefinitely until the limit fills, however
-long that takes) and **no live-tick confirmation gate** before placing it
-(deliberate — see the file's header comment: a resting limit can only fill
-at-or-better than the target price regardless of when it's placed, so
-gating on a tick adds a live-feed dependency for no safety benefit). This
-replaces the old design that waited for a live option tick to "confirm" the
-target before selling. Fills are tallied asynchronously in `updateTrade`
-(`:230`) until the full `targetQuantity` is sold, at which point the
-strategy **durably self-disables** (`configService.writeConfig`, one-shot —
-`config.yml`'s `enabled` must be manually flipped back to `true` to arm
-another run).
-**Restart safety**: `reconcile()` (`:266`) distinguishes a persisted
-`'selling'` phase (an exit is already resting — never re-place it, would
-oversell) from `'error'` (manual review required, never auto-place an exit).
+**Exit**: `placeExitSell()` places a resting **LIMIT** sell — chunked via
+`chunkedSquareOffLimit` — at `entryAvg + targetPoints` immediately once the
+buy completes, with no stop-loss and no live-tick confirmation gate (a resting
+limit only fills at-or-better than its price). Fills are tallied in
+`updateTrade` until the slot's full quantity is sold.
+**ANT pair (current design)**: ANT holds up to two slots, one per option side
+(`ant_call` / `ant_put`, `slotKey`). A lone ANT slot whose option tick falls
+`slDistance` (config, default 10) below its `entryAvg` opens the opposite side
+once, sized to the lone slot's still-open quantity, with its own +2 sell. The
+original +2 sell is never cancelled. When a side's +2 sell fully fills while
+the other side is still active, that side re-buys (`entryQuantity`, the root's
+entry quantity) and rests its +2 again (`onSlotSoldOut`, `buyAndExit`). So
+there are never more than two open trades, one per direction. Buys use
+`chunkedBuyIndex`, so they split above the freeze quantity. A buy that fills
+nothing becomes `'pending'` and is retried off the active side's ticks
+(`retryPendingRebuys`, throttled). An ambiguous or partial buy becomes `'error'`
+(manual review). The cycle ends when no side is active (`allBrokersFinished`).
+**EOD (15:15)**: `eodCloseAnt` pulls each open ANT slot's resting sells
+(`cancelRestingLimitSells`) and squares off the remainder (`antSquareOffBare`).
+Nothing re-buys after EOD (`eodDone`).
+**Restart safety**: `reconcile()` restores each slot from its own persisted
+`'selling'`/`'pending'`/`'done'` state. A persisted `'selling'` exit is never
+re-placed unless the broker shows it gone (same rule as before). A slot caught
+`'buying'` or in `'error'` becomes manual review. A legacy pre-pair `ant` record
+is migrated to its side, inferred from the tsym's CE/PE suffix.
 **Broker**: `getMonitorConfig()` returns `null` (self-monitored — no
 GTT/bracket). Multi-broker fan-out via config `brokers: [...]` (falls back to
 the legacy single `broker:` field if `brokers` is empty/absent) — runs each
@@ -155,7 +163,7 @@ none) was added alongside `BulkPcrAutoStartStrategy` below.
 **Config keys** (`config.yml`): `enabled`, `broker` (legacy single-broker
 fallback), `brokers` (preferred, multi-broker array), `quantity`,
 `targetPoints`, `chunkDriftCancelPoints`, `right` (`call`/`put`/`none`),
-`maxInvestment`, `logEnabled`.
+`maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10).
 **`isRunning()`**: exposes `phase === 'running'` externally — used by
 `BulkPcrAutoStartStrategy` to decide whether a scheduled re-arm should be
 skipped.
