@@ -34,6 +34,7 @@ strategies:
     minPremium: 50
     maxInvestment: 200000
     maxProfit: 4
+    maxLoss: 4
     spawnQuantityMode: '1'
     averageQuantityMode: same
     right: none

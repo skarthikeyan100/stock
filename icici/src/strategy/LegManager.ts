@@ -102,6 +102,7 @@ export interface LegManagerConfig {
     minPremium?: number; // default 100
     maxInvestment?: number; // falls back to DEFAULT_MAX_INVESTMENT
     maxProfit?: number | null; // null/undefined disables the feature
+    maxLoss?: number | null; // % of maxInvestment, mirrors maxProfit on the loss side; null/undefined disables the feature
     // Used only by restoreFromOpenTrades's wasAveraged heuristic - optional
     // since not every owning strategy has an "initial entry size" config key
     // (e.g. SupportResistanceStrategy has none; restored legs there simply
@@ -159,6 +160,9 @@ export class LegManager {
     // checkAndMaybeTripMaxProfit. Configured via cfg.maxProfit (% of
     // maxInvestment); unset disables the feature entirely.
     private maxProfitTripped = false;
+    // Loss-side mirror of maxProfitTripped: cumulative (realized + unrealized) P&L <= -threshold. Same close-all, same
+    // same-day Mongo latch, cleared by reset().
+    private maxLossTripped = false;
     // End-of-day force close latch: once set, onOptionTick keeps closing every leg (retrying a failed sell on the
     // next tick) and nothing new is opened. Not persisted - the trading day is over either way.
     private eodClosing = false;
@@ -320,7 +324,7 @@ export class LegManager {
         const cumulative = this.computeCumulativeProfit();
         if (cumulative < threshold) return;
         this.maxProfitTripped = true;
-        this.persistMaxProfitLatch(true);
+        this.persistLatch('maxProfitTripped');
         Log.log(`[${this.deps.ownerType}] MAX PROFIT TRIPPED - cumulative=${Math.round(cumulative)} threshold=${Math.round(threshold)} (maxProfit=${cfg.maxProfit}% of maxInvestment=${maxInvestment}) - closing all legs, cancelling all pending re-entries, and permanently blocking new entries for the rest of this session`);
     }
 
@@ -336,12 +340,14 @@ export class LegManager {
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     }
 
-    private persistMaxProfitLatch(tripped: boolean): void {
+    private persistLatch(field: 'maxProfitTripped' | 'maxLossTripped' | null): void {
         const col = Mongo.getInstance()?.db.collection('strategyLatches');
         if (!col) return;
         const key = { ownerType: this.deps.ownerType, userId: this.deps.userId, day: LegManager.latchDay() };
-        const op = tripped ? col.replaceOne(key, { ...key, maxProfitTripped: true, updatedAt: new Date() }, { upsert: true }) : col.deleteMany({ ownerType: key.ownerType, userId: key.userId });
-        op.catch((e) => Log.log(`[${this.deps.ownerType}] strategyLatches ${tripped ? 'write' : 'clear'} failed (continuing):`, e));
+        const op = field
+            ? col.updateOne(key, { $set: { [field]: true, updatedAt: new Date() } }, { upsert: true })
+            : col.deleteMany({ ownerType: key.ownerType, userId: key.userId }); // reset(): clear every latch
+        op.catch((e) => Log.log(`[${this.deps.ownerType}] strategyLatches ${field ? 'write' : 'clear'} failed (continuing):`, e));
     }
 
     // Called once at startup (ContinuousStrategy.reconcile): restores today's max-profit latch if it was tripped
@@ -355,9 +361,32 @@ export class LegManager {
                 this.maxProfitTripped = true;
                 Log.log(`[${this.deps.ownerType}] max-profit stop was already tripped earlier today - staying stopped after the restart (reset the strategy to trade again)`);
             }
+            if (doc?.maxLossTripped) {
+                this.maxLossTripped = true;
+                Log.log(`[${this.deps.ownerType}] max-loss stop was already tripped earlier today - staying stopped after the restart (reset the strategy to trade again)`);
+            }
         } catch (e) {
             Log.log(`[${this.deps.ownerType}] could not read strategyLatches (continuing with the stop untripped):`, e);
         }
+    }
+
+    // Loss-side mirror of checkAndMaybeTripMaxProfit. maxLoss is a % of the CONFIGURED maxInvestment, so
+    // maxLoss == maxProfit gives a symmetric daily band. Cumulative P&L is realized-since-reset + unrealized of every open
+    // leg (computeCumulativeProfit). Unset/null maxLoss disables it.
+    private checkAndMaybeTripMaxLoss(cfg: LegManagerConfig): void {
+        if (this.maxLossTripped) return;
+        if (cfg.maxLoss == null) return;
+        const maxInvestment = cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
+        const threshold = (cfg.maxLoss / 100) * maxInvestment;
+        const cumulative = this.computeCumulativeProfit();
+        if (!(cumulative <= -threshold)) return; // NaN-safe: a NaN cumulative must not trip it
+        this.maxLossTripped = true;
+        this.persistLatch('maxLossTripped');
+        Log.log(`[${this.deps.ownerType}] MAX LOSS TRIPPED - cumulative=${Math.round(cumulative)} threshold=-${Math.round(threshold)} (maxLoss=${cfg.maxLoss}% of maxInvestment=${maxInvestment}) - closing every open leg and blocking new entries`);
+    }
+
+    isMaxLossTripped(): boolean {
+        return this.maxLossTripped;
     }
 
     // Start of the end-of-day close: from here every tick closes whatever is still open and nothing new is opened.
@@ -565,7 +594,8 @@ export class LegManager {
         if (leg && !Number.isNaN(ltp)) leg.lastLtp = ltp;
 
         if (!this.maxProfitTripped) this.checkAndMaybeTripMaxProfit(this.deps.getConfig());
-        if (this.maxProfitTripped || this.eodClosing) { await this.closeAllLegsAndCancelReEntries(); return; }
+        if (!this.maxLossTripped) this.checkAndMaybeTripMaxLoss(this.deps.getConfig());
+        if (this.maxProfitTripped || this.maxLossTripped || this.eodClosing) { await this.closeAllLegsAndCancelReEntries(); return; }
 
         if (!leg) {
             await this.checkRefillDrift(token, ltp);
@@ -1088,7 +1118,8 @@ export class LegManager {
         this.deferredRootRefill = null;
         this.capitalGateTripped = false;
         this.maxProfitTripped = false;
-        this.persistMaxProfitLatch(false);
+        this.maxLossTripped = false;
+        this.persistLatch(null);
         this.eodClosing = false;
         this.supersededRefills.clear();
         this.handledBuyOrderIds.clear();

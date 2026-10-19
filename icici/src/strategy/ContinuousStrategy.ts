@@ -247,6 +247,7 @@ export default class ContinuousStrategy extends Strategy {
         // reject it further in. See LegManager's capitalGateTripped comment.
         if (this.legManager.isCapitalGateTripped()) return;
         if (this.legManager.isMaxProfitTripped()) return; // permanently blocks new T1 entries until reset()
+        if (this.legManager.isMaxLossTripped()) return; // same for the loss stop
         const cfg = this.cfg();
         if (!this.enabled) { this.logGateOnce('disabled'); return; }
         if (!this.isTimeInRange()) { this.logGateOnce('outside time window'); return; }
