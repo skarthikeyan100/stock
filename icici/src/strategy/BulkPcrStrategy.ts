@@ -81,6 +81,10 @@ interface BrokerPosition {
     right?: string;
     // 'pending' = a side whose buy did not fill, retried off the other side's ticks.
     phase: 'buying' | 'selling' | 'pending' | 'error' | 'done';
+    // Set while eodSquareOff is cancelling this slot's resting sell. updateTrade ignores fills
+    // meanwhile: the cancel's own filledQty already accounts for any chunk that filled during the
+    // cancel, so counting those fills again would under-square-off.
+    squaringOff?: boolean;
     heldTsym: string | null;
     heldToken: string | null;
     entryAvg: number;
@@ -259,7 +263,11 @@ export default class BulkPcrStrategy extends Strategy {
     // elsewhere.
     private persistState(): void {
         const positions: Partial<Record<BrokerName, BrokerPosition>> = {};
-        for (const [broker, pos] of this.positions) positions[broker] = pos;
+        // squaringOff is in-memory only: persisted true would survive a crash mid-close and block updateTrade after restart.
+        for (const [broker, pos] of this.positions) {
+            const { squaringOff: _inFlight, ...durable } = pos;
+            positions[broker] = durable as BrokerPosition;
+        }
         Mongo.getInstance()?.db.collection(STATE_COLLECTION)
             .replaceOne(
                 { userId: this.userId },
@@ -667,12 +675,19 @@ export default class BulkPcrStrategy extends Strategy {
     // open. The resting-order cancellations and fills that follow are ignored (see onOrderCancelled).
     private async eodSquareOff(pos: BrokerPosition): Promise<void> {
         const tsym = pos.heldTsym!;
+        // Snapshot before any await; updateTrade is gated off below, so the only fills counted on top
+        // of this are the cancel's own filledQty (no double count).
+        const soldBeforeClose = pos.soldQty;
         let remaining = 0;
+        pos.squaringOff = true;
         try {
             const r = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym });
             if (r.cancelFailed) throw new Error('cancel of resting sell failed - not squaring off');
             // filledQty = chunks that filled during the cancel itself; they are sold already.
-            remaining = pos.targetQuantity - pos.soldQty - r.filledQty;
+            remaining = pos.targetQuantity - soldBeforeClose - r.filledQty;
+            // The cancel's fills are now accounted for. Re-open updateTrade before the square-off so that
+            // fills from the market sell itself, including partial fills before a throw, are counted.
+            pos.squaringOff = false;
             if (remaining > 0) {
                 await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: 'NFO' });
             }
@@ -681,6 +696,8 @@ export default class BulkPcrStrategy extends Strategy {
         } catch (e) {
             pos.phase = 'error';
             Log.log(`[BulkPcrStrategy] [ant] ALERT: EOD force-close failed for ${tsym} - manual review required:`, e);
+        } finally {
+            pos.squaringOff = false;
         }
         this.persistState();
     }
@@ -718,7 +735,7 @@ export default class BulkPcrStrategy extends Strategy {
         const broker = trade.broker as BrokerName | undefined;
         if (!broker) return; // untagged fill - can't attribute to a position, ignore defensively
         const pos = this.slotFor(broker, trade.tsym);
-        if (!pos || pos.phase !== 'selling') return;
+        if (!pos || pos.phase !== 'selling' || pos.squaringOff) return;
         if (trade.action !== 'Sell' || trade.tsym !== pos.heldTsym) return;
 
         pos.soldQty += trade.quantity;
