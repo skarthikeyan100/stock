@@ -694,6 +694,14 @@ export default class BulkPcrStrategy extends Strategy {
         pos.soldQty += cancelResult.filledQty;
         pos.soldValue += cancelResult.filledQty * exitPrice;
         this.persistState();
+        if (pos.soldQty >= pos.targetQuantity) {
+            // Everything already sold (resting fills, incl. the cancel window): nothing to square off,
+            // whatever happened to a cancel.
+            pos.phase = 'done';
+            Log.log(`[BulkPcrStrategy] [ant] EOD: ${tsym} already fully sold (${pos.soldQty}/${pos.targetQuantity}) - nothing to square off`);
+            this.persistState();
+            return;
+        }
         if (cancelResult.cancelFailed) {
             pos.phase = 'error';
             Log.log(`[BulkPcrStrategy] [ant] ALERT: EOD force-close of ${tsym} aborted, resting sell cancel failed - manual review required`);
@@ -709,7 +717,7 @@ export default class BulkPcrStrategy extends Strategy {
             if (pos.phase === 'selling') pos.phase = 'done';
             Log.log(`[BulkPcrStrategy] [ant] EOD force-close: ${tsym} squared off qty=${Math.max(remaining, 0)}`);
         } catch (e) {
-            pos.phase = 'error';
+            if (pos.phase === 'selling') pos.phase = 'error'; // a fill may already have completed the slot
             Log.log(`[BulkPcrStrategy] [ant] ALERT: EOD square-off failed for ${tsym} - manual review required:`, e);
         }
         this.persistState();
