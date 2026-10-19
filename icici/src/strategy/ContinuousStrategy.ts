@@ -113,6 +113,8 @@ export default class ContinuousStrategy extends Strategy {
     // ToDo.md's 2026-08-31 live incident (blocked from 08:57 through the 09:30
     // window open with 0 open positions the whole time).
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
+        // Restore today's max-profit stop first, so a restart does not re-open a strategy that already hit its cap.
+        await this.legManager.loadPersistedLatches();
         let openTrades: Trade[] | undefined;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
@@ -219,8 +221,26 @@ export default class ContinuousStrategy extends Strategy {
         return aligned ? configuredRight : null;
     }
 
+    // End of the trading day for this strategy: cfg.eodCloseTime ('HH:mm', default 15:10). Expiry-day options go to
+    // zero or are exercised at 15:30, and the app's own expiry sweeper only runs on Tuesdays (a holiday-shifted
+    // Monday expiry on 2026-10-19 left every leg open), so the strategy closes its own legs before then.
+    private isPastEodCloseTime(): boolean {
+        if (MOCK_BROKER) return false;
+        const [h, m] = String(this.cfg().eodCloseTime ?? '15:10').split(':').map(Number);
+        const now = new Date();
+        return now.getHours() * 60 + now.getMinutes() >= h * 60 + m;
+    }
+
+    private lastEodAttempt = 0;
+
     async processNiftyQuote(quote: NiftyQuote): Promise<void> {
         this.lastNiftyLtp = quote.ltp;
+        // Ahead of every gate below (including the capital and max-profit latches): legs must still close at EOD.
+        // Throttled so a failing sell is retried every few seconds, not on every NIFTY tick.
+        if (this.isPastEodCloseTime() && Date.now() - this.lastEodAttempt > 5000) {
+            this.lastEodAttempt = Date.now();
+            await this.legManager.closeAllForEod();
+        }
         // Silent (not logGateOnce - that still logs every 5min forever) and
         // first, ahead of the other T1 gates below - once tripped, skip the
         // contract lookup/withOpLock entirely rather than let capitalCheck

@@ -1,30 +1,24 @@
 # Known Bugs
 
-## 2026-10-19 - ContinuousStrategy max-profit mass close does not actually close at the broker (naked short + untracked longs)
+## 2026-10-19 - ContinuousStrategy live session: consolidated bugs (Zerodha, expiry day)
 
-Observed live on Zerodha (`ContinuousStrategy`, expiry-day NIFTY weeklies). After a `Max-profit close`
-the strategy's ledger showed every leg closed, but the broker still held positions the strategy did not
-track, including a **naked short** (`NIFTY26O1923050PE` -130, which should never exist) and a 325-lot
-untracked long (`NIFTY26O1923000CE`, avg 90.9, closed manually at 33.81 for about -Rs 18,500). The short was bought back at 110.3 (sold ~67.8, about -Rs 5,500).
+Symptoms: a naked short (NIFTY26O1923050PE -130), untracked longs (23000CE 325, 22950PE 325, 22900PE 130), repeated
+"did not fill within timeout", a duplicate entry on startup, and a strategy that re-opened after a max-profit mass close.
+The strategy's own ledger showed profit while the Zerodha account was down about Rs 22k on these contracts.
 
-Causes found (all trust the strategy's own quantities instead of the broker's):
-- **Sell quantity not clamped to the broker's net position.** `closeAllLegsAndCancelReEntries` and the
-  other Zerodha sell paths (`squareOffOnZerodha`, `marketSellBareOnZerodha`, `placeLimitSellBareOnZerodha`)
-  sell the leg's tracked `totalQuantity` and retry on failure. A retry after an earlier sell had already
-  filled, or a tracked quantity that counted a buy that never filled, sells more than is held -> short.
-- **Cancel-vs-fill race on resting refill buys.** `cancelChildRefills` cancels a resting refill limit buy
-  when it spawns a deeper level, but the refill may already have filled. The fill is then not credited to
-  any leg, so it stays at the broker as an untracked long (130 + 195 on 23000 CE).
-- **Timeout cancel reported "did not fill" for a fill that landed in the race window** (`Zerodha.getFillPrice`),
-  so callers retried the same buy/sell. Fixed in 67d78f3 (re-reads the order after the timeout cancel).
-- **`maxProfitTripped` is in-memory only.** A restart clears it, so a strategy that mass-closed for max
-  profit starts trading again (observed 10:46 and 10:48 the same day). Not persisted anywhere.
-
-Status: FIXED in e004108 - `Zerodha.placeLimitSellOption` now refuses/clamps any sell larger than the sellable broker
-quantity (min of net position and order-implied net, minus resting sells; per-contract in-flight lock), and a superseded
-refill that filled before its cancel is sold straight back (`LegManager.cancelChildRefills`). Timeout-cancel race fixed in
-67d78f3. NOT done: persisting `maxProfitTripped` across restarts (a restart still re-enables trading); the same never-short
-guard for ANT/Breeze/Prism sell paths (ANT clamps to bookkeeping, not the broker).
+| # | Bug | Evidence | Status |
+|---|---|---|---|
+| 1 | Stale Zerodha instrument master (dated Aug 20) had no 19-Oct weekly: strike priced on ANT's 19-Oct expiry, Zerodha symbol resolved to the 27-Oct monthly, limit buy at 50 for a Rs 175 contract | 10:20 entry never filled | FIXED: `ZerodhaContractMaster.preload` re-downloads (atomic rename) when the file is not from today |
+| 2 | `Zerodha.getFillPrice` timeout path cancelled then reported "did not fill" even when the order filled in the race, so callers retried and double-filled | repeated market sells 10:42-10:45 | FIXED 67d78f3 (re-reads order after the cancel) |
+| 3 | No never-short guard: every Zerodha sell path sold the strategy's tracked quantity regardless of the broker position | -130 on 23050PE | FIXED e004108 (`getSellableQuantity`, clamp/refuse, per-contract in-flight lock) |
+| 4 | Marketable limits priced off `ANT.getQuote` (cached OHLC endpoint) that ran 1+ minute behind a fast option (54 quoted vs 65 ask), so buys rested below the ask and timed out about once a minute | 13:23-13:30 | FIXED 76bb7ae (live ScripDetails bid/ask, 5% cap, getQuote fallback) |
+| 5 | T1 entry stacked on a resting refill: a tick between a target-hit leg's deletion and its refill's registration cleared `ordered` | duplicate buy 10:31 | FIXED 13e232e (gate also requires `legManager.isIdle()`) |
+| 6 | Superseded refill limit buys filled anyway and were dropped silently (`cancelChildRefills` deletes the intent first; `handleFillOrExternalSell` ignores a Buy with no intent) -> orphaned longs | 22900PE 130 @69.65, 22950PE 325 @103.55, 23000CE 130+195 | FIXED (this commit): superseded order ids are tracked and a late fill is sold straight back; echoes de-duplicated by `handledBuyOrderIds` |
+| 7 | `maxProfitTripped` lived only in memory: a restart re-opened trading after a max-profit mass close | 10:46 and 10:48 restarts | FIXED (this commit): same-day latch in Mongo `strategyLatches`, loaded in `reconcile`, cleared by `reset()` |
+| 8 | No end-of-day close for ContinuousStrategy; the app's expiry sweeper only runs on Tuesdays, so a holiday-shifted Monday expiry left every leg open | 2026-10-19 | FIXED (this commit): `closeAllForEod` at `eodCloseTime` (default 15:10) |
+| 9 | tsc-watch hot-restarts the order/strategies processes on every compile, killing in-flight buys | orphan at 10:26:34 | NOT FIXED (operational): do not edit source or restart while a buy is resting |
+| 10 | Mass close (`maxProfit`, 1% of maxInvestment) realizes the losing hedge legs along with the winners; no daily loss cap; a restored leg is classed "averaged" (target avg+2 instead of +5) | -2.4k..-2.8k legs at 12:35 | NOT FIXED: needs a decision on loss cap and sizing |
+| 11 | ANT/Breeze/Prism sell paths have no equivalent never-short guard (ANT clamps to its own bookkeeping, not the broker) | - | NOT FIXED |
 
 ## Codebase-wide audit findings (2026-08-28)
 

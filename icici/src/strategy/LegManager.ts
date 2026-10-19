@@ -159,6 +159,17 @@ export class LegManager {
     // checkAndMaybeTripMaxProfit. Configured via cfg.maxProfit (% of
     // maxInvestment); unset disables the feature entirely.
     private maxProfitTripped = false;
+    // End-of-day force close latch: once set, onOptionTick keeps closing every leg (retrying a failed sell on the
+    // next tick) and nothing new is opened. Not persisted - the trading day is over either way.
+    private eodClosing = false;
+    // Refill limit buys superseded by a deeper spawn (cancelChildRefills), keyed by broker order id. The pending
+    // intent is deleted up front, so a fill that lands anyway (before/while the cancel goes through) has no intent to
+    // match and used to be dropped silently - an orphaned position (2026-10-19: 325 + 130 lots). A fill carrying one of
+    // these order ids is sold straight back instead.
+    private supersededRefills = new Map<string, { tsym: string; token: string; exchange: 'NFO' | 'BFO' }>();
+    // Order ids whose fill was already dealt with (adopted as a refill leg, or sold back), so an echo of the same fill
+    // is never acted on twice.
+    private handledBuyOrderIds = new Set<string>();
     // totalPnL snapshot taken at the last reset() call. computeCumulativeProfit uses
     // (recordedPnL - maxProfitBaseline) instead of raw totalPnL so that a reset() actually
     // re-arms max-profit tracking for a fresh session.
@@ -309,6 +320,7 @@ export class LegManager {
         const cumulative = this.computeCumulativeProfit();
         if (cumulative < threshold) return;
         this.maxProfitTripped = true;
+        this.persistMaxProfitLatch(true);
         Log.log(`[${this.deps.ownerType}] MAX PROFIT TRIPPED - cumulative=${Math.round(cumulative)} threshold=${Math.round(threshold)} (maxProfit=${cfg.maxProfit}% of maxInvestment=${maxInvestment}) - closing all legs, cancelling all pending re-entries, and permanently blocking new entries for the rest of this session`);
     }
 
@@ -316,6 +328,45 @@ export class LegManager {
     // repeatedly: only acts on legs still 'OPEN' and re-entries still
     // present, so a partial failure (some legs closed, some still resting)
     // simply retries the remainder on the next tick.
+    // The max-profit stop is a same-day latch kept in Mongo (collection strategyLatches), so a process restart
+    // (a deploy, a crash, tsc-watch) no longer re-enables a strategy that already hit its profit cap -
+    // observed 2026-10-19 when two restarts the same day re-opened trading after a mass close. reset() clears it.
+    private static latchDay(): string {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    private persistMaxProfitLatch(tripped: boolean): void {
+        const col = Mongo.getInstance()?.db.collection('strategyLatches');
+        if (!col) return;
+        const key = { ownerType: this.deps.ownerType, userId: this.deps.userId, day: LegManager.latchDay() };
+        const op = tripped ? col.replaceOne(key, { ...key, maxProfitTripped: true, updatedAt: new Date() }, { upsert: true }) : col.deleteMany({ ownerType: key.ownerType, userId: key.userId });
+        op.catch((e) => Log.log(`[${this.deps.ownerType}] strategyLatches ${tripped ? 'write' : 'clear'} failed (continuing):`, e));
+    }
+
+    // Called once at startup (ContinuousStrategy.reconcile): restores today's max-profit latch if it was tripped
+    // before the restart.
+    async loadPersistedLatches(): Promise<void> {
+        try {
+            const col = Mongo.getInstance()?.db.collection('strategyLatches');
+            if (!col) return;
+            const doc = await col.findOne({ ownerType: this.deps.ownerType, userId: this.deps.userId, day: LegManager.latchDay() });
+            if (doc?.maxProfitTripped) {
+                this.maxProfitTripped = true;
+                Log.log(`[${this.deps.ownerType}] max-profit stop was already tripped earlier today - staying stopped after the restart (reset the strategy to trade again)`);
+            }
+        } catch (e) {
+            Log.log(`[${this.deps.ownerType}] could not read strategyLatches (continuing with the stop untripped):`, e);
+        }
+    }
+
+    // Start of the end-of-day close: from here every tick closes whatever is still open and nothing new is opened.
+    async closeAllForEod(): Promise<void> {
+        if (!this.eodClosing) Log.log(`[${this.deps.ownerType}] End-of-day close - closing every open leg and cancelling pending re-entries`);
+        this.eodClosing = true;
+        await this.closeAllLegsAndCancelReEntries();
+    }
+
     private async closeAllLegsAndCancelReEntries(): Promise<void> {
         for (const leg of Array.from(this.legsByToken.values())) {
             if (leg.status !== 'OPEN') continue; // already closing (this call, or a previous tick's)
@@ -514,7 +565,7 @@ export class LegManager {
         if (leg && !Number.isNaN(ltp)) leg.lastLtp = ltp;
 
         if (!this.maxProfitTripped) this.checkAndMaybeTripMaxProfit(this.deps.getConfig());
-        if (this.maxProfitTripped) { await this.closeAllLegsAndCancelReEntries(); return; }
+        if (this.maxProfitTripped || this.eodClosing) { await this.closeAllLegsAndCancelReEntries(); return; }
 
         if (!leg) {
             await this.checkRefillDrift(token, ltp);
@@ -783,6 +834,7 @@ export class LegManager {
         for (const [token, intent] of stale) {
             this.pendingReEntries.delete(token);
             unwatchToken(token, this.deps.strategyRef);
+            if (intent.orderId) this.supersededRefills.set(intent.orderId, { tsym: intent.tsym, token, exchange: intent.exchange });
             try {
                 await this.currentOps().cancel(this.deps.userId, intent.orderId);
                 Log.log(`[${this.deps.ownerType}] Pending refill at level ${intent.parentLevel} cancelled (parent ${leg.tsym}): ${intent.tsym}`);
@@ -793,6 +845,9 @@ export class LegManager {
                 // of 23000 CE). Sell it straight back.
                 const filledQty = e?.name === 'OrderAlreadyFilledError' ? Number(e.filledQuantity ?? 0) : 0;
                 if (filledQty > 0) {
+                    // Sold back right here, so the echo of this same fill must not trigger a second sell-back.
+                    this.supersededRefills.delete(intent.orderId);
+                    this.handledBuyOrderIds.add(intent.orderId);
                     Log.log(`[${this.deps.ownerType}] ALERT: superseded refill ${intent.orderId} (${intent.tsym}) had already filled ${filledQty} - selling it back so it is not left untracked`);
                     try {
                         await this.currentOps().sell(this.deps.userId, intent.tsym, intent.token, filledQty, intent.exchange);
@@ -895,8 +950,25 @@ export class LegManager {
             return;
         }
         if (trade.action !== 'Buy') return;
+        // A superseded refill (see supersededRefills) that filled anyway: its pending intent is gone, so it can
+        // never become a leg. Match it by broker order id BEFORE the token lookup, because a newer refill on the same
+        // token would otherwise swallow this fill. Sell it straight back rather than leave an untracked position.
+        const oid = trade.brokerOrderId;
+        const superseded = oid ? this.supersededRefills.get(oid) : undefined;
+        if (oid && superseded && !this.handledBuyOrderIds.has(oid)) {
+            this.supersededRefills.delete(oid);
+            this.handledBuyOrderIds.add(oid);
+            Log.log(`[${this.deps.ownerType}] ALERT: superseded refill ${oid} (${superseded.tsym}) filled ${trade.quantity} @ ${trade.price} after it was replaced - selling it back so it is not left untracked`);
+            try {
+                await this.currentOps().sell(this.deps.userId, superseded.tsym, superseded.token, trade.quantity, superseded.exchange);
+            } catch (sellErr) {
+                Log.log(`[${this.deps.ownerType}] ALERT: could not sell back the filled superseded refill (${superseded.tsym} qty=${trade.quantity}) - UNTRACKED POSITION, manual action required:`, sellErr);
+            }
+            return;
+        }
         const intent = this.pendingReEntries.get(trade.token);
         if (!intent) return; // redundant echo of a market buy already handled synchronously
+        if (oid) this.handledBuyOrderIds.add(oid);
         this.pendingReEntries.delete(trade.token);
         unwatchToken(trade.token, this.deps.strategyRef);
         const legId = this.nextLegId();
@@ -1016,6 +1088,10 @@ export class LegManager {
         this.deferredRootRefill = null;
         this.capitalGateTripped = false;
         this.maxProfitTripped = false;
+        this.persistMaxProfitLatch(false);
+        this.eodClosing = false;
+        this.supersededRefills.clear();
+        this.handledBuyOrderIds.clear();
         this.maxProfitBaseline = this.realizedPnL;
     }
 }

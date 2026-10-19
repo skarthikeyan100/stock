@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import Log from '../util/Log';
 
 type Index = 'NIFTY' | 'SENSEX';
@@ -49,8 +50,31 @@ class ZerodhaContractMaster {
 
     // Warms the NFO and BFO instrument caches at startup (see AntContractMaster.preload).
     // Fail-soft per exchange: a missing BFO file must not block NFO.
+    // The master changes every trading day (new weekly expiries are listed ahead of time) and nothing else
+    // refreshes it: on 2026-10-19 a file dated Aug 20 had no 19-Oct weekly, so the Zerodha symbol resolved to the
+    // 27-Oct monthly while the strike was priced on ANT's 19-Oct expiry. If the file was not written today, download
+    // it again before loading (public endpoint, no auth). Written to a temp file and renamed, so a process reading
+    // it concurrently never sees a half-written file. Any failure keeps the existing file.
+    private refreshIfStale(exchange: Exchange): void {
+        const filePath = path.join(__dirname, '../../data/zerodha', `${exchange}_instruments.csv`);
+        try {
+            const mtime = fs.existsSync(filePath) ? fs.statSync(filePath).mtime : new Date(0);
+            const now = new Date();
+            if (mtime.toDateString() === now.toDateString()) return;
+            const tmp = `${filePath}.${process.pid}.tmp`;
+            execFileSync('curl', ['-sf', '-m', '60', '-o', tmp, `https://api.kite.trade/instruments/${exchange}`], { timeout: 70000 });
+            const lines = fs.readFileSync(tmp, 'utf-8').split('\n').length;
+            if (lines < 1000) throw new Error(`downloaded ${exchange} master has only ${lines} lines`);
+            fs.renameSync(tmp, filePath);
+            Log.log(`[ZerodhaContractMaster] refreshed stale ${exchange} master (${lines} lines)`);
+        } catch (e: any) {
+            Log.log(`[ZerodhaContractMaster] ALERT: could not refresh the ${exchange} instrument master - using the existing file: ${e?.message ?? e}`);
+        }
+    }
+
     preload(): void {
         for (const exchange of ['NFO', 'BFO'] as Exchange[]) {
+            this.refreshIfStale(exchange);
             const t0 = Date.now();
             try {
                 const rows = this.loadInstruments(exchange).length;

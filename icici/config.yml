@@ -26,14 +26,14 @@ strategies:
   - type: ContinuousStrategy
     enabled: true
     broker: kite
-    initialQuantity: 65
+    initialQuantity: 260
     slDistance: 10
     targetDistance: 5
     squareOffDistance: 500
     postAverageTargetDistance: 2
     minPremium: 50
     maxInvestment: 200000
-    maxProfit: 1
+    maxProfit: 4
     spawnQuantityMode: '1'
     averageQuantityMode: same
     right: none
@@ -134,7 +134,7 @@ strategies:
     brokers: &ref_0
       - ant
   - type: BulkPcrAutoStartStrategy
-    enabled: true
+    enabled: false
     times:
       - '10:35'
       - '11:05'
