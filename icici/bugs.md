@@ -1,11 +1,11 @@
 # Known Bugs
 
-## 2026-10-19 - ContinuousStrategy max-profit mass close does not actually close at the broker (live loss ~Rs 40k, naked short)
+## 2026-10-19 - ContinuousStrategy max-profit mass close does not actually close at the broker (naked short + untracked longs)
 
 Observed live on Zerodha (`ContinuousStrategy`, expiry-day NIFTY weeklies). After a `Max-profit close`
 the strategy's ledger showed every leg closed, but the broker still held positions the strategy did not
 track, including a **naked short** (`NIFTY26O1923050PE` -130, which should never exist) and a 325-lot
-untracked long (`NIFTY26O1923000CE`, avg 90.9, closed manually at 33.81 for about -Rs 18,500).
+untracked long (`NIFTY26O1923000CE`, avg 90.9, closed manually at 33.81 for about -Rs 18,500). The short was bought back at 110.3 (sold ~67.8, about -Rs 5,500).
 
 Causes found (all trust the strategy's own quantities instead of the broker's):
 - **Sell quantity not clamped to the broker's net position.** `closeAllLegsAndCancelReEntries` and the
