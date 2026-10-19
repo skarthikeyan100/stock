@@ -71,6 +71,24 @@ class AntContractMaster {
     return AntContractMaster.instance;
   }
 
+  // Fills the in-memory caches at process startup so the first lookup inside a trading window
+  // doesn't pay the JSON parse. Fail-soft: a failed load is logged and lookups stay lazy as before.
+  // NSE degrades to an empty table inside loadNSE itself (with its own ALERT).
+  preload(opts: { bfo?: boolean } = {}): void {
+    const tryLoad = (label: string, load: () => { length: number }) => {
+      const t0 = Date.now();
+      try {
+        const rows = load().length;
+        Log.log(`[AntContractMaster] preload ${label}: ${rows} rows in ${Date.now() - t0}ms`);
+      } catch (e: any) {
+        Log.log(`[AntContractMaster] ALERT: preload ${label} failed - lookups will retry lazily: ${e?.message ?? e}`);
+      }
+    };
+    tryLoad('NFO', () => this.loadNFO());
+    tryLoad('NSE', () => this.loadNSE());
+    if (opts.bfo) tryLoad('BFO', () => this.loadBFO());
+  }
+
   private loadNFO(): ContractRecord[] {
     if (!this.nfoCache) {
       this.checkStaleness(this.NFO_PATH);

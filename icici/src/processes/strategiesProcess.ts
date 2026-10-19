@@ -6,6 +6,7 @@ console.log = console.error;
 import net from 'net';
 import fs from 'fs';
 import Log from '../util/Log';
+import AntContractMaster from '../ant/AntContractMaster';
 import Mongo from '../tools/mongo';
 import { readJsonLines, writeJsonLine } from '../ipc/jsonLines';
 import { STRATEGIES_SOCKET_PATH, StrategiesRequest, StrategiesResponse } from '../ipc/strategiesProtocol';
@@ -250,6 +251,10 @@ function startStrategiesServer() {
 }
 
 async function main() {
+    // TopStock (and antLegOps) resolve ANT contracts in this process - warm the NFO/NSE caches
+    // before strategies.initialize() so the first in-window lookup is an in-memory read.
+    AntContractMaster.getInstance().preload();
+
     await Mongo.init().catch((e) => Log.log('[strategies] Mongo.init failed (continuing without persistence):', e));
 
     OrderClient.getInstance().onFill((userId, trade) => {

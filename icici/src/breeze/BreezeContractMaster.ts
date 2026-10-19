@@ -105,6 +105,20 @@ class BreezeContractMaster {
         }
     }
 
+    // Warms the FNO and NSE caches at startup. Runs the daily stale-refresh first, same as
+    // the lazy path would. Fail-soft: a failed download or parse is logged and lookups stay lazy.
+    async preload(): Promise<void> {
+        const t0 = Date.now();
+        try {
+            await this.ensureLoaded();
+            const fno = this.loadFno().length;
+            const nse = this.loadNse().length;
+            Log.log(`[BreezeContractMaster] preload: ${fno} FNO / ${nse} NSE rows in ${Date.now() - t0}ms`);
+        } catch (e: any) {
+            Log.log(`[BreezeContractMaster] ALERT: preload failed - lookups will retry lazily: ${e?.message ?? e}`);
+        }
+    }
+
     // relax_quotes/trim: the header row has a space before each field's
     // opening quote (`"Token", "ShortName", ...`), which csv-parse's default
     // strict quoting rejects (INVALID_OPENING_QUOTE) - confirmed against a

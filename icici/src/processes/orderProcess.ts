@@ -1003,6 +1003,14 @@ async function onTick(tick: any) {
 }
 
 async function main() {
+    // Warm every broker's contract master before the IPC socket accepts requests, so the first
+    // order inside a trading window doesn't pay the file parse. Breeze's daily refresh runs
+    // in the background (void) so a slow download can't delay startup.
+    AntContractMaster.getInstance().preload({ bfo: true });
+    ZerodhaContractMaster.getInstance().preload();
+    PrismContractMaster.getInstance().preload();
+    void BreezeContractMaster.getInstance().preload();
+
     await Mongo.init().catch((e) => Log.log('[order] Mongo.init failed (continuing without persistence):', e));
     await loadUserLimits();
     // bookkeeping.closedTrades is in-memory only - reload today's realized

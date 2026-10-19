@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import Log from '../util/Log';
 
 // Reads NFO_symbols.txt directly (repo root, __dirname-relative so it doesn't
 // depend on process cwd - see src/orchestrator.ts's explicit cwd fix for why
@@ -22,6 +23,17 @@ interface Row {
 class PrismContractMaster {
     private static instance: PrismContractMaster;
     private cache: Row[] | null = null;
+
+    // Warms the symbols cache at startup (see AntContractMaster.preload). Fail-soft.
+    preload(): void {
+        const t0 = Date.now();
+        try {
+            const rows = this.load().length;
+            Log.log(`[PrismContractMaster] preload: ${rows} rows in ${Date.now() - t0}ms`);
+        } catch (e: any) {
+            Log.log(`[PrismContractMaster] ALERT: preload failed - lookups will retry lazily: ${e?.message ?? e}`);
+        }
+    }
 
     static getInstance(): PrismContractMaster {
         if (!PrismContractMaster.instance) {

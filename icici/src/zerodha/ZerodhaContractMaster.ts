@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import Log from '../util/Log';
 
 type Index = 'NIFTY' | 'SENSEX';
 type Exchange = 'NFO' | 'BFO';
@@ -43,6 +44,20 @@ class ZerodhaContractMaster {
             this.warnedStale.add(filePath);
         } catch (e) {
             // Non-fatal - staleness detection is a courtesy warning, not a load-blocking check.
+        }
+    }
+
+    // Warms the NFO and BFO instrument caches at startup (see AntContractMaster.preload).
+    // Fail-soft per exchange: a missing BFO file must not block NFO.
+    preload(): void {
+        for (const exchange of ['NFO', 'BFO'] as Exchange[]) {
+            const t0 = Date.now();
+            try {
+                const rows = this.loadInstruments(exchange).length;
+                Log.log(`[ZerodhaContractMaster] preload ${exchange}: ${rows} rows in ${Date.now() - t0}ms`);
+            } catch (e: any) {
+                Log.log(`[ZerodhaContractMaster] ALERT: preload ${exchange} failed - lookups will retry lazily: ${e?.message ?? e}`);
+            }
         }
     }
 
