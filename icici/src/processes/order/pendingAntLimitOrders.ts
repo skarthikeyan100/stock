@@ -41,6 +41,10 @@ const FLAT_NO_FILL_CONFIRM_POLLS = 5;
 
 const pending = new Map<string, PendingAntLimitOrder>();
 
+// How long a passed session check is trusted by pollPendingAntLimitOrders (see its use there).
+const SESSION_RECHECK_MS = 5 * 60_000;
+let sessionValidUntil = 0;
+
 // One place that builds the Trade booked for an ANT fill, so every booking path records the same shape.
 function buildAntFillTrade(order: PendingAntLimitOrder, orderId: string, quantity: number, price: number, action: 'Buy' | 'Sell'): Trade {
     const trade = new Trade();
@@ -119,7 +123,12 @@ export async function loadPendingAntLimitOrdersFromMongo(): Promise<void> {
 export async function pollPendingAntLimitOrders(): Promise<void> {
     if (pending.size === 0) return;
     const ant = ANT.getInstance();
-    if (!(await ant.hasValidSession())) return;
+    // hasValidSession() is a full positions fetch (ANT has no lighter auth check), so it is not run on
+    // every 15s poll. A failed status call below clears the window so the next poll re-checks at once.
+    if (Date.now() >= sessionValidUntil) {
+        if (!(await ant.hasValidSession())) return;
+        sessionValidUntil = Date.now() + SESSION_RECHECK_MS;
+    }
 
     for (const [orderId, order] of pending) {
         try {
@@ -179,6 +188,7 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
             }
             // else: still pending, leave in map for the next poll
         } catch (e: any) {
+            sessionValidUntil = 0; // may be a dead session - re-verify it before the next poll acts on anything
             // AliceBlue's orders/history endpoint only covers the current trading
             // day - confirmed live 2026-10-16: a 2-day-old resting sell polled
             // every 15s, every single poll throwing "ANT orders/history not Ok...
