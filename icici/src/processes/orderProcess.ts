@@ -1239,70 +1239,31 @@ async function main() {
     // settings/config.yml happen to say, missing the real resting order
     // entirely - the same "stuck position with no exit" failure mode this
     // project already took a live loss from.
-    // Trades whose close order was sent are 'handled' and not re-sent while their
-    // sell fill is still in flight (re-sending would over-sell). Trades opened or
-    // failed after a pass started are picked up by a rerun (a breach event that
-    // arrives mid-pass) or a bounded retry (a failed close).
-    const drawdownHandled = new Map<string, Set<object>>();
-    const drawdownLiquidating = new Set<string>();
-    const drawdownRerun = new Set<string>();
-    const drawdownRetries = new Map<string, number>();
-    const MAX_LIQUIDATION_RETRIES = 5;
-    const liquidateOnBreach = async (user: string): Promise<void> => {
-        if (drawdownLiquidating.has(user)) { drawdownRerun.add(user); return; }
-        drawdownLiquidating.add(user);
-        let failed = false;
-        try {
-            const handled = drawdownHandled.get(user) ?? new Set<object>();
-            drawdownHandled.set(user, handled);
-            const live = new Set<object>([...bookkeeping.trades, ...bookkeeping.shortTrades]);
-            for (const h of handled) if (!live.has(h)) handled.delete(h);
-
-            for (const trade of bookkeeping.trades.filter((t) => t.user === user && !handled.has(t))) {
-                try {
-                    const executor = getBrokerExecutor(user, trade.broker);
-                    const { filledQty: alreadyFilledQty } = await cancelAnyRestingLimitSell(executor, user, trade.tsym);
-                    const remainingQty = trade.quantity - alreadyFilledQty;
-                    if (remainingQty <= 0) { handled.add(trade); continue; } // see cancelAnyRestingLimitSell's comment - would double-sell
-                    const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
-                    await executor.squareOff(user, trade.tsym, remainingQty, exchange);
-                    handled.add(trade);
-                } catch (e) {
-                    failed = true;
-                    Log.log('[order] Auto-squareoff on drawdown breach failed for', trade.tsym, e);
-                }
+    bookkeeping.onDrawdownBreach(async (user) => {
+        for (const trade of bookkeeping.trades.filter((t) => t.user === user)) {
+            try {
+                const executor = getBrokerExecutor(user, trade.broker);
+                const { filledQty: alreadyFilledQty } = await cancelAnyRestingLimitSell(executor, user, trade.tsym);
+                const remainingQty = trade.quantity - alreadyFilledQty;
+                if (remainingQty <= 0) continue; // see cancelAnyRestingLimitSell's comment - would double-sell
+                const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
+                await executor.squareOff(user, trade.tsym, remainingQty, exchange);
+            } catch (e) {
+                Log.log('[order] Auto-squareoff on drawdown breach failed for', trade.tsym, e);
             }
-            // ButterflyStrategy's short legs are NOT in bookkeeping.trades (separate ledger - see
-            // bookkeeping.recordShortFill) and were otherwise never force-closed by a drawdown
-            // breach - found on review: a user breaching their loss limit would ride an open short
-            // leg completely uncovered. Buy-to-close, not squareOff (a short reduces via a BUY).
-            for (const shortTrade of bookkeeping.shortTrades.filter((t) => t.user === user && !handled.has(t))) {
-                try {
-                    await buyToCloseShortLegForUser(user, shortTrade);
-                    handled.add(shortTrade);
-                } catch (e) {
-                    failed = true;
-                    Log.log('[order] Auto-buy-to-close on drawdown breach failed for', shortTrade.tsym, e);
-                }
-            }
-        } finally {
-            drawdownLiquidating.delete(user);
         }
-
-        if (failed) {
-            const attempts = (drawdownRetries.get(user) ?? 0) + 1;
-            if (attempts <= MAX_LIQUIDATION_RETRIES) {
-                drawdownRetries.set(user, attempts);
-                setTimeout(() => { liquidateOnBreach(user).catch((e) => Log.log('[order] drawdown liquidation retry failed:', e)); }, 15_000);
-            } else {
-                Log.log(`[order] drawdown liquidation for ${user} still failing after ${MAX_LIQUIDATION_RETRIES} retries - positions may still be open, manual action needed`);
+        // ButterflyStrategy's short legs are NOT in bookkeeping.trades (separate ledger - see
+        // bookkeeping.recordShortFill) and were otherwise never force-closed by a drawdown
+        // breach - found on review: a user breaching their loss limit would ride an open short
+        // leg completely uncovered. Buy-to-close, not squareOff (a short reduces via a BUY).
+        for (const shortTrade of bookkeeping.shortTrades.filter((t) => t.user === user)) {
+            try {
+                await buyToCloseShortLegForUser(user, shortTrade);
+            } catch (e) {
+                Log.log('[order] Auto-buy-to-close on drawdown breach failed for', shortTrade.tsym, e);
             }
-        } else {
-            drawdownRetries.delete(user);
         }
-        if (drawdownRerun.delete(user)) await liquidateOnBreach(user);
-    };
-    bookkeeping.onDrawdownBreach(liquidateOnBreach);
+    });
 
     connectAntOrderNotifyIfSessionValid('startup');
     connectBreezeOrderNotifyIfSessionValid('startup').catch((e) => Log.log('[order] connectBreezeOrderNotifyIfSessionValid failed:', e));

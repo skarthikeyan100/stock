@@ -759,7 +759,8 @@ class OrderBookkeeping {
             }
             // A buy that fills after a breach (a pending order) must not stay open
             // uncovered: the same check that runs on sells liquidates it.
-            await this.checkBreachAndNotify(tradeEvent.user || 'Default');
+            // Not awaited: the ledger reads must not delay this fill's publication.
+            this.checkBreachAndNotify(tradeEvent.user || 'Default').catch((e) => Log.log('[order] breach check failed after buy fill:', e));
         } else {
             const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user && t.broker == tradeEvent.broker);
             if (index != -1) {
@@ -811,9 +812,15 @@ class OrderBookkeeping {
                     if (buyTrade.token) exitMonitor.unregisterTrade(user, buyTrade.token);
                 }
 
-                // Awaited (bounded) so the breach check reads this fill from the ledger.
-                await withFallbackTimeout(this.persistClosedTrade(closedPortion, user, tradeEvent.price), LEDGER_TIMEOUT_MS, undefined, 'closedTrades write');
-                await this.checkBreachAndNotify(user);
+                // Bounded wait so the breach check can read this fill from the ledger. If the
+                // row did not land in time the read cannot see it, so re-check later instead.
+                const persisted = await withFallbackTimeout(
+                    this.persistClosedTrade(closedPortion, user, tradeEvent.price), LEDGER_TIMEOUT_MS, false, 'closedTrades write');
+                if (persisted) {
+                    this.checkBreachAndNotify(user).catch((e) => Log.log('[order] breach check failed for', user, e));
+                } else {
+                    this.scheduleDrawdownRecheck(user);
+                }
             }
         }
         this.notifyPositionsChanged();
@@ -1135,22 +1142,32 @@ class OrderBookkeeping {
     // row per closed position, with entry/exit timestamps). Feeds payout
     // history and drawdown-breach explanations (see src/payout.ts). Never
     // let a Mongo hiccup block live bookkeeping - fire and forget.
-    private async persistClosedTrade(trade: Trade, user: string, exitPrice: number): Promise<void> {
-        await Mongo.getInstance()?.db.collection('closedTrades').insertOne({
-            user,
-            tsym: trade.tsym,
-            token: trade.token,
-            right: trade.right,
-            quantity: trade.quantity,
-            entryPrice: trade.price,
-            exitPrice,
-            realizedPnL: trade.realizedPnL,
-            entryTime: trade.entryTime,
-            exitTime: trade.exitTime,
-            strategy: trade.strategy,
-            broker: trade.broker,
-            createdAt: new Date(),
-        }).catch((e) => Log.log('[order] Failed to persist closedTrade for', user, ':', e));
+    // Resolves true only when the row is written. Never throws: a failure here
+    // must not reject the fill handler after position state has already changed.
+    private async persistClosedTrade(trade: Trade, user: string, exitPrice: number): Promise<boolean> {
+        try {
+            const col = Mongo.getInstance()?.db?.collection('closedTrades');
+            if (!col) return false;
+            await col.insertOne({
+                user,
+                tsym: trade.tsym,
+                token: trade.token,
+                right: trade.right,
+                quantity: trade.quantity,
+                entryPrice: trade.price,
+                exitPrice,
+                realizedPnL: trade.realizedPnL,
+                entryTime: trade.entryTime,
+                exitTime: trade.exitTime,
+                strategy: trade.strategy,
+                broker: trade.broker,
+                createdAt: new Date(),
+            });
+            return true;
+        } catch (e) {
+            Log.log('[order] Failed to persist closedTrade for', user, ':', e);
+            return false;
+        }
     }
 
     // Called after zerodhaExecutor.setTargetStopLoss (or the Prism-routed
