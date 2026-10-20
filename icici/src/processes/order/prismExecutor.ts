@@ -240,6 +240,67 @@ export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
     return trade;
 }
 
+// ButterflyStrategy's narrow sell-to-open exception ONLY. Must poll real order status via
+// waitForPrismBuyFill (the same helper buyOnPrism's verified path above uses - it is
+// direction-agnostic, just polls getOrderStatus(orderId), so it's reusable here as-is)
+// rather than trusting an immediate "ORDERED" response the way the bare buyContract/
+// sellContract helpers at the top of this file do (see their own comment on that gap) -
+// an unconfirmed fill here would leave the strategy believing it holds a short leg it
+// doesn't actually hold. Throws (doesn't guess) if the fill never confirms, so
+// placeSellLegs sees this as a failed leg and runs its buy-back-the-other-leg unwind,
+// not a silent phantom short.
+export async function enterShortOnPrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const prism = Prism.getInstance();
+    const quote = await prism.getStockOptionQuote(tradingSymbol);
+    const limitPrice = quote.ltp;
+    Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) (Prism) ${tradingSymbol} qty=${quantity} @ ${limitPrice} for ${userId}`);
+    const { orderId } = await prism.placeLimitSellBare(tradingSymbol, instrumentId, quantity, limitPrice, userId, exchange);
+    const fillPrice = await waitForPrismBuyFill(orderId, tradingSymbol, userId);
+
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.token = instrumentId;
+    trade.quantity = quantity;
+    trade.price = fillPrice;
+    trade.lastTradePrice = fillPrice;
+    trade.action = 'SellToOpen';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+    trade.broker = 'prism';
+    trade.brokerOrderId = orderId;
+
+    await bookkeeping.recordShortFill(trade);
+    return trade;
+}
+
+// Closes a short opened by enterShortOnPrism. Mirrors buyOnPrism's verified (non-cover)
+// path exactly - same waitForPrismBuyFill poll discipline - but records via
+// recordShortFill with action='BuyToClose' so bookkeeping's long-only Buy branch never
+// mistakes this for a new long position.
+export async function buyToClosePrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const prism = Prism.getInstance();
+    const quote = await prism.getStockOptionQuote(tradingSymbol);
+    const limitPrice = quote.ltp;
+    Log.log(`[order] [BUTTERFLY] Buy-to-close (Prism) ${tradingSymbol} qty=${quantity} @ ${limitPrice} for ${userId}`);
+    const { orderId } = await prism.placeLimitBuyBare(tradingSymbol, instrumentId, quantity, limitPrice, userId, exchange);
+    const fillPrice = await waitForPrismBuyFill(orderId, tradingSymbol, userId);
+
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.token = instrumentId;
+    trade.quantity = quantity;
+    trade.price = fillPrice;
+    trade.lastTradePrice = fillPrice;
+    trade.action = 'BuyToClose';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+    trade.broker = 'prism';
+    trade.brokerOrderId = orderId;
+
+    await bookkeeping.recordShortFill(trade);
+    return trade;
+}
+
 export async function squareOffOnPrism(userId: string, tsym: string, quantity: number): Promise<Trade> {
     const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
     if (existing?.prismCoverOrderNo) {

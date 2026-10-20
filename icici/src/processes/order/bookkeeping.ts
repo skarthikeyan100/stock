@@ -74,6 +74,11 @@ interface PendingOrder {
 class OrderBookkeeping {
     trades: Trade[] = [];
     closedTrades: Trade[] = [];
+    // Separate ledger for a strategy's legitimate SHORT positions (e.g. ButterflyStrategy's
+    // sell-to-open legs) - deliberately NOT `trades` above, which every existing Buy/Sell
+    // branch in _processTradeEvent treats as long-only (see recordShortFill's own comment).
+    // Keyed identically to `trades`: (tsym, user, broker).
+    shortTrades: Trade[] = [];
     private orderUserMap: Map<string, string> = new Map();
     private pendingOrdersByTsym: Map<string, string[]> = new Map();
     userPnL: Map<string, number> = new Map();
@@ -553,6 +558,85 @@ class OrderBookkeeping {
             throw e;
         }
         for (const l of this.fillListeners) l(tradeEvent.user || 'Default', tradeEvent);
+    }
+
+    // Dedicated recorder for a strategy's own SellToOpen/BuyToClose fills (e.g.
+    // ButterflyStrategy's short legs). Never routes through _processTradeEvent's Buy/Sell
+    // branches: those assume every Buy opens/adds-to a long and every Sell reduces an
+    // existing long-trades entry (no-op, zero audit trail, if none exists) - a BuyToClose
+    // recorded as a plain 'Buy' there would hit the "no existing entry" case and wrongly
+    // create a phantom open-long that nothing ever naturally closes. Additive only - every
+    // other strategy's bookkeeping behavior via recordFill/_processTradeEvent is untouched.
+    async recordShortFill(tradeEvent: Trade): Promise<void> {
+        if (tradeEvent.brokerOrderId) {
+            if (this.processedFillIds.has(tradeEvent.brokerOrderId)) {
+                Log.log(`[order] Ignoring redelivered short fill for broker order ${tradeEvent.brokerOrderId} (${tradeEvent.tsym}) - already processed`);
+                return;
+            }
+            this.processedFillIds.add(tradeEvent.brokerOrderId);
+        }
+        Log.log(`[order] ${tradeEvent.action} (short) ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} status=${tradeEvent.status}`);
+        tradeEvent.entryTime = new Date();
+        Mongo.getInstance()?.insert(tradeEvent).catch((e) => {
+            Log.log('[order] Mongo insert failed for short fill (continuing without persistence):', tradeEvent.tsym, e);
+        });
+
+        if (tradeEvent.action === 'SellToOpen') {
+            const idx = this.shortTrades.findIndex((t) => t.tsym === tradeEvent.tsym && t.user === tradeEvent.user && t.broker === tradeEvent.broker);
+            if (idx === -1) {
+                this.shortTrades.push(tradeEvent);
+            } else {
+                const t = this.shortTrades[idx];
+                const traded = t.quantity * t.price;
+                const newTraded = tradeEvent.quantity * tradeEvent.price;
+                t.quantity += tradeEvent.quantity;
+                t.price = (traded + newTraded) / t.quantity;
+            }
+        } else if (tradeEvent.action === 'BuyToClose') {
+            const idx = this.shortTrades.findIndex((t) => t.tsym === tradeEvent.tsym && t.user === tradeEvent.user && t.broker === tradeEvent.broker);
+            if (idx === -1) {
+                Log.log(`[order] WARNING: BuyToClose for ${tradeEvent.tsym} (${tradeEvent.user}) has no matching SellToOpen entry - dropping (no phantom position created)`);
+                this.notifyPositionsChanged();
+                return;
+            }
+            const shortTrade = this.shortTrades[idx];
+            // Clamp, same discipline _processTradeEvent's long-side Sell branch uses - a
+            // strategy bug or a desynced close must never go negative here.
+            const closeQty = Math.min(tradeEvent.quantity, shortTrade.quantity);
+            if (tradeEvent.quantity > shortTrade.quantity) {
+                Log.log(`[order] WARNING: BuyToClose qty ${tradeEvent.quantity} for ${tradeEvent.tsym} (${tradeEvent.user}) exceeds tracked short qty ${shortTrade.quantity} - clamping`);
+            }
+            // Reversed vs. the long P&L formula in _processTradeEvent: a short profits when
+            // price falls (sold high, bought back low).
+            const realizedPnL = (shortTrade.price - tradeEvent.price) * closeQty;
+            const user = shortTrade.user || 'Default';
+            const cumulative = (this.userPnL.get(user) || 0) + realizedPnL;
+            this.userPnL.set(user, cumulative);
+            this.checkDrawdownNotification(user, cumulative);
+
+            const closedPortion = new Trade();
+            closedPortion.tsym = shortTrade.tsym;
+            closedPortion.token = shortTrade.token;
+            closedPortion.quantity = closeQty;
+            closedPortion.price = shortTrade.price;
+            closedPortion.action = 'BuyToClose';
+            closedPortion.user = user;
+            closedPortion.broker = shortTrade.broker;
+            closedPortion.open = false;
+            closedPortion.realizedPnL = realizedPnL;
+            closedPortion.entryTime = shortTrade.entryTime;
+            closedPortion.exitTime = new Date();
+            closedPortion.strategy = shortTrade.strategy;
+            this.closedTrades.push(closedPortion);
+            this.persistClosedTrade(closedPortion, user, tradeEvent.price);
+
+            shortTrade.quantity -= closeQty;
+            if (shortTrade.quantity <= 0) this.shortTrades.splice(idx, 1);
+        } else {
+            Log.log(`[order] WARNING: recordShortFill called with unexpected action '${tradeEvent.action}' for ${tradeEvent.tsym} - ignoring (expected SellToOpen/BuyToClose)`);
+            return;
+        }
+        this.notifyPositionsChanged();
     }
 
     // Prism/Shoonya websocket 'om' message shape - kept for the legacy order path.

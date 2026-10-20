@@ -25,12 +25,12 @@ import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
-import { buyIndexOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, cancelOrderOnZerodha, getContractByPriceRangeOnZerodha } from './order/zerodhaExecutor';
+import { buyIndexOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, cancelOrderOnZerodha, getContractByPriceRangeOnZerodha, enterShortOnZerodha, buyToCloseOnZerodha } from './order/zerodhaExecutor';
 import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingZerodhaOrdersForSymbol, onCancelled as onPendingZerodhaCancelled } from './order/pendingLimitOrders';
 import { pollPendingAntLimitOrders, loadPendingAntLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingAntOrdersForSymbol, onCancelled as onPendingAntCancelled } from './order/pendingAntLimitOrders';
 import { pollPendingPrismLimitOrders, loadPendingPrismLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingPrismOrdersForSymbol, onCancelled as onPendingPrismCancelled } from './order/pendingPrismLimitOrders';
 import * as antExecutor from './order/antExecutor';
-import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
+import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getMarketableBreezeBuyPrice, tsymFor, enterShortOnBreeze, buyToCloseOnBreeze } from './order/breezeExecutor';
 import { pollPendingBreezeLimitOrders, loadPendingBreezeLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, onCancelled as onPendingBreezeCancelled } from './order/breezePendingLimitOrders';
 import { buyChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
@@ -49,7 +49,7 @@ import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
 import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, CALL } from '../constants';
 import { getUser, getAllUsers } from '../user';
-import { OptionQuote } from '../model/model';
+import { OptionQuote, Trade } from '../model/model';
 import { isPastExpirySquareOffTime, isPastReconcileTime } from '../util/marketHours';
 
 // Defense-in-depth: an unhandled promise rejection anywhere in this process
@@ -275,6 +275,72 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
         }
     }
     return { filledQty, cancelFailed };
+}
+
+// Read-only strike+right -> contract lookup, dispatched per-broker to each broker's own
+// contract master. Used by ButterflyStrategy to resolve all 4 of its legs before placing
+// anything. ant's findNearestExpiryOption returns `exch` (renamed to `exchange` here for a
+// uniform return shape across all 4 brokers). Prism's contract master carries no exchange
+// field at all - hardcoded here, same as the 'BFO' fallback below.
+async function resolveOptionContractForBroker(
+    broker: 'zerodha' | 'ant' | 'breeze' | 'prism',
+    index: 'NIFTY' | 'SENSEX',
+    strike: number,
+    right: 'CE' | 'PE'
+): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
+    if (broker === 'ant') {
+        const exch = index === 'SENSEX' ? 'BFO' : 'NFO';
+        const r = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
+        return { tsym: r.tradingSymbol, token: r.token, exchange: r.exch as 'NFO' | 'BFO' };
+    }
+    if (broker === 'zerodha') {
+        // trade.token/tick subscriptions must always carry the ANT common token, never
+        // Zerodha's own instrument_token - ANT is the sole live-tick source and the only
+        // thing exitMonitor/tokenRouter's subscriptions understand (see ToDo.md 2026-08-27
+        // and AntContractMaster's own comment on this exact invariant). Zerodha's
+        // instrumentToken is discarded here; getMarketableZerodhaPrice also needs the ANT
+        // token specifically, since ANT is the price source Zerodha orders are priced from.
+        const r = await ZerodhaContractMaster.getInstance().findNearestExpiryOption(strike, right, index, 0);
+        const exch = index === 'SENSEX' ? 'BFO' : 'NFO';
+        const antMatch = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
+        return { tsym: r.tradingSymbol, token: antMatch.token, exchange: r.exchange };
+    }
+    if (broker === 'breeze') {
+        const exch = index === 'SENSEX' ? 'BFO' : 'NFO';
+        const r = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, right, index);
+        const antMatch = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
+        return { tsym: tsymFor(r), token: antMatch.token, exchange: exch };
+    }
+    if (broker === 'prism') {
+        // Prism's own contract master (NFO_symbols.txt) carries no exchange field and is a
+        // DIFFERENT token scheme from ANT's (confirmed: it's the Shoonya/Prism token, not
+        // cross-referenced) - resolve ANT's token separately, same as the zerodha/breeze
+        // branches above, so trade.token/tick subscriptions are always ANT-keyed (every
+        // live tick in this codebase, across every broker, flows through ANT - see
+        // BulkPcrStrategy's watchTokenOnSource('ant', ...) calls, the only live multi-
+        // broker precedent in this codebase).
+        const exch = index === 'SENSEX' ? 'BFO' : 'NFO';
+        const r = PrismContractMaster.getInstance().findNearestExpiryOption(index, strike, right, 0);
+        const antMatch = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
+        return { tsym: r.tradingSymbol, token: antMatch.token, exchange: exch };
+    }
+    throw new Error(`resolveOptionContractForBroker: unsupported broker ${broker}`);
+}
+
+// Force-closes one ButterflyStrategy short leg (bookkeeping.shortTrades entry) via
+// buy-to-close - used by the drawdown-breach and expiry-day safety nets, which otherwise
+// only ever iterate bookkeeping.trades (long-only) and would leave a short leg completely
+// unprotected. `shortTrade.broker` is always set by recordShortFill's callers; exchange is
+// inferred from tsym, mirroring the same SENSEX/BFO convention used elsewhere in this file
+// (onFill, resolveOptionContractForBroker) since Trade carries no exchange field of its own.
+async function buyToCloseShortLegForUser(user: string, shortTrade: Trade): Promise<void> {
+    const broker = shortTrade.broker;
+    const exchange: 'NFO' | 'BFO' = shortTrade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
+    if (broker === 'zerodha') await buyToCloseOnZerodha(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
+    else if (broker === 'ant') await antExecutor.buyToClosePosition(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
+    else if (broker === 'breeze') await buyToCloseOnBreeze(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
+    else if (broker === 'prism') await prismExecutor.buyToClosePrism(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
+    else throw new Error(`buyToCloseShortLegForUser: unsupported/missing broker '${broker}' for ${shortTrade.tsym}`);
 }
 
 async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
@@ -656,6 +722,75 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
+            // ButterflyStrategy's narrow sell-to-open exception (see Zerodha.ts's
+            // NEVER-SHORT GUARD comment) - the only two IPC cases allowed to open a
+            // short position, reachable only from ButterflyStrategy's own code path.
+            // Routed through placeOrderWithPendingGuard like every other real-money entry
+            // in this file (reconcileInFlight wait + canPlaceOrder loss/lot/investment check +
+            // markPending/releasePending dedup) - found on review: this and 'butterflyBuyLeg'
+            // below were the only two entry paths in this file that bypassed it entirely.
+            case 'butterflySellToOpen': {
+                const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
+                return placeOrderWithPendingGuard(req, undefined, () => {
+                    if (broker === 'zerodha') return enterShortOnZerodha(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                    if (broker === 'ant') return antExecutor.enterShortPosition(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                    if (broker === 'breeze') return enterShortOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                    if (broker === 'prism') return prismExecutor.enterShortOnPrism(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                    throw new Error(`butterflySellToOpen: unsupported broker ${broker}`);
+                });
+            }
+
+            // Long-side (buy-to-open) leg, explicit-broker dispatch - see orderProtocol.ts's
+            // comment on why this can't reuse 'buyContractBare'/'antBuyContractBare'/'buyContract'
+            // directly for a strategy that runs several brokers' legs concurrently. Mechanically
+            // identical to each broker's existing "bare" long-entry primitive; records via the
+            // normal recordFill (this is an ordinary long, not a short). Routed through
+            // placeOrderWithPendingGuard - see 'butterflySellToOpen' comment above.
+            case 'butterflyBuyLeg': {
+                const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
+                return placeOrderWithPendingGuard(req, undefined, () => {
+                    if (broker === 'zerodha') return marketBuyBareOnZerodha(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                    if (broker === 'ant') return antExecutor.enterPosition(req.userId, tradingSymbol, instrumentToken, quantity, exchange, 0, 0, 'target-only');
+                    if (broker === 'breeze') return marketBuyBareOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                    if (broker === 'prism') return prismExecutor.buyContract(req.userId, tradingSymbol, quantity);
+                    throw new Error(`butterflyBuyLeg: unsupported broker ${broker}`);
+                });
+            }
+
+            // Long-side (sell-to-close) leg, explicit-broker dispatch - closes a position
+            // opened by 'butterflyBuyLeg'. Mechanically identical to each broker's existing
+            // "bare" square-off primitive; records via the normal recordFill.
+            case 'butterflyCloseLeg': {
+                const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
+                let result: Trade;
+                if (broker === 'zerodha') result = await marketSellBareOnZerodha(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                else if (broker === 'ant') result = await antExecutor.squareOffOnAnt(req.userId, tradingSymbol, quantity, exchange);
+                else if (broker === 'breeze') result = await marketSellBareOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                else if (broker === 'prism') result = await prismExecutor.sellContract(req.userId, tradingSymbol, quantity);
+                else throw new Error(`butterflyCloseLeg: unsupported broker ${broker}`);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'butterflyBuyToClose': {
+                const { broker, tradingSymbol, instrumentToken, exchange } = req.payload;
+                let result: Trade;
+                if (broker === 'zerodha') result = await buyToCloseOnZerodha(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
+                else if (broker === 'ant') result = await antExecutor.buyToClosePosition(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
+                else if (broker === 'breeze') result = await buyToCloseOnBreeze(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
+                else if (broker === 'prism') result = await prismExecutor.buyToClosePrism(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
+                else throw new Error(`butterflyBuyToClose: unsupported broker ${broker}`);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            // Read-only strike+right -> contract lookup, dispatched per-broker to each
+            // broker's own contract master. Used by ButterflyStrategy to resolve all 4 of
+            // its legs before placing anything.
+            case 'resolveOptionContract': {
+                const { broker, index, strike, right } = req.payload;
+                const result = await resolveOptionContractForBroker(broker, index, strike, right);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
             case 'buyContract': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return placeOrderWithPendingGuard(req, estimatedValue, () =>
@@ -705,6 +840,11 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     ok: true,
                     result: {
                         trades: bookkeeping.trades,
+                        // ButterflyStrategy's short legs (SellToOpen) live in a separate ledger -
+                        // see bookkeeping.recordShortFill's own comment on why. Exposed here so
+                        // the position dashboard/trades API doesn't silently omit them - found on
+                        // review: they were otherwise invisible everywhere `trades` is read.
+                        shortTrades: bookkeeping.shortTrades,
                         closedTrades: bookkeeping.closedTrades,
                         userPnL: Object.fromEntries(bookkeeping.userPnL),
                     },
@@ -1107,6 +1247,17 @@ async function main() {
                 Log.log('[order] Auto-squareoff on drawdown breach failed for', trade.tsym, e);
             }
         }
+        // ButterflyStrategy's short legs are NOT in bookkeeping.trades (separate ledger - see
+        // bookkeeping.recordShortFill) and were otherwise never force-closed by a drawdown
+        // breach - found on review: a user breaching their loss limit would ride an open short
+        // leg completely uncovered. Buy-to-close, not squareOff (a short reduces via a BUY).
+        for (const shortTrade of bookkeeping.shortTrades.filter((t) => t.user === user)) {
+            try {
+                await buyToCloseShortLegForUser(user, shortTrade);
+            } catch (e) {
+                Log.log('[order] Auto-buy-to-close on drawdown breach failed for', shortTrade.tsym, e);
+            }
+        }
     });
 
     connectAntOrderNotifyIfSessionValid('startup');
@@ -1144,6 +1295,18 @@ async function main() {
                 });
             squareOff
                 .catch((e) => Log.log('[order] Expiry-day auto-squareoff failed for', trade.tsym, e))
+                .finally(() => expirySquareOffInFlight.delete(key));
+        }
+        // ButterflyStrategy's short legs are NOT in bookkeeping.trades - see the
+        // drawdown-breach handler's identical comment above for why this sweep must also
+        // separately cover bookkeeping.shortTrades, or a SellToOpen leg still open at the
+        // 3:15pm expiry deadline would ride uncovered with nothing to force-close it.
+        for (const shortTrade of bookkeeping.shortTrades) {
+            const key = `${shortTrade.user}:${shortTrade.token}:short`;
+            if (expirySquareOffInFlight.has(key)) continue;
+            expirySquareOffInFlight.add(key);
+            buyToCloseShortLegForUser(shortTrade.user, shortTrade)
+                .catch((e) => Log.log('[order] Expiry-day auto-buy-to-close failed for', shortTrade.tsym, e))
                 .finally(() => expirySquareOffInFlight.delete(key));
         }
     }, 60_000);

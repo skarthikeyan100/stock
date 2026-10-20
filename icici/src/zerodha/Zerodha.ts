@@ -534,6 +534,41 @@ class Zerodha {
         Log.log(`[Zerodha] Cancelling order ${orderId}`);
         await this.kc.cancelOrder('regular', orderId);
     }
+
+    // NARROW EXCEPTION TO THE NEVER-SHORT GUARD (see getSellableQuantity/placeLimitSellOption
+    // above): ButterflyStrategy's own 2 sell legs are allowed to open a short position, ONLY
+    // after its own 2 buy legs for the same entry cycle are confirmed filled - that sequencing
+    // is enforced entirely in ButterflyStrategy.ts, not here. This function deliberately does
+    // NOT call getSellableQuantity/sellsInFlight and never should - any caller reaching this
+    // other than the butterflySellToOpen IPC case (orderProcess.ts) is a bug.
+    async placeShortEntryOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+        if (!this.accessToken) {
+            throw new Error('No active session. Please login first.');
+        }
+        Log.log(`[Zerodha] [BUTTERFLY SHORT-ENTRY] Placing NRML limit sell-to-open: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
+        const response = await this.kc.placeOrder('regular', {
+            exchange,
+            tradingsymbol: tradingSymbol,
+            transaction_type: 'SELL',
+            quantity,
+            product: 'NRML',
+            order_type: 'LIMIT',
+            price,
+        });
+        Log.log(`[Zerodha] [BUTTERFLY SHORT-ENTRY] Limit sell-to-open order placed: ${response.order_id}`);
+        return { orderId: response.order_id };
+    }
+
+    // Read-only live net quantity for `tradingSymbol`, for ButterflyStrategy's reconcile() to
+    // cross-check a persisted leg's status against the real broker position - deliberately
+    // NOT getSellableQuantity (that's guard-bearing logic for a different decision: how much
+    // can still be sold without going short). Mirrors bookkeeping.reconcileZerodhaPositions'
+    // own direct getPositions() read.
+    async getLiveNetQuantity(tradingSymbol: string): Promise<number> {
+        const positions = await this.getPositions();
+        const pos = (positions?.net ?? []).find((p: any) => p.tradingsymbol === tradingSymbol);
+        return Number(pos?.quantity ?? 0);
+    }
 }
 
 export default Zerodha;

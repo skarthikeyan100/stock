@@ -488,6 +488,70 @@ export async function marketSellBareOnZerodha(userId: string, tradingSymbol: str
     return trade;
 }
 
+// ButterflyStrategy's narrow sell-to-open exception ONLY - see Zerodha.ts's
+// placeShortEntryOption/NEVER-SHORT GUARD comment. Mechanically mirrors
+// marketSellBareOnZerodha exactly, but calls placeShortEntryOption (never
+// placeLimitSellOption/getSellableQuantity) and records via
+// bookkeeping.recordShortFill (never recordFill - see that function's own
+// comment on why a plain Sell/Buy would be wrong here). Do not call this from
+// any strategy other than ButterflyStrategy.
+export async function enterShortOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const zerodha = Zerodha.getInstance();
+    if (!(await zerodha.hasValidSession())) {
+        throw new Error('Zerodha session not active - complete /kite/login first.');
+    }
+    Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) ${tradingSymbol} qty=${quantity} for ${userId}`);
+    const sellPrice = await getMarketableZerodhaPrice(instrumentToken, exchange, 'SELL');
+    const { orderId } = await zerodha.placeShortEntryOption(tradingSymbol, quantity, sellPrice, exchange);
+    const fillPrice = await zerodha.getFillPrice(orderId);
+
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.token = instrumentToken;
+    trade.quantity = quantity;
+    trade.price = fillPrice;
+    trade.lastTradePrice = fillPrice;
+    trade.action = 'SellToOpen';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+    trade.broker = 'zerodha';
+    trade.brokerOrderId = orderId;
+
+    await bookkeeping.recordShortFill(trade);
+    return trade;
+}
+
+// Closes a short opened by enterShortOnZerodha - a plain marketable LIMIT BUY via the
+// EXISTING, unguarded placeLimitBuyOption (closing a short via a BUY has no guard to begin
+// with - never needs a new broker-level primitive). Records via recordShortFill with
+// action='BuyToClose' so bookkeeping's long-only Buy branch never mistakes this for a new
+// long position. Do not call this from any strategy other than ButterflyStrategy.
+export async function buyToCloseOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const zerodha = Zerodha.getInstance();
+    if (!(await zerodha.hasValidSession())) {
+        throw new Error('Zerodha session not active - complete /kite/login first.');
+    }
+    Log.log(`[order] [BUTTERFLY] Buy-to-close ${tradingSymbol} qty=${quantity} for ${userId}`);
+    const buyPrice = await getMarketableZerodhaPrice(instrumentToken, exchange, 'BUY');
+    const { orderId } = await zerodha.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
+    const fillPrice = await zerodha.getFillPrice(orderId);
+
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.token = instrumentToken;
+    trade.quantity = quantity;
+    trade.price = fillPrice;
+    trade.lastTradePrice = fillPrice;
+    trade.action = 'BuyToClose';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+    trade.broker = 'zerodha';
+    trade.brokerOrderId = orderId;
+
+    await bookkeeping.recordShortFill(trade);
+    return trade;
+}
+
 // Places the limit order and returns immediately - does not wait for a fill
 // (unlike the market-order primitives above). The fill arrives later via
 // pollPendingLimitOrders -> bookkeeping.recordFill -> the normal fill-listener

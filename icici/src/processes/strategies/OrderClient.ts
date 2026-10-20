@@ -355,6 +355,43 @@ class OrderClient {
         return res.result;
     }
 
+    // ButterflyStrategy's narrow sell-to-open exception ONLY - see Zerodha.ts's
+    // NEVER-SHORT GUARD comment. Deliberately NOT a generic "sell" method - do not call
+    // this from any other strategy.
+    // Long-side (buy-to-open/sell-to-close) legs, explicit-broker dispatch - see
+    // orderProtocol.ts's comment for why these are separate from 'buyContractBare'/
+    // 'sellContractBare' (which resolve broker per-user, wrong for one strategy
+    // instance running several brokers' legs concurrently).
+    async butterflyBuyLeg(userId: string, payload: { broker: 'zerodha' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+        const res = await this.request('butterflyBuyLeg', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async butterflyCloseLeg(userId: string, payload: { broker: 'zerodha' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+        const res = await this.request('butterflyCloseLeg', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async butterflySellToOpen(userId: string, payload: { broker: 'zerodha' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+        const res = await this.request('butterflySellToOpen', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async butterflyBuyToClose(userId: string, payload: { broker: 'zerodha' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+        const res = await this.request('butterflyBuyToClose', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    async resolveOptionContract(userId: string, payload: { broker: 'zerodha' | 'ant' | 'breeze' | 'prism'; index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE' }): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
+        const res = await this.request('resolveOptionContract', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
     async reloadSession(userId = 'Default'): Promise<void> {
         const res = await this.request('reloadSession', userId, {});
         if (!res.ok) throw new Error(res.error);

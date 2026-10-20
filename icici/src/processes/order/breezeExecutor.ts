@@ -637,6 +637,80 @@ export async function marketSellBareOnBreeze(userId: string, tradingSymbol: stri
     return trade;
 }
 
+// ButterflyStrategy's narrow sell-to-open exception ONLY. Breeze has no position-based
+// never-short guard of its own (placeLimitOptionOrder already takes a generic
+// 'buy'|'sell' action, mechanically identical to marketSellBareOnBreeze above) - the
+// exception here is purely at the bookkeeping layer: recordShortFill (not recordFill),
+// so this fill is tracked as a short, not swallowed by the long-only Sell branch's
+// "no existing entry" no-op. Never call placeLimitOptionOrder with 'sell' for a fresh
+// entry from anywhere outside this function and the equivalent zerodha/ant/prism functions.
+export async function enterShortOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const breeze = Breeze.getInstance();
+    if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
+    const { shortName, strike, optionType } = parseTsym(tradingSymbol);
+    const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
+    const { bestBid } = await getOptionQuote(contract);
+    Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) ${tradingSymbol} qty=${quantity} @ ${bestBid} for ${userId}`);
+    const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, bestBid);
+    const entryPrice = await waitForBreezeFill(orderId);
+
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.token = antToken;
+    trade.quantity = quantity;
+    trade.price = entryPrice;
+    trade.lastTradePrice = entryPrice;
+    trade.action = 'SellToOpen';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+    trade.broker = 'breeze';
+    trade.brokerOrderId = orderId;
+    await bookkeeping.recordShortFill(trade);
+    return trade;
+}
+
+// Closes a short opened by enterShortOnBreeze - mechanically identical to
+// marketBuyBareOnBreeze above, but recorded via recordShortFill with action='BuyToClose'
+// so bookkeeping's long-only Buy branch never mistakes this for a new long position.
+export async function buyToCloseOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const breeze = Breeze.getInstance();
+    if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
+    const { shortName, strike, optionType } = parseTsym(tradingSymbol);
+    const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
+    const { bestAsk } = await getOptionQuote(contract);
+    Log.log(`[order] [BUTTERFLY] Buy-to-close ${tradingSymbol} qty=${quantity} @ ${bestAsk} for ${userId}`);
+    const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, bestAsk);
+    const exitPrice = await waitForBreezeFill(orderId);
+
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.token = antToken;
+    trade.quantity = quantity;
+    trade.price = exitPrice;
+    trade.lastTradePrice = exitPrice;
+    trade.action = 'BuyToClose';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+    trade.broker = 'breeze';
+    trade.brokerOrderId = orderId;
+    await bookkeeping.recordShortFill(trade);
+    return trade;
+}
+
+// Read-only live net quantity for `tradingSymbol`, for ButterflyStrategy's reconcile() to
+// cross-check a persisted leg against the real broker position - mirrors
+// bookkeeping.reconcileBreezePositions' own direct getPortfolioPositions() read.
+export async function getLiveNetQuantity(tradingSymbol: string): Promise<number> {
+    const result = await Breeze.getInstance().getPortfolioPositions();
+    const rows = Array.isArray(result?.Success) ? result.Success : [];
+    for (const p of rows) {
+        const optionType = p.right === 'Call' ? 'CE' : p.right === 'Put' ? 'PE' : undefined;
+        if (!optionType) continue;
+        if (`${p.stock_code}${p.strike_price}${optionType}` === tradingSymbol) return Number(p.quantity ?? 0);
+    }
+    return 0;
+}
+
 // Returns immediately with {orderId} - fill arrives later via
 // breezePendingLimitOrders' poller, mirroring placeLimitBuyBareOnZerodha's contract
 // exactly. Deliberately NOT wait-for-fill despite every other bare primitive here

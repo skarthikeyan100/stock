@@ -159,3 +159,27 @@ strategies:
     rankCount: 3
     lots: 1
     logEnabled: true
+  - type: ButterflyStrategy
+    enabled: false
+    userId: Butterfly-NIFTY
+    index: NIFTY
+    mode: standard
+    wingStrikes: 2
+    quantity: 65
+    targetPoints: 10
+    stopLossPoints: 15
+    brokers:
+      - zerodha
+    logEnabled: true
+  - type: ButterflyStrategy
+    enabled: false
+    userId: Butterfly-SENSEX
+    index: SENSEX
+    mode: standard
+    wingStrikes: 2
+    quantity: 20
+    targetPoints: 10
+    stopLossPoints: 15
+    brokers:
+      - ant
+    logEnabled: true

@@ -82,7 +82,26 @@ export type OrderRequestType =
     | 'antBuyContractBare'
     | 'antSquareOffBare'
     | 'antCancelOrderBare'
-    | 'cancelRestingLimitSells';
+    | 'cancelRestingLimitSells'
+    // ButterflyStrategy's narrow sell-to-open/buy-to-close exception (see
+    // Zerodha.ts's NEVER-SHORT GUARD comment and bookkeeping.recordShortFill) -
+    // dispatches per-broker in orderProcess.ts. 'resolveOptionContract' is a
+    // read-only strike+right -> {tsym, token, exchange} lookup, broker-dispatched
+    // to each broker's own contract master, used by ButterflyStrategy to resolve
+    // all 4 of its legs before placing anything.
+    | 'butterflySellToOpen'
+    | 'butterflyBuyToClose'
+    // Long-side (buy-to-open/sell-to-close) legs, explicit-broker dispatch. NOT the
+    // existing 'buyContractBare'/'sellContractBare' (those resolve broker via
+    // bookkeeping.getUserBroker(userId) - a per-USER setting, wrong for one strategy
+    // instance that runs several brokers' legs concurrently within one tick) nor
+    // 'antBuyContractBare'/'buyContract' alone (ant/prism-only, no zerodha/breeze
+    // equivalent with this same explicit-broker shape). Mechanically identical to the
+    // existing bare buy/sell primitives per broker - just dispatched by an explicit
+    // `broker` field in the payload instead of a per-user default.
+    | 'butterflyBuyLeg'
+    | 'butterflyCloseLeg'
+    | 'resolveOptionContract';
 
 export interface OrderRequest {
     kind: 'request';

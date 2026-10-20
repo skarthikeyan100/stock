@@ -19,6 +19,7 @@ import BulkPcrStrategy from './BulkPcrStrategy';
 import BulkPcrAutoStartStrategy from './BulkPcrAutoStartStrategy';
 import TopStockOptionsOpeningGapStrategy from './TopStockOptionsOpeningGapStrategy';
 import HourlyStrategy from './HourlyStrategy';
+import ButterflyStrategy from './ButterflyStrategy';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 
 const STRATEGY_REGISTRY = new Map<string, new (userId?: string) => Strategy>();
@@ -41,6 +42,7 @@ STRATEGY_REGISTRY.set('BulkPcrStrategy', BulkPcrStrategy);
 STRATEGY_REGISTRY.set('BulkPcrAutoStartStrategy', BulkPcrAutoStartStrategy);
 STRATEGY_REGISTRY.set('TopStockOptionsOpeningGapStrategy', TopStockOptionsOpeningGapStrategy);
 STRATEGY_REGISTRY.set('HourlyStrategy', HourlyStrategy);
+STRATEGY_REGISTRY.set('ButterflyStrategy', ButterflyStrategy);
 
 export function createStrategy(config: StrategyInstanceConfig): Strategy | null {
     const StrategyClass = STRATEGY_REGISTRY.get(config.type);

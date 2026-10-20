@@ -371,6 +371,110 @@ export async function enterPosition(
     return trade;
 }
 
+// ButterflyStrategy's narrow sell-to-open exception ONLY. `enterPosition` above hardcodes
+// `transactionType: 'BUY'` throughout every one of its branches - this is a deliberately
+// separate, minimal function rather than adding a direction param there, so every other ANT
+// caller of enterPosition stays byte-for-byte unmodified. Reuses the exact same fill-
+// confirmation discipline enterPosition's plain (non-bracket/cover) branch already uses
+// (push-based waitForFill, REST getFillPrice fallback on a missed push) - that fallback
+// exists because of a documented live incident with missed fill notifications; skipping it
+// here would risk the exact same orphaned-position class of bug for a short leg.
+export async function enterShortPosition(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade> {
+    const ant = ANT.getInstance();
+    const ltp = await entryLtp(undefined, exchange, instrumentId);
+    // BFO (SENSEX) priced at LTP itself, NFO at a marketable 1% cushion BELOW LTP (the sell-side
+    // mirror of enterPosition's own BFO/NFO buy-side convention a few lines up in this file).
+    const limitPrice = exchange === 'BFO' ? roundToTick(ltp) : roundToTick(ltp * 0.99);
+    Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order (ltp=${ltp} limit=${limitPrice})`);
+    const { orderNo } = await ant.placeOrder({
+        exchange,
+        instrumentId,
+        tradingSymbol,
+        quantity,
+        transactionType: 'SELL',
+        price: limitPrice,
+    });
+
+    let entryPrice: number;
+    try {
+        entryPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo);
+        Log.log(`[order] [BUTTERFLY] Short-entry filled ${tradingSymbol} at ${entryPrice} for ${userId}`);
+    } catch (waitErr) {
+        Log.log(`[order] [BUTTERFLY] waitForFill failed for short-entry ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
+        entryPrice = await ant.getFillPrice(orderNo);
+        Log.log(`[order] [BUTTERFLY] REST fallback confirmed short-entry fill for ${tradingSymbol} at ${entryPrice} for ${userId} (order-notify push was missed)`);
+    }
+
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.token = instrumentId;
+    trade.quantity = quantity;
+    trade.price = entryPrice;
+    trade.lastTradePrice = entryPrice;
+    trade.action = 'SellToOpen';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+    trade.broker = 'ant';
+    trade.brokerOrderId = orderNo;
+
+    await bookkeeping.recordShortFill(trade);
+    return trade;
+}
+
+// Closes a short opened by enterShortPosition - a plain marketable LIMIT BUY (closing a short
+// via a BUY has no broker-side guard to begin with). Mirrors enterShortPosition's own
+// fill-confirmation discipline exactly. Records via recordShortFill with action='BuyToClose'.
+export async function buyToClosePosition(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade> {
+    const ant = ANT.getInstance();
+    const ltp = await entryLtp(undefined, exchange, instrumentId);
+    const limitPrice = exchange === 'BFO' ? roundToTick(ltp) : roundToTick(ltp * 1.01);
+    Log.log(`[order] [BUTTERFLY] Buy-to-close ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order (ltp=${ltp} limit=${limitPrice})`);
+    const { orderNo } = await ant.placeOrder({
+        exchange,
+        instrumentId,
+        tradingSymbol,
+        quantity,
+        transactionType: 'BUY',
+        price: limitPrice,
+    });
+
+    let exitPrice: number;
+    try {
+        exitPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo);
+        Log.log(`[order] [BUTTERFLY] Buy-to-close filled ${tradingSymbol} at ${exitPrice} for ${userId}`);
+    } catch (waitErr) {
+        Log.log(`[order] [BUTTERFLY] waitForFill failed for buy-to-close ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
+        exitPrice = await ant.getFillPrice(orderNo);
+        Log.log(`[order] [BUTTERFLY] REST fallback confirmed buy-to-close fill for ${tradingSymbol} at ${exitPrice} for ${userId} (order-notify push was missed)`);
+    }
+
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.token = instrumentId;
+    trade.quantity = quantity;
+    trade.price = exitPrice;
+    trade.lastTradePrice = exitPrice;
+    trade.action = 'BuyToClose';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+    trade.broker = 'ant';
+    trade.brokerOrderId = orderNo;
+
+    await bookkeeping.recordShortFill(trade);
+    return trade;
+}
+
+// Read-only live net quantity for a (tradingSymbol, exchange) pair, for ButterflyStrategy's
+// reconcile() to cross-check a persisted leg against the real broker position. Field names
+// (netQty/tradingSymbol) are the same best-guess shape bookkeeping.reconcileAntPositions
+// already uses (its own comment flags them as unverified against a live response).
+export async function getLiveNetQuantity(tradingSymbol: string): Promise<number> {
+    const positions = await ANT.getInstance().getPositions();
+    const list = Array.isArray(positions) ? positions : [];
+    const pos = list.find((p: any) => (p.tradingSymbol ?? p.tsym ?? p.symbol) === tradingSymbol);
+    return Number(pos?.netQty ?? pos?.netqty ?? 0);
+}
+
 export interface BuyIndexRequest {
     userId: string;
     index?: 'NIFTY' | 'SENSEX';
