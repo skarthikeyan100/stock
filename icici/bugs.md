@@ -1,5 +1,26 @@
 # Known Bugs
 
+## 2026-10-20 - Drawdown ledger: closed-trade rows held in memory (accepted design, known gaps)
+
+Context: the drawdown breach check (`bookkeeping.ts` `drawdownState` / `checkBreachAndNotify`) sums
+`closedTrades` in Mongo plus rows still held in memory (`unpersistedClosed`) while their insert is in
+flight or has failed. Chosen deliberately over an awaited write (decided 2026-10-20). Gaps below are
+known and accepted for now; each is a live-trading risk on the drawdown stop.
+
+| # | Gap | Where | Status |
+|---|---|---|---|
+| A | A restart before a held row's insert lands loses that realized loss from the day's drawdown total (the startup reload only reads `closedTrades`). | `bookkeeping.ts` `unpersistedClosed`, startup reload | NOT FIXED: needs a durable journal or an awaited write |
+| B | `getRealizedPnLSince` snapshots `unpersistedClosed` after the `find` resolves; a row inserted between the server snapshot and that point is in neither the read nor the held map, so it is undercounted. | `getRealizedPnLSince` | NOT FIXED: copy the held entries before issuing the `find` |
+| C | `flushUnpersistedClosed` awaits each insert with no timeout, and `checkBreachAndNotify` awaits the flush before any drawdown read. A hung socket stalls the breach check, and no re-check is armed. | `checkBreachAndNotify`, `flushUnpersistedClosed` | NOT FIXED: bound each insert and arm a re-check on timeout |
+| D | `writeClosedRow` treats any error with code 11000 as landed. A duplicate on another unique index would silently drop the row from the total. | `writeClosedRow` | NOT FIXED: require `keyPattern` to be exactly `{ _id: 1 }` |
+| E | A non-transient insert error (validator, BSON) keeps the row held and retried forever, lengthening every breach check. | `writeClosedRow` / flush | NOT FIXED: cap attempts, log at error, stop retrying |
+| F | Each sell fill issues two concurrent inserts of the same `_id` (the immediate write and the flush). Costs a round-trip under bursts. | `persistClosedTrade`, `checkBreachAndNotify` | NOT FIXED: skip rows whose write is in flight |
+
+Pre-existing (not from the held-row change), also open:
+- Overlapping `checkBreachAndNotify` runs can each invoke the liquidation listener for the same user, and the listener has no in-flight guard. The same trade can be cancelled and squared off twice.
+- The expiry-day sweep (`orderProcess.ts`) can send a second squareoff for a trade whose sell is still in flight.
+- `cancelAnyRestingLimitSell` may subtract fills already booked by `recordFill`; needs checking against what the pending-order poller reports.
+
 ## 2026-10-19 - ContinuousStrategy live session: consolidated bugs (Zerodha, expiry day)
 
 Symptoms: a naked short (NIFTY26O1923050PE -130), untracked longs (23000CE 325, 22950PE 325, 22900PE 130), repeated
