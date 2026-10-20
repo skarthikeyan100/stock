@@ -2,6 +2,7 @@ import Log from '../util/Log';
 import { MOCK_BROKER } from '../constants';
 import { NiftyQuote, OptionQuote } from '../model/model';
 import configService from '../prism/ConfigService';
+import { toPercentNumber } from '../prism/percentConfig';
 import AntContractMaster from '../ant/AntContractMaster';
 import ANT from '../ant/ANT';
 import OrderClient from '../processes/strategies/OrderClient';
@@ -208,7 +209,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
         const rankCount: number = config.rankCount ?? 3;
         const lots: number = config.lots ?? 1;
         const logEnabled: boolean = config.logEnabled ?? true;
-        const marketProtectionPercent: number = config.marketProtectionPercent ?? 5;
+        const marketProtectionPercent: number = toPercentNumber(config.marketProtectionPercent) ?? 5;
 
         const universe = loadStockSymbols();
 

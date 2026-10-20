@@ -2,6 +2,7 @@ import Log from '../util/Log';
 import fs, { readFileSync, writeFileSync } from 'fs';
 import { load, dump } from 'js-yaml';
 import AppConfig, { StrategyInstanceConfig } from './AppConfig';
+import { normalizePercentFields, formatPercentFields } from './percentConfig';
 
 class ConfigService {
   private configPath = process.env.CONFIG_PATH || './config.yml';
@@ -20,8 +21,15 @@ class ConfigService {
     return ConfigService.instance;
   }
 
+  // Percent fields are written with a '%' suffix (e.g. 40 -> "40%") so the
+  // unit is visible in config.yml. loadConfig() accepts both forms.
   public writeConfig(config: AppConfig) {
-    writeFileSync(this.configPath, dump(config), 'utf8');
+    const shaped: AppConfig = {
+      ...config,
+      settings: formatPercentFields(config.settings as any),
+      strategies: (config.strategies || []).map(s => formatPercentFields(s)),
+    } as AppConfig;
+    writeFileSync(this.configPath, dump(shaped), 'utf8');
   }
 
   public getConfig(): AppConfig {
@@ -52,6 +60,14 @@ class ConfigService {
   private loadConfig() {
     const fileContents = readFileSync(this.configPath, 'utf8');
     const parsed: any = load(fileContents);
+    if (parsed && typeof parsed === 'object') {
+      // Percent fields may be written as "2" or "2%"; normalise to numbers so
+      // every consumer does arithmetic on a number.
+      parsed.settings = normalizePercentFields(parsed.settings);
+      if (Array.isArray(parsed.strategies)) {
+        parsed.strategies = parsed.strategies.map((s: any) => normalizePercentFields(s));
+      }
+    }
     this.config = parsed as AppConfig;
     Log.log('Config Updated:', this.config);
   }

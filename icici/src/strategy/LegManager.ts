@@ -5,6 +5,7 @@ import { Trade } from '../model/model';
 import AntContractMaster from '../ant/AntContractMaster';
 import { watchToken, unwatchToken, registerTrade } from '../processes/strategies/tokenRouter';
 import Mongo from '../tools/mongo';
+import { toPercentNumber } from '../prism/percentConfig';
 import { Strategy } from './strategy';
 import { LegBrokerOps, defaultLegOps, dryRunOps } from './LegBrokerOps';
 
@@ -319,8 +320,10 @@ export class LegManager {
     private checkAndMaybeTripMaxProfit(cfg: LegManagerConfig): void {
         if (this.maxProfitTripped) return; // latched permanently - see field comment
         if (cfg.maxProfit == null) return; // feature not configured
+        const maxProfitPct = toPercentNumber(cfg.maxProfit);
+        if (maxProfitPct === null) return; // unparseable - config validation rejects this on save; ConfigService normalises on load
         const maxInvestment = cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
-        const threshold = (cfg.maxProfit / 100) * maxInvestment;
+        const threshold = (maxProfitPct / 100) * maxInvestment;
         const cumulative = this.computeCumulativeProfit();
         if (cumulative < threshold) return;
         this.maxProfitTripped = true;
@@ -376,8 +379,10 @@ export class LegManager {
     private checkAndMaybeTripMaxLoss(cfg: LegManagerConfig): void {
         if (this.maxLossTripped) return;
         if (cfg.maxLoss == null) return;
+        const maxLossPct = toPercentNumber(cfg.maxLoss);
+        if (maxLossPct === null) return; // unparseable - see checkAndMaybeTripMaxProfit
         const maxInvestment = cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
-        const threshold = (cfg.maxLoss / 100) * maxInvestment;
+        const threshold = (maxLossPct / 100) * maxInvestment;
         const cumulative = this.computeCumulativeProfit();
         if (!(cumulative <= -threshold)) return; // NaN-safe: a NaN cumulative must not trip it
         this.maxLossTripped = true;

@@ -3,6 +3,8 @@
 // for the full investigation behind the field lists and the grandfathering
 // behavior in validateFlatConfig.
 
+import { PERCENT_KEYS, toPercentNumber } from './percentConfig';
+
 function isNum(v: any): v is number {
     return typeof v === 'number' && !Number.isNaN(v);
 }
@@ -35,6 +37,12 @@ const POSITIVE_QUANTITY_FIELDS: string[] = [
 // Percent-of-profit / drawdown fields, constrained to a sane 0-100 range.
 const PERCENT_FIELDS: string[] = [
     'consistencyLimitPercent', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
+];
+
+// Strategy percent fields (% of maxInvestment) - must be non-negative; no
+// upper bound since a profit cap above 100% is not nonsensical.
+const PERCENT_NON_NEGATIVE_FIELDS: string[] = [
+    'maxProfit', 'maxLoss', 'marketProtectionPercent',
 ];
 
 // target/stop-loss field-name pairs used across different strategies for the
@@ -70,9 +78,25 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
         }
     }
 
+    // Percent fields accept a number or "N%" (see percentConfig.ts). A value
+    // that is present but unparseable is an error rather than silently skipped.
+    for (const field of PERCENT_KEYS) {
+        if (obj[field] == null) continue;
+        const n = toPercentNumber(obj[field]);
+        if (n === null) {
+            errors.push(`${label}.${field} must be a number, optionally with a % sign (got ${JSON.stringify(obj[field])})`);
+        }
+    }
     for (const field of PERCENT_FIELDS) {
-        if (isNum(obj[field]) && (obj[field] < 0 || obj[field] > 100)) {
+        const n = toPercentNumber(obj[field]);
+        if (n !== null && (n < 0 || n > 100)) {
             errors.push(`${label}.${field} must be between 0 and 100 (got ${obj[field]})`);
+        }
+    }
+    for (const field of PERCENT_NON_NEGATIVE_FIELDS) {
+        const n = toPercentNumber(obj[field]);
+        if (n !== null && n < 0) {
+            errors.push(`${label}.${field} must be >= 0 (got ${obj[field]})`);
         }
     }
 

@@ -6,7 +6,7 @@ settings:
   trailingDistance: 4
   cooldownSeconds: 0
   safetyBufferAmount: 5000
-  consistencyLimitPercent: 40
+  consistencyLimitPercent: 40%
 strategies:
   - type: SentimentStrategy
     enabled: false
@@ -22,7 +22,7 @@ strategies:
     squareOffDistance: 50
     minPremium: 100
     allottedCapital: 500000
-    maxProfit: 2
+    maxProfit: 2%
     spawnQuantityMode: 3
     averageQuantityMode: same
     right: none
