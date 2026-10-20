@@ -2,7 +2,7 @@ import Mongo from './tools/mongo';
 import { getUser } from './user';
 import { computeTax } from './tax';
 import configService from './prism/ConfigService';
-import { drawdownLimit } from './prism/percentConfig';
+import { drawdownLimit, drawdownDecision } from './prism/percentConfig';
 import myEmitter from './tools/emitter';
 import { weekKey, startOfWeek, endOfWeek } from './util/weekWindow';
 
@@ -115,8 +115,8 @@ function groupByWeek(trades: any[]): Map<string, { pnl: number; tradeIds: any[];
 // computePnlSummary (the Trades-tab "eligible P/L" endpoint): a single day
 // (or a single week) losing more than the live daily/weekly drawdown limit
 // forfeits the checked period's profit entirely - the at-rest consequence of
-// the same breach that bookkeeping.ts's isDailyDrawdownBreached/
-// isWeeklyDrawdownBreached block new orders and trigger auto-squareoff for,
+// the same breach that bookkeeping.ts's drawdownState block new orders and
+// trigger auto-squareoff for,
 // live, using the same config values.
 export function computeDrawdownForfeiture(
     periodTrades: Array<{ exitTime: any; realizedPnL?: number; _id?: any }>,
@@ -131,7 +131,7 @@ export function computeDrawdownForfeiture(
 
     const byDay = groupByDay(periodTrades);
     for (const [day, entry] of byDay) {
-        if (entry.pnl <= -dailyLimit) {
+        if (drawdownDecision(entry.pnl, investmentAmount, maxDailyDrawdownPercent) === 'breached') {
             return {
                 forfeited: true,
                 reason: `${day} lost ₹${Math.abs(entry.pnl).toFixed(2)} - exceeds the daily drawdown limit of ${maxDailyDrawdownPercent}% (₹${dailyLimit.toFixed(2)}) of your investment amount. All profit since the last payout is forfeited.`,
@@ -142,7 +142,7 @@ export function computeDrawdownForfeiture(
 
     const byWeek = groupByWeek(periodTrades);
     for (const [week, entry] of byWeek) {
-        if (entry.pnl <= -weeklyLimit) {
+        if (drawdownDecision(entry.pnl, investmentAmount, maxWeeklyDrawdownPercent) === 'breached') {
             const weekLabel = `Week of ${entry.weekStart.toDateString()}–${entry.weekEnd.toDateString()}`;
             return {
                 forfeited: true,
@@ -218,7 +218,7 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
     // Drawdown forfeiture: a single day (or a single week) losing more than
     // the live daily/weekly drawdown limit forfeits the period's payout
     // entirely - the payout-time consequence of the same breach that
-    // bookkeeping.ts's isDailyDrawdownBreached/isWeeklyDrawdownBreached
+    // bookkeeping.ts's drawdownState
     // already block new orders and trigger auto-squareoff for live, using
     // the same config values.
     if (!blocked) {

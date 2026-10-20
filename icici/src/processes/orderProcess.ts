@@ -1216,7 +1216,7 @@ async function main() {
     // hedge hand-off) can call it.
 
     // Auto-squareoff on daily/weekly drawdown breach (see bookkeeping.ts's
-    // isDailyDrawdownBreached/isWeeklyDrawdownBreached, checked after every
+    // drawdownState (daily/weekly), checked after every
     // closing trade) - closes a snapshot of the user's remaining open
     // positions through their configured broker. Each squareoff's own Sell
     // fill re-enters this same check, which is safe: it only ever acts on
@@ -1239,7 +1239,15 @@ async function main() {
     // settings/config.yml happen to say, missing the real resting order
     // entirely - the same "stuck position with no exit" failure mode this
     // project already took a live loss from.
-    bookkeeping.onDrawdownBreach(async (user) => {
+    // One liquidation pass per user at a time. Each squareOff's own fill re-enters
+    // this handler; without the guard an overlapping pass would re-send squareOffs
+    // for trades whose earlier sell has not been booked yet. A re-entry during a
+    // pass is dropped - the pass already holds the snapshot of trades to close.
+    const drawdownLiquidating = new Set<string>();
+    const liquidateOnBreach = async (user: string): Promise<void> => {
+        if (drawdownLiquidating.has(user)) return;
+        drawdownLiquidating.add(user);
+        try {
         for (const trade of bookkeeping.trades.filter((t) => t.user === user)) {
             try {
                 const executor = getBrokerExecutor(user, trade.broker);
@@ -1263,7 +1271,11 @@ async function main() {
                 Log.log('[order] Auto-buy-to-close on drawdown breach failed for', shortTrade.tsym, e);
             }
         }
-    });
+        } finally {
+            drawdownLiquidating.delete(user);
+        }
+    };
+    bookkeeping.onDrawdownBreach(liquidateOnBreach);
 
     connectAntOrderNotifyIfSessionValid('startup');
     connectBreezeOrderNotifyIfSessionValid('startup').catch((e) => Log.log('[order] connectBreezeOrderNotifyIfSessionValid failed:', e));

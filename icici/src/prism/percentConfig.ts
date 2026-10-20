@@ -47,6 +47,15 @@ export function drawdownLimit(settings: Record<string, any> | undefined, key: ke
     return toPercentNumber(settings?.[key]) ?? DRAWDOWN_DEFAULTS[key];
 }
 
+// The one drawdown rule, shared by the live blocker (bookkeeping.ts) and the
+// payout forfeiture (payout.ts). 'unknown' when pnl could not be read.
+export type DrawdownState = 'ok' | 'breached' | 'unknown';
+
+export function drawdownDecision(pnl: number | null, investmentAmount: number, limitPercent: number): DrawdownState {
+    if (pnl === null) return 'unknown';
+    return pnl <= -(investmentAmount * limitPercent) / 100 ? 'breached' : 'ok';
+}
+
 // Formats a percent field for config.yml: number 40 -> "40%". Values that do
 // not parse are passed through untouched.
 export function formatPercentFields<T extends Record<string, any>>(obj: T): T {

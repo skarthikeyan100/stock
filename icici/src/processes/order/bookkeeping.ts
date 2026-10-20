@@ -8,7 +8,7 @@ import { UserContext } from '../../user';
 import { PUT, CALL, USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../../constants';
 import * as exitMonitor from './exitMonitor';
 import configService from '../../prism/ConfigService';
-import { drawdownLimit } from '../../prism/percentConfig';
+import { drawdownLimit, drawdownDecision } from '../../prism/percentConfig';
 import { startOfWeek } from '../../util/weekWindow';
 
 // Order-process-local replacement for Monitor's bookkeeping (trades/closedTrades,
@@ -372,8 +372,35 @@ class OrderBookkeeping {
             : drawdownLimit(settings, 'maxWeeklyDrawdownPercent');
         const since = window === 'daily' ? OrderBookkeeping.startOfDay() : startOfWeek();
         const pnl = await this.getRealizedPnLSince(user, since);
-        if (pnl === null) return 'unknown';
-        return pnl <= -(investmentAmount * limitPercent) / 100 ? 'breached' : 'ok';
+        return drawdownDecision(pnl, investmentAmount, limitPercent);
+    }
+
+    // After a sell fill, a drawdown read that came back 'unknown' is re-checked
+    // every 30s (bounded) so a Mongo outage cannot leave a real breach unenforced
+    // once the ledger is readable again. A definite breach fires the listeners.
+    private drawdownRecheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    private scheduleDrawdownRecheck(user: string, attempt = 1): void {
+        if (this.drawdownRecheckTimers.has(user)) return;
+        if (attempt > 20) {
+            Log.log(`[order] drawdown re-check for ${user} gave up after ${attempt - 1} attempts - ledger still unreadable`);
+            return;
+        }
+        const timer = setTimeout(async () => {
+            this.drawdownRecheckTimers.delete(user);
+            try {
+                const daily = await this.drawdownState(user, 'daily');
+                const weekly = daily === 'breached' ? 'ok' : await this.drawdownState(user, 'weekly');
+                if (daily === 'breached' || weekly === 'breached') {
+                    for (const l of this.drawdownBreachListeners) l(user);
+                } else if (daily === 'unknown' || weekly === 'unknown') {
+                    this.scheduleDrawdownRecheck(user, attempt + 1);
+                }
+            } catch (e) {
+                Log.log('[order] drawdown re-check failed for', user, e);
+                this.scheduleDrawdownRecheck(user, attempt + 1);
+            }
+        }, 30_000);
+        this.drawdownRecheckTimers.set(user, timer);
     }
 
     // Counts trades opened today: closed trades (from Mongo, by entryTime)
@@ -415,7 +442,7 @@ class OrderBookkeeping {
         // limit is a non-issue for it anyway (getTradedLots only counts
         // currently-open trades, which reset to 0 every time a cycle fully
         // sells out), and per-order cap/drawdown are already no-ops for any
-        // strategy pseudo-user (see isDailyDrawdownBreached's comment - they
+        // strategy pseudo-user (see drawdownState's comment - they
         // never have investmentAmount configured).
         // HourlyStrategy gets the same exemption for the same reason - its own
         // `quantity: -2` sentinel (translated to chunkedBuyIndex's -1 in
@@ -743,7 +770,8 @@ class OrderBookkeeping {
                 closedPortion.exitTime = new Date();
                 closedPortion.strategy = buyTrade.strategy;
                 this.closedTrades.push(closedPortion);
-                this.persistClosedTrade(closedPortion, user, tradeEvent.price);
+                // Awaited so the breach check below reads this fill from the ledger.
+                await this.persistClosedTrade(closedPortion, user, tradeEvent.price);
 
                 buyTrade.quantity -= sellQty;
                 if (buyTrade.quantity <= 0) {
@@ -752,11 +780,14 @@ class OrderBookkeeping {
                 }
 
                 // Liquidate only on a definite breach. 'unknown' (ledger unreadable)
-                // blocks new buys in canPlaceOrder but must not close positions.
-                const breached = (await this.drawdownState(user, 'daily')) === 'breached'
-                    || (await this.drawdownState(user, 'weekly')) === 'breached';
-                if (breached) {
+                // blocks new buys in canPlaceOrder but must not close positions;
+                // it schedules a bounded re-check instead.
+                const daily = await this.drawdownState(user, 'daily');
+                const weekly = daily === 'breached' ? 'ok' : await this.drawdownState(user, 'weekly');
+                if (daily === 'breached' || weekly === 'breached') {
                     for (const l of this.drawdownBreachListeners) l(user);
+                } else if (daily === 'unknown' || weekly === 'unknown') {
+                    this.scheduleDrawdownRecheck(user);
                 }
             }
         }
@@ -1079,8 +1110,8 @@ class OrderBookkeeping {
     // row per closed position, with entry/exit timestamps). Feeds payout
     // history and drawdown-breach explanations (see src/payout.ts). Never
     // let a Mongo hiccup block live bookkeeping - fire and forget.
-    private persistClosedTrade(trade: Trade, user: string, exitPrice: number) {
-        Mongo.getInstance()?.db.collection('closedTrades').insertOne({
+    private async persistClosedTrade(trade: Trade, user: string, exitPrice: number): Promise<void> {
+        await Mongo.getInstance()?.db.collection('closedTrades').insertOne({
             user,
             tsym: trade.tsym,
             token: trade.token,

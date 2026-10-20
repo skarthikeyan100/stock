@@ -9,7 +9,7 @@
  */
 
 import { validateNumericRanges, validateTargetVsStopLoss, validateFlatConfig, validateConfigFile } from '../prism/configValidation';
-import { toPercentNumber, formatPercentFields, normalizePercentFields, drawdownLimit } from '../prism/percentConfig';
+import { toPercentNumber, formatPercentFields, normalizePercentFields, drawdownLimit, drawdownDecision } from '../prism/percentConfig';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -128,6 +128,12 @@ async function main() {
         'drawdownLimit falls back to the shared defaults (25 / 50) when absent');
     assert(drawdownLimit({ maxDailyDrawdownPercent: '10%' }, 'maxDailyDrawdownPercent') === 10,
         'drawdownLimit reads "N%" values');
+
+    // --- drawdownDecision: the rule behind buy-blocking and liquidation ---
+    assert(drawdownDecision(null, 100000, 25) === 'unknown', 'an unreadable ledger is "unknown", never a breach');
+    assert(drawdownDecision(0, 100000, 25) === 'ok', 'zero P&L is ok (a 0% limit must not block a flat day)');
+    assert(drawdownDecision(-25000, 100000, 25) === 'breached', 'a loss exactly at the limit is breached');
+    assert(drawdownDecision(-24999.99, 100000, 25) === 'ok', 'a loss just inside the limit is ok');
 
     // --- ConfigService.loadConfig: a live reload keeps the previous config when the file is bad ---
     const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-test-'));
