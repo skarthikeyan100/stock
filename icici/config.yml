@@ -111,6 +111,14 @@ strategies:
     maxProfit: 100
     cooldownSeconds: 60
     marketSentiment: none
+  - type: HourlyStrategy
+    enabled: false
+    brokers: [zerodha, ant, breeze]
+    quantity: 65
+    targetPrice: 15
+    cooldownSeconds: 60
+    driftCancelPoints: 10
+    logEnabled: true
   - type: TargetReachStrategy
     enabled: false
     symbol: NIFTY

@@ -10,8 +10,8 @@ never auto-re-enables — see `strategies.ts:66-93`).
 **Only strategies with a `config.yml` block are actually armable today**:
 `SentimentStrategy`, `ContinuousStrategy`, `RateOfChangeStrategy`, `GapStrategy`,
 `RuleBasedStrategy`, `GoodMorningStrategy`, `GoodMorningSensexStrategy`,
-`SupportResistanceStrategy`, `TargetReachStrategy`, `BulkPcrStrategy`,
-`BulkPcrAutoStartStrategy` — all `enabled: false` except
+`SupportResistanceStrategy`, `HourlyStrategy`, `TargetReachStrategy`,
+`BulkPcrStrategy`, `BulkPcrAutoStartStrategy` — all `enabled: false` except
 `BulkPcrAutoStartStrategy` (its job is to arm `BulkPcrStrategy` on a
 schedule — see below). The rest (`BiDirectionStrategy`, `DiffStrategy`,
 `PivotStrategy`, `HighLotStrategy`, `Minutes5Decision`, `TestStrategy`) are
@@ -110,6 +110,54 @@ lifecycle so the owning strategy only needs to supply entry-trigger logic.
 - No GTT/bracket is ever placed for LegManager-owned legs — `getMonitorConfig()`
   on the owning strategy returns `null` specifically so the broker-side/exitMonitor
   path never double-manages these positions.
+
+### HourlyStrategy (`HourlyStrategy.ts`)
+Multi-timeframe breakout/breakdown off hourly support/resistance, confirmed
+on a 10-minute candle close — built from a shared Gemini conversation
+("Hourly Nifty Support and Resistance"). Not `LegManager`-based (single
+direction, one shot per breakout, no hedge tree) — closer in shape to
+`RateOfChangeStrategy`, but multi-broker like `BulkPcrStrategy`.
+**Levels**: resistance = previous clock-hour's high, support = previous
+clock-hour's low, snapshotted at every hour rollover from the hour that just
+finished (`rollHourIfNeeded`). No level exists for the first hour — gated by
+`isTimeInRange()` (10:15–15:00).
+**Confirmation**: a fully closed 10-minute candle whose entire body (not
+just a wick) closes above resistance (breakout) or below support
+(breakdown) sets a pending confirmation; filters fakeouts (`updateTenMinCandle`).
+**Entry**: fires on the *open* of the very next 10-minute candle after the
+confirming close — never mid-candle, never later (a confirmation more than
+one bucket stale is dropped as expired) — gated by `isCooldownElapsed`,
+`isSentimentAligned` (reused as the "avoid choppy hours" momentum filter the
+source conversation calls for), and `hasOpenPosition()` (at most one open
+trade cycle at a time, across hour boundaries).
+**Multi-broker**: `brokers: [zerodha, ant, breeze]` (falls back to legacy
+single `broker:`, same convention as `BulkPcrStrategy.configuredBrokers()`)
+— the full configured `quantity` is entered independently and in parallel on
+every configured broker via `chunkedBuyIndex`, `Promise.allSettled` so one
+broker's failure never touches another's.
+**Exit — two layers per broker**: (1) a resting LIMIT sell at
+`entryAvg + targetPoints`, placed right after entry via
+`chunkedSquareOffLimit`. (2) **Invalidation**: the stop level is the
+confirming candle's own low (CALL) / high (PUT) — if NIFTY crosses back
+through it, the breakout failed; every broker's resting sell is cancelled
+(`cancelRestingLimitSells`) and whatever remains is market-squared-off
+(`chunkedSquareOff`) immediately (`invalidateClose`). `getMonitorConfig()`
+returns `null` — self-monitored, no GTT/bracket (Breeze doesn't support
+them anyway).
+**Recurring**: once every configured broker's position for a cycle reaches
+`'done'`, state clears (`afterPositionDone`) so the next qualifying breakout
+can trade again — unlike `BulkPcrStrategy`, this does not durably disable
+itself after one cycle.
+**Restart safety**: deliberately conservative, not a full leg rebuild.
+Candle/hourly-level state is process-local and not persisted (same
+precedent as `niftyQuoteHistory.ts`/`niftyCandleBuilder.ts` — costs at most
+one hour's entries, never a stuck position). Broker *position* state is
+persisted to Mongo (`hourlyStrategyState`); `reconcile()` restores it and
+checks against the broker's live open trades — closed at the broker while
+down is marked `'done'`, still open is flagged `'error'` for manual review
+rather than guessing whether the resting sell survived.
+**Config keys**: `enabled`, `brokers` (or legacy `broker`), `quantity`,
+`targetPrice`, `cooldownSeconds`, `driftCancelPoints`, `logEnabled`.
 
 ## Strategy reference
 

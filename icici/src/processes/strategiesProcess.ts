@@ -106,8 +106,9 @@ let orderEventsReady = false;
 async function runReconcileOnce(): Promise<void> {
     if (reconciled) return;
     reconciled = true;
-    // Only ContinuousStrategy/BulkPcrStrategy implement reconcile() today -
-    // optional-chained since other strategies don't need it, and each call
+    // Only a handful of strategies implement reconcile() today (ContinuousStrategy,
+    // BulkPcrStrategy, SupportResistanceStrategy, HourlyStrategy) - optional-chained
+    // since other strategies don't need it, and each call
     // is independently try/caught so one strategy's reconcile failure can't
     // block the others (reconcile() itself already fails closed internally -
     // see ContinuousStrategy.reconcile).
