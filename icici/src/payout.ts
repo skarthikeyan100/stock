@@ -218,9 +218,8 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
     // Drawdown forfeiture: a single day (or a single week) losing more than
     // the live daily/weekly drawdown limit forfeits the period's payout
     // entirely - the payout-time consequence of the same breach that
-    // bookkeeping.ts's drawdownState
-    // already block new orders and trigger auto-squareoff for live, using
-    // the same config values.
+    // bookkeeping.ts's drawdownState blocks new orders and triggers
+    // auto-squareoff for live, using the same config values.
     if (!blocked) {
         const maxDailyDrawdownPercent: number = drawdownLimit(settings, 'maxDailyDrawdownPercent');
         const maxWeeklyDrawdownPercent: number = drawdownLimit(settings, 'maxWeeklyDrawdownPercent');

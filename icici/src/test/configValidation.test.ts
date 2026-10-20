@@ -128,6 +128,8 @@ async function main() {
         'drawdownLimit falls back to the shared defaults (25 / 50) when absent');
     assert(drawdownLimit({ maxDailyDrawdownPercent: '10%' }, 'maxDailyDrawdownPercent') === 10,
         'drawdownLimit reads "N%" values');
+    assert(drawdownLimit({ maxDailyDrawdownPercent: 0 }, 'maxDailyDrawdownPercent') === 25,
+        'a 0% drawdownLimit falls back to the default (0 would count every flat day as a breach)');
 
     // --- drawdownDecision: the rule behind buy-blocking and liquidation ---
     assert(drawdownDecision(null, 100000, 25) === 'unknown', 'an unreadable ledger is "unknown", never a breach');

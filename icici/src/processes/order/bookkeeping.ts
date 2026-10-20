@@ -72,6 +72,21 @@ interface PendingOrder {
                              // limit protection
 }
 
+// Bound on any Mongo call the fill path awaits. A hung socket must not stall
+// fill handling; a timed-out ledger read resolves to the caller's fallback
+// (drawdown reads then report 'unknown' - buys blocked, nothing liquidated).
+const LEDGER_TIMEOUT_MS = 5_000;
+function withFallbackTimeout<T, F>(p: Promise<T>, ms: number, fallback: F, label: string): Promise<T | F> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<F>((resolve) => {
+        timer = setTimeout(() => {
+            Log.log(`[order] ${label} timed out after ${ms}ms`);
+            resolve(fallback);
+        }, ms);
+    });
+    return Promise.race([p.finally(() => clearTimeout(timer)), timeout]);
+}
+
 class OrderBookkeeping {
     trades: Trade[] = [];
     closedTrades: Trade[] = [];
@@ -348,7 +363,10 @@ class OrderBookkeeping {
         try {
             const db = Mongo.getInstance()?.db;
             if (!db) return null;
-            const rows = await db.collection('closedTrades').find({ user, exitTime: { $gte: since } }).toArray();
+            const rows = await withFallbackTimeout(
+                db.collection('closedTrades').find({ user, exitTime: { $gte: since } }).toArray(),
+                LEDGER_TIMEOUT_MS, null, 'closedTrades read');
+            if (rows === null) return null;
             return rows.reduce((sum, r) => sum + (r.realizedPnL || 0), 0);
         } catch (e) {
             Log.log('[order] getRealizedPnLSince failed - drawdown check will block until it can be read:', e);
@@ -375,31 +393,43 @@ class OrderBookkeeping {
         return drawdownDecision(pnl, investmentAmount, limitPercent);
     }
 
-    // After a sell fill, a drawdown read that came back 'unknown' is re-checked
-    // every 30s (bounded) so a Mongo outage cannot leave a real breach unenforced
-    // once the ledger is readable again. A definite breach fires the listeners.
-    private drawdownRecheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    private scheduleDrawdownRecheck(user: string, attempt = 1): void {
-        if (this.drawdownRecheckTimers.has(user)) return;
-        if (attempt > 20) {
-            Log.log(`[order] drawdown re-check for ${user} gave up after ${attempt - 1} attempts - ledger still unreadable`);
-            return;
+    // Runs the daily/weekly check after a fill and acts on it. 'breached' fires
+    // the liquidation listeners; 'unknown' (ledger unreadable) schedules a
+    // re-check. Only a definite breach liquidates.
+    private async checkBreachAndNotify(user: string): Promise<void> {
+        const daily = await this.drawdownState(user, 'daily');
+        const weekly = daily === 'breached' ? 'ok' : await this.drawdownState(user, 'weekly');
+        if (daily === 'breached' || weekly === 'breached') {
+            this.cancelDrawdownRecheck(user);
+            for (const l of this.drawdownBreachListeners) l(user);
+        } else if (daily === 'unknown' || weekly === 'unknown') {
+            this.scheduleDrawdownRecheck(user);
         }
+    }
+
+    private drawdownRecheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    private cancelDrawdownRecheck(user: string): void {
+        const timer = this.drawdownRecheckTimers.get(user);
+        if (timer) clearTimeout(timer);
+        this.drawdownRecheckTimers.delete(user);
+    }
+
+    // While the ledger is unreadable, re-check every 60s. Does not give up while
+    // the user still has open positions - a breach during an outage must still be
+    // enforced once reads succeed. Stops once nothing is open.
+    private scheduleDrawdownRecheck(user: string): void {
+        if (this.drawdownRecheckTimers.has(user)) return;
         const timer = setTimeout(async () => {
             this.drawdownRecheckTimers.delete(user);
+            const hasOpen = this.trades.some((t) => t.user === user) || this.shortTrades.some((t) => t.user === user);
+            if (!hasOpen) return;
             try {
-                const daily = await this.drawdownState(user, 'daily');
-                const weekly = daily === 'breached' ? 'ok' : await this.drawdownState(user, 'weekly');
-                if (daily === 'breached' || weekly === 'breached') {
-                    for (const l of this.drawdownBreachListeners) l(user);
-                } else if (daily === 'unknown' || weekly === 'unknown') {
-                    this.scheduleDrawdownRecheck(user, attempt + 1);
-                }
+                await this.checkBreachAndNotify(user);
             } catch (e) {
                 Log.log('[order] drawdown re-check failed for', user, e);
-                this.scheduleDrawdownRecheck(user, attempt + 1);
+                this.scheduleDrawdownRecheck(user);
             }
-        }, 30_000);
+        }, 60_000);
         this.drawdownRecheckTimers.set(user, timer);
     }
 
@@ -727,6 +757,9 @@ class OrderBookkeeping {
                 trade.quantity += tradeEvent.quantity;
                 trade.price = (traded + newTraded) / trade.quantity;
             }
+            // A buy that fills after a breach (a pending order) must not stay open
+            // uncovered: the same check that runs on sells liquidates it.
+            await this.checkBreachAndNotify(tradeEvent.user || 'Default');
         } else {
             const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user && t.broker == tradeEvent.broker);
             if (index != -1) {
@@ -770,25 +803,17 @@ class OrderBookkeeping {
                 closedPortion.exitTime = new Date();
                 closedPortion.strategy = buyTrade.strategy;
                 this.closedTrades.push(closedPortion);
-                // Awaited so the breach check below reads this fill from the ledger.
-                await this.persistClosedTrade(closedPortion, user, tradeEvent.price);
-
+                // Position state is updated BEFORE any await: other fills run while
+                // this one awaits, and must see this fill's quantity and removal.
                 buyTrade.quantity -= sellQty;
                 if (buyTrade.quantity <= 0) {
                     this.trades.splice(index, 1);
                     if (buyTrade.token) exitMonitor.unregisterTrade(user, buyTrade.token);
                 }
 
-                // Liquidate only on a definite breach. 'unknown' (ledger unreadable)
-                // blocks new buys in canPlaceOrder but must not close positions;
-                // it schedules a bounded re-check instead.
-                const daily = await this.drawdownState(user, 'daily');
-                const weekly = daily === 'breached' ? 'ok' : await this.drawdownState(user, 'weekly');
-                if (daily === 'breached' || weekly === 'breached') {
-                    for (const l of this.drawdownBreachListeners) l(user);
-                } else if (daily === 'unknown' || weekly === 'unknown') {
-                    this.scheduleDrawdownRecheck(user);
-                }
+                // Awaited (bounded) so the breach check reads this fill from the ledger.
+                await withFallbackTimeout(this.persistClosedTrade(closedPortion, user, tradeEvent.price), LEDGER_TIMEOUT_MS, undefined, 'closedTrades write');
+                await this.checkBreachAndNotify(user);
             }
         }
         this.notifyPositionsChanged();

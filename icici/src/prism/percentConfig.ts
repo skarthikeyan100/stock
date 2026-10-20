@@ -43,8 +43,12 @@ export const DRAWDOWN_DEFAULTS = {
     maxWeeklyDrawdownPercent: 50,
 } as const;
 
+// A limit must be > 0 (validation rejects 0). At runtime a 0 or negative value
+// falls back to the default: a 0% limit would otherwise count every flat day as
+// a breach and liquidate.
 export function drawdownLimit(settings: Record<string, any> | undefined, key: keyof typeof DRAWDOWN_DEFAULTS): number {
-    return toPercentNumber(settings?.[key]) ?? DRAWDOWN_DEFAULTS[key];
+    const n = toPercentNumber(settings?.[key]);
+    return n !== null && n > 0 ? n : DRAWDOWN_DEFAULTS[key];
 }
 
 // The one drawdown rule, shared by the live blocker (bookkeeping.ts) and the
