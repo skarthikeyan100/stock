@@ -77,6 +77,9 @@ interface PendingOrder {
 // fill handling; a timed-out ledger read resolves to the caller's fallback
 // (drawdown reads then report 'unknown' - buys blocked, nothing liquidated).
 const LEDGER_TIMEOUT_MS = 5_000;
+// A closed-trade row that keeps failing (not a timeout, not a duplicate) is retried this many times, then left
+// counted in memory and logged at error level rather than retried on every check.
+const MAX_CLOSED_ROW_ATTEMPTS = 20;
 function withFallbackTimeout<T, F>(p: Promise<T>, ms: number, fallback: F, label: string): Promise<T | F> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<F>((resolve) => {
@@ -364,15 +367,18 @@ class OrderBookkeeping {
         try {
             const db = Mongo.getInstance()?.db;
             if (!db) return null;
+            // Snapshot held rows BEFORE the read: a row that lands after this point is in the read's
+            // result (deduped below), and a row that landed before it is already in the collection.
+            const heldSnapshot = [...this.unpersistedClosed.entries()]
+                .filter(([, p]) => p.user === user && p.exitTime >= since);
             const rows = await withFallbackTimeout(
                 db.collection('closedTrades').find({ user, exitTime: { $gte: since } }).toArray(),
                 LEDGER_TIMEOUT_MS, null, 'closedTrades read');
             if (rows === null) return null;
-            // Rows still held in memory (write in flight or failed) count too. A held
-            // row that has already landed is counted once, by its _id.
+            // Held rows that have already landed are counted once, by their _id.
             const landed = new Set(rows.map((r) => String(r._id)));
-            const held = [...this.unpersistedClosed.entries()]
-                .filter(([id, p]) => p.user === user && p.exitTime >= since && !landed.has(id))
+            const held = heldSnapshot
+                .filter(([id]) => !landed.has(id))
                 .reduce((sum, [, p]) => sum + p.realizedPnL, 0);
             return rows.reduce((sum, r) => sum + (r.realizedPnL || 0), 0) + held;
         } catch (e) {
@@ -405,7 +411,8 @@ class OrderBookkeeping {
     // re-check. Only a definite breach liquidates.
     private async checkBreachAndNotify(user: string): Promise<void> {
         try {
-            await this.flushUnpersistedClosed();
+            // Not awaited: held rows are counted in the read below either way, so a slow flush must not stall the decision.
+            this.flushUnpersistedClosed().catch((e) => Log.log('[order] flush of held closedTrades failed:', e));
             const daily = await this.drawdownState(user, 'daily');
             const weekly = daily === 'breached' ? 'ok' : await this.drawdownState(user, 'weekly');
             if (daily === 'breached' || weekly === 'breached') {
@@ -1153,7 +1160,7 @@ class OrderBookkeeping {
     // let a Mongo hiccup block live bookkeeping - the row is held in
     // unpersistedClosed until its write is confirmed, and the breach check
     // counts it from there, so the write is never awaited on the fill path.
-    private unpersistedClosed = new Map<string, { user: string; realizedPnL: number; exitTime: Date; row: Record<string, any> }>();
+    private unpersistedClosed = new Map<string, { user: string; realizedPnL: number; exitTime: Date; row: Record<string, any>; attempts: number; inFlight: boolean; dead: boolean }>();
 
     // Never throws: a failure here must not reject the fill handler after
     // position state has already changed.
@@ -1175,27 +1182,49 @@ class OrderBookkeeping {
             broker: trade.broker,
             createdAt: new Date(),
         };
-        this.unpersistedClosed.set(id, { user, realizedPnL: trade.realizedPnL || 0, exitTime: trade.exitTime, row });
+        this.unpersistedClosed.set(id, { user, realizedPnL: trade.realizedPnL || 0, exitTime: trade.exitTime, row, attempts: 0, inFlight: false, dead: false });
         return this.writeClosedRow(id);
     }
 
     // Writes one held row. The _id makes this idempotent: a duplicate-key error
     // means an earlier attempt (e.g. one that outlived a timeout) already landed.
+    // Never more than one insert in flight per row (a flush and the immediate write
+    // would otherwise both send it). A timed-out insert stays in flight until it
+    // settles, and is still safe to retry because _id is unique.
     private async writeClosedRow(id: string): Promise<boolean> {
         const entry = this.unpersistedClosed.get(id);
-        if (!entry) return true;
+        if (!entry || entry.inFlight || entry.dead) return !entry;
         try {
             const col = Mongo.getInstance()?.db?.collection('closedTrades');
             if (!col) return false;
-            await col.insertOne(entry.row);
-            this.unpersistedClosed.delete(id);
-            return true;
-        } catch (e: any) {
-            if (e?.code === 11000) {
+            entry.inFlight = true;
+            const settled = col.insertOne(entry.row).then(
+                () => ({ ok: true as const }),
+                (error: any) => ({ ok: false as const, error }),
+            ).finally(() => { entry.inFlight = false; });
+            const outcome = await withFallbackTimeout(settled, LEDGER_TIMEOUT_MS, null, 'closedTrades write');
+            if (outcome === null) return false; // still in flight - settled by its own promise
+            if (outcome.ok) {
                 this.unpersistedClosed.delete(id);
                 return true;
             }
-            Log.log('[order] Failed to persist closedTrade for', entry.user, '- will retry:', e);
+            const error = outcome.error;
+            // Only a duplicate on _id means this row already landed; a duplicate on any other unique index is a real failure.
+            const keys = Object.keys(error?.keyPattern ?? error?.keyValue ?? {});
+            if (error?.code === 11000 && keys.length === 1 && keys[0] === '_id') {
+                this.unpersistedClosed.delete(id);
+                return true;
+            }
+            entry.attempts += 1;
+            if (entry.attempts >= MAX_CLOSED_ROW_ATTEMPTS) {
+                entry.dead = true;
+                Log.log('[order] ERROR closedTrade for', entry.user, `failed ${MAX_CLOSED_ROW_ATTEMPTS} times and will not be retried - it stays counted in the drawdown total for this process lifetime:`, error);
+            } else {
+                Log.log('[order] Failed to persist closedTrade for', entry.user, '- will retry:', error);
+            }
+            return false;
+        } catch (e) {
+            Log.log('[order] closedTrade write threw for', entry.user, '- will retry:', e);
             return false;
         }
     }
