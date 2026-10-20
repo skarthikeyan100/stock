@@ -1,4 +1,5 @@
 import Log from '../../util/Log';
+import { randomUUID } from 'crypto';
 import Mongo from '../../tools/mongo';
 import Zerodha from '../../zerodha/Zerodha';
 import ANT from '../../ant/ANT';
@@ -367,7 +368,13 @@ class OrderBookkeeping {
                 db.collection('closedTrades').find({ user, exitTime: { $gte: since } }).toArray(),
                 LEDGER_TIMEOUT_MS, null, 'closedTrades read');
             if (rows === null) return null;
-            return rows.reduce((sum, r) => sum + (r.realizedPnL || 0), 0);
+            // Rows still held in memory (write in flight or failed) count too. A held
+            // row that has already landed is counted once, by its _id.
+            const landed = new Set(rows.map((r) => String(r._id)));
+            const held = [...this.unpersistedClosed.entries()]
+                .filter(([id, p]) => p.user === user && p.exitTime >= since && !landed.has(id))
+                .reduce((sum, [, p]) => sum + p.realizedPnL, 0);
+            return rows.reduce((sum, r) => sum + (r.realizedPnL || 0), 0) + held;
         } catch (e) {
             Log.log('[order] getRealizedPnLSince failed - drawdown check will block until it can be read:', e);
             return null;
@@ -397,12 +404,19 @@ class OrderBookkeeping {
     // the liquidation listeners; 'unknown' (ledger unreadable) schedules a
     // re-check. Only a definite breach liquidates.
     private async checkBreachAndNotify(user: string): Promise<void> {
-        const daily = await this.drawdownState(user, 'daily');
-        const weekly = daily === 'breached' ? 'ok' : await this.drawdownState(user, 'weekly');
-        if (daily === 'breached' || weekly === 'breached') {
-            this.cancelDrawdownRecheck(user);
-            for (const l of this.drawdownBreachListeners) l(user);
-        } else if (daily === 'unknown' || weekly === 'unknown') {
+        try {
+            await this.flushUnpersistedClosed();
+            const daily = await this.drawdownState(user, 'daily');
+            const weekly = daily === 'breached' ? 'ok' : await this.drawdownState(user, 'weekly');
+            if (daily === 'breached' || weekly === 'breached') {
+                this.cancelDrawdownRecheck(user);
+                for (const l of this.drawdownBreachListeners) l(user);
+            } else if (daily === 'unknown' || weekly === 'unknown') {
+                this.scheduleDrawdownRecheck(user);
+            }
+        } catch (e) {
+            // A failed check must not silently drop enforcement: re-check later.
+            Log.log('[order] drawdown check failed for', user, '- re-checking:', e);
             this.scheduleDrawdownRecheck(user);
         }
     }
@@ -812,15 +826,10 @@ class OrderBookkeeping {
                     if (buyTrade.token) exitMonitor.unregisterTrade(user, buyTrade.token);
                 }
 
-                // Bounded wait so the breach check can read this fill from the ledger. If the
-                // row did not land in time the read cannot see it, so re-check later instead.
-                const persisted = await withFallbackTimeout(
-                    this.persistClosedTrade(closedPortion, user, tradeEvent.price), LEDGER_TIMEOUT_MS, false, 'closedTrades write');
-                if (persisted) {
-                    this.checkBreachAndNotify(user).catch((e) => Log.log('[order] breach check failed for', user, e));
-                } else {
-                    this.scheduleDrawdownRecheck(user);
-                }
+                // Not awaited: the row is counted from memory (unpersistedClosed) while its
+                // write is in flight, so the breach check needs no wait on the ledger write.
+                this.persistClosedTrade(closedPortion, user, tradeEvent.price);
+                this.checkBreachAndNotify(user);
             }
         }
         this.notifyPositionsChanged();
@@ -1141,33 +1150,58 @@ class OrderBookkeeping {
     // per-fill insert in _processTradeEvent (that's a fill log, this is one
     // row per closed position, with entry/exit timestamps). Feeds payout
     // history and drawdown-breach explanations (see src/payout.ts). Never
-    // let a Mongo hiccup block live bookkeeping - fire and forget.
-    // Resolves true only when the row is written. Never throws: a failure here
-    // must not reject the fill handler after position state has already changed.
+    // let a Mongo hiccup block live bookkeeping - the row is held in
+    // unpersistedClosed until its write is confirmed, and the breach check
+    // counts it from there, so the write is never awaited on the fill path.
+    private unpersistedClosed = new Map<string, { user: string; realizedPnL: number; exitTime: Date; row: Record<string, any> }>();
+
+    // Never throws: a failure here must not reject the fill handler after
+    // position state has already changed.
     private async persistClosedTrade(trade: Trade, user: string, exitPrice: number): Promise<boolean> {
+        const id = randomUUID();
+        const row = {
+            _id: id,
+            user,
+            tsym: trade.tsym,
+            token: trade.token,
+            right: trade.right,
+            quantity: trade.quantity,
+            entryPrice: trade.price,
+            exitPrice,
+            realizedPnL: trade.realizedPnL,
+            entryTime: trade.entryTime,
+            exitTime: trade.exitTime,
+            strategy: trade.strategy,
+            broker: trade.broker,
+            createdAt: new Date(),
+        };
+        this.unpersistedClosed.set(id, { user, realizedPnL: trade.realizedPnL || 0, exitTime: trade.exitTime, row });
+        return this.writeClosedRow(id);
+    }
+
+    // Writes one held row. The _id makes this idempotent: a duplicate-key error
+    // means an earlier attempt (e.g. one that outlived a timeout) already landed.
+    private async writeClosedRow(id: string): Promise<boolean> {
+        const entry = this.unpersistedClosed.get(id);
+        if (!entry) return true;
         try {
             const col = Mongo.getInstance()?.db?.collection('closedTrades');
             if (!col) return false;
-            await col.insertOne({
-                user,
-                tsym: trade.tsym,
-                token: trade.token,
-                right: trade.right,
-                quantity: trade.quantity,
-                entryPrice: trade.price,
-                exitPrice,
-                realizedPnL: trade.realizedPnL,
-                entryTime: trade.entryTime,
-                exitTime: trade.exitTime,
-                strategy: trade.strategy,
-                broker: trade.broker,
-                createdAt: new Date(),
-            });
+            await col.insertOne(entry.row);
+            this.unpersistedClosed.delete(id);
             return true;
-        } catch (e) {
-            Log.log('[order] Failed to persist closedTrade for', user, ':', e);
+        } catch (e: any) {
+            if (e?.code === 11000) {
+                this.unpersistedClosed.delete(id);
+                return true;
+            }
+            Log.log('[order] Failed to persist closedTrade for', entry.user, '- will retry:', e);
             return false;
         }
+    }
+
+    private async flushUnpersistedClosed(): Promise<void> {
+        for (const id of [...this.unpersistedClosed.keys()]) await this.writeClosedRow(id);
     }
 
     // Called after zerodhaExecutor.setTargetStopLoss (or the Prism-routed
