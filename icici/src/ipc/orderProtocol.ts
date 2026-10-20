@@ -82,6 +82,8 @@ export type OrderRequestType =
     | 'antBuyContractBare'
     | 'antSquareOffBare'
     | 'antCancelOrderBare'
+    // Broker-dispatched (see orderProcess.ts's case comment) - not ANT-specific like
+    // the antXBare family above despite living in the same block.
     | 'cancelRestingLimitSells'
     // ButterflyStrategy's narrow sell-to-open/buy-to-close exception (see
     // Zerodha.ts's NEVER-SHORT GUARD comment and bookkeeping.recordShortFill) -

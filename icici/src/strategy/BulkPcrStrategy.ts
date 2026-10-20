@@ -727,7 +727,7 @@ export default class BulkPcrStrategy extends Strategy {
         // chunks that filled during it (counting them via updateTrade as well would double-count).
         pos.squaringOff = true;
         try {
-            cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym });
+            cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym, broker: 'ant' });
         } catch (e) {
             cancelResult = { filledQty: 0, cancelFailed: true };
             Log.log(`[BulkPcrStrategy] [ant] EOD cancel request failed for ${tsym}:`, e);

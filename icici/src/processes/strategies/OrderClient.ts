@@ -349,7 +349,7 @@ class OrderClient {
         if (!res.ok) throw new Error(res.error);
     }
 
-    async cancelRestingLimitSells(userId: string, payload: { tsym: string }): Promise<{ filledQty: number; cancelFailed: boolean }> {
+    async cancelRestingLimitSells(userId: string, payload: { tsym: string; broker: 'zerodha' | 'ant' | 'breeze' | 'prism' }): Promise<{ filledQty: number; cancelFailed: boolean }> {
         const res = await this.request('cancelRestingLimitSells', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;

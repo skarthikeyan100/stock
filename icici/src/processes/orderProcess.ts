@@ -711,13 +711,16 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true };
             }
 
-            // ANT only (BulkPcrStrategy's hedge tree is ANT-only - see antLegOps.ts) -
-            // cancels any resting limit sell(s) for this tsym ahead of a hand-off to
-            // the hedge tree, same closure the drawdown-breach/expiry-squareoff paths
-            // below use, just forced onto the ANT executor regardless of this user's
-            // configured default broker.
+            // Cancels any resting limit sell(s) for this tsym ahead of a hand-off to
+            // the hedge tree (BulkPcrStrategy, ANT-only) or a plain invalidation-close
+            // (HourlyStrategy, zerodha/ant/breeze) - same closure the drawdown-breach/
+            // expiry-squareoff paths below use. Dispatched via the caller-supplied
+            // broker rather than hardcoded to 'ant': HourlyStrategy runs zerodha/ant/
+            // breeze legs, and forcing a non-ant position's cancel onto the ANT
+            // executor would miss the real resting order entirely, letting the
+            // market force-close double-sell.
             case 'cancelRestingLimitSells': {
-                const executor = getBrokerExecutor(req.userId, 'ant');
+                const executor = getBrokerExecutor(req.userId, req.payload.broker);
                 const result = await cancelAnyRestingLimitSell(executor, req.userId, req.payload.tsym);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
@@ -1222,9 +1225,10 @@ async function main() {
     // than a hand-rolled ant/else-zerodha branch, so a breeze-routed position
     // (e.g. ContinuousStrategy with config.yml broker: breeze) doesn't get
     // misrouted to a Zerodha square-off call for a symbol it never bought there.
-    // Trade has no `exchange` field, so 'NFO' is passed literally - every trade
-    // reaching this loop is a NIFTY/NFO option, matching the pre-existing
-    // (implicit, default-'NFO') behavior of both branches this replaces.
+    // Trade has no `exchange` field, so it's inferred from tsym - same
+    // SENSEX/BFO convention used everywhere else in this file (onFill,
+    // resolveOptionContractForBroker, buyToCloseShortLegForUser) since
+    // BulkPcrStrategy's SENSEX/BFO support means not every trade here is NFO.
     //
     // Resolved via trade.broker (falling back to the per-user default only
     // when a trade has none) rather than getBrokerExecutor(user) alone -
@@ -1242,7 +1246,8 @@ async function main() {
                 const { filledQty: alreadyFilledQty } = await cancelAnyRestingLimitSell(executor, user, trade.tsym);
                 const remainingQty = trade.quantity - alreadyFilledQty;
                 if (remainingQty <= 0) continue; // see cancelAnyRestingLimitSell's comment - would double-sell
-                await executor.squareOff(user, trade.tsym, remainingQty, 'NFO');
+                const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
+                await executor.squareOff(user, trade.tsym, remainingQty, exchange);
             } catch (e) {
                 Log.log('[order] Auto-squareoff on drawdown breach failed for', trade.tsym, e);
             }
@@ -1291,7 +1296,10 @@ async function main() {
                     const remainingQty = trade.quantity - alreadyFilledQty;
                     // see cancelAnyRestingLimitSell's comment - would double-sell
                     if (remainingQty <= 0) return;
-                    return executor.squareOff(trade.user, trade.tsym, remainingQty, 'NFO');
+                    // Trade has no `exchange` field - inferred from tsym, same SENSEX/BFO
+                    // convention used elsewhere in this file (see drawdown-breach handler above).
+                    const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
+                    return executor.squareOff(trade.user, trade.tsym, remainingQty, exchange);
                 });
             squareOff
                 .catch((e) => Log.log('[order] Expiry-day auto-squareoff failed for', trade.tsym, e))

@@ -412,7 +412,7 @@ export default class HourlyStrategy extends Strategy {
         let cancelResult: { filledQty: number; cancelFailed: boolean };
         pos.squaringOff = true;
         try {
-            cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym });
+            cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym, broker });
         } catch (e) {
             cancelResult = { filledQty: 0, cancelFailed: true };
             Log.log(`[Hourly] [${broker}] Invalidation cancel request failed for ${tsym}:`, e);
