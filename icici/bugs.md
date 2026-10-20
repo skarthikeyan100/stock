@@ -10,11 +10,6 @@ known and accepted for now; each is a live-trading risk on the drawdown stop.
 | # | Gap | Where | Status |
 |---|---|---|---|
 | A | OPEN (kept per decision 2026-10-20: needs a durable journal). A restart before a held row's insert lands loses that realized loss from the day's drawdown total (the startup reload only reads `closedTrades`). | `bookkeeping.ts` `unpersistedClosed`, startup reload | NOT FIXED: needs a durable journal or an awaited write |
-| B | FIXED (this commit): held rows are snapshotted before the read. Was: `getRealizedPnLSince` snapshots `unpersistedClosed` after the `find` resolves; a row inserted between the server snapshot and that point is in neither the read nor the held map, so it is undercounted. | `getRealizedPnLSince` | NOT FIXED: copy the held entries before issuing the `find` |
-| C | FIXED (this commit): flush is not awaited by the breach check, and each insert is bounded. Was: `flushUnpersistedClosed` awaits each insert with no timeout, and `checkBreachAndNotify` awaits the flush before any drawdown read. A hung socket stalls the breach check, and no re-check is armed. | `checkBreachAndNotify`, `flushUnpersistedClosed` | NOT FIXED: bound each insert and arm a re-check on timeout |
-| D | FIXED (this commit): duplicate-key counts as landed only on `_id`. Was: `writeClosedRow` treats any error with code 11000 as landed. A duplicate on another unique index would silently drop the row from the total. | `writeClosedRow` | NOT FIXED: require `keyPattern` to be exactly `{ _id: 1 }` |
-| E | FIXED (this commit): after 20 failed attempts the row stops retrying, stays counted, and is logged at error. Was: a non-transient insert error (validator, BSON) keeps the row held and retried forever, lengthening every breach check. | `writeClosedRow` / flush | NOT FIXED: cap attempts, log at error, stop retrying |
-| F | FIXED (this commit): one insert in flight per row. Was: each sell fill issues two concurrent inserts of the same `_id` (the immediate write and the flush). Costs a round-trip under bursts. | `persistClosedTrade`, `checkBreachAndNotify` | NOT FIXED: skip rows whose write is in flight |
 
 Pre-existing (not from the held-row change), also open:
 - Overlapping `checkBreachAndNotify` runs can each invoke the liquidation listener for the same user, and the listener has no in-flight guard. The same trade can be cancelled and squared off twice.
@@ -29,14 +24,6 @@ The strategy's own ledger showed profit while the Zerodha account was down about
 
 | # | Bug | Evidence | Status |
 |---|---|---|---|
-| 1 | Stale Zerodha instrument master (dated Aug 20) had no 19-Oct weekly: strike priced on ANT's 19-Oct expiry, Zerodha symbol resolved to the 27-Oct monthly, limit buy at 50 for a Rs 175 contract | 10:20 entry never filled | FIXED: `ZerodhaContractMaster.preload` re-downloads (atomic rename) when the file is not from today |
-| 2 | `Zerodha.getFillPrice` timeout path cancelled then reported "did not fill" even when the order filled in the race, so callers retried and double-filled | repeated market sells 10:42-10:45 | FIXED 67d78f3 (re-reads order after the cancel) |
-| 3 | No never-short guard: every Zerodha sell path sold the strategy's tracked quantity regardless of the broker position | -130 on 23050PE | FIXED e004108 (`getSellableQuantity`, clamp/refuse, per-contract in-flight lock) |
-| 4 | Marketable limits priced off `ANT.getQuote` (cached OHLC endpoint) that ran 1+ minute behind a fast option (54 quoted vs 65 ask), so buys rested below the ask and timed out about once a minute | 13:23-13:30 | FIXED 76bb7ae (live ScripDetails bid/ask, 5% cap, getQuote fallback) |
-| 5 | T1 entry stacked on a resting refill: a tick between a target-hit leg's deletion and its refill's registration cleared `ordered` | duplicate buy 10:31 | FIXED 13e232e (gate also requires `legManager.isIdle()`) |
-| 6 | Superseded refill limit buys filled anyway and were dropped silently (`cancelChildRefills` deletes the intent first; `handleFillOrExternalSell` ignores a Buy with no intent) -> orphaned longs | 22900PE 130 @69.65, 22950PE 325 @103.55, 23000CE 130+195 | FIXED (this commit): superseded order ids are tracked and a late fill is sold straight back; echoes de-duplicated by `handledBuyOrderIds` |
-| 7 | `maxProfitTripped` lived only in memory: a restart re-opened trading after a max-profit mass close | 10:46 and 10:48 restarts | FIXED (this commit): same-day latch in Mongo `strategyLatches`, loaded in `reconcile`, cleared by `reset()` |
-| 8 | No end-of-day close for ContinuousStrategy; the app's expiry sweeper only runs on Tuesdays, so a holiday-shifted Monday expiry left every leg open | 2026-10-19 | FIXED (this commit): `closeAllForEod` at `eodCloseTime` (default 15:10) |
 | 9 | tsc-watch hot-restarts the order/strategies processes on every compile, killing in-flight buys | orphan at 10:26:34 | NOT FIXED (operational): do not edit source or restart while a buy is resting |
 | 10 | Mass close (`maxProfit`, 1% of maxInvestment) realizes the losing hedge legs along with the winners; no daily loss cap; a restored leg is classed "averaged" (target avg+2 instead of +5) | -2.4k..-2.8k legs at 12:35 | NOT FIXED: needs a decision on loss cap and sizing |
 | 11 | ANT/Breeze/Prism sell paths have no equivalent never-short guard (ANT clamps to its own bookkeeping, not the broker) | - | NOT FIXED |
@@ -236,33 +223,6 @@ if (user && response?.norenordno)
 
 **Fix:** Change `orderReply?.data?.norenordno` to `orderReply?.norenordno` in `squareOffOrder`.
 
-## investmentAmount has no effect on manual-buy order sizing [RESOLVED]
-
-The live Zerodha manual-buy path never reads `investmentAmount`/`investmentMode` at all.
-Quantity always defaults to one lot (`bookkeeping.getInstrumentLotSize`, e.g. 65 for NIFTY)
-whenever the frontend doesn't send an explicit `quantity` — which it never does.
-
-- `frontend/src/context/TradingContext.tsx` `placeOrder`/`placeContractOrder` never send `quantity`.
-- `src/server.ts` `GET /prism/order/buy` never reads `quantity` from the query string.
-- `src/processes/order/zerodhaExecutor.ts` `manualBuyOnZerodha` (~line 142-165):
-  `const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(...)` — always 1 lot.
-
-Investment-amount-based sizing (`available / (price * lotSize)`, floored to a lot multiple)
-DOES exist, but only in the legacy Prism/Shoonya path, unreachable from the current
-Zerodha/ANT flow:
-- `src/nse_index.ts` `getQuantity(pricePerquantity, userContext)` (~line 82-91)
-- `src/prism.ts` `buyContract()` (~line 773-790), `sendLimitOrder()` (~line 1083-1091)
-
-**Fix (implemented):** Added `bookkeeping.resolveManualBuyQuantity(userId, tsym, price, explicitQuantity?)`
-— sizes to as many lots as `investmentMode='investmentAmount'` users' remaining capital covers
-at the given price, falling back to 1 lot otherwise (unchanged default). Since Zerodha's own
-quote/LTP endpoints return 403 for this account (see `Zerodha.ts` `buyOption`'s comment), the
-pre-trade price estimate is sourced from ANT instead (`antExecutor.ts`'s new
-`estimateOptionPrice()`/`safeAntQuote()`, never throws — falls back to 1-lot sizing on any
-quote failure) and reused by both `manualBuyOnZerodha` and `manualBuyOnAnt`'s `contract`/
-`strikePrice` branches. The `right`-only (Flash Trade / ATM-by-index) branch is unchanged,
-still 1 lot by default — no pre-resolved contract to price there without added complexity.
-
 ## BulkPcrStrategy LPP order rejection (2026-09-22 12:32:50)
 
 **Status:** Active — requires manual review / contract data refresh
@@ -285,23 +245,30 @@ still 1 lot by default — no pre-resolved contract to price there without added
 3. Review `BulkPcrStrategy.resolveEntryRight()` pricing logic — verify contract selection and price derivation against live market data
 4. Consider adding pre-order validation: cap order price at or below current LTP + safety buffer before sending to broker
 
-## investmentAmount is not editable anywhere in the frontend [RESOLVED]
+## Every manual buy uses a hardcoded global 2pt/11pt target/stop-loss regardless of user or broker [PARTIALLY RESOLVED]
 
-`frontend/src/pages/ProfilePage.tsx` has an editable `investmentMode` selector (~line 218-231,
-`Form.Select` + "Save Mode" button posting to `/users/:email/settings`), but `investmentAmount`
-itself has no input field anywhere — it's only interpolated read-only into descriptive text
-(~line 235): "Each trade uses your entire allocated capital (₹{investmentAmount}) to buy the
-maximum possible quantity" — text that is also currently misleading, since that behavior isn't
-what actually executes (see above). `AdminPage.tsx` doesn't expose it either, even for admins.
-Backend already supports setting it (`POST /users/:email/settings` accepts `investmentAmount`,
-`src/user.ts` `updateUserSettings` persists it) — only the frontend input is missing. Currently
-stuck at the Mongo-seeded default (₹100,000, `src/user.ts` ~line 59/81) unless set via a raw
-API call.
+`src/processes/order/zerodhaExecutor.ts` `buyContractOnZerodha()` (~line 186-187):
+`finalizeEntry(trade, userId, exchange, settings.targetPriceDiff, settings.stopLossPriceDiff)`
+— always uses `config.yml`'s global `settings.targetPriceDiff` (2) / `settings.stopLossPriceDiff`
+(11), regardless of the placing user's profile or the instrument's price level. This is why a
+manual buy squared off almost immediately at ~₹2/point profit once the broker-side GTT bracket
+(placed at entry ± 2/11 points) triggered.
 
-**Fix (implemented):** `investmentAmount` is admin-only by design (per user direction) — added
-an editable ₹ column to `AdminPage.tsx`'s users table (mirroring the existing `perOrderCap`
-column) instead of `ProfilePage.tsx`, which now shows it read-only with a note to contact an
-admin. Backend already persisted `investmentAmount` from `POST /users/:email/settings`.
+`frontend/src/components/OrderEntry.tsx` (the buy form) has no target/SL inputs at all, and
+`TradingContext.tsx` `placeOrder`/`placeContractOrder` never send `targetPoints`/`stopLossPoints`.
+There's a post-entry edit path (`PositionCard.tsx` → `setTargetStopLoss` → `POST /prism/settarget`
+→ `zerodhaExecutor.ts` `setTargetStopLoss()`), but it's effectively unreachable in practice:
+`PositionCard.tsx` computes `hasTargetSet = !!trade.targetPrice || !!trade.stopLossPrice`, and
+since `finalizeEntry` sets both synchronously before the trade first reaches the frontend via
+SSE, `hasTargetSet` is already true on first render — so the editable T/SL inputs are hidden and
+only the (already-defaulted) read-only text is ever shown, before or after the buy.
+
+**Still open:** Flash Trade (`placeOrder`/`right`-only buys) has no target/SL inputs - still
+always uses the global default. `PositionCard.tsx`'s post-entry edit UI is still unreachable
+(`hasTargetSet` is already `true` on first render since `finalizeEntry` sets both synchronously
+at fill time) - not fixed here, since order-time inputs now cover the reported case.
+
+## Open items carried from resolved investmentAmount sections
 
 **Note:** `POST /users/:email/settings` itself has no role/admin check at all — it's the same
 shared endpoint `ProfilePage.tsx` (self-service, `investmentMode` only) and `AdminPage.tsx`
@@ -329,16 +296,4 @@ since `finalizeEntry` sets both synchronously before the trade first reaches the
 SSE, `hasTargetSet` is already true on first render — so the editable T/SL inputs are hidden and
 only the (already-defaulted) read-only text is ever shown, before or after the buy.
 
-**Fix (implemented):** `ManualBuyRequest` (both executors) now carries optional `targetPoints`/
-`stopLossPoints`; when set, they override `settings.targetPriceDiff`/`stopLossPriceDiff` for
-that order (unset still falls back to the global default - fully backward compatible).
-`OrderEntry.tsx`'s Symbol Search form now has optional "Target pts" / "Stop-loss pts" inputs,
-threaded through `TradingContext.tsx` → `GET /prism/order/buy` → `manualBuyOnZerodha`/
-`manualBuyOnAnt`. Also fixed `orderProcess.ts`'s `manualBuy` IPC case, which was hardcoded to
-always call `manualBuyOnZerodha` regardless of the placing user's broker setting - now routed
-per-user via `bookkeeping.getUserBroker()`, consistent with `buyIndex`/`squareOff`.
-
-**Still open:** Flash Trade (`placeOrder`/`right`-only buys) has no target/SL inputs - still
-always uses the global default. `PositionCard.tsx`'s post-entry edit UI is still unreachable
-(`hasTargetSet` is already `true` on first render since `finalizeEntry` sets both synchronously
-at fill time) - not fixed here, since order-time inputs now cover the reported case.
+- Flash Trade / `right`-only buys (no pre-resolved contract): sizing still defaults to 1 lot, since there is no contract to price before the order (`bookkeeping.resolveManualBuyQuantity` only sizes contract-resolved buys).
