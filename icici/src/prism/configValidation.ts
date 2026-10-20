@@ -59,6 +59,14 @@ const TARGET_STOPLOSS_PAIRS: [string, string][] = [
     ['target', 'stopLoss'],
 ];
 
+// maxInvestment may be quoted in YAML ("100000"): a plain numeric string is
+// accepted and converted to a number. Anything else (e.g. "1,00,000") is left
+// as-is so validation rejects it.
+export function coerceMaxInvestment(v: unknown): unknown {
+    if (typeof v === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(v)) return Number(v);
+    return v;
+}
+
 /**
  * Single-field range checks for one flat config object (either the
  * top-level `settings` object, or one strategy's flat block, e.g.
@@ -113,7 +121,8 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     // maxInvestment is the base every % stop is computed against. A non-numeric
     // value (e.g. "1,00,000") would make the thresholds NaN and silently
     // disable them, so it must be a positive number when present.
-    if (obj.maxInvestment != null && !(isNum(obj.maxInvestment) && obj.maxInvestment > 0)) {
+    const maxInv = coerceMaxInvestment(obj.maxInvestment);
+    if (obj.maxInvestment != null && !(isNum(maxInv) && maxInv > 0)) {
         errors.push(`${label}.maxInvestment must be a number > 0 (got ${JSON.stringify(obj.maxInvestment)})`);
     }
 

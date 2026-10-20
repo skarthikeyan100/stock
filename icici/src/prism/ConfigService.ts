@@ -3,7 +3,7 @@ import fs, { readFileSync, writeFileSync } from 'fs';
 import { load, dump } from 'js-yaml';
 import AppConfig, { StrategyInstanceConfig } from './AppConfig';
 import { normalizePercentFields, formatPercentFields } from './percentConfig';
-import { validateConfigFile } from './configValidation';
+import { validateConfigFile, coerceMaxInvestment } from './configValidation';
 
 class ConfigService {
   private configPath = process.env.CONFIG_PATH || './config.yml';
@@ -80,9 +80,11 @@ class ConfigService {
     }
     // Percent fields may be written as "2" or "2%"; normalise to numbers so
     // every consumer does arithmetic on a number.
-    parsed.settings = normalizePercentFields(parsed.settings);
+    const normalizeBlock = (o: any) => normalizePercentFields(
+      o && o.maxInvestment !== undefined ? { ...o, maxInvestment: coerceMaxInvestment(o.maxInvestment) } : o);
+    parsed.settings = normalizeBlock(parsed.settings);
     if (Array.isArray(parsed.strategies)) {
-      parsed.strategies = parsed.strategies.map((s: any) => normalizePercentFields(s));
+      parsed.strategies = parsed.strategies.map((s: any) => normalizeBlock(s));
     }
     this.config = parsed as AppConfig;
     Log.log('Config Updated:', this.config);

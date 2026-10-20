@@ -10,6 +10,9 @@
 
 import { validateNumericRanges, validateTargetVsStopLoss, validateFlatConfig, validateConfigFile } from '../prism/configValidation';
 import { toPercentNumber, formatPercentFields, normalizePercentFields, drawdownLimit } from '../prism/percentConfig';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 function assert(condition: boolean, message: string) {
     if (condition) {
@@ -126,6 +129,24 @@ async function main() {
     assert(drawdownLimit({ maxDailyDrawdownPercent: '10%' }, 'maxDailyDrawdownPercent') === 10,
         'drawdownLimit reads "N%" values');
 
+    // --- ConfigService.loadConfig: a live reload keeps the previous config when the file is bad ---
+    const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-test-'));
+    const cfgPath = path.join(cfgDir, 'config.yml');
+    fs.writeFileSync(cfgPath, 'settings:\n  consistencyLimitPercent: 40%\nstrategies: []\n');
+    process.env.CONFIG_PATH = cfgPath; // read by ConfigService at import time
+    const { default: configService } = await import('../prism/ConfigService');
+    assert(configService.getConfig().settings.consistencyLimitPercent === 40, 'loadConfig normalises "40%" to 40');
+
+    fs.writeFileSync(cfgPath, 'a: [1');
+    configService.reloadNow();
+    assert(configService.getConfig().settings.consistencyLimitPercent === 40, 'a malformed file on reload keeps the previous config');
+
+    fs.writeFileSync(cfgPath, 'settings:\n  maxDailyDrawdownPercent: 0%\n');
+    configService.reloadNow();
+    assert(configService.getConfig().settings.consistencyLimitPercent === 40, 'an invalid file on reload keeps the previous config');
+
+    fs.rmSync(cfgDir, { recursive: true, force: true });
+
     if (process.exitCode === 1) {
         console.log('SOME TESTS FAILED');
     } else {
@@ -133,4 +154,5 @@ async function main() {
     }
 }
 
-main();
+// ConfigService's fs.watch keeps the event loop alive, so exit explicitly.
+main().then(() => process.exit(process.exitCode ?? 0));

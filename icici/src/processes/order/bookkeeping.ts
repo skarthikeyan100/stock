@@ -360,24 +360,20 @@ class OrderBookkeeping {
     // strategy pseudo-users (see orderProcess.ts loadUserLimits) never get
     // investmentAmount populated, and 25%/50% of an unset (0) amount would
     // instantly block every automated strategy.
-    async isDailyDrawdownBreached(user: string): Promise<boolean> {
+    // 'unknown' means the ledger could not be read. New buys are blocked on
+    // anything other than 'ok'; the sell-side liquidation trigger acts only on
+    // a definite 'breached' - an unreadable ledger must never close positions.
+    async drawdownState(user: string, window: 'daily' | 'weekly'): Promise<'ok' | 'breached' | 'unknown'> {
         const investmentAmount = this.userSettingsCache.get(user)?.investmentAmount;
-        if (!investmentAmount) return false;
+        if (!investmentAmount) return 'ok';
         const settings = configService.getConfig().settings as any;
-        const limitPercent = drawdownLimit(settings, 'maxDailyDrawdownPercent');
-        const pnl = await this.getRealizedPnLSince(user, OrderBookkeeping.startOfDay());
-        if (pnl === null) return true; // cannot verify the day's loss - block rather than trade past the limit
-        return pnl <= -(investmentAmount * limitPercent) / 100;
-    }
-
-    async isWeeklyDrawdownBreached(user: string): Promise<boolean> {
-        const investmentAmount = this.userSettingsCache.get(user)?.investmentAmount;
-        if (!investmentAmount) return false;
-        const settings = configService.getConfig().settings as any;
-        const limitPercent = drawdownLimit(settings, 'maxWeeklyDrawdownPercent');
-        const pnl = await this.getRealizedPnLSince(user, startOfWeek());
-        if (pnl === null) return true; // cannot verify the week's loss - block rather than trade past the limit
-        return pnl <= -(investmentAmount * limitPercent) / 100;
+        const limitPercent = window === 'daily'
+            ? drawdownLimit(settings, 'maxDailyDrawdownPercent')
+            : drawdownLimit(settings, 'maxWeeklyDrawdownPercent');
+        const since = window === 'daily' ? OrderBookkeeping.startOfDay() : startOfWeek();
+        const pnl = await this.getRealizedPnLSince(user, since);
+        if (pnl === null) return 'unknown';
+        return pnl <= -(investmentAmount * limitPercent) / 100 ? 'breached' : 'ok';
     }
 
     // Counts trades opened today: closed trades (from Mongo, by entryTime)
@@ -446,13 +442,19 @@ class OrderBookkeeping {
         if (estimatedOrderValue !== undefined && perOrderCap !== undefined && estimatedOrderValue > perOrderCap) {
             return { allowed: false, reason: `Order value ₹${estimatedOrderValue.toFixed(2)} exceeds per-order cap ₹${perOrderCap}.` };
         }
-        if (await this.isDailyDrawdownBreached(user)) {
-            const reason = `User '${user}' has reached the maximum daily drawdown.`;
+        const dailyDrawdown = await this.drawdownState(user, 'daily');
+        if (dailyDrawdown !== 'ok') {
+            const reason = dailyDrawdown === 'breached'
+                ? `User '${user}' has reached the maximum daily drawdown.`
+                : `User '${user}' daily drawdown could not be verified (trade ledger unreadable) - buys blocked.`;
             this.logOrderRejection(user, reason);
             return { allowed: false, reason };
         }
-        if (await this.isWeeklyDrawdownBreached(user)) {
-            const reason = `User '${user}' has reached the maximum weekly drawdown.`;
+        const weeklyDrawdown = await this.drawdownState(user, 'weekly');
+        if (weeklyDrawdown !== 'ok') {
+            const reason = weeklyDrawdown === 'breached'
+                ? `User '${user}' has reached the maximum weekly drawdown.`
+                : `User '${user}' weekly drawdown could not be verified (trade ledger unreadable) - buys blocked.`;
             this.logOrderRejection(user, reason);
             return { allowed: false, reason };
         }
@@ -749,7 +751,11 @@ class OrderBookkeeping {
                     if (buyTrade.token) exitMonitor.unregisterTrade(user, buyTrade.token);
                 }
 
-                if ((await this.isDailyDrawdownBreached(user)) || (await this.isWeeklyDrawdownBreached(user))) {
+                // Liquidate only on a definite breach. 'unknown' (ledger unreadable)
+                // blocks new buys in canPlaceOrder but must not close positions.
+                const breached = (await this.drawdownState(user, 'daily')) === 'breached'
+                    || (await this.drawdownState(user, 'weekly')) === 'breached';
+                if (breached) {
                     for (const l of this.drawdownBreachListeners) l(user);
                 }
             }
