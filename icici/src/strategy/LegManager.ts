@@ -325,10 +325,10 @@ export class LegManager {
         const maxInvestment = cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
         const threshold = (maxProfitPct / 100) * maxInvestment;
         const cumulative = this.computeCumulativeProfit();
-        if (cumulative < threshold) return;
+        if (!(cumulative >= threshold)) return; // NaN-safe: a NaN cumulative must not trip it
         this.maxProfitTripped = true;
         this.persistLatch('maxProfitTripped');
-        Log.log(`[${this.deps.ownerType}] MAX PROFIT TRIPPED - cumulative=${Math.round(cumulative)} threshold=${Math.round(threshold)} (maxProfit=${cfg.maxProfit}% of maxInvestment=${maxInvestment}) - closing all legs, cancelling all pending re-entries, and permanently blocking new entries for the rest of this session`);
+        Log.log(`[${this.deps.ownerType}] MAX PROFIT TRIPPED - cumulative=${Math.round(cumulative)} threshold=${Math.round(threshold)} (maxProfit=${maxProfitPct}% of maxInvestment=${maxInvestment}) - closing all legs, cancelling all pending re-entries, and permanently blocking new entries for the rest of this session`);
     }
 
     // Invoked once maxProfitTripped latches - idempotent/safe to call
@@ -387,7 +387,7 @@ export class LegManager {
         if (!(cumulative <= -threshold)) return; // NaN-safe: a NaN cumulative must not trip it
         this.maxLossTripped = true;
         this.persistLatch('maxLossTripped');
-        Log.log(`[${this.deps.ownerType}] MAX LOSS TRIPPED - cumulative=${Math.round(cumulative)} threshold=-${Math.round(threshold)} (maxLoss=${cfg.maxLoss}% of maxInvestment=${maxInvestment}) - closing every open leg and blocking new entries`);
+        Log.log(`[${this.deps.ownerType}] MAX LOSS TRIPPED - cumulative=${Math.round(cumulative)} threshold=-${Math.round(threshold)} (maxLoss=${maxLossPct}% of maxInvestment=${maxInvestment}) - closing every open leg and blocking new entries`);
     }
 
     isMaxLossTripped(): boolean {

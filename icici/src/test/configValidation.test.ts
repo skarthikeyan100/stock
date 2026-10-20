@@ -9,6 +9,7 @@
  */
 
 import { validateNumericRanges, validateTargetVsStopLoss, validateFlatConfig } from '../prism/configValidation';
+import { toPercentNumber, formatPercentFields, normalizePercentFields } from '../prism/percentConfig';
 
 function assert(condition: boolean, message: string) {
     if (condition) {
@@ -74,6 +75,34 @@ async function main() {
     };
     const validFullErrors = validateFlatConfig(validFullFlat, currentFlat);
     assert(validFullErrors.length === 0, `a fully valid full config payload passes with no errors (errors: ${JSON.stringify(validFullErrors)})`);
+
+    // --- percent fields: "N" and "N%" are both accepted ---
+    assert(toPercentNumber(2) === 2 && toPercentNumber('2') === 2 && toPercentNumber('2%') === 2 && toPercentNumber(' 2.5 % ') === 2.5,
+        'toPercentNumber accepts 2, "2", "2%" and " 2.5 % "');
+    assert(toPercentNumber('abc%') === null && toPercentNumber('2 pct') === null && toPercentNumber(undefined) === null,
+        'toPercentNumber returns null for unparseable values');
+    const normalized: Record<string, any> = normalizePercentFields({ maxLoss: '6%', targetPoints: '10' } as Record<string, any>);
+    assert(normalized.maxLoss === 6 && normalized.targetPoints === '10',
+        'normalizePercentFields converts only percent keys');
+    const formatted: Record<string, any> = formatPercentFields({ maxLoss: 6, targetPoints: 10 } as Record<string, any>);
+    assert(formatted.maxLoss === '6%' && formatted.targetPoints === 10,
+        'formatPercentFields writes percent keys with % and leaves others alone');
+
+    const okPercentErrors = validateFlatConfig(
+        { settings: { consistencyLimitPercent: '40%', maxDailyDrawdownPercent: 25 }, continuousStrategy: { type: 'ContinuousStrategy', maxProfit: '4%', maxLoss: 6 } },
+        {});
+    assert(okPercentErrors.length === 0, `valid "N" and "N%" percent values pass (errors: ${JSON.stringify(okPercentErrors)})`);
+
+    const badPercentErrors = validateFlatConfig(
+        { settings: { consistencyLimitPercent: 'abc%' }, continuousStrategy: { type: 'ContinuousStrategy', maxLoss: '-3%' } },
+        {});
+    assert(badPercentErrors.length === 2, `an unparseable and a negative percent are both rejected (errors: ${JSON.stringify(badPercentErrors)})`);
+
+    const zeroStopErrors = validateNumericRanges('continuousStrategy', { maxProfit: 0 });
+    assert(zeroStopErrors.length === 1, `maxProfit of 0 is rejected - it would trip on the first tick (errors: ${JSON.stringify(zeroStopErrors)})`);
+
+    const outOfRangeErrors = validateNumericRanges('settings', { consistencyLimitPercent: '150%' });
+    assert(outOfRangeErrors.length === 1, `consistencyLimitPercent above 100 is rejected (errors: ${JSON.stringify(outOfRangeErrors)})`);
 
     if (process.exitCode === 1) {
         console.log('SOME TESTS FAILED');

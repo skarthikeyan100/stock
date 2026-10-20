@@ -3,6 +3,7 @@ import fs, { readFileSync, writeFileSync } from 'fs';
 import { load, dump } from 'js-yaml';
 import AppConfig, { StrategyInstanceConfig } from './AppConfig';
 import { normalizePercentFields, formatPercentFields } from './percentConfig';
+import { validateNumericRanges } from './configValidation';
 
 class ConfigService {
   private configPath = process.env.CONFIG_PATH || './config.yml';
@@ -66,6 +67,19 @@ class ConfigService {
       parsed.settings = normalizePercentFields(parsed.settings);
       if (Array.isArray(parsed.strategies)) {
         parsed.strategies = parsed.strategies.map((s: any) => normalizePercentFields(s));
+      }
+      // Reject a file with invalid values (bad percent, negative limit, ...)
+      // rather than trading on it. At startup this fails closed; on a live
+      // reload the previous config stays in effect and the error is logged.
+      const errors = [
+        ...(parsed.settings ? validateNumericRanges('settings', parsed.settings) : []),
+        ...(parsed.strategies || []).flatMap((s: any) => validateNumericRanges(s?.type ?? 'strategy', s)),
+      ];
+      if (errors.length > 0) {
+        const msg = `config file rejected: ${errors.join('; ')}`;
+        if (!this.config) throw new Error(msg);
+        Log.log(`[ConfigService] ${msg} - keeping previous config`);
+        return;
       }
     }
     this.config = parsed as AppConfig;

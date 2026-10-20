@@ -39,11 +39,13 @@ const PERCENT_FIELDS: string[] = [
     'consistencyLimitPercent', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
 ];
 
-// Strategy percent fields (% of maxInvestment) - must be non-negative; no
-// upper bound since a profit cap above 100% is not nonsensical.
-const PERCENT_NON_NEGATIVE_FIELDS: string[] = [
-    'maxProfit', 'maxLoss', 'marketProtectionPercent',
-];
+// Strategy stop levels (% of maxInvestment). No upper bound - a cap above
+// 100% is not nonsensical. Must be strictly positive: 0 would trip the stop on
+// the first tick, so "disabled" is expressed by removing the key instead.
+const PERCENT_POSITIVE_FIELDS: string[] = ['maxProfit', 'maxLoss'];
+
+// Must be non-negative (0 is allowed).
+const PERCENT_NON_NEGATIVE_FIELDS: string[] = ['marketProtectionPercent'];
 
 // target/stop-loss field-name pairs used across different strategies for the
 // same "distance from entry price" concept. Within a single object, if both
@@ -91,6 +93,12 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
         const n = toPercentNumber(obj[field]);
         if (n !== null && (n < 0 || n > 100)) {
             errors.push(`${label}.${field} must be between 0 and 100 (got ${obj[field]})`);
+        }
+    }
+    for (const field of PERCENT_POSITIVE_FIELDS) {
+        const n = toPercentNumber(obj[field]);
+        if (n !== null && n <= 0) {
+            errors.push(`${label}.${field} must be > 0 (got ${obj[field]}); remove the key to disable it`);
         }
     }
     for (const field of PERCENT_NON_NEGATIVE_FIELDS) {

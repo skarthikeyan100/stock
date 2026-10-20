@@ -2,6 +2,7 @@ import Mongo from './tools/mongo';
 import { getUser } from './user';
 import { computeTax } from './tax';
 import configService from './prism/ConfigService';
+import { toPercentNumber } from './prism/percentConfig';
 import myEmitter from './tools/emitter';
 import { weekKey, startOfWeek, endOfWeek } from './util/weekWindow';
 
@@ -221,8 +222,8 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
     // already block new orders and trigger auto-squareoff for live, using
     // the same config values.
     if (!blocked) {
-        const maxDailyDrawdownPercent: number = settings.maxDailyDrawdownPercent ?? 25;
-        const maxWeeklyDrawdownPercent: number = settings.maxWeeklyDrawdownPercent ?? 50;
+        const maxDailyDrawdownPercent: number = toPercentNumber(settings.maxDailyDrawdownPercent) ?? 25;
+        const maxWeeklyDrawdownPercent: number = toPercentNumber(settings.maxWeeklyDrawdownPercent) ?? 50;
         const drawdown = computeDrawdownForfeiture(periodTrades, userDoc.investmentAmount, maxDailyDrawdownPercent, maxWeeklyDrawdownPercent);
         if (drawdown.forfeited) {
             blocked = true;
@@ -289,8 +290,8 @@ export async function computePnlSummary(user: string, from: Date, to: Date, brea
     if (!userDoc) throw new Error(`User not found: ${user}`);
 
     const settings = configService.getConfig().settings as any;
-    const maxDailyDrawdownPercent: number = settings.maxDailyDrawdownPercent ?? 25;
-    const maxWeeklyDrawdownPercent: number = settings.maxWeeklyDrawdownPercent ?? 50;
+    const maxDailyDrawdownPercent: number = toPercentNumber(settings.maxDailyDrawdownPercent) ?? 25;
+    const maxWeeklyDrawdownPercent: number = toPercentNumber(settings.maxWeeklyDrawdownPercent) ?? 50;
     const investmentAmount = userDoc.investmentAmount || 0;
 
     const periodTrades = await closedTradesCollection()

@@ -8,6 +8,7 @@ import { UserContext } from '../../user';
 import { PUT, CALL, USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../../constants';
 import * as exitMonitor from './exitMonitor';
 import configService from '../../prism/ConfigService';
+import { toPercentNumber } from '../../prism/percentConfig';
 import { startOfWeek } from '../../util/weekWindow';
 
 // Order-process-local replacement for Monitor's bookkeeping (trades/closedTrades,
@@ -361,7 +362,7 @@ class OrderBookkeeping {
         const investmentAmount = this.userSettingsCache.get(user)?.investmentAmount;
         if (!investmentAmount) return false;
         const settings = configService.getConfig().settings as any;
-        const limitPercent = settings.maxDailyDrawdownPercent ?? 25;
+        const limitPercent = toPercentNumber(settings.maxDailyDrawdownPercent) ?? 25;
         const pnl = await this.getRealizedPnLSince(user, OrderBookkeeping.startOfDay());
         return pnl <= -(investmentAmount * limitPercent) / 100;
     }
@@ -370,7 +371,7 @@ class OrderBookkeeping {
         const investmentAmount = this.userSettingsCache.get(user)?.investmentAmount;
         if (!investmentAmount) return false;
         const settings = configService.getConfig().settings as any;
-        const limitPercent = settings.maxWeeklyDrawdownPercent ?? 50;
+        const limitPercent = toPercentNumber(settings.maxWeeklyDrawdownPercent) ?? 50;
         const pnl = await this.getRealizedPnLSince(user, startOfWeek());
         return pnl <= -(investmentAmount * limitPercent) / 100;
     }
