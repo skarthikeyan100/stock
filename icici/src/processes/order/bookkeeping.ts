@@ -81,6 +81,7 @@ const LEDGER_TIMEOUT_MS = 5_000;
 // the failure is logged at error level every this-many attempts rather than on each one.
 const CLOSED_ROW_ERROR_LOG_EVERY = 20;
 const CLOSED_ROW_FLUSH_INTERVAL_MS = 60_000;
+const RECENTLY_LANDED_MS = 30_000;
 function withFallbackTimeout<T, F>(p: Promise<T>, ms: number, fallback: F, label: string): Promise<T | F> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<F>((resolve) => {
@@ -368,8 +369,15 @@ class OrderBookkeeping {
         try {
             const db = Mongo.getInstance()?.db;
             if (!db) return null;
-            const snapshotHeld = () => [...this.unpersistedClosed.entries()]
-                .filter(([, p]) => p.user === user && p.exitTime >= since);
+            // recentlyLanded keeps just-written rows visible briefly, so a row that commits after the
+            // find scanned but leaves unpersistedClosed before the second snapshot is still counted.
+            type HeldRow = { user: string; realizedPnL: number; exitTime: Date };
+            const snapshotHeld = (): [string, HeldRow][] => {
+                const cutoff = Date.now() - RECENTLY_LANDED_MS;
+                for (const [id, r] of this.recentlyLanded) if (r.at < cutoff) this.recentlyLanded.delete(id);
+                return [...this.unpersistedClosed.entries(), ...this.recentlyLanded.entries()]
+                    .filter(([, p]) => p.user === user && p.exitTime >= since);
+            };
             // Snapshot held rows both BEFORE and AFTER the read, unioned by _id. Before: covers a row
             // whose insert commits after the find but returns (and leaves the map) before the second
             // snapshot. After: covers a row added while the find was running. Anything in either
@@ -379,7 +387,7 @@ class OrderBookkeeping {
                 db.collection('closedTrades').find({ user, exitTime: { $gte: since } }).toArray(),
                 LEDGER_TIMEOUT_MS, null, 'closedTrades read');
             if (rows === null) return null;
-            const heldSnapshot = [...new Map([...before, ...snapshotHeld()]).entries()];
+            const heldSnapshot = [...new Map<string, HeldRow>([...before, ...snapshotHeld()]).entries()];
             // Held rows that have already landed are counted once, by their _id.
             const landed = new Set(rows.map((r) => String(r._id)));
             const held = heldSnapshot
@@ -1215,7 +1223,10 @@ class OrderBookkeeping {
                 // Only a duplicate on _id means this row already landed; a duplicate on any other unique index is a real failure.
                 const keys = Object.keys((outcome as any).error?.keyPattern ?? (outcome as any).error?.keyValue ?? {});
                 const landed = outcome.ok || ((outcome as any).error?.code === 11000 && keys.length === 1 && keys[0] === '_id');
-                if (landed) this.unpersistedClosed.delete(id);
+                if (landed) {
+                    this.recentlyLanded.set(id, { user: entry.user, realizedPnL: entry.realizedPnL, exitTime: entry.exitTime, at: Date.now() });
+                    this.unpersistedClosed.delete(id);
+                }
                 return { ...outcome, landed };
             });
             const outcome = await withFallbackTimeout(settled, LEDGER_TIMEOUT_MS, null, 'closedTrades write');
@@ -1238,6 +1249,7 @@ class OrderBookkeeping {
 
     // A held row must keep being retried even when no further fill (and so no flush) happens.
     // Started on the first held row; stops itself once nothing is held.
+    private recentlyLanded = new Map<string, { user: string; realizedPnL: number; exitTime: Date; at: number }>();
     private closedRowFlushTimer: ReturnType<typeof setInterval> | undefined;
     private ensureClosedRowFlushTimer(): void {
         if (this.closedRowFlushTimer) return;
@@ -1249,6 +1261,7 @@ class OrderBookkeeping {
             }
             this.flushUnpersistedClosed().catch((e) => Log.log('[order] periodic flush of held closedTrades failed:', e));
         }, CLOSED_ROW_FLUSH_INTERVAL_MS);
+        this.closedRowFlushTimer.unref?.();
     }
 
     private async flushUnpersistedClosed(): Promise<void> {

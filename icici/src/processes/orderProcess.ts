@@ -284,28 +284,31 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
 // would let the next sweep tick (or a second breach event) sell the same position again.
 // A failed attempt releases at once so it is retried.
 const FORCE_CLOSE_COOLDOWN_MS = 2 * 60_000;
-const forceCloseStartedAt = new Map<string, number>();
-function forceCloseKey(trade: { user: string; token: any; broker?: string }): string {
-    return `${trade.user}:${trade.broker ?? ''}:${trade.token}`;
-}
-function forceCloseActive(trade: { user: string; token: any; broker?: string }): boolean {
-    const key = forceCloseKey(trade);
-    const startedAt = forceCloseStartedAt.get(key);
+// Keyed by the trade row itself (not user+token): a position split into chunks has several rows
+// with the same token, and each must be force-closed.
+const forceCloseStartedAt = new Map<Trade, number>();
+function forceCloseActive(trade: Trade): boolean {
+    const startedAt = forceCloseStartedAt.get(trade);
     if (startedAt === undefined) return false;
-    const stillOpen = bookkeeping.trades.some((t) => forceCloseKey(t) === key);
-    if (!stillOpen || Date.now() - startedAt > FORCE_CLOSE_COOLDOWN_MS) {
-        forceCloseStartedAt.delete(key);
+    if (!bookkeeping.trades.includes(trade) || Date.now() - startedAt > FORCE_CLOSE_COOLDOWN_MS) {
+        forceCloseStartedAt.delete(trade);
         return false;
     }
     return true;
+}
+// Short-leg guard key, shared by the breach handler and the expiry sweep.
+function shortCloseKey(t: { user: string; token: any }): string {
+    return `${t.user}:${t.token}:short`;
 }
 
 // Cancels any resting limit sell for the trade, then sells what is left. Returns false when it
 // skipped because a force-close for this trade is already underway.
 async function forceCloseTrade(trade: Trade): Promise<boolean> {
-    if (forceCloseActive(trade)) return false;
-    const key = forceCloseKey(trade);
-    forceCloseStartedAt.set(key, Date.now());
+    if (forceCloseActive(trade)) {
+        Log.log(`[order] forceCloseTrade: skipped ${trade.tsym} (${trade.user}) - a force-close is already in progress; will be retried by the next sweep once it expires`);
+        return false;
+    }
+    forceCloseStartedAt.set(trade, Date.now());
     try {
         const executor = getBrokerExecutor(trade.user, trade.broker);
         // Quantity BEFORE the cancel: the pending-order poller may book a fill (shrinking
@@ -315,13 +318,17 @@ async function forceCloseTrade(trade: Trade): Promise<boolean> {
         const quantityBefore = trade.quantity;
         const { filledQty: alreadyFilledQty } = await cancelAnyRestingLimitSell(executor, trade.user, trade.tsym);
         const remainingQty = Math.min(trade.quantity, quantityBefore - alreadyFilledQty);
-        if (remainingQty <= 0) return true; // see cancelAnyRestingLimitSell's comment - would double-sell
+        if (remainingQty <= 0) {
+            // Key stays held (bounded by the cooldown) so the next sweep does not sell a position whose fill is not booked yet.
+            Log.log(`[order] forceCloseTrade: ${trade.tsym} (${trade.user}) fully covered by already-filled sells - nothing to sell`);
+            return true;
+        } // see cancelAnyRestingLimitSell's comment - would double-sell
         // Trade has no `exchange` field - inferred from tsym (SENSEX = BFO).
         const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
         await executor.squareOff(trade.user, trade.tsym, remainingQty, exchange);
         return true;
     } catch (e) {
-        forceCloseStartedAt.delete(key);
+        forceCloseStartedAt.delete(trade);
         throw e;
     }
 }
@@ -1304,8 +1311,11 @@ async function main() {
         // leg completely uncovered. Buy-to-close, not squareOff (a short reduces via a BUY).
         for (const shortTrade of bookkeeping.shortTrades.filter((t) => t.user === user)) {
             // Same key as the expiry sweep below, so overlapping breach events and the sweep cannot double-buy-to-close.
-            const key = `${shortTrade.user}:${shortTrade.token}:short`;
-            if (expirySquareOffInFlight.has(key)) continue;
+            const key = shortCloseKey(shortTrade);
+            if (expirySquareOffInFlight.has(key)) {
+                Log.log('[order] Drawdown buy-to-close skipped for', shortTrade.tsym, '- one is already in flight');
+                continue;
+            }
             expirySquareOffInFlight.add(key);
             try {
                 await buyToCloseShortLegForUser(user, shortTrade);
@@ -1345,7 +1355,7 @@ async function main() {
         // separately cover bookkeeping.shortTrades, or a SellToOpen leg still open at the
         // 3:15pm expiry deadline would ride uncovered with nothing to force-close it.
         for (const shortTrade of bookkeeping.shortTrades) {
-            const key = `${shortTrade.user}:${shortTrade.token}:short`;
+            const key = shortCloseKey(shortTrade);
             if (expirySquareOffInFlight.has(key)) continue;
             expirySquareOffInFlight.add(key);
             buyToCloseShortLegForUser(shortTrade.user, shortTrade)
