@@ -36,6 +36,17 @@ export function normalizePercentFields<T extends Record<string, any>>(obj: T): T
     return out as T;
 }
 
+// Default drawdown limits (% of investment) when the settings key is absent.
+// Single source for payout.ts and bookkeeping.ts so the two stops cannot drift.
+export const DRAWDOWN_DEFAULTS = {
+    maxDailyDrawdownPercent: 25,
+    maxWeeklyDrawdownPercent: 50,
+} as const;
+
+export function drawdownLimit(settings: Record<string, any> | undefined, key: keyof typeof DRAWDOWN_DEFAULTS): number {
+    return toPercentNumber(settings?.[key]) ?? DRAWDOWN_DEFAULTS[key];
+}
+
 // Formats a percent field for config.yml: number 40 -> "40%". Values that do
 // not parse are passed through untouched.
 export function formatPercentFields<T extends Record<string, any>>(obj: T): T {

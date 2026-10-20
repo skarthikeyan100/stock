@@ -3,7 +3,7 @@ import fs, { readFileSync, writeFileSync } from 'fs';
 import { load, dump } from 'js-yaml';
 import AppConfig, { StrategyInstanceConfig } from './AppConfig';
 import { normalizePercentFields, formatPercentFields } from './percentConfig';
-import { validateNumericRanges } from './configValidation';
+import { validateConfigFile } from './configValidation';
 
 class ConfigService {
   private configPath = process.env.CONFIG_PATH || './config.yml';
@@ -59,28 +59,30 @@ class ConfigService {
   }
 
   private loadConfig() {
-    const fileContents = readFileSync(this.configPath, 'utf8');
-    const parsed: any = load(fileContents);
-    if (parsed && typeof parsed === 'object') {
-      // Percent fields may be written as "2" or "2%"; normalise to numbers so
-      // every consumer does arithmetic on a number.
-      parsed.settings = normalizePercentFields(parsed.settings);
-      if (Array.isArray(parsed.strategies)) {
-        parsed.strategies = parsed.strategies.map((s: any) => normalizePercentFields(s));
-      }
-      // Reject a file with invalid values (bad percent, negative limit, ...)
-      // rather than trading on it. At startup this fails closed; on a live
-      // reload the previous config stays in effect and the error is logged.
-      const errors = [
-        ...(parsed.settings ? validateNumericRanges('settings', parsed.settings) : []),
-        ...(parsed.strategies || []).flatMap((s: any) => validateNumericRanges(s?.type ?? 'strategy', s)),
-      ];
-      if (errors.length > 0) {
-        const msg = `config file rejected: ${errors.join('; ')}`;
-        if (!this.config) throw new Error(msg);
-        Log.log(`[ConfigService] ${msg} - keeping previous config`);
-        return;
-      }
+    // Any failure to read or validate the file is handled the same way: a
+    // file that is not valid is never traded on. At startup this fails closed
+    // (throws); on a live reload the previous config stays in effect and the
+    // error is logged - a half-written or mid-edit file must not crash a
+    // running trading process.
+    let parsed: any;
+    let errors: string[];
+    try {
+      parsed = load(readFileSync(this.configPath, 'utf8'));
+      errors = validateConfigFile(parsed);
+    } catch (e) {
+      errors = [`config file does not parse: ${(e as Error).message}`];
+    }
+    if (errors.length > 0) {
+      const msg = `config file rejected: ${errors.join('; ')}`;
+      if (!this.config) throw new Error(msg);
+      Log.log(`[ConfigService] ${msg} - keeping previous config`);
+      return;
+    }
+    // Percent fields may be written as "2" or "2%"; normalise to numbers so
+    // every consumer does arithmetic on a number.
+    parsed.settings = normalizePercentFields(parsed.settings);
+    if (Array.isArray(parsed.strategies)) {
+      parsed.strategies = parsed.strategies.map((s: any) => normalizePercentFields(s));
     }
     this.config = parsed as AppConfig;
     Log.log('Config Updated:', this.config);

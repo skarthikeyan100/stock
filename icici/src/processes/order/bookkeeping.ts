@@ -8,7 +8,7 @@ import { UserContext } from '../../user';
 import { PUT, CALL, USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../../constants';
 import * as exitMonitor from './exitMonitor';
 import configService from '../../prism/ConfigService';
-import { toPercentNumber } from '../../prism/percentConfig';
+import { drawdownLimit } from '../../prism/percentConfig';
 import { startOfWeek } from '../../util/weekWindow';
 
 // Order-process-local replacement for Monitor's bookkeeping (trades/closedTrades,
@@ -342,15 +342,17 @@ class OrderBookkeeping {
     // correct across process restarts. Returns 0 (never blocks) on a Mongo
     // hiccup - matches this file's existing "don't let Mongo block live
     // trading" convention (see persistClosedTrade's comment).
-    private async getRealizedPnLSince(user: string, since: Date): Promise<number> {
+    // Returns null when the ledger cannot be read. Callers that gate on this
+    // (the drawdown checks) must fail closed on null, not treat it as zero loss.
+    private async getRealizedPnLSince(user: string, since: Date): Promise<number | null> {
         try {
             const db = Mongo.getInstance()?.db;
-            if (!db) return 0;
+            if (!db) return null;
             const rows = await db.collection('closedTrades').find({ user, exitTime: { $gte: since } }).toArray();
             return rows.reduce((sum, r) => sum + (r.realizedPnL || 0), 0);
         } catch (e) {
-            Log.log('[order] getRealizedPnLSince failed (not blocking on this):', e);
-            return 0;
+            Log.log('[order] getRealizedPnLSince failed - drawdown check will block until it can be read:', e);
+            return null;
         }
     }
 
@@ -362,8 +364,9 @@ class OrderBookkeeping {
         const investmentAmount = this.userSettingsCache.get(user)?.investmentAmount;
         if (!investmentAmount) return false;
         const settings = configService.getConfig().settings as any;
-        const limitPercent = toPercentNumber(settings.maxDailyDrawdownPercent) ?? 25;
+        const limitPercent = drawdownLimit(settings, 'maxDailyDrawdownPercent');
         const pnl = await this.getRealizedPnLSince(user, OrderBookkeeping.startOfDay());
+        if (pnl === null) return true; // cannot verify the day's loss - block rather than trade past the limit
         return pnl <= -(investmentAmount * limitPercent) / 100;
     }
 
@@ -371,8 +374,9 @@ class OrderBookkeeping {
         const investmentAmount = this.userSettingsCache.get(user)?.investmentAmount;
         if (!investmentAmount) return false;
         const settings = configService.getConfig().settings as any;
-        const limitPercent = toPercentNumber(settings.maxWeeklyDrawdownPercent) ?? 50;
+        const limitPercent = drawdownLimit(settings, 'maxWeeklyDrawdownPercent');
         const pnl = await this.getRealizedPnLSince(user, startOfWeek());
+        if (pnl === null) return true; // cannot verify the week's loss - block rather than trade past the limit
         return pnl <= -(investmentAmount * limitPercent) / 100;
     }
 

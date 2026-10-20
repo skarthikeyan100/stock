@@ -8,8 +8,8 @@
  * Run: npm run build (compile), then: node ./dist/test/configValidation.test.js
  */
 
-import { validateNumericRanges, validateTargetVsStopLoss, validateFlatConfig } from '../prism/configValidation';
-import { toPercentNumber, formatPercentFields, normalizePercentFields } from '../prism/percentConfig';
+import { validateNumericRanges, validateTargetVsStopLoss, validateFlatConfig, validateConfigFile } from '../prism/configValidation';
+import { toPercentNumber, formatPercentFields, normalizePercentFields, drawdownLimit } from '../prism/percentConfig';
 
 function assert(condition: boolean, message: string) {
     if (condition) {
@@ -103,6 +103,28 @@ async function main() {
 
     const outOfRangeErrors = validateNumericRanges('settings', { consistencyLimitPercent: '150%' });
     assert(outOfRangeErrors.length === 1, `consistencyLimitPercent above 100 is rejected (errors: ${JSON.stringify(outOfRangeErrors)})`);
+
+    // --- validateConfigFile: whole-file checks used by the loader and POST /config ---
+    assert(validateConfigFile(null).length > 0 && validateConfigFile('x').length > 0,
+        'an empty or non-mapping config file is rejected');
+    assert(validateConfigFile({ strategies: [] }).length > 0,
+        'a config with no settings block is rejected');
+    assert(validateConfigFile({ settings: {}, strategies: { type: 'x' } }).length > 0,
+        'strategies that is not a list is rejected');
+    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, quantity: 0 }] }).length > 0,
+        'an enabled strategy with an invalid value is rejected');
+    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: false, quantity: 0, maxLoss: 0 }] }).length === 0,
+        'a stale invalid value in a DISABLED strategy block does not reject the file');
+    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, maxInvestment: '1,00,000' }] }).length > 0,
+        'a non-numeric maxInvestment is rejected (would otherwise NaN-disable the stops)');
+    assert(validateConfigFile({ settings: { maxDailyDrawdownPercent: '0%' }, strategies: [] }).length > 0,
+        'a zero drawdown limit is rejected (would block every zero-P&L day)');
+
+    // --- drawdownLimit: shared default, percent parsing, safe with absent settings ---
+    assert(drawdownLimit(undefined, 'maxDailyDrawdownPercent') === 25 && drawdownLimit({}, 'maxWeeklyDrawdownPercent') === 50,
+        'drawdownLimit falls back to the shared defaults (25 / 50) when absent');
+    assert(drawdownLimit({ maxDailyDrawdownPercent: '10%' }, 'maxDailyDrawdownPercent') === 10,
+        'drawdownLimit reads "N%" values');
 
     if (process.exitCode === 1) {
         console.log('SOME TESTS FAILED');

@@ -39,7 +39,7 @@ import https from 'https';
 import fs from 'fs';
 import { Trade } from './model/model';
 import configService from './prism/ConfigService';
-import { validateFlatConfig } from './prism/configValidation';
+import { validateFlatConfig, validateConfigFile } from './prism/configValidation';
 import { getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile } from './user';
 import { computePayout, createPayoutRecord, markPayoutDecision, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary } from './payout';
 import multer from 'multer';
@@ -1571,6 +1571,13 @@ app.post('/config', requireAdmin, async (req, res) => {
     const errors = validateFlatConfig(flat, current);
     if (errors.length > 0) {
         return res.status(400).json({ error: errors.join('; ') });
+    }
+    // Refuse a save that the reload would reject (ConfigService.loadConfig runs
+    // the same file-level check), so the admin is told instead of the file
+    // being written and the old config silently staying live.
+    const fileErrors = validateConfigFile(configService.flatToConfig(flat));
+    if (fileErrors.length > 0) {
+        return res.status(400).json({ error: fileErrors.join('; ') });
     }
     configService.writeConfig(configService.flatToConfig(flat));
     configService.reloadNow(); // this process's own in-memory copy shouldn't lag its own write either

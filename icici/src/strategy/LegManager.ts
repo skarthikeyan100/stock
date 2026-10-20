@@ -321,7 +321,7 @@ export class LegManager {
         if (this.maxProfitTripped) return; // latched permanently - see field comment
         if (cfg.maxProfit == null) return; // feature not configured
         const maxProfitPct = toPercentNumber(cfg.maxProfit);
-        if (maxProfitPct === null) return; // unparseable - config validation rejects this on save; ConfigService normalises on load
+        if (maxProfitPct === null) { this.logUnparseablePercent('maxProfit', cfg.maxProfit); return; }
         const maxInvestment = cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
         const threshold = (maxProfitPct / 100) * maxInvestment;
         const cumulative = this.computeCumulativeProfit();
@@ -373,6 +373,17 @@ export class LegManager {
         }
     }
 
+    // A stop whose value cannot be read is not enforced. ConfigService rejects
+    // such a file on load, so this is only reachable from a path that bypasses
+    // it - log it loudly (once per field, not every tick) rather than let it
+    // pass silently.
+    private unparseablePercentLogged = new Set<string>();
+    private logUnparseablePercent(field: string, raw: unknown): void {
+        if (this.unparseablePercentLogged.has(field)) return;
+        this.unparseablePercentLogged.add(field);
+        Log.log(`[${this.deps.ownerType}] ERROR ${field}=${JSON.stringify(raw)} is not a number - this stop is NOT being enforced; fix the config`);
+    }
+
     // Loss-side mirror of checkAndMaybeTripMaxProfit. maxLoss is a % of the CONFIGURED maxInvestment, so
     // maxLoss == maxProfit gives a symmetric daily band. Cumulative P&L is realized-since-reset + unrealized of every open
     // leg (computeCumulativeProfit). Unset/null maxLoss disables it.
@@ -380,7 +391,7 @@ export class LegManager {
         if (this.maxLossTripped) return;
         if (cfg.maxLoss == null) return;
         const maxLossPct = toPercentNumber(cfg.maxLoss);
-        if (maxLossPct === null) return; // unparseable - see checkAndMaybeTripMaxProfit
+        if (maxLossPct === null) { this.logUnparseablePercent('maxLoss', cfg.maxLoss); return; }
         const maxInvestment = cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
         const threshold = (maxLossPct / 100) * maxInvestment;
         const cumulative = this.computeCumulativeProfit();

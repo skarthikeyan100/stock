@@ -39,10 +39,12 @@ const PERCENT_FIELDS: string[] = [
     'consistencyLimitPercent', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
 ];
 
-// Strategy stop levels (% of maxInvestment). No upper bound - a cap above
-// 100% is not nonsensical. Must be strictly positive: 0 would trip the stop on
-// the first tick, so "disabled" is expressed by removing the key instead.
-const PERCENT_POSITIVE_FIELDS: string[] = ['maxProfit', 'maxLoss'];
+// Stop levels that must be strictly positive. 0 for maxProfit/maxLoss would
+// trip on the first tick; 0 for a drawdown limit would block every zero-P&L
+// day. "Disabled" is expressed by removing the key instead.
+const PERCENT_POSITIVE_FIELDS: string[] = [
+    'maxProfit', 'maxLoss', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
+];
 
 // Must be non-negative (0 is allowed).
 const PERCENT_NON_NEGATIVE_FIELDS: string[] = ['marketProtectionPercent'];
@@ -108,6 +110,13 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
         }
     }
 
+    // maxInvestment is the base every % stop is computed against. A non-numeric
+    // value (e.g. "1,00,000") would make the thresholds NaN and silently
+    // disable them, so it must be a positive number when present.
+    if (obj.maxInvestment != null && !(isNum(obj.maxInvestment) && obj.maxInvestment > 0)) {
+        errors.push(`${label}.maxInvestment must be a number > 0 (got ${JSON.stringify(obj.maxInvestment)})`);
+    }
+
     if (isNum(obj.minPrice) && isNum(obj.maxPrice) && obj.minPrice > obj.maxPrice) {
         errors.push(`${label}.minPrice (${obj.minPrice}) must be <= ${label}.maxPrice (${obj.maxPrice})`);
     }
@@ -131,6 +140,38 @@ export function validateTargetVsStopLoss(label: string, obj: Record<string, any>
         }
     }
 
+    return errors;
+}
+
+/**
+ * Validates a whole parsed config file (or the same shape about to be written
+ * by POST /config). Used by ConfigService.loadConfig - an invalid file is
+ * rejected, never traded on - and by POST /config before it writes, so a save
+ * that the reload would reject is refused up front. Percent values may be
+ * "N" or "N%". Disabled strategy blocks are not checked: a stale value in a
+ * block that is not running must not stop the process from starting.
+ * Returns an array of errors; empty means valid.
+ */
+export function validateConfigFile(parsed: any): string[] {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return ['config is empty or is not a mapping'];
+    }
+    if (!parsed.settings || typeof parsed.settings !== 'object') {
+        return ['settings block is required'];
+    }
+    if (parsed.strategies !== undefined && parsed.strategies !== null && !Array.isArray(parsed.strategies)) {
+        return ['strategies must be a list'];
+    }
+
+    const errors = validateNumericRanges('settings', parsed.settings);
+    for (const s of parsed.strategies || []) {
+        if (!s || typeof s !== 'object' || typeof s.type !== 'string') {
+            errors.push('every strategies entry needs a string type');
+            continue;
+        }
+        if (s.enabled === false) continue;
+        errors.push(...validateNumericRanges(s.type, s));
+    }
     return errors;
 }
 
