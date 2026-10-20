@@ -77,9 +77,10 @@ interface PendingOrder {
 // fill handling; a timed-out ledger read resolves to the caller's fallback
 // (drawdown reads then report 'unknown' - buys blocked, nothing liquidated).
 const LEDGER_TIMEOUT_MS = 5_000;
-// A closed-trade row that keeps failing (not a timeout, not a duplicate) is retried this many times, then left
-// counted in memory and logged at error level rather than retried on every check.
-const MAX_CLOSED_ROW_ATTEMPTS = 20;
+// A closed-trade row that keeps failing is retried until it lands (flushed on every fill and on a timer);
+// the failure is logged at error level every this-many attempts rather than on each one.
+const CLOSED_ROW_ERROR_LOG_EVERY = 20;
+const CLOSED_ROW_FLUSH_INTERVAL_MS = 60_000;
 function withFallbackTimeout<T, F>(p: Promise<T>, ms: number, fallback: F, label: string): Promise<T | F> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<F>((resolve) => {
@@ -367,14 +368,18 @@ class OrderBookkeeping {
         try {
             const db = Mongo.getInstance()?.db;
             if (!db) return null;
-            // Snapshot held rows BEFORE the read: a row that lands after this point is in the read's
-            // result (deduped below), and a row that landed before it is already in the collection.
-            const heldSnapshot = [...this.unpersistedClosed.entries()]
+            const snapshotHeld = () => [...this.unpersistedClosed.entries()]
                 .filter(([, p]) => p.user === user && p.exitTime >= since);
+            // Snapshot held rows both BEFORE and AFTER the read, unioned by _id. Before: covers a row
+            // whose insert commits after the find but returns (and leaves the map) before the second
+            // snapshot. After: covers a row added while the find was running. Anything in either
+            // snapshot that the read also returned is deduped below.
+            const before = snapshotHeld();
             const rows = await withFallbackTimeout(
                 db.collection('closedTrades').find({ user, exitTime: { $gte: since } }).toArray(),
                 LEDGER_TIMEOUT_MS, null, 'closedTrades read');
             if (rows === null) return null;
+            const heldSnapshot = [...new Map([...before, ...snapshotHeld()]).entries()];
             // Held rows that have already landed are counted once, by their _id.
             const landed = new Set(rows.map((r) => String(r._id)));
             const held = heldSnapshot
@@ -1160,7 +1165,7 @@ class OrderBookkeeping {
     // let a Mongo hiccup block live bookkeeping - the row is held in
     // unpersistedClosed until its write is confirmed, and the breach check
     // counts it from there, so the write is never awaited on the fill path.
-    private unpersistedClosed = new Map<string, { user: string; realizedPnL: number; exitTime: Date; row: Record<string, any>; attempts: number; inFlight: boolean; dead: boolean }>();
+    private unpersistedClosed = new Map<string, { user: string; realizedPnL: number; exitTime: Date; row: Record<string, any>; attempts: number; inFlight: boolean }>();
 
     // Never throws: a failure here must not reject the fill handler after
     // position state has already changed.
@@ -1182,7 +1187,8 @@ class OrderBookkeeping {
             broker: trade.broker,
             createdAt: new Date(),
         };
-        this.unpersistedClosed.set(id, { user, realizedPnL: trade.realizedPnL || 0, exitTime: trade.exitTime, row, attempts: 0, inFlight: false, dead: false });
+        this.unpersistedClosed.set(id, { user, realizedPnL: trade.realizedPnL || 0, exitTime: trade.exitTime, row, attempts: 0, inFlight: false });
+        this.ensureClosedRowFlushTimer();
         return this.writeClosedRow(id);
     }
 
@@ -1190,43 +1196,59 @@ class OrderBookkeeping {
     // means an earlier attempt (e.g. one that outlived a timeout) already landed.
     // Never more than one insert in flight per row (a flush and the immediate write
     // would otherwise both send it). A timed-out insert stays in flight until it
-    // settles, and is still safe to retry because _id is unique.
+    // settles - and clears the row itself if it lands late - and is still safe to
+    // retry because _id is unique.
     private async writeClosedRow(id: string): Promise<boolean> {
         const entry = this.unpersistedClosed.get(id);
-        if (!entry || entry.inFlight || entry.dead) return !entry;
+        if (!entry || entry.inFlight) return !entry;
         try {
             const col = Mongo.getInstance()?.db?.collection('closedTrades');
             if (!col) return false;
             entry.inFlight = true;
-            const settled = col.insertOne(entry.row).then(
+            // Promise.resolve().then turns a synchronous throw from insertOne into a rejection,
+            // so the settled chain below always runs and clears inFlight.
+            const settled = Promise.resolve().then(() => col.insertOne(entry.row)).then(
                 () => ({ ok: true as const }),
                 (error: any) => ({ ok: false as const, error }),
-            ).finally(() => { entry.inFlight = false; });
+            ).then((outcome) => {
+                entry.inFlight = false;
+                // Only a duplicate on _id means this row already landed; a duplicate on any other unique index is a real failure.
+                const keys = Object.keys((outcome as any).error?.keyPattern ?? (outcome as any).error?.keyValue ?? {});
+                const landed = outcome.ok || ((outcome as any).error?.code === 11000 && keys.length === 1 && keys[0] === '_id');
+                if (landed) this.unpersistedClosed.delete(id);
+                return { ...outcome, landed };
+            });
             const outcome = await withFallbackTimeout(settled, LEDGER_TIMEOUT_MS, null, 'closedTrades write');
             if (outcome === null) return false; // still in flight - settled by its own promise
-            if (outcome.ok) {
-                this.unpersistedClosed.delete(id);
-                return true;
-            }
-            const error = outcome.error;
-            // Only a duplicate on _id means this row already landed; a duplicate on any other unique index is a real failure.
-            const keys = Object.keys(error?.keyPattern ?? error?.keyValue ?? {});
-            if (error?.code === 11000 && keys.length === 1 && keys[0] === '_id') {
-                this.unpersistedClosed.delete(id);
-                return true;
-            }
+            if (outcome.landed) return true;
             entry.attempts += 1;
-            if (entry.attempts >= MAX_CLOSED_ROW_ATTEMPTS) {
-                entry.dead = true;
-                Log.log('[order] ERROR closedTrade for', entry.user, `failed ${MAX_CLOSED_ROW_ATTEMPTS} times and will not be retried - it stays counted in the drawdown total for this process lifetime:`, error);
+            const error = (outcome as any).error;
+            if (entry.attempts % CLOSED_ROW_ERROR_LOG_EVERY === 0) {
+                Log.log('[order] ERROR closedTrade for', entry.user, `still failing after ${entry.attempts} attempts - kept in memory and retried:`, error);
             } else {
                 Log.log('[order] Failed to persist closedTrade for', entry.user, '- will retry:', error);
             }
             return false;
         } catch (e) {
+            entry.inFlight = false;
             Log.log('[order] closedTrade write threw for', entry.user, '- will retry:', e);
             return false;
         }
+    }
+
+    // A held row must keep being retried even when no further fill (and so no flush) happens.
+    // Started on the first held row; stops itself once nothing is held.
+    private closedRowFlushTimer: ReturnType<typeof setInterval> | undefined;
+    private ensureClosedRowFlushTimer(): void {
+        if (this.closedRowFlushTimer) return;
+        this.closedRowFlushTimer = setInterval(() => {
+            if (this.unpersistedClosed.size === 0) {
+                clearInterval(this.closedRowFlushTimer);
+                this.closedRowFlushTimer = undefined;
+                return;
+            }
+            this.flushUnpersistedClosed().catch((e) => Log.log('[order] periodic flush of held closedTrades failed:', e));
+        }, CLOSED_ROW_FLUSH_INTERVAL_MS);
     }
 
     private async flushUnpersistedClosed(): Promise<void> {

@@ -277,6 +277,55 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
     return { filledQty, cancelFailed };
 }
 
+// Shared by the drawdown-breach liquidation and the expiry-day sweep so the two can never both
+// square off the same position. A key is held from the moment a force-close starts until the
+// trade has left bookkeeping.trades (its sell fill was booked) or FORCE_CLOSE_COOLDOWN_MS has
+// passed - a squareoff call returning does not mean the sell has filled, so releasing on return
+// would let the next sweep tick (or a second breach event) sell the same position again.
+// A failed attempt releases at once so it is retried.
+const FORCE_CLOSE_COOLDOWN_MS = 2 * 60_000;
+const forceCloseStartedAt = new Map<string, number>();
+function forceCloseKey(trade: { user: string; token: any; broker?: string }): string {
+    return `${trade.user}:${trade.broker ?? ''}:${trade.token}`;
+}
+function forceCloseActive(trade: { user: string; token: any; broker?: string }): boolean {
+    const key = forceCloseKey(trade);
+    const startedAt = forceCloseStartedAt.get(key);
+    if (startedAt === undefined) return false;
+    const stillOpen = bookkeeping.trades.some((t) => forceCloseKey(t) === key);
+    if (!stillOpen || Date.now() - startedAt > FORCE_CLOSE_COOLDOWN_MS) {
+        forceCloseStartedAt.delete(key);
+        return false;
+    }
+    return true;
+}
+
+// Cancels any resting limit sell for the trade, then sells what is left. Returns false when it
+// skipped because a force-close for this trade is already underway.
+async function forceCloseTrade(trade: Trade): Promise<boolean> {
+    if (forceCloseActive(trade)) return false;
+    const key = forceCloseKey(trade);
+    forceCloseStartedAt.set(key, Date.now());
+    try {
+        const executor = getBrokerExecutor(trade.user, trade.broker);
+        // Quantity BEFORE the cancel: the pending-order poller may book a fill (shrinking
+        // trade.quantity) while the cancel is in flight, and cancelAnyRestingLimitSell's
+        // filledQty would then be subtracted a second time. The smaller of the two views is
+        // correct in both orderings (fill booked during the cancel, or not yet booked).
+        const quantityBefore = trade.quantity;
+        const { filledQty: alreadyFilledQty } = await cancelAnyRestingLimitSell(executor, trade.user, trade.tsym);
+        const remainingQty = Math.min(trade.quantity, quantityBefore - alreadyFilledQty);
+        if (remainingQty <= 0) return true; // see cancelAnyRestingLimitSell's comment - would double-sell
+        // Trade has no `exchange` field - inferred from tsym (SENSEX = BFO).
+        const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
+        await executor.squareOff(trade.user, trade.tsym, remainingQty, exchange);
+        return true;
+    } catch (e) {
+        forceCloseStartedAt.delete(key);
+        throw e;
+    }
+}
+
 // Read-only strike+right -> contract lookup, dispatched per-broker to each broker's own
 // contract master. Used by ButterflyStrategy to resolve all 4 of its legs before placing
 // anything. ant's findNearestExpiryOption returns `exch` (renamed to `exchange` here for a
@@ -1239,15 +1288,12 @@ async function main() {
     // settings/config.yml happen to say, missing the real resting order
     // entirely - the same "stuck position with no exit" failure mode this
     // project already took a live loss from.
+    // In-flight guard for short-leg buy-to-close, shared by the breach handler and the expiry sweep.
+    const expirySquareOffInFlight = new Set<string>();
     bookkeeping.onDrawdownBreach(async (user) => {
         for (const trade of bookkeeping.trades.filter((t) => t.user === user)) {
             try {
-                const executor = getBrokerExecutor(user, trade.broker);
-                const { filledQty: alreadyFilledQty } = await cancelAnyRestingLimitSell(executor, user, trade.tsym);
-                const remainingQty = trade.quantity - alreadyFilledQty;
-                if (remainingQty <= 0) continue; // see cancelAnyRestingLimitSell's comment - would double-sell
-                const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
-                await executor.squareOff(user, trade.tsym, remainingQty, exchange);
+                await forceCloseTrade(trade);
             } catch (e) {
                 Log.log('[order] Auto-squareoff on drawdown breach failed for', trade.tsym, e);
             }
@@ -1257,10 +1303,16 @@ async function main() {
         // breach - found on review: a user breaching their loss limit would ride an open short
         // leg completely uncovered. Buy-to-close, not squareOff (a short reduces via a BUY).
         for (const shortTrade of bookkeeping.shortTrades.filter((t) => t.user === user)) {
+            // Same key as the expiry sweep below, so overlapping breach events and the sweep cannot double-buy-to-close.
+            const key = `${shortTrade.user}:${shortTrade.token}:short`;
+            if (expirySquareOffInFlight.has(key)) continue;
+            expirySquareOffInFlight.add(key);
             try {
                 await buyToCloseShortLegForUser(user, shortTrade);
             } catch (e) {
                 Log.log('[order] Auto-buy-to-close on drawdown breach failed for', shortTrade.tsym, e);
+            } finally {
+                expirySquareOffInFlight.delete(key);
             }
         }
     });
@@ -1281,29 +1333,12 @@ async function main() {
     // a squareoff for the same open position on the next tick before its
     // Sell fill has removed it from bookkeeping.trades; a failed attempt is
     // simply retried on the next tick since the trade is still open.
-    const expirySquareOffInFlight = new Set<string>();
     setInterval(() => {
         if (!isPastExpirySquareOffTime()) return;
         for (const trade of bookkeeping.trades) {
-            const key = `${trade.user}:${trade.token}`;
-            if (expirySquareOffInFlight.has(key)) continue;
-            expirySquareOffInFlight.add(key);
-            // Routed via getBrokerExecutor (see the drawdown-breach handler's comment
-            // above for why), resolved via trade.broker for the same reason.
-            const executor = getBrokerExecutor(trade.user, trade.broker);
-            const squareOff = cancelAnyRestingLimitSell(executor, trade.user, trade.tsym)
-                .then(({ filledQty: alreadyFilledQty }) => {
-                    const remainingQty = trade.quantity - alreadyFilledQty;
-                    // see cancelAnyRestingLimitSell's comment - would double-sell
-                    if (remainingQty <= 0) return;
-                    // Trade has no `exchange` field - inferred from tsym, same SENSEX/BFO
-                    // convention used elsewhere in this file (see drawdown-breach handler above).
-                    const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
-                    return executor.squareOff(trade.user, trade.tsym, remainingQty, exchange);
-                });
-            squareOff
-                .catch((e) => Log.log('[order] Expiry-day auto-squareoff failed for', trade.tsym, e))
-                .finally(() => expirySquareOffInFlight.delete(key));
+            // Shares forceCloseTrade's in-flight guard with the drawdown-breach handler.
+            forceCloseTrade(trade)
+                .catch((e) => Log.log('[order] Expiry-day auto-squareoff failed for', trade.tsym, e));
         }
         // ButterflyStrategy's short legs are NOT in bookkeeping.trades - see the
         // drawdown-breach handler's identical comment above for why this sweep must also

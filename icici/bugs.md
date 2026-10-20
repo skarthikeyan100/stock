@@ -10,16 +10,7 @@ known and accepted for now; each is a live-trading risk on the drawdown stop.
 | # | Gap | Where | Status |
 |---|---|---|---|
 | A | OPEN (kept per decision 2026-10-20: needs a durable journal). A restart before a held row's insert lands loses that realized loss from the day's drawdown total (the startup reload only reads `closedTrades`). | `bookkeeping.ts` `unpersistedClosed`, startup reload | NOT FIXED: needs a durable journal or an awaited write |
-| G | The dead-row cap counts attempts per flush, not per unit of time. A short Mongo outage can mark a row dead within a burst of fills, and in a quiet market nothing retries it, so the row is never written and is lost on restart. | `bookkeeping.ts` `writeClosedRow` / `flushUnpersistedClosed` | NOT FIXED: cap by elapsed time, or keep retrying a row until it lands |
-| H | A write that times out and later succeeds leaves its entry in `unpersistedClosed`. It is cleared only by a duplicate-key round trip on a later flush, which costs an extra write per affected row. | `writeClosedRow` settled chain | NOT FIXED: delete the entry in the settled chain when the insert returns ok |
-| I | A synchronous throw from `insertOne` leaves `inFlight` set forever. The row is then never written, never retried, and never logged as dead, so it stays counted in memory only. | `writeClosedRow` | NOT FIXED: set `inFlight` inside try/finally, or turn a sync throw into a rejected promise |
-| J | `getRealizedPnLSince`'s comment says a row landing after the snapshot is in the read result. A row added after the snapshot and not yet committed when the `find` runs is in neither the read nor the snapshot, so that read undercounts by that row. The fill's own breach check includes it, so the breach path self-corrects, but a buy-gate `drawdownState` overlapping the fill can allow a buy. | `getRealizedPnLSince` | NOT FIXED: correct the comment, or take the snapshot after the read and dedupe by `_id` |
-| K | `dead` duplicates state already implied by `attempts >= MAX_CLOSED_ROW_ATTEMPTS`. No behaviour change, but it must be kept in sync. | `unpersistedClosed` type and `writeClosedRow` | NOT FIXED (cleanup): derive `dead` from `attempts` |
 
-Pre-existing (not from the held-row change), also open:
-- Overlapping `checkBreachAndNotify` runs can each invoke the liquidation listener for the same user, and the listener has no in-flight guard. The same trade can be cancelled and squared off twice.
-- The expiry-day sweep (`orderProcess.ts`) can send a second squareoff for a trade whose sell is still in flight.
-- `cancelAnyRestingLimitSell` may subtract fills already booked by `recordFill`; needs checking against what the pending-order poller reports.
 
 ## 2026-10-19 - ContinuousStrategy live session: consolidated bugs (Zerodha, expiry day)
 
