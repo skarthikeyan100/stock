@@ -373,6 +373,9 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     if (!Number.isFinite(niftyLtp)) {
                         return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (breeze): niftyLtp is required and must be a finite number' };
                     }
+                    if (req.payload.index === 'SENSEX') {
+                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (breeze): SENSEX (BFO) is not supported on Breeze yet' };
+                    }
                     const contract = await BreezeContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
                     const buyPrice = await getMarketableBreezeBuyPrice(contract);
                     const resolvedQty = resolveChunkedBuyQuantity(req, buyPrice, tsymFor(contract));
@@ -408,12 +411,18 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     if (!Number.isFinite(niftyLtp)) {
                         return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (zerodha): niftyLtp is required and must be a finite number' };
                     }
-                    const contract = await ZerodhaContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
-                    const commonToken = String(AntContractMaster.getInstance().resolveCommonToken('NIFTY', optionType, { atmLtp: niftyLtp }));
-                    // NIFTY strike step (50) mirrors ZerodhaContractMaster.findATMOption's
-                    // own rounding - needed here only for the pre-trade price estimate.
-                    const atmStrike = Math.round(niftyLtp / 50) * 50;
-                    const estimatedPrice = await antExecutor.estimateOptionPrice('NIFTY', atmStrike, optionType);
+                    // index threaded through exactly like the ant branch below - found on review:
+                    // this used to hardcode 'NIFTY' regardless of req.payload.index, which for a
+                    // SENSEX-configured instance would resolve a NIFTY contract (wrong strike/
+                    // exchange entirely) against a SENSEX spot price.
+                    const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
+                    const contract = await ZerodhaContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
+                    const commonToken = String(AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: niftyLtp }));
+                    // Strike step mirrors ZerodhaContractMaster.findATMOption's own rounding -
+                    // needed here only for the pre-trade price estimate.
+                    const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
+                    const atmStrike = Math.round(niftyLtp / step) * step;
+                    const estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
                     const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol);
                     if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
                     const quantity = resolvedQty.quantity;
@@ -445,9 +454,11 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     if (!Number.isFinite(niftyLtp)) {
                         return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (ant): niftyLtp is required and must be a finite number' };
                     }
-                    const contract = AntContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
-                    const atmStrike = Math.round(niftyLtp / 50) * 50;
-                    const estimatedPrice = await antExecutor.estimateOptionPrice('NIFTY', atmStrike, optionType);
+                    const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
+                    const contract = AntContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
+                    const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
+                    const atmStrike = Math.round(niftyLtp / step) * step;
+                    const estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
                     const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol);
                     if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
                     const quantity = resolvedQty.quantity;
@@ -481,9 +492,18 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     if (!Number.isFinite(niftyLtp)) {
                         return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (prism): niftyLtp is required and must be a finite number' };
                     }
-                    const contract = PrismContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
-                    const atmStrike = Math.round(niftyLtp / 50) * 50;
-                    const estimatedPrice = await antExecutor.estimateOptionPrice('NIFTY', atmStrike, optionType);
+                    // index threaded through exactly like the ant/zerodha branches above - found on
+                    // review: this used to hardcode 'NIFTY' regardless of req.payload.index, which for
+                    // a SENSEX-configured instance would resolve a NIFTY contract against a SENSEX
+                    // spot price (PrismContractMaster.STRIKE_STEP's own comment already flagged this
+                    // exact gap). exchange derived the same way AntContractMaster/ZerodhaContractMaster
+                    // do elsewhere - PrismContractMaster.findATMOption doesn't return one.
+                    const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
+                    const prismExchange = index === 'SENSEX' ? 'BFO' : 'NFO';
+                    const contract = PrismContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
+                    const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
+                    const atmStrike = Math.round(niftyLtp / step) * step;
+                    const estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
                     const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol);
                     if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
                     const quantity = resolvedQty.quantity;
@@ -497,7 +517,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                                 tradingSymbol: contract.tradingSymbol,
                                 instrumentId: contract.token,
                                 quantity,
-                                exchange: 'NFO',
+                                exchange: prismExchange,
                                 driftCancelPoints: req.payload.driftCancelPoints,
                             },
                             req.payload.freezeQuantity
@@ -519,7 +539,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // review purely because reconcile hadn't finished yet.
                 if (reconcileInFlight) await reconcileInFlight;
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
-                const result = await squareOffChunked(executor, req.userId, req.payload.tsym, req.payload.quantity, 'NFO', req.payload.freezeQuantity);
+                const result = await squareOffChunked(executor, req.userId, req.payload.tsym, req.payload.quantity, req.payload.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO', req.payload.freezeQuantity);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -534,7 +554,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     req.payload.tsym,
                     req.payload.instrumentId,
                     req.payload.quantity,
-                    'NFO',
+                    req.payload.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO',
                     req.payload.price,
                     req.payload.freezeQuantity
                 );

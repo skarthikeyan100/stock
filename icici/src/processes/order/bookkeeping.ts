@@ -411,7 +411,10 @@ class OrderBookkeeping {
         // sells out), and per-order cap/drawdown are already no-ops for any
         // strategy pseudo-user (see isDailyDrawdownBreached's comment - they
         // never have investmentAmount configured).
-        if (user === 'ContinuousStrategy' || user === 'BulkPcrStrategy') {
+        // HourlyStrategy gets the same exemption for the same reason - its own
+        // `quantity: -2` sentinel (translated to chunkedBuyIndex's -1 in
+        // HourlyStrategy.tryEnter) sizes off this same maxInvestment-only gate.
+        if (user === 'ContinuousStrategy' || user === 'BulkPcrStrategy' || user === 'HourlyStrategy') {
             const currentInvestment = this.getCurrentInvestment(user) + this.pendingValue(user);
             const maxInvestment = this.getUserMaxInvestment(user);
             if (currentInvestment >= maxInvestment) {

@@ -1,5 +1,5 @@
 import { BrokerExecutor, BuyRequest, Exchange } from './BrokerExecutor';
-import { NIFTY_FREEZE_QUANTITY } from '../../constants';
+import { NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY } from '../../constants';
 import { splitIntoFreezeQtyChunks } from '../../util/quantityChunks';
 import Log from '../../util/Log';
 
@@ -55,7 +55,11 @@ export interface ChunkedFillResult {
 export async function buyChunked(
     executor: BrokerExecutor,
     request: BuyRequest,
-    freezeQty: number = NIFTY_FREEZE_QUANTITY
+    // Defaults to the request's own exchange's freeze limit - found on review:
+    // this used to always default to NIFTY's (much larger) limit regardless
+    // of exchange, which for an un-chunked BFO (SENSEX) order above 1000
+    // would get rejected by the exchange outright instead of being split.
+    freezeQty: number = request.exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY
 ): Promise<ChunkedFillResult> {
     const chunks = splitIntoFreezeQtyChunks(request.quantity, freezeQty);
     let filledQty = 0;
@@ -98,7 +102,8 @@ export async function squareOffChunked(
     tradingSymbol: string,
     quantity: number,
     exchange: Exchange,
-    freezeQty: number = NIFTY_FREEZE_QUANTITY
+    // Same exchange-aware default as buyChunked above.
+    freezeQty: number = exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY
 ): Promise<ChunkedFillResult> {
     const chunks = splitIntoFreezeQtyChunks(quantity, freezeQty);
     let filledQty = 0;
@@ -146,7 +151,8 @@ export async function squareOffLimitChunked(
     quantity: number,
     exchange: Exchange,
     limitPrice: number,
-    freezeQty: number = NIFTY_FREEZE_QUANTITY
+    // Same exchange-aware default as buyChunked above.
+    freezeQty: number = exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY
 ): Promise<{ orderIds: string[] }> {
     if (!executor.squareOffLimit) {
         throw new Error(`squareOffLimitChunked: broker '${executor.brokerName}' does not support a limit-priced square-off`);

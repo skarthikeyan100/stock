@@ -517,9 +517,10 @@ class ANT {
     // (getQuote/getQuotes/postOhlc) - confirmed live, no 429s seen here even
     // when the OHLC endpoint was rate-limiting on a single call.
     private async fetchOptionChainRows(underlying: string): Promise<any[]> {
+        const chainExch = underlying === 'SENSEX' ? 'bse_fo' : 'nse_fo';
         const expResp = await axios.post(
             'https://a3.aliceblueonline.com/obrest/optionChain/getUnderlyingExp',
-            { underlying, exch: 'nse_fo' },
+            { underlying, exch: chainExch },
             { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
         );
         const expiry = expResp.data?.result?.[0]?.underlying_expiry?.[0];
@@ -529,7 +530,7 @@ class ANT {
 
         const chainResp = await axios.post(
             'https://a3.aliceblueonline.com/obrest/optionChain/getOptionChain',
-            { underlying, expiry, interval: 5, exch: 'nse_fo' },
+            { underlying, expiry, interval: 5, exch: chainExch },
             { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
         );
         return chainResp.data?.result?.[0]?.data ?? [];

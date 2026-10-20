@@ -1,6 +1,6 @@
 import Log from '../util/Log';
 import { CALL, PUT } from '../constants';
-import { NiftyQuote, OptionQuote, Trade } from '../model/model';
+import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import Mongo from '../tools/mongo';
@@ -210,6 +210,11 @@ export default class BulkPcrStrategy extends Strategy {
 
     // A lone ANT slot that falls this far below its entry opens the opposite side.
     // Optional config key; defaults to 10 points.
+    // Underlying this instance trades: config `index: SENSEX` (ANT only, BFO options) or NIFTY (default).
+    private index(): 'NIFTY' | 'SENSEX' {
+        return this.cfg().index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
+    }
+
     private slDistance(): number {
         return this.cfg().slDistance ?? 10;
     }
@@ -293,11 +298,11 @@ export default class BulkPcrStrategy extends Strategy {
     private async resolveEntryRight(quote: NiftyQuote, configuredRight?: string): Promise<string | null> {
         if (configuredRight && configuredRight !== 'none') return configuredRight; // explicit direction - skip PCR entirely
         try {
-            const pcr = await OrderClient.getInstance().getPCR(this.userId, 'NIFTY', quote.ltp, PCR_WINDOW_POINTS);
+            const pcr = await OrderClient.getInstance().getPCR(this.userId, this.index(), quote.ltp, this.index() === 'SENSEX' ? PCR_WINDOW_POINTS * 3 : PCR_WINDOW_POINTS);
             const pcrFavors = pcr > 1 ? PUT : CALL;
             Log.log(`[BulkPcrStrategy] PCR=${pcr.toFixed(3)} -> resolved direction ${pcrFavors}`);
 
-            const momentumFavors = await this.momentum.getDirection(this, quote.ltp, BulkPcrStrategy.MOMENTUM_TIMEOUT_MS);
+            const momentumFavors = await this.momentum.getDirection(this, quote.ltp, BulkPcrStrategy.MOMENTUM_TIMEOUT_MS, this.index());
             if (momentumFavors != null && momentumFavors !== pcrFavors) {
                 Log.log(`[BulkPcrStrategy] Momentum (${momentumFavors}) disagrees with PCR (${pcrFavors}) - blocking entry this window`);
                 return null;
@@ -310,11 +315,16 @@ export default class BulkPcrStrategy extends Strategy {
     }
 
     async processNiftyQuote(quote: NiftyQuote): Promise<void> {
-        this.lastNiftyQuote = quote;
+        if (this.index() !== 'NIFTY') { await this.eodCheck(); return; } // SENSEX instance: entry runs off SENSEX ticks, but NIFTY ticks still drive the EOD check
+        await this.processUnderlyingQuote(quote);
+    }
 
-        // EOD force-close of open ANT slots - checked before the phase==='idle' gate below, since by
-        // the time a slot exists the outer phase is already 'running' and would return first.
-        // One-shot via eodDone; a NIFTY tick after 15:15 is frequent enough that no interval poll is needed.
+    async processSensexQuote(quote: SensexQuote): Promise<void> {
+        if (this.index() !== 'SENSEX') return;
+        await this.processUnderlyingQuote(quote as unknown as NiftyQuote);
+    }
+
+    private async eodCheck(): Promise<void> {
         if (!this.eodDone && this.antSlots().length > 0) {
             const now = new Date();
             const pastEodCutoff = now.getHours() > 15 || (now.getHours() === 15 && now.getMinutes() >= 15);
@@ -324,6 +334,18 @@ export default class BulkPcrStrategy extends Strategy {
                 await this.eodCloseAnt();
             }
         }
+    }
+
+    private async processUnderlyingQuote(quote: NiftyQuote): Promise<void> {
+        this.lastNiftyQuote = quote;
+
+        // EOD force-close of open ANT slots - checked before the phase==='idle' gate below, since by
+        // the time a slot exists the outer phase is already 'running' and would return first.
+        // One-shot via eodDone; a NIFTY/SENSEX tick after 15:15 is frequent enough that no interval
+        // poll is needed. Shared with the SENSEX-instance early-return path above (processNiftyQuote) -
+        // found on review: this used to duplicate the cutoff check inline instead of calling eodCheck(),
+        // which would have silently diverged the next time the cutoff changed in only one place.
+        await this.eodCheck();
 
         if (!this.enabled) { this.logGateOnce('disabled'); return; }
         if (this.phase !== 'idle') { this.logGateOnce(`entry already in progress or done (phase=${this.phase})`); return; }
@@ -398,7 +420,7 @@ export default class BulkPcrStrategy extends Strategy {
 
         try {
             const chunkDriftCancelPoints = this.cfg().chunkDriftCancelPoints ?? 10;
-            const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, { right, quantity, niftyLtp, broker, driftCancelPoints: chunkDriftCancelPoints });
+            const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, { right, quantity, niftyLtp, broker, driftCancelPoints: chunkDriftCancelPoints, index: this.index() });
             const pos = this.positions.get(key)!;
             pos.heldTsym = result.tsym;
             pos.heldToken = String(result.token);
@@ -453,6 +475,26 @@ export default class BulkPcrStrategy extends Strategy {
                 }
                 this.positions.delete(key);
                 await this.enterOnBroker(broker, retryRight, quantity, latest.ltp, true);
+                return;
+            }
+            if (nothingWasBought && isRetry) {
+                // Both attempts were confirmed cancelled-unfilled: no position exists, so there is nothing to
+                // review - mark this slot 'done' (a legitimate "finished, nothing held" terminal state, same
+                // as the 'pending'->'done' EOD case below) instead of latching 'error' (which blocked every
+                // later autostart slot until a manual reset, live 2026-10-19 SENSEX). Deliberately NOT deleted
+                // from `this.positions` - allBrokersFinished() requires at least one slot per configured
+                // broker to consider that broker finished; deleting it left that broker permanently
+                // unaccounted for, so a different broker's later, perfectly normal completion could never
+                // flip this.phase to 'done' either (found on review). finishIfFlat() reuses the exact same
+                // "every configured broker finished" check the normal full-sell completion path uses -
+                // BulkPcrAutoStartStrategy's target.reset() (called before every scheduled re-arm, and which
+                // force-sets config `enabled: true` regardless) already makes durablyDisable()'s config
+                // write here a non-issue for the next scheduled slot.
+                Log.log(`[BulkPcrStrategy] [${broker}] Entry retry also filled nothing - no position, marking slot done: ${message}`);
+                const slot = this.positions.get(key);
+                if (slot) slot.phase = 'done';
+                this.persistState();
+                this.finishIfFlat();
                 return;
             }
             Log.log(`[BulkPcrStrategy] [${broker}] Chunked entry failed - manual review required:`, e);
@@ -516,7 +558,10 @@ export default class BulkPcrStrategy extends Strategy {
             // them for the slDistance check that opens the opposite side (tokenRouter only routes
             // ticks for watched/registered tokens).
             if (broker === 'ant' && pos.heldToken) {
-                watchTokenOnSource('ant', pos.heldToken, this); // ANT token: always the ANT feed, whatever config's broker: key says
+                // ANT token: always the ANT feed, whatever config's broker: key says. exchange
+                // derived from heldTsym (found on review - this used to default to NFO regardless,
+                // which silently never got a tick back for a SENSEX/BFO leg).
+                watchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
             }
         } catch (e) {
             Log.log(`[BulkPcrStrategy] [${broker}] Chunked limit-sell placement failed - manual review required:`, e);
@@ -614,10 +659,11 @@ export default class BulkPcrStrategy extends Strategy {
             // Same chunked buy the root entry uses: splits above the exchange freeze quantity and
             // returns only once every chunk has filled.
             const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, {
-                right: pos.right, quantity: pos.entryQuantity, niftyLtp, broker: 'ant',
+                right: pos.right, quantity: pos.entryQuantity, niftyLtp, broker: 'ant', index: this.index(),
                 driftCancelPoints: this.cfg().chunkDriftCancelPoints ?? 10,
             });
-            if (pos.heldToken && pos.heldToken !== String(result.token)) unwatchTokenOnSource('ant', pos.heldToken, this); // re-buy rolled to a new contract
+            // re-buy rolled to a new contract - exchange is the OLD heldTsym's (being unsubscribed), found on review.
+            if (pos.heldToken && pos.heldToken !== String(result.token)) unwatchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
             pos.heldTsym = result.tsym;
             pos.heldToken = String(result.token);
             pos.entryAvg = result.avgPrice;
@@ -711,7 +757,7 @@ export default class BulkPcrStrategy extends Strategy {
         const remaining = pos.targetQuantity - pos.soldQty;
         try {
             if (remaining > 0) {
-                await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: 'NFO' });
+                await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: tsym.startsWith('SENSEX') ? 'BFO' : 'NFO' });
             }
             // A fill notification may already have completed the slot via updateTrade/onSlotSoldOut.
             if (pos.phase === 'selling') pos.phase = 'done';
@@ -790,7 +836,7 @@ export default class BulkPcrStrategy extends Strategy {
         if (this.phase === 'done') return;
         // Unwatch every ANT slot's held token - a no-op for any that was never watched.
         for (const slot of this.antSlots()) {
-            if (slot.heldToken) unwatchTokenOnSource('ant', slot.heldToken, this);
+            if (slot.heldToken) unwatchTokenOnSource('ant', slot.heldToken, this, slot.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
         }
         // Not configService.getStrategyConfig(type) - see cfg()'s comment above for why;
         // this call site was missed when that fix landed. A second instance under a

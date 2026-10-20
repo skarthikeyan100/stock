@@ -41,24 +41,24 @@ function refCount(k: string): number {
     return (watchers.get(k)?.size ?? 0) + (tradeHolders.get(k)?.size ?? 0);
 }
 
-export function watchToken(token: string, strategy: Strategy): void {
+export function watchToken(token: string, strategy: Strategy, exchange?: 'NFO' | 'BFO'): void {
     const source = resolveSource(strategy);
     const k = key(source, token);
     if (!watchers.has(k)) watchers.set(k, new Set());
     const set = watchers.get(k)!;
     if (set.has(strategy)) return;
     set.add(strategy);
-    if (refCount(k) === 1) subscribeToken(token, source);
+    if (refCount(k) === 1) subscribeToken(token, source, exchange);
 }
 
-export function unwatchToken(token: string, strategy: Strategy): void {
+export function unwatchToken(token: string, strategy: Strategy, exchange?: 'NFO' | 'BFO'): void {
     const source = resolveSource(strategy);
     const k = key(source, token);
     const set = watchers.get(k);
     if (!set?.has(strategy)) return;
     set.delete(strategy);
     if (set.size === 0) watchers.delete(k);
-    if (refCount(k) === 0) unsubscribeToken(token, source);
+    if (refCount(k) === 0) unsubscribeToken(token, source, exchange);
 }
 
 // Explicit-source variants of watchToken/unwatchToken above, for callers that
@@ -67,40 +67,46 @@ export function unwatchToken(token: string, strategy: Strategy): void {
 // (depth mode, ANT-only) even when the owning strategy's `broker:` config
 // routes its order execution (and therefore its own watchToken/registerTrade
 // calls, via resolveSource) through Breeze instead.
-export function watchTokenOnSource(source: FeedSource, token: string, strategy: Strategy): void {
+//
+// exchange ('NFO'/'BFO') is threaded through to subscribeToken/unsubscribeToken
+// so a SENSEX (BFO) token's ANT websocket subscription is keyed correctly
+// instead of always assuming NFO (found on code review) - callers holding a
+// BFO instrument (e.g. BulkPcrStrategy's SENSEX-configured instance) must
+// pass 'BFO' explicitly; every existing NFO caller is unaffected by the default.
+export function watchTokenOnSource(source: FeedSource, token: string, strategy: Strategy, exchange?: 'NFO' | 'BFO'): void {
     const k = key(source, token);
     if (!watchers.has(k)) watchers.set(k, new Set());
     const set = watchers.get(k)!;
     if (set.has(strategy)) return;
     set.add(strategy);
-    if (refCount(k) === 1) subscribeToken(token, source);
+    if (refCount(k) === 1) subscribeToken(token, source, exchange);
 }
 
-export function unwatchTokenOnSource(source: FeedSource, token: string, strategy: Strategy): void {
+export function unwatchTokenOnSource(source: FeedSource, token: string, strategy: Strategy, exchange?: 'NFO' | 'BFO'): void {
     const k = key(source, token);
     const set = watchers.get(k);
     if (!set?.has(strategy)) return;
     set.delete(strategy);
     if (set.size === 0) watchers.delete(k);
-    if (refCount(k) === 0) unsubscribeToken(token, source);
+    if (refCount(k) === 0) unsubscribeToken(token, source, exchange);
 }
 
-export function registerTrade(token: string, strategy: Strategy, source: FeedSource = resolveSource(strategy)): void {
+export function registerTrade(token: string, strategy: Strategy, source: FeedSource = resolveSource(strategy), exchange?: 'NFO' | 'BFO'): void {
     const k = key(source, token);
     if (!tradeHolders.has(k)) tradeHolders.set(k, new Set());
     const set = tradeHolders.get(k)!;
     if (set.has(strategy)) return;
     set.add(strategy);
-    if (refCount(k) === 1) subscribeToken(token, source);
+    if (refCount(k) === 1) subscribeToken(token, source, exchange);
 }
 
-export function unregisterTrade(token: string, strategy: Strategy, source: FeedSource = resolveSource(strategy)): void {
+export function unregisterTrade(token: string, strategy: Strategy, source: FeedSource = resolveSource(strategy), exchange?: 'NFO' | 'BFO'): void {
     const k = key(source, token);
     const set = tradeHolders.get(k);
     if (!set?.has(strategy)) return;
     set.delete(strategy);
     if (set.size === 0) tradeHolders.delete(k);
-    if (refCount(k) === 0) unsubscribeToken(token, source);
+    if (refCount(k) === 0) unsubscribeToken(token, source, exchange);
 }
 
 export async function routeOptionTick(source: FeedSource, quote: OptionQuote): Promise<void> {

@@ -27,13 +27,17 @@ class AntDataStream implements DataStream {
         { exch: 'BSE', token: '1' },
     ];
 
-    private dynamicOptionTokens: Set<string> = new Set();
+    // Maps bare token -> its exchange ('NFO'/'BFO'), not a Set<string> -
+    // the reconnect resubscribe below (and unsubscribe) must rebuild the
+    // same `${exchange}|${token}` key a BFO (SENSEX) token was originally
+    // subscribed with, not always assume NFO (found on code review).
+    private dynamicOptionTokens: Map<string, 'NFO' | 'BFO'> = new Map();
     // Depth-mode subscriptions - a separate AliceBlue subscription type from
     // dynamicOptionTokens' touchline above, used only for the momentum
-    // signal's tbq/tsq (see MomentumSignal.ts). A token can be in both sets
+    // signal's tbq/tsq (see MomentumSignal.ts). A token can be in both maps
     // independently (e.g. an open leg's touchline token happening to also be
     // momentum-checked).
-    private dynamicDepthTokens: Set<string> = new Set();
+    private dynamicDepthTokens: Map<string, 'NFO' | 'BFO'> = new Map();
 
     constructor(private writeTick: (tick: any) => void) {}
 
@@ -65,10 +69,10 @@ class AntDataStream implements DataStream {
         this.ws.on('open', () => {
             Log.log('[AntDataStream] WebSocket open, subscribing to always-on instruments...');
             const fixedKeys = this.ALWAYS_ON.map((i) => `${i.exch}|${i.token}`);
-            const dynamicKeys = Array.from(this.dynamicOptionTokens).map((t) => `NFO|${t}`);
+            const dynamicKeys = Array.from(this.dynamicOptionTokens, ([t, exch]) => `${exch}|${t}`);
             this.ws!.subscribe([...fixedKeys, ...dynamicKeys]);
             if (this.dynamicDepthTokens.size > 0) {
-                this.ws!.subscribeDepth(Array.from(this.dynamicDepthTokens).map((t) => `NFO|${t}`));
+                this.ws!.subscribeDepth(Array.from(this.dynamicDepthTokens, ([t, exch]) => `${exch}|${t}`));
             }
         });
 
@@ -166,28 +170,33 @@ class AntDataStream implements DataStream {
         }
     }
 
-    async subscribeOption(token: string): Promise<void> {
+    async subscribeOption(token: string, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<void> {
         if (this.dynamicOptionTokens.has(token)) return;
-        this.dynamicOptionTokens.add(token);
-        this.ws?.subscribe([`NFO|${token}`]);
+        this.dynamicOptionTokens.set(token, exchange);
+        this.ws?.subscribe([`${exchange}|${token}`]);
     }
 
-    async unsubscribeOption(token: string): Promise<void> {
+    async unsubscribeOption(token: string, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<void> {
         if (!this.dynamicOptionTokens.has(token)) return;
+        // Unsubscribe with the exchange it was actually subscribed under, not
+        // whatever the caller passes this time - defensive, in case a caller
+        // ever gets that wrong.
+        const actualExchange = this.dynamicOptionTokens.get(token)!;
         this.dynamicOptionTokens.delete(token);
-        this.ws?.unsubscribe([`NFO|${token}`]);
+        this.ws?.unsubscribe([`${actualExchange}|${token}`]);
     }
 
-    async subscribeOptionDepth(token: string): Promise<void> {
+    async subscribeOptionDepth(token: string, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<void> {
         if (this.dynamicDepthTokens.has(token)) return;
-        this.dynamicDepthTokens.add(token);
-        this.ws?.subscribeDepth([`NFO|${token}`]);
+        this.dynamicDepthTokens.set(token, exchange);
+        this.ws?.subscribeDepth([`${exchange}|${token}`]);
     }
 
-    async unsubscribeOptionDepth(token: string): Promise<void> {
+    async unsubscribeOptionDepth(token: string, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<void> {
         if (!this.dynamicDepthTokens.has(token)) return;
+        const actualExchange = this.dynamicDepthTokens.get(token)!;
         this.dynamicDepthTokens.delete(token);
-        this.ws?.unsubscribeDepth([`NFO|${token}`]);
+        this.ws?.unsubscribeDepth([`${actualExchange}|${token}`]);
     }
 
     disconnect(): void {

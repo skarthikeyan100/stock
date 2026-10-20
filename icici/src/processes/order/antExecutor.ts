@@ -230,7 +230,8 @@ export async function enterPosition(
         // Same fix: a marketable LIMIT 1% above LTP, fills immediately like
         // a market order would from the caller's point of view.
         const ltp = await entryLtp(knownLtp, exchange, instrumentId);
-        const limitPrice = roundToTick(ltp * 1.01);
+        // BFO (SENSEX) buys are limited at LTP itself, not LTP+1% (user decision 2026-10-19); NFO keeps the 1% cushion.
+        const limitPrice = exchange === 'BFO' ? roundToTick(ltp) : roundToTick(ltp * 1.01);
         Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order (ltp=${ltp} limit=${limitPrice})`);
         ({ orderNo } = await ant.placeOrder({
             exchange,

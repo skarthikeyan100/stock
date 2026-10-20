@@ -59,15 +59,17 @@ async function main() {
                 Log.log('[data] Unknown feed source:', source);
                 return;
             }
+            // cmd.exchange ('NFO'/'BFO') passed through from DataClient.ts/tokenRouter.ts -
+            // defaults to 'NFO' inside each DataStream implementation when omitted.
             if (cmd.cmd === 'subscribe' && cmd.token) {
-                stream.subscribeOption(cmd.token);
+                stream.subscribeOption(cmd.token, cmd.exchange);
             } else if (cmd.cmd === 'unsubscribe' && cmd.token) {
-                stream.unsubscribeOption(cmd.token);
+                stream.unsubscribeOption(cmd.token, cmd.exchange);
             } else if (cmd.cmd === 'subscribeDepth' && cmd.token) {
-                if (stream.subscribeOptionDepth) stream.subscribeOptionDepth(cmd.token);
+                if (stream.subscribeOptionDepth) stream.subscribeOptionDepth(cmd.token, cmd.exchange);
                 else Log.log(`[data] subscribeDepth: ${source} stream does not support depth mode`);
             } else if (cmd.cmd === 'unsubscribeDepth' && cmd.token) {
-                if (stream.unsubscribeOptionDepth) stream.unsubscribeOptionDepth(cmd.token);
+                if (stream.unsubscribeOptionDepth) stream.unsubscribeOptionDepth(cmd.token, cmd.exchange);
                 else Log.log(`[data] unsubscribeDepth: ${source} stream does not support depth mode`);
             } else if (cmd.cmd === 'reconnect') {
                 reloadSessionFns[source]?.();

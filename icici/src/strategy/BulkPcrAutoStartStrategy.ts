@@ -149,10 +149,15 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         bulkPcrCfg.quantity = cfg.quantity;
         bulkPcrCfg.targetPoints = cfg.targetPoints;
         bulkPcrCfg.brokers = cfg.brokers;
+        // Unconditional, like every other field above - found on review: `if (cfg.index)` left a
+        // previous slot's persisted `index: SENSEX` write in place for a later slot that omits
+        // `index` (reverting to NIFTY), silently continuing to trade SENSEX under a NIFTY-intended
+        // quantity/brokers config. Always write this slot's own value, defaulting to 'NIFTY'.
+        bulkPcrCfg.index = cfg.index ?? 'NIFTY';
         bulkPcrCfg.enabled = true;
         configService.writeConfig(configService.getConfig());
         strategies.syncFromConfig();
 
-        Log.log(`[BulkPcrAutoStart] ${timeStr} slot: armed BulkPcrStrategy (quantity=${cfg.quantity}, targetPoints=${cfg.targetPoints}, brokers=${JSON.stringify(cfg.brokers)})`);
+        Log.log(`[BulkPcrAutoStart] ${timeStr} slot: armed BulkPcrStrategy (quantity=${cfg.quantity}, targetPoints=${cfg.targetPoints}, brokers=${JSON.stringify(cfg.brokers)}, index=${bulkPcrCfg.index})`);
     }
 }

@@ -133,13 +133,17 @@ class BreezeDataStream implements DataStream {
             .catch((e) => Log.log('[BreezeDataStream] subscribeFeeds failed:', token, e));
     }
 
-    async subscribeOption(token: string): Promise<void> {
+    // exchange param accepted only for DataStream interface conformance and
+    // ignored - Breeze has no BFO (SENSEX) option support here (see
+    // orderProcess.ts's chunkedBuyIndex breeze branch, which already rejects
+    // index: SENSEX outright), so every token this ever sees is NFO.
+    async subscribeOption(token: string, _exchange?: 'NFO' | 'BFO'): Promise<void> {
         if (this.dynamicOptionTokens.has(token)) return;
         this.dynamicOptionTokens.add(token);
         if (this.connected) this.sendSubscribe(token);
     }
 
-    async unsubscribeOption(token: string): Promise<void> {
+    async unsubscribeOption(token: string, _exchange?: 'NFO' | 'BFO'): Promise<void> {
         if (!this.dynamicOptionTokens.has(token)) return;
         this.dynamicOptionTokens.delete(token);
         this.lastTickAt.delete(token);

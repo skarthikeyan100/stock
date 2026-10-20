@@ -115,6 +115,7 @@ strategies:
     enabled: false
     brokers: [zerodha, ant, breeze]
     quantity: 65
+    maxInvestment: 100000
     targetPrice: 15
     cooldownSeconds: 60
     driftCancelPoints: 10
@@ -131,10 +132,10 @@ strategies:
     stopLossPoints: 15
     logEnabled: true
   - type: BulkPcrStrategy
-    enabled: false
+    enabled: true
     broker: breeze
-    quantity: -1
-    targetPoints: 2
+    quantity: 20
+    targetPoints: 10
     chunkDriftCancelPoints: 10
     right: none
     maxInvestment: 100000
@@ -142,20 +143,14 @@ strategies:
     logEnabled: true
     brokers: &ref_0
       - ant
+    index: SENSEX
   - type: BulkPcrAutoStartStrategy
-    enabled: false
+    enabled: true
     times:
-      - '10:35'
-      - '11:05'
-      - '11:35'
-      - '12:05'
-      - '12:35'
-      - '13:05'
-      - '13:35'
-      - '14:00'
-      - '14:35'
-    quantity: -1
-    targetPoints: 2
+      - '14:56'
+    quantity: 20
+    targetPoints: 10
+    index: SENSEX
     brokers: *ref_0
   - type: TopStockOptionsOpeningGapStrategy
     enabled: false

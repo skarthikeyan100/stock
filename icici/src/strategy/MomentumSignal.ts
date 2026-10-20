@@ -41,10 +41,10 @@ export default class MomentumSignal {
     // two legs' order-book imbalance is inconclusive (doesn't agree with each
     // other). null always means "momentum unavailable" to the caller, which
     // falls back to PCR alone - never a reason to block an entry by itself.
-    async getDirection(strategy: Strategy, niftyLtp: number, timeoutMs: number): Promise<string | null> {
+    async getDirection(strategy: Strategy, niftyLtp: number, timeoutMs: number, index: string = 'NIFTY'): Promise<string | null> {
         let ceToken: string, peToken: string;
         try {
-            const tokens = await OrderClient.getInstance().getATMTokens(strategy.userId, niftyLtp);
+            const tokens = await OrderClient.getInstance().getATMTokens(strategy.userId, niftyLtp, index);
             ceToken = tokens.ce.token;
             peToken = tokens.pe.token;
         } catch (e) {
@@ -52,13 +52,17 @@ export default class MomentumSignal {
             return null;
         }
 
+        // SENSEX ATM tokens are BFO, not NFO - found on review: this used to
+        // default to NFO regardless of `index`, which would silently never
+        // get a depth tick back for a SENSEX momentum check.
+        const exchange: 'NFO' | 'BFO' = index === 'SENSEX' ? 'BFO' : 'NFO';
         const subscribedNow: string[] = [];
         for (const token of [ceToken, peToken]) {
             if (this.pending.has(token)) continue;
             this.pending.set(token, {});
             subscribedNow.push(token);
-            watchTokenOnSource('ant', token, strategy);
-            subscribeTokenDepth(token, 'ant');
+            watchTokenOnSource('ant', token, strategy, exchange);
+            subscribeTokenDepth(token, 'ant', exchange);
         }
 
         try {
@@ -81,8 +85,8 @@ export default class MomentumSignal {
         } finally {
             for (const token of subscribedNow) {
                 this.pending.delete(token);
-                unwatchTokenOnSource('ant', token, strategy);
-                unsubscribeTokenDepth(token, 'ant');
+                unwatchTokenOnSource('ant', token, strategy, exchange);
+                unsubscribeTokenDepth(token, 'ant', exchange);
             }
         }
     }

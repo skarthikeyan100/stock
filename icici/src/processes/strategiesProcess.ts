@@ -40,10 +40,15 @@ async function onFill(userId: string, raw: any) {
     // key is only a fallback for untagged fills (a BulkPcr ANT pair under `broker: breeze` would
     // otherwise subscribe an ANT token on the Breeze feed).
     const feed = trade.broker ? BROKER_TO_FEED_SOURCE[trade.broker] : undefined;
+    // SENSEX (BFO) tsym -> 'BFO', same convention BulkPcrStrategy already uses
+    // for its own antSquareOffBare/reconcile calls - found on review: without
+    // this, a held BFO token's subscription here would default to NFO and
+    // never receive a tick back from AliceBlue.
+    const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
     if (trade.action === 'Buy' && trade.token) {
-        registerTrade(trade.token, strategy, feed);
+        registerTrade(trade.token, strategy, feed, exchange);
     } else if (trade.action === 'Sell' && trade.token) {
-        unregisterTrade(trade.token, strategy, feed);
+        unregisterTrade(trade.token, strategy, feed, exchange);
     }
     await strategy.updateTrade(trade);
 }
