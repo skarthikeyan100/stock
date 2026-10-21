@@ -613,8 +613,13 @@ export default class BulkPcrStrategy extends Strategy {
 
         this.retryPendingRebuys();
 
-        // Once both sides exist the pair is complete - this tick does nothing more.
-        if (this.antSlots().length !== 1) return;
+        // Once both sides exist the pair is complete - this tick does nothing more. A 'done'
+        // side (already fully sold out, e.g. from an earlier cycle) doesn't count as "existing"
+        // here - same convention onSlotSoldOut's sibling check and canHandleOptionQuote already
+        // use (phase !== 'done') - found live 2026-10-21: a stale 'done' PE record from a prior
+        // cycle was otherwise permanently counted as a second active side, blocking this lone CE
+        // slot from ever opening its hedge no matter how far price moved.
+        if (this.antSlots().filter((p) => p.phase !== 'done').length !== 1) return;
         if (quote.ltp > slot.entryAvg - this.slDistance()) return;
         await this.openOppositeSide(slot);
     }
@@ -1089,8 +1094,22 @@ export default class BulkPcrStrategy extends Strategy {
                 // only affects bookkeeping of a fill already in flight, not a new order size.
                 const placedSameDay = persistedPos.sellPlacedAt != null && isStillWithinSameTradingSession(persistedPos.sellPlacedAt);
                 if (placedSameDay) {
-                    this.positions.set(key, { ...persistedPos });
+                    const pos = { ...persistedPos };
+                    this.positions.set(key, pos);
                     anyRestored = true;
+                    // The comment above this branch assumes the tick subscription survived the
+                    // restart - true for THIS process (strategies), but not for the separate
+                    // `data` process, which loses its own in-memory subscription map on its own
+                    // restart. Found live 2026-10-21: after a restart cycle that touched both
+                    // processes, this branch kept resuming 'selling' correctly but never
+                    // re-subscribed, so no option tick ever reached processOptionQuote again -
+                    // the opposite-side hedge trigger silently went dead despite the position
+                    // otherwise looking perfectly healthy. watchTokenOnSource is idempotent
+                    // (tokenRouter dedupes by refcount), so calling it here even when the
+                    // subscription did survive is harmless.
+                    if (broker === 'ant' && pos.heldToken) {
+                        watchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
+                    }
                     Log.log(`[BulkPcrStrategy] [${broker}] reconcile: restored in-flight limit-sell exit for ${persistedPos.heldTsym} (${persistedPos.soldQty}/${persistedPos.targetQuantity} filled so far) - resuming fill watch`);
                     continue;
                 }
