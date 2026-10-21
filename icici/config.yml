@@ -132,26 +132,59 @@ strategies:
     stopLossPoints: 15
     logEnabled: true
   - type: BulkPcrStrategy
+    userId: BulkPcr-SENSEX
     enabled: false
-    broker: breeze
-    quantity: 20
+    quantity: -1
     targetPoints: 10
+    chunkDriftCancelPoints: 10
+    right: none
+    maxInvestment: 100000
+    slDistance: 50
+    logEnabled: true
+    brokers:
+      - ant
+    index: SENSEX
+  - type: BulkPcrStrategy
+    userId: BulkPcr-NIFTY
+    enabled: true
+    quantity: -1
+    targetPoints: 2
     chunkDriftCancelPoints: 10
     right: none
     maxInvestment: 100000
     slDistance: 10
     logEnabled: true
-    brokers: &ref_0
+    brokers:
       - ant
-    index: SENSEX
+    index: NIFTY
   - type: BulkPcrAutoStartStrategy
-    enabled: false
+    userId: BulkPcrAutoStart-SENSEX
+    targetUserId: BulkPcr-SENSEX
+    enabled: true
     times:
-      - '14:56'
-    quantity: 20
+      - '10:35'
+      - '11:05'
+      - '11:35'
+      - '12:05'
+    quantity: -1
     targetPoints: 10
     index: SENSEX
-    brokers: *ref_0
+    brokers:
+      - ant
+  - type: BulkPcrAutoStartStrategy
+    userId: BulkPcrAutoStart-NIFTY
+    targetUserId: BulkPcr-NIFTY
+    enabled: true
+    times:
+      - '10:35'
+      - '11:05'
+      - '11:35'
+      - '12:05'
+    quantity: -1
+    targetPoints: 2
+    index: NIFTY
+    brokers:
+      - ant
   - type: TopStockOptionsOpeningGapStrategy
     enabled: true
     broker: ant
