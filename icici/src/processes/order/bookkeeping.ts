@@ -1235,6 +1235,7 @@ class OrderBookkeeping {
             trade.stopLossPrice = row.stopLossPrice;
             trade.gttTriggerId = row.gttTriggerId;
             trade.antOrderNo = row.antOrderNo;
+            trade.product = row.product;
             trade.prismCoverOrderNo = row.prismCoverOrderNo;
             trade.strategy = row.strategy;
             trade.entryTime = row.entryTime;

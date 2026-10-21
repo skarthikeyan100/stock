@@ -794,17 +794,17 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // to actually execute inside `order`, where antExecutor.ts's
             // singletons live.
             case 'antBuyTargetOnly': {
-                const { tradingSymbol, instrumentId, quantity, exchange, underlyingOpen, marketProtectionPercent } = req.payload;
+                const { tradingSymbol, instrumentId, quantity, exchange, underlyingOpen, marketProtectionPercent, product } = req.payload;
                 // No pre-trade option LTP any more, so no value estimate (same as 'buyIndex').
                 return placeOrderWithPendingGuard(req, undefined, () =>
                     antExecutor.enterPosition(req.userId, tradingSymbol, instrumentId, quantity, exchange, 0, 0, 'target-only', undefined,
-                        { underlyingOpen, marketProtectionPercent: String(marketProtectionPercent) }),
+                        { underlyingOpen, marketProtectionPercent: String(marketProtectionPercent), product }),
                 );
             }
 
             case 'antPlaceLimitSellBare': {
-                const { tradingSymbol, instrumentId, quantity, price, exchange } = req.payload;
-                const result = await antExecutor.placeLimitSellBareOnAnt(req.userId, tradingSymbol, instrumentId, quantity, price, exchange);
+                const { tradingSymbol, instrumentId, quantity, price, exchange, product } = req.payload;
+                const result = await antExecutor.placeLimitSellBareOnAnt(req.userId, tradingSymbol, instrumentId, quantity, price, exchange, product);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 

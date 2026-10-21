@@ -23,6 +23,7 @@ export interface PendingAntLimitOrder {
     quantity: number;
     exchange: 'NFO' | 'BFO';
     action: 'Buy' | 'Sell';
+    product?: 'INTRADAY' | 'LONGTERM'; // see Trade.product
     // In-memory only (not persisted to Mongo - a restart gets a fresh count,
     // which is fine, it just re-runs the same give-up check a bit later).
     // Counts consecutive non-transient (order-not-found-in-history) poll
@@ -108,6 +109,7 @@ export async function loadPendingAntLimitOrdersFromMongo(): Promise<void> {
             quantity: row.quantity,
             exchange: row.exchange,
             action: row.action ?? 'Sell',
+            product: row.product,
         });
     }
     if (rows.length > 0) {

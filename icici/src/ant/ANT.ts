@@ -18,6 +18,8 @@ const axios = axiosModule.create({ timeout: ANT_HTTP_TIMEOUT_MS });
 // intended to be used as a general-purpose HTTP client outside this file.
 export const antAxiosInstance = axios;
 
+export type AntProduct = 'INTRADAY' | 'LONGTERM';
+
 class ANT {
     private static instance: ANT;
 
@@ -595,6 +597,7 @@ class ANT {
         transactionType: 'BUY' | 'SELL';
         price?: number; // omitted/0 => MARKET
         marketProtectionPercent?: string; // only meaningful when price is omitted (MARKET)
+        product?: AntProduct; // default INTRADAY (squared off by the broker at ~3:20pm); LONGTERM = overnight/carry-forward (NRML equivalent)
     }): Promise<{ orderNo: string }> {
         const body = [{
             exchange: params.exchange,
@@ -602,7 +605,7 @@ class ANT {
             tradingSymbol: params.tradingSymbol,
             transactionType: params.transactionType,
             quantity: params.quantity,
-            product: 'INTRADAY',
+            product: params.product ?? 'INTRADAY',
             orderType: params.price ? 'LIMIT' : 'MARKET',
             price: params.price ?? 0,
             orderComplexity: 'REGULAR',

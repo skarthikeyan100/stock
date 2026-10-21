@@ -318,13 +318,13 @@ class OrderClient {
     // market protection), no broker-side bracket/cover, waits for the real
     // fill inside `order` and returns the resulting Trade (targetPrice set
     // after the real fill from underlyingOpen).
-    async antBuyTargetOnly(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; underlyingOpen: number; marketProtectionPercent: number }): Promise<Trade> {
+    async antBuyTargetOnly(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; underlyingOpen: number; marketProtectionPercent: number; product?: 'INTRADAY' | 'LONGTERM' }): Promise<Trade> {
         const res = await this.request('antBuyTargetOnly', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
-    async antPlaceLimitSellBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
+    async antPlaceLimitSellBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; exchange: 'NFO' | 'BFO'; product?: 'INTRADAY' | 'LONGTERM' }): Promise<{ orderId: string }> {
         const res = await this.request('antPlaceLimitSellBare', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;

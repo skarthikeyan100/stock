@@ -156,7 +156,7 @@ export async function enterPosition(
     stopLossPoints: number,
     orderMode: 'bracket' | 'cover' | 'target-only' = 'bracket',
     knownLtp?: { ltp: number; atMs: number },
-    marketEntry?: { underlyingOpen: number; marketProtectionPercent: string }
+    marketEntry?: { underlyingOpen: number; marketProtectionPercent: string; product?: 'INTRADAY' | 'LONGTERM' }
 ): Promise<Trade> {
     if (marketEntry && !(marketEntry.underlyingOpen > 0)) {
         throw new Error(`enterPosition ${tradingSymbol}: invalid underlyingOpen ${marketEntry.underlyingOpen} - order not placed`);
@@ -210,6 +210,7 @@ export async function enterPosition(
             ({ orderNo } = await ant.placeOrder({
                 exchange, instrumentId, tradingSymbol, quantity, transactionType: 'BUY',
                 marketProtectionPercent: marketEntry.marketProtectionPercent,
+                product: marketEntry.product,
             }));
         } catch (e: any) {
             // Fall back ONLY on the known broker rejection of MARKET orders. Any other error (timeout, network)
@@ -220,7 +221,7 @@ export async function enterPosition(
             const ltp = await ant.getScripQuote(exchange, instrumentId);
             if (!(ltp > 0)) throw new Error(`ANT fallback quote unusable for ${tradingSymbol} - order not placed`);
             const limitPrice = roundToTick(ltp * 1.01);
-            ({ orderNo } = await ant.placeOrder({ exchange, instrumentId, tradingSymbol, quantity, transactionType: 'BUY', price: limitPrice }));
+            ({ orderNo } = await ant.placeOrder({ exchange, instrumentId, tradingSymbol, quantity, transactionType: 'BUY', price: limitPrice, product: marketEntry.product }));
         }
     } else {
         // Confirmed live 2026-10-12: AliceBlue now rejects MARKET orders on
@@ -293,6 +294,7 @@ export async function enterPosition(
     trade.user = userId;
     trade.broker = 'ant';
     trade.brokerOrderId = orderNo;
+    if (marketEntry?.product) trade.product = marketEntry.product;
 
     if (useCover || (targetPoints > 0 && stopLossPoints > 0)) {
         // Tick-rounded for consistency with the Zerodha path and with
@@ -705,7 +707,7 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
 // places a regular order with no price floor. Used for a target-hit exit
 // that must lock in a specific price - see placeLimitSellBareOnZerodha's
 // comment for why (2026-09-22 incident).
-export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO', product?: 'INTRADAY' | 'LONGTERM'): Promise<{ orderId: string }> {
     const ant = ANT.getInstance();
     Log.log(`[order] Bare ANT limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderNo } = await ant.placeOrder({
@@ -715,8 +717,9 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
         quantity,
         transactionType: 'SELL',
         price,
+        product,
     });
-    trackPendingAntLimitOrder({ orderId: orderNo, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell' });
+    trackPendingAntLimitOrder({ orderId: orderNo, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell', product });
     return { orderId: orderNo };
 }
 
@@ -938,8 +941,9 @@ async function placeReplacementExit(order: PendingAntLimitOrder, remaining: numb
         quantity: remaining,
         transactionType: 'SELL',
         price: limit,
+        product: order.product,
     });
-    const next: PendingAntLimitOrder = { orderId: orderNo, userId: order.userId, tradingSymbol: order.tradingSymbol, instrumentId: order.instrumentId, quantity: remaining, exchange: order.exchange, action: 'Sell' };
+    const next: PendingAntLimitOrder = { orderId: orderNo, userId: order.userId, tradingSymbol: order.tradingSymbol, instrumentId: order.instrumentId, quantity: remaining, exchange: order.exchange, action: 'Sell', product: order.product };
     trackPendingAntLimitOrder(next);
     Log.log(`[order] re-price ${attempt + 1}: ${order.tradingSymbol} (${order.userId}) ${remaining} re-placed as ${orderNo} at ${limit} (ltp=${ltp})`);
     scheduleExitRecheck(next, { attempt: attempt + 1, unreadableStatusCount: 0, cancelFailureCount: 0 }, limit);
@@ -1032,10 +1036,11 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
                 quantity,
                 transactionType: 'SELL',
                 price: limitPrice,
+                product: existing?.product,
             });
             squareOffOrderNo = orderNo;
             // Tracked so the pending-order poller books the fill if this wait misses it - same as a bare limit sell.
-            placedExit = { orderId: orderNo, userId, tradingSymbol: tsym, instrumentId, quantity, exchange, action: 'Sell' };
+            placedExit = { orderId: orderNo, userId, tradingSymbol: tsym, instrumentId, quantity, exchange, action: 'Sell', product: existing?.product };
             placedLimit = limitPrice;
             trackPendingAntLimitOrder(placedExit);
         }
