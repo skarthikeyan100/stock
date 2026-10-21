@@ -25,12 +25,12 @@ import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
-import { buyIndexOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, cancelOrderOnZerodha, getContractByPriceRangeOnZerodha, enterShortOnZerodha, buyToCloseOnZerodha } from './order/zerodhaExecutor';
+import { buyIndexOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, placeLimitSellBareOnZerodha, cancelOrderOnZerodha, getContractByPriceRangeOnZerodha, enterShortOnZerodha, buyToCloseOnZerodha } from './order/zerodhaExecutor';
 import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingZerodhaOrdersForSymbol, onCancelled as onPendingZerodhaCancelled } from './order/pendingLimitOrders';
 import { pollPendingAntLimitOrders, loadPendingAntLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingAntOrdersForSymbol, onCancelled as onPendingAntCancelled } from './order/pendingAntLimitOrders';
 import { pollPendingPrismLimitOrders, loadPendingPrismLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingPrismOrdersForSymbol, onCancelled as onPendingPrismCancelled } from './order/pendingPrismLimitOrders';
 import * as antExecutor from './order/antExecutor';
-import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getMarketableBreezeBuyPrice, tsymFor, enterShortOnBreeze, buyToCloseOnBreeze } from './order/breezeExecutor';
+import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, placeLimitSellBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getMarketableBreezeBuyPrice, tsymFor, enterShortOnBreeze, buyToCloseOnBreeze } from './order/breezeExecutor';
 import { pollPendingBreezeLimitOrders, loadPendingBreezeLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, onCancelled as onPendingBreezeCancelled } from './order/breezePendingLimitOrders';
 import { buyChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
@@ -163,12 +163,59 @@ async function connectBreezeOrderNotifyIfSessionValid(context: string): Promise<
 // no headroom (or the computed quantity would be 0 for some other reason),
 // so callers can respond with ok:false instead of placing a zero-quantity
 // order.
-function resolveChunkedBuyQuantity(req: OrderRequest, pricePerUnit: number, tsym: string): { quantity: number; error?: undefined } | { quantity?: undefined; error: string } {
+// Which broker a given request's canPlaceOrder/markPending/releasePending
+// reservation should be scoped to - maxInvestment is now checked per (user,
+// broker), not pooled across every broker a multi-broker strategy
+// pseudo-user trades under (see bookkeeping.canPlaceOrder's own comment).
+// Matches each request type's own actual broker dispatch: the explicit-
+// broker families (antXxx, breezeBuyIndex, buyContract/prism) always trade
+// that one broker regardless of the user's configured default, so they're
+// hardcoded here rather than resolved from bookkeeping.getUserBroker, which
+// would give the wrong answer for a user whose default broker setting
+// differs from the broker this specific request type always uses.
+// chunkedBuyIndex/butterflyBuyLeg/butterflySellToOpen already carry an
+// explicit `broker` field in their payload (multi-broker-per-user support -
+// see orderProtocol.ts's own comments on those types) - use it when present.
+// Every other (single-implicit-broker-per-user) type falls back to
+// bookkeeping.getUserBroker(userId), identical to how its own handler
+// resolves which broker to actually call.
+function resolveRequestBroker(req: OrderRequest): string {
+    switch (req.type) {
+        case 'antBuyIndex':
+        case 'antManualBuy':
+        case 'antPlaceCoverOrder':
+        case 'antBuyTargetOnly':
+        case 'antBuyContractBare':
+            return 'ant';
+        case 'breezeBuyIndex':
+            return 'breeze';
+        case 'buyContract':
+            return 'prism';
+        case 'chunkedBuyIndex':
+        case 'butterflyBuyLeg':
+        case 'butterflySellToOpen':
+            return req.payload?.broker ?? bookkeeping.getUserBroker(req.userId);
+        default:
+            return bookkeeping.getUserBroker(req.userId);
+    }
+}
+
+// `knownLotSize` is the contract's own lot size as resolved by that broker's contract master
+// (AntContractMaster/ZerodhaContractMaster/BreezeContractMaster all already carry it on the
+// resolved contract) - preferred over bookkeeping.getInstrumentLotSize(tsym), which only
+// recognizes BANKNIFTY/FINNIFTY by name and silently falls back to 65 (NIFTY's lot size) for
+// everything else, including SENSEX (actual lot size 20). That mismatch sized a real SENSEX
+// order at 325 (5 x 65) instead of a multiple of 20 and got REJECTED at the broker (live
+// 2026-10-21, BulkPcr-SENSEX's 11:05 slot, quantity=-1) - PrismContractMaster.findATMOption
+// doesn't return a lot size today, so its caller omits knownLotSize and this still falls back
+// to the guess for that one broker.
+function resolveChunkedBuyQuantity(req: OrderRequest, pricePerUnit: number, tsym: string, knownLotSize?: number): { quantity: number; error?: undefined } | { quantity?: undefined; error: string } {
     if (req.payload.quantity !== -1) return { quantity: req.payload.quantity };
-    const lotSize = bookkeeping.getInstrumentLotSize(tsym);
-    const quantity = bookkeeping.resolveMaxInvestmentQuantity(req.userId, pricePerUnit, lotSize);
+    const broker = resolveRequestBroker(req);
+    const lotSize = knownLotSize && knownLotSize > 0 ? knownLotSize : bookkeeping.getInstrumentLotSize(tsym);
+    const quantity = bookkeeping.resolveMaxInvestmentQuantity(req.userId, pricePerUnit, lotSize, broker);
     if (quantity <= 0) {
-        return { error: `chunkedBuyIndex: quantity=-1 but no available investment headroom to size an order from (maxInvestment=${bookkeeping.getUserMaxInvestment(req.userId)}, current=${bookkeeping.getCurrentInvestment(req.userId)}, price=${pricePerUnit})` };
+        return { error: `chunkedBuyIndex: quantity=-1 but no available investment headroom to size an order from (broker=${broker}, maxInvestment=${bookkeeping.getUserMaxInvestment(req.userId)}, current=${bookkeeping.getCurrentInvestment(req.userId, broker)}, price=${pricePerUnit})` };
     }
     return { quantity };
 }
@@ -187,16 +234,17 @@ async function placeOrderWithPendingGuard(
     // bookkeeping.trades, reopening the exact doubled-quantity failure mode
     // the reconcileInFlight mechanism exists to close.
     if (reconcileInFlight) await reconcileInFlight;
-    const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedOrderValue);
+    const broker = resolveRequestBroker(req);
+    const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedOrderValue, broker);
     if (!validation.allowed) {
         return { kind: 'response', id: req.id, ok: false, error: validation.reason };
     }
-    bookkeeping.markPending(req.userId, estimatedOrderValue);
+    bookkeeping.markPending(req.userId, estimatedOrderValue, broker);
     try {
         const result = await place();
         return { kind: 'response', id: req.id, ok: true, result };
     } catch (e) {
-        bookkeeping.releasePending(req.userId);
+        bookkeeping.releasePending(req.userId, broker);
         throw e;
     }
 }
@@ -500,7 +548,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     }
                     const contract = await BreezeContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
                     const buyPrice = await getMarketableBreezeBuyPrice(contract);
-                    const resolvedQty = resolveChunkedBuyQuantity(req, buyPrice, tsymFor(contract));
+                    const resolvedQty = resolveChunkedBuyQuantity(req, buyPrice, tsymFor(contract), contract.lotSize);
                     if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
                     const quantity = resolvedQty.quantity;
                     const estimatedOrderValue = quantity * buyPrice;
@@ -545,7 +593,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
                     const atmStrike = Math.round(niftyLtp / step) * step;
                     const estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
-                    const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol);
+                    const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol, contract.lotSize);
                     if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
                     const quantity = resolvedQty.quantity;
                     const estimatedOrderValue = quantity * estimatedPrice;
@@ -581,7 +629,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
                     const atmStrike = Math.round(niftyLtp / step) * step;
                     const estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
-                    const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol);
+                    const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol, Number(contract.lotSize));
                     if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
                     const quantity = resolvedQty.quantity;
                     const estimatedOrderValue = quantity * estimatedPrice;
@@ -683,6 +731,21 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
+            case 'getPendingSells': {
+                // Broker-uniform: dispatch to whichever tracker owns this broker's pending
+                // orders, filter to SELL generically here (not per-tracker) since all four
+                // trackers already share the same {quantity, action, ...} shape.
+                const findFns: Record<string, (userId: string, tsym: string) => { quantity: number; action: 'Buy' | 'Sell' }[]> = {
+                    ant: findPendingAntOrdersForSymbol,
+                    zerodha: findPendingZerodhaOrdersForSymbol,
+                    breeze: findPendingBreezeOrdersForSymbol,
+                    prism: findPendingPrismOrdersForSymbol,
+                };
+                const find = findFns[req.payload.broker];
+                const result = find ? find(req.userId, req.payload.tradingSymbol).filter((o) => o.action === 'Sell') : [];
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
             case 'antManualBuy': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return placeOrderWithPendingGuard(req, estimatedValue, () =>
@@ -742,6 +805,23 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'antPlaceLimitSellBare': {
                 const { tradingSymbol, instrumentId, quantity, price, exchange } = req.payload;
                 const result = await antExecutor.placeLimitSellBareOnAnt(req.userId, tradingSymbol, instrumentId, quantity, price, exchange);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            // Broker-parameterized counterpart of 'antPlaceLimitSellBare' - used by
+            // TopStockOptionsOpeningGapStrategy's zerodha/breeze legs, which (unlike
+            // ant's antBuyTargetOnly) have no broker-side target computation, so the
+            // strategy itself sizes the target and places its own resting sell here.
+            // Mechanically identical to each broker's existing bare limit-sell
+            // primitive (already used by brokerExecutors.ts's squareOffLimit) - just
+            // dispatched by an explicit `broker` field instead of a per-user default.
+            case 'brokerPlaceLimitSellBare': {
+                const { broker, tradingSymbol, instrumentToken, quantity, price, exchange } = req.payload;
+                let result: { orderId: string };
+                if (broker === 'zerodha') result = await placeLimitSellBareOnZerodha(req.userId, tradingSymbol, instrumentToken, quantity, price, exchange);
+                else if (broker === 'breeze') result = await placeLimitSellBareOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, price, exchange);
+                else if (broker === 'ant') result = await antExecutor.placeLimitSellBareOnAnt(req.userId, tradingSymbol, instrumentToken, quantity, price, exchange);
+                else throw new Error(`brokerPlaceLimitSellBare: unsupported broker ${broker}`);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 

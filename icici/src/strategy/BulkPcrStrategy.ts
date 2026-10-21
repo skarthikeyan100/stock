@@ -66,6 +66,20 @@ function slotKey(broker: BrokerName, right?: string): string {
     return broker === 'ant' && right ? `ant_${right}` : broker;
 }
 
+// Derives CALL/PUT from an ANT tradingSymbol - ANT uses TWO different conventions
+// depending on index, confirmed live 2026-10-21: NIFTY embeds the option-type letter
+// right before the strike with nothing after it (e.g. 'NIFTY27OCT26C23000',
+// 'NIFTY27OCT26P22950' - ends in digits, not a letter), while SENSEX/BFO uses a
+// genuine trailing 'CE'/'PE' suffix after the strike (e.g. 'SENSEX26O2274300PE' -
+// ends in letters). A plain `endsWith('PE')` (this file's own pre-existing
+// legacy-migration check, and this fix's first draft) only matches the SENSEX
+// convention and silently never matches a NIFTY put, always falling through to
+// CALL. Stripping any trailing digit run first normalizes both conventions to the
+// same shape ('...C'/'...P' or unchanged '...CE'/'...PE'), so one regex covers both.
+function tsymRight(tsym: string): string {
+    return /PE?$/.test(String(tsym).replace(/\d+$/, '')) ? PUT : CALL;
+}
+
 // True only for a buy failure that provably filled nothing - safe to retry. Ambiguous outcomes
 // ("fill status unresolved") and partial fills are never retried.
 function isNothingBought(e: any): boolean {
@@ -929,6 +943,20 @@ export default class BulkPcrStrategy extends Strategy {
     // broker can be resting fine while a different broker sits in 'error'
     // needing manual review, or a third was never even attempted yet.
     // Mirrors ContinuousStrategy.reconcile()'s retry shape.
+    //
+    // KNOWN RACE (live 2026-10-21, ToDo.md): this is only as good as getOpenTradesOnce's
+    // first successful response. If the `order` process's own IPC socket is already
+    // accepting connections but its startup broker-position restore
+    // (loadOpenTradesFromBroker/restoreOpenTradesForTsym) hasn't finished populating
+    // bookkeeping.trades yet, getOpenTrades() succeeds (no retry triggered - the call
+    // itself doesn't error) and simply returns an empty/incomplete list. A real open
+    // position with no persisted state can then be missed entirely, anyRestored stays
+    // false, this.phase stays 'idle', and the ordinary fresh-entry gate opens instead -
+    // exactly what happened live when both `order` and `strategies` were restarted
+    // together. Restarting only `strategies` while `order` is already warm (its own
+    // restore long finished) avoids this; restarting both at once does not. Not fixed
+    // here - needs either a readiness handshake from `order` or retrying
+    // getOpenTradesOnce() when it returns suspiciously empty, not just when it throws.
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
         const persisted = await this.loadState();
         const brokers = this.configuredBrokers();
@@ -973,7 +1001,7 @@ export default class BulkPcrStrategy extends Strategy {
         delete persistedPositions['ant'];
         if (legacyAnt && legacyAnt.phase !== 'done') {
             if (legacyAnt.phase === 'selling' && legacyAnt.heldTsym) {
-                const right = String(legacyAnt.heldTsym).endsWith('PE') ? PUT : CALL;
+                const right = tsymRight(legacyAnt.heldTsym);
                 persistedPositions[slotKey('ant', right)] = { ...legacyAnt, broker: 'ant', right, entryQuantity: legacyAnt.targetQuantity };
             } else {
                 persistedPositions['ant_legacy'] = { ...legacyAnt, broker: 'ant', phase: 'error' };
@@ -990,23 +1018,17 @@ export default class BulkPcrStrategy extends Strategy {
             const broker: BrokerName = key.startsWith('ant') ? 'ant' : (key as BrokerName);
             const persistedPos = persistedPositions[key];
 
-            if (broker === 'ant') {
-                // An ANT slot is only restored from its own persisted state - nothing is attributed
-                // by broker name alone, since both sides can be open at once.
-                if (!persistedPos) continue;
-                if (persistedPos.phase === 'done' || persistedPos.phase === 'pending') {
-                    this.positions.set(key, { ...persistedPos });
-                    anyRestored = true;
-                    continue;
-                }
-                if (persistedPos.phase !== 'selling') {
-                    // Caught mid-buy (fill unknown - no tsym to reconcile against) or a legacy state: fail closed.
-                    this.positions.set(key, { ...persistedPos, phase: 'error' });
-                    anyRestored = true;
-                    this.persistState();
-                    Log.log(`[BulkPcrStrategy] [ant] reconcile: ${key} was '${persistedPos.phase}' at shutdown - manual review required, NOT auto-placing anything`);
-                    continue;
-                }
+            // Which side (CALL/PUT) this key represents, if any - derived from the key's own
+            // structure (see slotKey() above), not from the broker's name. Only ant currently
+            // builds two-sided keys (ant_call/ant_put), but every branch below is driven by
+            // this value instead of a broker-name check, so the logic is identical for every
+            // broker; a future two-sided broker would need no changes here.
+            const keyRight = key !== broker ? (key === slotKey(broker, PUT) ? PUT : CALL) : undefined;
+
+            if (persistedPos && (persistedPos.phase === 'done' || persistedPos.phase === 'pending')) {
+                this.positions.set(key, { ...persistedPos });
+                anyRestored = true;
+                continue;
             }
 
             if (persistedPos?.phase === 'selling') {
@@ -1110,25 +1132,72 @@ export default class BulkPcrStrategy extends Strategy {
                 continue;
             }
 
-            if (persistedPos?.phase === 'error') {
-                // Last run failed for this broker - either a partial buy or a
-                // partial/failed exit placement. Either way, getOpenTrades
-                // below can't tell "clean buy done, exit never attempted"
-                // apart from "exit partially placed then failed" - blindly
-                // calling placeExitSell here could place a SECOND
-                // full-quantity resting sell on top of chunks already resting
-                // from the failed attempt, risking an oversell if both fill.
-                // Stay in 'error' for this broker and require the manual
-                // review the original failure already called for.
-                this.positions.set(key, { ...persistedPos });
+            if (persistedPos) {
+                // Any persisted phase reaching here is neither 'done'/'pending' nor
+                // 'selling' (both handled above, and 'selling' always continues) - so
+                // it's 'buying' (caught mid-buy, fill unknown - no tsym to reconcile
+                // against), an already-'error' slot from a prior run, or a legacy shape.
+                // getOpenTrades below can't tell "clean buy done, exit never attempted"
+                // apart from "exit partially placed then failed" - blindly calling
+                // placeExitSell here could place a SECOND resting sell on top of chunks
+                // already resting from a failed attempt, an oversell if both fill. Fail
+                // closed for every broker: stay in/move to 'error' and require the
+                // manual review the original failure already called for. Skips the
+                // redundant persistState() write if it was already 'error' - no actual
+                // state change to record.
+                //
+                // EXCEPTION (live 2026-10-21): an 'error' slot that still has its tsym
+                // recorded is worth one broker-truth check before giving up on it - the
+                // exact incident that landed here was a duplicate-sell rejection on top
+                // of a sell that was ALREADY resting and fine; the position itself was
+                // never actually broken. Reusing the same getPendingSells check the
+                // fresh-no-persisted-state fallback below already uses for this reason.
+                if (persistedPos.phase === 'error' && persistedPos.heldTsym) {
+                    const pendingSells = await OrderClient.getInstance()
+                        .getPendingSells(this.userId, broker, persistedPos.heldTsym)
+                        .catch(() => [] as { quantity: number }[]);
+                    const alreadyResting = pendingSells.reduce((sum, o) => sum + o.quantity, 0);
+                    if (alreadyResting > 0) {
+                        const pos: BrokerPosition = {
+                            ...persistedPos,
+                            phase: 'selling',
+                            targetQuantity: alreadyResting,
+                            soldQty: 0,
+                            soldValue: 0,
+                            sellPlacedAt: Date.now(),
+                            // Reset the rejection streak - onOrderCancelled only guards on
+                            // phase !== 'selling' (line ~887), so leaving the old count/
+                            // timestamp in place would let the very next rejection
+                            // immediately re-trip MAX_EXIT_REJECT_RETRIES and bounce
+                            // straight back to 'error'.
+                            exitRejectCount: 0,
+                            exitLastRejectAt: undefined,
+                        };
+                        this.positions.set(key, pos);
+                        anyRestored = true;
+                        this.persistState();
+                        // Same reason placeExitSellAtTargetPrice/the alreadyResting fallback
+                        // below call this - ticks must reach processOptionQuote or the
+                        // opposite-side hedge trigger can never evaluate.
+                        if (broker === 'ant' && pos.heldToken) {
+                            watchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
+                        }
+                        Log.log(`[BulkPcrStrategy] [${broker}] reconcile: ${key} was 'error' but a resting exit sell for ${persistedPos.heldTsym} (qty=${alreadyResting}) is still confirmed at the broker - resuming fill watch instead of manual review`);
+                        continue;
+                    }
+                }
+                const alreadyError = persistedPos.phase === 'error';
+                this.positions.set(key, { ...persistedPos, phase: 'error' });
                 anyRestored = true;
-                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: last run ended in 'error' for ${persistedPos.heldTsym} - manual review required, NOT auto-placing an exit`);
+                if (!alreadyError) this.persistState();
+                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: ${key} was '${persistedPos.phase}' at shutdown - manual review required, NOT auto-placing anything`);
                 continue;
             }
 
-            // Reached only when persisted state for this broker was neither
-            // 'selling' nor 'error' - check the live broker for an open
-            // position a crash left with a genuinely never-attempted exit.
+            // Reached only when there's no persisted record at all for this key (every
+            // persisted phase - done/pending/selling/anything else - was handled and
+            // `continue`d above) - check the live broker/Mongo truth for a position a
+            // crash left with a genuinely never-attempted exit.
             const openTrades = await getOpenTradesOnce();
             if (!openTrades) {
                 Log.log(`[BulkPcrStrategy] [${broker}] reconcile: order query exhausted retries - failing closed`);
@@ -1137,13 +1206,18 @@ export default class BulkPcrStrategy extends Strategy {
                 continue;
             }
 
-            // getOpenTrades(userId) returns one entry per broker this user
-            // holds a position on (bookkeeping.trades is keyed by (tsym,
-            // user, broker)) - filter to this broker specifically rather
-            // than assuming a single entry describes the whole position, as
-            // was safe in the single-broker world.
-            const brokerTrade = openTrades.find((t: any) => t.broker === broker);
-            if (!brokerTrade) continue; // nothing open for this broker - stays untracked
+            // getOpenTrades(userId) returns one entry per broker this user holds a
+            // position on - except when this key represents one side of a two-sided
+            // broker, where the other side can independently also be open under the
+            // SAME broker name at once (ant's actual incident 2026-10-21: both legs
+            // naked simultaneously). tsymRight() - the only reliable per-side signal,
+            // since a buy Trade never sets `right` (see antExecutor.ts) - disambiguates
+            // which of the two this key should claim. For a single-sided broker,
+            // keyRight is undefined and this reduces to the original broker-only match.
+            const brokerTrade = openTrades.find((t: any) =>
+                t.broker === broker && (keyRight == null || tsymRight(t.tsym) === keyRight)
+            );
+            if (!brokerTrade) continue; // nothing open for this broker/side - stays untracked
 
             anyRestored = true;
             this.positions.set(key, {
@@ -1155,7 +1229,46 @@ export default class BulkPcrStrategy extends Strategy {
                 targetQuantity: 0,
                 soldQty: 0,
                 soldValue: 0,
+                // Only meaningful for a key that represents a side - right/entryQuantity
+                // are never read for a single-sided broker slot (every reference to
+                // pos.right/pos.entryQuantity in this file is inside ant-only rebuy/
+                // opposite-side logic). entryQuantity must be the real open quantity so
+                // a later +2 fill correctly triggers a rebuy (buyAndExit's guard
+                // requires entryQuantity > 0).
+                ...(keyRight != null ? { right: keyRight, entryQuantity: brokerTrade.quantity } : {}),
             });
+
+            // Before placing a brand-new exit sell, check whether one already survived
+            // from before whatever crash left this key with no persisted state (live
+            // 2026-10-21: placeExitSellAtTargetPrice had run successfully once, earlier,
+            // before the restart that triggered this whole reconcile path - the resting
+            // sell it placed was still live at the broker). Placing a second sell on top
+            // of it would oversell (offer more than brokerTrade.quantity against what's
+            // actually held), which the broker reads as a naked short needing full margin
+            // for the excess - this is what actually caused that incident's "Margin
+            // Shortfall" rejection, not a broker netting bug. Broker-uniform (same check,
+            // same shape, for every broker - degrades to "nothing pending" and the normal
+            // placeExitSell path for a broker with no survivor).
+            const pendingSells = await OrderClient.getInstance().getPendingSells(this.userId, broker, brokerTrade.tsym).catch(() => [] as { quantity: number }[]);
+            const alreadyResting = pendingSells.reduce((sum, o) => sum + o.quantity, 0);
+            if (alreadyResting > 0) {
+                const pos = this.positions.get(key)!;
+                pos.phase = 'selling';
+                pos.targetQuantity = alreadyResting;
+                pos.soldQty = 0;
+                pos.soldValue = 0;
+                pos.sellPlacedAt = Date.now();
+                this.persistState();
+                // Same reason placeExitSellAtTargetPrice does this on its own success
+                // path - ticks must reach processOptionQuote regardless of which path
+                // confirmed the exit is in place, or the opposite-side hedge trigger can
+                // never evaluate even once price has already moved past slDistance.
+                if (broker === 'ant' && pos.heldToken) {
+                    watchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
+                }
+                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: found an already-resting exit sell for ${brokerTrade.tsym} (qty=${alreadyResting}) - resuming fill watch instead of placing a duplicate`);
+                continue;
+            }
 
             if (isPastMarketClose()) {
                 // Same reasoning as the persisted 'selling' branch above: a

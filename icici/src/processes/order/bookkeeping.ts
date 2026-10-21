@@ -71,6 +71,12 @@ interface PendingOrder {
                              // (buyIndex/antBuyIndex) - those get lot-limit
                              // protection while pending but not investment-
                              // limit protection
+    broker?: string;        // which broker this reservation is for - lets
+                             // releasePending/pendingValue scope to the same
+                             // (user, broker) pair maxInvestment now gates on
+                             // (see canPlaceOrder's own comment); undefined
+                             // for a caller that never resolved one (treated
+                             // as "any broker" by the broker-scoped filters)
 }
 
 // Bound on any Mongo call the fill path awaits. A hung socket must not stall
@@ -236,9 +242,16 @@ class OrderBookkeeping {
         };
     }
 
+    // Fallback only - callers that already resolved a contract from a broker's own contract
+    // master (AntContractMaster/ZerodhaContractMaster/BreezeContractMaster) should pass that
+    // contract's own lotSize instead (see orderProcess.ts's resolveChunkedBuyQuantity), since
+    // this name-based guess doesn't recognize every index and a wrong guess sizes an order to
+    // a quantity the broker rejects as not a multiple of the real lot size (live 2026-10-21,
+    // SENSEX sized against this 65 default instead of its real 20).
     getInstrumentLotSize(tsym: string): number {
         if (tsym.startsWith('BANKNIFTY')) return 15;
         if (tsym.startsWith('FINNIFTY')) return 25;
+        if (tsym.startsWith('SENSEX')) return 20;
         return 65;
     }
 
@@ -263,32 +276,31 @@ class OrderBookkeeping {
     // mirrors resolveManualBuyQuantity's lot-sizing-from-available-capital
     // math above, but driven by maxInvestment/getCurrentInvestment (the cap
     // BulkPcrStrategy-style pseudo-users actually use - see canPlaceOrder's
-    // 'BulkPcrStrategy' branch) rather than investmentAmount/availableAmount,
-    // which only real per-user accounts have configured. Nets out
-    // pendingValue() too (not just confirmed trades), same as canPlaceOrder's
-    // own check, so a second broker's chunkedBuyIndex call that happens to
-    // run its own price-fetch after the first one's markPending has already
-    // landed sees reduced headroom instead of recomputing against the full,
-    // not-yet-debited cap. This narrows but does NOT close the race for
-    // config.yml's multi-broker case (BulkPcrStrategy.enterOnBroker fires
-    // every configured broker's chunkedBuyIndex concurrently via
-    // Promise.allSettled) - two brokers whose own async price-fetches
-    // (antExecutor.estimateOptionPrice / getMarketableBreezeBuyPrice) are
-    // both in flight before either reaches markPending can still each
-    // compute against the same full, undebited headroom and together
-    // request up to ~2x maxInvestment; canPlaceOrder's post-hoc ratchet
-    // check only blocks a THIRD broker's order once pending+current has
-    // already reached the cap, it does not shrink an in-flight one. Safe
-    // today because config.yml's `brokers` list for BulkPcrStrategy /
-    // BulkPcrAutoStartStrategy has exactly one entry (ant) - revisit this if
-    // quantity: -1 is ever combined with 2+ configured brokers.
+    // own comment) rather than investmentAmount/availableAmount, which only
+    // real per-user accounts have configured. Nets out pendingValue() too
+    // (not just confirmed trades), same as canPlaceOrder's own check.
+    //
+    // `broker` scopes getCurrentInvestment/pendingValue to that broker only -
+    // maxInvestment is checked per (user, broker), not per user alone (see
+    // canPlaceOrder's comment), so two configured brokers for the same
+    // strategy pseudo-user (BulkPcrStrategy.enterOnBroker fires every
+    // configured broker concurrently via Promise.allSettled) each size
+    // against their OWN headroom instead of racing a single shared pool -
+    // this closes the "together request up to ~2x maxInvestment" gap this
+    // comment used to describe for the multi-broker case. A narrower race
+    // remains WITHIN one broker: two concurrent chunkedBuyIndex calls for the
+    // same (user, broker) whose own async price-fetches are both in flight
+    // before either reaches markPending can still each compute against the
+    // same full, undebited per-broker headroom - canPlaceOrder's post-hoc
+    // ratchet check only blocks a THIRD such call once pending+current has
+    // already reached that broker's cap, it does not shrink an in-flight one.
     // Returns 0 (never negative, never a fraction of a lot) when there's no
     // headroom left or the price/lotSize inputs are non-positive, so callers
     // can treat 0 as "nothing to buy" uniformly instead of special-casing
     // negative/NaN.
-    resolveMaxInvestmentQuantity(user: string, pricePerUnit: number, lotSize: number): number {
+    resolveMaxInvestmentQuantity(user: string, pricePerUnit: number, lotSize: number, broker?: string): number {
         if (!(pricePerUnit > 0) || !(lotSize > 0)) return 0;
-        const available = this.getUserMaxInvestment(user) - this.getCurrentInvestment(user) - this.pendingValue(user);
+        const available = this.getUserMaxInvestment(user) - this.getCurrentInvestment(user, broker) - this.pendingValue(user, broker);
         if (available <= 0) return 0;
         const lots = Math.floor(available / (pricePerUnit * lotSize));
         return lots * lotSize;
@@ -308,12 +320,19 @@ class OrderBookkeeping {
         return this.trades.filter((t) => t.user === user);
     }
 
-    getCurrentInvestment(user: string): number {
-        return this.trades.filter((t) => t.user === user).reduce((sum, t) => sum + t.price * t.quantity, 0);
+    // `broker` scopes the sum to this user's trades on that broker only - see
+    // canPlaceOrder's own comment for why maxInvestment is now checked per
+    // (user, broker). Omitted, sums across every broker (the original,
+    // user-wide behavior still used by callers - e.g. getUserContext - that
+    // intentionally want the whole-user total).
+    getCurrentInvestment(user: string, broker?: string): number {
+        return this.trades
+            .filter((t) => t.user === user && (broker === undefined || t.broker === broker))
+            .reduce((sum, t) => sum + t.price * t.quantity, 0);
     }
 
-    isInvestmentLimitReached(user: string): boolean {
-        return this.getCurrentInvestment(user) >= this.getUserMaxInvestment(user);
+    isInvestmentLimitReached(user: string, broker?: string): boolean {
+        return this.getCurrentInvestment(user, broker) >= this.getUserMaxInvestment(user);
     }
 
     // Called by orderProcess.ts immediately after canPlaceOrder() returns
@@ -325,21 +344,33 @@ class OrderBookkeeping {
     // either from the fill path (_processTradeEvent, already wired) or from
     // orderProcess.ts's failure path (placeOrderWithPendingGuard) - or the
     // reservation leaks and this user is blocked until the next fill.
-    markPending(user: string, estimatedOrderValue?: number): void {
+    markPending(user: string, estimatedOrderValue?: number, broker?: string): void {
         const list = this.pendingOrders.get(user) ?? [];
-        list.push({ estimatedLots: 1, estimatedValue: estimatedOrderValue ?? 0 });
+        list.push({ estimatedLots: 1, estimatedValue: estimatedOrderValue ?? 0, broker });
         this.pendingOrders.set(user, list);
     }
 
-    // Releases exactly one pending reservation for `user` (oldest first) -
-    // never all of them - so releasing/resolving one in-flight order can't
-    // silently drop a different, still-in-flight order's reservation for the
-    // same user. Safe to call when nothing is pending (no-op), so both the
-    // fill path and orderProcess's failure path can call it unconditionally.
-    releasePending(user: string): void {
+    // Releases exactly one pending reservation for `user` - never all of them -
+    // so releasing/resolving one in-flight order can't silently drop a
+    // different, still-in-flight order's reservation for the same user. Safe
+    // to call when nothing is pending (no-op), so both the fill path and
+    // orderProcess's failure path can call it unconditionally.
+    //
+    // When `broker` is given, releases the oldest reservation tagged with
+    // THAT broker, not just the oldest overall - a plain user-wide FIFO would
+    // otherwise sometimes release a different broker's reservation (e.g. two
+    // concurrent legs for the same strategy pseudo-user on zerodha and
+    // breeze), permanently leaking the broker whose own order this call is
+    // actually for while wrongly freeing up headroom for the other. Falls
+    // back to the oldest entry overall if no entry tagged with this broker is
+    // found (e.g. broker omitted, or every pending caller for this user left
+    // it undefined) - matches the old plain-FIFO behavior for single-broker
+    // users.
+    releasePending(user: string, broker?: string): void {
         const list = this.pendingOrders.get(user);
         if (!list || list.length === 0) return;
-        list.shift();
+        const idx = broker !== undefined ? list.findIndex((p) => p.broker === broker) : 0;
+        list.splice(idx === -1 ? 0 : idx, 1);
         if (list.length === 0) this.pendingOrders.delete(user);
     }
 
@@ -347,8 +378,16 @@ class OrderBookkeeping {
         return (this.pendingOrders.get(user) ?? []).reduce((sum, p) => sum + p.estimatedLots, 0);
     }
 
-    private pendingValue(user: string): number {
-        return (this.pendingOrders.get(user) ?? []).reduce((sum, p) => sum + p.estimatedValue, 0);
+    // `broker` scopes the sum to reservations tagged with that broker only -
+    // see canPlaceOrder's own comment on why maxInvestment is now checked per
+    // (user, broker), not per user alone. Omitted (undefined), it sums every
+    // pending reservation for this user regardless of broker - the original,
+    // user-wide behavior still used by callers that don't need per-broker
+    // scoping.
+    private pendingValue(user: string, broker?: string): number {
+        return (this.pendingOrders.get(user) ?? [])
+            .filter((p) => broker === undefined || p.broker === broker)
+            .reduce((sum, p) => sum + p.estimatedValue, 0);
     }
 
     private static startOfDay(): Date {
@@ -489,7 +528,36 @@ class OrderBookkeeping {
     // estimatedOrderValue is necessarily approximate for index-based buys
     // (niftyLtp * quantity - the real option premium isn't known until
     // contract selection) but exact for buyContract's price * quantity.
-    async canPlaceOrder(user: string, estimatedOrderValue?: number): Promise<{ allowed: boolean; reason?: string }> {
+    // Strategy TYPES (not literal userId strings) that get the capital-only
+    // exemption below - resolved via config.yml's own `type` field, keyed by
+    // (userId || type), rather than a hardcoded userId literal. A literal
+    // check (`user === 'BulkPcrStrategy'`) silently stops matching the
+    // moment a second instance of that type is configured under its own
+    // `userId` (e.g. 'BulkPcr-NIFTY'/'BulkPcr-SENSEX') - exactly the
+    // type-vs-instance gap BulkPcrStrategy.cfg()/ButterflyStrategy.cfg()
+    // already guard against for their OWN config reads; this is the same
+    // mistake, just inside the shared risk gate instead of a strategy's own
+    // config lookup.
+    private static readonly CAPITAL_ONLY_EXEMPT_TYPES = ['ContinuousStrategy', 'BulkPcrStrategy', 'HourlyStrategy'];
+
+    private isCapitalOnlyExemptUser(user: string): boolean {
+        const cfg = configService.getConfig().strategies?.find((s) => (s.userId || s.type) === user);
+        return !!cfg && OrderBookkeeping.CAPITAL_ONLY_EXEMPT_TYPES.includes(cfg.type);
+    }
+
+    // `broker`, when given, scopes the maxInvestment check to this user's
+    // trades/pending reservations on THAT broker only, instead of pooling
+    // every broker a multi-broker strategy pseudo-user trades under one
+    // shared cap - e.g. TopStockOptionsOpeningGapStrategy/BulkPcrStrategy
+    // running the same userId across zerodha/breeze/ant, each with its own
+    // maxInvestment headroom rather than racing (and potentially starving
+    // each other out of) one pooled number. Every OTHER check here (lot
+    // limit, per-order cap, drawdown, daily trade count) stays user-wide -
+    // only capital usage is broker-scoped, since those others are either
+    // already no-ops for strategy pseudo-users (see this function's own
+    // exemption comment) or are deliberately meant to bound the user as a
+    // whole regardless of which broker a given leg happens to run on.
+    async canPlaceOrder(user: string, estimatedOrderValue?: number, broker?: string): Promise<{ allowed: boolean; reason?: string }> {
         // ContinuousStrategy manages its own risk (per-leg averaging/hedging,
         // its own allottedCapital gate in ContinuousStrategy.capitalCheck())
         // and was hitting the shared daily-trade-count limit on ordinary
@@ -509,13 +577,14 @@ class OrderBookkeeping {
         // strategy pseudo-user (see drawdownState's comment - they
         // never have investmentAmount configured).
         // HourlyStrategy gets the same exemption for the same reason - its own
-        // `quantity: -2` sentinel (translated to chunkedBuyIndex's -1 in
-        // HourlyStrategy.tryEnter) sizes off this same maxInvestment-only gate.
-        if (user === 'ContinuousStrategy' || user === 'BulkPcrStrategy' || user === 'HourlyStrategy') {
-            const currentInvestment = this.getCurrentInvestment(user) + this.pendingValue(user);
+        // `quantity: -1` config sentinel (same value BulkPcrStrategy uses, not
+        // a separate per-type magic number) sizes off this same
+        // maxInvestment-only gate.
+        if (this.isCapitalOnlyExemptUser(user)) {
+            const currentInvestment = this.getCurrentInvestment(user, broker) + this.pendingValue(user, broker);
             const maxInvestment = this.getUserMaxInvestment(user);
             if (currentInvestment >= maxInvestment) {
-                return { allowed: false, reason: `User '${user}' has reached max investment (${currentInvestment}/${maxInvestment}).` };
+                return { allowed: false, reason: `User '${user}'${broker ? ` (${broker})` : ''} has reached max investment (${currentInvestment}/${maxInvestment}).` };
             }
             return { allowed: true };
         }
@@ -524,10 +593,10 @@ class OrderBookkeeping {
         if (tradedLots >= lotLimit) {
             return { allowed: false, reason: `User '${user}' has reached the lot limit (${tradedLots}/${lotLimit} lots).` };
         }
-        const currentInvestment = this.getCurrentInvestment(user) + this.pendingValue(user);
+        const currentInvestment = this.getCurrentInvestment(user, broker) + this.pendingValue(user, broker);
         const maxInvestment = this.getUserMaxInvestment(user);
         if (currentInvestment >= maxInvestment) {
-            return { allowed: false, reason: `User '${user}' has reached max investment (${currentInvestment}/${maxInvestment}).` };
+            return { allowed: false, reason: `User '${user}'${broker ? ` (${broker})` : ''} has reached max investment (${currentInvestment}/${maxInvestment}).` };
         }
         const perOrderCap = this.getUserPerOrderCap(user);
         if (estimatedOrderValue !== undefined && perOrderCap !== undefined && estimatedOrderValue > perOrderCap) {
@@ -780,7 +849,7 @@ class OrderBookkeeping {
         });
 
         if (tradeEvent.action == 'Buy') {
-            this.releasePending(tradeEvent.user || 'Default');
+            this.releasePending(tradeEvent.user || 'Default', tradeEvent.broker);
             const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user && t.broker == tradeEvent.broker);
             if (index == -1) {
                 this.trades.push(tradeEvent);
@@ -931,8 +1000,21 @@ class OrderBookkeeping {
     // restores nothing and just logs a WARNING (restoreOpenTradesForTsym's
     // `restored.length === 0` branch), so broadening the candidate set here
     // doesn't let a genuinely foreign broker position back in.
+    // ANT uses TWO different tsym conventions depending on index, confirmed live
+    // 2026-10-21: SENSEX/BFO has a genuine trailing 'CE'/'PE' suffix after the strike
+    // (e.g. 'SENSEX26O2274300PE'), but NIFTY embeds the option-type letter right
+    // before the strike with nothing after it (e.g. 'NIFTY27OCT26C23000',
+    // '...P22950' - ends in digits, never 'CE'/'PE'). The old endsWith-only check
+    // silently excluded every NIFTY ANT option position from reconcileAntPositions,
+    // dropping them from bookkeeping.trades (and therefore every strategy's own
+    // reconcile()/getOpenTrades view) on every order-process restart - the real root
+    // cause of a live incident where a naked BulkPcr-NIFTY call was invisible to
+    // reconcile() no matter how long the order process had been warm, since this
+    // gate ran before any per-tsym Mongo lookup ever got a chance to run.
     private static isOptionContract(tsym: string | undefined): boolean {
-        return typeof tsym === 'string' && (tsym.endsWith('CE') || tsym.endsWith('PE'));
+        if (typeof tsym !== 'string') return false;
+        if (tsym.endsWith('CE') || tsym.endsWith('PE')) return true;
+        return /[CP]\d+$/.test(tsym);
     }
 
     private mergeRestored(restored: Trade[]): void {
@@ -978,21 +1060,25 @@ class OrderBookkeeping {
     // Caveat, not yet live-verified: ANT's getPositions() return shape is
     // untyped/`any` and hasn't been confirmed against a real response - same
     // caveat ToDo.md already carries for AntOrderNotifyStream's norenordno/
-    // flprc fields. The field names below (netQty/token/tradingSymbol/
-    // exchange) are a best guess from AliceBlue's v2 REST conventions, not
-    // observed - verify against a live response before trusting this in
-    // production. Called both at startup and reactively after a successful
-    // ANT login (see reconcileZerodhaPositions's comment for why).
+    // flprc fields. The field names below were confirmed live 2026-10-21 against a
+    // real GET /open-api/od/v1/positions response (ANT.getPositions()): quantity is
+    // `netQuantity`, the instrument token is `instrumentId` - NOT `netQty`/`netqty`/
+    // `token`, which was this function's previous never-observed guess and meant
+    // `Number(p.netQty ?? p.netqty ?? 0)` always fell through to the `?? 0` default,
+    // so this filter excluded every single ANT position regardless of quantity or
+    // symbol - reconcileAntPositions had never actually restored anything. Called
+    // both at startup and reactively after a successful ANT login (see
+    // reconcileZerodhaPositions's comment for why).
     async reconcileAntPositions(): Promise<void> {
         const restored: Trade[] = [];
         try {
             const positions = await ANT.getInstance().getPositions();
             const list = Array.isArray(positions) ? positions : [];
-            const open = list.filter((p: any) => Number(p.netQty ?? p.netqty ?? 0) !== 0 && OrderBookkeeping.isOptionContract(p.tradingSymbol ?? p.tsym ?? p.symbol));
+            const open = list.filter((p: any) => Number(p.netQuantity ?? 0) !== 0 && OrderBookkeeping.isOptionContract(p.tradingSymbol));
             for (const p of open) {
-                const tsym = p.tradingSymbol ?? p.tsym ?? p.symbol;
-                const qty = Number(p.netQty ?? p.netqty);
-                const token = p.token != null ? String(p.token) : undefined;
+                const tsym = p.tradingSymbol;
+                const qty = Number(p.netQuantity);
+                const token = p.instrumentId != null ? String(p.instrumentId) : undefined;
                 restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, token, 'ant')));
             }
         } catch (e) {

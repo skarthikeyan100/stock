@@ -63,6 +63,14 @@ export type OrderRequestType =
     // a caller-chosen price instead of squareOffChunked's immediate market/
     // current-bid exit (see chunkedOrder.ts's squareOffLimitChunked).
     | 'chunkedSquareOffLimit'
+    // Broker-uniform query of this app's own pending-order trackers (pendingAntLimitOrders.ts
+    // and its zerodha/breeze/prism siblings - all four share the same {quantity, action, ...}
+    // shape) for a given tsym, filtered to SELL orders only. Added for BulkPcrStrategy.reconcile()
+    // to check whether an exit sell already survived from before a crash (live 2026-10-21 -
+    // reconcile's no-persisted-state fallback was placing a brand-new sell on top of one still
+    // resting from before the incident, oversubscribing the sell quantity and triggering a
+    // broker margin-shortfall rejection, not a broker netting bug) before placing a duplicate.
+    | 'getPendingSells'
     // ANT-specific (not broker-generic like the 'Bare' family above, which
     // has no ant branch) - used by TopStockOptionsOpeningGapStrategy, which
     // runs in the separate `strategies` process and so cannot call
@@ -74,6 +82,12 @@ export type OrderRequestType =
     // 'antPlaceLimitSellBare' right after.
     | 'antBuyTargetOnly'
     | 'antPlaceLimitSellBare'
+    // Broker-parameterized counterpart of 'antPlaceLimitSellBare' - same
+    // plain resting-limit-sell-only shape, dispatched by an explicit
+    // `broker` field (zerodha/breeze/ant) instead of being ANT-only, so
+    // TopStockOptionsOpeningGapStrategy's zerodha/breeze legs can place
+    // their own target-only resting sell too.
+    | 'brokerPlaceLimitSellBare'
     // ANT bare ops for BulkPcrStrategy's hedge tree (LegManager via
     // antLegOps.ts) - see orderProcess.ts's case comments for why these are
     // ANT-specific rather than routed through the broker-generic 'Bare'

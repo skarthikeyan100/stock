@@ -330,6 +330,13 @@ class OrderClient {
         return res.result;
     }
 
+    // Broker-parameterized counterpart of antPlaceLimitSellBare - see orderProtocol.ts's comment.
+    async brokerPlaceLimitSellBare(userId: string, payload: { broker: 'zerodha' | 'breeze' | 'ant'; tradingSymbol: string; instrumentToken: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
+        const res = await this.request('brokerPlaceLimitSellBare', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
     // ANT bare ops for BulkPcrStrategy's hedge tree (antLegOps.ts) - see
     // orderProtocol.ts's comment.
     async antBuyContractBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
@@ -435,6 +442,14 @@ class OrderClient {
 
     async getOpenTrades(userId: string): Promise<any[]> {
         const res = await this.request('openTrades', userId, {});
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
+    // Broker-uniform query of this app's own pending-order trackers for a given tsym,
+    // filtered to SELL orders only (see orderProtocol.ts's 'getPendingSells' comment).
+    async getPendingSells(userId: string, broker: string, tradingSymbol: string): Promise<{ quantity: number }[]> {
+        const res = await this.request('getPendingSells', userId, { broker, tradingSymbol });
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
