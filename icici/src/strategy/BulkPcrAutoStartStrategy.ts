@@ -8,18 +8,36 @@ import configService from '../prism/ConfigService';
 import strategies from './strategies';
 import BulkPcrStrategy from './BulkPcrStrategy';
 
-// Scheduled auto-arm wrapper: at each configured HH:mm time, arms
-// BulkPcrStrategy (its own config.yml block - quantity/brokers below) iff
-// it isn't already mid-cycle, instead of requiring a human to notice it
-// finished and flip `enabled: true` back on by hand. Does not place any
-// orders itself - it only flips BulkPcrStrategy's config and enabled flag.
+// Scheduled auto-arm wrapper: at each configured HH:mm time, arms a
+// BulkPcrStrategy instance (its own config.yml block - quantity/brokers
+// below) iff it isn't already mid-cycle, instead of requiring a human to
+// notice it finished and flip `enabled: true` back on by hand. Does not
+// place any orders itself - it only flips the target BulkPcrStrategy's
+// config and enabled flag.
+//
+// Multi-instance (same shape as ButterflyStrategy's Butterfly-NIFTY/
+// Butterfly-SENSEX config.yml entries): config.yml can list several
+// `type: BulkPcrAutoStartStrategy` blocks under distinct `userId` values,
+// each targeting its OWN BulkPcrStrategy instance via `targetUserId` - e.g.
+// a `userId: BulkPcrAutoStart-NIFTY` instance with `targetUserId:
+// BulkPcr-NIFTY` running alongside a `userId: BulkPcrAutoStart-SENSEX`
+// instance with `targetUserId: BulkPcr-SENSEX`. `targetUserId` defaults to
+// the plain 'BulkPcrStrategy' type name for a single, unnamed instance
+// (today's existing single-instance setups keep working unchanged).
 //
 // Config (config.yml):
+//   userId: BulkPcrAutoStart-SENSEX     - optional; defaults to this type's
+//                                          own name for a single instance
+//   targetUserId: BulkPcr-SENSEX        - optional; which BulkPcrStrategy
+//                                          instance (its own `userId`) this
+//                                          one arms. Defaults to
+//                                          'BulkPcrStrategy'.
 //   times: ['10:35', '11:35', '12:35']  - HH:mm slots, each attempted at most
 //                                          once per day
-//   quantity: 1340                      - written onto BulkPcrStrategy's own
-//                                          config block when armed; -1 means
-//                                          "size from maxInvestment" (see
+//   quantity: 1340                      - written onto the target
+//                                          BulkPcrStrategy's own config
+//                                          block when armed; -1 means "size
+//                                          from maxInvestment" (see
 //                                          BulkPcrStrategy.ts's header comment)
 //   targetPoints: 2                     - same
 //   brokers: ['ant', 'prism']            - same
@@ -53,8 +71,26 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         }
     }
 
+    // Not configService.getStrategyConfig(type) - that returns only the FIRST
+    // config.yml entry of this type, regardless of userId. config.yml can
+    // configure multiple instances of this strategy (one per index) under
+    // distinct userId values (see this file's own header comment), and a
+    // second instance's cfg() must read ITS OWN block, not silently inherit
+    // whichever instance is listed first. Same (cfg.userId || type) ===
+    // userId convention BulkPcrStrategy.cfg()/ButterflyStrategy.cfg() already
+    // use for the identical type-vs-instance distinction.
     private cfg() {
-        return configService.getStrategyConfig('BulkPcrAutoStartStrategy');
+        return configService.getConfig().strategies?.find(
+            (s) => s.type === 'BulkPcrAutoStartStrategy' && (s.userId || s.type) === this.userId
+        ) ?? { type: 'BulkPcrAutoStartStrategy', enabled: false };
+    }
+
+    // Which BulkPcrStrategy instance (its own config.yml `userId`) this
+    // instance arms - defaults to the plain type name so a single, unnamed
+    // BulkPcrAutoStartStrategy/BulkPcrStrategy pair (today's existing setup)
+    // keeps working with no config change.
+    private targetUserId(): string {
+        return this.cfg().targetUserId ?? 'BulkPcrStrategy';
     }
 
     async processNiftyQuote(quote: NiftyQuote): Promise<void> {
@@ -74,7 +110,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
             this.firedToday.add(timeStr); // each configured slot fires at most once per day, whether it starts, skips, or is too late
 
             if (now.diff(slotTime, 'minutes') > LATE_WINDOW_MINUTES) {
-                Log.log(`[BulkPcrAutoStart] Missed ${timeStr} slot (now ${now.format('HH:mm:ss')}) - skipping`);
+                Log.log(`[BulkPcrAutoStart:${this.userId}] Missed ${timeStr} slot (now ${now.format('HH:mm:ss')}) - skipping`);
                 continue;
             }
 
@@ -84,7 +120,16 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
 
     // Slots already armed today, persisted so a process restart can't re-arm a slot that already ran
     // (live 2026-10-14: a restart at 11:39 re-armed the 11:35 slot and bought again).
-    private armedSlotsFile = path.join(__dirname, '../../.bulkpcr_armed_slots.json');
+    // Namespaced by this.userId - config.yml can configure multiple instances of this
+    // strategy (one per index, see this file's own header comment), and they must not
+    // share one armed-slots file: two instances using the same HH:mm slot (e.g. a NIFTY
+    // and a SENSEX instance both on '10:35') would otherwise collide in a shared file and
+    // each wrongly see the other's slot as "already attempted".
+    private armedSlotsFile = path.join(__dirname, `../../.bulkpcr_armed_slots.${this.safeFileToken(this.userId)}.json`);
+
+    private safeFileToken(s: string): string {
+        return s.replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
 
     private loadArmedSlots(): Set<string> {
         try {
@@ -104,7 +149,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
             fs.writeFileSync(this.armedSlotsFile, JSON.stringify(keep));
             return true;
         } catch (e: any) {
-            Log.log(`[BulkPcrAutoStart] ALERT: could not persist armed slot ${key} - NOT arming: ${e?.message ?? e}`);
+            Log.log(`[BulkPcrAutoStart:${this.userId}] ALERT: could not persist armed slot ${key} - NOT arming: ${e?.message ?? e}`);
             return false;
         }
     }
@@ -112,15 +157,16 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
     private async attemptStart(timeStr: string): Promise<void> {
         const slotKey = `${moment().format('YYYY-MM-DD')} ${timeStr}`;
         if (this.loadArmedSlots().has(slotKey)) {
-            Log.log(`[BulkPcrAutoStart] ${timeStr} slot already attempted earlier today - skipping (process restart does not re-attempt it)`);
+            Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot already attempted earlier today - skipping (process restart does not re-attempt it)`);
             return;
         }
         // Recorded on every attempt, including ones skipped below (still running, no target): a restart
         // inside the late window must not turn a skipped slot into a fresh arm.
         if (!this.recordArmedSlot(slotKey)) return;
-        const target = strategies.getByUserId('BulkPcrStrategy') as BulkPcrStrategy | undefined;
+        const targetUserId = this.targetUserId();
+        const target = strategies.getByUserId(targetUserId) as BulkPcrStrategy | undefined;
         if (!target) {
-            Log.log('[BulkPcrAutoStart] BulkPcrStrategy instance not found - is it present (even if disabled) in config.yml?');
+            Log.log(`[BulkPcrAutoStart:${this.userId}] BulkPcrStrategy instance '${targetUserId}' not found - is it present (even if disabled) in config.yml?`);
             return;
         }
 
@@ -135,9 +181,9 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
                 // on every slot until a human resolves it (same manual-
                 // review bar BulkPcrStrategy's own error-phase logging
                 // already requires) - this strategy does not auto-clear it.
-                Log.log(`[BulkPcrAutoStart] ${timeStr} slot: BulkPcrStrategy STUCK in a broker error state - manual review and reset() required before any further slot can arm. Skipping.`);
+                Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: '${targetUserId}' STUCK in a broker error state - manual review and reset() required before any further slot can arm. Skipping.`);
             } else {
-                Log.log(`[BulkPcrAutoStart] ${timeStr} slot: BulkPcrStrategy already running - skipping`);
+                Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: '${targetUserId}' already running - skipping`);
             }
             return;
         }
@@ -145,10 +191,19 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         target.reset(); // clear any stale phase='done'/positions left over from a previous cycle so it can re-enter cleanly
 
         const cfg = this.cfg();
-        const bulkPcrCfg = configService.getStrategyConfig('BulkPcrStrategy');
+        // Not configService.getStrategyConfig(type) - see this.cfg()'s own comment above for
+        // why: config.yml can configure multiple BulkPcrStrategy instances under distinct
+        // userId values, and this must mutate ONLY the one this instance targets.
+        const bulkPcrCfg = configService.getConfig().strategies?.find(
+            (s) => s.type === 'BulkPcrStrategy' && (s.userId || s.type) === targetUserId
+        );
+        if (!bulkPcrCfg) {
+            Log.log(`[BulkPcrAutoStart:${this.userId}] ALERT: '${targetUserId}' config.yml entry not found even though strategies.getByUserId resolved an instance - not arming.`);
+            return;
+        }
         bulkPcrCfg.quantity = cfg.quantity;
         bulkPcrCfg.targetPoints = cfg.targetPoints;
-        bulkPcrCfg.brokers = cfg.brokers;
+        bulkPcrCfg.brokers = Array.isArray(cfg.brokers) ? [...cfg.brokers] : cfg.brokers;
         // Unconditional, like every other field above - found on review: `if (cfg.index)` left a
         // previous slot's persisted `index: SENSEX` write in place for a later slot that omits
         // `index` (reverting to NIFTY), silently continuing to trade SENSEX under a NIFTY-intended
@@ -158,6 +213,6 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         configService.writeConfig(configService.getConfig());
         strategies.syncFromConfig();
 
-        Log.log(`[BulkPcrAutoStart] ${timeStr} slot: armed BulkPcrStrategy (quantity=${cfg.quantity}, targetPoints=${cfg.targetPoints}, brokers=${JSON.stringify(cfg.brokers)}, index=${bulkPcrCfg.index})`);
+        Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: armed '${targetUserId}' (quantity=${cfg.quantity}, targetPoints=${cfg.targetPoints}, brokers=${JSON.stringify(cfg.brokers)}, index=${bulkPcrCfg.index})`);
     }
 }

@@ -30,7 +30,7 @@ class ConfigService {
       settings: formatPercentFields(config.settings as any),
       strategies: (config.strategies || []).map(s => formatPercentFields(s)),
     } as AppConfig;
-    writeFileSync(this.configPath, dump(shaped), 'utf8');
+    writeFileSync(this.configPath, dump(shaped, { noRefs: true }), 'utf8');
   }
 
   public getConfig(): AppConfig {

@@ -1,6 +1,6 @@
 import Log from '../../util/Log';
 import Breeze from '../../breeze/Breeze';
-import BreezeContractMaster, { FnoRecord } from '../../breeze/BreezeContractMaster';
+import BreezeContractMaster, { FnoRecord, BreezeExchange, breezeShortNameFor, indexNameFor, strikeStepFor } from '../../breeze/BreezeContractMaster';
 import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
@@ -52,18 +52,48 @@ async function waitForBreezeFill(orderId: string, notifyTimeoutMs = 30000, restM
         return price;
     } catch (waitErr) {
         Log.log(`[order] waitForFill failed for Breeze order ${orderId} - falling back to REST fill check:`, waitErr);
-        const price = await Breeze.getInstance().getFillPrice('NFO', orderId, restMaxAttempts, restIntervalMs, cancelOnTimeout);
+        const price = await Breeze.getInstance().getFillPrice(exchangeOfOrder(orderId), orderId, restMaxAttempts, restIntervalMs, cancelOnTimeout);
         Log.log(`[order] REST fallback confirmed fill for Breeze order ${orderId} at ${price} (order-notify push was missed)`);
         return price;
     }
+}
+
+// Breeze's getOrderDetail / cancelOrder / getFillPrice are all keyed by exchangeCode, and the
+// BrokerExecutor interface's cancelOrder(orderId) / getFillPrice(orderId) carry no exchange.
+// So every order this process places records its exchange here, keyed by orderId, and the
+// order-keyed calls look it up. An orderId this process never placed (e.g. from before an
+// `order` restart) falls back to NFO - the pre-SENSEX behaviour - and a BFO order in that
+// state fails loudly at the broker (wrong exchange) rather than silently acting on the wrong
+// contract. Bounded so a long-running process can't grow it without limit.
+const ORDER_EXCHANGE_CAP = 5000;
+const orderExchange = new Map<string, BreezeExchange>();
+
+function rememberOrderExchange(orderId: string, exchange: BreezeExchange): void {
+    orderExchange.set(orderId, exchange);
+    if (orderExchange.size > ORDER_EXCHANGE_CAP) {
+        const oldest = orderExchange.keys().next().value;
+        if (oldest !== undefined) orderExchange.delete(oldest);
+    }
+}
+
+export function exchangeOfOrder(orderId: string): BreezeExchange {
+    return orderExchange.get(orderId) ?? 'NFO';
 }
 
 // Exported for chunkedBuyIndex's IPC handler (orderProcess.ts), which needs
 // to resolve the contract/tsym once up front for the whole chunked sequence
 // and compute a real pre-trade estimatedOrderValue - see BulkPcrStrategy's
 // use of this in the plan.
+// SENSEX contracts use the 'SENSEX' index name in their tsym (not ICICI's 'BSESEN' stockCode)
+// so every tsym-keyed path in the app (bookkeeping lot size, BFO-vs-NFO inference via
+// startsWith('SENSEX'), ANT-style tsyms) treats them the same as the ANT/Zerodha SENSEX legs.
 export function tsymFor(record: FnoRecord): string {
-    return `${record.shortName}${record.strikePrice}${record.optionType}`;
+    return `${indexNameFor(record.shortName)}${record.strikePrice}${record.optionType}`;
+}
+
+// The tsym a live Breeze position reports (ICICI stock_code 'BSESEN' -> 'SENSEX' prefix).
+function tsymFromPosition(p: any, optionType: 'CE' | 'PE'): string {
+    return `${indexNameFor(String(p.stock_code))}${p.strike_price}${optionType}`;
 }
 
 // Breeze's expiryDate wire format is an ISO string anchored at 06:00 UTC for
@@ -84,7 +114,7 @@ export async function getOptionQuote(record: FnoRecord): Promise<{ bestBid: numb
     try {
         const result = await Breeze.getInstance().getQuotes({
             stockCode: record.shortName,
-            exchangeCode: 'NFO',
+            exchangeCode: record.exchange,
             productType: 'options',
             expiryDate: expiryToIso(record.expiryDate),
             right: record.optionType === 'CE' ? 'call' : 'put',
@@ -105,14 +135,13 @@ export async function getOptionQuote(record: FnoRecord): Promise<{ bestBid: numb
         // price off ANT's option-chain LTP with the same 5% buffer as the Zerodha path instead
         // of failing the entry/exit outright. Placement itself still goes through Breeze.
         Log.log(`[order] Breeze option quote failed for ${tsymFor(record)} (${String(e?.message ?? e).slice(0, 120)}) - falling back to ANT-priced bid/ask`);
-        // ANT's option chain covers only NIFTY's nearest expiry - for anything else a strike
+        // ANT's option chain covers only each index's nearest expiry - for anything else a strike
         // match would silently price a different contract, so surface the original failure.
-        const nearest = record.shortName === 'NIFTY'
-            ? await BreezeContractMaster.getInstance().findNearestExpiryOption(Number(record.strikePrice), record.optionType as 'CE' | 'PE', 'NIFTY').catch(() => undefined)
-            : undefined;
+        const index = indexNameFor(record.shortName);
+        const nearest = await BreezeContractMaster.getInstance().findNearestExpiryOption(Number(record.strikePrice), record.optionType as 'CE' | 'PE', record.shortName).catch(() => undefined);
         if (!nearest || nearest.expiryDate !== record.expiryDate) throw e;
         const strike = Number(record.strikePrice);
-        const data = (await estimateOptionPricesBatch('NIFTY', [{ strike, optionType: record.optionType }])).get(`${strike}_${record.optionType}`);
+        const data = (await estimateOptionPricesBatch(index, [{ strike, optionType: record.optionType }])).get(`${strike}_${record.optionType}`);
         if (!data || !(data.premium > 0)) throw new Error(`No Breeze quote and no ANT price estimate available for ${tsymFor(record)}`);
         return {
             bestBid: Math.max(0.05, roundToTick(data.premium * 0.95)),
@@ -142,7 +171,7 @@ export async function getOptionQuote(record: FnoRecord): Promise<{ bestBid: numb
 // below already uses the batch helper for the identical reason.
 export async function getMarketableBreezeBuyPrice(contract: FnoRecord): Promise<number> {
     const strike = Number(contract.strikePrice);
-    const premiumData = await estimateOptionPricesBatch('NIFTY', [{ strike, optionType: contract.optionType }]);
+    const premiumData = await estimateOptionPricesBatch(indexNameFor(contract.shortName), [{ strike, optionType: contract.optionType }]);
     const data = premiumData.get(`${strike}_${contract.optionType}`);
     if (!data) throw new Error(`No ANT price estimate available for ${tsymFor(contract)}`);
     return roundToTick(data.premium * 1.01);
@@ -154,9 +183,9 @@ async function placeLimitOptionOrder(
     quantity: number,
     price: number
 ): Promise<{ orderId: string }> {
-    return Breeze.getInstance().placeOrder({
+    const { orderId } = await Breeze.getInstance().placeOrder({
         stockCode: record.shortName,
-        exchangeCode: 'NFO',
+        exchangeCode: record.exchange,
         product: 'options',
         action,
         orderType: 'limit',
@@ -169,14 +198,44 @@ async function placeLimitOptionOrder(
         strikePrice: record.strikePrice,
         userRemark: 'BreezeIntegration', // ICICI rejects non-alphanumeric user_remark (confirmed live)
     });
+    rememberOrderExchange(orderId, record.exchange);
+    return { orderId };
 }
 
 export interface BuyIndexOnBreezeRequest {
     userId: string;
     right: string; // constants.CALL ('call') or PUT ('put')
+    index?: 'NIFTY' | 'SENSEX'; // defaults to NIFTY
     quantity?: number; // defaults to the resolved contract's own lot size
     targetPoints?: number;
     stopLossPoints?: number;
+}
+
+// Live spot for the underlying. NIFTY: its NSE cash quote. SENSEX: Breeze has no usable BSE cash
+// quote for it (BSESEN on BSE returns no data, checked live 2026-10-21), but every BFO option quote
+// carries the underlying's spot_price field - read it off the nearest-expiry contract.
+async function getBreezeSpot(index: 'NIFTY' | 'SENSEX'): Promise<number> {
+    const breeze = Breeze.getInstance();
+    if (index === 'NIFTY') {
+        const niftyQuote = await breeze.getQuotes({ stockCode: 'NIFTY', exchangeCode: 'NSE', productType: 'cash' });
+        const spotRecord = Array.isArray(niftyQuote?.Success) ? niftyQuote.Success[0] : niftyQuote?.Success;
+        const ltp = Number(spotRecord?.ltp);
+        if (!ltp) throw new Error('Could not fetch a live NIFTY spot quote');
+        return ltp;
+    }
+    const anyStrike = await BreezeContractMaster.getInstance().findNearestExpiryAnyStrike('SENSEX');
+    const quote = await breeze.getQuotes({
+        stockCode: anyStrike.shortName,
+        exchangeCode: anyStrike.exchange,
+        productType: 'options',
+        expiryDate: expiryToIso(anyStrike.expiryDate),
+        right: 'call',
+        strikePrice: anyStrike.strikePrice,
+    });
+    const q = Array.isArray(quote?.Success) ? quote.Success[0] : quote?.Success;
+    const ltp = Number(q?.spot_price);
+    if (!ltp) throw new Error('Could not fetch a live SENSEX spot quote (BFO option spot_price)');
+    return ltp;
 }
 
 export async function buyIndexOnBreeze(req: BuyIndexOnBreezeRequest): Promise<Trade> {
@@ -186,12 +245,10 @@ export async function buyIndexOnBreeze(req: BuyIndexOnBreezeRequest): Promise<Tr
     }
 
     const optionType: 'CE' | 'PE' = req.right === CALL ? 'CE' : 'PE';
-    const niftyQuote = await breeze.getQuotes({ stockCode: 'NIFTY', exchangeCode: 'NSE', productType: 'cash' });
-    const spotRecord = Array.isArray(niftyQuote?.Success) ? niftyQuote.Success[0] : niftyQuote?.Success;
-    const niftyLtp = Number(spotRecord?.ltp);
-    if (!niftyLtp) throw new Error('Could not fetch a live NIFTY spot quote');
+    const index = req.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
+    const spotLtp = await getBreezeSpot(index);
 
-    const contract = await BreezeContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
+    const contract = await BreezeContractMaster.getInstance().findATMOption(spotLtp, optionType, index);
     const quantity = req.quantity ?? contract.lotSize;
     const { bestAsk } = await getOptionQuote(contract);
     const tsym = tsymFor(contract);
@@ -239,7 +296,7 @@ async function resolveOpenBreezeContract(tsym: string, existingToken: string | u
     for (const p of rows) {
         const optionType = p.right === 'Call' ? 'CE' : p.right === 'Put' ? 'PE' : undefined;
         if (!optionType) continue;
-        const candidateTsym = `${p.stock_code}${p.strike_price}${optionType}`;
+        const candidateTsym = tsymFromPosition(p, optionType);
         if (candidateTsym === tsym) {
             const contract = await BreezeContractMaster.getInstance().findOption(p.stock_code, p.expiry_date, Number(p.strike_price), optionType);
             if (contract) return contract;
@@ -370,7 +427,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                         const filledQty = cancelErr.filledQuantity;
                         let lateFillPrice: number;
                         try {
-                            lateFillPrice = await Breeze.getInstance().getFillPrice('NFO', orderId, 3, 2000);
+                            lateFillPrice = await Breeze.getInstance().getFillPrice(contract.exchange, orderId, 3, 2000);
                         } catch (fillPriceErr) {
                             // Deliberately NOT wrapping the recordSellFill call
                             // below in this same catch (confirmed via code
@@ -481,7 +538,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
 // filledQuantity as "the rest is safely gone" in that case (see
 // cancelOrderWithFillRecheck's own terminal comment for why).
 async function getBreezeOrderFillInfo(orderId: string): Promise<{ filledQuantity: number; avgPrice: number; terminal: boolean } | undefined> {
-    const result = await Breeze.getInstance().getOrderDetail('NFO', orderId);
+    const result = await Breeze.getInstance().getOrderDetail(exchangeOfOrder(orderId), orderId);
     const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
     if (!record) return undefined;
     // An order REJECTED outright (never rested at all) was never seen live
@@ -522,7 +579,7 @@ export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
     await cancelOrderWithFillRecheck({
         orderId,
         label: 'cancelOrderOnBreeze',
-        cancel: () => breeze.cancelOrder('NFO', orderId),
+        cancel: () => breeze.cancelOrder(exchangeOfOrder(orderId), orderId),
         isFilled: async () => {
             const info = await getBreezeOrderFillInfo(orderId);
             return { filledQuantity: info?.filledQuantity ?? 0, terminal: info?.terminal ?? false };
@@ -590,7 +647,7 @@ function parseTsym(tradingSymbol: string): { shortName: string; strike: number; 
 // Zerodha bare path (see LegManager.ts's "ANT token, not Zerodha's instrumentToken"
 // comment) - trade.token is deliberately set to antToken, not contract.token, since
 // live option ticks and LegManager's legsByToken map are keyed by ANT's token.
-export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const { shortName, strike, optionType } = parseTsym(tradingSymbol);
@@ -615,7 +672,7 @@ export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: strin
     return trade;
 }
 
-export async function marketSellBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+export async function marketSellBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const { shortName, strike, optionType } = parseTsym(tradingSymbol);
     const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
     const { bestBid } = await getOptionQuote(contract);
@@ -644,7 +701,7 @@ export async function marketSellBareOnBreeze(userId: string, tradingSymbol: stri
 // so this fill is tracked as a short, not swallowed by the long-only Sell branch's
 // "no existing entry" no-op. Never call placeLimitOptionOrder with 'sell' for a fresh
 // entry from anywhere outside this function and the equivalent zerodha/ant/prism functions.
-export async function enterShortOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+export async function enterShortOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const { shortName, strike, optionType } = parseTsym(tradingSymbol);
@@ -672,7 +729,7 @@ export async function enterShortOnBreeze(userId: string, tradingSymbol: string, 
 // Closes a short opened by enterShortOnBreeze - mechanically identical to
 // marketBuyBareOnBreeze above, but recorded via recordShortFill with action='BuyToClose'
 // so bookkeeping's long-only Buy branch never mistakes this for a new long position.
-export async function buyToCloseOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+export async function buyToCloseOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const { shortName, strike, optionType } = parseTsym(tradingSymbol);
@@ -706,7 +763,7 @@ export async function getLiveNetQuantity(tradingSymbol: string): Promise<number>
     for (const p of rows) {
         const optionType = p.right === 'Call' ? 'CE' : p.right === 'Put' ? 'PE' : undefined;
         if (!optionType) continue;
-        if (`${p.stock_code}${p.strike_price}${optionType}` === tradingSymbol) return Number(p.quantity ?? 0);
+        if (tsymFromPosition(p, optionType) === tradingSymbol) return Number(p.quantity ?? 0);
     }
     return 0;
 }
@@ -717,14 +774,14 @@ export async function getLiveNetQuantity(tradingSymbol: string): Promise<number>
 // doing so: a root-refill limit sits below current LTP hoping for a retrace, which
 // can take arbitrarily long or never happen (see LegManager's checkRefillDrift) -
 // blocking here would hang LegManager's opLock indefinitely.
-export async function placeLimitBuyBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+export async function placeLimitBuyBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, price: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const { shortName, strike, optionType } = parseTsym(tradingSymbol);
     const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
     Log.log(`[order] Bare Breeze limit buy ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, price);
-    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange, action: 'Buy' });
+    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange: contract.exchange, action: 'Buy' });
     return { orderId };
 }
 
@@ -733,14 +790,14 @@ export async function placeLimitBuyBareOnBreeze(userId: string, tradingSymbol: s
 // current-bestBid limit gets filled at (still a live-market price, not the
 // strategy's own target). Returns immediately; fill arrives later via
 // pollPendingBreezeLimitOrders.
-export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, price: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const { shortName, strike, optionType } = parseTsym(tradingSymbol);
     const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
     Log.log(`[order] Bare Breeze limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, price);
-    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange, action: 'Sell' });
+    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange: contract.exchange, action: 'Sell' });
     return { orderId };
 }
 
@@ -756,7 +813,7 @@ export async function getContractByPriceRangeOnBreeze(
     minPremium = 100,
     excludeStrikes: Set<number> = new Set()
 ): Promise<{ tradingSymbol: string; instrumentToken: string; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
-    const strikeStep = index === 'SENSEX' ? 100 : 50;
+    const strikeStep = strikeStepFor(breezeShortNameFor(index));
     const atmStrike = Math.round(underlyingLtp / strikeStep) * strikeStep;
 
     const candidateStrikes: number[] = [];
@@ -776,7 +833,7 @@ export async function getContractByPriceRangeOnBreeze(
         if (data == null || data.premium < minPremium) continue;
         try {
             const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, index);
-            return { tradingSymbol: tsymFor(contract), instrumentToken: contract.token, lotSize: contract.lotSize, exchange: 'NFO', strike, premium: data.premium, antToken: data.antToken };
+            return { tradingSymbol: tsymFor(contract), instrumentToken: contract.token, lotSize: contract.lotSize, exchange: contract.exchange, strike, premium: data.premium, antToken: data.antToken };
         } catch (e) {
             Log.log('[order] Breeze contract resolution failed for a priced-in strike:', strike, optionType, e);
         }
@@ -800,7 +857,7 @@ async function getPositionsOnBreeze(): Promise<BrokerPosition[]> {
                 ? await BreezeContractMaster.getInstance().findOption(r.stock_code, r.expiry_date, Number(r.strike_price), optionType)
                 : undefined;
             return {
-                tradingSymbol: r.stock_code ?? '',
+                tradingSymbol: r.stock_code ? indexNameFor(String(r.stock_code)) : '',
                 instrumentId: contract?.token ?? '',
                 quantity: Number(r.quantity ?? 0),
                 avgPrice: Number(r.average_price ?? 0),
@@ -814,15 +871,22 @@ async function getTradesOnBreeze(): Promise<Trade[]> {
     const today = new Date();
     const fromDate = new Date(today);
     fromDate.setDate(fromDate.getDate() - 1);
-    const result = await Breeze.getInstance().getTradeList({
-        fromDate: fromDate.toISOString(),
-        toDate: today.toISOString(),
-        exchangeCode: 'NFO',
-    });
-    const rows = Array.isArray(result?.Success) ? result.Success : [];
+    // NFO and BFO (SENSEX) are separate exchangeCode queries on Breeze - both are needed for the full list.
+    const rows: any[] = [];
+    const fetchTrades = async (exchangeCode: BreezeExchange) => {
+        const result = await Breeze.getInstance().getTradeList({
+            fromDate: fromDate.toISOString(),
+            toDate: today.toISOString(),
+            exchangeCode,
+        });
+        if (Array.isArray(result?.Success)) rows.push(...result.Success);
+    };
+    await fetchTrades('NFO'); // a failure here propagates, same as before SENSEX support
+    // BFO is additive - a failure there must not drop the NFO trades already fetched, so it is logged and skipped.
+    await fetchTrades('BFO').catch((e) => Log.log('[order] Breeze getTradeList(BFO) failed - continuing with NFO trades only:', e));
     return rows.map((r: any) => {
         const trade = new Trade();
-        trade.tsym = r.stock_code ?? r.stockCode ?? '';
+        trade.tsym = r.stock_code || r.stockCode ? indexNameFor(String(r.stock_code ?? r.stockCode)) : '';
         trade.action = r.action;
         trade.quantity = Number(r.quantity ?? 0);
         trade.broker = 'breeze';
@@ -841,7 +905,7 @@ export const BreezeExecutor: BrokerExecutor = {
     squareOffLimit: (userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: Exchange, limitPrice: number) =>
         placeLimitSellBareOnBreeze(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as 'NFO' | 'BFO'),
     cancelOrder: cancelOrderOnBreeze,
-    getFillPrice: (orderId: string) => Breeze.getInstance().getFillPrice('NFO', orderId),
+    getFillPrice: (orderId: string) => Breeze.getInstance().getFillPrice(exchangeOfOrder(orderId), orderId),
     getPositions: getPositionsOnBreeze,
     getTrades: getTradesOnBreeze,
 };

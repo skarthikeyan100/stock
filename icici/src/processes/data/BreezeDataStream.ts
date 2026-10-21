@@ -1,6 +1,7 @@
 import Log from '../../util/Log';
 import Breeze from '../../breeze/Breeze';
 import { OptionQuote } from '../../model/model';
+import type { BreezeExchange } from '../../breeze/BreezeContractMaster';
 import { DataStream } from './DataStream';
 
 // data process's Breeze-native tick source, mirroring AntDataStream.ts's
@@ -126,32 +127,49 @@ class BreezeDataStream implements DataStream {
         await this.connect();
     }
 
+    // The stockToken segment prefix per exchange. NFO's "4." is confirmed live (NIFTY/NFO legs tick).
+    // BFO's "1." is INFERRED, not yet observed: breezeconnect's own exchange->segment table maps
+    // BSE -> "1." and NFO -> "4." (the NFO group sharing NSE's segment), so BFO is taken to share
+    // BSE's "1.". Breeze accepts a subscription for any prefix (ack says "subscribed" even for a
+    // wrong one), so the only real check is a BFO tick arriving - verify on the first live SENSEX
+    // Breeze leg; if none arrive, the WATCHDOG lines in orchestrator.log are the signal.
+    private static readonly STOCK_TOKEN_SEGMENT: Record<BreezeExchange, string> = { NFO: '4.1!', BFO: '1.1!' };
+
+    // Which exchange each subscribed token belongs to - needed to pick its stockToken prefix when
+    // resubscribing (watchdog/heartbeat), not just on first subscribe.
+    private tokenExchange = new Map<string, BreezeExchange>();
+
+    private stockToken(token: string): string {
+        return `${BreezeDataStream.STOCK_TOKEN_SEGMENT[this.tokenExchange.get(token) ?? 'NFO']}${token}`;
+    }
+
     private sendSubscribe(token: string): void {
         Breeze.getInstance()
-            .subscribeFeeds({ stockToken: `4.1!${token}`, getExchangeQuotes: true, getMarketDepth: false })
+            .subscribeFeeds({ stockToken: this.stockToken(token), getExchangeQuotes: true, getMarketDepth: false })
             .then(() => Log.log('[BreezeDataStream] subscribed:', token))
             .catch((e) => Log.log('[BreezeDataStream] subscribeFeeds failed:', token, e));
     }
 
-    // exchange param accepted only for DataStream interface conformance and
-    // ignored - Breeze has no BFO (SENSEX) option support here (see
-    // orderProcess.ts's chunkedBuyIndex breeze branch, which already rejects
-    // index: SENSEX outright), so every token this ever sees is NFO.
-    async subscribeOption(token: string, _exchange?: 'NFO' | 'BFO'): Promise<void> {
+    // exchange: 'BFO' for SENSEX legs (BreezeContractMaster.FnoRecord.exchange), defaults to NFO
+    // for every existing NIFTY caller.
+    async subscribeOption(token: string, exchange: BreezeExchange = 'NFO'): Promise<void> {
         if (this.dynamicOptionTokens.has(token)) return;
         this.dynamicOptionTokens.add(token);
+        this.tokenExchange.set(token, exchange);
         if (this.connected) this.sendSubscribe(token);
     }
 
-    async unsubscribeOption(token: string, _exchange?: 'NFO' | 'BFO'): Promise<void> {
+    async unsubscribeOption(token: string, _exchange?: BreezeExchange): Promise<void> {
         if (!this.dynamicOptionTokens.has(token)) return;
+        const stockToken = this.stockToken(token);
         this.dynamicOptionTokens.delete(token);
+        this.tokenExchange.delete(token);
         this.lastTickAt.delete(token);
         this.lastLoggedAt.delete(token);
         this.resubscribedWhileStale.delete(token);
         if (!this.connected) return;
         await Breeze.getInstance()
-            .unsubscribeFeeds({ stockToken: `4.1!${token}`, getExchangeQuotes: true, getMarketDepth: false })
+            .unsubscribeFeeds({ stockToken, getExchangeQuotes: true, getMarketDepth: false })
             .catch((e) => Log.log('[BreezeDataStream] unsubscribeFeeds failed:', token, e));
     }
 

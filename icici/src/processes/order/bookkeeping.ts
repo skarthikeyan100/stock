@@ -1034,15 +1034,17 @@ class OrderBookkeeping {
         }
     }
 
-    // Called both at order-process startup and reactively whenever `order`
-    // is told a Zerodha login just succeeded (see orderProcess.ts's
-    // 'reloadSession' handler) - a stale/expired session on disk at startup
-    // otherwise means this never gets a second chance until the next process
-    // restart, silently leaving real open positions untracked (2026-09-03
+    // Run only by the explicit 'reconcileBrokerPositions' step (POST /reconcile)
+    // - not at startup or on login. A stale/expired session at the time of an
+    // earlier run must not leave real open positions untracked; the user re-runs
+    // it after a login (2026-09-03
     // incident: session was invalid at startup, a same-session re-login later
     // fixed it, but nothing re-ran this, so bookkeeping.trades stayed empty
     // against 4 real open Zerodha positions).
-    async reconcileZerodhaPositions(): Promise<void> {
+    // Returns true only when the broker's positions were fetched and restored;
+    // false means this broker must not be treated as reconciled (see
+    // orderProcess.ts's brokerReconciled gate).
+    async reconcileZerodhaPositions(): Promise<boolean> {
         const restored: Trade[] = [];
         try {
             const positions = await Zerodha.getInstance().getPositions();
@@ -1052,9 +1054,10 @@ class OrderBookkeeping {
             }
         } catch (e) {
             Log.log('[order] reconcileZerodhaPositions: Zerodha getPositions failed (continuing without restore):', e);
-            return;
+            return false;
         }
         this.mergeRestored(restored);
+        return true;
     }
 
     // Caveat, not yet live-verified: ANT's getPositions() return shape is
@@ -1069,7 +1072,7 @@ class OrderBookkeeping {
     // symbol - reconcileAntPositions had never actually restored anything. Called
     // both at startup and reactively after a successful ANT login (see
     // reconcileZerodhaPositions's comment for why).
-    async reconcileAntPositions(): Promise<void> {
+    async reconcileAntPositions(): Promise<boolean> {
         const restored: Trade[] = [];
         try {
             const positions = await ANT.getInstance().getPositions();
@@ -1083,9 +1086,10 @@ class OrderBookkeeping {
             }
         } catch (e) {
             Log.log('[order] reconcileAntPositions: ANT getPositions failed (continuing without restore):', e);
-            return;
+            return false;
         }
         this.mergeRestored(restored);
+        return true;
     }
 
     // Mirrors reconcileAntPositions's shape exactly. Without this, restarting
@@ -1098,10 +1102,12 @@ class OrderBookkeeping {
     // untracked at the broker. Field names (stock_code/expiry_date/
     // strike_price/right/quantity) confirmed live 2026-09-17 against a real
     // open position - see breezeExecutor.ts's getPositionsOnBreeze comment.
-    async reconcileBreezePositions(): Promise<void> {
+    async reconcileBreezePositions(): Promise<boolean> {
         const restored: Trade[] = [];
         try {
-            if (!(await withTimeout(Breeze.getInstance().hasValidSession(), 15000, 'Breeze hasValidSession'))) return;
+            // No valid session = positions can't be read, so this is NOT reconciled
+            // (a logged-out Breeze must be logged in and reconciled before new entries).
+            if (!(await withTimeout(Breeze.getInstance().hasValidSession(), 15000, 'Breeze hasValidSession'))) return false;
             const result = await withTimeout(Breeze.getInstance().getPortfolioPositions(), 15000, 'Breeze getPortfolioPositions');
             const rows = Array.isArray(result?.Success) ? result.Success : [];
             for (const p of rows) {
@@ -1114,15 +1120,10 @@ class OrderBookkeeping {
             }
         } catch (e) {
             Log.log('[order] reconcileBreezePositions: Breeze getPortfolioPositions failed (continuing without restore):', e);
-            return;
+            return false;
         }
         this.mergeRestored(restored);
-    }
-
-    async loadOpenTradesFromBroker(): Promise<void> {
-        await this.reconcileZerodhaPositions();
-        await this.reconcileAntPositions();
-        await this.reconcileBreezePositions();
+        return true;
     }
 
     // Recovers the app-only fields (user/target/stopLoss/gttTriggerId/strategy)

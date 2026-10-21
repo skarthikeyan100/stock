@@ -21,7 +21,6 @@ import * as niftyStatsBuilder from './strategies/niftyStatsBuilder';
 import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 import { FeedSource, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
-import { isPastReconcileTime } from '../util/marketHours';
 
 // Entry point for the `strategies` process. No Prism/Zerodha dependency at all -
 // ticks arrive over stdin (piped from `data` by the orchestrator), orders go out
@@ -73,24 +72,22 @@ async function onOrderCancelled(userId: string, notification: OrderCancelledNoti
 // tick moments later re-populates lastNiftyLtp etc.
 let ready = false;
 
-// Login/restart-triggered reconcile() must not run against pre-market
-// broker state (see marketHours.isPastReconcileTime's comment) - deferred
-// from main()'s startup path to here, so it fires on the first tick received
-// once the clock has passed 9:10 instead of unconditionally at process
-// start/login, whatever time that happens to be.
-let reconciled = false;
+// reconcile() runs only when explicitly requested (the 'reconcile' IPC request,
+// reached via POST /reconcile in server.ts) - never on startup or on a tick.
+// Set on the first request and shared by every later one, so it runs at most
+// once per process lifetime. Until it has run, `ready` stays false and no
+// tick reaches a strategy.
+let reconcilePromise: Promise<void> | null = null;
 
 // Fill/cancelled notifications (OrderClient.onFill/onCancelled, wired in
 // main() before strategies.initialize()/reconcile() ever run) that arrive
-// before `reconciled` is true. Real gap found by code review: deferring
-// reconcile() to "the first tick after 09:10" can leave this window open for
-// hours (a restart well before market open), not the few seconds it used to
-// take when reconcile() ran synchronously at startup - during that window a
+// before reconcile() has completed (`orderEventsReady` still false). Because
+// reconcile() is now an explicit step that can happen hours after startup, a
 // strategy's per-position state (e.g. BulkPcrStrategy's `this.positions`)
-// isn't populated yet, so onFill/onOrderCancelled would silently no-op on a
-// genuine event instead of acting on it. Queued here and replayed, in
-// original arrival order (a fill and a cancel for the same order can
-// interleave), once runReconcileOnce() actually populates that state.
+// isn't populated for that whole window, so onFill/onOrderCancelled would
+// silently no-op on a genuine event instead of acting on it. Queued here and
+// replayed, in original arrival order (a fill and a cancel for the same order
+// can interleave), once reconcile() actually populates that state.
 type QueuedOrderEvent =
     | { kind: 'fill'; userId: string; raw: any }
     | { kind: 'cancelled'; userId: string; notification: OrderCancelledNotification };
@@ -108,9 +105,14 @@ const queuedOrderEvents: QueuedOrderEvent[] = [];
 // nothing dispatched outside the queue can ever run concurrently with it.
 let orderEventsReady = false;
 
-async function runReconcileOnce(): Promise<void> {
-    if (reconciled) return;
-    reconciled = true;
+// Idempotent: the first call starts the reconcile, every later call (including
+// one that arrives while the first is still running) awaits that same run.
+function runReconcileOnce(): Promise<void> {
+    if (!reconcilePromise) reconcilePromise = reconcileStrategies();
+    return reconcilePromise;
+}
+
+async function reconcileStrategies(): Promise<void> {
     // Only a handful of strategies implement reconcile() today (ContinuousStrategy,
     // BulkPcrStrategy, SupportResistanceStrategy, HourlyStrategy) - optional-chained
     // since other strategies don't need it, and each call
@@ -152,9 +154,6 @@ async function runReconcileOnce(): Promise<void> {
 }
 
 async function onTick(tick: any) {
-    if (!reconciled && isPastReconcileTime()) {
-        await runReconcileOnce();
-    }
     if (!ready) return;
     if (tick.type === 'nifty') {
         const quote = Object.assign(new NiftyQuote(), tick.quote) as NiftyQuote;
@@ -233,6 +232,17 @@ async function handleStrategiesRequest(req: StrategiesRequest): Promise<Strategi
                 strategies.syncFromConfig();
                 return { kind: 'response', id: req.id, ok: true, result: null };
 
+            // Explicit reconcile - POST /reconcile in server.ts sends this only
+            // after `order`'s broker-position reconcile has succeeded, since
+            // every strategy's reconcile() reads the restored open trades.
+            // `ran` is false when a reconcile was already requested earlier in
+            // this process's lifetime (it is not re-run).
+            case 'reconcile': {
+                const alreadyRequested = reconcilePromise !== null;
+                await runReconcileOnce();
+                return { kind: 'response', id: req.id, ok: true, result: { ran: !alreadyRequested } };
+            }
+
             default:
                 return { kind: 'response', id: req.id, ok: false, error: `Unknown request type: ${(req as any).type}` };
         }
@@ -295,12 +305,9 @@ async function main() {
 
     await strategies.initialize();
 
-    // reconcile() itself (and setting ready=true) is deferred to the first
-    // tick received after isPastReconcileTime() - see runReconcileOnce/onTick
-    // above. If it's already past that time right now (e.g. a mid-day
-    // restart), it simply runs on whatever tick arrives next - no different
-    // in practice from running it here, since no tick exists before market
-    // open anyway.
+    // reconcile() does not run here or on any tick - it's the explicit
+    // 'reconcile' request (POST /reconcile). Until then `ready` stays false and
+    // every tick is dropped, so no strategy can act on unrestored state.
 
     // Keeps the trading-window gate (strategies.ts's enforceTradingWindow)
     // self-correcting without needing a restart - disable-only: force-disables
@@ -311,7 +318,7 @@ async function main() {
     // setEnabledOverride comments.
     setInterval(() => strategies.recheckTradingWindow(), 60 * 1000);
 
-    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. Reconciliation deferred to first tick after 09:10.`);
+    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. Reconciliation not run - POST /reconcile triggers it.`);
 }
 
 main().catch((e) => {

@@ -52,10 +52,9 @@ class BreezeStream {
     // expiryDate: 'DD-MMM-YYYY' (BreezeContractMaster.FnoRecord.expiryDate
     // format) - converted to the ISO-at-06:00-UTC wire format internally,
     // same conversion breezeExecutor.ts's expiryToIso uses.
-    async subscribeOption(stockCode: string, expiryDate: string, strikePrice: string, optionType: 'CE' | 'PE'): Promise<void> {
+    async subscribeOption(stockCode: string, expiryDate: string, strikePrice: string, optionType: 'CE' | 'PE', exchangeCode: 'NFO' | 'BFO' = 'NFO'): Promise<void> {
         const key = `${stockCode}${strikePrice}${optionType}`;
         if (this.subscribedOptions.has(key)) return;
-        const exchangeCode = 'NFO';
         const right = optionType === 'CE' ? 'call' : 'put';
         await Breeze.getInstance().subscribeFeeds({
             stockCode,

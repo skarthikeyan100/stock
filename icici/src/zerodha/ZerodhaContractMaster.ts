@@ -173,6 +173,42 @@ class ZerodhaContractMaster {
         };
     }
 
+    // Exact (symbol, strike, expiry, optionType) resolution for any NFO/BFO
+    // underlying, not just the NIFTY/SENSEX Index union findExactOption is
+    // restricted to - used by TopStockOptionsOpeningGapStrategy, which must
+    // match ANT's chosen expiry exactly (not "nearest"), the same contract
+    // for an individual stock. Only SENSEX trades on BFO; every stock (and
+    // NIFTY/BANKNIFTY) is NFO.
+    async findExactOptionBySymbol(
+        symbol: string,
+        strike: number,
+        expiry: string,
+        optionType: 'CE' | 'PE'
+    ): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: Exchange }> {
+        const exchange: Exchange = symbol === 'SENSEX' ? 'BFO' : 'NFO';
+        const instruments = this.loadInstruments(exchange);
+        const expiryDateString = new Date(expiry).toDateString();
+
+        const contract = instruments.find(
+            (i) =>
+                i.name === symbol &&
+                i.instrument_type === optionType &&
+                i.strike === strike &&
+                new Date(i.expiry).toDateString() === expiryDateString
+        );
+
+        if (!contract) {
+            throw new Error(`No ${symbol} ${optionType} contract found for strike ${strike} expiry ${expiry}`);
+        }
+
+        return {
+            tradingSymbol: contract.tradingsymbol,
+            instrumentToken: contract.instrument_token,
+            lotSize: contract.lot_size,
+            exchange,
+        };
+    }
+
     // Canonical-symbol resolution: exact (symbol, strike, optionType), no
     // expiry given - resolves to the nearest expiry (expiryOffset=0) or the
     // Nth-nearest (expiryOffset=1 => "next", etc). Not exposed as a user

@@ -7,9 +7,18 @@ const WEEKLY_LOSS_PERCENT = 50;
 
 export default function RulesPage() {
   const navigate = useNavigate();
-  const { user, logout, setTermsAccepted } = useAuth();
+  const { user, termsAccepted, logout, setTermsAccepted } = useAuth();
 
+  // Reachable two ways: the forced first-login flow (termsAccepted is still
+  // false - LoginPage redirects here) and a voluntary re-read from the
+  // profile page (termsAccepted already true). Only the first one should
+  // treat "Close" as declining and log the user out - a returning user just
+  // checking the rules again must not be logged out for clicking Close.
   const handleClose = async () => {
+    if (termsAccepted) {
+      navigate('/profile');
+      return;
+    }
     await logout();
     navigate('/');
   };
@@ -50,14 +59,14 @@ export default function RulesPage() {
                   navigate('/trade');
                 }}
               >
-                Accept &amp; Continue
+                {termsAccepted ? 'Continue' : 'Accept & Continue'}
               </Button>
               <Button
                 variant="secondary"
                 size="lg"
                 onClick={handleClose}
               >
-                Close
+                {termsAccepted ? 'Back' : 'Close'}
               </Button>
             </div>
           </Card.Body>

@@ -202,7 +202,7 @@ class AntContractMaster {
   // a real listed strike). Instead picks whichever actually-listed strike
   // (for the nearest expiry >= today) is closest to referencePrice. Used by
   // TopStockOptionsOpeningGapStrategy.
-  findNearestStrikeOption(symbol: string, optionType: string, referencePrice: number, exch: string = 'NFO'): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
+  findNearestStrikeOption(symbol: string, optionType: string, referencePrice: number, exch: string = 'NFO'): { token: string; exch: string; tradingSymbol: string; lotSize: string; strike: number; expiry: string } {
     const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
     const todayStartUtc = Math.floor(Date.now() / 86400000) * 86400000;
 
@@ -230,6 +230,8 @@ class AntContractMaster {
       exch: best.Exch,
       tradingSymbol: best['Trading Symbol'] || best.Trading || '',
       lotSize: best['Lot Size'],
+      strike: Number(best['Strike Price']),
+      expiry: new Date(nearestExpiry).toISOString(),
     };
   }
 

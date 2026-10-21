@@ -238,7 +238,7 @@ class OrderClient {
     }
 
     // ICICI Breeze order path - see src/processes/order/breezeExecutor.ts.
-    async breezeBuyIndex(userId: string, payload: { right: string; quantity?: number; targetPoints?: number; stopLossPoints?: number }): Promise<any> {
+    async breezeBuyIndex(userId: string, payload: { right: string; index?: 'NIFTY' | 'SENSEX'; quantity?: number; targetPoints?: number; stopLossPoints?: number }): Promise<any> {
         const res = await this.request('breezeBuyIndex', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
@@ -407,6 +407,14 @@ class OrderClient {
     async reloadUserLimits(userId = 'Default'): Promise<void> {
         const res = await this.request('reloadUserLimits', userId, {});
         if (!res.ok) throw new Error(res.error);
+    }
+
+    // Explicit broker-position reconcile (POST /reconcile) - returns per-broker
+    // success flags; throws if the order process refused (e.g. before 09:10).
+    async reconcileBrokerPositions(): Promise<Record<string, boolean>> {
+        const res = await this.request('reconcileBrokerPositions', 'Default', {}, 180000);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
     }
 
     async refreshTradeList(userId = 'Default'): Promise<any> {

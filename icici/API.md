@@ -556,6 +556,24 @@ data: { "symbol": "NIFTY 50", "ltp": 17480.6, ... }
 
 ---
 
+## Reconcile
+
+Broker-position and strategy reconciliation is **not** run on process startup or on broker login. Check for open positions first (e.g. `/trades`, the broker app), then call this. New entries on zerodha/ant/breeze are refused until a reconcile has restored that broker, and strategies don't tick until `strategies` has reconciled.
+
+### POST /reconcile
+**Description:** Restores open positions from each broker into `order`, then runs every strategy's `reconcile()`. Strategies only reconcile when all brokers were read successfully. Refused before 09:10 IST (broker responses are pre-market and incomplete). Safe to re-run: restored trades are de-duplicated, and strategies reconcile at most once per process lifetime.
+
+**Auth:** Admin
+
+**Response:** `{ brokers: { zerodha, ant, breeze }, strategies: { ran } }` (booleans per broker)
+
+**Status Codes:**
+- 200 - reconciled
+- 409 - one or more brokers could not be read (`brokers` shows which); strategies NOT reconciled. Fix that broker's session and call again.
+- 500 - refused (e.g. before 09:10) or unexpected failure
+
+---
+
 ### GET /stats
 **Description:** Get strategy statistics and P&L data
 

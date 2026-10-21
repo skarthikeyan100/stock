@@ -57,10 +57,29 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+// Rules-page acceptance is remembered client-side only (no backend field) -
+// keyed per email in localStorage, since the same browser/device can see
+// more than one account log in over time. Read/write both wrapped in
+// try/catch: private-browsing/blocked-storage/quota failures must fall back
+// to "not accepted yet" (asks again) rather than throwing and breaking login.
+const TERMS_KEY_PREFIX = 'propfirm.termsAccepted.';
+
+function termsKeyFor(email: string): string {
+  return `${TERMS_KEY_PREFIX}${email}`;
+}
+
+function readTermsAccepted(email: string): boolean {
+  try {
+    return localStorage.getItem(termsKeyFor(email)) === 'true';
+  } catch {
+    return false;
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
-  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [termsAccepted, setTermsAcceptedState] = useState(false);
 
   // Check session on mount
   useEffect(() => {
@@ -69,7 +88,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (res.ok) return res.json();
         throw new Error('Not logged in');
       })
-      .then(data => setUser(data))
+      .then(data => {
+        // Set together with `user`, in the same state update, so there is
+        // never a render where isLoggedIn is true but termsAccepted hasn't
+        // caught up yet - that gap would let LoginPage's redirect effect
+        // bounce an already-accepted returning user through /rules for one
+        // frame before snapping back.
+        setUser(data);
+        setTermsAcceptedState(readTermsAccepted(data.email));
+      })
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
@@ -87,13 +114,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!res.ok) throw new Error('Login failed');
     const userData = await res.json();
     setUser(userData);
+    setTermsAcceptedState(readTermsAccepted(userData.email)); // see the mount effect's comment above
   }, []);
 
   const logout = useCallback(async () => {
     await fetch('/auth/logout', { method: 'POST' });
     setUser(null);
-    setTermsAccepted(false);
+    setTermsAcceptedState(false); // in-memory reset only - the persisted per-email acceptance is left intact for next login
   }, []);
+
+  // Exposed as `setTermsAccepted` below - persists the acceptance so it
+  // isn't asked again on this device for this account (the actual feature
+  // requested: accept once, never see /rules again on a later login).
+  const setTermsAccepted = useCallback((accepted: boolean) => {
+    setTermsAcceptedState(accepted);
+    if (!user) return; // shouldn't happen (RulesPage requires being logged in) - defensive only
+    try {
+      if (accepted) localStorage.setItem(termsKeyFor(user.email), 'true');
+      else localStorage.removeItem(termsKeyFor(user.email));
+    } catch {
+      // Storage blocked/unavailable - in-memory state above still updates for this session;
+      // it just won't survive a reload or next login, which degrades safely to "ask again"
+      // rather than failing the accept action itself.
+    }
+  }, [user]);
 
   // Re-fetches the session user - used after a background update (e.g. OCR
   // extracting a PAN/Aadhaar number from an uploaded document) so the UI

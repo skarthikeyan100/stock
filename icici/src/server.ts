@@ -1559,6 +1559,34 @@ app.get('/candles', requireAdmin, async function (req, res) {
     }
 });
 
+// ============================== Reconcile ==============================
+
+// Explicit broker-position + strategy reconcile. Not run on startup or on
+// broker login any more - the operator checks for open positions and then
+// calls this. Order matters: `order` restores bookkeeping.trades from the
+// brokers first, and only then do strategies reconcile against them. If any
+// broker could not be read, strategies are NOT reconciled (they would otherwise
+// conclude "no open position" from incomplete data) - 409 with the per-broker
+// status so the caller can fix that broker's session and call again.
+app.post('/reconcile', requireAdmin, async (req, res) => {
+    try {
+        const brokers = await orderClient.reconcileBrokerPositions();
+        const failed = Object.entries(brokers).filter(([, ok]) => !ok).map(([broker]) => broker);
+        if (failed.length > 0) {
+            res.status(409).json({
+                error: `broker positions could not be read for: ${failed.join(', ')} - strategies not reconciled. Log in to that broker and call POST /reconcile again.`,
+                brokers,
+            });
+            return;
+        }
+        const strategies = await strategiesClient.reconcile();
+        res.json({ brokers, strategies });
+    } catch (e: any) {
+        Log.log('[frontend] /reconcile failed:', e);
+        res.status(500).json({ error: e?.message ?? 'reconcile failed' });
+    }
+});
+
 // ============================== Configuration ==============================
 
 app.get('/config', requireAdmin, (req, res) => {

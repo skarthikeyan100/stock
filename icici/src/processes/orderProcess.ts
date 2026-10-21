@@ -235,6 +235,13 @@ async function placeOrderWithPendingGuard(
     // the reconcileInFlight mechanism exists to close.
     if (reconcileInFlight) await reconcileInFlight;
     const broker = resolveRequestBroker(req);
+    // Startup and login no longer reconcile, so bookkeeping.trades can be empty
+    // while the broker still holds a live position. Refuse new entries on a
+    // reconcilable broker until POST /reconcile has restored it - otherwise a
+    // buy could double up a position the app simply doesn't know about yet.
+    if (isReconcilableBroker(broker) && !brokerReconciled[broker]) {
+        return { kind: 'response', id: req.id, ok: false, error: `${broker}: broker positions not reconciled since startup - run POST /reconcile before placing new entries on this broker` };
+    }
     const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedOrderValue, broker);
     if (!validation.allowed) {
         return { kind: 'response', id: req.id, ok: false, error: validation.reason };
@@ -543,10 +550,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     if (!Number.isFinite(niftyLtp)) {
                         return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (breeze): niftyLtp is required and must be a finite number' };
                     }
-                    if (req.payload.index === 'SENSEX') {
-                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (breeze): SENSEX (BFO) is not supported on Breeze yet' };
-                    }
-                    const contract = await BreezeContractMaster.getInstance().findATMOption(niftyLtp, optionType, 'NIFTY');
+                    // index threaded through (not hardcoded NIFTY) - a SENSEX-configured instance resolves a BFO
+                    // contract against the SENSEX spot it passes as niftyLtp, same as the zerodha/ant/prism branches.
+                    const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
+                    const contract = await BreezeContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
                     const buyPrice = await getMarketableBreezeBuyPrice(contract);
                     const resolvedQty = resolveChunkedBuyQuantity(req, buyPrice, tsymFor(contract), contract.lotSize);
                     if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
@@ -561,7 +568,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                                 tradingSymbol: tsymFor(contract),
                                 instrumentId: contract.token,
                                 quantity,
-                                exchange: 'NFO',
+                                exchange: contract.exchange,
                             },
                             req.payload.freezeQuantity
                         );
@@ -1011,28 +1018,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 connectAntOrderNotifyIfSessionValid('reloadSession');
                 Breeze.getInstance().reloadSession();
                 connectBreezeOrderNotifyIfSessionValid('reloadSession').catch((e) => Log.log('[order] connectBreezeOrderNotifyIfSessionValid failed:', e));
-                // Re-run broker-position reconciliation now that a login just
-                // succeeded (server.ts only calls reloadSession from its
-                // OAuth callback handlers) - closes the gap where a session
-                // that was stale/invalid at process startup left
-                // bookkeeping.trades permanently empty until the next
-                // restart, even after the user re-logged in. Each reconcile
-                // call is a no-op (besides a failed getPositions log) if that
-                // broker's session isn't actually the one that just changed.
-                // Deferred to the first tick after 09:10 - see
-                // runPendingLoginReconcileIfDue's comment - rather than run
-                // inline here, whatever time the login happens to occur.
-                if (isPastReconcileTime()) {
-                    // Clears any stale flag left by an earlier pre-09:10 login on a
-                    // different broker - without this, the next tick's
-                    // runPendingLoginReconcileIfDue() would see it still set and fire
-                    // a redundant second reconcile right after this one.
-                    pendingLoginReconcile = false;
-                    startReconcile('login');
-                } else {
-                    pendingLoginReconcile = true;
-                    Log.log('[order] reloadSession: before 09:10 - deferring broker-position reconciliation to first tick after 09:10');
-                }
+                // Broker-position reconciliation is NOT run here any more - a
+                // login no longer triggers it. It's an explicit step, invoked
+                // via the 'reconcileBrokerPositions' IPC case (POST /reconcile
+                // in server.ts), once the user has checked for open positions.
                 return { kind: 'response', id: req.id, ok: true };
             }
 
@@ -1063,11 +1052,23 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'hasActiveTrade':
                 return { kind: 'response', id: req.id, ok: true, result: bookkeeping.hasActiveTrade(req.userId) };
 
+            // Explicit broker-position reconcile - POST /reconcile in server.ts
+            // invokes this first, then `strategies`' reconcile (which depends on
+            // the restored bookkeeping.trades). Refused before 09:10.
+            case 'reconcileBrokerPositions': {
+                try {
+                    const result = await runBrokerReconcileNow('manual (POST /reconcile)');
+                    return { kind: 'response', id: req.id, ok: true, result };
+                } catch (e: any) {
+                    Log.log('[order] reconcileBrokerPositions failed:', e);
+                    return { kind: 'response', id: req.id, ok: false, error: e?.message ?? String(e) };
+                }
+            }
+
             case 'openTrades':
-                // See reconcileInFlight's comment - waits out a deferred
-                // broker-position reconcile still in progress so the caller
-                // (e.g. BulkPcrStrategy.reconcile() in the `strategies`
-                // process, polling this right around the same 09:10 boundary)
+                // See reconcileInFlight's comment - waits out a broker-position
+                // reconcile still in progress so the caller (e.g.
+                // BulkPcrStrategy.reconcile() in the `strategies` process)
                 // never reads bookkeeping.trades mid-reconcile.
                 if (reconcileInFlight) await reconcileInFlight;
                 return { kind: 'response', id: req.id, ok: true, result: bookkeeping.getOpenTrades(req.userId) };
@@ -1209,65 +1210,51 @@ async function loadUserLimits() {
     }
 }
 
-// A login (reloadSession IPC case below) fires broker-position reconciliation
-// immediately, whatever the wall-clock time is - done before market open (as
-// happened 2026-09-24, ~08:44-08:51 across 3 separate broker logins in quick
-// succession) can see incomplete/stale broker responses, and re-running it
-// once per login re-derives the same Mongo aggregate multiple times, which is
-// what actually produced a doubled quantity that morning. Deferred here to
-// the first tick received once marketHours.isPastReconcileTime() is true,
-// instead of running inline inside the IPC handler.
-let pendingLoginReconcile = false;
-
-// Set for the duration of ANY broker-position reconcile (login-triggered,
-// immediate or deferred) - awaited by the 'openTrades'/'canPlaceOrder'/
-// 'squareOff' IPC handlers above so a concurrent reader can't observe
-// bookkeeping.trades mid-reconcile and wrongly conclude nothing is open (or
-// approve a duplicate entry). Real races found by code review:
-// (1) `strategies`' BulkPcrStrategy.reconcile() independently defers to its
-// OWN first tick after 09:10 (strategiesProcess.ts) and queries this
-// process's open trades over IPC right around that same boundary; (2) a
-// mid-day broker relogin (reloadSession below, isPastReconcileTime() already
-// true) fires the same three reconcile calls fire-and-forget too - without
-// this covering that path as well, a concurrent reader could land in the
-// exact same gap a relogin causes, not just the deferred-at-09:10 case.
-// null once nothing is in flight.
+// Broker-position reconciliation is an explicit, operator-triggered step (the
+// 'reconcileBrokerPositions' IPC case, reached via POST /reconcile in server.ts)
+// - it does NOT run at process startup or on every broker login any more. The
+// user checks for open positions and then invokes it.
+//
+// Set for the duration of a reconcile - awaited by the 'openTrades'/
+// 'canPlaceOrder'/'squareOff' IPC handlers above so a concurrent reader can't
+// observe bookkeeping.trades mid-reconcile and wrongly conclude nothing is open
+// (or approve a duplicate entry). null once nothing is in flight.
 let reconcileInFlight: Promise<void> | null = null;
 
 // True while a trailing coalesced reconcile has been requested but not yet
 // started - see startReconcile's comment.
 let reconcileQueued = false;
 
+// Per-broker outcome of the most recent completed reconcile. A broker is only
+// true when its positions were actually fetched and restored. Until then (and
+// after any failed run) placeOrderWithPendingGuard refuses new entries on that
+// broker - bookkeeping.trades can't yet be trusted to say what is already open.
+type ReconcilableBroker = 'zerodha' | 'ant' | 'breeze';
+const brokerReconciled: Record<ReconcilableBroker, boolean> = { zerodha: false, ant: false, breeze: false };
+
+function isReconcilableBroker(broker: string): broker is ReconcilableBroker {
+    return broker === 'zerodha' || broker === 'ant' || broker === 'breeze';
+}
+
 async function reconcileAllBrokersOnce(logContext: string): Promise<void> {
     Log.log(`[order] Running broker-position reconciliation (${logContext})`);
-    await Promise.all([
-        bookkeeping.reconcileZerodhaPositions().catch((e) => Log.log('[order] reconcileZerodhaPositions failed:', e)),
-        bookkeeping.reconcileAntPositions().catch((e) => Log.log('[order] reconcileAntPositions failed:', e)),
-        bookkeeping.reconcileBreezePositions().catch((e) => Log.log('[order] reconcileBreezePositions failed:', e)),
+    const [zerodha, ant, breeze] = await Promise.all([
+        bookkeeping.reconcileZerodhaPositions().catch((e) => { Log.log('[order] reconcileZerodhaPositions failed:', e); return false; }),
+        bookkeeping.reconcileAntPositions().catch((e) => { Log.log('[order] reconcileAntPositions failed:', e); return false; }),
+        bookkeeping.reconcileBreezePositions().catch((e) => { Log.log('[order] reconcileBreezePositions failed:', e); return false; }),
     ]);
+    brokerReconciled.zerodha = zerodha;
+    brokerReconciled.ant = ant;
+    brokerReconciled.breeze = breeze;
+    exitMonitor.reconcileFromTrades(bookkeeping.trades);
 }
 
 // Runs all three broker reconciles and tracks them via reconcileInFlight.
-// Fire-and-forget from the CALLER's point of view (doesn't await this) so
-// tick processing/IPC handling isn't blocked on slow broker calls - but any
-// concurrent reader that DOES await reconcileInFlight (see the IPC cases
-// above) waits for the real completion, not just for this function to return.
-//
-// Coalesces overlapping triggers instead of starting a fully independent
-// reconcile per call. Real race found by code review: a call that arrives
-// while one is already in flight (e.g. 3 broker OAuth callbacks firing
-// reloadSession within a few seconds of each other) would otherwise start
-// its own Promise.all, and whichever one happens to resolve FIRST nulls
-// reconcileInFlight while the other is still running - exactly the race
-// this mechanism exists to close. Simply ignoring the new trigger isn't
-// safe either: reloadSession updates that broker's session synchronously
-// before calling this, so an already-running reconcile may have already
-// made its broker API calls using the OLD session. Instead, queue exactly
-// one trailing run to start right after the current one finishes - this
-// also avoids repeating the "reconcile fired multiple times in quick
-// succession, re-deriving the same Mongo aggregate" pattern that caused the
-// original 2026-09-24 incident, since any number of triggers arriving
-// during one in-flight window collapse into a single trailing run.
+// Coalesces overlapping triggers: a call that arrives while one is already in
+// flight can't start its own Promise.all (whichever finished first would null
+// reconcileInFlight while the other is still running). Instead exactly one
+// trailing run is queued to start right after the current one finishes, since
+// it may have been triggered by a session that changed mid-run.
 function startReconcile(logContext: string): void {
     if (reconcileInFlight) {
         reconcileQueued = true;
@@ -1284,17 +1271,23 @@ function startReconcile(logContext: string): void {
     })();
 }
 
-async function runPendingLoginReconcileIfDue(): Promise<void> {
-    if (!pendingLoginReconcile || !isPastReconcileTime()) return;
-    pendingLoginReconcile = false;
-    startReconcile('first tick after 09:10');
+// Explicit reconcile, reached via the 'reconcileBrokerPositions' IPC case.
+// Refused before 09:10: pre-market broker responses are incomplete/stale (see
+// marketHours.isPastReconcileTime). Resolves only once the run - including any
+// trailing coalesced run - has completed, and returns the per-broker outcome.
+async function runBrokerReconcileNow(logContext: string): Promise<Record<ReconcilableBroker, boolean>> {
+    if (!isPastReconcileTime()) {
+        throw new Error('broker-position reconciliation refused before 09:10 - broker responses are pre-market and incomplete; retry after 09:10');
+    }
+    startReconcile(logContext);
+    await reconcileInFlight;
+    return { ...brokerReconciled };
 }
 
 // Only useGTT=false trades ever end up in exitMonitor's watch list (see
 // zerodhaExecutor.finalizeEntry), so this is a no-op for the GTT-brokered
 // majority of trades - most ticks arriving here simply have no matching entry.
 async function onTick(tick: any) {
-    await runPendingLoginReconcileIfDue();
     if (tick.type === 'option') {
         const quote = Object.assign(new OptionQuote(), tick.quote) as OptionQuote;
         await exitMonitor.handleOptionTick(quote);
@@ -1317,24 +1310,11 @@ async function main() {
     // on every restart even though nothing was actually lost (see
     // loadClosedTradesFromMongo's comment).
     await bookkeeping.loadClosedTradesFromMongo();
-    // Must complete before connectAntOrderNotifyIfSessionValid() and before
-    // the IPC socket starts accepting strategies/frontend connections below,
-    // so no client ever observes an empty bookkeeping.trades mid-restore -
-    // but only when isPastReconcileTime() is true. A restart before 09:10
-    // (crash, deploy, or a tsc-watch hot-restart) must not reconcile against
-    // pre-market broker state either - same reasoning, and the same gate,
-    // already applied to the login (reloadSession) path below. Deferred the
-    // same way via pendingLoginReconcile: bookkeeping.trades simply stays
-    // empty until the first tick after 09:10 runs runPendingLoginReconcileIfDue().
-    if (isPastReconcileTime()) {
-        await bookkeeping.loadOpenTradesFromBroker();
-    } else {
-        pendingLoginReconcile = true;
-        Log.log('[order] startup: before 09:10 - deferring broker-position reconciliation to first tick after 09:10');
-    }
-    // Now live: bookkeeping.trades is populated from the broker/Mongo restore
-    // above (previously this reconciled against an always-empty list on a
-    // fresh restart).
+    // Broker-position reconciliation is NOT run at startup - it's the explicit
+    // 'reconcileBrokerPositions' step (POST /reconcile). Until it has run for a
+    // broker, bookkeeping.trades has nothing restored for that broker and
+    // placeOrderWithPendingGuard refuses new entries on it.
+    Log.log('[order] startup: broker-position reconciliation not run - invoke POST /reconcile after checking for open positions');
     exitMonitor.reconcileFromTrades(bookkeeping.trades);
 
     // Restore any resting root-refill limit orders tracked before this restart,

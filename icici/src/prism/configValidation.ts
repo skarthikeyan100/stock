@@ -34,6 +34,20 @@ const POSITIVE_QUANTITY_FIELDS: string[] = [
     'quantity', 'orderQuantity', 'initialQuantity', 'incrementQuantity', 'spawnQuantityMode',
 ];
 
+// Documented "size from maxInvestment headroom instead of a fixed quantity"
+// sentinel (see bookkeeping.resolveMaxInvestmentQuantity's own comment and
+// HourlyStrategy.tryEnter) - deliberately the SAME value (-1) for every
+// strategy type listed here, not a different magic number per type, so
+// arming one doesn't require remembering which type uses which value. A
+// strategy TYPE's own `quantity` field is allowed to be exactly this value
+// instead of the normal ">0" rule below. Keyed by strategy type (the
+// `label` this validator is called with for a strategy block), not a
+// blanket "any negative quantity is fine" exception, so a genuine typo/
+// garbage value (e.g. -3, or -1 on a type that never implemented this
+// convention) still gets rejected.
+const QUANTITY_SENTINEL_VALUE = -1;
+const QUANTITY_SENTINEL_TYPES = ['BulkPcrStrategy', 'BulkPcrAutoStartStrategy', 'HourlyStrategy'];
+
 // Percent-of-profit / drawdown fields, constrained to a sane 0-100 range.
 const PERCENT_FIELDS: string[] = [
     'consistencyLimitPercent', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
@@ -86,6 +100,7 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
 
     for (const field of POSITIVE_QUANTITY_FIELDS) {
         if (isNum(obj[field]) && obj[field] <= 0) {
+            if (field === 'quantity' && obj[field] === QUANTITY_SENTINEL_VALUE && QUANTITY_SENTINEL_TYPES.includes(label)) continue;
             errors.push(`${label}.${field} must be > 0 (got ${obj[field]})`);
         }
     }

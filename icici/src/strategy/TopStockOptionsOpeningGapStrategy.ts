@@ -5,6 +5,9 @@ import configService from '../prism/ConfigService';
 import { toPercentNumber } from '../prism/percentConfig';
 import AntContractMaster from '../ant/AntContractMaster';
 import ANT from '../ant/ANT';
+import ZerodhaContractMaster from '../zerodha/ZerodhaContractMaster';
+import BreezeContractMaster from '../breeze/BreezeContractMaster';
+import { roundToTick } from '../zerodha/Zerodha';
 import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
 import fs from 'fs';
@@ -53,7 +56,25 @@ interface RankedStock {
     latestOpen: number;
 }
 
-type OptionContract = { token: string; exch: string; tradingSymbol: string; lotSize: string };
+type OptionContract = { token: string; exch: string; tradingSymbol: string; lotSize: string; strike: number; expiry: string };
+
+type BrokerName = 'zerodha' | 'breeze' | 'ant';
+
+// One resolved, broker-specific tradable contract for a ranked stock -
+// `instrumentToken` is always the ANT-native common token (see
+// AntContractMaster.ts's resolveCommonToken comment on why - live
+// ticks/restart-reconciliation elsewhere in the app key off this, not a
+// broker-native token), even for a zerodha/breeze leg; `tradingSymbol` is
+// that broker's OWN trading symbol, used to actually place the order.
+interface BrokerLeg {
+    stock: RankedStock;
+    optionType: 'CE' | 'PE';
+    broker: BrokerName;
+    tradingSymbol: string;
+    instrumentToken: string;
+    exchange: 'NFO' | 'BFO';
+    lotSize: number;
+}
 
 export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     private phase: 'idle' | 'running' | 'done' = 'idle';
@@ -86,6 +107,31 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
 
     private safeFileToken(s: string): string {
         return s.replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+
+    // config.yml's `brokers: [zerodha, breeze, ant]` (or the legacy single
+    // `broker: ant` field, kept as a fallback for a not-yet-migrated config)
+    // normalized to this strategy's own canonical broker names - 'kite' is
+    // accepted as an alias for 'zerodha' (BulkPcr/Hourly/Butterfly's own
+    // convention), unknown names are dropped (logged, not thrown - one bad
+    // entry must not block the other configured brokers), and an empty/
+    // missing config falls back to ['ant'] (this strategy's original,
+    // ANT-only behavior).
+    private configuredBrokers(config: any): BrokerName[] {
+        const raw: string[] = Array.isArray(config.brokers) && config.brokers.length > 0
+            ? config.brokers
+            : (config.broker ? [config.broker] : []);
+        const normalized = raw.map((b: string) => {
+            const lower = String(b).toLowerCase();
+            return lower === 'kite' ? 'zerodha' : lower;
+        });
+        const deduped = Array.from(new Set(normalized));
+        const valid: BrokerName[] = deduped.filter((b): b is BrokerName => b === 'zerodha' || b === 'breeze' || b === 'ant');
+        const invalid = deduped.filter((b) => !valid.includes(b as BrokerName));
+        if (invalid.length > 0) {
+            Log.log(`[${this.userId}] ALERT: config lists unknown broker(s) [${invalid.join(',')}] - dropping. Running only: ${valid.join(',') || 'none'}`);
+        }
+        return valid.length > 0 ? valid : ['ant'];
     }
 
     private hasFiredToday(): boolean {
@@ -268,33 +314,103 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                 selected.map(s => `${s.symbol}(${s.gapPct}%)`).join(', '));
         }
 
+        const brokers = this.configuredBrokers(config);
+        if (logEnabled) {
+            Log.log(`[${this.userId}] brokers: ${brokers.join(',')}`);
+        }
+
         // Contract resolution (local lookup, no network) for every selected
-        // stock, isolated per-stock so one missing/malformed contract master
-        // entry doesn't drop the rest.
-        const resolvedLegs: { stock: RankedStock; optionType: 'CE' | 'PE'; contract: OptionContract }[] = [];
+        // stock x configured broker, isolated per-(stock,broker) so one
+        // missing/malformed contract master entry doesn't drop the rest.
+        // ANT's own contract is always resolved first, even when 'ant' isn't
+        // in `brokers` - it is the ranking-independent reference strike/
+        // expiry every other broker's lookup is pinned to (see plan: ANT
+        // stays the sole market-data source, each broker then resolves its
+        // OWN tradable contract for that SAME strike/expiry).
+        const resolvedLegs: BrokerLeg[] = [];
         for (const stock of selected) {
+            // optionType must be the raw 'CE'/'PE' strings used by the contract
+            // master's own 'Option Type' field - NOT the CALL/PUT ('call'/'put')
+            // constants from constants.ts, which are a different, sentiment-
+            // check-only vocabulary.
+            //
+            // Deliberately using findNearestStrikeOption, not findATMOption:
+            // the latter's strike-rounding step (STRIKE_STEP) only has entries
+            // for NIFTY/SENSEX and falls back to a flat 50 for every other
+            // symbol, which practically never matches a real listed strike
+            // for an individual stock (strike increments vary wildly by price
+            // band - e.g. 2.5/5/10/20/50/100).
+            const optionType: 'CE' | 'PE' = stock.gapPct > 0 ? 'CE' : 'PE';
+            let antContract: OptionContract;
             try {
-                // optionType must be the raw 'CE'/'PE' strings used by the contract
-                // master's own 'Option Type' field - NOT the CALL/PUT ('call'/'put')
-                // constants from constants.ts, which are a different, sentiment-
-                // check-only vocabulary.
-                //
-                // Deliberately using findNearestStrikeOption, not findATMOption:
-                // the latter's strike-rounding step (STRIKE_STEP) only has entries
-                // for NIFTY/SENSEX and falls back to a flat 50 for every other
-                // symbol, which practically never matches a real listed strike
-                // for an individual stock (strike increments vary wildly by price
-                // band - e.g. 2.5/5/10/20/50/100).
-                const optionType: 'CE' | 'PE' = stock.gapPct > 0 ? 'CE' : 'PE';
-                const contract = AntContractMaster.getInstance().findNearestStrikeOption(stock.symbol, optionType, stock.latestOpen);
-                resolvedLegs.push({ stock, optionType, contract });
+                antContract = AntContractMaster.getInstance().findNearestStrikeOption(stock.symbol, optionType, stock.latestOpen);
             } catch (e: any) {
-                Log.log(`[${this.userId}] ${stock.symbol} contract resolution failed: ${e?.message ?? e}`);
+                Log.log(`[${this.userId}] ${stock.symbol} ANT contract resolution failed (skipping all brokers for this stock): ${e?.message ?? e}`);
+                continue;
+            }
+            const exchange = antContract.exch as 'NFO' | 'BFO';
+
+            for (const broker of brokers) {
+                if (broker === 'ant') {
+                    resolvedLegs.push({
+                        stock, optionType, broker,
+                        tradingSymbol: antContract.tradingSymbol,
+                        instrumentToken: antContract.token,
+                        exchange,
+                        lotSize: parseInt(antContract.lotSize, 10),
+                    });
+                    continue;
+                }
+                if (broker === 'zerodha') {
+                    try {
+                        const z = await ZerodhaContractMaster.getInstance().findExactOptionBySymbol(stock.symbol, antContract.strike, antContract.expiry, optionType);
+                        resolvedLegs.push({
+                            stock, optionType, broker,
+                            tradingSymbol: z.tradingSymbol,
+                            instrumentToken: antContract.token, // ANT common token - see BrokerLeg's own comment
+                            exchange: z.exchange,
+                            lotSize: z.lotSize,
+                        });
+                    } catch (e: any) {
+                        Log.log(`[${this.userId}] ${stock.symbol} zerodha contract resolution failed, skipping this broker's leg only: ${e?.message ?? e}`);
+                    }
+                    continue;
+                }
+                if (broker === 'breeze') {
+                    try {
+                        const shortName = (await BreezeContractMaster.getInstance().getEquityStockCode(stock.symbol)) ?? stock.symbol;
+                        // Breeze's own order-placement path (breezeExecutor.ts's parseTsym)
+                        // requires a tradingSymbol matching ^[A-Za-z]+?\d+(CE|PE)$ - a
+                        // shortName with digits/symbols (e.g. 'M&M') would build an
+                        // unparseable tsym downstream; skip this broker's leg rather than
+                        // dispatch an order that's guaranteed to fail inside `order`.
+                        if (!/^[A-Za-z]+$/.test(shortName)) {
+                            Log.log(`[${this.userId}] ${stock.symbol} breeze shortName '${shortName}' is not a plain-letters tsym prefix - skipping breeze leg`);
+                            continue;
+                        }
+                        const expiryDdMmmYyyy = moment(antContract.expiry).format('DD-MMM-YYYY');
+                        const record = await BreezeContractMaster.getInstance().findOption(shortName, expiryDdMmmYyyy, antContract.strike, optionType);
+                        if (!record) {
+                            Log.log(`[${this.userId}] ${stock.symbol} no breeze contract for ${shortName} strike=${antContract.strike} expiry=${expiryDdMmmYyyy} ${optionType} - skipping breeze leg`);
+                            continue;
+                        }
+                        resolvedLegs.push({
+                            stock, optionType, broker,
+                            tradingSymbol: `${shortName}${antContract.strike}${optionType}`,
+                            instrumentToken: antContract.token, // ANT common token - see BrokerLeg's own comment
+                            exchange,
+                            lotSize: Number(record.lotSize),
+                        });
+                    } catch (e: any) {
+                        Log.log(`[${this.userId}] ${stock.symbol} breeze contract resolution failed, skipping this broker's leg only: ${e?.message ?? e}`);
+                    }
+                    continue;
+                }
             }
         }
-        lap(`contract resolve (${resolvedLegs.length}/${selected.length})`);
+        lap(`contract resolve (${resolvedLegs.length} leg(s) across ${selected.length} stock(s) x ${brokers.length} broker(s))`);
         if (resolvedLegs.length === 0) {
-            Log.log(`[${this.userId}] no stock(s) resolved to a contract, skipping`);
+            Log.log(`[${this.userId}] no stock(s) resolved to a contract on any broker, skipping`);
             return;
         }
 
@@ -314,10 +430,10 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
         // recordFiredToday() above is already persisted, so processNiftyQuote's finally sees 'done' and a
         // restart cannot re-enter these legs. Aggregation/durablyDisable happen in the background.
         const tDispatch = Date.now();
-        const legPromises = resolvedLegs.map(({ stock, optionType, contract }) =>
-            this.enterLeg(stock, optionType, contract, lots, logEnabled, marketProtectionPercent));
+        const legPromises = resolvedLegs.map((leg) =>
+            this.enterLeg(leg, lots, logEnabled, marketProtectionPercent));
         void Promise.allSettled(legPromises).then((results) => {
-            Log.log(`[${this.userId}] timing all ${selected.length} leg(s) settled: ${Date.now() - tDispatch}ms after dispatch (total ${Date.now() - tStart}ms since executeTrade start)`);
+            Log.log(`[${this.userId}] timing all ${resolvedLegs.length} leg(s) settled: ${Date.now() - tDispatch}ms after dispatch (total ${Date.now() - tStart}ms since executeTrade start)`);
             // Counts by whether the buy actually filled (enterLeg's `entered`
             // flag), not by Promise.allSettled's fulfilled/rejected alone - a leg
             // whose buy filled but whose resting-sell placement then failed
@@ -328,9 +444,9 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
             // strategy armed to open more unprotected positions on a future day
             // while live, unprotected positions are already open right now.
             const enteredCount = results.filter((r) => r.status === 'fulfilled' && r.value.entered).length;
-            const notEnteredCount = selected.length - enteredCount;
+            const notEnteredCount = resolvedLegs.length - enteredCount;
             if (notEnteredCount > 0) {
-                Log.log(`[${this.userId}] ${notEnteredCount}/${selected.length} leg(s) failed to enter - see individual leg logs above`);
+                Log.log(`[${this.userId}] ${notEnteredCount}/${resolvedLegs.length} leg(s) failed to enter - see individual leg logs above`);
             }
 
             // Keep the existing rule: durably disable only if at least one leg actually traded;
@@ -381,90 +497,127 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     // actually traded." Throws (never resolves) only for a failure BEFORE
     // any order was placed - those are genuine non-entries.
     private async enterLeg(
-        stock: RankedStock,
-        optionType: 'CE' | 'PE',
-        contract: OptionContract,
+        leg: BrokerLeg,
         lots: number,
         logEnabled: boolean,
         marketProtectionPercent: number
     ): Promise<{ entered: boolean }> {
+        const { stock, optionType, broker } = leg;
         try {
             if (!(stock.latestOpen > 0)) {
-                throw new Error(`invalid latestOpen ${stock.latestOpen} for ${contract.tradingSymbol}`);
+                throw new Error(`invalid latestOpen ${stock.latestOpen} for ${leg.tradingSymbol}`);
             }
-            const lotSize = parseInt(contract.lotSize, 10);
-            if (!lotSize || lotSize <= 0) {
-                throw new Error(`invalid lotSize ${contract.lotSize} for ${contract.tradingSymbol}`);
+            if (!leg.lotSize || leg.lotSize <= 0) {
+                throw new Error(`invalid lotSize ${leg.lotSize} for ${leg.tradingSymbol}`);
             }
-            const quantity = lotSize * lots;
+            const quantity = leg.lotSize * lots;
             const tLeg = Date.now();
 
             if (logEnabled) {
-                Log.log(`[${this.userId}] ${stock.symbol} gap=${stock.gapPct}% dir=${optionType} ` +
-                    `contract=${contract.tradingSymbol} qty=${quantity} protection=${marketProtectionPercent}%`);
+                Log.log(`[${this.userId}] ${stock.symbol} gap=${stock.gapPct}% dir=${optionType} broker=${broker} ` +
+                    `contract=${leg.tradingSymbol} qty=${quantity} protection=${marketProtectionPercent}%`);
             }
 
-            // ANT/AliceBlue has no broker-native target-only order type
-            // (placeBracketOrder requires both legs, placeCoverOrder is
-            // SL-only), so this is just buy, wait for the real fill, then
-            // place a separate resting target-only limit sell - nothing more
-            // (no re-place-on-cancel, no reconcile: kept deliberately simple
-            // per this strategy's single-shot, single-order-per-leg shape).
-            //
-            // Routed through OrderClient/IPC into the `order` process rather
-            // than calling antExecutor.ts directly - this strategy runs in
-            // the separate `strategies` process, where antExecutor.ts's
-            // bookkeeping.ts/exitMonitor.ts/pendingAntLimitOrders.ts
-            // singletons are disconnected shadow copies that nothing else in
-            // the app ever reads from.
-            //
-            // No pre-trade option LTP any more: buys MARKET (with market
-            // protection), and the target is sized server-side (antExecutor)
-            // from the real fill price and stock.latestOpen.
-            const trade = await OrderClient.getInstance().antBuyTargetOnly(this.userId, {
-                tradingSymbol: contract.tradingSymbol,
-                instrumentId: contract.token,
+            if (broker === 'ant') {
+                // ANT/AliceBlue has no broker-native target-only order type
+                // (placeBracketOrder requires both legs, placeCoverOrder is
+                // SL-only), so this is just buy, wait for the real fill, then
+                // place a separate resting target-only limit sell - nothing more
+                // (no re-place-on-cancel, no reconcile: kept deliberately simple
+                // per this strategy's single-shot, single-order-per-leg shape).
+                //
+                // Routed through OrderClient/IPC into the `order` process rather
+                // than calling antExecutor.ts directly - this strategy runs in
+                // the separate `strategies` process, where antExecutor.ts's
+                // bookkeeping.ts/exitMonitor.ts/pendingAntLimitOrders.ts
+                // singletons are disconnected shadow copies that nothing else in
+                // the app ever reads from.
+                //
+                // No pre-trade option LTP any more: buys MARKET (with market
+                // protection), and the target is sized server-side (antExecutor)
+                // from the real fill price and stock.latestOpen.
+                const trade = await OrderClient.getInstance().antBuyTargetOnly(this.userId, {
+                    tradingSymbol: leg.tradingSymbol,
+                    instrumentId: leg.instrumentToken,
+                    quantity,
+                    exchange: leg.exchange,
+                    underlyingOpen: stock.latestOpen,
+                    marketProtectionPercent,
+                    product: 'LONGTERM', // overnight (NRML-equivalent), not the INTRADAY default the broker squares off at ~3:20pm
+                });
+                const buyMs = Date.now() - tLeg;
+
+                // Sized from the ACTUAL fill price/quantity, not any pre-trade estimate.
+                // trade.targetPrice can come back unset (antExecutor's entryPrice<=0 guard) if
+                // the fill price itself was unusable - never place a resting sell at a
+                // falsy/zero price in that case; antExecutor already logged the ALERT.
+                if (!(trade.targetPrice > 0)) {
+                    Log.log(`[${this.userId}] ALERT: ${stock.symbol} ${leg.tradingSymbol} broker=ant qty=${trade.quantity} entry=${trade.price} FILLED but has no usable target price - skipping sell placement, position is LIVE and UNPROTECTED (buy=${buyMs}ms)`);
+                    return { entered: true };
+                }
+                const tSell = Date.now();
+                try {
+                    await OrderClient.getInstance().antPlaceLimitSellBare(this.userId, {
+                        tradingSymbol: trade.tsym,
+                        instrumentId: trade.token,
+                        quantity: trade.quantity,
+                        price: trade.targetPrice,
+                        exchange: leg.exchange,
+                        product: 'LONGTERM', // must match the entry's product
+                    });
+                } catch (sellErr: any) {
+                    const sellMs = Date.now() - tSell;
+                    Log.log(`[${this.userId}] ALERT: ${stock.symbol} ${leg.tradingSymbol} broker=ant qty=${trade.quantity} entry=${trade.price} FILLED but target sell placement failed - position is LIVE and UNPROTECTED (buy=${buyMs}ms sell=${sellMs}ms): ${sellErr?.message ?? sellErr}`);
+                    return { entered: true };
+                }
+
+                Log.log(`[${this.userId}] TRADED ${stock.symbol} ${optionType} broker=ant ${leg.tradingSymbol} qty=${trade.quantity} entry=${trade.price} target=${trade.targetPrice} (buy=${buyMs}ms sell=${Date.now() - tSell}ms leg=${Date.now() - tLeg}ms)`);
+                return { entered: true };
+            }
+
+            // zerodha/breeze: no broker-native target-only order type either (and
+            // these "bare" buy primitives are themselves already a marketable
+            // LIMIT at the live best bid/ask, not a true MARKET order - see
+            // marketBuyBareOnZerodha/marketBuyBareOnBreeze's own header comments).
+            // Mirrors the ant branch's own shape: buy -> real fill -> own resting
+            // target-only limit sell, sized from the ACTUAL fill price exactly
+            // like antExecutor's marketEntry formula - min(0.25 delta x 1% of the
+            // underlying's open, the premium actually paid), tick-rounded.
+            const trade = await OrderClient.getInstance().butterflyBuyLeg(this.userId, {
+                broker,
+                tradingSymbol: leg.tradingSymbol,
+                instrumentToken: leg.instrumentToken,
                 quantity,
-                exchange: contract.exch as 'NFO' | 'BFO',
-                underlyingOpen: stock.latestOpen,
-                marketProtectionPercent,
+                exchange: leg.exchange,
             });
             const buyMs = Date.now() - tLeg;
 
-            // Sized from the ACTUAL fill price/quantity, not any pre-trade estimate.
-            // trade.targetPrice can come back unset (antExecutor's entryPrice<=0 guard) if
-            // the fill price itself was unusable - never place a resting sell at a
-            // falsy/zero price in that case; antExecutor already logged the ALERT.
-            if (!(trade.targetPrice > 0)) {
-                Log.log(`[${this.userId}] ALERT: ${stock.symbol} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} FILLED but has no usable target price - skipping sell placement, position is LIVE and UNPROTECTED (buy=${buyMs}ms)`);
+            if (!(trade.price > 0)) {
+                Log.log(`[${this.userId}] ALERT: ${stock.symbol} ${leg.tradingSymbol} broker=${broker} qty=${trade.quantity} entry=${trade.price} FILLED but price is unusable - skipping sell placement, position is LIVE and UNPROTECTED (buy=${buyMs}ms)`);
                 return { entered: true };
             }
+            const targetPoints = Math.min(0.0025 * stock.latestOpen, trade.price);
+            const targetPrice = roundToTick(trade.price + targetPoints);
             const tSell = Date.now();
             try {
-                await OrderClient.getInstance().antPlaceLimitSellBare(this.userId, {
+                await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
+                    broker,
                     tradingSymbol: trade.tsym,
-                    instrumentId: trade.token,
+                    instrumentToken: trade.token,
                     quantity: trade.quantity,
-                    price: trade.targetPrice,
-                    exchange: contract.exch as 'NFO' | 'BFO',
+                    price: targetPrice,
+                    exchange: leg.exchange,
                 });
             } catch (sellErr: any) {
                 const sellMs = Date.now() - tSell;
-                // The buy already filled and is live (recorded in bookkeeping)
-                // with no resting exit order and no stop-loss of any kind -
-                // distinct from "never entered" so an operator scanning logs
-                // doesn't mistake this for a no-op skip. Resolved (entered:
-                // true), not thrown - a live, already-executed trade must
-                // never be miscounted as "failed to enter" by the caller,
-                // which would leave durablyDisable thinking nothing traded.
-                Log.log(`[${this.userId}] ALERT: ${stock.symbol} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} FILLED but target sell placement failed - position is LIVE and UNPROTECTED (buy=${buyMs}ms sell=${sellMs}ms): ${sellErr?.message ?? sellErr}`);
+                Log.log(`[${this.userId}] ALERT: ${stock.symbol} ${leg.tradingSymbol} broker=${broker} qty=${trade.quantity} entry=${trade.price} FILLED but target sell placement failed - position is LIVE and UNPROTECTED (buy=${buyMs}ms sell=${sellMs}ms): ${sellErr?.message ?? sellErr}`);
                 return { entered: true };
             }
 
-            Log.log(`[${this.userId}] TRADED ${stock.symbol} ${optionType} ${contract.tradingSymbol} qty=${trade.quantity} entry=${trade.price} target=${trade.targetPrice} (buy=${buyMs}ms sell=${Date.now() - tSell}ms leg=${Date.now() - tLeg}ms)`);
+            Log.log(`[${this.userId}] TRADED ${stock.symbol} ${optionType} broker=${broker} ${leg.tradingSymbol} qty=${trade.quantity} entry=${trade.price} target=${targetPrice} (buy=${buyMs}ms sell=${Date.now() - tSell}ms leg=${Date.now() - tLeg}ms)`);
             return { entered: true };
-        } catch (e) {
-            Log.log(`[${this.userId}] ${stock.symbol} leg failed: ${e?.message ?? e}`);
+        } catch (e: any) {
+            Log.log(`[${this.userId}] ${stock.symbol} broker=${broker} leg failed: ${e?.message ?? e}`);
             throw e;
         }
     }

@@ -1,5 +1,35 @@
 # Known Bugs
 
+## 2026-10-21 - Strategies.enforceTradingWindow is one-directional: a restart before the window permanently disables an otherwise-armed strategy for the whole window
+
+Context: `Strategies.enforceTradingWindow()` (`src/strategy/strategies.ts:66-72`) force-disables
+(in-memory `strategy.enabled = false`) any strategy found enabled outside the global
+09:10-15:25 trading window, and is deliberately one-directional (never auto-re-enables - see
+its own comment). It runs at `initialize()` (process startup), on `syncFromConfig()` (a config
+save / admin toggle), and every 60s via `strategiesProcess.ts`'s `recheckTradingWindow()`
+`setInterval`. The periodic recheck only *disables*, so a strategy that was armed in
+`config.yml` (`enabled: true`) but happened to start up *before* 09:10 gets force-disabled at
+startup and then **silently stays disabled for the rest of that trading window** - the 60s
+recheck never flips it back on once the window opens, and nothing logs this as an ongoing
+problem (only the one-time "force-disabled" line at the moment it happened, easily scrolled
+past in `orchestrator.log`).
+
+Hit live 2026-10-21: `npm run processes` was (re)started at 08:47 (before 09:10) with
+`TopStockOptionsOpeningGapStrategy` armed (`enabled: true`) for its 9:10-9:20 entry window.
+`enforceTradingWindow()` force-disabled it at startup as designed. Nothing re-armed it as
+09:10 passed, and the strategy produced zero log output through the entire window with no
+error raised - from the outside this read as "nothing happening" rather than "disabled",
+until `Strategies.initialize`'s one-time startup log line was found by hand in the log. Worked
+around in the moment by manually sending a `syncFromConfig` IPC request directly to the
+`strategies` process's Unix socket (`/tmp/icici-strategies.sock`) at 09:16 while still inside
+the window, which re-read `config.yml` and re-armed it (per `syncFromConfig`'s own
+`enforceTradingWindow()` call, which is a no-op once inside the window) - the strategy then
+fired successfully a few minutes before its own 9:20 cutoff.
+
+| # | Gap | Where | Status |
+|---|---|---|---|
+| A | A process start/restart before the trading window opens permanently strands any `enabled: true` strategy disabled for that entire window, with no periodic re-check and no distinguishing log once the one-time startup message scrolls by | `strategies.ts` `enforceTradingWindow`/`recheckTradingWindow`; `strategiesProcess.ts`'s 60s interval | NOT FIXED: needs either a periodic re-enable-if-config-says-so-and-now-in-window check, or a louder/repeating "N strategies parked outside window, will not auto-arm" signal so this isn't silent |
+
 ## 2026-10-20 - Drawdown ledger: closed-trade rows held in memory (accepted design, known gaps)
 
 Context: the drawdown breach check (`bookkeeping.ts` `drawdownState` / `checkBreachAndNotify`) sums

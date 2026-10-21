@@ -442,7 +442,7 @@ sell — no fill confirmation). Explicit code comment: "no stop loss - monitor
 manually". Caps concurrent trades at `tradesCount` (10). Legacy/prototype —
 not part of the current live strategy set.
 
-### TopStockOptionsOpeningGapStrategy (`TopStockOptionsOpeningGapStrategy.ts`) — config: `enabled: false`
+### TopStockOptionsOpeningGapStrategy (`TopStockOptionsOpeningGapStrategy.ts`) — config: `enabled: true`, multi-broker
 **Entry**: one-shot per day, fires once within a short morning window
 (`isTimeInRange()` override, 9:10–9:20 IST — right as NSE's pre-open
 equilibrium price settles, well clear of `BulkPcrAutoStartStrategy`'s 10:35
@@ -453,28 +453,68 @@ re-run the fetch by hand every few months to refresh it; not wired to a
 cron), ranks by `|Gap %|` descending, takes the configured rank window
 (default ranks 3–5, i.e. `rankStart: 3`, `rankCount: 3`), and for each one
 buys the nearest-strike CE (gap up) or PE (gap down) option — one leg per
-stock, isolated via `Promise.allSettled` so one stock's contract-resolution/
-order failure doesn't abort the others.
+(stock, broker) pair, isolated via `Promise.allSettled` so one leg's
+contract-resolution/order failure doesn't abort the others.
+**Product (overnight, not intraday)**: the position is meant to be held
+past the session. Zerodha places `NRML` and Breeze `options` (both carry
+forward). ANT's buy and resting target sell pass `product: 'LONGTERM'`
+explicitly (`ANT.placeOrder`'s default is `INTRADAY`, which AliceBlue squares
+off at ~3:20pm). The product is stored on the Trade so exits and restores
+reuse it. `LONGTERM` is the unverified value from AliceBlue's v2 docs; if
+the first live ANT entry is rejected, check the logged response and try
+`NORMAL`.
+**Multi-broker (`brokers: [zerodha, breeze, ant]`)**: ranking stays
+broker-independent — the single ANT OHLC batch call picks the stocks and
+`AntContractMaster.findNearestStrikeOption` picks the reference strike +
+nearest expiry for each one; every configured broker then resolves its OWN
+tradable contract for that SAME (strike, expiry) pair
+(`ZerodhaContractMaster.findExactOptionBySymbol`,
+`BreezeContractMaster.findOption` via `getEquityStockCode` for the ICICI
+shortName) rather than independently re-picking a strike, so a stale
+weekly-vs-monthly master on one broker can't silently diverge from what ANT
+chose (the exact failure class flagged in `ZerodhaContractMaster.ts`'s own
+`refreshIfStale` comment). `kite` is accepted as an alias for `zerodha`;
+unknown broker names are dropped with a log; an empty/missing config falls
+back to `['ant']`. `lots` applies **per stock per broker** — 3 stocks × 3
+brokers = up to 9 positions — and the shared per-user capital/loss caps
+(`canPlaceOrder`) can reject a later broker's leg once an earlier one has
+used up the budget.
 **Contract resolution**: uses `AntContractMaster.findNearestStrikeOption`
 (not `findATMOption` - its strike-rounding step only covers NIFTY/SENSEX,
 defaulting to a flat 50 for everything else, which almost never matches a
 real listed strike for an individual stock) to pick the strike nearest to
 the stock's `Latest Open` from the real listed strikes for the nearest
+expiry. A breeze leg is skipped (logged, not fatal) if the ICICI shortName
+isn't plain letters (e.g. `M&M`) or no contract exists at ANT's exact
 expiry.
-**Entry/exit**: 1 lot (`lots` config, default 1) per leg, bought at MARKET
-with AliceBlue's `marketProtectionPercent` (`marketProtectionPercent` config,
-default 5) instead of a pre-trade-LTP marketable limit — this drops the
-second (pre-buy) OHLC call entirely, cutting the ANT-throttled gap between
-ranking and the first buy to well under a second. If ANT rejects the
+**Entry/exit — ant**: 1 lot (`lots` config, default 1) per leg, bought at
+MARKET with AliceBlue's `marketProtectionPercent` (`marketProtectionPercent`
+config, default 5) instead of a pre-trade-LTP marketable limit — this drops
+the second (pre-buy) OHLC call entirely, cutting the ANT-throttled gap
+between ranking and the first buy to well under a second. If ANT rejects the
 MARKET+protection order (`EC965`/"Market orders are not allowed"),
 `antExecutor.enterPosition` falls back to a marketable LIMIT priced off
-`ANT.getScripQuote` (not OHLC-throttled). The resting target-only exit is a
-separate limit sell placed after the real fill, at
-`min(0.0025 * stockOpen, fillPrice)` points above the fill price (0.25 assumed
-delta × 1% of the underlying's open, capped at 100% of the premium paid) —
-exit is self-managed (one resting limit sell per leg, no re-place-on-cancel,
-no reconcile), not broker-owned; `getMonitorConfig()` returns `null` and
-`canHandleOptionQuote()` is always `false` accordingly.
+`ANT.getScripQuote` (not OHLC-throttled).
+**Entry/exit — zerodha/breeze**: bought via the broker-dispatched
+`butterflyBuyLeg` IPC (`marketBuyBareOnZerodha`/`marketBuyBareOnBreeze` —
+themselves a marketable LIMIT at the live best bid/ask, not a true broker
+MARKET order), using the ANT-native token for the live-quote lookup and
+that broker's own trading symbol to place the order. The target is computed
+strategy-side from the real fill, with the identical formula ANT's
+`antExecutor` uses server-side, and placed as a separate resting sell via
+the broker-dispatched `brokerPlaceLimitSellBare` IPC
+(`placeLimitSellBareOnZerodha`/`placeLimitSellBareOnBreeze`).
+**All brokers**: the resting target-only exit is a separate limit sell
+placed after the real fill, at `min(0.0025 * stockOpen, fillPrice)` points
+above the fill price (0.25 assumed delta × 1% of the underlying's open,
+capped at 100% of the premium paid) — exit is self-managed (one resting
+limit sell per leg, no re-place-on-cancel, no reconcile), not broker-owned;
+`getMonitorConfig()` returns `null` and `canHandleOptionQuote()` is always
+`false` accordingly. `exitMonitor.ts`'s `SELF_MANAGED_STRATEGY_TYPES` lists
+this strategy's type so a restart's `reconcileFromTrades()` never
+re-registers these trades as broker-owned; the zerodha/breeze fills on the
+resting sell are picked up by `pendingLimitOrders.ts`'s/
+`breezePendingLimitOrders.ts`'s own pollers like any other bare limit sell.
 **Fire-and-forget**: `executeTrade()` dispatches every leg's buy+fill-wait+
 sell and returns immediately once all buys are in flight; per-leg
 aggregation (entered-count logging, `durablyDisable`) happens in the
@@ -484,11 +524,12 @@ marker (namespaced by `userId`, same pattern as `BulkPcrAutoStartStrategy`'s
 `.bulkpcr_armed_slots.json`, written *before* any leg is dispatched)
 prevents a process restart inside the trading window from re-entering all
 legs a second time the same day.
-**Config keys** (`config.yml`): `enabled`, `rankStart`, `rankCount`,
-`marketProtectionPercent`, `lots`, `logEnabled`. Ships `enabled: false` —
-this places real option orders across up to `rankCount` stocks at once; a
-dry run of the log output (rank selection, resolved contracts) should be
-reviewed before flipping it on.
+**Config keys** (`config.yml`): `enabled`, `brokers` (or legacy single
+`broker`), `rankStart`, `rankCount`, `marketProtectionPercent`, `lots`,
+`logEnabled`. This places real option orders across up to `rankCount`
+stocks × `brokers.length` brokers at once; a dry run of the log output
+(rank selection, resolved contracts) should be reviewed before changing the
+rank window or broker list.
 
 ### BiDirectionStrategy, DiffStrategy, PivotStrategy, HighLotStrategy, TestStrategy
 Legacy/early-prototype strategies registered in `StrategyFactory.ts` but with

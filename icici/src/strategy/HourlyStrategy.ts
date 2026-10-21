@@ -317,24 +317,27 @@ export default class HourlyStrategy extends Strategy {
         this.activeInvalidationLevel = confirmation.slLevel;
         this.recordTriggerTime();
 
-        // -2 is HourlyStrategy's own "use the full configured maxInvestment"
-        // sentinel (distinct from chunkedBuyIndex's own universal -1
-        // sentinel - see resolveChunkedBuyQuantity/bookkeeping.
-        // resolveMaxInvestmentQuantity, orderProcess.ts) - translated to -1
-        // right here before the OrderClient call, same effect BulkPcrStrategy
-        // gets from configuring `quantity: -1` directly. Requires a
-        // `maxInvestment` key in this instance's own config.yml block (and
-        // `'HourlyStrategy'` in bookkeeping.canPlaceOrder's maxInvestment-only
-        // exemption, alongside ContinuousStrategy/BulkPcrStrategy) or it
-        // falls back to DEFAULT_MAX_INVESTMENT. CAUTION with 2+ configured
-        // brokers (this strategy's default): each broker's chunkedBuyIndex
-        // independently resolves "max quantity for the FULL maxInvestment" at
-        // roughly the same instant (Promise.allSettled below), so N
-        // concurrently-entering brokers can together request up to N x
-        // maxInvestment before any fill reduces headroom - same accepted gap
-        // BulkPcrStrategy's own enterOnBroker documents, size maxInvestment
-        // (or trim `brokers`) with that in mind.
-        const quantity = cfg.quantity === -2 ? -1 : cfg.quantity ?? 65;
+        // `quantity: -1` in config.yml means "use the full configured
+        // maxInvestment" - the same universal sentinel chunkedBuyIndex
+        // itself understands (see resolveChunkedBuyQuantity/bookkeeping.
+        // resolveMaxInvestmentQuantity, orderProcess.ts) and the identical
+        // value BulkPcrStrategy/BulkPcrAutoStartStrategy configure for the
+        // same effect - deliberately the SAME sentinel across every strategy
+        // that supports this convention, not a per-type value, so arming one
+        // doesn't require remembering a different magic number per type.
+        // Requires a `maxInvestment` key in this instance's own config.yml
+        // block (and `'HourlyStrategy'` in bookkeeping.canPlaceOrder's
+        // maxInvestment-only exemption, alongside ContinuousStrategy/
+        // BulkPcrStrategy) or it falls back to DEFAULT_MAX_INVESTMENT.
+        // CAUTION with 2+ configured brokers (this strategy's default): each
+        // broker's chunkedBuyIndex independently resolves "max quantity for
+        // the FULL maxInvestment" at roughly the same instant
+        // (Promise.allSettled below), so N concurrently-entering brokers can
+        // together request up to N x maxInvestment before any fill reduces
+        // headroom - same accepted gap BulkPcrStrategy's own enterOnBroker
+        // documents, size maxInvestment (or trim `brokers`) with that in
+        // mind.
+        const quantity = cfg.quantity ?? 65;
         const brokers = this.configuredBrokers();
         Log.log(`[Hourly] Entering ${confirmation.direction} qty=${quantity} independently on: ${brokers.join(', ')}`);
         // allSettled, not all - one broker's entry failing must not abort a

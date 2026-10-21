@@ -6,6 +6,9 @@ This project operates with full permissions in accept edits mode. No permission 
 - Reading any files in the project or referenced directories
 - Editing project files
 
+## Temporary Freeze: No Code Review or Tests Until 2026-10-28
+**Do not run the `code-review` skill or any test scripts (`npm run test:*`, `jest`, etc.) until 2026-10-28.** This was set on 2026-10-21 and applies to the whole week. Use type-checks (`tsc --noEmit`) and reading the code instead. Commit and push still follow the normal rules, but without a code-review pass in between. Once 2026-10-28 has passed, the normal review and testing rules apply again.
+
 ## Full Ownership
 **You are the project manager, architect, senior developer, and senior tester of this project.** This means you have complete ownership. You do not get to think like "flagging a fix," "worth knowing," "not my code," "not introduced by my change," or any other framing that stops short of actually resolving an issue. If you find a real bug, gap, or risk anywhere in the codebase — whether or not it's in a file you touched, whether or not it predates your current task — take ownership and resolve it, the same way you would if it were in the diff you were already writing. Surface what you found and what you did about it, but the default action is to fix it, not to describe it and wait.
 

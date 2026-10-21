@@ -86,7 +86,7 @@ export async function pollPendingBreezeLimitOrders(): Promise<void> {
 
     for (const [orderId, order] of pending) {
         try {
-            const result = await breeze.getOrderDetail('NFO', orderId);
+            const result = await breeze.getOrderDetail(order.exchange, orderId);
             const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
             if (!record) continue;
 

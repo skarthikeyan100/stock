@@ -113,7 +113,10 @@ strategies:
     marketSentiment: none
   - type: HourlyStrategy
     enabled: false
-    brokers: [zerodha, ant, breeze]
+    brokers:
+      - zerodha
+      - ant
+      - breeze
     quantity: 65
     maxInvestment: 100000
     targetPrice: 15
@@ -146,7 +149,7 @@ strategies:
     index: SENSEX
   - type: BulkPcrStrategy
     userId: BulkPcr-NIFTY
-    enabled: true
+    enabled: false
     quantity: -1
     targetPoints: 2
     chunkDriftCancelPoints: 10
@@ -160,7 +163,7 @@ strategies:
   - type: BulkPcrAutoStartStrategy
     userId: BulkPcrAutoStart-SENSEX
     targetUserId: BulkPcr-SENSEX
-    enabled: true
+    enabled: false
     times:
       - '10:35'
       - '11:05'
@@ -174,7 +177,7 @@ strategies:
   - type: BulkPcrAutoStartStrategy
     userId: BulkPcrAutoStart-NIFTY
     targetUserId: BulkPcr-NIFTY
-    enabled: true
+    enabled: false
     times:
       - '10:35'
       - '11:05'
@@ -186,7 +189,7 @@ strategies:
     brokers:
       - ant
   - type: TopStockOptionsOpeningGapStrategy
-    enabled: true
+    enabled: false
     broker: ant
     rankStart: 3
     rankCount: 3

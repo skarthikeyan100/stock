@@ -10,10 +10,12 @@ import Log from '../util/Log';
 // calls needs its own axios.create() rather than the global one.
 const httpClient = axios.create();
 
+export type BreezeExchange = 'NFO' | 'BFO';
+
 export interface FnoRecord {
     token: string;
     instrumentName: string; // 'FUTIDX' | 'FUTSTK' | 'OPTIDX' | 'OPTSTK'
-    shortName: string; // ICICI's stockCode for placeOrder/getQuotes, e.g. 'NIFTY', 'VEDLIM'
+    shortName: string; // ICICI's stockCode for placeOrder/getQuotes, e.g. 'NIFTY', 'VEDLIM', 'BSESEN' (SENSEX)
     series: string; // 'FUTURE' | 'OPTION'
     expiryDate: string; // 'DD-MMM-YYYY', matches Breeze's own expiryDate param format
     strikePrice: string;
@@ -21,6 +23,7 @@ export interface FnoRecord {
     lotSize: number;
     tickSize: number;
     companyName: string;
+    exchange: BreezeExchange; // 'NFO' for NIFTY-family, 'BFO' for SENSEX - which Security Master file the row came from
 }
 
 export interface CashRecord {
@@ -29,6 +32,31 @@ export interface CashRecord {
     series: string;
     companyName: string;
     symbol: string; // NSE trading symbol
+}
+
+// ICICI's stockCode for SENSEX (ShortName in FOBSE/BSE Security Masters). The rest of the
+// codebase names the index 'SENSEX' (tsyms, IPC payloads, ANT pricing) - this is the one
+// place that translates between the two.
+export const SENSEX_BREEZE_SHORT_NAME = 'BSESEN';
+
+// Index name ('NIFTY'|'SENSEX') or ICICI shortName -> ICICI shortName used for placeOrder/getQuotes.
+export function breezeShortNameFor(underlying: string): string {
+    return underlying === 'SENSEX' ? SENSEX_BREEZE_SHORT_NAME : underlying;
+}
+
+// ICICI shortName -> index name the rest of the codebase uses (tsym prefix, ANT option chain).
+export function indexNameFor(shortName: string): string {
+    return shortName === SENSEX_BREEZE_SHORT_NAME ? 'SENSEX' : shortName;
+}
+
+// Which exchange an option/underlying trades on, derived from its ICICI shortName.
+export function breezeExchangeFor(shortName: string): BreezeExchange {
+    return shortName === SENSEX_BREEZE_SHORT_NAME ? 'BFO' : 'NFO';
+}
+
+// SENSEX strikes are 100 apart, NIFTY's are 50 (same split ANT/Zerodha/Prism use).
+export function strikeStepFor(shortName: string): number {
+    return shortName === SENSEX_BREEZE_SHORT_NAME ? 100 : 50;
 }
 
 // Wraps ICICI's officially documented Security Master download
@@ -56,6 +84,8 @@ class BreezeContractMaster {
     // ("instruments" section) as "Security Master file for token mapping".
     private readonly ZIP_URL = 'https://directlink.icicidirect.com/NewSecurityMaster/SecurityMaster.zip';
     private readonly FNO_FILE = path.join(this.DATA_DIR, 'FONSEScripMaster.txt');
+    // BSE derivatives (SENSEX/BANKEX options) - extracted from the same zip as FNO_FILE.
+    private readonly BFO_FILE = path.join(this.DATA_DIR, 'FOBSEScripMaster.txt');
     private readonly NSE_FILE = path.join(this.DATA_DIR, 'NSEScripMaster.txt');
 
     // ICICI regenerates the Security Master daily at 8am (per their own docs) -
@@ -65,6 +95,7 @@ class BreezeContractMaster {
     private readonly STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
     private fnoCache: FnoRecord[] | null = null;
+    private bfoCache: FnoRecord[] | null = null;
     private nseCache: CashRecord[] | null = null;
 
     private constructor() {
@@ -95,6 +126,7 @@ class BreezeContractMaster {
         // existing child_process usage elsewhere (candle.ts, decision.ts).
         execFileSync('unzip', ['-o', this.ZIP_PATH, '-d', this.DATA_DIR]);
         this.fnoCache = null;
+        this.bfoCache = null;
         this.nseCache = null;
         Log.log('[BreezeContractMaster] Security Master downloaded and extracted');
     }
@@ -105,15 +137,16 @@ class BreezeContractMaster {
         }
     }
 
-    // Warms the FNO and NSE caches at startup. Runs the daily stale-refresh first, same as
+    // Warms the FNO, BFO and NSE caches at startup. Runs the daily stale-refresh first, same as
     // the lazy path would. Fail-soft: a failed download or parse is logged and lookups stay lazy.
     async preload(): Promise<void> {
         const t0 = Date.now();
         try {
             await this.ensureLoaded();
-            const fno = this.loadFno().length;
+            const fno = this.loadDerivatives('NFO').length;
+            const bfo = this.loadDerivatives('BFO').length;
             const nse = this.loadNse().length;
-            Log.log(`[BreezeContractMaster] preload: ${fno} FNO / ${nse} NSE rows in ${Date.now() - t0}ms`);
+            Log.log(`[BreezeContractMaster] preload: ${fno} NFO / ${bfo} BFO / ${nse} NSE rows in ${Date.now() - t0}ms`);
         } catch (e: any) {
             Log.log(`[BreezeContractMaster] ALERT: preload failed - lookups will retry lazily: ${e?.message ?? e}`);
         }
@@ -124,26 +157,33 @@ class BreezeContractMaster {
     // strict quoting rejects (INVALID_OPENING_QUOTE) - confirmed against a
     // live download 2026-09-17. Data rows aren't affected (no such spacing),
     // this only unblocks parsing the header row we discard anyway.
-    private loadFno(): FnoRecord[] {
-        if (!this.fnoCache) {
-            const raw = fs.readFileSync(this.FNO_FILE, 'utf-8');
-            const rows: string[][] = parse(raw, { skip_empty_lines: true, relax_quotes: true, trim: true });
-            const [, ...dataRows] = rows; // first row is the header
-            this.fnoCache = dataRows.map((row) => ({
-                token: row[0],
-                instrumentName: row[1],
-                shortName: row[2],
-                series: row[3],
-                expiryDate: row[4],
-                strikePrice: row[5],
-                optionType: row[6],
-                lotSize: Number(row[27]),
-                tickSize: Number(row[28]),
-                companyName: row[29],
-            }));
-            Log.log(`[BreezeContractMaster] Loaded ${this.fnoCache.length} NFO contracts`);
-        }
-        return this.fnoCache;
+    // NFO and BFO share one column layout (verified against both live files
+    // 2026-10-21: LotSize at index 27, TickSize at 28, CompanyName at 29), so
+    // one parser serves both - only the file and the tagged exchange differ.
+    private loadDerivatives(exchange: BreezeExchange): FnoRecord[] {
+        const cached = exchange === 'BFO' ? this.bfoCache : this.fnoCache;
+        if (cached) return cached;
+        const file = exchange === 'BFO' ? this.BFO_FILE : this.FNO_FILE;
+        const raw = fs.readFileSync(file, 'utf-8');
+        const rows: string[][] = parse(raw, { skip_empty_lines: true, relax_quotes: true, trim: true });
+        const [, ...dataRows] = rows; // first row is the header
+        const records: FnoRecord[] = dataRows.map((row) => ({
+            token: row[0],
+            instrumentName: row[1],
+            shortName: row[2],
+            series: row[3],
+            expiryDate: row[4],
+            strikePrice: row[5],
+            optionType: row[6],
+            lotSize: Number(row[27]),
+            tickSize: Number(row[28]),
+            companyName: row[29],
+            exchange,
+        }));
+        if (exchange === 'BFO') this.bfoCache = records;
+        else this.fnoCache = records;
+        Log.log(`[BreezeContractMaster] Loaded ${records.length} ${exchange} contracts`);
+        return records;
     }
 
     private loadNse(): CashRecord[] {
@@ -167,6 +207,12 @@ class BreezeContractMaster {
         return this.nseCache;
     }
 
+    // The option list for one underlying - BFO for SENSEX, NFO otherwise. Callers pass either
+    // an index name ('NIFTY'/'SENSEX') or an ICICI shortName; both normalize to the same list.
+    private optionsFor(underlying: string): FnoRecord[] {
+        return this.loadDerivatives(breezeExchangeFor(breezeShortNameFor(underlying)));
+    }
+
     // NIFTY/BANKNIFTY's ShortName already equals the underlying name Breeze's
     // own placeOrder examples use directly (confirmed against a live download
     // 2026-09-17: ShortName "NIFTY" for NIFTY index options) - this lookup
@@ -174,10 +220,11 @@ class BreezeContractMaster {
     // differs from the NSE trading symbol (e.g. "VEDLIM" for NSE "VEDL").
     async findOption(underlyingShortName: string, expiryDate: string, strikePrice: number, optionType: 'CE' | 'PE'): Promise<FnoRecord | undefined> {
         await this.ensureLoaded();
-        return this.loadFno().find(
+        const shortName = breezeShortNameFor(underlyingShortName);
+        return this.optionsFor(shortName).find(
             (r) =>
                 r.series === 'OPTION' &&
-                r.shortName === underlyingShortName &&
+                r.shortName === shortName &&
                 r.expiryDate === expiryDate &&
                 Number(r.strikePrice) === strikePrice &&
                 r.optionType === optionType
@@ -195,27 +242,30 @@ class BreezeContractMaster {
     // only carries FnoRecord.token forward on Trade.token (see BrokerExecutor.ts's
     // "opaque, already-resolved" contract), so squareOff/cancelOrder/generic
     // buy() need this to reconstruct stockCode/expiryDate/strikePrice/right.
+    // NFO and BFO token numbering is disjoint (checked 2026-10-21 - no shared
+    // token between the two masters), so searching both is unambiguous.
     async findByToken(token: string): Promise<FnoRecord | undefined> {
         await this.ensureLoaded();
-        return this.loadFno().find((r) => r.token === token);
+        return this.loadDerivatives('NFO').find((r) => r.token === token) ?? this.loadDerivatives('BFO').find((r) => r.token === token);
     }
 
     // Mirrors AntContractMaster.findATMOption/ZerodhaContractMaster.findATMOption
-    // exactly (same 50-point strike step, same "nearest expiry >= today" rule)
-    // - same logic backing the frontend's Up/Down flash-trade buttons
+    // exactly (same "nearest expiry >= today" rule, strike step per underlying) -
+    // same logic backing the frontend's Up/Down flash-trade buttons
     // (server.ts's /demo/resolve), just resolving against Breeze's own
     // stockCode/expiryDate/strikePrice shape instead of a numeric token.
     async findATMOption(underlyingLtp: number, optionType: 'CE' | 'PE', underlyingShortName: string = 'NIFTY'): Promise<FnoRecord> {
         await this.ensureLoaded();
-        const step = 50;
+        const shortName = breezeShortNameFor(underlyingShortName);
+        const step = strikeStepFor(shortName);
         const atmStrike = Math.round(underlyingLtp / step) * step;
 
         const todayStartMs = new Date().setHours(0, 0, 0, 0);
-        const candidates = this.loadFno().filter(
-            (r) => r.series === 'OPTION' && r.shortName === underlyingShortName && new Date(r.expiryDate).getTime() >= todayStartMs
+        const candidates = this.optionsFor(shortName).filter(
+            (r) => r.series === 'OPTION' && r.shortName === shortName && new Date(r.expiryDate).getTime() >= todayStartMs
         );
         if (candidates.length === 0) {
-            throw new Error(`No ${underlyingShortName} option contracts found in Security Master`);
+            throw new Error(`No ${shortName} option contracts found in Security Master`);
         }
         const nearestExpiryMs = Math.min(...candidates.map((r) => new Date(r.expiryDate).getTime()));
 
@@ -223,7 +273,7 @@ class BreezeContractMaster {
             (r) => new Date(r.expiryDate).getTime() === nearestExpiryMs && Number(r.strikePrice) === atmStrike && r.optionType === optionType
         );
         if (!match) {
-            throw new Error(`No ${underlyingShortName} ${atmStrike}${optionType} contract found for nearest expiry`);
+            throw new Error(`No ${shortName} ${atmStrike}${optionType} contract found for nearest expiry`);
         }
         return match;
     }
@@ -233,21 +283,37 @@ class BreezeContractMaster {
     // execution IPC surface (breezeExecutor.ts) only carries a flat tradingSymbol string
     // (no expiry) into sell/limit-buy calls, so the full contract tuple must be
     // re-resolved from just strike+optionType - safe since both LegManager-driven
-    // strategies only ever trade the nearest NIFTY expiry.
+    // strategies only ever trade the nearest expiry of their underlying.
     async findNearestExpiryOption(strike: number, optionType: 'CE' | 'PE', underlyingShortName: string = 'NIFTY'): Promise<FnoRecord> {
         await this.ensureLoaded();
+        const shortName = breezeShortNameFor(underlyingShortName);
         const todayStartMs = new Date().setHours(0, 0, 0, 0);
-        const candidates = this.loadFno().filter(
+        const candidates = this.optionsFor(shortName).filter(
             (r) =>
                 r.series === 'OPTION' &&
-                r.shortName === underlyingShortName &&
+                r.shortName === shortName &&
                 Number(r.strikePrice) === strike &&
                 r.optionType === optionType &&
                 new Date(r.expiryDate).getTime() >= todayStartMs
         );
         if (candidates.length === 0) {
-            throw new Error(`No ${underlyingShortName} ${strike}${optionType} contract found for any upcoming expiry`);
+            throw new Error(`No ${shortName} ${strike}${optionType} contract found for any upcoming expiry`);
         }
+        candidates.sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+        return candidates[0];
+    }
+
+    // Any one live option contract of an underlying, nearest expiry - only used to read the
+    // underlying's spot price off a Breeze option quote (its spot_price field), since SENSEX
+    // has no Breeze cash quote (BSE cash for BSESEN returns no data, checked 2026-10-21).
+    async findNearestExpiryAnyStrike(underlyingShortName: string = 'NIFTY'): Promise<FnoRecord> {
+        await this.ensureLoaded();
+        const shortName = breezeShortNameFor(underlyingShortName);
+        const todayStartMs = new Date().setHours(0, 0, 0, 0);
+        const candidates = this.optionsFor(shortName).filter(
+            (r) => r.series === 'OPTION' && r.shortName === shortName && new Date(r.expiryDate).getTime() >= todayStartMs
+        );
+        if (candidates.length === 0) throw new Error(`No ${shortName} option contracts found in Security Master`);
         candidates.sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
         return candidates[0];
     }

@@ -97,6 +97,13 @@ class StrategiesClient {
         const res = await this.request('syncFromConfig', {});
         if (!res.ok) throw new Error(res.error);
     }
+
+    // Explicit reconcile (POST /reconcile) - only after `order`'s broker reconcile.
+    async reconcile(): Promise<{ ran: boolean }> {
+        const res = await this.request('reconcile', {});
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
 }
 
 export default StrategiesClient;

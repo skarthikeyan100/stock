@@ -27,6 +27,7 @@ export type OrderRequestType =
     | 'antSetTargetStopLoss'
     | 'reloadSession'
     | 'reloadUserLimits'
+    | 'reconcileBrokerPositions'
     | 'refreshTradeList'
     | 'getOrders'
     | 'updateUserSettings'
