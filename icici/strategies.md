@@ -211,7 +211,20 @@ none) was added alongside `BulkPcrAutoStartStrategy` below.
 **Config keys** (`config.yml`): `enabled`, `broker` (legacy single-broker
 fallback), `brokers` (preferred, multi-broker array), `quantity`,
 `targetPoints`, `chunkDriftCancelPoints`, `right` (`call`/`put`/`none`),
-`maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10).
+`maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10), `maxLoss`.
+**Loss stop (`maxLoss`, optional)**: a percent of this block's `maxInvestment`
+(`10%` = 10000 on 100000), applied **per pair broker** (`ant`, `zerodha`). Each
+broker's cumulative P&L = that day's realized P&L (summed over every completed
+cycle, both sides, all re-buys) + open P&L of its selling slots at the last
+live tick. Once it reaches `-maxLoss` the latch trips (`PnlStop`, a Mongo
+`strategyLatches` doc keyed by `ownerType`, `userId`, `scope`, `day`): the
+broker's resting sells are cancelled and its open quantity is squared off at
+limit (`eodSquareOff`); its buys and re-buys stop; the other broker keeps
+running. The latch is daily: it survives restarts and the auto-start re-arm
+(`reset({ keepStops: true })`), and only the admin `GET /strategies/BulkPcrStrategy/reset`
+clears it. A restored latch only blocks new buys; it does not auto-close
+positions at reconcile. No `maxLoss` = off. `maxProfit` is not built for BulkPcr.
+A `maxLoss` without a usable `maxInvestment` fails config validation.
 **`isRunning()`**: exposes `phase === 'running'` externally — used by
 `BulkPcrAutoStartStrategy` to decide whether a scheduled re-arm should be
 skipped.

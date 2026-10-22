@@ -188,7 +188,10 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
             return;
         }
 
-        target.reset(); // clear any stale phase='done'/positions left over from a previous cycle so it can re-enter cleanly
+        // Today's loss-stop latches must be loaded before the broker filter below: after a restart, reconcile() may not have run yet.
+        await target.loadStopLatches();
+        // keepStops: the re-arm must not clear today's loss stop or realized P&L (maxloss.md B3.7).
+        target.reset({ keepStops: true }); // clear any stale phase='done'/positions left over from a previous cycle so it can re-enter cleanly
 
         const cfg = this.cfg();
         // Not configService.getStrategyConfig(type) - see this.cfg()'s own comment above for
@@ -201,9 +204,16 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
             Log.log(`[BulkPcrAutoStart:${this.userId}] ALERT: '${targetUserId}' config.yml entry not found even though strategies.getByUserId resolved an instance - not arming.`);
             return;
         }
+        // A loss-stopped broker is not armed for today (maxloss.md B3.8). cfg itself is not mutated.
+        const wanted: string[] = Array.isArray(cfg.brokers) ? cfg.brokers : [cfg.broker ?? 'zerodha'];
+        const armable = wanted.filter((b) => !target.isBrokerStopped(String(b).toLowerCase()));
+        if (armable.length === 0) {
+            Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: every configured broker is loss-stopped for today - skipping`);
+            return;
+        }
         bulkPcrCfg.quantity = cfg.quantity;
         bulkPcrCfg.targetPoints = cfg.targetPoints;
-        bulkPcrCfg.brokers = Array.isArray(cfg.brokers) ? [...cfg.brokers] : cfg.brokers;
+        bulkPcrCfg.brokers = Array.isArray(cfg.brokers) ? [...armable] : cfg.brokers;
         // Unconditional, like every other field above - found on review: `if (cfg.index)` left a
         // previous slot's persisted `index: SENSEX` write in place for a later slot that omits
         // `index` (reverting to NIFTY), silently continuing to trade SENSEX under a NIFTY-intended

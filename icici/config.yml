@@ -142,6 +142,7 @@ strategies:
     chunkDriftCancelPoints: 10
     right: none
     maxInvestment: 100000
+    maxLoss: 10%
     slDistance: 50
     logEnabled: true
     brokers:

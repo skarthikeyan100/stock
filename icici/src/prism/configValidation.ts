@@ -140,6 +140,11 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     if (obj.maxInvestment != null && !(isNum(maxInv) && maxInv > 0)) {
         errors.push(`${label}.maxInvestment must be a number > 0 (got ${JSON.stringify(obj.maxInvestment)})`);
     }
+    // A BulkPcr loss stop is a percent of maxInvestment: with no usable base it could never trip, so refuse the file.
+    // Scoped to BulkPcr only - other strategies fall back to a default base and must keep loading as they do today.
+    if (label === 'BulkPcrStrategy' && obj.maxLoss != null && !(isNum(maxInv) && maxInv > 0)) {
+        errors.push(`${label}.maxLoss needs a usable maxInvestment (> 0) - the percent is taken of it`);
+    }
 
     if (isNum(obj.minPrice) && isNum(obj.maxPrice) && obj.minPrice > obj.maxPrice) {
         errors.push(`${label}.minPrice (${obj.minPrice}) must be <= ${label}.maxPrice (${obj.maxPrice})`);

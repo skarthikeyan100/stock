@@ -9,6 +9,7 @@ import { roundToTick } from '../zerodha/Zerodha';
 import MomentumSignal from './MomentumSignal';
 import { isPastMarketClose } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
+import { PnlStop } from './PnlStop';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
 
@@ -158,12 +159,21 @@ interface BrokerPosition {
 
 interface PersistedState {
     positions: Partial<Record<BrokerName, BrokerPosition>>;
+    // Day's realized P&L per pair broker; restored on reconcile only when realizedDay is today.
+    realizedByBroker?: Partial<Record<BrokerName, number>>;
+    realizedDay?: string;
 }
 
 function isSameCalendarDay(epochMs: number): boolean {
     const a = new Date(epochMs);
     const b = new Date();
     return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+// Local YYYY-MM-DD, same key as PnlStop's latch day.
+function localDayKey(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 // A resting DAY-validity sell placed today is only still trustworthy as
@@ -243,6 +253,22 @@ export default class BulkPcrStrategy extends Strategy {
     // Set once the EOD force-close has started - nothing new opens or re-buys after it.
     private eodDone = false;
 
+    // Per-broker daily loss stop (maxloss.md). One PnlStop latch per pair broker. A tripped broker closes
+    // its open slots and takes no new buys until the next trading day or an admin reset.
+    private stops = new Map<BrokerName, PnlStop>();
+    // Day's realized P&L per pair broker, summed over every completed slot cycle (slot fields reset on re-buy).
+    private realizedByBroker = new Map<BrokerName, number>();
+    // Last tick price per slot key, in memory only. Feeds the unrealized part of the stop check.
+    private lastLtpByKey = new Map<string, number>();
+    // Local day the stop accumulators belong to. A rollover clears them (see ensureToday).
+    private statsDay = '';
+    // Slots whose resting exit is being placed right now. closeBroker skips them; placeExitSellAtTargetPrice
+    // closes the slot itself once placement returns, so a sell placed after the cancel cannot be left resting.
+    private placingKeys = new Set<string>();
+    // True while reconcile() runs. A restored stop only blocks new buys after a restart (maxloss.md B3.7),
+    // so the in-flight stop handling in placeExitSellAtTargetPrice is skipped then.
+    private reconciling = false;
+
     receive(oldStats, newStats) {}
 
     // A lone slot (per pair broker) that falls this far below its entry opens that broker's opposite side.
@@ -313,7 +339,12 @@ export default class BulkPcrStrategy extends Strategy {
         Mongo.getInstance()?.db.collection(STATE_COLLECTION)
             .replaceOne(
                 { userId: this.userId },
-                { userId: this.userId, positions },
+                {
+                    userId: this.userId,
+                    positions,
+                    realizedByBroker: Object.fromEntries(this.realizedByBroker),
+                    realizedDay: this.statsDay,
+                },
                 { upsert: true }
             )
             .catch((e) => Log.log('[BulkPcrStrategy] persistState failed:', e));
@@ -327,6 +358,81 @@ export default class BulkPcrStrategy extends Strategy {
             Log.log('[BulkPcrStrategy] loadState failed:', e);
             return null;
         }
+    }
+
+    // Rolls the stop accumulators over at the local day boundary. A long-running process would otherwise
+    // carry yesterday's realized P&L and tripped latch into today (the latch itself is day-keyed in Mongo).
+    private ensureToday(): void {
+        const today = localDayKey();
+        if (today === this.statsDay) return;
+        this.statsDay = today;
+        this.realizedByBroker.clear();
+        this.stops.clear();
+    }
+
+    private stopFor(broker: BrokerName): PnlStop {
+        this.ensureToday();
+        let stop = this.stops.get(broker);
+        if (!stop) {
+            stop = new PnlStop({
+                ownerType: 'BulkPcrStrategy',
+                userId: this.userId,
+                scope: broker,
+                getMaxLossPct: () => this.cfg().maxLoss,
+                getMaxInvestment: () => this.cfg().maxInvestment ?? 0,
+            });
+            this.stops.set(broker, stop);
+        }
+        return stop;
+    }
+
+    // Public: BulkPcrAutoStartStrategy skips a loss-stopped broker before arming it.
+    isBrokerStopped(broker: string): boolean {
+        if (!isPairBroker(broker as BrokerName)) return false;
+        return this.stopFor(broker as BrokerName).isTripped();
+    }
+
+    // Restores today's persisted stop latch for every configured pair broker. Called from reconcile() and by
+    // the auto-start before it arms, so a restart never re-arms a stopped broker.
+    async loadStopLatches(): Promise<void> {
+        for (const broker of this.configuredBrokers()) {
+            if (isPairBroker(broker)) await this.stopFor(broker).load();
+        }
+    }
+
+    // Books one finished cycle's (or one square-off's) realized P&L against the broker, for today.
+    private bookRealized(broker: BrokerName, pnl: number): void {
+        if (!isPairBroker(broker)) return;
+        if (!Number.isFinite(pnl)) {
+            Log.log(`[BulkPcrStrategy] [${broker}] ALERT: realized P&L is not a finite number (${pnl}) - NOT booked into the loss stop`);
+            return;
+        }
+        this.ensureToday();
+        this.realizedByBroker.set(broker, (this.realizedByBroker.get(broker) ?? 0) + pnl);
+        this.persistState();
+    }
+
+    // Day's realized P&L plus open P&L of every selling slot of one broker (both sides, across re-buys).
+    // A slot with no tick yet adds 0 unrealized - a price is never guessed. Slots in 'error' are excluded:
+    // what they still hold is unknown (see maxloss.md B3.2 / the ruling there), so counting them could trip falsely.
+    private cumulativePnl(broker: BrokerName): number {
+        let total = this.realizedByBroker.get(broker) ?? 0;
+        for (const pos of this.slotsOf(broker)) {
+            if (pos.phase !== 'selling' || !pos.heldTsym) continue;
+            total += pos.soldValue - pos.soldQty * pos.entryAvg;
+            const ltp = this.lastLtpByKey.get(this.keyOf(pos));
+            const open = pos.targetQuantity - pos.soldQty;
+            if (open > 0 && ltp !== undefined && Number.isFinite(ltp) && ltp > 0) total += (ltp - pos.entryAvg) * open;
+        }
+        return total;
+    }
+
+    // Synchronous latch check for one broker. True only on the call that trips it, so the caller starts
+    // closeBroker exactly once. Nothing trips after EOD (the EOD close already covers every slot).
+    private tripIfBreached(broker: BrokerName): boolean {
+        if (!isPairBroker(broker) || this.eodDone) return false;
+        if (this.isBrokerStopped(broker)) return false;
+        return this.stopFor(broker).evaluate(this.cumulativePnl(broker));
     }
 
     // See file header for the momentum-veto rationale.
@@ -410,7 +516,13 @@ export default class BulkPcrStrategy extends Strategy {
         if (right == null) { this.phase = 'idle'; return; } // retried on the next tick
 
         const quantity = cfg.quantity ?? 13975;
-        const brokers = this.configuredBrokers();
+        // A loss-stopped broker takes no new entry (maxloss.md B3.6).
+        const brokers = this.configuredBrokers().filter((b) => !this.isBrokerStopped(b));
+        if (brokers.length === 0) {
+            this.logGateOnce('every configured broker is loss-stopped - not entering');
+            this.phase = 'done';
+            return;
+        }
         Log.log(`[BulkPcrStrategy] Entering ${right} qty=${quantity} independently on: ${brokers.join(', ')}`);
 
         // allSettled, not all - one broker's entry failing must not abort a
@@ -570,11 +682,19 @@ export default class BulkPcrStrategy extends Strategy {
         // Cancellation re-placement: keep soldQty/soldValue/targetQuantity untouched,
         // just re-place the chunk that was orphaned by cancellation
 
+        if (!this.reconciling && isPairBroker(broker) && this.isBrokerStopped(broker)) {
+            // Stopped while this buy was in flight: square the fill off instead of resting a new sell.
+            pos.phase = 'selling';
+            await this.eodSquareOff(pos);
+            return;
+        }
+
         pos.phase = 'selling'; // synchronous, before any await
         pos.sellPlacedAt = Date.now();
         Log.log(`[BulkPcrStrategy] [${broker}] Placing resting limit sell for ${pos.heldTsym} qty=${quantity} @ ${targetPrice}`);
         this.persistState();
 
+        this.placingKeys.add(key);
         try {
             // Resting LIMIT sell at the target price, not a market order -
             // either fills at (at least) the intended profit, or doesn't
@@ -599,6 +719,13 @@ export default class BulkPcrStrategy extends Strategy {
             Log.log(`[BulkPcrStrategy] [${broker}] Chunked limit-sell placement failed - manual review required:`, e);
             pos.phase = 'error';
             this.persistState();
+        } finally {
+            this.placingKeys.delete(key);
+        }
+        // The stop may have tripped while this sell was being placed; closeBroker skipped this slot then,
+        // so close it now that the resting sell is known. Never during a restart's reconcile (B3.7).
+        if (!this.reconciling && isPairBroker(broker) && this.isBrokerStopped(broker)) {
+            await this.closeBroker(broker);
         }
     }
 
@@ -632,9 +759,22 @@ export default class BulkPcrStrategy extends Strategy {
         const matches = this.pairSlots().filter((p) => p.heldToken === token && p.phase === 'selling');
         if (matches.length === 0) return;
 
+        if (quote.ltp > 0 && Number.isFinite(quote.ltp)) {
+            for (const slot of matches) this.lastLtpByKey.set(this.keyOf(slot), quote.ltp);
+        }
+        // Stop check before any hedge logic, so a broker tripped by this tick never opens its opposite side.
+        const tripped = Array.from(new Set(matches.map((m) => m.broker))).filter((b) => this.tripIfBreached(b));
+        if (tripped.length > 0) {
+            for (const b of tripped) {
+                Log.log(`[BulkPcrStrategy] [${b}] loss stop tripped - closing this broker's open slots at limit and blocking new buys for today`);
+            }
+            await Promise.all(tripped.map((b) => this.closeBroker(b)));
+        }
+
         this.retryPendingRebuys();
 
         for (const slot of matches) {
+            if (this.isBrokerStopped(slot.broker)) continue;
             // Once both sides of this broker exist its pair is complete - this tick does nothing more
             // for it. A 'done' side (already fully sold out, e.g. from an earlier cycle) doesn't count
             // as "existing" here - same convention onSlotSoldOut's sibling check and canHandleOptionQuote
@@ -688,6 +828,7 @@ export default class BulkPcrStrategy extends Strategy {
     // Opens the opposite side against a lone slot that moved slDistance against its entry. Sized to
     // the lone slot's still-open quantity. The lone slot's own +2 sell is never cancelled.
     private async openOppositeSide(slot: BrokerPosition): Promise<void> {
+        if (this.isBrokerStopped(slot.broker)) return;
         const right = slot.right === CALL ? PUT : CALL;
         const remaining = slot.targetQuantity - slot.soldQty;
         if (remaining <= 0) return;
@@ -708,6 +849,14 @@ export default class BulkPcrStrategy extends Strategy {
     private async buyAndExit(key: string): Promise<void> {
         const pos = this.positions.get(key);
         if (!pos || !pos.right || !(pos.entryQuantity && pos.entryQuantity > 0)) return;
+
+        if (this.isBrokerStopped(pos.broker)) {
+            // Stopped before this buy started: nothing is bought, so the side simply ends.
+            pos.phase = 'done';
+            this.persistState();
+            this.finishIfFlat();
+            return;
+        }
 
         const niftyLtp = this.lastNiftyQuote?.ltp ?? 0;
         if (!(niftyLtp > 0)) {
@@ -735,8 +884,8 @@ export default class BulkPcrStrategy extends Strategy {
             pos.heldToken = feedTokenOf(result);
             pos.entryAvg = result.avgPrice;
             Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
-            if (this.eodDone) {
-                // EOD started while this buy was in flight - square it off now, don't rest a sell for a closed session.
+            if (this.eodDone || this.isBrokerStopped(pos.broker)) {
+                // EOD or the loss stop started while this buy was in flight - square it off now, don't rest a sell.
                 pos.targetQuantity = result.quantity;
                 pos.soldQty = 0;
                 pos.soldValue = 0;
@@ -765,6 +914,12 @@ export default class BulkPcrStrategy extends Strategy {
         if (this.eodDone) return;
         for (const pos of this.pairSlots()) {
             if (pos.phase !== 'pending') continue;
+            if (this.isBrokerStopped(pos.broker)) {
+                pos.phase = 'done'; // stopped: this side never buys again today
+                this.persistState();
+                this.finishIfFlat();
+                continue;
+            }
             if (Date.now() - (pos.lastBuyAttemptAt ?? 0) < REBUY_RETRY_THROTTLE_MS) continue;
             this.buyAndExit(this.keyOf(pos)).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] pending buy retry failed:`, e));
         }
@@ -773,15 +928,44 @@ export default class BulkPcrStrategy extends Strategy {
     // A slot's +2 exit has fully filled. If the opposite side (same broker) is still active, this
     // side re-buys immediately and rests its own +2 again. Otherwise there is nothing left to re-buy.
     private onSlotSoldOut(pos: BrokerPosition): void {
+        // This cycle is over: its realized P&L goes into the day's total, then the slot's live price is dropped.
+        this.bookRealized(pos.broker, pos.soldValue - pos.soldQty * pos.entryAvg);
+        this.lastLtpByKey.delete(this.keyOf(pos));
         pos.phase = 'done';
         this.persistState();
+        // A realized loss can cross the line with no tick, so check before deciding on the re-buy below.
+        const tripped = this.tripIfBreached(pos.broker);
         if (isPairBroker(pos.broker) && !this.eodDone) {
             const sibling = this.slotsOf(pos.broker).find((p) => p.right !== pos.right);
-            if (sibling && (sibling.phase === 'selling' || sibling.phase === 'buying')) {
+            if (sibling && (sibling.phase === 'selling' || sibling.phase === 'buying') && !this.isBrokerStopped(pos.broker)) {
                 Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} +2 filled while ${sibling.right} is still open - re-buying ${pos.right}`);
                 this.buyAndExit(this.keyOf(pos)).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] re-buy failed:`, e));
             }
         }
+        if (tripped) {
+            Log.log(`[BulkPcrStrategy] [${pos.broker}] loss stop tripped on a realized fill - closing this broker's open slots at limit`);
+            this.closeBroker(pos.broker).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] loss-stop close failed:`, e));
+        }
+        this.finishIfFlat();
+    }
+
+    // Closes every open slot of a loss-stopped broker: cancels its resting +N sell, then squares off the rest at
+    // limit (eodSquareOff). Only acts on 'selling' slots that are not already being closed or placed; a 'buying'
+    // slot is squared off by buyAndExit when its buy returns, and a slot still being placed is closed by
+    // placeExitSellAtTargetPrice once placement returns. Safe to call repeatedly.
+    private async closeBroker(broker: BrokerName): Promise<void> {
+        for (const pos of this.slotsOf(broker)) {
+            const key = this.keyOf(pos);
+            if (pos.phase === 'selling') {
+                if (pos.squaringOff || this.placingKeys.has(key)) continue;
+                await this.eodSquareOff(pos);
+            } else if (pos.phase === 'pending') {
+                pos.phase = 'done'; // nothing held - the buy never filled
+            } else if (pos.phase === 'error') {
+                Log.log(`[BulkPcrStrategy] [${broker}] stop: ${pos.right} slot is in error - skipped, manual review required`);
+            }
+        }
+        this.persistState();
         this.finishIfFlat();
     }
 
@@ -789,59 +973,79 @@ export default class BulkPcrStrategy extends Strategy {
     // open. The resting-order cancellations and fills that follow are ignored (see onOrderCancelled).
     // The cancel and square-off go through that slot's own broker.
     private async eodSquareOff(pos: BrokerPosition): Promise<void> {
+        if (pos.squaringOff) return; // already being closed by another path
         const tsym = pos.heldTsym!;
         const broker = pos.broker;
-        let cancelResult: { filledQty: number; cancelFailed: boolean };
-        // updateTrade ignores fills only across the cancel: its filledQty is the single count for
-        // chunks that filled during it (counting them via updateTrade as well would double-count).
+        // Held across the whole close, not just the cancel: updateTrade ignores fills while squaringOff, so
+        // this cycle is counted exactly once - the cancel's filledQty below plus the square-off's own average.
+        // Counting the square-off's fills via updateTrade as well would double-book the cycle's realized P&L.
         pos.squaringOff = true;
         try {
-            cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym, broker });
-        } catch (e) {
-            cancelResult = { filledQty: 0, cancelFailed: true };
-            Log.log(`[BulkPcrStrategy] [${broker}] EOD cancel request failed for ${tsym}:`, e);
+            let cancelResult: { filledQty: number; cancelFailed: boolean };
+            try {
+                cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym, broker });
+            } catch (e) {
+                cancelResult = { filledQty: 0, cancelFailed: true };
+                Log.log(`[BulkPcrStrategy] [${broker}] EOD cancel request failed for ${tsym}:`, e);
+            }
+            // Book the cancel-window fills first (even if another chunk's cancel failed): they are sold.
+            // They filled at the resting limit price, so that prices them for the logged average.
+            const exitPrice = pos.entryAvg + (this.cfg().targetPoints ?? 2);
+            pos.soldQty += cancelResult.filledQty;
+            pos.soldValue += cancelResult.filledQty * exitPrice;
+            this.persistState();
+            if (pos.soldQty >= pos.targetQuantity) {
+                // Everything already sold (resting fills, incl. the cancel window): nothing to square off,
+                // whatever happened to a cancel. This is the cycle's only booking.
+                pos.phase = 'done';
+                Log.log(`[BulkPcrStrategy] [${broker}] EOD: ${tsym} already fully sold (${pos.soldQty}/${pos.targetQuantity}) - nothing to square off`);
+                this.bookRealized(broker, pos.soldValue - pos.soldQty * pos.entryAvg);
+                this.lastLtpByKey.delete(this.keyOf(pos));
+                this.persistState();
+                return;
+            }
+            if (cancelResult.cancelFailed) {
+                pos.phase = 'error';
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: EOD force-close of ${tsym} aborted, resting sell cancel failed - manual review required`);
+                this.persistState();
+                return;
+            }
+            const remaining = pos.targetQuantity - pos.soldQty;
+            try {
+                let squareOffAvg: number | undefined;
+                if (remaining > 0) {
+                    if (broker === 'ant') {
+                        const trade = await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: tsym.startsWith('SENSEX') ? 'BFO' : 'NFO' });
+                        squareOffAvg = trade?.price;
+                    } else if (broker === 'zerodha' || broker === 'breeze') {
+                        const res = await OrderClient.getInstance().chunkedSquareOff(this.userId, { tsym, quantity: remaining, broker });
+                        squareOffAvg = res?.avgPrice;
+                    } else {
+                        throw new Error(`EOD square-off: broker '${broker}' does not run a pair`);
+                    }
+                }
+                // Realized for the cycle: the cancel-window part (above) plus the square-off part at its own average.
+                // If the average is missing, estimate from the last tick and say so in the log.
+                let sellPrice = squareOffAvg;
+                if (remaining > 0 && !(Number.isFinite(sellPrice) && sellPrice! > 0)) {
+                    sellPrice = this.lastLtpByKey.get(this.keyOf(pos)) ?? pos.entryAvg;
+                    Log.log(`[BulkPcrStrategy] [${broker}] ${tsym} square-off gave no average price - booking exit at ${sellPrice} (estimated)`);
+                }
+                const squaredOffPnl = remaining > 0 ? remaining * (sellPrice! - pos.entryAvg) : 0;
+                this.bookRealized(broker, pos.soldValue - pos.soldQty * pos.entryAvg + squaredOffPnl);
+                this.lastLtpByKey.delete(this.keyOf(pos));
+                // A fill notification may already have completed the slot via updateTrade/onSlotSoldOut.
+                if (pos.phase === 'selling') pos.phase = 'done';
+                Log.log(`[BulkPcrStrategy] [${broker}] EOD force-close: ${tsym} squared off qty=${Math.max(remaining, 0)}`);
+            } catch (e) {
+                // Nothing is booked: the square-off's fills are unknown, and a retry would double count.
+                if (pos.phase === 'selling') pos.phase = 'error'; // a fill may already have completed the slot
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: EOD square-off failed for ${tsym} - manual review required:`, e);
+            }
+            this.persistState();
         } finally {
             pos.squaringOff = false;
         }
-        // Book the cancel-window fills first (even if another chunk's cancel failed): they are sold.
-        // They filled at the resting limit price, so that prices them for the logged average.
-        const exitPrice = pos.entryAvg + (this.cfg().targetPoints ?? 2);
-        pos.soldQty += cancelResult.filledQty;
-        pos.soldValue += cancelResult.filledQty * exitPrice;
-        this.persistState();
-        if (pos.soldQty >= pos.targetQuantity) {
-            // Everything already sold (resting fills, incl. the cancel window): nothing to square off,
-            // whatever happened to a cancel.
-            pos.phase = 'done';
-            Log.log(`[BulkPcrStrategy] [ant] EOD: ${tsym} already fully sold (${pos.soldQty}/${pos.targetQuantity}) - nothing to square off`);
-            this.persistState();
-            return;
-        }
-        if (cancelResult.cancelFailed) {
-            pos.phase = 'error';
-            Log.log(`[BulkPcrStrategy] [ant] ALERT: EOD force-close of ${tsym} aborted, resting sell cancel failed - manual review required`);
-            this.persistState();
-            return;
-        }
-        const remaining = pos.targetQuantity - pos.soldQty;
-        try {
-            if (remaining > 0) {
-                if (broker === 'ant') {
-                    await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: tsym.startsWith('SENSEX') ? 'BFO' : 'NFO' });
-                } else if (broker === 'zerodha' || broker === 'breeze') {
-                    await OrderClient.getInstance().chunkedSquareOff(this.userId, { tsym, quantity: remaining, broker });
-                } else {
-                    throw new Error(`EOD square-off: broker '${broker}' does not run a pair`);
-                }
-            }
-            // A fill notification may already have completed the slot via updateTrade/onSlotSoldOut.
-            if (pos.phase === 'selling') pos.phase = 'done';
-            Log.log(`[BulkPcrStrategy] [${broker}] EOD force-close: ${tsym} squared off qty=${Math.max(remaining, 0)}`);
-        } catch (e) {
-            if (pos.phase === 'selling') pos.phase = 'error'; // a fill may already have completed the slot
-            Log.log(`[BulkPcrStrategy] [${broker}] ALERT: EOD square-off failed for ${tsym} - manual review required:`, e);
-        }
-        this.persistState();
     }
 
     private async eodCloseSlots(): Promise<void> {
@@ -948,6 +1152,13 @@ export default class BulkPcrStrategy extends Strategy {
         if (!pos || pos.phase !== 'selling' || pos.heldTsym !== notification.tradingSymbol || this.eodDone) {
             return;
         }
+        // Cancellations from the loss stop's own close (squaringOff) must not be re-placed. For a stopped
+        // broker a cancellation we did not make leaves the position unprotected, so flag it for manual review.
+        if (pos.squaringOff) return;
+        if (this.isBrokerStopped(pos.broker)) {
+            Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: resting sell for ${notification.tradingSymbol} cancelled while the loss stop is active - NOT re-placing, manual review required`);
+            return;
+        }
 
         const rejectReason: string | undefined = notification.rejectReason;
         if (notification.reason === 'REJECTED') {
@@ -1019,7 +1230,25 @@ export default class BulkPcrStrategy extends Strategy {
     // here - needs either a readiness handshake from `order` or retrying
     // getOpenTradesOnce() when it returns suspiciously empty, not just when it throws.
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
+        this.reconciling = true;
+        try {
+            await this.reconcileBody(maxAttempts, retryDelayMs);
+        } finally {
+            this.reconciling = false;
+        }
+    }
+
+    private async reconcileBody(maxAttempts: number, retryDelayMs: number): Promise<void> {
         const persisted = await this.loadState();
+        // Loss-stop state first, before any slot is rebuilt: today's realized P&L (only if it was saved today)
+        // and each pair broker's latch. A restored latch blocks new buys; it does not auto-close positions.
+        this.ensureToday();
+        if (persisted?.realizedDay === this.statsDay) {
+            for (const [broker, pnl] of Object.entries(persisted.realizedByBroker ?? {})) {
+                if (Number.isFinite(Number(pnl))) this.realizedByBroker.set(broker as BrokerName, Number(pnl));
+            }
+        }
+        await this.loadStopLatches();
         const brokers = this.configuredBrokers();
         let anyRestored = false;
 
@@ -1397,9 +1626,21 @@ export default class BulkPcrStrategy extends Strategy {
         return Array.from(this.positions.values()).some((p) => p.phase === 'error');
     }
 
-    reset(): void {
+    // keepStops: the auto-start re-arm path. It keeps today's loss-stop latches and realized P&L (the stop
+    // must survive a re-arm). Without it (admin reset) the stops and the day's realized P&L are cleared too.
+    reset(opts?: { keepStops?: boolean }): void {
         this.phase = 'idle';
         this.positions.clear();
+        this.lastLtpByKey.clear();
+        if (opts?.keepStops) {
+            // Re-saves the state with no positions, keeping realizedByBroker for today.
+            this.persistState();
+            Log.log(`[${this.userId}] Reset for re-arm (loss stops and realized P&L kept)`);
+            return;
+        }
+        this.realizedByBroker.clear();
+        for (const stop of this.stops.values()) void stop.clear();
+        this.stops.clear();
         Mongo.getInstance()?.db.collection(STATE_COLLECTION).deleteOne({ userId: this.userId })
             .catch((e) => Log.log('[BulkPcrStrategy] reset: persisted-state clear failed:', e));
         Log.log(`[${this.userId}] Reset via admin request`);
