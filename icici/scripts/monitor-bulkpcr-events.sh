@@ -35,4 +35,5 @@ s/^\[([0-9:]{8})\] .*AutoStart:[^]]*\] Missed ([0-9:]{5}) slot.*/\1 SLOT \2 MISS
 s/^\[([0-9:]{8})\] .*AutoStart:[^]]*\] ([0-9:]{5}) slot: .*(already running|loss-stopped|STUCK).*/\1 SLOT \2 skipped: \3/p;t
 # --- terminal / failure states (message trimmed) ---
 s/^\[([0-9:]{8})\] (\[[^]]*\] )*(.*(Cycle complete|MAX LOSS TRIPPED|loss stop tripped|Chunked entry failed|Entry retry also filled nothing|Chunked limit-sell placement failed|ALERT|manual review|Unhandled|TypeError|ReferenceError|WebSocket closed).*)/\1 !!! \3/p;t
-'  | sed -u -E 's/([0-9]+\.[0-9]{2})[0-9]+/\1/g' | cut -c1-150
+'  | sed -u -E -e 's/([0-9]+\.[0-9]{2})[0-9]+/\1/g' -e 's/^(.{150}).*/\1/'
+# No `cut` at the end: it block-buffers when writing to a pipe, so lines never reached the Monitor (missed the 14:00 slot).
