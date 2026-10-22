@@ -1395,6 +1395,12 @@ async function main() {
     connectAntOrderNotifyIfSessionValid('startup');
     connectBreezeOrderNotifyIfSessionValid('startup').catch((e) => Log.log('[order] connectBreezeOrderNotifyIfSessionValid failed:', e));
 
+    // Today's daily-drawdown latches are restored once at startup (not awaited: a failed read is logged and the
+    // realized check still applies). Then the daily drawdown is re-evaluated every 10s for users with open positions,
+    // since open P&L moves between fills (maxloss.md B4.3).
+    bookkeeping.loadDrawdownLatches().catch((e) => Log.log('[order] loadDrawdownLatches failed:', e));
+    setInterval(() => bookkeeping.evaluateOpenDrawdowns().catch((e) => Log.log('[order] evaluateOpenDrawdowns failed:', e)), 10_000);
+
     setInterval(() => pollGttFills().catch((e) => Log.log('[order] pollGttFills failed:', e)), 60_000);
     setInterval(() => reconcileManualSells().catch((e) => Log.log('[order] reconcileManualSells failed:', e)), 60_000);
     setInterval(() => pollPendingLimitOrders().catch((e) => Log.log('[order] pollPendingLimitOrders failed:', e)), 15_000);

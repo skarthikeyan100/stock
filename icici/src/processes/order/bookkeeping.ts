@@ -11,6 +11,17 @@ import * as exitMonitor from './exitMonitor';
 import configService from '../../prism/ConfigService';
 import { drawdownLimit, drawdownDecision } from '../../prism/percentConfig';
 import { startOfWeek } from '../../util/weekWindow';
+import AntContractMaster from '../../ant/AntContractMaster';
+
+// Open-P&L pricing gets a short budget: it runs inside every buy's drawdown check, so a slow quote must not stall an order.
+const OPEN_PNL_TIMEOUT_MS = 4_000;
+const OPEN_PNL_LOG_EVERY_MS = 60_000;
+
+// Local YYYY-MM-DD, same key as PnlStop's latch day.
+function dayKeyLocal(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
 // Order-process-local replacement for Monitor's bookkeeping (trades/closedTrades,
 // risk limits, order<->user attribution, P&L). Ported from src/monitor.ts, with
@@ -449,13 +460,106 @@ class OrderBookkeeping {
     async drawdownState(user: string, window: 'daily' | 'weekly'): Promise<'ok' | 'breached' | 'unknown'> {
         const investmentAmount = this.userSettingsCache.get(user)?.investmentAmount;
         if (!investmentAmount) return 'ok';
+        // Once today's daily breach is latched it stays breached for the day, even if the position that caused it closed at a better price.
+        if (window === 'daily' && this.drawdownLatched(user)) return 'breached';
         const settings = configService.getConfig().settings as any;
         const limitPercent = window === 'daily'
             ? drawdownLimit(settings, 'maxDailyDrawdownPercent')
             : drawdownLimit(settings, 'maxWeeklyDrawdownPercent');
         const since = window === 'daily' ? OrderBookkeeping.startOfDay() : startOfWeek();
         const pnl = await this.getRealizedPnLSince(user, since);
-        return drawdownDecision(pnl, investmentAmount, limitPercent);
+        // Daily only: open P&L at live prices counts toward the daily loss (maxloss.md B4.2). A failed price adds 0.
+        const unrealized = window === 'daily'
+            ? await withFallbackTimeout(this.getOpenUnrealizedPnL(user), OPEN_PNL_TIMEOUT_MS, null, 'open P&L pricing')
+            : null;
+        const total = pnl === null ? null : pnl + (unrealized ?? 0);
+        return drawdownDecision(total, investmentAmount, limitPercent);
+    }
+
+    // Open P&L of this user's positions at live ANT prices (maxloss.md B4.1). Long: (ltp - price) * qty; short: the reverse.
+    // The token comes from the trading symbol via AntContractMaster, not Trade.token: Zerodha and Breeze rows carry their own
+    // broker's instrument token there, which ANT would price as a different contract. Returns null when no row could be priced.
+    // Never throws; a row whose quote fails counts as 0 (a failed quote must never by itself breach the limit).
+    private openPnlLogAt = 0;
+    async getOpenUnrealizedPnL(user: string): Promise<number | null> {
+        const rows: Array<{ trade: Trade; sign: 1 | -1 }> = [
+            ...this.trades.filter((t) => t.user === user).map((trade) => ({ trade, sign: 1 as const })),
+            ...this.shortTrades.filter((t) => t.user === user).map((trade) => ({ trade, sign: -1 as const })),
+        ];
+        if (rows.length === 0) return 0;
+        const quotes = new Map<string, Promise<number>>(); // one live quote per token, shared by every row on it
+        let total = 0;
+        let priced = 0;
+        let failed = 0;
+        for (const { trade, sign } of rows) {
+            let token: string | undefined;
+            try {
+                const exch = trade.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO';
+                token = AntContractMaster.getInstance().findByTradingSymbol(trade.tsym, exch)?.token;
+                if (!token || !Number.isFinite(trade.price) || !(trade.quantity > 0)) { failed++; continue; }
+                let ltp = quotes.get(token);
+                if (!ltp) {
+                    ltp = ANT.getInstance().getLiveQuote(exch, token).then((q) => q.ltp);
+                    quotes.set(token, ltp);
+                }
+                const price = await ltp;
+                if (!(price > 0)) { failed++; continue; }
+                total += sign * (price - trade.price) * trade.quantity;
+                priced++;
+            } catch (e) {
+                failed++;
+                if (token) quotes.delete(token); // a failed quote is retried on the next call, not cached
+            }
+        }
+        if (failed > 0 && Date.now() - this.openPnlLogAt > OPEN_PNL_LOG_EVERY_MS) {
+            this.openPnlLogAt = Date.now();
+            Log.log(`[order] open P&L for ${user}: ${failed}/${rows.length} position(s) could not be priced live - counted as 0`);
+        }
+        return priced === 0 ? null : total;
+    }
+
+    // Users whose daily drawdown breached today (maxloss.md B4.4). Persisted so a restart keeps buys blocked.
+    private drawdownLatchedDay = new Map<string, string>();
+    private drawdownLatched(user: string): boolean {
+        return this.drawdownLatchedDay.get(user) === dayKeyLocal();
+    }
+
+    private latchDrawdown(user: string): void {
+        const day = dayKeyLocal();
+        this.drawdownLatchedDay.set(user, day);
+        Mongo.getInstance()?.db.collection('strategyLatches')
+            .updateOne({ ownerType: 'user', userId: user, scope: 'drawdown', day }, { $set: { updatedAt: new Date() } }, { upsert: true })
+            .catch((e) => Log.log(`[order] drawdown latch write failed for ${user} (in-memory latch still holds):`, e));
+    }
+
+    // Startup: restores today's drawdown latches. A read failure leaves them unset but logs loudly.
+    async loadDrawdownLatches(): Promise<void> {
+        try {
+            const day = dayKeyLocal();
+            const rows = await Mongo.getInstance()?.db.collection('strategyLatches')
+                .find({ ownerType: 'user', scope: 'drawdown', day }).toArray();
+            for (const r of rows ?? []) this.drawdownLatchedDay.set(String(r.userId), day);
+            if (rows?.length) Log.log(`[order] drawdown latch restored for today: ${rows.map((r: any) => r.userId).join(', ')}`);
+        } catch (e) {
+            Log.log('[order] ALERT: could not read drawdown latches - continuing UNLATCHED (realized check still applies):', e);
+        }
+    }
+
+    // Periodic daily-drawdown evaluation for users with open positions (maxloss.md B4.3): open P&L moves between fills.
+    // Per-user in-flight guard so a slow pass never overlaps the next tick for the same user.
+    private drawdownEvalInFlight = new Set<string>();
+    async evaluateOpenDrawdowns(): Promise<void> {
+        const users = new Set([...this.trades, ...this.shortTrades].map((t) => t.user));
+        for (const user of users) {
+            if (!this.userSettingsCache.get(user)?.investmentAmount) continue; // strategy pseudo-users are skipped by design
+            if (this.drawdownEvalInFlight.has(user)) continue;
+            this.drawdownEvalInFlight.add(user);
+            try {
+                await this.checkBreachAndNotify(user);
+            } finally {
+                this.drawdownEvalInFlight.delete(user);
+            }
+        }
     }
 
     // Runs the daily/weekly check after a fill and acts on it. 'breached' fires
@@ -468,6 +572,7 @@ class OrderBookkeeping {
             const daily = await this.drawdownState(user, 'daily');
             const weekly = daily === 'breached' ? 'ok' : await this.drawdownState(user, 'weekly');
             if (daily === 'breached' || weekly === 'breached') {
+                if (daily === 'breached' && !this.drawdownLatched(user)) this.latchDrawdown(user);
                 this.cancelDrawdownRecheck(user);
                 for (const l of this.drawdownBreachListeners) l(user);
             } else if (daily === 'unknown' || weekly === 'unknown') {
