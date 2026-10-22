@@ -549,6 +549,14 @@ const EXIT_FALLBACK_FLOOR_FACTOR = 0.97;
 // Returns 0 (never throws) when no usable quote could be had. Sizing and exits use this.
 async function safeAntQuote(exch: string, token: string, retryDelaysMs: number[] = SAFE_QUOTE_BACKOFF_MS, skipCache = false): Promise<number> {
     try {
+        // Live ScripDetails LTP first: the cached OHLC quote below ran far behind on a fast expiry-day option
+        // (live 2026-10-22: sized and priced a buy off 109-128 while the contract traded ~197, so the limit
+        // never filled and the paired Zerodha leg was oversized). getLiveQuote refuses a non-positive LTP.
+        try {
+            return (await ANT.getInstance().getLiveQuote(exch, token)).ltp;
+        } catch (liveErr: any) {
+            Log.log(`[order] ANT live quote unavailable for ${token} (${liveErr?.message ?? liveErr}) - falling back to OHLC quote`);
+        }
         // getQuote refuses a non-positive LTP, so anything it returns is usable.
         return await ANT.getInstance().getQuote(exch, token, { retryDelaysMs, skipCache });
     } catch (e: any) {
