@@ -7,6 +7,10 @@ Status: plan only, written 2026-10-22. Nothing here is built yet.
 > broker's trade and locks the broker out for the rest of the day, including across restarts and the auto-start
 > re-arm. See `strategies.md` (BulkPcrStrategy section). `ContinuousStrategy` and `SupportResistanceStrategy` keep `maxLoss`.
 
+> **Update 2026-10-22 (maxProfit for BulkPcr):** BulkPcr now has `maxProfit` (percent of `maxInvestment`, per broker,
+> cumulative for the whole day across every slot cycle). Reaching it closes that broker's open slots and locks the
+> broker out for the rest of the day, same as a loss trip. Its day P&L survives the auto-start re-arm. See `strategies.md`.
+
 ## 1. What exists today
 
 **Only the `LegManager`-based strategies have the stop** (`ContinuousStrategy`, `SupportResistanceStrategy`).

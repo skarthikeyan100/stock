@@ -211,7 +211,7 @@ none) was added alongside `BulkPcrAutoStartStrategy` below.
 **Config keys** (`config.yml`): `enabled`, `broker` (legacy single-broker
 fallback), `brokers` (preferred, multi-broker array), `quantity`,
 `targetPoints`, `chunkDriftCancelPoints`, `right` (`call`/`put`/`none`),
-`maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10), `maxLossPerTrade`.
+`maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10), `maxLossPerTrade`, `maxProfit`.
 (`maxLossPerDay` was removed on 2026-10-22, and `maxLoss` before it. A config still carrying either key is
 ignored, with a one-time WARN in the log. Use `maxLossPerTrade`.)
 
@@ -230,8 +230,17 @@ The lockout survives restarts: it is written to both the `strategyLatches` doc a
 that broker. If the lockout state cannot be read at all, the broker stays closed (fail-closed) until it can.
 Only the admin `GET /strategies/BulkPcrStrategy/reset` clears it, or the local day rollover. The auto-start
 re-arm (`reset({ keepStops: true })`) starts a new trade (trade P&L back to zero) but keeps the lockout.
-No `maxLossPerTrade` = off. `maxProfit` is not built for BulkPcr. A `maxLossPerTrade` without a usable
-`maxInvestment` fails config validation. Keep it above the hedge trigger (`slDistance` points on the put, about
+No `maxLossPerTrade` = off. A `maxLossPerTrade` without a usable
+`maxInvestment` fails config validation.
+
+**Profit stop (`maxProfit`, optional, ships unset)**: the same percent-of-`maxInvestment` form, but cumulative **per
+broker for the whole day**, not per trade. Day P&L = realized over every slot cycle today (`dayRealizedByBroker`) +
+open P&L of that broker's selling slots at the last live tick. Once it reaches `+maxProfit`, its own latch trips
+(`PnlStop` kind `profit`, scope `<broker>:maxProfit`, field `maxProfitTripped`) and the broker gets the same lockout as
+a loss trip: open slots closed at limit, no new buys or re-buys, skipped by `BulkPcrAutoStartStrategy` for the rest of
+the day. The day's realized P&L survives a re-arm (`reset({ keepStops: true })`) and is cleared only by the admin
+reset or the day rollover; it is persisted as `dayRealizedByBroker` and restored on reconcile. Its lockout is stored as
+`profitStoppedBrokers`. A breach is checked on every tick and on every realized slot fill. Keep it above the hedge trigger (`slDistance` points on the put, about
 7,800 at 780 qty), or the hedge has no room under the cap.
 
 **Margin rejections (ANT)**: a margin-rejected buy is never re-sent unchanged. It gets ONE reduced-quantity
