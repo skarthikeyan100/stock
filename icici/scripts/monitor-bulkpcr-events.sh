@@ -26,8 +26,12 @@ s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] Entry complete: (\S+) qty=([0-9]+)
 s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] Placing resting limit sell for (\S+) qty=([0-9]+) @ ([0-9.]+).*/\1 \U\2\E SELL placed \3 qty=\4 @\5/p;t
 # --- sell filled ---
 s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] Exit fill: (\S+) qty=([0-9]+) @ ([0-9.]+).*/\1 \U\2\E SELL FILLED \3 qty=\4 @\5/p;t
+# --- loss-stop / trade-cap close fills (square-off part of eodSquareOff) ---
+s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] Close fill: (\S+) qty=([0-9]+) @([0-9.]+).*/\1 \U\2\E CLOSE FILLED \3 qty=\4 @\5/p;t
 # --- hedge / re-buy of the opposite side ---
 s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] (\w+) \+2 filled while (\w+) is still open - re-buying.*/\1 \U\2\E HEDGE re-buy \3 (\4 still open)/p;t
+s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] (\S+) is ([0-9]+) points below its entry ([0-9.]+) - opening (\w+) qty=([0-9]+).*/\1 \U\2\E HEDGE OPEN \6 qty=\7 (\3 -\4 below entry \5)/p;t
+s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] (\w+) buy did not fill - will retry.*(Margin Shortfall[^"]{0,60}|REJECTED|timeout)?.*/\1 \U\2\E !!! \3 buy NOT filled - retrying/p;t
 # --- direction + slots ---
 s/^\[([0-9:]{8})\] .*PCR=([0-9.]+) .*resolved direction (\w+).*/\1 PCR=\2 -> \3/p;t
 s/^\[([0-9:]{8})\] .*AutoStart:[^]]*\] ([0-9:]{5}) slot: armed .*brokers=(\[[^]]*\]).*/\1 SLOT \2 armed \3/p;t
