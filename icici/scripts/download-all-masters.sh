@@ -79,26 +79,31 @@ else
 fi
 
 echo "=== Prism (Shoonya) ==="
-NFO_SYMBOLS="$REPO_ROOT/NFO_symbols.txt"
-TMP_ZIP="$(mktemp --suffix=.zip)"
-TMP_DIR="$(mktemp -d)"
-if curl -sf "https://api.shoonya.com/NFO_symbols.txt.zip" -o "$TMP_ZIP"; then
-    unzip -o "$TMP_ZIP" -d "$TMP_DIR" >/dev/null
-    if [ -f "$TMP_DIR/NFO_symbols.txt" ]; then
-        backup "$NFO_SYMBOLS"
-        mv "$TMP_DIR/NFO_symbols.txt" "$NFO_SYMBOLS"
-        echo "Downloaded $(wc -l < "$NFO_SYMBOLS") lines to $NFO_SYMBOLS"
+PRISM_DIR="$REPO_ROOT/data/prism"
+mkdir -p "$PRISM_DIR"
+for SEGMENT in NFO BFO; do
+    DEST="$PRISM_DIR/${SEGMENT}_symbols.txt"
+    TMP_ZIP="$(mktemp --suffix=.zip)"
+    TMP_DIR="$(mktemp -d)"
+    if curl -sf "https://api.shoonya.com/${SEGMENT}_symbols.txt.zip" -o "$TMP_ZIP"; then
+        unzip -o "$TMP_ZIP" -d "$TMP_DIR" >/dev/null
+        if [ -f "$TMP_DIR/${SEGMENT}_symbols.txt" ]; then
+            backup "$DEST"
+            mv "$TMP_DIR/${SEGMENT}_symbols.txt" "$DEST"
+            echo "Downloaded $(wc -l < "$DEST") lines to $DEST"
+        else
+            echo "[download-all-masters] Shoonya zip did not contain ${SEGMENT}_symbols.txt - leaving existing file untouched" >&2
+            fail=$((fail + 1))
+        fi
     else
-        echo "[download-all-masters] Shoonya zip did not contain NFO_symbols.txt - leaving existing file untouched" >&2
+        echo "[download-all-masters] Prism/Shoonya $SEGMENT download failed - leaving existing file untouched" >&2
         fail=$((fail + 1))
     fi
-else
-    echo "[download-all-masters] Prism/Shoonya download failed - leaving existing file untouched" >&2
-    fail=$((fail + 1))
-fi
-rm -rf "$TMP_ZIP" "$TMP_DIR"
+    rm -rf "$TMP_ZIP" "$TMP_DIR"
+done
 
 echo "=== Done (failures: $fail) ==="
+
 # Every contract-master cache above (AntContractMaster, ZerodhaContractMaster,
 # BreezeContractMaster, Prism.cacheFile) is loaded once and cached in-memory
 # per process - a running order/strategies process will NOT pick up these new
