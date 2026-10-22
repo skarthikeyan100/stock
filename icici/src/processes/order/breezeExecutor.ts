@@ -1,5 +1,6 @@
 import Log from '../../util/Log';
 import Breeze from '../../breeze/Breeze';
+import ANT from '../../ant/ANT';
 import BreezeContractMaster, { FnoRecord, BreezeExchange, breezeShortNameFor, indexNameFor, strikeStepFor } from '../../breeze/BreezeContractMaster';
 import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
@@ -180,7 +181,17 @@ export async function getMarketableBreezeBuyPrice(contract: FnoRecord): Promise<
     const premiumData = await estimateOptionPricesBatch(indexNameFor(contract.shortName), [{ strike, optionType: contract.optionType }]);
     const data = premiumData.get(`${strike}_${contract.optionType}`);
     if (!data) throw new Error(`No ANT price estimate available for ${tsymFor(contract)}`);
-    return roundToTick(data.premium * 1.01);
+    // The option chain's LTP lags a fast expiry-day option (live 2026-10-22 13:00: priced the Breeze buy
+    // at 125.05 while the contract traded ~129-132, so the limit never filled, twice). Prefer ANT's live
+    // ScripDetails LTP for the same contract, as zerodhaExecutor/antExecutor do; fall back to the chain.
+    let ltp = data.premium;
+    try {
+        const exch = indexNameFor(contract.shortName) === 'SENSEX' ? 'BFO' : 'NFO';
+        ltp = (await ANT.getInstance().getLiveQuote(exch, data.antToken)).ltp;
+    } catch (liveErr: any) {
+        Log.log(`[order] ANT live quote unavailable for Breeze pricing of ${tsymFor(contract)} (${liveErr?.message ?? liveErr}) - using option-chain LTP`);
+    }
+    return roundToTick(ltp * 1.01);
 }
 
 async function placeLimitOptionOrder(
