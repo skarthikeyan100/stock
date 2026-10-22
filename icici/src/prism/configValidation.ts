@@ -142,9 +142,8 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     }
     // A BulkPcr loss stop is a percent of maxInvestment: with no usable base it could never trip, so refuse the file.
     // Scoped to BulkPcr only - other strategies fall back to a default base and must keep loading as they do today.
-    const bulkPcrLossKey = obj.maxLossPerDay != null ? 'maxLossPerDay' : obj.maxLossPerTrade != null ? 'maxLossPerTrade' : 'maxLoss';
-    if (label === 'BulkPcrStrategy' && (obj.maxLoss != null || obj.maxLossPerDay != null || obj.maxLossPerTrade != null) && !(isNum(maxInv) && maxInv > 0)) {
-        errors.push(`${label}.${bulkPcrLossKey} needs a usable maxInvestment (> 0) - the percent is taken of it`);
+    if (label === 'BulkPcrStrategy' && obj.maxLossPerTrade != null && !(isNum(maxInv) && maxInv > 0)) {
+        errors.push(`${label}.maxLossPerTrade needs a usable maxInvestment (> 0) - the percent is taken of it`);
     }
 
     if (isNum(obj.minPrice) && isNum(obj.maxPrice) && obj.minPrice > obj.maxPrice) {

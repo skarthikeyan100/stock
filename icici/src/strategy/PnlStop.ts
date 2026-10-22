@@ -2,9 +2,10 @@ import Log from '../util/Log';
 import Mongo from '../tools/mongo';
 import { toPercentNumber } from '../prism/percentConfig';
 
-// Daily max-loss latch for one owner + scope (e.g. a BulkPcr broker). Standalone copy of the
-// LegManager stop logic (see maxloss.md B0 #6 - LegManager is intentionally not refactored onto this).
-// Once tripped it stays tripped for the rest of the local day, including across restarts, until clear().
+// Day latch for one owner + scope (e.g. a BulkPcr broker). Tripped by a max-loss breach, it stays tripped for the
+// rest of the local day, including across restarts, until clear(). A latch that could not be read back after a
+// restart fails closed (isTripped() is true) until a later load() succeeds.
+// Standalone copy of the LegManager stop logic (see maxloss.md B0 #6 - LegManager is intentionally not refactored onto this).
 
 export interface PnlStopDeps {
     ownerType: string;                 // e.g. 'BulkPcrStrategy'
@@ -16,16 +17,17 @@ export interface PnlStopDeps {
 
 export class PnlStop {
     private tripped = false;
+    private loadFailed = false;
     private unusableLogged = false;
 
     constructor(private deps: PnlStopDeps) {}
 
     isTripped(): boolean {
-        return this.tripped;
+        return this.tripped || this.loadFailed;
     }
 
     // Returns true only on the call that newly trips the latch. NaN-safe: a NaN P&L never trips.
-    // Disabled (returns false) when maxLossPerDay is unset.
+    // Disabled (returns false) when maxLossPerTrade is unset.
     evaluate(cumulativePnl: number): boolean {
         if (this.tripped) return false;
         const raw = this.deps.getMaxLossPct();
@@ -34,7 +36,7 @@ export class PnlStop {
         if (pct === null || !(pct > 0)) {
             if (!this.unusableLogged) {
                 this.unusableLogged = true;
-                Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR maxLossPerDay=${JSON.stringify(raw)} is not a usable percent - NOT enforced`);
+                Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR maxLossPerTrade=${JSON.stringify(raw)} is not a usable percent - NOT enforced`);
             }
             return false;
         }
@@ -43,35 +45,51 @@ export class PnlStop {
         if (!(threshold > 0)) {
             if (!this.unusableLogged) {
                 this.unusableLogged = true;
-                Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR maxLossPerDay=${pct}% has no usable maxInvestment (${maxInvestment}) - NOT enforced`);
+                Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR maxLossPerTrade=${pct}% has no usable maxInvestment (${maxInvestment}) - NOT enforced`);
             }
             return false;
         }
         if (!(cumulativePnl <= -threshold)) return false;
         this.tripped = true;
-        this.persist();
-        Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] MAX LOSS TRIPPED - cumulative=${Math.round(cumulativePnl)} threshold=-${Math.round(threshold)} (maxLossPerDay=${pct}% of maxInvestment=${maxInvestment})`);
+        Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] MAX LOSS TRIPPED - trade P&L=${Math.round(cumulativePnl)} threshold=-${Math.round(threshold)} (maxLossPerTrade=${pct}% of maxInvestment=${maxInvestment}) - locked out for the rest of the day`);
         return true;
     }
 
-    // Restores today's latch from Mongo at startup. A read failure leaves the stop untripped but logs loudly.
-    async load(): Promise<void> {
+    // True only for a real breach (or a restored one), not for a failed read - what gets written durably.
+    isLatched(): boolean {
+        return this.tripped;
+    }
+
+    // Restores today's latch (set from a second durable copy, e.g. the strategy's own state doc).
+    markTripped(): void {
+        this.tripped = true;
+    }
+
+    // Restores today's latch from Mongo. Resolves false when the latch could not be read (the stop then
+    // fails closed until a later load() succeeds). Resolves true otherwise, whether or not it was tripped.
+    async load(): Promise<boolean> {
         try {
             const col = Mongo.getInstance()?.db.collection('strategyLatches');
-            if (!col) return;
+            if (!col) throw new Error('Mongo not connected');
             const doc = await col.findOne({ ownerType: this.deps.ownerType, userId: this.deps.userId, scope: this.deps.scope, day: PnlStop.latchDay() });
+            this.loadFailed = false;
             if (doc?.maxLossTripped) {
                 this.tripped = true;
-                Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] max-loss stop was already tripped earlier today - staying stopped (admin reset clears it)`);
+                Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] max-loss lockout was already tripped earlier today - staying locked out (admin reset clears it)`);
             }
+            return true;
         } catch (e) {
-            Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR could not read strategyLatches - continuing with the loss stop UNTRIPPED:`, e);
+            // Fail closed only when the cap is configured: with no maxLossPerTrade there is no lockout to protect.
+            this.loadFailed = this.deps.getMaxLossPct() != null;
+            Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR could not read strategyLatches${this.loadFailed ? ' - broker held CLOSED (fail-closed) until it can be read' : ''}:`, e);
+            return false;
         }
     }
 
     // Admin reset only: clears memory and every persisted day for this owner + scope.
     async clear(): Promise<void> {
         this.tripped = false;
+        this.loadFailed = false;
         try {
             const col = Mongo.getInstance()?.db.collection('strategyLatches');
             if (!col) return;
@@ -81,12 +99,19 @@ export class PnlStop {
         }
     }
 
-    private persist(): void {
-        const col = Mongo.getInstance()?.db.collection('strategyLatches');
-        if (!col) return;
+    // Durable write of the tripped latch. Retried once; resolves even on failure (the in-memory latch still holds).
+    async persist(): Promise<void> {
         const key = { ownerType: this.deps.ownerType, userId: this.deps.userId, scope: this.deps.scope, day: PnlStop.latchDay() };
-        col.updateOne(key, { $set: { maxLossTripped: true, updatedAt: new Date() } }, { upsert: true })
-            .catch((e) => Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] strategyLatches write failed (in-memory latch still holds):`, e));
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                const col = Mongo.getInstance()?.db.collection('strategyLatches');
+                if (!col) throw new Error('Mongo not connected');
+                await col.updateOne(key, { $set: { maxLossTripped: true, updatedAt: new Date() } }, { upsert: true });
+                return;
+            } catch (e) {
+                if (attempt === 2) Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] strategyLatches write failed (in-memory latch still holds):`, e);
+            }
+        }
     }
 
     // Same local-date key as LegManager.latchDay().

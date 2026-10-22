@@ -2,10 +2,10 @@
 
 Status: plan only, written 2026-10-22. Nothing here is built yet.
 
-> **Update 2026-10-22:** For BulkPcr, `maxLoss` is now `maxLossPerDay` (same value, same behaviour; an old
-> `maxLoss` key still works with a WARN). A new `maxLossPerTrade` key caps one slot's trade per broker and
-> ships unset. See `strategies.md` (BulkPcrStrategy section) and `rejected.md`. `ContinuousStrategy` and
-> `SupportResistanceStrategy` keep `maxLoss`.
+> **Update 2026-10-22:** For BulkPcr, the loss stop is `maxLossPerTrade` only. `maxLossPerDay` (and the older
+> `maxLoss` key on BulkPcr) was removed and is ignored with a WARN. A breach of `maxLossPerTrade` closes that
+> broker's trade and locks the broker out for the rest of the day, including across restarts and the auto-start
+> re-arm. See `strategies.md` (BulkPcrStrategy section). `ContinuousStrategy` and `SupportResistanceStrategy` keep `maxLoss`.
 
 ## 1. What exists today
 

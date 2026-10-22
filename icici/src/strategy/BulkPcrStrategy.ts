@@ -10,7 +10,6 @@ import MomentumSignal from './MomentumSignal';
 import { isPastMarketClose } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { PnlStop } from './PnlStop';
-import { toPercentNumber } from '../prism/percentConfig';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
 
@@ -189,10 +188,11 @@ interface BrokerPosition {
 
 interface PersistedState {
     positions: Partial<Record<BrokerName, BrokerPosition>>;
-    // Day's realized P&L per pair broker; restored on reconcile only when realizedDay is today.
-    realizedByBroker?: Partial<Record<BrokerName, number>>;
-    // Current trade's realized P&L per pair broker (maxLossPerTrade); same day guard as realizedByBroker.
+    // Current trade's realized P&L per pair broker (maxLossPerTrade); restored on reconcile only when realizedDay is today.
     cycleRealizedByBroker?: Partial<Record<BrokerName, number>>;
+    // Brokers locked out by maxLossPerTrade on realizedDay. Second durable copy of the PnlStop latch: reconcile
+    // re-trips these even if the strategyLatches read fails, so a restart can never re-enable a tripped broker.
+    stoppedBrokers?: BrokerName[];
     realizedDay?: string;
 }
 
@@ -285,17 +285,15 @@ export default class BulkPcrStrategy extends Strategy {
     // Set once the EOD force-close has started - nothing new opens or re-buys after it.
     private eodDone = false;
 
-    // Per-broker daily loss stop (maxloss.md). One PnlStop latch per pair broker. A tripped broker closes
-    // its open slots and takes no new buys until the next trading day or an admin reset.
+    // Per-broker loss stop (maxLossPerTrade, maxloss.md). One PnlStop latch per pair broker. A trade = one auto-start
+    // slot = everything since the last reset(). When a broker's trade P&L breaches maxLossPerTrade, its open slots are
+    // closed at limit and that broker is locked out for the rest of the day (BulkPcrAutoStartStrategy skips it even
+    // while the strategy is enabled). Cleared only by admin reset or the day rollover.
     private stops = new Map<BrokerName, PnlStop>();
-    // Day's realized P&L per pair broker, summed over every completed slot cycle (slot fields reset on re-buy).
-    private realizedByBroker = new Map<BrokerName, number>();
-    // Per-trade loss cap (maxLossPerTrade). A trade = one auto-start slot = everything since the last reset().
-    // cycleRealizedByBroker is the current trade's realized P&L; cycleStopped holds brokers whose trade was closed by the
-    // cap (cleared by reset(), so the next slot can arm). Live 2026-10-22: ANT's 14:25 trade lost about 18,900 against a
-    // 10,000 limit because six winning slots offset it in the day's cumulative total.
+    // Current trade's realized P&L per pair broker, summed over every completed slot cycle (slot fields reset on re-buy).
+    // Live 2026-10-22: ANT's 14:25 trade lost about 18,900 against a 10,000 limit because six winning slots offset it in
+    // a day-wide total - so the cap is measured per trade, not per day.
     private cycleRealizedByBroker = new Map<BrokerName, number>();
-    private cycleStopped = new Set<BrokerName>();
     // Last tick price per slot key, in memory only. Feeds the unrealized part of the stop check.
     private lastLtpByKey = new Map<string, number>();
     // Local day the stop accumulators belong to. A rollover clears them (see ensureToday).
@@ -367,25 +365,27 @@ export default class BulkPcrStrategy extends Strategy {
     // fine while a different broker sits in 'error' needing manual review.
     // Fire-and-forget, same convention as bookkeeping's own Mongo writes
     // elsewhere.
-    private persistState(): void {
+    private persistState(): Promise<void> {
         const positions: Partial<Record<BrokerName, BrokerPosition>> = {};
         // squaringOff is in-memory only: persisted true would survive a crash mid-close and block updateTrade after restart.
         for (const [broker, pos] of this.positions) {
             const { squaringOff: _inFlight, ...durable } = pos;
             positions[broker] = durable as BrokerPosition;
         }
-        Mongo.getInstance()?.db.collection(STATE_COLLECTION)
+        const stoppedBrokers = this.configuredBrokers().filter((b) => isPairBroker(b) && this.stops.get(b)?.isLatched() === true);
+        return Promise.resolve(Mongo.getInstance()?.db.collection(STATE_COLLECTION)
             .replaceOne(
                 { userId: this.userId },
                 {
                     userId: this.userId,
                     positions,
-                    realizedByBroker: Object.fromEntries(this.realizedByBroker),
                     cycleRealizedByBroker: Object.fromEntries(this.cycleRealizedByBroker),
+                    stoppedBrokers,
                     realizedDay: this.statsDay,
                 },
                 { upsert: true }
-            )
+            ))
+            .then(() => undefined)
             .catch((e) => Log.log('[BulkPcrStrategy] persistState failed:', e));
     }
 
@@ -405,26 +405,19 @@ export default class BulkPcrStrategy extends Strategy {
         const today = localDayKey();
         if (today === this.statsDay) return;
         this.statsDay = today;
-        this.realizedByBroker.clear();
         this.cycleRealizedByBroker.clear();
-        this.cycleStopped.clear();
         this.stops.clear();
     }
 
-    // maxLossPerDay was called maxLoss until 2026-10-22. An old config still carrying maxLoss must not silently lose its
-    // stop, so fall back to it (once-only warning) when the new key is absent.
-    private maxLossWarned = false;
-    private maxLossPerDayRaw(): unknown {
+    // A broker-only lockout comes from maxLossPerTrade. maxLossPerDay was removed on 2026-10-22; a config still
+    // carrying it (or the older maxLoss key) is ignored, with a once-only warning, so the operator notices.
+    private legacyLossKeyWarned = false;
+    private warnIfLegacyLossKey(): void {
         const cfg = this.cfg();
-        if (cfg.maxLossPerDay != null) return cfg.maxLossPerDay;
-        if (cfg.maxLoss != null) {
-            if (!this.maxLossWarned) {
-                this.maxLossWarned = true;
-                Log.log(`[BulkPcrStrategy] WARN: config key maxLoss was renamed maxLossPerDay - using maxLoss=${JSON.stringify(cfg.maxLoss)} for now, please rename it in config.yml`);
-            }
-            return cfg.maxLoss;
-        }
-        return undefined;
+        const legacy = cfg.maxLossPerDay ?? cfg.maxLoss;
+        if (legacy == null || this.legacyLossKeyWarned) return;
+        this.legacyLossKeyWarned = true;
+        Log.log(`[BulkPcrStrategy] WARN: config key ${cfg.maxLossPerDay != null ? 'maxLossPerDay' : 'maxLoss'}=${JSON.stringify(legacy)} is REMOVED and ignored - the loss stop is maxLossPerTrade (a trade breach locks the broker out for the day). Remove it from config.yml.`);
     }
 
     private stopFor(broker: BrokerName): PnlStop {
@@ -435,7 +428,7 @@ export default class BulkPcrStrategy extends Strategy {
                 ownerType: 'BulkPcrStrategy',
                 userId: this.userId,
                 scope: broker,
-                getMaxLossPct: () => this.maxLossPerDayRaw(),
+                getMaxLossPct: () => this.cfg().maxLossPerTrade,
                 getMaxInvestment: () => this.cfg().maxInvestment ?? 0,
             });
             this.stops.set(broker, stop);
@@ -443,39 +436,52 @@ export default class BulkPcrStrategy extends Strategy {
         return stop;
     }
 
-    // Public: BulkPcrAutoStartStrategy skips a loss-stopped broker before arming it.
+    // Public: BulkPcrAutoStartStrategy skips a locked-out broker before arming it, and entries/re-buys skip it too.
     isBrokerStopped(broker: string): boolean {
         if (!isPairBroker(broker as BrokerName)) return false;
-        if (this.cycleStopped.has(broker as BrokerName)) return true; // this trade was capped by maxLossPerTrade
         return this.stopFor(broker as BrokerName).isTripped();
     }
 
-    // Restores today's persisted stop latch for every configured pair broker. Called from reconcile() and by
-    // the auto-start before it arms, so a restart never re-arms a stopped broker.
+    // Restores today's lockouts for every configured pair broker. Called from reconcile() and by the auto-start before
+    // it arms, so a restart never re-enables a locked-out broker. Two durable copies are consulted: the strategyLatches
+    // doc (PnlStop) and this strategy's own state doc (stoppedBrokers). If neither can be read the broker stays
+    // closed (fail-closed) until a later load succeeds.
     async loadStopLatches(): Promise<void> {
+        this.warnIfLegacyLossKey();
+        const persisted = await this.loadState();
+        const stateDayIsToday = persisted?.realizedDay === localDayKey();
         for (const broker of this.configuredBrokers()) {
-            if (isPairBroker(broker)) await this.stopFor(broker).load();
+            if (!isPairBroker(broker)) continue;
+            const stop = this.stopFor(broker);
+            const latchReadOk = await stop.load();
+            if (stateDayIsToday && persisted?.stoppedBrokers?.includes(broker)) {
+                stop.markTripped();
+                Log.log(`[BulkPcrStrategy] [${broker}] restored today's maxLossPerTrade lockout from the state doc - staying locked out`);
+            }
+            if (!latchReadOk && stop.isTripped() && !stop.isLatched()) {
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: lockout state unreadable - broker held closed until it can be read`);
+            }
         }
     }
 
-    // Books one finished cycle's (or one square-off's) realized P&L against the broker, for today.
+    // Books one slot cycle's realized P&L against the broker's current trade.
     private bookRealized(broker: BrokerName, pnl: number): void {
         if (!isPairBroker(broker)) return;
         if (!Number.isFinite(pnl)) {
-            Log.log(`[BulkPcrStrategy] [${broker}] ALERT: realized P&L is not a finite number (${pnl}) - NOT booked into the loss stop`);
+            Log.log(`[BulkPcrStrategy] [${broker}] ALERT: realized P&L is not a finite number (${pnl}) - NOT booked into the trade loss cap`);
             return;
         }
         this.ensureToday();
-        this.realizedByBroker.set(broker, (this.realizedByBroker.get(broker) ?? 0) + pnl);
         this.cycleRealizedByBroker.set(broker, (this.cycleRealizedByBroker.get(broker) ?? 0) + pnl);
         this.persistState();
     }
 
-    // Day's realized P&L plus open P&L of every selling slot of one broker (both sides, across re-buys).
-    // A slot with no tick yet adds 0 unrealized - a price is never guessed. Slots in 'error' are excluded:
-    // what they still hold is unknown (see maxloss.md B3.2 / the ruling there), so counting them could trip falsely.
-    private cumulativePnl(broker: BrokerName): number {
-        let total = this.realizedByBroker.get(broker) ?? 0;
+    // Current trade's P&L for one broker: realized so far in this trade (cycleRealizedByBroker) plus the open part of
+    // every selling slot (both sides, across re-buys). A slot with no tick yet adds 0 unrealized - a price is never
+    // guessed. Slots in 'error' are excluded: what they still hold is unknown (see maxloss.md B3.2), so counting them
+    // could trip falsely.
+    private tradePnl(broker: BrokerName): number {
+        let total = this.cycleRealizedByBroker.get(broker) ?? 0;
         for (const pos of this.slotsOf(broker)) {
             if (pos.phase !== 'selling' || !pos.heldTsym) continue;
             total += pos.soldValue - pos.soldQty * pos.entryAvg;
@@ -490,32 +496,8 @@ export default class BulkPcrStrategy extends Strategy {
     // closeBroker exactly once. Nothing trips after EOD (the EOD close already covers every slot).
     private tripIfBreached(broker: BrokerName): boolean {
         if (!isPairBroker(broker) || this.eodDone) return false;
-        // Daily latch only: a trade cap (cycleStopped) must not hide the daily line from this check.
         if (this.stopFor(broker).isTripped()) return false;
-        return this.stopFor(broker).evaluate(this.cumulativePnl(broker));
-    }
-
-    // Trade P&L = this trade's realized + open P&L of the broker's selling slots. cumulativePnl() already adds the DAY's
-    // realized, so swap that part for the trade's.
-    private tradePnl(broker: BrokerName): number {
-        return this.cumulativePnl(broker) - (this.realizedByBroker.get(broker) ?? 0) + (this.cycleRealizedByBroker.get(broker) ?? 0);
-    }
-
-    // True only on the call that newly caps the trade, so the caller starts closeBroker exactly once. Disabled when
-    // maxLossPerTrade is unset or unusable. Same percent-of-maxInvestment form as maxLossPerDay.
-    private tripTradeIfBreached(broker: BrokerName): boolean {
-        if (!isPairBroker(broker) || this.eodDone || this.cycleStopped.has(broker) || this.stopFor(broker).isTripped()) return false;
-        const raw = this.cfg().maxLossPerTrade;
-        if (raw == null) return false;
-        const pct = toPercentNumber(raw);
-        const maxInvestment = this.cfg().maxInvestment ?? 0;
-        const threshold = pct !== null && pct > 0 ? (pct / 100) * maxInvestment : 0;
-        if (!(threshold > 0)) return false; // unusable value: not enforced (config validation reports it)
-        const pnl = this.tradePnl(broker);
-        if (!Number.isFinite(pnl) || pnl > -threshold) return false;
-        this.cycleStopped.add(broker);
-        Log.log(`[BulkPcrStrategy] [${broker}] ALERT: MAX LOSS PER TRADE TRIPPED - trade P&L=${Math.round(pnl)} threshold=-${Math.round(threshold)} (maxLossPerTrade=${pct}% of maxInvestment=${maxInvestment}) - closing this broker's open slots at limit`);
-        return true;
+        return this.stopFor(broker).evaluate(this.tradePnl(broker));
     }
 
     // See file header for the momentum-veto rationale.
@@ -856,14 +838,7 @@ export default class BulkPcrStrategy extends Strategy {
         }
         // Stop check before any hedge logic, so a broker tripped by this tick never opens its opposite side.
         const tripped = Array.from(new Set(matches.map((m) => m.broker))).filter((b) => this.tripIfBreached(b));
-        if (tripped.length > 0) {
-            for (const b of tripped) {
-                Log.log(`[BulkPcrStrategy] [${b}] loss stop tripped - closing this broker's open slots at limit and blocking new buys for today`);
-            }
-            await Promise.all(tripped.map((b) => this.closeBroker(b)));
-        }
-        const tradeTripped = Array.from(new Set(matches.map((m) => m.broker))).filter((b) => this.tripTradeIfBreached(b));
-        if (tradeTripped.length > 0) await Promise.all(tradeTripped.map((b) => this.closeBroker(b)));
+        await Promise.all(tripped.map((b) => this.lockOutBroker(b, 'trade P&L breached maxLossPerTrade on a tick')));
 
         this.retryPendingRebuys();
 
@@ -1073,14 +1048,13 @@ export default class BulkPcrStrategy extends Strategy {
     // A slot's +2 exit has fully filled. If the opposite side (same broker) is still active, this
     // side re-buys immediately and rests its own +2 again. Otherwise there is nothing left to re-buy.
     private onSlotSoldOut(pos: BrokerPosition): void {
-        // This cycle is over: its realized P&L goes into the day's total, then the slot's live price is dropped.
+        // This cycle is over: its realized P&L goes into the current trade's total, then the slot's live price is dropped.
         this.bookRealized(pos.broker, pos.soldValue - pos.soldQty * pos.entryAvg);
         this.lastLtpByKey.delete(this.keyOf(pos));
         pos.phase = 'done';
         this.persistState();
         // A realized loss can cross the line with no tick, so check before deciding on the re-buy below.
         const tripped = this.tripIfBreached(pos.broker);
-        const tradeTripped = this.tripTradeIfBreached(pos.broker);
         if (isPairBroker(pos.broker) && !this.eodDone) {
             const sibling = this.slotsOf(pos.broker).find((p) => p.right !== pos.right);
             if (sibling && (sibling.phase === 'selling' || sibling.phase === 'buying') && !this.isBrokerStopped(pos.broker)) {
@@ -1089,11 +1063,18 @@ export default class BulkPcrStrategy extends Strategy {
             }
         }
         if (tripped) {
-            Log.log(`[BulkPcrStrategy] [${pos.broker}] loss stop tripped on a realized fill - closing this broker's open slots at limit`);
-            this.closeBroker(pos.broker).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] loss-stop close failed:`, e));
+            this.lockOutBroker(pos.broker, 'trade P&L breached maxLossPerTrade on a realized fill').catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] lockout close failed:`, e));
         }
-        if (tradeTripped) this.closeBroker(pos.broker).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] trade-cap close failed:`, e));
         this.finishIfFlat();
+    }
+
+    // A broker whose trade breached maxLossPerTrade: its lockout is made durable (both copies) before its open slots are
+    // closed, so a restart in between cannot re-enable it. The in-memory latch already blocks every new buy and re-buy.
+    private async lockOutBroker(broker: BrokerName, reason: string): Promise<void> {
+        Log.log(`[BulkPcrStrategy] [${broker}] LOCKED OUT for the rest of the day (${reason}) - closing this broker's open slots at limit`);
+        await this.stopFor(broker).persist();
+        await this.persistState();
+        await this.closeBroker(broker);
     }
 
     // Closes every open slot of a loss-stopped broker: cancels its resting +N sell, then squares off the rest at
@@ -1388,13 +1369,11 @@ export default class BulkPcrStrategy extends Strategy {
 
     private async reconcileBody(maxAttempts: number, retryDelayMs: number): Promise<void> {
         const persisted = await this.loadState();
-        // Loss-stop state first, before any slot is rebuilt: today's realized P&L (only if it was saved today)
-        // and each pair broker's latch. A restored latch blocks new buys; it does not auto-close positions.
+        // Loss-stop state first, before any slot is rebuilt: the current trade's realized P&L (only if it was saved today)
+        // and each pair broker's lockout. A restored lockout blocks new buys; open slots of a locked-out broker are closed
+        // once the slots are rebuilt (see the end of this method).
         this.ensureToday();
         if (persisted?.realizedDay === this.statsDay) {
-            for (const [broker, pnl] of Object.entries(persisted.realizedByBroker ?? {})) {
-                if (Number.isFinite(Number(pnl))) this.realizedByBroker.set(broker as BrokerName, Number(pnl));
-            }
             for (const [broker, pnl] of Object.entries(persisted.cycleRealizedByBroker ?? {})) {
                 if (Number.isFinite(Number(pnl))) this.cycleRealizedByBroker.set(broker as BrokerName, Number(pnl));
             }
@@ -1750,6 +1729,13 @@ export default class BulkPcrStrategy extends Strategy {
         } else if (anyRestored) {
             this.phase = 'running';
         }
+        // A broker locked out for today never resumes on restart: a restored open exit or pending slot is closed now,
+        // so a crash between the trip and its close cannot leave a locked-out broker holding a position.
+        for (const b of this.configuredBrokers()) {
+            if (!isPairBroker(b) || !this.isBrokerStopped(b)) continue;
+            if (!this.slotsOf(b).some((p) => p.phase === 'selling' || p.phase === 'pending')) continue;
+            await this.lockOutBroker(b, 'restart found this broker locked out for today').catch((e) => Log.log(`[BulkPcrStrategy] [${b}] reconcile: lockout close failed:`, e));
+        }
     }
 
     // Exposes the outer one-shot reentrancy gate to callers outside this
@@ -1780,19 +1766,17 @@ export default class BulkPcrStrategy extends Strategy {
     // keepStops: the auto-start re-arm path. It keeps today's loss-stop latches and realized P&L (the stop
     // must survive a re-arm). Without it (admin reset) the stops and the day's realized P&L are cleared too.
     reset(opts?: { keepStops?: boolean }): void {
-        // A new trade starts here in both modes: the per-trade cap and its realized P&L restart at zero.
+        // A new trade starts here in both modes: the trade's realized P&L restarts at zero.
         this.cycleRealizedByBroker.clear();
-        this.cycleStopped.clear();
         this.phase = 'idle';
         this.positions.clear();
         this.lastLtpByKey.clear();
         if (opts?.keepStops) {
-            // Re-saves the state with no positions, keeping realizedByBroker for today.
+            // Re-saves the state with no positions. Lockouts stay: a broker locked out today is not re-armed today.
             this.persistState();
-            Log.log(`[${this.userId}] Reset for re-arm (loss stops and realized P&L kept)`);
+            Log.log(`[${this.userId}] Reset for re-arm (day's lockouts kept)`);
             return;
         }
-        this.realizedByBroker.clear();
         for (const stop of this.stops.values()) void stop.clear();
         this.stops.clear();
         Mongo.getInstance()?.db.collection(STATE_COLLECTION).deleteOne({ userId: this.userId })
