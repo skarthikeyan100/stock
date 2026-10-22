@@ -298,7 +298,7 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
 
     if (trade.gttTriggerId) {
         const zerodha = Zerodha.getInstance();
-        const exchange = trade.tsym.startsWith('BSE') ? 'BFO' : 'NFO';
+        const exchange = trade.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO';
         await zerodha.modifyTargetStopLossGTT(
             trade.gttTriggerId,
             trade.tsym,

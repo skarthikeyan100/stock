@@ -23,7 +23,7 @@ const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses arou
 // landing the broker position in phase='error' for no reason other than
 // this strategy's own call volume.
 const ENTRY_ATTEMPT_THROTTLE_MS = 10_000;
-// Minimum gap between retries of a pending ANT side buy (see retryPendingRebuys).
+// Minimum gap between retries of a pending pair-side buy (see retryPendingRebuys).
 const REBUY_RETRY_THROTTLE_MS = 10_000;
 
 // onOrderCancelled's re-placement cap/backoff (live incident 2026-10-15 - see BrokerPosition's
@@ -60,10 +60,33 @@ const STATE_COLLECTION = 'bulkPcrStrategyState';
 // against ant/prism instead of zerodha/breeze.
 type BrokerName = 'zerodha' | 'breeze' | 'ant' | 'prism';
 
-// Positions key: every broker has one position under its own name, except ANT, which holds one
-// slot per option side (ant_call / ant_put) - the two sides of the opposite-direction pair.
+// Brokers that run the opposite-direction pair: one slot per option side per broker
+// (zerodha_call / zerodha_put, breeze_call, ant_put, ...). Prism stays a single slot.
+const PAIR_BROKERS: ReadonlySet<BrokerName> = new Set<BrokerName>(['ant', 'zerodha', 'breeze']);
+function isPairBroker(broker: BrokerName): boolean {
+    return PAIR_BROKERS.has(broker);
+}
+
+// Positions key: a non-pair broker keeps one position under its own name; a pair broker holds
+// one slot per option side (<broker>_call / <broker>_put).
 function slotKey(broker: BrokerName, right?: string): string {
-    return broker === 'ant' && right ? `ant_${right}` : broker;
+    return isPairBroker(broker) && right ? `${broker}_${right}` : broker;
+}
+
+// Inverse of slotKey: the broker a positions key belongs to (`ant_call` -> `ant`, `prism` -> `prism`).
+function brokerOfKey(key: string): BrokerName {
+    for (const b of PAIR_BROKERS) {
+        if (key === b || key.startsWith(`${b}_`)) return b;
+    }
+    return key as BrokerName;
+}
+
+// The id live option ticks and resting-sell tracking are keyed on: the ANT common token for this
+// contract. Every pair broker's chunkedBuyIndex result carries it - zerodha/ant return it as
+// `token`, breeze as `feedToken` (its own `token` is Breeze's instrument id, which only Breeze's
+// bookkeeping/squareOff paths understand).
+function feedTokenOf(result: { token: unknown; feedToken?: unknown }): string {
+    return String(result.feedToken ?? result.token);
 }
 
 // Derives CALL/PUT from an ANT tradingSymbol - ANT uses TWO different conventions
@@ -91,7 +114,7 @@ function isNothingBought(e: any): boolean {
 
 interface BrokerPosition {
     broker: BrokerName;
-    // ANT only: the option side this slot holds (CALL | PUT).
+    // Pair brokers only: the option side this slot holds (CALL | PUT).
     right?: string;
     // 'pending' = a side whose buy did not fill, retried off the other side's ticks.
     phase: 'buying' | 'selling' | 'pending' | 'error' | 'done';
@@ -105,7 +128,7 @@ interface BrokerPosition {
     targetQuantity: number;
     soldQty: number;
     soldValue: number;
-    // ANT only: quantity each buy of this side uses. The root's entry quantity; the opposite side
+    // Pair brokers only: quantity each buy of this side uses. The root's entry quantity; the opposite side
     // inherits the root's still-open quantity when it is opened. Re-buys reuse it.
     entryQuantity?: number;
     // Epoch ms of the last buy attempt - throttles retries of a 'pending' buy.
@@ -205,7 +228,7 @@ export default class BulkPcrStrategy extends Strategy {
     // lives in `positions`, keyed by broker, since brokers advance through
     // buying/selling/error/done entirely independently of each other.
     private phase: 'idle' | 'running' | 'done' = 'idle';
-    // Keyed by slotKey: a broker name, or ant_call / ant_put for the two ANT sides.
+    // Keyed by slotKey: a non-pair broker's name, or <broker>_call / <broker>_put for a pair broker.
     private positions = new Map<string, BrokerPosition>();
     private momentum = new MomentumSignal();
     private lastGateLog = new Map<string, number>();
@@ -215,16 +238,16 @@ export default class BulkPcrStrategy extends Strategy {
     // re-resolves against are current.
     private lastNiftyQuote: NiftyQuote | null = null;
 
-    // ANT holds the pair: one slot per option side, keyed ant_call / ant_put (see slotKey).
-    // Entry, the opposite-side opening and re-buys live in the methods further down.
+    // Each pair broker holds its own pair: one slot per option side (see slotKey). Entry, the
+    // opposite-side opening and re-buys live in the methods further down.
     // Set once the EOD force-close has started - nothing new opens or re-buys after it.
     private eodDone = false;
 
     receive(oldStats, newStats) {}
 
-    // A lone ANT slot that falls this far below its entry opens the opposite side.
+    // A lone slot (per pair broker) that falls this far below its entry opens that broker's opposite side.
     // Optional config key; defaults to 10 points.
-    // Underlying this instance trades: config `index: SENSEX` (ANT only, BFO options) or NIFTY (default).
+    // Underlying this instance trades: config `index: SENSEX` (BFO options) or NIFTY (default).
     private index(): 'NIFTY' | 'SENSEX' {
         return this.cfg().index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
     }
@@ -339,13 +362,13 @@ export default class BulkPcrStrategy extends Strategy {
     }
 
     private async eodCheck(): Promise<void> {
-        if (!this.eodDone && this.antSlots().length > 0) {
+        if (!this.eodDone && this.pairSlots().length > 0) {
             const now = new Date();
             const pastEodCutoff = now.getHours() > 15 || (now.getHours() === 15 && now.getMinutes() >= 15);
             if (pastEodCutoff) {
                 this.eodDone = true;
-                Log.log('[BulkPcrStrategy] EOD cutoff reached - force-closing open ANT slot(s)');
-                await this.eodCloseAnt();
+                Log.log('[BulkPcrStrategy] EOD cutoff reached - force-closing open pair slot(s)');
+                await this.eodCloseSlots();
             }
         }
     }
@@ -353,7 +376,7 @@ export default class BulkPcrStrategy extends Strategy {
     private async processUnderlyingQuote(quote: NiftyQuote): Promise<void> {
         this.lastNiftyQuote = quote;
 
-        // EOD force-close of open ANT slots - checked before the phase==='idle' gate below, since by
+        // EOD force-close of open pair slots - checked before the phase==='idle' gate below, since by
         // the time a slot exists the outer phase is already 'running' and would return first.
         // One-shot via eodDone; a NIFTY/SENSEX tick after 15:15 is frequent enough that no interval
         // poll is needed. Shared with the SENSEX-instance early-return path above (processNiftyQuote) -
@@ -422,7 +445,7 @@ export default class BulkPcrStrategy extends Strategy {
         const key = slotKey(broker, right);
         this.positions.set(key, {
             broker,
-            right: broker === 'ant' ? right : undefined,
+            right: isPairBroker(broker) ? right : undefined,
             phase: 'buying',
             heldTsym: null,
             heldToken: null,
@@ -437,7 +460,7 @@ export default class BulkPcrStrategy extends Strategy {
             const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, { right, quantity, niftyLtp, broker, driftCancelPoints: chunkDriftCancelPoints, index: this.index() });
             const pos = this.positions.get(key)!;
             pos.heldTsym = result.tsym;
-            pos.heldToken = String(result.token);
+            pos.heldToken = feedTokenOf(result);
             pos.entryAvg = result.avgPrice;
             Log.log(`[BulkPcrStrategy] [${broker}] Entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
             pos.entryQuantity = result.quantity;
@@ -568,15 +591,10 @@ export default class BulkPcrStrategy extends Strategy {
                 broker,
             });
             Log.log(`[BulkPcrStrategy] [${broker}] Limit sell chunks resting for ${pos.heldTsym} @ ${targetPrice} - waiting for fills`);
-            // Watch the held token so its option ticks reach processOptionQuote - an ANT slot needs
+            // Watch the held token so its option ticks reach processOptionQuote - a pair slot needs
             // them for the slDistance check that opens the opposite side (tokenRouter only routes
             // ticks for watched/registered tokens).
-            if (broker === 'ant' && pos.heldToken) {
-                // ANT token: always the ANT feed, whatever config's broker: key says. exchange
-                // derived from heldTsym (found on review - this used to default to NFO regardless,
-                // which silently never got a tick back for a SENSEX/BFO leg).
-                watchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
-            }
+            this.watchSlot(pos);
         } catch (e) {
             Log.log(`[BulkPcrStrategy] [${broker}] Chunked limit-sell placement failed - manual review required:`, e);
             pos.phase = 'error';
@@ -590,53 +608,81 @@ export default class BulkPcrStrategy extends Strategy {
         await this.placeExitSellAtTargetPrice(key, quantity, true);
     }
 
-    // Momentum-only tick consumer PLUS the ANT slots' own tokens - an ANT slot is ticked
+    // Momentum-only tick consumer PLUS every pair slot's own token - a pair slot is ticked
     // so processOptionQuote can observe the slDistance adverse move that opens its opposite side.
     canHandleOptionQuote(quote: OptionQuote): boolean {
         const token = String(quote.token);
         if (this.momentum.isTracking(token)) return true;
-        return this.antSlots().some((p) => p.heldToken === token && p.phase !== 'done');
+        return this.pairSlots().some((p) => p.heldToken === token && p.phase !== 'done');
     }
 
-    // The ANT pair (see the file header): at most one slot per side. A lone slot that falls
-    // slDistance below its entry opens the opposite side, once. From then on each side re-buys
-    // its own side the moment its +2 sell fills, while the other side is still active - so there
-    // are never more than two open trades, one per direction.
+    // The opposite-direction pair (see the file header), run independently by each pair broker:
+    // at most one slot per side per broker. A lone slot that falls slDistance below its entry opens
+    // that broker's opposite side, once. From then on each side re-buys its own side the moment its
+    // +2 sell fills, while the other side is still active - so each broker never has more than two
+    // open trades, one per direction. All brokers hold the same ATM token, so one tick is offered
+    // to every matching slot.
     async processOptionQuote(quote: OptionQuote): Promise<void> {
         const token = String(quote.token);
         if (this.momentum.isTracking(token)) {
             this.momentum.onTick(quote);
             return;
         }
-        const slot = this.antSlots().find((p) => p.heldToken === token && p.phase === 'selling');
-        if (!slot || this.eodDone) return;
+        if (this.eodDone) return;
+        const matches = this.pairSlots().filter((p) => p.heldToken === token && p.phase === 'selling');
+        if (matches.length === 0) return;
 
         this.retryPendingRebuys();
 
-        // Once both sides exist the pair is complete - this tick does nothing more. A 'done'
-        // side (already fully sold out, e.g. from an earlier cycle) doesn't count as "existing"
-        // here - same convention onSlotSoldOut's sibling check and canHandleOptionQuote already
-        // use (phase !== 'done') - found live 2026-10-21: a stale 'done' PE record from a prior
-        // cycle was otherwise permanently counted as a second active side, blocking this lone CE
-        // slot from ever opening its hedge no matter how far price moved.
-        if (this.antSlots().filter((p) => p.phase !== 'done').length !== 1) return;
-        if (quote.ltp > slot.entryAvg - this.slDistance()) return;
-        await this.openOppositeSide(slot);
+        for (const slot of matches) {
+            // Once both sides of this broker exist its pair is complete - this tick does nothing more
+            // for it. A 'done' side (already fully sold out, e.g. from an earlier cycle) doesn't count
+            // as "existing" here - same convention onSlotSoldOut's sibling check and canHandleOptionQuote
+            // already use (phase !== 'done') - found live 2026-10-21: a stale 'done' PE record from a prior
+            // cycle was otherwise permanently counted as a second active side, blocking this lone CE
+            // slot from ever opening its hedge no matter how far price moved.
+            if (this.slotsOf(slot.broker).filter((p) => p.phase !== 'done').length !== 1) continue;
+            if (quote.ltp > slot.entryAvg - this.slDistance()) continue;
+            await this.openOppositeSide(slot);
+        }
     }
 
-    private antSlots(): BrokerPosition[] {
-        return Array.from(this.positions.values()).filter((p) => p.broker === 'ant');
+    private pairSlots(): BrokerPosition[] {
+        return Array.from(this.positions.values()).filter((p) => isPairBroker(p.broker));
     }
 
-    // Fills arrive by tsym for ANT (two sides can both be open), and by broker name for every
-    // other broker - whose single position is keyed by that name.
+    private slotsOf(broker: BrokerName): BrokerPosition[] {
+        return this.pairSlots().filter((p) => p.broker === broker);
+    }
+
+    // Fills arrive by tsym for a pair broker (two sides can both be open), and by broker name for
+    // every other broker - whose single position is keyed by that name.
     private slotFor(broker: BrokerName, tsym: string): BrokerPosition | undefined {
-        if (broker !== 'ant') return this.positions.get(broker);
-        return this.antSlots().find((p) => p.heldTsym === tsym);
+        if (!isPairBroker(broker)) return this.positions.get(broker);
+        return this.slotsOf(broker).find((p) => p.heldTsym === tsym);
     }
 
     private keyOf(pos: BrokerPosition): string {
         return slotKey(pos.broker, pos.right);
+    }
+
+    // Starts tick routing for a slot's held token. Idempotent (tokenRouter refcounts per strategy).
+    // Pair brokers only: a non-pair slot is never ticked by its held token.
+    private watchSlot(pos: BrokerPosition): void {
+        if (!isPairBroker(pos.broker) || !pos.heldToken) return;
+        watchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
+    }
+
+    // Stops tick routing for a slot's held token - but only if no other pair slot still holds the
+    // same token (brokers share one ATM contract, so unwatching it for one slot would silently
+    // starve the others of their adverse-move ticks).
+    private unwatchSlot(pos: BrokerPosition, exceptKey?: string): void {
+        if (!isPairBroker(pos.broker) || !pos.heldToken) return;
+        const stillHeld = Array.from(this.positions.entries()).some(([k, p]) =>
+            k !== exceptKey && p !== pos && isPairBroker(p.broker) && p.phase !== 'done' && p.heldToken === pos.heldToken
+        );
+        if (stillHeld) return;
+        unwatchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
     }
 
     // Opens the opposite side against a lone slot that moved slDistance against its entry. Sized to
@@ -645,20 +691,20 @@ export default class BulkPcrStrategy extends Strategy {
         const right = slot.right === CALL ? PUT : CALL;
         const remaining = slot.targetQuantity - slot.soldQty;
         if (remaining <= 0) return;
-        const key = slotKey('ant', right);
+        const key = slotKey(slot.broker, right);
         // Registered as 'buying' synchronously, before any await - a second tick for the same
         // adverse move then sees two slots and does nothing.
         this.positions.set(key, {
-            broker: 'ant', right, phase: 'buying', heldTsym: null, heldToken: null,
+            broker: slot.broker, right, phase: 'buying', heldTsym: null, heldToken: null,
             entryAvg: 0, targetQuantity: 0, soldQty: 0, soldValue: 0, entryQuantity: remaining,
         });
-        Log.log(`[BulkPcrStrategy] [ant] ${slot.heldTsym} is ${this.slDistance()} points below its entry ${slot.entryAvg} - opening ${right} qty=${remaining} against it`);
+        Log.log(`[BulkPcrStrategy] [${slot.broker}] ${slot.heldTsym} is ${this.slDistance()} points below its entry ${slot.entryAvg} - opening ${right} qty=${remaining} against it`);
         await this.buyAndExit(key);
     }
 
-    // Buys one ANT side and rests its +2 exit. Used for the opposite-side opening, for a re-buy
-    // after a +2 fill, and for retries of either. 'buying' is set synchronously before any await
-    // (the callers rely on it to block a duplicate buy for the same side).
+    // Buys one pair-broker side and rests its +2 exit. Used for the opposite-side opening, for a
+    // re-buy after a +2 fill, and for retries of either. 'buying' is set synchronously before any
+    // await (the callers rely on it to block a duplicate buy for the same side).
     private async buyAndExit(key: string): Promise<void> {
         const pos = this.positions.get(key);
         if (!pos || !pos.right || !(pos.entryQuantity && pos.entryQuantity > 0)) return;
@@ -667,7 +713,7 @@ export default class BulkPcrStrategy extends Strategy {
         if (!(niftyLtp > 0)) {
             pos.phase = 'pending';
             this.persistState();
-            this.logGateOnce(`[ant] ${pos.right} buy: no NIFTY price yet - waiting for the next tick`);
+            this.logGateOnce(`[${pos.broker}] ${pos.right} buy: no NIFTY price yet - waiting for the next tick`);
             return;
         }
 
@@ -678,15 +724,17 @@ export default class BulkPcrStrategy extends Strategy {
             // Same chunked buy the root entry uses: splits above the exchange freeze quantity and
             // returns only once every chunk has filled.
             const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, {
-                right: pos.right, quantity: pos.entryQuantity, niftyLtp, broker: 'ant', index: this.index(),
+                right: pos.right, quantity: pos.entryQuantity, niftyLtp, broker: pos.broker, index: this.index(),
                 driftCancelPoints: this.cfg().chunkDriftCancelPoints ?? 10,
             });
-            // re-buy rolled to a new contract - exchange is the OLD heldTsym's (being unsubscribed), found on review.
-            if (pos.heldToken && pos.heldToken !== String(result.token)) unwatchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
+            // Re-buy rolled to a new contract: stop watching the old token (if no other slot still
+            // holds it). Exchange is the OLD heldTsym's, which the unwatch needs.
+            const oldToken = pos.heldToken;
+            if (oldToken && oldToken !== feedTokenOf(result)) this.unwatchSlot({ ...pos, heldToken: oldToken }, key);
             pos.heldTsym = result.tsym;
-            pos.heldToken = String(result.token);
+            pos.heldToken = feedTokenOf(result);
             pos.entryAvg = result.avgPrice;
-            Log.log(`[BulkPcrStrategy] [ant] ${pos.right} entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
+            Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
             if (this.eodDone) {
                 // EOD started while this buy was in flight - square it off now, don't rest a sell for a closed session.
                 pos.targetQuantity = result.quantity;
@@ -701,10 +749,10 @@ export default class BulkPcrStrategy extends Strategy {
             const message = typeof e?.message === 'string' ? e.message : String(e);
             if (isNothingBought(e)) {
                 pos.phase = 'pending';
-                Log.log(`[BulkPcrStrategy] [ant] ${pos.right} buy did not fill - will retry on the next tick: ${message}`);
+                Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} buy did not fill - will retry on the next tick: ${message}`);
             } else {
                 pos.phase = 'error';
-                Log.log(`[BulkPcrStrategy] [ant] ALERT: ${pos.right} buy outcome unconfirmed or partially filled - position may be LIVE and UNPROTECTED, manual review required: ${message}`);
+                Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: ${pos.right} buy outcome unconfirmed or partially filled - position may be LIVE and UNPROTECTED, manual review required: ${message}`);
             }
         }
         this.persistState();
@@ -715,41 +763,43 @@ export default class BulkPcrStrategy extends Strategy {
     // throttled so a failing buy doesn't fire on every tick.
     private retryPendingRebuys(): void {
         if (this.eodDone) return;
-        for (const pos of this.antSlots()) {
+        for (const pos of this.pairSlots()) {
             if (pos.phase !== 'pending') continue;
             if (Date.now() - (pos.lastBuyAttemptAt ?? 0) < REBUY_RETRY_THROTTLE_MS) continue;
-            this.buyAndExit(this.keyOf(pos)).catch((e) => Log.log(`[BulkPcrStrategy] [ant] pending buy retry failed:`, e));
+            this.buyAndExit(this.keyOf(pos)).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] pending buy retry failed:`, e));
         }
     }
 
-    // A slot's +2 exit has fully filled. If the opposite side is still active, this side re-buys
-    // immediately and rests its own +2 again. Otherwise there is nothing left to re-buy.
+    // A slot's +2 exit has fully filled. If the opposite side (same broker) is still active, this
+    // side re-buys immediately and rests its own +2 again. Otherwise there is nothing left to re-buy.
     private onSlotSoldOut(pos: BrokerPosition): void {
         pos.phase = 'done';
         this.persistState();
-        if (pos.broker === 'ant' && !this.eodDone) {
-            const sibling = this.antSlots().find((p) => p.right !== pos.right);
+        if (isPairBroker(pos.broker) && !this.eodDone) {
+            const sibling = this.slotsOf(pos.broker).find((p) => p.right !== pos.right);
             if (sibling && (sibling.phase === 'selling' || sibling.phase === 'buying')) {
-                Log.log(`[BulkPcrStrategy] [ant] ${pos.right} +2 filled while ${sibling.right} is still open - re-buying ${pos.right}`);
-                this.buyAndExit(this.keyOf(pos)).catch((e) => Log.log(`[BulkPcrStrategy] [ant] re-buy failed:`, e));
+                Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} +2 filled while ${sibling.right} is still open - re-buying ${pos.right}`);
+                this.buyAndExit(this.keyOf(pos)).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] re-buy failed:`, e));
             }
         }
         this.finishIfFlat();
     }
 
-    // EOD force-close of one ANT slot: pull its resting +2 sells, then square off what's still
+    // EOD force-close of one pair slot: pull its resting +2 sells, then square off what's still
     // open. The resting-order cancellations and fills that follow are ignored (see onOrderCancelled).
+    // The cancel and square-off go through that slot's own broker.
     private async eodSquareOff(pos: BrokerPosition): Promise<void> {
         const tsym = pos.heldTsym!;
+        const broker = pos.broker;
         let cancelResult: { filledQty: number; cancelFailed: boolean };
         // updateTrade ignores fills only across the cancel: its filledQty is the single count for
         // chunks that filled during it (counting them via updateTrade as well would double-count).
         pos.squaringOff = true;
         try {
-            cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym, broker: 'ant' });
+            cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym, broker });
         } catch (e) {
             cancelResult = { filledQty: 0, cancelFailed: true };
-            Log.log(`[BulkPcrStrategy] [ant] EOD cancel request failed for ${tsym}:`, e);
+            Log.log(`[BulkPcrStrategy] [${broker}] EOD cancel request failed for ${tsym}:`, e);
         } finally {
             pos.squaringOff = false;
         }
@@ -776,23 +826,29 @@ export default class BulkPcrStrategy extends Strategy {
         const remaining = pos.targetQuantity - pos.soldQty;
         try {
             if (remaining > 0) {
-                await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: tsym.startsWith('SENSEX') ? 'BFO' : 'NFO' });
+                if (broker === 'ant') {
+                    await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: tsym.startsWith('SENSEX') ? 'BFO' : 'NFO' });
+                } else if (broker === 'zerodha' || broker === 'breeze') {
+                    await OrderClient.getInstance().chunkedSquareOff(this.userId, { tsym, quantity: remaining, broker });
+                } else {
+                    throw new Error(`EOD square-off: broker '${broker}' does not run a pair`);
+                }
             }
             // A fill notification may already have completed the slot via updateTrade/onSlotSoldOut.
             if (pos.phase === 'selling') pos.phase = 'done';
-            Log.log(`[BulkPcrStrategy] [ant] EOD force-close: ${tsym} squared off qty=${Math.max(remaining, 0)}`);
+            Log.log(`[BulkPcrStrategy] [${broker}] EOD force-close: ${tsym} squared off qty=${Math.max(remaining, 0)}`);
         } catch (e) {
             if (pos.phase === 'selling') pos.phase = 'error'; // a fill may already have completed the slot
-            Log.log(`[BulkPcrStrategy] [ant] ALERT: EOD square-off failed for ${tsym} - manual review required:`, e);
+            Log.log(`[BulkPcrStrategy] [${broker}] ALERT: EOD square-off failed for ${tsym} - manual review required:`, e);
         }
         this.persistState();
     }
 
-    private async eodCloseAnt(): Promise<void> {
-        for (const pos of this.antSlots()) {
+    private async eodCloseSlots(): Promise<void> {
+        for (const pos of this.pairSlots()) {
             if (pos.phase === 'selling') await this.eodSquareOff(pos);
             else if (pos.phase === 'pending') pos.phase = 'done'; // nothing held - the buy never filled
-            else if (pos.phase === 'error') Log.log(`[BulkPcrStrategy] [ant] EOD: ${pos.right} slot is in error - skipped, manual review required`);
+            else if (pos.phase === 'error') Log.log(`[BulkPcrStrategy] [${pos.broker}] EOD: ${pos.right} slot is in error - skipped, manual review required`);
         }
         this.persistState();
         this.finishIfFlat();
@@ -853,8 +909,8 @@ export default class BulkPcrStrategy extends Strategy {
         // redundant config write and avoids a second, confusing "already fully closed at the
         // broker on restart" log line for what was actually just a normal fill.
         if (this.phase === 'done') return;
-        // Unwatch every ANT slot's held token - a no-op for any that was never watched.
-        for (const slot of this.antSlots()) {
+        // Unwatch every pair slot's held token - a no-op for any that was never watched.
+        for (const slot of this.pairSlots()) {
             if (slot.heldToken) unwatchTokenOnSource('ant', slot.heldToken, this, slot.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
         }
         // Not configService.getStrategyConfig(type) - see cfg()'s comment above for why;
@@ -883,9 +939,9 @@ export default class BulkPcrStrategy extends Strategy {
     onOrderCancelled = async (notification: any): Promise<void> => {
         const broker = notification.broker as BrokerName | undefined;
         if (!broker) return;
-        // ANT slots are found by their held tsym (both sides can be open); every other broker has
-        // a single position keyed by its name.
-        const pos = broker === 'ant' ? this.slotFor('ant', notification.tradingSymbol) : this.positions.get(broker);
+        // Pair-broker slots are found by their held tsym (both sides can be open); every other broker
+        // has a single position keyed by its name.
+        const pos = this.slotFor(broker, notification.tradingSymbol);
 
         // Ignore if this notification doesn't match an open/selling position we care about. Also
         // ignored once the EOD force-close has started - its own cancellations must not be re-placed.
@@ -999,35 +1055,36 @@ export default class BulkPcrStrategy extends Strategy {
             return openTradesFetch;
         };
 
-        // ANT is restored per side (ant_call / ant_put). A pre-pair 'ant' record is migrated to its
-        // side (inferred from the tsym's PE suffix); anything else non-done is kept as a manual-review slot.
+        // Pair brokers are restored per side (<broker>_call / <broker>_put). A pre-pair bare-name
+        // record (e.g. 'ant', 'zerodha') is migrated to its side (inferred from the tsym's CE/PE
+        // suffix); anything else non-done is kept as a manual-review slot.
         const persistedPositions: Record<string, any> = { ...(persisted?.positions ?? {}) };
-        const legacyAnt = persistedPositions['ant'];
-        delete persistedPositions['ant'];
-        if (legacyAnt && legacyAnt.phase !== 'done') {
-            if (legacyAnt.phase === 'selling' && legacyAnt.heldTsym) {
-                const right = tsymRight(legacyAnt.heldTsym);
-                persistedPositions[slotKey('ant', right)] = { ...legacyAnt, broker: 'ant', right, entryQuantity: legacyAnt.targetQuantity };
+        for (const b of PAIR_BROKERS) {
+            const legacy = persistedPositions[b];
+            if (!legacy) continue;
+            delete persistedPositions[b];
+            if (legacy.phase === 'done') continue;
+            if (legacy.phase === 'selling' && legacy.heldTsym) {
+                const right = tsymRight(legacy.heldTsym);
+                persistedPositions[slotKey(b, right)] = { ...legacy, broker: b, right, entryQuantity: legacy.targetQuantity };
             } else {
-                persistedPositions['ant_legacy'] = { ...legacyAnt, broker: 'ant', phase: 'error' };
+                persistedPositions[`${b}_legacy`] = { ...legacy, broker: b, phase: 'error' };
             }
         }
         const keys = new Set<string>();
         for (const b of brokers) {
-            if (b === 'ant') { keys.add(slotKey('ant', CALL)); keys.add(slotKey('ant', PUT)); }
+            if (isPairBroker(b)) { keys.add(slotKey(b, CALL)); keys.add(slotKey(b, PUT)); }
             else keys.add(b);
         }
         for (const k of Object.keys(persistedPositions)) keys.add(k);
 
         for (const key of keys) {
-            const broker: BrokerName = key.startsWith('ant') ? 'ant' : (key as BrokerName);
+            const broker = brokerOfKey(key);
             const persistedPos = persistedPositions[key];
 
             // Which side (CALL/PUT) this key represents, if any - derived from the key's own
-            // structure (see slotKey() above), not from the broker's name. Only ant currently
-            // builds two-sided keys (ant_call/ant_put), but every branch below is driven by
-            // this value instead of a broker-name check, so the logic is identical for every
-            // broker; a future two-sided broker would need no changes here.
+            // structure (see slotKey() above), not from the broker's name. Every branch below is
+            // driven by this value instead of a broker-name check.
             const keyRight = key !== broker ? (key === slotKey(broker, PUT) ? PUT : CALL) : undefined;
 
             if (persistedPos && (persistedPos.phase === 'done' || persistedPos.phase === 'pending')) {
@@ -1107,9 +1164,7 @@ export default class BulkPcrStrategy extends Strategy {
                     // otherwise looking perfectly healthy. watchTokenOnSource is idempotent
                     // (tokenRouter dedupes by refcount), so calling it here even when the
                     // subscription did survive is harmless.
-                    if (broker === 'ant' && pos.heldToken) {
-                        watchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
-                    }
+                    this.watchSlot(pos);
                     Log.log(`[BulkPcrStrategy] [${broker}] reconcile: restored in-flight limit-sell exit for ${persistedPos.heldTsym} (${persistedPos.soldQty}/${persistedPos.targetQuantity} filled so far) - resuming fill watch`);
                     continue;
                 }
@@ -1198,9 +1253,7 @@ export default class BulkPcrStrategy extends Strategy {
                         // Same reason placeExitSellAtTargetPrice/the alreadyResting fallback
                         // below call this - ticks must reach processOptionQuote or the
                         // opposite-side hedge trigger can never evaluate.
-                        if (broker === 'ant' && pos.heldToken) {
-                            watchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
-                        }
+                        this.watchSlot(pos);
                         Log.log(`[BulkPcrStrategy] [${broker}] reconcile: ${key} was 'error' but a resting exit sell for ${persistedPos.heldTsym} (qty=${alreadyResting}) is still confirmed at the broker - resuming fill watch instead of manual review`);
                         continue;
                     }
@@ -1282,9 +1335,7 @@ export default class BulkPcrStrategy extends Strategy {
                 // path - ticks must reach processOptionQuote regardless of which path
                 // confirmed the exit is in place, or the opposite-side hedge trigger can
                 // never evaluate even once price has already moved past slDistance.
-                if (broker === 'ant' && pos.heldToken) {
-                    watchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
-                }
+                this.watchSlot(pos);
                 Log.log(`[BulkPcrStrategy] [${broker}] reconcile: found an already-resting exit sell for ${brokerTrade.tsym} (qty=${alreadyResting}) - resuming fill watch instead of placing a duplicate`);
                 continue;
             }

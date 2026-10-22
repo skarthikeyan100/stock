@@ -184,7 +184,7 @@ export function reconcileFromTrades(trades: Trade[]): void {
         // whichever executor's Trade shape this is (antOrderNo present -> ant,
         // prismCoverOrderNo present -> prism, otherwise zerodha - matches
         // this file's existing Broker union).
-        const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('BSE') ? 'BFO' : 'NFO';
+        const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
         const broker: Broker = trade.antOrderNo ? 'ant' : trade.prismCoverOrderNo ? 'prism' : 'zerodha';
         // A GTT/bracket/cover trade already has its exit owned by the broker -
         // reconcile it watch-only (mark-to-market only) so a restart doesn't

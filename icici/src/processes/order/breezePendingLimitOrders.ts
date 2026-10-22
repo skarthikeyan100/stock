@@ -33,6 +33,13 @@ export function onCancelled(listener: CancelledListener): void {
     cancelledListeners.push(listener);
 }
 
+// Exchange of a still-resting limit order, restored from Mongo across restarts. Lets
+// breezeExecutor's exchangeOfOrder resolve a BFO (SENSEX) order placed before an `order`
+// restart instead of defaulting it to NFO.
+export function pendingBreezeOrderExchange(orderId: string): 'NFO' | 'BFO' | undefined {
+    return pending.get(orderId)?.exchange;
+}
+
 // See pendingLimitOrders.ts's findPendingOrdersForSymbol for why this exists.
 export function findPendingOrdersForSymbol(userId: string, tradingSymbol: string): PendingBreezeLimitOrder[] {
     return Array.from(pending.values()).filter((o) => o.userId === userId && o.tradingSymbol === tradingSymbol);

@@ -559,6 +559,11 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
                     const quantity = resolvedQty.quantity;
                     const estimatedOrderValue = quantity * buyPrice;
+                    // feedToken: the ANT common token for this same contract - the id live ticks
+                    // and resting-sell tracking key off (zerodha's branch returns it as `token`).
+                    // `token` stays Breeze's own id, which bookkeeping/squareOff use. Resolved
+                    // before the order is placed so a lookup failure can't follow a live fill.
+                    const feedToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: niftyLtp });
 
                     return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
                         const result = await buyChunked(
@@ -572,7 +577,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                             },
                             req.payload.freezeQuantity
                         );
-                        return { tsym: tsymFor(contract), token: contract.token, ...result };
+                        return { tsym: tsymFor(contract), token: contract.token, feedToken, ...result };
                     });
                 }
 

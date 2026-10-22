@@ -7,7 +7,7 @@ import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
 import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange, cancelOrderWithFillRecheck, OrderAlreadyFilledError } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
-import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder } from './breezePendingLimitOrders';
+import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange } from './breezePendingLimitOrders';
 import { roundToTick } from '../../zerodha/Zerodha';
 
 // ICICI Breeze execution, mirroring zerodhaExecutor.ts/antExecutor.ts's shape.
@@ -76,8 +76,14 @@ function rememberOrderExchange(orderId: string, exchange: BreezeExchange): void 
     }
 }
 
+// Resolution order: this process's own record, then the Mongo-restored pending limit-order
+// tracker (survives an `order` restart for resting limit sells). Only an order that is neither
+// (e.g. a market buy already filled before the restart) falls back to NFO.
 export function exchangeOfOrder(orderId: string): BreezeExchange {
-    return orderExchange.get(orderId) ?? 'NFO';
+    const known = orderExchange.get(orderId) ?? pendingBreezeOrderExchange(orderId);
+    if (known) return known;
+    Log.log(`[order] exchangeOfOrder: no recorded exchange for Breeze order ${orderId} - defaulting to NFO`);
+    return 'NFO';
 }
 
 // Exported for chunkedBuyIndex's IPC handler (orderProcess.ts), which needs
