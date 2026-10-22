@@ -10,6 +10,7 @@ import MomentumSignal from './MomentumSignal';
 import { isPastMarketClose } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { PnlStop } from './PnlStop';
+import { toPercentNumber } from '../prism/percentConfig';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
 
@@ -26,6 +27,14 @@ const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses arou
 const ENTRY_ATTEMPT_THROTTLE_MS = 10_000;
 // Minimum gap between retries of a pending pair-side buy (see retryPendingRebuys).
 const REBUY_RETRY_THROTTLE_MS = 10_000;
+// A buy that was rejected or unfilled is retried at most this many times (transient failures only; a margin
+// rejection is never retried as-is - see onBuyNotFilled). Live 2026-10-22: ANT's hedge buy was retried 18 times.
+const MAX_BUY_RETRIES = 3;
+// Headroom kept when shrinking a hedge to fit margin: the premium moves between attempts.
+const MARGIN_RESIZE_BUFFER = 0.05;
+// Lot sizes needed to round a reduced quantity down to a whole lot. Same values as
+// bookkeeping.getInstrumentLotSize, which lives in the order process and is not importable here.
+const LOT_SIZE: Record<'NIFTY' | 'SENSEX', number> = { NIFTY: 65, SENSEX: 20 };
 
 // onOrderCancelled's re-placement cap/backoff (live incident 2026-10-15 - see BrokerPosition's
 // exitRejectCount comment). A rejection whose broker-supplied reason looks like a margin/
@@ -113,6 +122,21 @@ function isNothingBought(e: any): boolean {
         || /failed after filling 0\//.test(message);
 }
 
+// Parses an ANT margin rejection out of buyChunked's error text. The text embeds the broker order JSON, e.g.
+//   ... REJECTED: {..."quantity":780,..."price":169.4,..."rejectionReason":"RED:Margin Shortfall:INR 32491.91 Available:INR 233123.35 for ..."...}
+// Returns null if any field is missing (a non-ANT broker's wording differs), so the caller abandons instead of guessing.
+function parseAntMarginReject(message: string): { quantity: number; price: number; shortfall: number } | null {
+    const qty = /"quantity":\s*(\d+)/.exec(message);
+    const price = /"price":\s*([0-9.]+)/.exec(message);
+    const short = /Margin Shortfall:INR\s*([0-9.]+)/i.exec(message);
+    if (!qty || !price || !short) return null;
+    const quantity = Number(qty[1]);
+    const p = Number(price[1]);
+    const shortfall = Number(short[1]);
+    if (!(quantity > 0) || !(p > 0) || !(shortfall > 0)) return null;
+    return { quantity, price: p, shortfall };
+}
+
 interface BrokerPosition {
     broker: BrokerName;
     // Pair brokers only: the option side this slot holds (CALL | PUT).
@@ -155,12 +179,20 @@ interface BrokerPosition {
     // through re-placement, which doesn't exist anywhere in this codebase yet.
     exitRejectCount?: number;
     exitLastRejectAt?: number;
+    // Failed buy attempts since the last successful buy of this slot (transient-failure retry cap).
+    buyAttempts?: number;
+    // True once this slot's buy was shrunk after a margin rejection (only one resize per slot).
+    marginResized?: boolean;
+    // True when this slot's buy was given up for this cycle (margin, or retry cap). Blocks reopening the hedge.
+    abandoned?: boolean;
 }
 
 interface PersistedState {
     positions: Partial<Record<BrokerName, BrokerPosition>>;
     // Day's realized P&L per pair broker; restored on reconcile only when realizedDay is today.
     realizedByBroker?: Partial<Record<BrokerName, number>>;
+    // Current trade's realized P&L per pair broker (maxLossPerTrade); same day guard as realizedByBroker.
+    cycleRealizedByBroker?: Partial<Record<BrokerName, number>>;
     realizedDay?: string;
 }
 
@@ -258,6 +290,12 @@ export default class BulkPcrStrategy extends Strategy {
     private stops = new Map<BrokerName, PnlStop>();
     // Day's realized P&L per pair broker, summed over every completed slot cycle (slot fields reset on re-buy).
     private realizedByBroker = new Map<BrokerName, number>();
+    // Per-trade loss cap (maxLossPerTrade). A trade = one auto-start slot = everything since the last reset().
+    // cycleRealizedByBroker is the current trade's realized P&L; cycleStopped holds brokers whose trade was closed by the
+    // cap (cleared by reset(), so the next slot can arm). Live 2026-10-22: ANT's 14:25 trade lost about 18,900 against a
+    // 10,000 limit because six winning slots offset it in the day's cumulative total.
+    private cycleRealizedByBroker = new Map<BrokerName, number>();
+    private cycleStopped = new Set<BrokerName>();
     // Last tick price per slot key, in memory only. Feeds the unrealized part of the stop check.
     private lastLtpByKey = new Map<string, number>();
     // Local day the stop accumulators belong to. A rollover clears them (see ensureToday).
@@ -343,6 +381,7 @@ export default class BulkPcrStrategy extends Strategy {
                     userId: this.userId,
                     positions,
                     realizedByBroker: Object.fromEntries(this.realizedByBroker),
+                    cycleRealizedByBroker: Object.fromEntries(this.cycleRealizedByBroker),
                     realizedDay: this.statsDay,
                 },
                 { upsert: true }
@@ -367,7 +406,25 @@ export default class BulkPcrStrategy extends Strategy {
         if (today === this.statsDay) return;
         this.statsDay = today;
         this.realizedByBroker.clear();
+        this.cycleRealizedByBroker.clear();
+        this.cycleStopped.clear();
         this.stops.clear();
+    }
+
+    // maxLossPerDay was called maxLoss until 2026-10-22. An old config still carrying maxLoss must not silently lose its
+    // stop, so fall back to it (once-only warning) when the new key is absent.
+    private maxLossWarned = false;
+    private maxLossPerDayRaw(): unknown {
+        const cfg = this.cfg();
+        if (cfg.maxLossPerDay != null) return cfg.maxLossPerDay;
+        if (cfg.maxLoss != null) {
+            if (!this.maxLossWarned) {
+                this.maxLossWarned = true;
+                Log.log(`[BulkPcrStrategy] WARN: config key maxLoss was renamed maxLossPerDay - using maxLoss=${JSON.stringify(cfg.maxLoss)} for now, please rename it in config.yml`);
+            }
+            return cfg.maxLoss;
+        }
+        return undefined;
     }
 
     private stopFor(broker: BrokerName): PnlStop {
@@ -378,7 +435,7 @@ export default class BulkPcrStrategy extends Strategy {
                 ownerType: 'BulkPcrStrategy',
                 userId: this.userId,
                 scope: broker,
-                getMaxLossPct: () => this.cfg().maxLoss,
+                getMaxLossPct: () => this.maxLossPerDayRaw(),
                 getMaxInvestment: () => this.cfg().maxInvestment ?? 0,
             });
             this.stops.set(broker, stop);
@@ -389,6 +446,7 @@ export default class BulkPcrStrategy extends Strategy {
     // Public: BulkPcrAutoStartStrategy skips a loss-stopped broker before arming it.
     isBrokerStopped(broker: string): boolean {
         if (!isPairBroker(broker as BrokerName)) return false;
+        if (this.cycleStopped.has(broker as BrokerName)) return true; // this trade was capped by maxLossPerTrade
         return this.stopFor(broker as BrokerName).isTripped();
     }
 
@@ -409,6 +467,7 @@ export default class BulkPcrStrategy extends Strategy {
         }
         this.ensureToday();
         this.realizedByBroker.set(broker, (this.realizedByBroker.get(broker) ?? 0) + pnl);
+        this.cycleRealizedByBroker.set(broker, (this.cycleRealizedByBroker.get(broker) ?? 0) + pnl);
         this.persistState();
     }
 
@@ -431,8 +490,32 @@ export default class BulkPcrStrategy extends Strategy {
     // closeBroker exactly once. Nothing trips after EOD (the EOD close already covers every slot).
     private tripIfBreached(broker: BrokerName): boolean {
         if (!isPairBroker(broker) || this.eodDone) return false;
-        if (this.isBrokerStopped(broker)) return false;
+        // Daily latch only: a trade cap (cycleStopped) must not hide the daily line from this check.
+        if (this.stopFor(broker).isTripped()) return false;
         return this.stopFor(broker).evaluate(this.cumulativePnl(broker));
+    }
+
+    // Trade P&L = this trade's realized + open P&L of the broker's selling slots. cumulativePnl() already adds the DAY's
+    // realized, so swap that part for the trade's.
+    private tradePnl(broker: BrokerName): number {
+        return this.cumulativePnl(broker) - (this.realizedByBroker.get(broker) ?? 0) + (this.cycleRealizedByBroker.get(broker) ?? 0);
+    }
+
+    // True only on the call that newly caps the trade, so the caller starts closeBroker exactly once. Disabled when
+    // maxLossPerTrade is unset or unusable. Same percent-of-maxInvestment form as maxLossPerDay.
+    private tripTradeIfBreached(broker: BrokerName): boolean {
+        if (!isPairBroker(broker) || this.eodDone || this.cycleStopped.has(broker) || this.stopFor(broker).isTripped()) return false;
+        const raw = this.cfg().maxLossPerTrade;
+        if (raw == null) return false;
+        const pct = toPercentNumber(raw);
+        const maxInvestment = this.cfg().maxInvestment ?? 0;
+        const threshold = pct !== null && pct > 0 ? (pct / 100) * maxInvestment : 0;
+        if (!(threshold > 0)) return false; // unusable value: not enforced (config validation reports it)
+        const pnl = this.tradePnl(broker);
+        if (!Number.isFinite(pnl) || pnl > -threshold) return false;
+        this.cycleStopped.add(broker);
+        Log.log(`[BulkPcrStrategy] [${broker}] ALERT: MAX LOSS PER TRADE TRIPPED - trade P&L=${Math.round(pnl)} threshold=-${Math.round(threshold)} (maxLossPerTrade=${pct}% of maxInvestment=${maxInvestment}) - closing this broker's open slots at limit`);
+        return true;
     }
 
     // See file header for the momentum-veto rationale.
@@ -602,6 +685,15 @@ export default class BulkPcrStrategy extends Strategy {
                 message.includes('no available investment headroom to size an order from')
                 || /failed after filling 0\//.test(message)
             );
+            if (nothingWasBought && MARGIN_SHORTFALL_REASON_PATTERN.test(message)) {
+                // Deterministic: waiting 10s and re-sending the same order cannot succeed.
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${right} entry rejected for margin - not retrying: ${message.slice(0, 200)}`);
+                const slot = this.positions.get(key);
+                if (slot) { slot.phase = 'done'; slot.abandoned = true; }
+                this.persistState();
+                this.finishIfFlat();
+                return;
+            }
             if (nothingWasBought && !isRetry) {
                 Log.log(`[BulkPcrStrategy] [${broker}] Chunked entry failed with nothing bought - retrying once in 10s: ${message || e}`);
                 await new Promise((resolve) => setTimeout(resolve, 10000));
@@ -770,11 +862,14 @@ export default class BulkPcrStrategy extends Strategy {
             }
             await Promise.all(tripped.map((b) => this.closeBroker(b)));
         }
+        const tradeTripped = Array.from(new Set(matches.map((m) => m.broker))).filter((b) => this.tripTradeIfBreached(b));
+        if (tradeTripped.length > 0) await Promise.all(tradeTripped.map((b) => this.closeBroker(b)));
 
         this.retryPendingRebuys();
 
         for (const slot of matches) {
             if (this.isBrokerStopped(slot.broker)) continue;
+            if (this.slotsOf(slot.broker).some((p) => p.abandoned)) continue; // hedge given up this cycle
             // Once both sides of this broker exist its pair is complete - this tick does nothing more
             // for it. A 'done' side (already fully sold out, e.g. from an earlier cycle) doesn't count
             // as "existing" here - same convention onSlotSoldOut's sibling check and canHandleOptionQuote
@@ -883,6 +978,7 @@ export default class BulkPcrStrategy extends Strategy {
             pos.heldTsym = result.tsym;
             pos.heldToken = feedTokenOf(result);
             pos.entryAvg = result.avgPrice;
+            pos.buyAttempts = 0;
             Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
             if (this.eodDone || this.isBrokerStopped(pos.broker)) {
                 // EOD or the loss stop started while this buy was in flight - square it off now, don't rest a sell.
@@ -897,8 +993,7 @@ export default class BulkPcrStrategy extends Strategy {
         } catch (e: any) {
             const message = typeof e?.message === 'string' ? e.message : String(e);
             if (isNothingBought(e)) {
-                pos.phase = 'pending';
-                Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} buy did not fill - will retry on the next tick: ${message}`);
+                this.onBuyNotFilled(pos, message);
             } else {
                 pos.phase = 'error';
                 Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: ${pos.right} buy outcome unconfirmed or partially filled - position may be LIVE and UNPROTECTED, manual review required: ${message}`);
@@ -906,6 +1001,54 @@ export default class BulkPcrStrategy extends Strategy {
         }
         this.persistState();
         this.finishIfFlat();
+    }
+
+    // A buy provably filled nothing. A margin rejection is deterministic: the identical order can never succeed, so
+    // it is never retried as-is (live 2026-10-22: 18 identical rejected ANT hedge buys). It gets ONE smaller attempt
+    // when the rejection can be parsed; anything else retries a capped number of times with doubling backoff.
+    private onBuyNotFilled(pos: BrokerPosition, message: string): void {
+        pos.buyAttempts = (pos.buyAttempts ?? 0) + 1;
+        if (MARGIN_SHORTFALL_REASON_PATTERN.test(message)) {
+            const reduced = pos.marginResized ? null : this.marginReducedQuantity(pos, message);
+            if (reduced !== null) {
+                Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: ${pos.right} buy rejected for margin - retrying ONCE with reduced qty ${pos.entryQuantity} -> ${reduced}`);
+                pos.entryQuantity = reduced;
+                pos.marginResized = true;
+                pos.phase = 'pending';
+                pos.lastBuyAttemptAt = 0; // retry on the next tick instead of waiting out the throttle
+                return;
+            }
+            this.abandonBuy(pos, pos.marginResized ? 'margin rejection again after the reduced-size attempt' : 'margin rejection and no affordable reduced size');
+            return;
+        }
+        // MAX_BUY_RETRIES retries after the first failure: failures 1..3 retry (waits 10s, 20s, 40s), failure 4 gives up.
+        if (pos.buyAttempts > MAX_BUY_RETRIES) {
+            this.abandonBuy(pos, `${pos.buyAttempts} failed attempts: ${message.slice(0, 200)}`);
+            return;
+        }
+        pos.phase = 'pending';
+        Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} buy did not fill - will retry on the next tick (attempt ${pos.buyAttempts}/${MAX_BUY_RETRIES + 1}): ${message}`);
+    }
+
+    // Quantity that fits the margin the broker implied, rounded down to a whole lot, or null if none fits.
+    // usable = price x qty - shortfall (what the rejection says WAS affordable); keep a 5% buffer.
+    private marginReducedQuantity(pos: BrokerPosition, message: string): number | null {
+        const parsed = parseAntMarginReject(message);
+        if (!parsed) return null;
+        const lot = LOT_SIZE[this.index()];
+        if (!(pos.entryQuantity && pos.entryQuantity % lot === 0)) return null; // unexpected size: do not guess
+        const usable = parsed.price * parsed.quantity - parsed.shortfall;
+        const units = Math.floor((usable * (1 - MARGIN_RESIZE_BUFFER)) / parsed.price);
+        const reduced = Math.floor(units / lot) * lot;
+        return reduced >= lot && reduced < pos.entryQuantity ? reduced : null;
+    }
+
+    // Gives up this side's buy for the rest of the cycle. 'done' + abandoned: nothing is held, the other side's
+    // resting +2 sell is left alone, and openOppositeSide will not reopen this hedge (see its guard).
+    private abandonBuy(pos: BrokerPosition, why: string): void {
+        pos.phase = 'done';
+        pos.abandoned = true;
+        Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: ${pos.right} buy abandoned for this cycle - ${why}`);
     }
 
     // A side whose buy did not fill is 'pending'. It is retried off the still-active side's ticks,
@@ -920,7 +1063,9 @@ export default class BulkPcrStrategy extends Strategy {
                 this.finishIfFlat();
                 continue;
             }
-            if (Date.now() - (pos.lastBuyAttemptAt ?? 0) < REBUY_RETRY_THROTTLE_MS) continue;
+            // Doubling backoff per failed attempt (10s, 20s, 40s), so a failing buy never fires every tick.
+            const wait = REBUY_RETRY_THROTTLE_MS * 2 ** Math.max(0, (pos.buyAttempts ?? 1) - 1);
+            if (Date.now() - (pos.lastBuyAttemptAt ?? 0) < wait) continue;
             this.buyAndExit(this.keyOf(pos)).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] pending buy retry failed:`, e));
         }
     }
@@ -935,6 +1080,7 @@ export default class BulkPcrStrategy extends Strategy {
         this.persistState();
         // A realized loss can cross the line with no tick, so check before deciding on the re-buy below.
         const tripped = this.tripIfBreached(pos.broker);
+        const tradeTripped = this.tripTradeIfBreached(pos.broker);
         if (isPairBroker(pos.broker) && !this.eodDone) {
             const sibling = this.slotsOf(pos.broker).find((p) => p.right !== pos.right);
             if (sibling && (sibling.phase === 'selling' || sibling.phase === 'buying') && !this.isBrokerStopped(pos.broker)) {
@@ -946,6 +1092,7 @@ export default class BulkPcrStrategy extends Strategy {
             Log.log(`[BulkPcrStrategy] [${pos.broker}] loss stop tripped on a realized fill - closing this broker's open slots at limit`);
             this.closeBroker(pos.broker).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] loss-stop close failed:`, e));
         }
+        if (tradeTripped) this.closeBroker(pos.broker).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] trade-cap close failed:`, e));
         this.finishIfFlat();
     }
 
@@ -1036,6 +1183,7 @@ export default class BulkPcrStrategy extends Strategy {
                 this.lastLtpByKey.delete(this.keyOf(pos));
                 // A fill notification may already have completed the slot via updateTrade/onSlotSoldOut.
                 if (pos.phase === 'selling') pos.phase = 'done';
+                if (remaining > 0) Log.log(`[BulkPcrStrategy] [${broker}] Close fill: ${tsym} qty=${remaining} @${sellPrice}`);
                 Log.log(`[BulkPcrStrategy] [${broker}] EOD force-close: ${tsym} squared off qty=${Math.max(remaining, 0)}`);
             } catch (e) {
                 // Nothing is booked: the square-off's fills are unknown, and a retry would double count.
@@ -1246,6 +1394,9 @@ export default class BulkPcrStrategy extends Strategy {
         if (persisted?.realizedDay === this.statsDay) {
             for (const [broker, pnl] of Object.entries(persisted.realizedByBroker ?? {})) {
                 if (Number.isFinite(Number(pnl))) this.realizedByBroker.set(broker as BrokerName, Number(pnl));
+            }
+            for (const [broker, pnl] of Object.entries(persisted.cycleRealizedByBroker ?? {})) {
+                if (Number.isFinite(Number(pnl))) this.cycleRealizedByBroker.set(broker as BrokerName, Number(pnl));
             }
         }
         await this.loadStopLatches();
@@ -1629,6 +1780,9 @@ export default class BulkPcrStrategy extends Strategy {
     // keepStops: the auto-start re-arm path. It keeps today's loss-stop latches and realized P&L (the stop
     // must survive a re-arm). Without it (admin reset) the stops and the day's realized P&L are cleared too.
     reset(opts?: { keepStops?: boolean }): void {
+        // A new trade starts here in both modes: the per-trade cap and its realized P&L restart at zero.
+        this.cycleRealizedByBroker.clear();
+        this.cycleStopped.clear();
         this.phase = 'idle';
         this.positions.clear();
         this.lastLtpByKey.clear();

@@ -25,7 +25,7 @@ export class PnlStop {
     }
 
     // Returns true only on the call that newly trips the latch. NaN-safe: a NaN P&L never trips.
-    // Disabled (returns false) when maxLoss is unset.
+    // Disabled (returns false) when maxLossPerDay is unset.
     evaluate(cumulativePnl: number): boolean {
         if (this.tripped) return false;
         const raw = this.deps.getMaxLossPct();
@@ -34,7 +34,7 @@ export class PnlStop {
         if (pct === null || !(pct > 0)) {
             if (!this.unusableLogged) {
                 this.unusableLogged = true;
-                Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR maxLoss=${JSON.stringify(raw)} is not a usable percent - NOT enforced`);
+                Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR maxLossPerDay=${JSON.stringify(raw)} is not a usable percent - NOT enforced`);
             }
             return false;
         }
@@ -43,14 +43,14 @@ export class PnlStop {
         if (!(threshold > 0)) {
             if (!this.unusableLogged) {
                 this.unusableLogged = true;
-                Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR maxLoss=${pct}% has no usable maxInvestment (${maxInvestment}) - NOT enforced`);
+                Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR maxLossPerDay=${pct}% has no usable maxInvestment (${maxInvestment}) - NOT enforced`);
             }
             return false;
         }
         if (!(cumulativePnl <= -threshold)) return false;
         this.tripped = true;
         this.persist();
-        Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] MAX LOSS TRIPPED - cumulative=${Math.round(cumulativePnl)} threshold=-${Math.round(threshold)} (maxLoss=${pct}% of maxInvestment=${maxInvestment})`);
+        Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] MAX LOSS TRIPPED - cumulative=${Math.round(cumulativePnl)} threshold=-${Math.round(threshold)} (maxLossPerDay=${pct}% of maxInvestment=${maxInvestment})`);
         return true;
     }
 

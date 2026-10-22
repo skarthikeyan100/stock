@@ -57,7 +57,7 @@ const PERCENT_FIELDS: string[] = [
 // trip on the first tick; 0 for a drawdown limit would block every zero-P&L
 // day. "Disabled" is expressed by removing the key instead.
 const PERCENT_POSITIVE_FIELDS: string[] = [
-    'maxProfit', 'maxLoss', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
+    'maxProfit', 'maxLoss', 'maxLossPerDay', 'maxLossPerTrade', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
 ];
 
 // Must be non-negative (0 is allowed).
@@ -142,8 +142,9 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     }
     // A BulkPcr loss stop is a percent of maxInvestment: with no usable base it could never trip, so refuse the file.
     // Scoped to BulkPcr only - other strategies fall back to a default base and must keep loading as they do today.
-    if (label === 'BulkPcrStrategy' && obj.maxLoss != null && !(isNum(maxInv) && maxInv > 0)) {
-        errors.push(`${label}.maxLoss needs a usable maxInvestment (> 0) - the percent is taken of it`);
+    const bulkPcrLossKey = obj.maxLossPerDay != null ? 'maxLossPerDay' : obj.maxLossPerTrade != null ? 'maxLossPerTrade' : 'maxLoss';
+    if (label === 'BulkPcrStrategy' && (obj.maxLoss != null || obj.maxLossPerDay != null || obj.maxLossPerTrade != null) && !(isNum(maxInv) && maxInv > 0)) {
+        errors.push(`${label}.${bulkPcrLossKey} needs a usable maxInvestment (> 0) - the percent is taken of it`);
     }
 
     if (isNum(obj.minPrice) && isNum(obj.maxPrice) && obj.minPrice > obj.maxPrice) {

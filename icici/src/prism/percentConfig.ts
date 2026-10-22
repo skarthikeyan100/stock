@@ -9,6 +9,8 @@ export const PERCENT_KEYS: ReadonlySet<string> = new Set([
     'maxWeeklyDrawdownPercent',
     'maxProfit',
     'maxLoss',
+    'maxLossPerDay',
+    'maxLossPerTrade',
     'marketProtectionPercent',
 ]);
 
