@@ -211,8 +211,10 @@ none) was added alongside `BulkPcrAutoStartStrategy` below.
 **Config keys** (`config.yml`): `enabled`, `broker` (legacy single-broker
 fallback), `brokers` (preferred, multi-broker array), `quantity`,
 `targetPoints`, `chunkDriftCancelPoints`, `right` (`call`/`put`/`none`),
-`maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10), `maxLoss`.
-**Loss stop (`maxLoss`, optional)**: a percent of this block's `maxInvestment`
+`maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10), `maxLossPerDay`,
+`maxLossPerTrade`. (`maxLoss` was renamed `maxLossPerDay` on 2026-10-22; an old `maxLoss` key still
+works, with a one-time WARN in the log.)
+**Loss stop (`maxLossPerDay`, optional)**: a percent of this block's `maxInvestment`
 (`10%` = 10000 on 100000), applied **per pair broker** (`ant`, `zerodha`). Each
 broker's cumulative P&L = that day's realized P&L (summed over every completed
 cycle, both sides, all re-buys) + open P&L of its selling slots at the last
@@ -223,8 +225,26 @@ limit (`eodSquareOff`); its buys and re-buys stop; the other broker keeps
 running. The latch is daily: it survives restarts and the auto-start re-arm
 (`reset({ keepStops: true })`), and only the admin `GET /strategies/BulkPcrStrategy/reset`
 clears it. A restored latch only blocks new buys; it does not auto-close
-positions at reconcile. No `maxLoss` = off. `maxProfit` is not built for BulkPcr.
-A `maxLoss` without a usable `maxInvestment` fails config validation.
+positions at reconcile. No `maxLossPerDay` = off. `maxProfit` is not built for BulkPcr.
+A `maxLossPerDay` without a usable `maxInvestment` fails config validation.
+
+**Per-trade cap (`maxLossPerTrade`, optional, ships unset)**: a trade is one auto-start slot on one
+broker, i.e. everything since the last `reset()` (the auto-start calls `reset({ keepStops: true })`
+before each slot). Trade P&L = realized since that reset + open P&L of that broker's selling slots (both
+sides). Once it reaches `-maxLossPerTrade` (same percent-of-`maxInvestment` form), the broker's resting
+sells are cancelled, its open legs are squared off at limit, and its buys are blocked until the next
+`reset()`. One `ALERT` line is logged. It does NOT latch the day: the broker re-arms at the next slot,
+unless `maxLossPerDay` has latched. Its realized loss still counts toward `maxLossPerDay`. Purpose:
+profit from earlier slots must not raise the loss a later slot may take. Keep `maxLossPerTrade` at or
+below `maxLossPerDay`, and above the hedge trigger (`slDistance` points on the put, about 7,800 at 780
+qty), or the hedge has no room under the cap.
+
+**Margin rejections (ANT)**: a margin-rejected buy is never re-sent unchanged. It gets ONE reduced-quantity
+attempt (rounded down to whole lots, 5% headroom, from the shortfall the broker reports). If that fails,
+or the rejection cannot be parsed, the side is abandoned for this cycle with an `ALERT`. Other "nothing
+bought" failures retry at most 3 times with 10s/20s/40s backoff, then abandon. An abandoned hedge is never
+reopened in the same cycle, and the other side's resting +N sell is left alone (the loss stops and the EOD
+close are the backstop). A root entry rejected for margin is not retried; its slot ends `done` with an `ALERT`.
 **`isRunning()`**: exposes `phase === 'running'` externally — used by
 `BulkPcrAutoStartStrategy` to decide whether a scheduled re-arm should be
 skipped.
