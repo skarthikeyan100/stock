@@ -2,14 +2,14 @@ import fs from 'fs';
 import path from 'path';
 import Log from '../util/Log';
 
-// Reads NFO_symbols.txt directly (repo root, __dirname-relative so it doesn't
+// Reads data/prism/NFO_symbols.txt directly (__dirname-relative so it doesn't
 // depend on process cwd - see src/orchestrator.ts's explicit cwd fix for why
 // that matters), independent of Prism's own cacheFile()/this.lines lifecycle.
 // Columns: Exchange,Token,LotSize,Symbol,TradingSymbol,Expiry,Instrument,
 // OptionType,StrikePrice,TickSize - confirmed against the live file.
 // Expiry is `DD-MMM-YYYY` (e.g. "26-JUN-2029").
 
-const FILE_PATH = path.join(__dirname, '../../NFO_symbols.txt');
+const FILE_PATH = path.join(__dirname, '../../data/prism/NFO_symbols.txt');
 
 interface Row {
     token: string;

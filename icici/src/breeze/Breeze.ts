@@ -9,6 +9,7 @@ import axios from 'axios';
 // convention for other untyped libs in this codebase (see payout.ts,
 // functions.ts).
 const { BreezeConnect } = require('breezeconnect');
+const BREEZE_API_URL = 'https://api.icicidirect.com/breezeapi/api/v1/';
 
 // breezeconnect's own error handling destroys the real HTTP error body: its
 // internal errorException() helper (breezeConnect.js) does
@@ -413,7 +414,14 @@ class Breeze {
             throw new Error('No active Breeze session. Please login first.');
         }
         Log.log(`[Breeze] Cancelling order ${orderId}`);
-        await this.callSdk('cancelOrder', () => this.breeze.cancelOrder({ exchangeCode, orderId }));
+        // breezeconnect's cancelOrder calls axios.delete(url, body, {headers}) - axios takes (url, config), so
+        // the auth headers are never sent and every cancel fails with "appkey is empty". Send it ourselves.
+        await this.callSdk('cancelOrder', async () => {
+            const body = { exchange_code: exchangeCode, order_id: orderId };
+            const headers = this.breeze.generateHeaders(body);
+            const res = await axios.create().delete(`${BREEZE_API_URL}order`, { data: body, headers, validateStatus: () => true });
+            return res.data;
+        });
     }
 
     async getOrderDetail(exchangeCode: string, orderId: string): Promise<any> {
@@ -437,7 +445,14 @@ class Breeze {
         if (!this.apiSession) {
             throw new Error('No active Breeze session. Please login first.');
         }
-        return this.callSdk('getPortfolioPositions', () => this.breeze.getPortfolioPositions());
+        try {
+            return await this.callSdk('getPortfolioPositions', () => this.breeze.getPortfolioPositions());
+        } catch (e: any) {
+            // Breeze answers a flat account with an Error ("No Positions available.") instead of an
+            // empty list; that is a successful read of zero positions, not a failed one.
+            if (/No Positions available/i.test(String(e?.message ?? e))) return { Status: 200, Success: [] };
+            throw e;
+        }
     }
 
     async getTradeList(params: {

@@ -868,10 +868,14 @@ class ANT {
             'https://a3.aliceblueonline.com/open-api/od/v1/orders/trades',
             { headers: { 'Authorization': `Bearer ${this.userSession}` } }
         );
-        if (tradesResp.data?.status !== 'Ok') {
+        // ANT answers a trade book with no executions at all (seen live 2026-10-22) as status EC926
+        // "No trades found for this user." rather than an empty list - a definitive "nothing filled",
+        // unlike any other non-Ok reply, which stays a lookup failure.
+        const emptyBook = tradesResp.data?.status === 'EC926' && /No trades found/i.test(String(tradesResp.data?.message ?? ''));
+        if (tradesResp.data?.status !== 'Ok' && !emptyBook) {
             throw new Error(`ANT trade book not Ok: ${JSON.stringify(tradesResp.data)}`);
         }
-        const trades: any[] = tradesResp.data.result ?? [];
+        const trades: any[] = emptyBook ? [] : (tradesResp.data.result ?? []);
         let qty = 0;
         let value = 0;
         for (const t of trades) {

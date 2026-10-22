@@ -20,9 +20,9 @@ export default class ShoonyaBroker implements Broker {
     if (this.nfoSymbolsCache) return this.nfoSymbolsCache;
 
     const map = new Map<string, string>();
-    const filePath = path.join(__dirname, '..', '..', 'NFO_symbols.txt');
+    const filePath = path.join(__dirname, '..', '..', 'data', 'prism', 'NFO_symbols.txt');
     if (!fs.existsSync(filePath)) {
-      console.warn(`NFO_symbols.txt not found at ${filePath}`);
+      console.warn(`data/prism/NFO_symbols.txt not found at ${filePath}`);
       return map;
     }
 

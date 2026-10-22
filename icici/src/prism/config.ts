@@ -12,7 +12,7 @@ class Config {
     timeout = 7000
     heartbeat = 3000
     
-    NFOSymbolsPath = '/home/karthikeyan/work/icici/NFO_symbols.txt'
+    NFOSymbolsPath = '/home/karthikeyan/work/icici/data/prism/NFO_symbols.txt'
     stocksPath = 'stocks.csv'
 
     startHour = 10

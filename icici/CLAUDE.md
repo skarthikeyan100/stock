@@ -129,7 +129,7 @@ This is a Node.js/TypeScript-based options trading platform built for automated 
 
 ### Data Files
 
-- `NFO_symbols.txt` (repo root) - Shoonya/Prism contract master, comma-delimited, loaded by `Prism.cacheFile()`.
+- `data/prism/NFO_symbols.txt` - Shoonya/Prism contract master, comma-delimited, loaded by `Prism.cacheFile()`.
 - `data/ant/NFO_contract.json`, `data/ant/BFO_contract.json` - ANT's own contract masters (official AliceBlue v2 format, `{"NFO"/"BFO": [...]}`), used by `AntContractMaster`. Large (~18-34MB) — re-download from `https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/` if stale.
 
 ## Getting Started
