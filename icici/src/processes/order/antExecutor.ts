@@ -59,6 +59,13 @@ async function resolveUnconfirmedAntBuy(
     }
     if (before && before.quantity === requested) return before;
 
+    // The broker already REJECTED this order: it never reached the exchange, so nothing filled and there is nothing to
+    // cancel (the cancel only produced "order is not open to cancel" noise on every retry, live 2026-10-22).
+    if (/\bREJECTED\b/.test(String(pollErr?.message ?? '')) && !(before && before.quantity > 0)) {
+        Log.log(`[order] ANT order ${orderNo} was REJECTED at the broker - nothing filled, not cancelling`);
+        throw pollErr;
+    }
+
     if (!mayCancel) {
         throw manualReview(`bracket/cover parent, not auto-cancelled; trade book shows ${before?.quantity ?? 'unknown'}/${requested}`);
     }
