@@ -1856,6 +1856,12 @@ export default class BulkPcrStrategy extends Strategy {
             Log.log(`[${this.userId}] Reset for re-arm (day's lockouts and day P&L kept)`);
             return;
         }
+        // A latch object exists only once its broker was evaluated since the process started, so after a restart the
+        // maps can be missing a broker whose lockout is still persisted. Create all of them so clear() reaches every one.
+        for (const broker of PAIR_BROKERS) {
+            this.stopFor(broker);
+            this.profitStopFor(broker);
+        }
         for (const stop of this.stops.values()) void stop.clear();
         for (const stop of this.profitStops.values()) void stop.clear();
         this.stops.clear();
