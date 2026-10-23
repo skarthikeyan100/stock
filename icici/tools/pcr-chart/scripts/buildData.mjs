@@ -52,6 +52,18 @@ async function forEachRow(file, fn) {
 // "2026-09-02 09:15:40" -> "2026-09-02 09:15"
 const toMinute = (ts) => ts.slice(0, 16);
 
+// Per-contract buildup statuses -> counts by option type: { CE: { 'Long buildup': n, ... }, PE: {...} }.
+// 'no baseline' and 'flat' entries are skipped; they carry no direction.
+const BUILDUP_STATUSES = ['Long buildup', 'Short buildup', 'Short covering', 'Long unwinding'];
+function countBuildup(json) {
+  const out = { CE: {}, PE: {} };
+  for (const side of ['CE', 'PE']) for (const s of BUILDUP_STATUSES) out[side][s] = 0;
+  let legs = [];
+  try { legs = JSON.parse(json); } catch { /* leave zero counts */ }
+  for (const leg of legs) if (out[leg.optionType] && BUILDUP_STATUSES.includes(leg.status)) out[leg.optionType][leg.status]++;
+  return out;
+}
+
 async function buildDay(dataDir, folder) {
   const dir = path.join(dataDir, folder);
 
@@ -65,6 +77,7 @@ async function buildDay(dataDir, folder) {
       ceOi: Number(r.ceOi),
       peOi: Number(r.peOi),
       contracts: Number(r.contracts),
+      buildup: countBuildup(r.buildup),
     });
   });
   const minutes = [...pcrByMinute.keys()].sort();
@@ -104,6 +117,7 @@ async function buildDay(dataDir, folder) {
       peOi: valid ? p.peOi : null,
       pcr: valid ? p.pcr : null,
       contracts: valid ? p.contracts : null,
+      buildup: p.buildup,
     });
     if (valid) { pcrMinutes++; contractSum += p.contracts; }
   }

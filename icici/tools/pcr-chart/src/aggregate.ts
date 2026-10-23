@@ -1,4 +1,17 @@
-import type { Bucket, MinuteRow } from './types';
+import type { Bucket, BuildupCounts, MinuteRow } from './types';
+
+// Contracts reading bullish for NIFTY minus contracts reading bearish. A call's long buildup or
+// short covering is bullish and its short buildup or long unwinding bearish; for a put it is the
+// reverse (puts gain when NIFTY falls).
+export function buildupBias(b: BuildupCounts): number | null {
+  const { CE, PE } = b;
+  const total = Object.values(CE).reduce((a, v) => a + v, 0) + Object.values(PE).reduce((a, v) => a + v, 0);
+  if (total === 0) return null;
+  return (
+    CE['Long buildup'] + CE['Short covering'] + PE['Short buildup'] + PE['Long unwinding'] -
+    (CE['Short buildup'] + CE['Long unwinding'] + PE['Long buildup'] + PE['Short covering'])
+  );
+}
 
 const minuteOfDay = (t: string) => {
   const [h, m] = t.slice(11, 16).split(':').map(Number);
@@ -42,6 +55,8 @@ export function aggregate(rows: MinuteRow[], size: number): Bucket[] {
       close,
       change,
       changePct,
+      buildup: last?.buildup ?? null,
+      bias: last?.buildup ? buildupBias(last.buildup) : null,
     });
     if (close !== null) prevClose = close;
   }

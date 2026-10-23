@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { aggregate } from './aggregate';
 import { AXIS_W, Chart, PAD } from './Chart';
-import type { DayFile, DaySummary } from './types';
+import type { BuildupStatus, DayFile, DaySummary } from './types';
 
 const TIMEFRAMES = [1, 5, 10, 15, 20, 30];
 const MIN_STEP = 6; // px per bucket for the densest view (1m scrolls horizontally)
@@ -13,6 +13,8 @@ const fmtDay = (day: string) => {
 };
 const fmtNum = (v: number, digits = 2) => v.toFixed(digits);
 const fmtSigned = (v: number, digits = 2) => `${v >= 0 ? '+' : ''}${v.toFixed(digits)}`;
+
+const BUILDUP_ROWS: BuildupStatus[] = ['Long buildup', 'Short buildup', 'Short covering', 'Long unwinding'];
 
 interface Hover {
   idx: number;
@@ -78,6 +80,7 @@ export function App() {
     : MIN_STEP;
 
   const pcrValues = useMemo(() => buckets.map((b) => b.pcr), [buckets]);
+  const biasValues = useMemo(() => buckets.map((b) => b.bias), [buckets]);
   const changeValues = useMemo(() => buckets.map((b) => b.change), [buckets]);
 
   const onPlotMove = (e: MouseEvent) => {
@@ -141,6 +144,16 @@ export function App() {
               hoverIdx={hover?.idx ?? null}
             />
             <Chart
+              title="Buildup bias"
+              values={biasValues}
+              step={step}
+              color="#8250df"
+              zeroLine
+              signDots
+              format={(v) => fmtSigned(v, 0)}
+              hoverIdx={hover?.idx ?? null}
+            />
+            <Chart
               title="Nifty Δ pts"
               values={changeValues}
               step={step}
@@ -170,12 +183,26 @@ export function App() {
             Δ: {hb.change === null ? '—' : `${fmtSigned(hb.change)} pts`}
             {hb.changePct !== null && <span className="muted"> ({fmtSigned(hb.changePct, 2)}%)</span>}
           </div>
+          {hb.buildup && (
+            <table className="bu">
+              <thead><tr><th></th><th>CE</th><th>PE</th></tr></thead>
+              <tbody>
+                {BUILDUP_ROWS.map((s) => (
+                  <tr key={s}><td>{s}</td><td>{hb.buildup!.CE[s]}</td><td>{hb.buildup!.PE[s]}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div>Bias: {hb.bias === null ? '—' : fmtSigned(hb.bias, 0)}</div>
         </div>
       )}
 
       <footer className="caveat">
         PCR is the stored Pcr document: total put OI ÷ total call OI over the NIFTY contracts the data process
         subscribes to (about 12, near the money), so it is not the full-chain PCR. One document per minute.
+        Buildup bias = contracts reading bullish for NIFTY minus bearish, from each contract's price and OI change
+        over the last 5 minutes (call long buildup / short covering and put short buildup / long unwinding are
+        bullish; the reverse is bearish).
       </footer>
     </div>
   );

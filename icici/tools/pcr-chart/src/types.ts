@@ -1,3 +1,7 @@
+export type BuildupStatus = 'Long buildup' | 'Short buildup' | 'Short covering' | 'Long unwinding';
+// Number of subscribed contracts in each status, per option type.
+export type BuildupCounts = Record<'CE' | 'PE', Record<BuildupStatus, number>>;
+
 // One minute of data as written by scripts/buildData.mjs.
 export interface MinuteRow {
   t: string; // "YYYY-MM-DD HH:MM"
@@ -9,6 +13,7 @@ export interface MinuteRow {
   peOi: number | null;
   pcr: number | null;
   contracts: number | null;
+  buildup: BuildupCounts;
 }
 
 export interface DayFile {
@@ -33,4 +38,6 @@ export interface Bucket {
   close: number | null;
   change: number | null; // points vs previous bucket's close (day open for the first)
   changePct: number | null;
+  buildup: BuildupCounts | null;
+  bias: number | null; // see buildupBias
 }

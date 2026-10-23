@@ -25,6 +25,9 @@ npm run dev    # or: npm run build && npm run preview
 - **PCR (OI)**: the stored Pcr document, total put OI / total call OI over the NIFTY contracts the data
   process subscribes to (about 12, near the money, so not the full-chain PCR). One document a minute,
   09:30–15:29; per bucket the last minute's value is shown.
+- **Buildup bias**: from the Pcr document's per-contract `buildup` statuses. Contracts reading bullish for
+  NIFTY (call long buildup / short covering, put short buildup / long unwinding) minus those reading bearish.
+  Hover shows the CE/PE counts per status.
 - **Nifty Δ pts**: bucket close minus the previous bucket's close (the first bucket is measured from the day's open),
   from the `Quote` ticks.
 - Timeframes 1, 5, 10, 15, 20, 30 min are clock-aligned. 1 min is wide and scrolls horizontally;
