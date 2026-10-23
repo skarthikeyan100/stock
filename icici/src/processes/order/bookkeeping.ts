@@ -5,7 +5,7 @@ import Zerodha from '../../zerodha/Zerodha';
 import ANT from '../../ant/ANT';
 import Breeze from '../../breeze/Breeze';
 import { Trade } from '../../model/model';
-import { UserContext } from '../../user';
+import { UserContext, closeUserAccount } from '../../user';
 import { PUT, CALL, USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../../constants';
 import * as exitMonitor from './exitMonitor';
 import configService from '../../prism/ConfigService';
@@ -66,6 +66,7 @@ interface UserSettings {
     allottedCapital?: number;
     targetPoints?: number;
     stopLossPoints?: number;
+    accountClosed?: boolean;
 }
 
 // One reservation per in-flight, not-yet-resolved buy request. A Set<string>
@@ -570,7 +571,10 @@ class OrderBookkeeping {
             // Not awaited: held rows are counted in the read below either way, so a slow flush must not stall the decision.
             this.flushUnpersistedClosed().catch((e) => Log.log('[order] flush of held closedTrades failed:', e));
             const daily = await this.drawdownState(user, 'daily');
-            const weekly = daily === 'breached' ? 'ok' : await this.drawdownState(user, 'weekly');
+            // Evaluated even when the daily limit is breached: the weekly breach closes the account and a latched
+            // daily breach would otherwise mask it for the rest of the day.
+            const weekly = await this.drawdownState(user, 'weekly');
+            if (weekly === 'breached') this.closeAccountForWeeklyBreach(user);
             if (daily === 'breached' || weekly === 'breached') {
                 if (daily === 'breached' && !this.drawdownLatched(user)) this.latchDrawdown(user);
                 this.cancelDrawdownRecheck(user);
@@ -583,6 +587,21 @@ class OrderBookkeeping {
             Log.log('[order] drawdown check failed for', user, '- re-checking:', e);
             this.scheduleDrawdownRecheck(user);
         }
+    }
+
+    // Weekly drawdown breach closes the account: the user document is kept and flagged accountClosed, and
+    // canPlaceOrder rejects every new order for a closed account. The cache flag is set synchronously so the
+    // block is immediate; the Mongo write is retried on the next breach evaluation if it fails.
+    private closeAccountForWeeklyBreach(user: string): void {
+        const settings = this.userSettingsCache.get(user);
+        if (!settings || settings.accountClosed) return;
+        settings.accountClosed = true;
+        const reason = `Weekly loss limit of ${drawdownLimit(configService.getConfig().settings as any, 'maxWeeklyDrawdownPercent')}% breached`;
+        Log.log(`[order] Account closed for ${user}: ${reason}`);
+        closeUserAccount(user, reason).catch((e) => {
+            settings.accountClosed = false;
+            Log.log(`[order] Failed to persist account closure for ${user} (will retry on the next breach check):`, e);
+        });
     }
 
     private drawdownRecheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -707,6 +726,11 @@ class OrderBookkeeping {
         if (estimatedOrderValue !== undefined && perOrderCap !== undefined && estimatedOrderValue > perOrderCap) {
             return { allowed: false, reason: `Order value ₹${estimatedOrderValue.toFixed(2)} exceeds per-order cap ₹${perOrderCap}.` };
         }
+        if (this.userSettingsCache.get(user)?.accountClosed) {
+            const reason = `User '${user}' account is closed (weekly loss limit breached).`;
+            this.logOrderRejection(user, reason);
+            return { allowed: false, reason };
+        }
         const dailyDrawdown = await this.drawdownState(user, 'daily');
         if (dailyDrawdown !== 'ok') {
             const reason = dailyDrawdown === 'breached'
@@ -716,6 +740,7 @@ class OrderBookkeeping {
             return { allowed: false, reason };
         }
         const weeklyDrawdown = await this.drawdownState(user, 'weekly');
+        if (weeklyDrawdown === 'breached') this.closeAccountForWeeklyBreach(user);
         if (weeklyDrawdown !== 'ok') {
             const reason = weeklyDrawdown === 'breached'
                 ? `User '${user}' has reached the maximum weekly drawdown.`

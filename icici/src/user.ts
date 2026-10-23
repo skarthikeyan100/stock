@@ -14,6 +14,12 @@ export interface User {
     broker?: 'zerodha' | 'ant' | 'breeze';
     role: string;
     enabled: boolean;
+    // Set when the user's realized loss in a trading week breached the weekly
+    // drawdown limit (see bookkeeping.ts closeAccountForWeeklyBreach). The user
+    // document is kept; the flag blocks new orders. Only an admin clears it.
+    accountClosed?: boolean;
+    accountClosedAt?: Date;
+    accountClosedReason?: string;
     createdAt: Date;
     phone?: string;
     emailVerified: boolean;
@@ -197,6 +203,15 @@ export async function updateUserSettings(email: string, settings: { lossLimit?: 
     if (settings.profitSplitPercent !== undefined) update.profitSplitPercent = settings.profitSplitPercent;
     await collection().updateOne({ email }, { $set: update });
     return getUser(email);
+}
+
+// Flags the account closed without removing the user. Idempotent: an already
+// closed account keeps its original closedAt/reason.
+export async function closeUserAccount(email: string, reason: string): Promise<void> {
+    await collection().updateOne(
+        { email, accountClosed: { $ne: true } },
+        { $set: { accountClosed: true, accountClosedAt: new Date(), accountClosedReason: reason } }
+    );
 }
 
 const AADHAR_PATTERN = /^\d{12}$/;

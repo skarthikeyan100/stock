@@ -1204,6 +1204,7 @@ async function loadUserLimits() {
             allottedCapital: user.allottedCapital,
             targetPoints: user.targetPoints,
             stopLossPoints: user.stopLossPoints,
+            accountClosed: user.accountClosed,
         });
     }
 }

@@ -299,7 +299,7 @@ export default function TermsAndConditionsPage() {
 
           <h3>11.2 Account Termination</h3>
           <p>
-            You may terminate your account at any time by providing written notice. PropFirm may terminate your account without notice for serious violations or regulatory non-compliance.
+            You may terminate your account at any time by providing written notice. PropFirm may terminate your account without notice for serious violations or regulatory non-compliance. Your account is also closed automatically if your realized loss in a trading week (Wednesday through Tuesday) exceeds the weekly loss limit described in Section 3.3; a closed account is retained on record but can no longer place orders.
           </p>
 
           <h3>11.3 Consequences of Termination</h3>

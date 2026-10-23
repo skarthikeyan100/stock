@@ -146,7 +146,7 @@ export function computeDrawdownForfeiture(
             const weekLabel = `Week of ${entry.weekStart.toDateString()}–${entry.weekEnd.toDateString()}`;
             return {
                 forfeited: true,
-                reason: `${weekLabel} lost ₹${Math.abs(entry.pnl).toFixed(2)} - exceeds the weekly loss limit of ${maxWeeklyDrawdownPercent}% (₹${weeklyLimit.toFixed(2)}) of your investment amount. All profit since the last payout is forfeited.`,
+                reason: `${weekLabel} lost ₹${Math.abs(entry.pnl).toFixed(2)} - exceeds the weekly loss limit of ${maxWeeklyDrawdownPercent}% (₹${weeklyLimit.toFixed(2)}) of your investment amount. All profit since the last payout is forfeited and the account is closed.`,
                 detail: { week, weekPnL: entry.pnl, tradeIds: entry.tradeIds },
             };
         }
