@@ -294,7 +294,7 @@ export default class BulkPcrStrategy extends Strategy {
     // while the strategy is enabled). Cleared only by admin reset or the day rollover.
     private stops = new Map<BrokerName, PnlStop>();
     // Per-broker profit stop (maxProfit). Unlike the loss stop it is cumulative per broker for the whole day: the day's
-    // realized P&L of every slot cycle plus the open part of every selling slot. Reaching +maxProfit closes that
+    // realized P&L of every slot cycle plus what open slots have already sold (see dayPnl: open slots marked below entry hold it back). Reaching +maxProfit closes that
     // broker's open slots and locks it out for the rest of the day, exactly like a loss trip. Its own latch (scope
     // `<broker>:maxProfit`), so a loss trip and a profit trip never share a field.
     private profitStops = new Map<BrokerName, PnlStop>();
@@ -525,15 +525,24 @@ export default class BulkPcrStrategy extends Strategy {
         this.persistState();
     }
 
-    // Unrealized-plus-partial part of one broker's open slots: for every selling slot (both sides, across re-buys) the
-    // part already sold plus the open quantity marked at its last tick. A slot with no tick yet adds 0 unrealized - a
-    // price is never guessed. Slots in 'error' are excluded: what they still hold is unknown (see maxloss.md B3.2), so
-    // counting them could trip falsely.
-    private openPnl(broker: BrokerName): number {
+    // Part of one broker's open selling slots that is already realized: what each slot has sold so far, against its
+    // entry. Uses fill prices only, never a tick. Slots in 'error' are excluded: what they still hold is unknown (see
+    // maxloss.md B3.2), so counting them could trip falsely.
+    private soldPartPnl(broker: BrokerName): number {
         let total = 0;
         for (const pos of this.slotsOf(broker)) {
             if (pos.phase !== 'selling' || !pos.heldTsym) continue;
             total += pos.soldValue - pos.soldQty * pos.entryAvg;
+        }
+        return total;
+    }
+
+    // Unrealized part of one broker's open selling slots: the open quantity marked at its last tick. A slot with no tick
+    // yet adds 0 - a price is never guessed. 'error' slots are excluded, as in soldPartPnl.
+    private unrealizedPnl(broker: BrokerName): number {
+        let total = 0;
+        for (const pos of this.slotsOf(broker)) {
+            if (pos.phase !== 'selling' || !pos.heldTsym) continue;
             const ltp = this.lastLtpByKey.get(this.keyOf(pos));
             const open = pos.targetQuantity - pos.soldQty;
             if (open > 0 && ltp !== undefined && Number.isFinite(ltp) && ltp > 0) total += (ltp - pos.entryAvg) * open;
@@ -555,9 +564,14 @@ export default class BulkPcrStrategy extends Strategy {
         return total;
     }
 
-    // The day's P&L for one broker (profit cap): realized over every slot cycle today plus the open part.
+    // The figure the profit cap is measured against: the day's realized P&L (every completed slot cycle plus what open
+    // slots have already sold), but only while the open slots, marked at their last tick, would not pull it back under.
+    // Tripping closes the broker's other open slots at limit, so the cap must hold with those closes included: the
+    // smaller of realized and realized-plus-unrealized is returned, and a slot marked above its resting sell never
+    // counts as profit.
     private dayPnl(broker: BrokerName): number {
-        return (this.dayRealizedByBroker.get(broker) ?? 0) + this.openPnl(broker);
+        const realized = (this.dayRealizedByBroker.get(broker) ?? 0) + this.soldPartPnl(broker);
+        return Math.min(realized, realized + this.unrealizedPnl(broker));
     }
 
     // Synchronous latch check for one broker, both caps. True only on the call that trips one of them, so the caller
