@@ -218,8 +218,9 @@ ignored, with a one-time WARN in the log. Use `maxLossPerTrade`.)
 **Loss stop (`maxLossPerTrade`, optional, ships unset)**: a percent of this block's `maxInvestment`
 (`10%` = 10000 on 100000), applied **per pair broker** (`ant`, `zerodha`). A trade is one auto-start slot on
 one broker, i.e. everything since the last `reset()` (the auto-start calls `reset({ keepStops: true })`
-before each slot). Trade P&L = realized since that reset + open P&L of that broker's selling slots (both
-sides, all re-buys) at the last live tick. Once it reaches `-maxLossPerTrade`, the latch trips (`PnlStop`, a
+before each slot). Loss figure = open P&L only: the unrealized P&L of that broker's selling slots (both
+sides) at the last live tick. Closed cycles (earlier re-buy exits) and partial fills do not offset it,
+e.g. PE -10 and CE -15 is a loss of 25 whatever was booked before. Once it reaches `-maxLossPerTrade`, the latch trips (`PnlStop`, a
 Mongo `strategyLatches` doc keyed by `ownerType`, `userId`, `scope`, `day`) and the broker is **locked out for
 the rest of the day**: its resting sells are cancelled and its open quantity is squared off at limit
 (`eodSquareOff`), its buys and re-buys stop, and `BulkPcrAutoStartStrategy` skips it at every later slot even
@@ -229,7 +230,7 @@ The lockout survives restarts: it is written to both the `strategyLatches` doc a
 (`stoppedBrokers`), and reconcile re-applies it. A restored lockout also closes any open exit or pending slot of
 that broker. If the lockout state cannot be read at all, the broker stays closed (fail-closed) until it can.
 Only the admin `GET /strategies/BulkPcrStrategy/reset` clears it, or the local day rollover. The auto-start
-re-arm (`reset({ keepStops: true })`) starts a new trade (trade P&L back to zero) but keeps the lockout.
+re-arm (`reset({ keepStops: true })`) starts a new trade but keeps the lockout.
 No `maxLossPerTrade` = off. A `maxLossPerTrade` without a usable
 `maxInvestment` fails config validation.
 

@@ -188,8 +188,6 @@ interface BrokerPosition {
 
 interface PersistedState {
     positions: Partial<Record<BrokerName, BrokerPosition>>;
-    // Current trade's realized P&L per pair broker (maxLossPerTrade); restored on reconcile only when realizedDay is today.
-    cycleRealizedByBroker?: Partial<Record<BrokerName, number>>;
     // Day's realized P&L per pair broker, summed over every completed slot cycle today (maxProfit). Restored on
     // reconcile only when realizedDay is today.
     dayRealizedByBroker?: Partial<Record<BrokerName, number>>;
@@ -300,10 +298,6 @@ export default class BulkPcrStrategy extends Strategy {
     // broker's open slots and locks it out for the rest of the day, exactly like a loss trip. Its own latch (scope
     // `<broker>:maxProfit`), so a loss trip and a profit trip never share a field.
     private profitStops = new Map<BrokerName, PnlStop>();
-    // Current trade's realized P&L per pair broker, summed over every completed slot cycle (slot fields reset on re-buy).
-    // Live 2026-10-22: ANT's 14:25 trade lost about 18,900 against a 10,000 limit because six winning slots offset it in
-    // a day-wide total - so the loss cap is measured per trade, not per day.
-    private cycleRealizedByBroker = new Map<BrokerName, number>();
     // Day's realized P&L per pair broker over every completed slot cycle today - what maxProfit is measured against.
     // Survives a re-arm (reset({keepStops})) and is cleared only by an admin reset or the day rollover.
     private dayRealizedByBroker = new Map<BrokerName, number>();
@@ -393,7 +387,6 @@ export default class BulkPcrStrategy extends Strategy {
                 {
                     userId: this.userId,
                     positions,
-                    cycleRealizedByBroker: Object.fromEntries(this.cycleRealizedByBroker),
                     dayRealizedByBroker: Object.fromEntries(this.dayRealizedByBroker),
                     stoppedBrokers,
                     profitStoppedBrokers,
@@ -421,7 +414,6 @@ export default class BulkPcrStrategy extends Strategy {
         const today = localDayKey();
         if (today === this.statsDay) return;
         this.statsDay = today;
-        this.cycleRealizedByBroker.clear();
         this.dayRealizedByBroker.clear();
         this.stops.clear();
         this.profitStops.clear();
@@ -494,9 +486,6 @@ export default class BulkPcrStrategy extends Strategy {
         if (persisted?.realizedDay === this.statsDay) {
             // Only where memory has no entry yet: a live process's in-memory total is never older than a read made
             // while it was running, so it must not be overwritten by one.
-            for (const [broker, pnl] of Object.entries(persisted.cycleRealizedByBroker ?? {})) {
-                if (Number.isFinite(Number(pnl)) && !this.cycleRealizedByBroker.has(broker as BrokerName)) this.cycleRealizedByBroker.set(broker as BrokerName, Number(pnl));
-            }
             for (const [broker, pnl] of Object.entries(persisted.dayRealizedByBroker ?? {})) {
                 if (Number.isFinite(Number(pnl)) && !this.dayRealizedByBroker.has(broker as BrokerName)) this.dayRealizedByBroker.set(broker as BrokerName, Number(pnl));
             }
@@ -532,7 +521,6 @@ export default class BulkPcrStrategy extends Strategy {
             return;
         }
         this.ensureToday();
-        this.cycleRealizedByBroker.set(broker, (this.cycleRealizedByBroker.get(broker) ?? 0) + pnl);
         this.dayRealizedByBroker.set(broker, (this.dayRealizedByBroker.get(broker) ?? 0) + pnl);
         this.persistState();
     }
@@ -553,9 +541,18 @@ export default class BulkPcrStrategy extends Strategy {
         return total;
     }
 
-    // Current trade's P&L for one broker (loss cap): realized so far in this trade plus the open part.
+    // Loss-cap figure for one broker: only what is open right now, i.e. every selling slot's open quantity marked at its
+    // last tick. Closed cycles (earlier re-buy +target exits) and partial fills do not offset it, so PE -10 and CE -15
+    // is a 25 loss however much was booked before. A slot with no tick yet adds 0; 'error' slots are excluded.
     private tradePnl(broker: BrokerName): number {
-        return (this.cycleRealizedByBroker.get(broker) ?? 0) + this.openPnl(broker);
+        let total = 0;
+        for (const pos of this.slotsOf(broker)) {
+            if (pos.phase !== 'selling' || !pos.heldTsym) continue;
+            const ltp = this.lastLtpByKey.get(this.keyOf(pos));
+            const open = pos.targetQuantity - pos.soldQty;
+            if (open > 0 && ltp !== undefined && Number.isFinite(ltp) && ltp > 0) total += (ltp - pos.entryAvg) * open;
+        }
+        return total;
     }
 
     // The day's P&L for one broker (profit cap): realized over every slot cycle today plus the open part.
@@ -1835,9 +1832,7 @@ export default class BulkPcrStrategy extends Strategy {
     // keepStops: the auto-start re-arm path. It keeps today's loss-stop latches and realized P&L (the stop
     // must survive a re-arm). Without it (admin reset) the stops and the day's realized P&L are cleared too.
     reset(opts?: { keepStops?: boolean }): void {
-        // A new trade starts here in both modes: the trade's realized P&L restarts at zero. The day's realized P&L
-        // (maxProfit) is not touched by a re-arm - it is cleared only by the admin reset below.
-        this.cycleRealizedByBroker.clear();
+        // The day's realized P&L (maxProfit) is not touched by a re-arm - it is cleared only by the admin reset below.
         this.phase = 'idle';
         this.positions.clear();
         this.lastLtpByKey.clear();

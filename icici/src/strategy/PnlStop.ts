@@ -6,7 +6,7 @@ import { toPercentNumber } from '../prism/percentConfig';
 // local day, including across restarts, until clear(). A latch that could not be read back after a restart fails
 // closed (isTripped() is true) until a later load() succeeds.
 // Two kinds share this class:
-//   'loss'   - maxLossPerTrade: trade P&L <= -threshold (a trade = one auto-start slot cycle, see BulkPcrStrategy).
+//   'loss'   - maxLossPerTrade: open-position P&L <= -threshold (unrealized on what is open now, see BulkPcrStrategy).
 //   'profit' - maxProfit: day P&L of the broker (cumulative across every slot cycle today) >= +threshold.
 // Both lock the owner out for the rest of the day. They are separate latches (own scope + own persisted field).
 // Standalone copy of the LegManager stop logic (see maxloss.md B0 #6 - LegManager is intentionally not refactored onto this).
@@ -67,7 +67,7 @@ export class PnlStop {
         if (this.deps.kind === 'loss') {
             if (!(pnl <= -threshold)) return false;
             this.tripped = true;
-            Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] MAX LOSS TRIPPED - trade P&L=${Math.round(pnl)} threshold=-${Math.round(threshold)} (maxLossPerTrade=${pct}% of maxInvestment=${maxInvestment}) - locked out for the rest of the day`);
+            Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] MAX LOSS TRIPPED - open-position P&L=${Math.round(pnl)} threshold=-${Math.round(threshold)} (maxLossPerTrade=${pct}% of maxInvestment=${maxInvestment}) - locked out for the rest of the day`);
         } else {
             if (!(pnl >= threshold)) return false;
             this.tripped = true;
