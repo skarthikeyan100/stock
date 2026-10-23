@@ -33,6 +33,14 @@ npm run dev    # or: npm run build && npm run preview
 - Timeframes 1, 5, 10, 15, 20, 30 min are clock-aligned. 1 min is wide and scrolls horizontally;
   the y-axes stay pinned while you scroll. Hover to see the values for that bucket.
 
+## Price-action analysis
+
+`node scripts/analyze.mjs [dataDir] [day ...]` prints, per day and pooled: ATM straddle and implied vol,
+IV/skew vs Nifty, OI walls, opening-range breaks, autocorrelation by hour, and hit rates of a few signals
+over the next 5/15/30 min. It also uses `FutureQuote.csv` / `VixQuote.csv` (futures buildup, VWAP, basis,
+VIX regime) when they are in the day folder; those parts are untested on real data. Needs `OptionQuote.csv`
+(75 MB, gitignored) in `data/<day>/`. One day is indicative only.
+
 ## Data
 
 `scripts/buildData.mjs` writes `public/data/<YYYY-MM-DD>.json` (one row per minute) and `public/data/index.json`

@@ -9,47 +9,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { forEachRow } from './csv.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DATA = path.resolve(here, '..', 'data');
 const outDir = path.resolve(here, '..', 'public', 'data');
 
-// Minimal CSV line splitter: handles "quoted, fields" and "" escapes.
-// None of the backup files contain embedded newlines.
-function splitCsvLine(line) {
-  const out = [];
-  let cur = '';
-  let inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (inQ) {
-      if (c === '"') {
-        if (line[i + 1] === '"') { cur += '"'; i++; } else inQ = false;
-      } else cur += c;
-    } else if (c === '"') inQ = true;
-    else if (c === ',') { out.push(cur); cur = ''; }
-    else cur += c;
-  }
-  out.push(cur);
-  return out;
-}
-
-async function forEachRow(file, fn) {
-  const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
-  let header = null;
-  for await (const line of rl) {
-    if (!line) continue;
-    const cols = splitCsvLine(line);
-    if (!header) { header = cols; continue; }
-    const row = {};
-    for (let i = 0; i < header.length; i++) row[header[i]] = cols[i];
-    fn(row);
-  }
-}
-
-// "2026-09-02 09:15:40" -> "2026-09-02 09:15"
 const toMinute = (ts) => ts.slice(0, 16);
 
 // Per-contract buildup statuses -> counts by option type: { CE: { 'Long buildup': n, ... }, PE: {...} }.
