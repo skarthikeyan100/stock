@@ -64,16 +64,16 @@ export default function TermsAndConditionsPage() {
           <ul>
             <li><strong>Threshold:</strong> Your realized loss on any single trading day may not exceed 25% of your allocated investment capital</li>
             <li><strong>Example:</strong> If allocated ₹100,000, daily loss limit = ₹25,000</li>
-            <li><strong>Consequence:</strong> When this limit is breached, your active positions will be automatically squared off and further order placement will be restricted until the next trading day</li>
-            <li><strong>Profit Protection:</strong> Accumulated profits earned are NOT affected by daily loss limit breach</li>
+            <li><strong>Consequence:</strong> When this limit is breached, your active positions will be automatically squared off, further order placement will be restricted until the next trading day, and ALL ACCUMULATED PROFITS since your last payout will be FORFEITED</li>
+            <li><strong>Critical:</strong> A single bad day can erase your profits, even if you had made 100% profit before that day - protect your gains by managing risk carefully</li>
           </ul>
 
           <h3>3.3 Weekly Loss Limit</h3>
           <ul>
             <li><strong>Threshold:</strong> Your total realized loss across a trading week (Wednesday through Tuesday) may not exceed 50% of your allocated investment capital</li>
             <li><strong>Example:</strong> If allocated ₹100,000, weekly loss limit = ₹50,000</li>
-            <li><strong>Consequence:</strong> When this limit is breached, all open positions will be automatically squared off, further order placement will be restricted, and ALL ACCUMULATED PROFITS since your last payout will be FORFEITED</li>
-            <li><strong>Critical:</strong> A weekly loss breach results in profit forfeiture - protect your gains by managing risk carefully</li>
+            <li><strong>Consequence:</strong> When this limit is breached, all open positions will be automatically squared off, further order placement will be restricted, and your ACCOUNT WILL BE CLOSED</li>
+            <li><strong>Critical:</strong> A weekly loss breach results in closure of your account - manage risk carefully</li>
           </ul>
 
           <h3>3.4 Simultaneous Trade Limits</h3>
@@ -106,7 +106,7 @@ export default function TermsAndConditionsPage() {
           </p>
           <ul>
             <li><strong>Total Loss Risk:</strong> You can lose your entire allocated capital in a single trade or series of trades</li>
-            <li><strong>Profit Forfeiture:</strong> Exceeding the weekly loss limit will result in forfeiture of ALL accumulated profits, regardless of magnitude</li>
+            <li><strong>Profit Forfeiture and Account Closure:</strong> Exceeding the daily loss limit will result in forfeiture of ALL accumulated profits, regardless of magnitude; exceeding the weekly loss limit will result in closure of your account</li>
             <li><strong>Volatility Risk:</strong> Options prices are highly volatile and can move drastically in seconds</li>
             <li><strong>Liquidity Risk:</strong> During low-liquidity periods, order execution may occur at unfavorable prices or may fail entirely</li>
             <li><strong>Technology Risk:</strong> Network outages, system failures, or platform glitches may prevent order placement or closure</li>
@@ -223,7 +223,7 @@ export default function TermsAndConditionsPage() {
             <li>Your trading decisions or strategy execution</li>
             <li>Market movements, price volatility, or adverse market conditions</li>
             <li>Losses from exceeding daily or weekly loss limits</li>
-            <li>Profit forfeiture due to weekly loss limit breach</li>
+            <li>Profit forfeiture due to daily loss limit breach, or account closure due to weekly loss limit breach</li>
             <li>Forced position closures due to risk management rules</li>
             <li>Order rejections or execution at unfavorable prices</li>
             <li>Technology failures, platform outages, or connectivity issues</li>

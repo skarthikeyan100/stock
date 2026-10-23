@@ -29,8 +29,8 @@ export default function RulesPage() {
 
   const rules = [
     'The number of simultaneous trades depends on how your account is configured. If your account trades by fixed lot size, multiple positions can run at the same time. If it trades by total investment amount, your entire allocated capital is committed to one trade at a time. Additionally, a single user may place at most 10 trades in one day. These trade-count and investment limits are checked before every order is placed (on the first leg of the trade) and simply reject it if breached.',
-    `Maximum daily drawdown: your realized loss on any single day may not exceed ${DAILY_DRAWDOWN_PERCENT}% of your allocated investment amount (₹${dailyLimit.toLocaleString()} for your account). If this limit is reached, your active positions will be automatically squared off and further order placement will be restricted until the next trading day.`,
-    `Maximum weekly loss: your total realized loss across a trading week (Wednesday through Tuesday) may not exceed ${WEEKLY_LOSS_PERCENT}% of your allocated investment amount (₹${weeklyLimit.toLocaleString()} for your account). If this limit is breached, remaining open positions will be automatically squared off, further order placement will be restricted, and all profit accumulated since your last payout is forfeited.`,
+    `Maximum daily drawdown: your realized loss on any single day may not exceed ${DAILY_DRAWDOWN_PERCENT}% of your allocated investment amount (₹${dailyLimit.toLocaleString()} for your account). If this limit is reached, your active positions will be automatically squared off, further order placement will be restricted until the next trading day, and all profit accumulated since your last payout is forfeited, even if you had made 100% profit before that day.`,
+    `Maximum weekly loss: your total realized loss across a trading week (Wednesday through Tuesday) may not exceed ${WEEKLY_LOSS_PERCENT}% of your allocated investment amount (₹${weeklyLimit.toLocaleString()} for your account). If this limit is breached, remaining open positions will be automatically squared off and your account will be closed.`,
   ];
 
   return (

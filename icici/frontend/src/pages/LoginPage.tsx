@@ -119,11 +119,10 @@ export default function LoginPage() {
               <div className="rule-icon rule-icon-red">✗</div>
               <h4>Scenario B — Profits Forfeited</h4>
               <p>
-                You had ₹30,000 in accumulated profits, but a bad week breaches the 50% weekly
+                You had ₹30,000 in accumulated profits, but a bad day breaches the 25% daily
                 loss limit. <strong> All profits accumulated since your last payout are forfeited</strong> —
-                you receive nothing for that period. A breach of the 25% daily loss limit only pauses trading
-                for the day and leaves your profits untouched.
-                <strong> Protect your gains. Never let a bad week erase your accumulated profits.</strong>
+                you receive nothing for that period, even if you had made 100% profit before that day.
+                <strong> Protect your gains. Never let a bad day erase your accumulated profits.</strong>
               </p>
             </div>
           </div>
@@ -149,10 +148,11 @@ export default function LoginPage() {
               <h4>Loss Limit & Reset</h4>
               <p>
                 Your realized loss on any single day may not exceed <strong>25% of your allocated capital</strong> —
-                breach it and your positions are squared off with trading paused until the next trading day, but
-                your accumulated profits are untouched. Your realized loss across a trading week (Wednesday–Tuesday)
-                may not exceed <strong>50%</strong> — breach this weekly limit and <strong>all profits accumulated
-                since your last payout are forfeited</strong>. Manage your risk carefully.
+                breach it and your positions are squared off, trading is paused until the next trading day, and
+                <strong>all profits accumulated since your last payout are forfeited</strong>, even if you had made
+                100% profit before that day. Your realized loss across a trading week (Wednesday–Tuesday)
+                may not exceed <strong>50%</strong> — breach this weekly limit and <strong>your account will be
+                closed</strong>. Manage your risk carefully.
               </p>
             </div>
             <div className="rule-card">
