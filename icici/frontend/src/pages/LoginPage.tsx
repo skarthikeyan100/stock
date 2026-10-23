@@ -110,18 +110,20 @@ export default function LoginPage() {
               <div className="rule-icon rule-icon-green">✓</div>
               <h4>Scenario A — You Profit</h4>
               <p>
-                You trade carefully and close the month with <strong>₹40,000 in net profits</strong>.
+                You trade carefully and close the week with <strong>₹40,000 in net profits</strong>.
                 Your 25% share is <strong>₹10,000 paid directly to you</strong> on the next payout date.
-                The firm keeps the rest and your account continues with full capital for next month.
+                The firm keeps the rest and your account continues with full capital for next week.
               </p>
             </div>
             <div className="rule-card rule-card-danger">
               <div className="rule-icon rule-icon-red">✗</div>
               <h4>Scenario B — Profits Forfeited</h4>
               <p>
-                You had ₹30,000 in accumulated profits, but a bad week breaches the weekly
+                You had ₹30,000 in accumulated profits, but a bad week breaches the 50% weekly
                 loss limit. <strong> All profits accumulated since your last payout are forfeited</strong> —
-                you receive nothing for that period. <strong>Protect your gains. Never let a bad week erase your accumulated profits.</strong>
+                you receive nothing for that period. A breach of the 25% daily loss limit only pauses trading
+                for the day and leaves your profits untouched.
+                <strong> Protect your gains. Never let a bad week erase your accumulated profits.</strong>
               </p>
             </div>
           </div>
