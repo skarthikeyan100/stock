@@ -1561,9 +1561,9 @@ app.get('/candles', requireAdmin, async function (req, res) {
 
 // ============================== Reconcile ==============================
 
-// Explicit broker-position + strategy reconcile. Not run on startup or on
-// broker login any more - the operator checks for open positions and then
-// calls this. Order matters: `order` restores bookkeeping.trades from the
+// Explicit, on-demand broker-position + strategy reconcile - called only when
+// broker positions and Mongo documents disagree. Nothing waits for it (ticks,
+// order events and entries work without it). Order matters: `order` restores bookkeeping.trades from the
 // brokers first, and only then do strategies reconcile against them. If any
 // broker could not be read, strategies are NOT reconciled (they would otherwise
 // conclude "no open position" from incomplete data) - 409 with the per-broker

@@ -98,7 +98,7 @@ class StrategiesClient {
         if (!res.ok) throw new Error(res.error);
     }
 
-    // Explicit reconcile (POST /reconcile) - only after `order`'s broker reconcile.
+    // On-demand reconcile (POST /reconcile) - only after `order`'s broker reconcile.
     async reconcile(): Promise<{ ran: boolean }> {
         const res = await this.request('reconcile', {});
         if (!res.ok) throw new Error(res.error);

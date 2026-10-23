@@ -235,13 +235,6 @@ async function placeOrderWithPendingGuard(
     // the reconcileInFlight mechanism exists to close.
     if (reconcileInFlight) await reconcileInFlight;
     const broker = resolveRequestBroker(req);
-    // Startup and login no longer reconcile, so bookkeeping.trades can be empty
-    // while the broker still holds a live position. Refuse new entries on a
-    // reconcilable broker until POST /reconcile has restored it - otherwise a
-    // buy could double up a position the app simply doesn't know about yet.
-    if (isReconcilableBroker(broker) && !brokerReconciled[broker]) {
-        return { kind: 'response', id: req.id, ok: false, error: `${broker}: broker positions not reconciled since startup - run POST /reconcile before placing new entries on this broker` };
-    }
     const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedOrderValue, broker);
     if (!validation.allowed) {
         return { kind: 'response', id: req.id, ok: false, error: validation.reason };
@@ -1230,16 +1223,11 @@ let reconcileInFlight: Promise<void> | null = null;
 // started - see startReconcile's comment.
 let reconcileQueued = false;
 
-// Per-broker outcome of the most recent completed reconcile. A broker is only
-// true when its positions were actually fetched and restored. Until then (and
-// after any failed run) placeOrderWithPendingGuard refuses new entries on that
-// broker - bookkeeping.trades can't yet be trusted to say what is already open.
+// Per-broker outcome of the most recent completed reconcile, returned to the
+// POST /reconcile caller. true only when that broker's positions were actually
+// fetched and restored. Informational only - nothing is gated on it.
 type ReconcilableBroker = 'zerodha' | 'ant' | 'breeze';
-const brokerReconciled: Record<ReconcilableBroker, boolean> = { zerodha: false, ant: false, breeze: false };
-
-function isReconcilableBroker(broker: string): broker is ReconcilableBroker {
-    return broker === 'zerodha' || broker === 'ant' || broker === 'breeze';
-}
+const lastReconcileResult: Record<ReconcilableBroker, boolean> = { zerodha: false, ant: false, breeze: false };
 
 async function reconcileAllBrokersOnce(logContext: string): Promise<void> {
     Log.log(`[order] Running broker-position reconciliation (${logContext})`);
@@ -1248,9 +1236,9 @@ async function reconcileAllBrokersOnce(logContext: string): Promise<void> {
         bookkeeping.reconcileAntPositions().catch((e) => { Log.log('[order] reconcileAntPositions failed:', e); return false; }),
         bookkeeping.reconcileBreezePositions().catch((e) => { Log.log('[order] reconcileBreezePositions failed:', e); return false; }),
     ]);
-    brokerReconciled.zerodha = zerodha;
-    brokerReconciled.ant = ant;
-    brokerReconciled.breeze = breeze;
+    lastReconcileResult.zerodha = zerodha;
+    lastReconcileResult.ant = ant;
+    lastReconcileResult.breeze = breeze;
     exitMonitor.reconcileFromTrades(bookkeeping.trades);
 }
 
@@ -1286,7 +1274,7 @@ async function runBrokerReconcileNow(logContext: string): Promise<Record<Reconci
     }
     startReconcile(logContext);
     await reconcileInFlight;
-    return { ...brokerReconciled };
+    return { ...lastReconcileResult };
 }
 
 // Only useGTT=false trades ever end up in exitMonitor's watch list (see
@@ -1315,11 +1303,10 @@ async function main() {
     // on every restart even though nothing was actually lost (see
     // loadClosedTradesFromMongo's comment).
     await bookkeeping.loadClosedTradesFromMongo();
-    // Broker-position reconciliation is NOT run at startup - it's the explicit
-    // 'reconcileBrokerPositions' step (POST /reconcile). Until it has run for a
-    // broker, bookkeeping.trades has nothing restored for that broker and
-    // placeOrderWithPendingGuard refuses new entries on it.
-    Log.log('[order] startup: broker-position reconciliation not run - invoke POST /reconcile after checking for open positions');
+    // Broker-position reconciliation is not run at startup - it's the explicit
+    // 'reconcileBrokerPositions' step (POST /reconcile), used only to repair a
+    // mismatch between broker positions and Mongo. Nothing waits for it.
+    Log.log('[order] startup: broker-position reconciliation is on-demand only (POST /reconcile)');
     exitMonitor.reconcileFromTrades(bookkeeping.trades);
 
     // Restore any resting root-refill limit orders tracked before this restart,

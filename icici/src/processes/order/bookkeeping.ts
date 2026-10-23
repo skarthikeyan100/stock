@@ -1147,8 +1147,8 @@ class OrderBookkeeping {
     // fixed it, but nothing re-ran this, so bookkeeping.trades stayed empty
     // against 4 real open Zerodha positions).
     // Returns true only when the broker's positions were fetched and restored;
-    // false means this broker must not be treated as reconciled (see
-    // orderProcess.ts's brokerReconciled gate).
+    // false means this broker could not be read (reported back to the
+    // POST /reconcile caller).
     async reconcileZerodhaPositions(): Promise<boolean> {
         const restored: Trade[] = [];
         try {
@@ -1211,7 +1211,7 @@ class OrderBookkeeping {
         const restored: Trade[] = [];
         try {
             // No valid session = positions can't be read, so this is NOT reconciled
-            // (a logged-out Breeze must be logged in and reconciled before new entries).
+            // (a logged-out Breeze must be logged in before it can be reconciled).
             if (!(await withTimeout(Breeze.getInstance().hasValidSession(), 15000, 'Breeze hasValidSession'))) return false;
             const result = await withTimeout(Breeze.getInstance().getPortfolioPositions(), 15000, 'Breeze getPortfolioPositions');
             const rows = Array.isArray(result?.Success) ? result.Success : [];

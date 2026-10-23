@@ -63,53 +63,18 @@ async function onOrderCancelled(userId: string, notification: OrderCancelledNoti
     }
 }
 
-// Ticks queued on stdin during startup (data.stdout is piped in before
-// strategies.initialize()/reconcile() resolve) must not reach
-// strategy.processNiftyQuote before every strategy has had a chance to
-// restore its "is a position already open" state - otherwise a fresh
-// instance can fire a duplicate live T1 entry before reconciliation ever
-// runs. A few dropped ticks during this brief window are harmless; the next
-// tick moments later re-populates lastNiftyLtp etc.
-let ready = false;
-
 // reconcile() runs only when explicitly requested (the 'reconcile' IPC request,
-// reached via POST /reconcile in server.ts) - never on startup or on a tick.
-// Set on the first request and shared by every later one, so it runs at most
-// once per process lifetime. Until it has run, `ready` stays false and no
-// tick reaches a strategy.
-let reconcilePromise: Promise<void> | null = null;
+// reached via POST /reconcile in server.ts) - never on startup or on a tick, and
+// nothing waits for it: ticks and order events flow from startup. It is a repair
+// for when broker positions and Mongo documents disagree. Concurrent requests
+// share the run that is in flight; once it finishes a later request runs again.
+let reconcileInFlight: Promise<void> | null = null;
 
-// Fill/cancelled notifications (OrderClient.onFill/onCancelled, wired in
-// main() before strategies.initialize()/reconcile() ever run) that arrive
-// before reconcile() has completed (`orderEventsReady` still false). Because
-// reconcile() is now an explicit step that can happen hours after startup, a
-// strategy's per-position state (e.g. BulkPcrStrategy's `this.positions`)
-// isn't populated for that whole window, so onFill/onOrderCancelled would
-// silently no-op on a genuine event instead of acting on it. Queued here and
-// replayed, in original arrival order (a fill and a cancel for the same order
-// can interleave), once reconcile() actually populates that state.
-type QueuedOrderEvent =
-    | { kind: 'fill'; userId: string; raw: any }
-    | { kind: 'cancelled'; userId: string; notification: OrderCancelledNotification };
-const queuedOrderEvents: QueuedOrderEvent[] = [];
-
-// Gates the onFill/onCancelled listeners below (queue vs. dispatch
-// immediately) - deliberately separate from `ready` (which only gates
-// ticks). Real race found by code review: setting `ready = true` before the
-// replay loop finishes draining meant a brand-new live event arriving WHILE
-// the loop was still sequentially awaiting older queued events for that
-// exact same userId would dispatch immediately (ready was already true),
-// racing ahead of and potentially applying before an older queued event -
-// exactly the ordering this queuing exists to prevent. Only flips true once
-// the drain loop below has emptied queuedOrderEvents with nothing left, so
-// nothing dispatched outside the queue can ever run concurrently with it.
-let orderEventsReady = false;
-
-// Idempotent: the first call starts the reconcile, every later call (including
-// one that arrives while the first is still running) awaits that same run.
-function runReconcileOnce(): Promise<void> {
-    if (!reconcilePromise) reconcilePromise = reconcileStrategies();
-    return reconcilePromise;
+function runReconcile(): Promise<void> {
+    if (!reconcileInFlight) {
+        reconcileInFlight = reconcileStrategies().finally(() => { reconcileInFlight = null; });
+    }
+    return reconcileInFlight;
 }
 
 async function reconcileStrategies(): Promise<void> {
@@ -126,35 +91,10 @@ async function reconcileStrategies(): Promise<void> {
             Log.log(`[strategies] reconcile() failed for ${strategy.userId}:`, e);
         }
     }
-    ready = true;
-    if (queuedOrderEvents.length > 0) {
-        Log.log(`[strategies] Replaying ${queuedOrderEvents.length} order event(s) queued during reconcile`);
-    }
-    // A while-loop, not a single splice-and-iterate pass: each await below
-    // is a real yield point (strategy.updateTrade/onOrderCancelled persist
-    // state), and a new live event for the same userId can still be queued
-    // during that window (the listeners below are gated on orderEventsReady,
-    // still false here) - draining until genuinely empty catches one
-    // appended mid-replay instead of leaving it for a dispatch that could
-    // race ahead of this loop once orderEventsReady flips.
-    while (queuedOrderEvents.length > 0) {
-        const event = queuedOrderEvents.shift()!;
-        try {
-            if (event.kind === 'fill') {
-                await onFill(event.userId, event.raw);
-            } else {
-                await onOrderCancelled(event.userId, event.notification);
-            }
-        } catch (e) {
-            Log.log(`[strategies] queued ${event.kind} handler failed:`, e);
-        }
-    }
-    orderEventsReady = true;
-    Log.log(`[strategies] Reconciled and ready - ${strategies.getList().length} strategies loaded.`);
+    Log.log(`[strategies] Reconciled - ${strategies.getList().length} strategies.`);
 }
 
 async function onTick(tick: any) {
-    if (!ready) return;
     if (tick.type === 'nifty') {
         const quote = Object.assign(new NiftyQuote(), tick.quote) as NiftyQuote;
         niftyQuoteHistory.record(quote);
@@ -235,12 +175,11 @@ async function handleStrategiesRequest(req: StrategiesRequest): Promise<Strategi
             // Explicit reconcile - POST /reconcile in server.ts sends this only
             // after `order`'s broker-position reconcile has succeeded, since
             // every strategy's reconcile() reads the restored open trades.
-            // `ran` is false when a reconcile was already requested earlier in
-            // this process's lifetime (it is not re-run).
+            // `ran` is false when this request joined a reconcile already in flight.
             case 'reconcile': {
-                const alreadyRequested = reconcilePromise !== null;
-                await runReconcileOnce();
-                return { kind: 'response', id: req.id, ok: true, result: { ran: !alreadyRequested } };
+                const joinedInFlight = reconcileInFlight !== null;
+                await runReconcile();
+                return { kind: 'response', id: req.id, ok: true, result: { ran: !joinedInFlight } };
             }
 
             default:
@@ -279,17 +218,9 @@ async function main() {
     await Mongo.init().catch((e) => Log.log('[strategies] Mongo.init failed (continuing without persistence):', e));
 
     OrderClient.getInstance().onFill((userId, trade) => {
-        // Gated on `orderEventsReady` (set only once the queued-event drain
-        // loop has fully emptied), not `ready` (set as soon as every
-        // strategy's reconcile() finishes, BEFORE that drain loop runs) - a
-        // fill arriving while the drain loop is still sequentially awaiting
-        // older queued events must still queue behind them, not dispatch
-        // immediately and race ahead of an older event for the same order.
-        if (!orderEventsReady) { queuedOrderEvents.push({ kind: 'fill', userId, raw: trade }); return; }
         onFill(userId, trade).catch((e) => Log.log('[strategies] onFill handler failed:', e));
     });
     OrderClient.getInstance().onCancelled((userId, notification) => {
-        if (!orderEventsReady) { queuedOrderEvents.push({ kind: 'cancelled', userId, notification }); return; }
         onOrderCancelled(userId, notification).catch((e) => Log.log('[strategies] onOrderCancelled handler failed:', e));
     });
     OrderClient.getInstance().connect();
@@ -306,8 +237,8 @@ async function main() {
     await strategies.initialize();
 
     // reconcile() does not run here or on any tick - it's the explicit
-    // 'reconcile' request (POST /reconcile). Until then `ready` stays false and
-    // every tick is dropped, so no strategy can act on unrestored state.
+    // 'reconcile' request (POST /reconcile), used only to repair a mismatch
+    // between broker positions and Mongo. Ticks and order events flow regardless.
 
     // Keeps the trading-window gate (strategies.ts's enforceTradingWindow)
     // self-correcting without needing a restart - disable-only: force-disables
@@ -318,7 +249,7 @@ async function main() {
     // setEnabledOverride comments.
     setInterval(() => strategies.recheckTradingWindow(), 60 * 1000);
 
-    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. Reconciliation not run - POST /reconcile triggers it.`);
+    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. POST /reconcile is on-demand only.`);
 }
 
 main().catch((e) => {
