@@ -117,7 +117,7 @@ export function App() {
         </label>
         {summary && (
           <span className="meta">
-            {n} bars · PCR on {summary.pcrMinutes}/{summary.minutes} min · avg {summary.avgStrikes} strikes
+            {n} bars · PCR on {summary.pcrMinutes}/{summary.minutes} min · avg {summary.avgContracts} contracts
           </span>
         )}
       </header>
@@ -133,7 +133,7 @@ export function App() {
             onMouseLeave={() => setHover(null)}
           >
             <Chart
-              title="PCR (premium)"
+              title="PCR (OI)"
               values={pcrValues}
               step={step}
               color="#0969da"
@@ -164,7 +164,7 @@ export function App() {
       {hb && hover && (
         <div className="tooltip" style={{ left: hover.clientX + 14, top: hover.clientY + 14 }}>
           <div><strong>{hb.label}–{hb.endLabel}</strong></div>
-          <div>PCR: {hb.pcr === null ? '—' : fmtNum(hb.pcr, 4)}{hb.strikes !== null && <span className="muted"> ({hb.strikes} strikes)</span>}</div>
+          <div>PCR: {hb.pcr === null ? '—' : fmtNum(hb.pcr, 4)}{hb.contracts !== null && <span className="muted"> ({hb.contracts} contracts)</span>}</div>
           <div>Nifty: {hb.close === null ? '—' : fmtNum(hb.close)}</div>
           <div>
             Δ: {hb.change === null ? '—' : `${fmtSigned(hb.change)} pts`}
@@ -174,9 +174,8 @@ export function App() {
       )}
 
       <footer className="caveat">
-        PCR is a premium-based proxy (sum of PE LTP ÷ sum of CE LTP over strikes within 300 pts of spot), not
-        open-interest PCR: the backups store no OI. Strike coverage varies by day, so levels are not directly
-        comparable across days. Legs are forward-filled for up to 5 minutes.
+        PCR is the stored Pcr document: total put OI ÷ total call OI over the NIFTY contracts the data process
+        subscribes to (about 12, near the money), so it is not the full-chain PCR. One document per minute.
       </footer>
     </div>
   );

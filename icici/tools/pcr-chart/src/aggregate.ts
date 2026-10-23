@@ -38,7 +38,7 @@ export function aggregate(rows: MinuteRow[], size: number): Bucket[] {
       label: hhmm(key),
       endLabel: hhmm(key + size - 1),
       pcr: last?.pcr ?? null,
-      strikes: last?.strikes ?? null,
+      contracts: last?.contracts ?? null,
       close,
       change,
       changePct,

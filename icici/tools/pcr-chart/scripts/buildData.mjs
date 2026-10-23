@@ -1,24 +1,19 @@
-// Builds per-minute premium-PCR + NIFTY rows for each backup day.
+// Builds per-minute OI-PCR + NIFTY rows for each stored day.
 //
-// Input : <backupsDir>/<Mon-DD>/csv/{OptionChain,OptionQuote,Quote}.csv
+// Input : <repo>/tools/pcr-chart/data/<YYYY-MM-DD>/{Pcr,Quote}.csv
+//         (Mongo exports of the Pcr and Quote collections, as written by backupAndClearStocks)
 // Output: public/data/<YYYY-MM-DD>.json  and  public/data/index.json
 //
-// PCR here is a PREMIUM proxy, not OI PCR: the backups carry no OI.
-//   pcr = sum(PE ltp) / sum(CE ltp) over strikes within WINDOW_POINTS of the
-//   minute's NIFTY futures spot, using only strikes where both legs have a
-//   price observed within MAX_STALE_MIN minutes.
+// pcr is the stored Pcr document's value (total put OI / total call OI over the subscribed
+// NIFTY contracts); the last document in each minute wins.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
-const WINDOW_POINTS = 300;
-const MAX_STALE_MIN = 5;
-const DEFAULT_BACKUPS = '/home/karthikeyan/work/data/backups';
-const DEFAULT_DAYS = ['Sep-01', 'Sep-02', 'Sep-03', 'Sep-04'];
-
 const here = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_DATA = path.resolve(here, '..', 'data');
 const outDir = path.resolve(here, '..', 'public', 'data');
 
 // Minimal CSV line splitter: handles "quoted, fields" and "" escapes.
@@ -57,36 +52,28 @@ async function forEachRow(file, fn) {
 // "2026-09-02 09:15:40" -> "2026-09-02 09:15"
 const toMinute = (ts) => ts.slice(0, 16);
 
-async function buildDay(backupsDir, folder) {
-  const csvDir = path.join(backupsDir, folder, 'csv');
+async function buildDay(dataDir, folder) {
+  const dir = path.join(dataDir, folder);
 
-  // 1. Option chain snapshots -> one entry per minute (spot + CE strike set).
-  const chain = new Map();
-  await forEachRow(path.join(csvDir, 'OptionChain.csv'), (r) => {
-    const minute = toMinute(r.fetchedAt);
-    if (chain.has(minute)) return; // keep the first snapshot in each minute
-    const legs = JSON.parse(r.values);
-    const ceStrikes = new Set();
-    for (const leg of legs) if (leg.optt === 'CE') ceStrikes.add(Math.round(Number(leg.strprc)));
-    chain.set(minute, { spot: Number(r.spot), ceStrikes });
+  // 1. Pcr documents -> last document per minute.
+  const pcrByMinute = new Map();
+  await forEachRow(path.join(dir, 'Pcr.csv'), (r) => {
+    if (r.index !== 'NIFTY') return;
+    const pcr = Number(r.pcr);
+    pcrByMinute.set(toMinute(r.fetchedAt), {
+      pcr: r.pcr === '' || !Number.isFinite(pcr) ? null : pcr,
+      ceOi: Number(r.ceOi),
+      peOi: Number(r.peOi),
+      contracts: Number(r.contracts),
+    });
   });
-  const minutes = [...chain.keys()].sort();
-  if (minutes.length === 0) throw new Error(`${folder}: no OptionChain rows`);
+  const minutes = [...pcrByMinute.keys()].sort();
+  if (minutes.length === 0) throw new Error(`${folder}: no Pcr rows`);
   const day = minutes[0].slice(0, 10);
 
-  // 2. NIFTY option LTPs -> last LTP per (minute, strike, type).
-  const optTicks = new Map(); // minute -> Map("strike|CE/PE" -> ltp)
-  await forEachRow(path.join(csvDir, 'OptionQuote.csv'), (r) => {
-    if (r.index !== 'NIFTY') return;
-    const m = toMinute(r.time);
-    let bucket = optTicks.get(m);
-    if (!bucket) optTicks.set(m, (bucket = new Map()));
-    bucket.set(`${Math.round(Number(r.strike))}|${r.optionType}`, Number(r.ltp));
-  });
-
-  // 3. NIFTY index ticks -> OHLC per minute.
+  // 2. NIFTY index ticks -> OHLC per minute.
   const niftyBars = new Map();
-  await forEachRow(path.join(csvDir, 'Quote.csv'), (r) => {
+  await forEachRow(path.join(dir, 'Quote.csv'), (r) => {
     if (r.index !== 'NIFTY') return;
     const ltp = Number(r.ltp);
     const m = toMinute(r.time);
@@ -99,47 +86,27 @@ async function buildDay(backupsDir, folder) {
     }
   });
 
-  // 4. Walk minutes in order, forward-filling option LTPs within the staleness cap.
-  const lastSeen = new Map(); // "strike|type" -> { ltp, idx }
+  // 3. One row per Pcr minute, joined with that minute's NIFTY bar.
   const rows = [];
   let pcrMinutes = 0;
-  let strikeSum = 0;
-  let maxStaleSeen = 0;
-  minutes.forEach((minute, idx) => {
-    const { spot, ceStrikes } = chain.get(minute);
-    const ticks = optTicks.get(minute);
-    if (ticks) for (const [k, ltp] of ticks) lastSeen.set(k, { ltp, idx });
-
-    let ce = 0;
-    let pe = 0;
-    let used = 0;
-    for (const strike of ceStrikes) {
-      if (Math.abs(strike - spot) > WINDOW_POINTS) continue;
-      const c = lastSeen.get(`${strike}|CE`);
-      const p = lastSeen.get(`${strike}|PE`);
-      if (!c || !p) continue;
-      if (idx - c.idx > MAX_STALE_MIN || idx - p.idx > MAX_STALE_MIN) continue;
-      ce += c.ltp;
-      pe += p.ltp;
-      used++;
-      maxStaleSeen = Math.max(maxStaleSeen, idx - c.idx, idx - p.idx);
-    }
-    const valid = used > 0 && ce > 0;
+  let contractSum = 0;
+  for (const minute of minutes) {
+    const p = pcrByMinute.get(minute);
     const bar = niftyBars.get(minute) ?? null;
+    const valid = p.pcr !== null && p.contracts > 0;
     rows.push({
       t: minute,
-      spot,
       open: bar?.open ?? null,
       high: bar?.high ?? null,
       low: bar?.low ?? null,
       close: bar?.close ?? null,
-      ce: valid ? ce : null,
-      pe: valid ? pe : null,
-      pcr: valid ? pe / ce : null,
-      strikes: used,
+      ceOi: valid ? p.ceOi : null,
+      peOi: valid ? p.peOi : null,
+      pcr: valid ? p.pcr : null,
+      contracts: valid ? p.contracts : null,
     });
-    if (valid) { pcrMinutes++; strikeSum += used; }
-  });
+    if (valid) { pcrMinutes++; contractSum += p.contracts; }
+  }
 
   const niftyMinutes = rows.filter((r) => r.close !== null).length;
   const summary = {
@@ -147,26 +114,27 @@ async function buildDay(backupsDir, folder) {
     minutes: rows.length,
     pcrMinutes,
     niftyMinutes,
-    avgStrikes: pcrMinutes ? +(strikeSum / pcrMinutes).toFixed(2) : 0,
-    maxStaleSeen,
+    avgContracts: pcrMinutes ? +(contractSum / pcrMinutes).toFixed(2) : 0,
   };
-  return { summary, file: { day, windowPoints: WINDOW_POINTS, maxStaleMin: MAX_STALE_MIN, rows } };
+  return { summary, file: { day, rows } };
 }
 
 async function main() {
-  const backupsDir = process.argv[2] ?? DEFAULT_BACKUPS;
-  const folders = process.argv.slice(3).length ? process.argv.slice(3) : DEFAULT_DAYS;
+  const dataDir = process.argv[2] ?? DEFAULT_DATA;
+  const folders = process.argv.slice(3).length
+    ? process.argv.slice(3)
+    : fs.readdirSync(dataDir).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
   fs.mkdirSync(outDir, { recursive: true });
 
   const index = [];
   for (const folder of folders) {
     console.log(`Building ${folder} ...`);
-    const { summary, file } = await buildDay(backupsDir, folder);
+    const { summary, file } = await buildDay(dataDir, folder);
     fs.writeFileSync(path.join(outDir, `${summary.day}.json`), JSON.stringify(file));
     index.push(summary);
     console.log(
       `  ${summary.day}: minutes=${summary.minutes} pcr=${summary.pcrMinutes} ` +
-      `nifty=${summary.niftyMinutes} avgStrikes=${summary.avgStrikes} maxStale=${summary.maxStaleSeen}min`
+      `nifty=${summary.niftyMinutes} avgContracts=${summary.avgContracts}`
     );
   }
   index.sort((a, b) => a.day.localeCompare(b.day));
