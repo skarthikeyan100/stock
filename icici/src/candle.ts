@@ -144,9 +144,6 @@ export class CandleManager {
     addQuote(quote: NiftyQuote) {
 
         const x = new Date(quote.ltt * 1000);
-        if (x.getDate() != 21) {
-            return;
-        }
         if ((x.getHours() == 9 && x.getMinutes() < 15)) {
             return;
         }

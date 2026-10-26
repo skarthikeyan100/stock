@@ -67,6 +67,8 @@ export default class ButterflyStrategy extends Strategy {
     private phase: 'idle' | 'running' = 'idle';
     private positions = new Map<BrokerName, BrokerButterflyPosition>();
     private eodDone = false;
+    // Day eodDone was set; a process left running overnight must clear it so the next day's legs are still force-closed.
+    private eodDay = '';
     private latestLtp = new Map<string, number>(); // token -> last seen ltp, across all brokers/legs
 
     receive(_oldStats, _newStats) {}
@@ -421,11 +423,14 @@ export default class ButterflyStrategy extends Strategy {
 
     // ---- EOD force-close + recurring reset ----
     private async eodCheck(): Promise<void> {
+        const dayKey = `${new Date().getFullYear()}-${new Date().getMonth()}-${new Date().getDate()}`;
+        if (this.eodDone && this.eodDay !== dayKey) this.eodDone = false;
         if (this.eodDone) return;
         const now = new Date();
         const pastEodCutoff = now.getHours() > 15 || (now.getHours() === 15 && now.getMinutes() >= 15);
         if (!pastEodCutoff) return;
         this.eodDone = true;
+        this.eodDay = dayKey;
         for (const pos of this.positions.values()) {
             if (pos.phase === 'open') await this.squareOffAll(pos, 'EOD cutoff 15:15 reached');
         }

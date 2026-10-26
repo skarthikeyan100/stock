@@ -106,7 +106,7 @@ class Kite {
     private saveSession(): void {
         try {
             if (this.accessToken) {
-                fs.writeFileSync(this.sessionFile, JSON.stringify({ access_token: this.accessToken }));
+                fs.writeFileSync(this.sessionFile, JSON.stringify({ access_token: this.accessToken }), { mode: 0o600 });
                 Log.log('Kite session saved');
             }
         } catch (e) {
@@ -127,7 +127,7 @@ class Kite {
 
             const session = await this.kc.generateSession(requestToken, this.apiSecret);
 
-            Log.log('Session generated:', session);
+            Log.log('Kite session generated for user', session.user_id ?? '(unknown)');
 
             this.accessToken = session.access_token;
             this.kc.setAccessToken(this.accessToken);

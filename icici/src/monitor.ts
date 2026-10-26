@@ -294,7 +294,9 @@ export default class Monitor {
             tradeEvent.token = await prism.getToken(tradeEvent.tsym);
             tradeEvent.action = data.trantype == 'S' ? 'Sell' : 'Buy'
             tradeEvent.status = data.status
-            tradeEvent.right = tradeEvent.tsym.indexOf('P') !== -1 ? PUT : CALL;
+            // Option type is the suffix ('...PE'/'...CE') or the letter before the strike ('...P17500'); a bare 'P' search
+            // mis-reads a call in an APR/SEP/... expiry as a put.
+            tradeEvent.right = /PE$/.test(tradeEvent.tsym) || /P\d+$/.test(tradeEvent.tsym) ? PUT : CALL;
             tradeEvent.user = user;
 
             if (tradeEvent.action == 'Buy') {

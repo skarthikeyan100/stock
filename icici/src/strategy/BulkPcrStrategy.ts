@@ -289,6 +289,8 @@ export default class BulkPcrStrategy extends Strategy {
     // opposite-side opening and re-buys live in the methods further down.
     // Set once the EOD force-close has started - nothing new opens or re-buys after it.
     private eodDone = false;
+    // Day eodDone was set; it is a one-day latch, so a process left running overnight must clear it (see eodCheck).
+    private eodDay = '';
 
     // Per-broker loss stop (maxLossPerTrade, maxloss.md). One PnlStop latch per pair broker. A trade = one auto-start
     // slot = everything since the last reset(). When a broker's trade P&L breaches maxLossPerTrade, its open slots are
@@ -619,11 +621,13 @@ export default class BulkPcrStrategy extends Strategy {
     }
 
     private async eodCheck(): Promise<void> {
+        if (this.eodDone && this.eodDay !== localDayKey()) this.eodDone = false;
         if (!this.eodDone && this.pairSlots().length > 0) {
             const now = new Date();
             const pastEodCutoff = now.getHours() > 15 || (now.getHours() === 15 && now.getMinutes() >= 15);
             if (pastEodCutoff) {
                 this.eodDone = true;
+                this.eodDay = localDayKey();
                 Log.log('[BulkPcrStrategy] EOD cutoff reached - force-closing open pair slot(s)');
                 await this.eodCloseSlots();
             }

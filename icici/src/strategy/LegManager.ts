@@ -167,6 +167,9 @@ export class LegManager {
     // End-of-day force close latch: once set, onOptionTick keeps closing every leg (retrying a failed sell on the
     // next tick) and nothing new is opened. Not persisted - the trading day is over either way.
     private eodClosing = false;
+    // Calendar day the latches above belong to. They are one-day latches (persistLatch is keyed by day), but this
+    // object can outlive the day when the process is not restarted overnight - see rollDayIfNeeded.
+    private activeDay = LegManager.latchDay();
     // Refill limit buys superseded by a deeper spawn (cancelChildRefills), keyed by broker order id. The pending
     // intent is deleted up front, so a fill that lands anyway (before/while the cancel goes through) has no intent to
     // match and used to be dropped silently - an orphaned position (2026-10-19: 325 + 130 lots). A fill carrying one of
@@ -289,6 +292,7 @@ export class LegManager {
     // `logCtx` identifies the triggering call site/contract in the one-time
     // trip log line.
     async capitalCheck(newQty: number, estimatedPremium: number, logCtx: string): Promise<boolean> {
+        this.rollDayIfNeeded();
         if (this.capitalGateTripped) return false; // latched permanently - see field comment
         const cfg = this.deps.getConfig();
         const maxInvestment = cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
@@ -318,6 +322,7 @@ export class LegManager {
     // cap, not live deployed capital). Unset/null maxProfit disables the
     // feature entirely (no-op).
     private checkAndMaybeTripMaxProfit(cfg: LegManagerConfig): void {
+        this.rollDayIfNeeded();
         if (this.maxProfitTripped) return; // latched permanently - see field comment
         if (cfg.maxProfit == null) return; // feature not configured
         const maxProfitPct = toPercentNumber(cfg.maxProfit);
@@ -338,6 +343,21 @@ export class LegManager {
     // The max-profit stop is a same-day latch kept in Mongo (collection strategyLatches), so a process restart
     // (a deploy, a crash, tsc-watch) no longer re-enables a strategy that already hit its profit cap -
     // observed 2026-10-19 when two restarts the same day re-opened trading after a mass close. reset() clears it.
+    // First touch on a new calendar day clears the per-day latches (capital gate, max profit/loss, EOD close) and
+    // rebases the P&L baseline, so yesterday's trip or EOD close cannot block (or instantly sell) today's entries.
+    // Open legs are kept. No-op within a day.
+    private rollDayIfNeeded(): void {
+        const today = LegManager.latchDay();
+        if (today === this.activeDay) return;
+        Log.log(`[${this.deps.ownerType}] new trading day ${today} (was ${this.activeDay}) - clearing yesterday's capital/profit/loss/EOD latches`);
+        this.activeDay = today;
+        this.capitalGateTripped = false;
+        this.maxProfitTripped = false;
+        this.maxLossTripped = false;
+        this.eodClosing = false;
+        this.maxProfitBaseline = this.realizedPnL;
+    }
+
     private static latchDay(): string {
         const d = new Date();
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -388,6 +408,7 @@ export class LegManager {
     // maxLoss == maxProfit gives a symmetric daily band. Cumulative P&L is realized-since-reset + unrealized of every open
     // leg (computeCumulativeProfit). Unset/null maxLoss disables it.
     private checkAndMaybeTripMaxLoss(cfg: LegManagerConfig): void {
+        this.rollDayIfNeeded();
         if (this.maxLossTripped) return;
         if (cfg.maxLoss == null) return;
         const maxLossPct = toPercentNumber(cfg.maxLoss);
@@ -402,11 +423,13 @@ export class LegManager {
     }
 
     isMaxLossTripped(): boolean {
+        this.rollDayIfNeeded();
         return this.maxLossTripped;
     }
 
     // Start of the end-of-day close: from here every tick closes whatever is still open and nothing new is opened.
     async closeAllForEod(): Promise<void> {
+        this.rollDayIfNeeded();
         if (!this.eodClosing) Log.log(`[${this.deps.ownerType}] End-of-day close - closing every open leg and cancelling pending re-entries`);
         this.eodClosing = true;
         await this.closeAllLegsAndCancelReEntries();
@@ -466,10 +489,12 @@ export class LegManager {
     }
 
     isCapitalGateTripped(): boolean {
+        this.rollDayIfNeeded();
         return this.capitalGateTripped;
     }
 
     isMaxProfitTripped(): boolean {
+        this.rollDayIfNeeded();
         return this.maxProfitTripped;
     }
 
@@ -597,6 +622,7 @@ export class LegManager {
     // processOptionQuote body exactly, generalized off `this.cfg()`/
     // `this.lastNiftyLtp` into deps.getConfig()/deps.getLastUnderlyingLtp().
     async onOptionTick(token: string, ltp: number): Promise<void> {
+        this.rollDayIfNeeded();
         const leg = this.legsByToken.get(token);
         // Cache before any early return - see Leg.lastLtp comment. Guard against NaN (a
         // known gap in ~12.5% of historical backtest CSV rows, and cheap insurance against

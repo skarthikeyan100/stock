@@ -146,7 +146,8 @@ class ANT {
         try {
             fs.writeFileSync(
                 this.sessionFile,
-                JSON.stringify({ userSession: this.userSession, userId: this.userId })
+                JSON.stringify({ userSession: this.userSession, userId: this.userId }),
+                { mode: 0o600 }
             );
             Log.log('ANT session saved');
         } catch (e) {
@@ -187,7 +188,7 @@ class ANT {
             );
 
             Log.log('Response status:', tokenResp.status);
-            Log.log('Response data:', tokenResp.data);
+            Log.log('Response data: userSession', tokenResp.data?.userSession ? '(received)' : '(missing)', 'status', tokenResp.data?.stat ?? tokenResp.data?.status);
 
             this.userSession = tokenResp.data?.userSession;
             if (!this.userSession) {

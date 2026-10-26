@@ -1013,11 +1013,14 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'reloadSession': {
-                Kite.getInstance().reloadSession();
-                NorenRestApi.reloadToken();
-                ANT.getInstance().reloadSession();
-                connectAntOrderNotifyIfSessionValid('reloadSession');
-                Breeze.getInstance().reloadSession();
+                // Each broker reload is isolated: one throwing (e.g. a corrupt session file) must not skip the others,
+                // in particular the ANT order-notify reconnect that fill pushes depend on.
+                const safely = (name: string, fn: () => void) => { try { fn(); } catch (e) { Log.log(`[order] reloadSession: ${name} failed (continuing with the others):`, e); } };
+                safely('kite', () => Kite.getInstance().reloadSession());
+                safely('prism', () => NorenRestApi.reloadToken());
+                safely('ant', () => ANT.getInstance().reloadSession());
+                safely('ant order-notify', () => connectAntOrderNotifyIfSessionValid('reloadSession'));
+                safely('breeze', () => Breeze.getInstance().reloadSession());
                 connectBreezeOrderNotifyIfSessionValid('reloadSession').catch((e) => Log.log('[order] connectBreezeOrderNotifyIfSessionValid failed:', e));
                 // Broker-position reconciliation is NOT run here any more - a
                 // login no longer triggers it. It's an explicit step, invoked
@@ -1266,12 +1269,19 @@ function startReconcile(logContext: string): void {
         return;
     }
     reconcileInFlight = (async () => {
-        await reconcileAllBrokersOnce(logContext);
-        while (reconcileQueued) {
+        try {
+            await reconcileAllBrokersOnce(logContext);
+            while (reconcileQueued) {
+                reconcileQueued = false;
+                await reconcileAllBrokersOnce('trailing, coalesced');
+            }
+        } catch (e) {
+            // Must not leave reconcileInFlight rejected/set: every buy, square-off and canPlaceOrder awaits it.
             reconcileQueued = false;
-            await reconcileAllBrokersOnce('trailing, coalesced');
+            Log.log(`[order] ALERT: reconcile (${logContext}) threw - clearing the in-flight gate so trading is not wedged:`, e);
+        } finally {
+            reconcileInFlight = null;
         }
-        reconcileInFlight = null;
     })();
 }
 

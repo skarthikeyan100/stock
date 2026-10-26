@@ -94,6 +94,15 @@ async function reconcileStrategies(): Promise<void> {
     Log.log(`[strategies] Reconciled - ${strategies.getList().length} strategies.`);
 }
 
+// One strategy throwing on a tick must not starve the strategies after it (including ones managing live exits).
+async function isolate(strategy: { userId?: string; getClassName(): string }, what: string, fn: () => Promise<unknown>): Promise<void> {
+    try {
+        await fn();
+    } catch (e) {
+        Log.log(`[strategies] ${strategy.getClassName()}${strategy.userId ? ':' + strategy.userId : ''} ${what} threw (other strategies unaffected):`, e);
+    }
+}
+
 async function onTick(tick: any) {
     if (tick.type === 'nifty') {
         const quote = Object.assign(new NiftyQuote(), tick.quote) as NiftyQuote;
@@ -102,16 +111,16 @@ async function onTick(tick: any) {
         const statsUpdate = niftyStatsBuilder.record(quote.ltp, parseInt(quote.ltt as any));
         if (statsUpdate) {
             for (const strategy of strategies.getList()) {
-                await strategy.receive(statsUpdate.oldStats, statsUpdate.newStats);
+                await isolate(strategy, 'receive', () => strategy.receive(statsUpdate.oldStats, statsUpdate.newStats));
             }
         }
         for (const strategy of strategies.getList()) {
-            if (strategy.enabled) await strategy.processNiftyQuote(quote);
+            if (strategy.enabled) await isolate(strategy, 'processNiftyQuote', () => strategy.processNiftyQuote(quote));
         }
     } else if (tick.type === 'sensex') {
         const quote = Object.assign(new SensexQuote(), tick.quote) as SensexQuote;
         for (const strategy of strategies.getList()) {
-            if (strategy.enabled) await strategy.processSensexQuote(quote);
+            if (strategy.enabled) await isolate(strategy, 'processSensexQuote', () => strategy.processSensexQuote(quote));
         }
     } else if (tick.type === 'option') {
         const quote = Object.assign(new OptionQuote(), tick.quote) as OptionQuote;

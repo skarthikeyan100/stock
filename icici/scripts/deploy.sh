@@ -39,6 +39,12 @@ rsync -avz --progress \
   --exclude 'node_modules' \
   --exclude '*.log' \
   --exclude '.git' \
+  --exclude '.env' \
+  --exclude 'config.yml' \
+  --exclude '.*_session*.json' \
+  --exclude 'userToken.txt' \
+  --exclude '.bulkpcr_armed_slots.*' \
+  --exclude '.topStockOptionsOpeningGap_firedToday.*' \
   "${LOCAL_SERVER_PATH}/" \
   "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
 

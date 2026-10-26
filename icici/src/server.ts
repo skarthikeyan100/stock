@@ -319,6 +319,19 @@ app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (
     try {
         const { email } = req.params;
         const { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled } = req.body;
+        // Self-service is limited to investment preferences; limits, capital, broker, profit split and the enabled flag
+        // are admin-controlled (a trader must not be able to raise their own loss limit or re-enable a disabled account).
+        if (!requestIsLoopback(req)) {
+            const caller = await getUser(resolveUser(req) ?? '');
+            if (caller?.role !== 'admin') {
+                const restricted = { lossLimit, lotCount, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled };
+                const attempted = Object.entries(restricted).filter(([, v]) => v !== undefined).map(([k]) => k);
+                if (attempted.length > 0) {
+                    res.status(403).json({ error: `Only an admin can change: ${attempted.join(', ')}` });
+                    return;
+                }
+            }
+        }
         if (broker !== undefined && !['ant', 'kite', 'breeze'].includes(normalizeBrokerName(broker))) {
             res.status(400).json({ error: `Invalid broker '${broker}' (expected ant, kite or breeze)` });
             return;

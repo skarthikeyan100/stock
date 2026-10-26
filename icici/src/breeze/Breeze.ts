@@ -256,7 +256,7 @@ class Breeze {
     private saveSession(): void {
         try {
             if (this.apiSession) {
-                fs.writeFileSync(this.sessionFile, JSON.stringify({ apiSession: this.apiSession }));
+                fs.writeFileSync(this.sessionFile, JSON.stringify({ apiSession: this.apiSession }), { mode: 0o600 });
                 Log.log('[Breeze] Session saved');
             }
         } catch (e) {

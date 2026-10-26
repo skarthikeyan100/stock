@@ -5,7 +5,7 @@ import { isPastMarketClose } from '../util/marketHours';
 import PendingFillRegistry from '../util/PendingFillRegistry';
 import ANT from './ANT';
 
-const axios = axiosModule.create();
+const axios = axiosModule.create({ timeout: 15000 });
 
 // Push-based order-fill notification, replacing ANT.getFillPrice's REST
 // polling of orders/history. This is a SEPARATE websocket from AntDataStream
@@ -100,6 +100,8 @@ class AntOrderNotifyStream {
             return;
         }
 
+        // A previous disconnect() leaves this set; without the reset no later close would ever reconnect.
+        this.manualDisconnect = false;
         const orderToken = await this.getWsToken();
         const userId = ANT.getInstance().getUserId();
         if (!userId) throw new Error('userId not available');
