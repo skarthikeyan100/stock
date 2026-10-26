@@ -24,7 +24,10 @@ fail=0
 backup() {
     # $1 = file to back up, if it exists
     local f="$1"
-    [ -f "$f" ] && cp "$f" "$f.bak-$STAMP"
+    [ -f "$f" ] || return 0
+    # keep only the most recent backup: drop older ones before writing the new one
+    rm -f "$f".bak-*
+    cp "$f" "$f.bak-$STAMP"
 }
 
 echo "=== ANT (AliceBlue) ==="

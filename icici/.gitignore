@@ -41,3 +41,17 @@ tmp/
 *.csv
 public/
 output.csv
+
+# Broker contract-master download backups (scripts/download-all-masters.sh)
+*.bak-*
+
+# Runtime state and credentials (read by code, never committed)
+userToken.txt
+cert.pem
+key.pem
+.bulkpcr_armed_slots.*.json
+.topStockOptionsOpeningGap_firedToday.*.json
+debug.log
+debug.txt
+server_logs*.txt
+requestOtp*
