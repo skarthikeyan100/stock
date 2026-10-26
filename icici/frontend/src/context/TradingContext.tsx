@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
-import { isMarketHours } from '../utils/marketHours';
+import { useMarketHours } from '../utils/marketHours';
+import { apiPost, readError } from '../utils/api';
 
 export interface Trade {
   tsym: string;
@@ -36,9 +37,10 @@ interface TradingState {
   blockReason: string | null;
   orderError: string | null;
   placeOrder: (right: string) => Promise<void>;
-  placeContractOrder: (contract: string, targetPoints?: number, stopLossPoints?: number) => Promise<void>;
-  squareOff: (token: string, qty: number) => Promise<void>;
-  setTargetStopLoss: (token: string, targetPoints: number, stopLossPoints: number) => Promise<void>;
+  // Resolve true only when the server accepted the request, so callers clear their inputs/selection on success only.
+  placeContractOrder: (contract: string, targetPoints?: number, stopLossPoints?: number) => Promise<boolean>;
+  squareOff: (token: string, qty: number) => Promise<boolean>;
+  setTargetStopLoss: (token: string, targetPoints: number, stopLossPoints: number) => Promise<boolean>;
   clearError: () => void;
 }
 
@@ -74,10 +76,12 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const getInstrumentLotSize = (tsym: string): number => {
     if (tsym.startsWith('BANKNIFTY')) return 15;
     if (tsym.startsWith('FINNIFTY')) return 25;
+    if (tsym.startsWith('SENSEX')) return 20;
     return 65;
   };
   const tradedLots = trades.reduce((sum, t) => sum + Math.ceil(t.quantity / getInstrumentLotSize(t.tsym)), 0);
-  const isOrderDisabled = tradedLots >= lotLimit || totalPnL <= -maxLoss || placingOrder || !isMarketHours();
+  const marketOpen = useMarketHours();
+  const isOrderDisabled = tradedLots >= lotLimit || totalPnL <= -maxLoss || placingOrder || !marketOpen;
 
   // SSE: Position stream — connects only after user is authenticated, retries
   // indefinitely with a capped exponential backoff (never gives up: a live
@@ -151,8 +155,12 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     const check = () => {
-      fetch('/prism/canPlaceOrder', { headers: { 'X-User-Id': user.email } })
-        .then(res => res.json())
+      fetch('/prism/canPlaceOrder')
+        .then(res => {
+          // A 401/500 says nothing about the trading rules: keep the last known state instead of flipping to "blocked".
+          if (!res.ok) throw new Error(`canPlaceOrder ${res.status}`);
+          return res.json();
+        })
         .then((data: { allowed: boolean; reason?: string }) => {
           if (cancelled) return;
           setTradingBlocked(!data.allowed);
@@ -185,13 +193,9 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     setPlacingOrder(true);
     setOrderError(null);
     try {
-      const response = await fetch(
-        `/order/buy?index=NIFTY&right=${right}`,
-        { headers: { 'X-User-Id': user?.email || 'Default' } }
-      );
+      const response = await apiPost(`/order/buy?index=NIFTY&right=${encodeURIComponent(right)}`);
       if (!response.ok) {
-        const body = await response.json();
-        setOrderError(describeOrderError(body));
+        setOrderError(describeOrderError({ error: await readError(response) }));
       }
     } catch (err) {
       console.error('[Order] Order failed:', err);
@@ -199,57 +203,59 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     } finally {
       setPlacingOrder(false);
     }
-  }, [user?.email]);
+  }, []);
 
-  const placeContractOrder = useCallback(async (contract: string, targetPoints?: number, stopLossPoints?: number) => {
+  const placeContractOrder = useCallback(async (contract: string, targetPoints?: number, stopLossPoints?: number): Promise<boolean> => {
     setPlacingOrder(true);
     setOrderError(null);
     try {
       const params = new URLSearchParams({ contract });
       if (targetPoints !== undefined) params.set('targetPoints', String(targetPoints));
       if (stopLossPoints !== undefined) params.set('stopLossPoints', String(stopLossPoints));
-      const response = await fetch(
-        `/order/buy?${params.toString()}`,
-        { headers: { 'X-User-Id': user?.email || 'Default' } }
-      );
+      const response = await apiPost(`/order/buy?${params.toString()}`);
       if (!response.ok) {
-        const body = await response.json();
-        setOrderError(describeOrderError(body));
+        setOrderError(describeOrderError({ error: await readError(response) }));
+        return false;
       }
+      return true;
     } catch (err) {
       console.error('[Order] Contract order failed:', err);
       setOrderError('Network error');
+      return false;
     } finally {
       setPlacingOrder(false);
     }
-  }, [user?.email]);
+  }, []);
 
-  const squareOff = useCallback(async (token: string, qty: number) => {
+  const squareOff = useCallback(async (token: string, qty: number): Promise<boolean> => {
     setOrderError(null);
     try {
-      const response = await fetch(
-        `/order/squareoff?token=${encodeURIComponent(token)}&qty=${qty}`,
-        { headers: { 'X-User-Id': user?.email || 'Default' } }
-      );
+      const response = await apiPost(`/order/squareoff?token=${encodeURIComponent(token)}&qty=${qty}`);
       if (!response.ok) {
-        const body = await response.json();
-        setOrderError(describeOrderError(body));
+        // The server answers with plain text on some failures: read it as text, not JSON.
+        setOrderError(describeOrderError({ error: await readError(response) }));
+        return false;
       }
+      return true;
     } catch (err) {
       console.error('[SquareOff] Square off failed:', err);
       setOrderError('Network error');
+      return false;
     }
-  }, [user?.email]);
+  }, []);
 
-  const setTargetStopLoss = useCallback(async (token: string, targetPoints: number, stopLossPoints: number) => {
+  const setTargetStopLoss = useCallback(async (token: string, targetPoints: number, stopLossPoints: number): Promise<boolean> => {
     try {
-      await fetch('/order/settarget', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, targetPoints, stopLossPoints }),
-      });
+      const response = await apiPost('/order/settarget', { token, targetPoints, stopLossPoints });
+      if (!response.ok) {
+        setOrderError(await readError(response));
+        return false;
+      }
+      return true;
     } catch (err) {
       console.error('[SetTarget] Failed:', err);
+      setOrderError('Network error');
+      return false;
     }
   }, []);
 

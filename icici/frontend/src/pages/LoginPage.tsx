@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { GoogleLogin } from '@react-oauth/google';
 import { useAuth } from '../context/AuthContext';
 import { isMarketHours } from '../utils/marketHours';
@@ -7,6 +7,7 @@ import { isMarketHours } from '../utils/marketHours';
 export default function LoginPage() {
   const { login, isLoggedIn, termsAccepted } = useAuth();
   const navigate = useNavigate();
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isLoggedIn && !termsAccepted) navigate('/rules', { replace: true });
@@ -46,15 +47,19 @@ export default function LoginPage() {
           <div className="landing-hero-cta">
             <GoogleLogin
               onSuccess={async (credentialResponse) => {
+                setLoginError(null);
                 try {
-                  await login(credentialResponse.credential!);
+                  if (!credentialResponse.credential) throw new Error('Google did not return a credential');
+                  await login(credentialResponse.credential);
                   navigate('/rules');
-                } catch (e) {
+                } catch (e: any) {
                   console.error('Login failed:', e);
+                  setLoginError(e?.message || 'Login failed - please try again');
                 }
               }}
-              onError={() => console.error('Google login error')}
+              onError={() => setLoginError('Google sign-in failed - please try again')}
             />
+            {loginError && <div className="text-danger small mt-2">{loginError}</div>}
           </div>
         </div>
         <div className="landing-hero-graphic">

@@ -16,25 +16,37 @@ export default function NiftyTicker() {
 
   useEffect(() => {
     let failCount = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
     const connect = () => {
+      if (disposed) return;
       if (esRef.current) esRef.current.close();
       const es = new EventSource('/niftystream');
       esRef.current = es;
       es.onopen = () => { failCount = 0; };
       es.onmessage = (e) => {
-        const data = JSON.parse(e.data);
-        setQuote(data.nifty ?? data);
+        try {
+          const data = JSON.parse(e.data);
+          setQuote(data.nifty ?? data);
+        } catch (err) {
+          console.error('[NiftyTicker] bad stream message:', err);
+        }
       };
       es.onerror = () => {
         es.close();
         failCount++;
         // Retry indefinitely with a capped backoff - never give up (see
         // TradingContext.tsx's positionstream fix for why).
-        setTimeout(connect, Math.min(3000 * 2 ** (failCount - 1), 30000));
+        retryTimer = setTimeout(connect, Math.min(3000 * 2 ** (failCount - 1), 30000));
       };
     };
     connect();
-    return () => { esRef.current?.close(); };
+    return () => {
+      // Clear a pending reconnect too, or an unmount during backoff opens an orphan EventSource that retries forever.
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      esRef.current?.close();
+    };
   }, []);
 
   if (!quote) {

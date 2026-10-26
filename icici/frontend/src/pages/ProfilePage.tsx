@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Container, Card, Form, Button, Badge, Alert, Spinner, Row, Col, Table } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
 import NotificationBell from '../components/NotificationBell';
+import { readError } from '../utils/api';
 
 function VerifiedBadge({ verified, hasValue }: { verified: boolean; hasValue: boolean }) {
   if (verified) return <Badge bg="success" className="ms-2">Verified</Badge>;
@@ -122,6 +123,8 @@ export default function ProfilePage() {
   const [editingBank, setEditingBank] = useState(false);
   const [bankSaving, setBankSaving] = useState(false);
   const [bankSaved, setBankSaved] = useState(false);
+  const [bankError, setBankError] = useState<string | null>(null);
+  const [companyError, setCompanyError] = useState<string | null>(null);
 
   const [expandedPayoutId, setExpandedPayoutId] = useState<string | null>(null);
   const [decisionLogs, setDecisionLogs] = useState<Record<string, DecisionLogEntry[]>>({});
@@ -129,7 +132,7 @@ export default function ProfilePage() {
   useEffect(() => {
     if (!user) return;
     fetch(`/users/${encodeURIComponent(user.email)}/payouts`)
-      .then(res => res.json())
+      .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
       .then(data => { if (Array.isArray(data)) setPayouts(data); })
       .catch(() => {})
       .finally(() => setPayoutsLoading(false));
@@ -139,8 +142,9 @@ export default function ProfilePage() {
     if (!user) return;
     setBankSaving(true);
     setBankSaved(false);
+    setBankError(null);
     try {
-      await fetch(`/users/${encodeURIComponent(user.email)}/bank-details`, {
+      const res = await fetch(`/users/${encodeURIComponent(user.email)}/bank-details`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -150,9 +154,13 @@ export default function ProfilePage() {
           upiId,
         }),
       });
+      if (!res.ok) throw new Error(await readError(res));
       setBankSaved(true);
       setEditingBank(false);
       setTimeout(() => setBankSaved(false), 3000);
+      await refreshUser().catch(() => undefined);
+    } catch (e: any) {
+      setBankError(e?.message || 'Failed to save bank details');
     } finally {
       setBankSaving(false);
     }
@@ -163,9 +171,14 @@ export default function ProfilePage() {
     setExpandedPayoutId(payout._id);
     if (!decisionLogs[payout._id] && !user) return;
     if (!decisionLogs[payout._id]) {
-      const res = await fetch(`/users/${encodeURIComponent(user!.email)}/payouts/${payout._id}/decision-log`);
-      const data = await res.json();
-      setDecisionLogs(prev => ({ ...prev, [payout._id]: data }));
+      try {
+        const res = await fetch(`/users/${encodeURIComponent(user!.email)}/payouts/${payout._id}/decision-log`);
+        const data = res.ok ? await res.json() : null;
+        // Only a real list may be stored: an error object here would crash the .map in the render.
+        setDecisionLogs(prev => ({ ...prev, [payout._id]: Array.isArray(data) ? data : [] }));
+      } catch {
+        setDecisionLogs(prev => ({ ...prev, [payout._id]: [] }));
+      }
     }
   };
 
@@ -187,8 +200,7 @@ export default function ProfilePage() {
       });
       if (!res.ok) throw new Error('Failed to save');
       setPhoneSaved(true);
-      const t = setTimeout(() => setPhoneSaved(false), 3000);
-      return () => clearTimeout(t);
+      setTimeout(() => setPhoneSaved(false), 3000);
     } catch {
       setPhoneError('Failed to save phone number');
     } finally {
@@ -208,8 +220,7 @@ export default function ProfilePage() {
       });
       if (!res.ok) throw new Error('Failed to save');
       setModeSaved(true);
-      const t = setTimeout(() => setModeSaved(false), 3000);
-      return () => clearTimeout(t);
+      setTimeout(() => setModeSaved(false), 3000);
     } catch {
       setModeError('Failed to save investment mode');
     } finally {
@@ -240,6 +251,7 @@ export default function ProfilePage() {
 
   const saveCompanyProfile = async () => {
     setCompanySaved(false);
+    setCompanyError(null);
     setCompanySaving(true);
     try {
       const res = await fetch(`/users/${encodeURIComponent(user!.email)}/company-profile`, {
@@ -247,9 +259,11 @@ export default function ProfilePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ gstin, companyRegisteredName: companyName }),
       });
-      if (!res.ok) throw new Error('Failed to save');
+      if (!res.ok) throw new Error(await readError(res));
       setCompanySaved(true);
       setTimeout(() => setCompanySaved(false), 3000);
+    } catch (e: any) {
+      setCompanyError(e?.message || 'Failed to save company profile');
     } finally {
       setCompanySaving(false);
     }
@@ -284,7 +298,8 @@ export default function ProfilePage() {
         if (!data.numberExtracted) {
           setNeedsClearerPhoto(prev => ({ ...prev, [docType]: true }));
         }
-        await refreshUser();
+        // A failed profile refresh must not turn a successful upload into an 'error'.
+        refreshUser().catch((err: unknown) => console.error('refreshUser after upload failed:', err));
       }
     } catch (e: any) {
       setUploadStatus(prev => ({ ...prev, [docType]: 'error' }));
@@ -296,6 +311,8 @@ export default function ProfilePage() {
     }
   };
 
+  // Plain render helpers (called as functions below, not mounted as components): a component defined inside render is
+  // a new type every render, so React remounted it and dropped the file input's state on every state change.
   const DocRow = ({ docType, label, verified, isLast = false }: { docType: DocType; label: string; verified: boolean; isLast?: boolean }) => (
     <div className={`d-flex align-items-center justify-content-between py-2 ${isLast ? '' : 'border-bottom'}`}>
       <div>
@@ -535,8 +552,9 @@ export default function ProfilePage() {
                     {companySaving ? <Spinner animation="border" size="sm" /> : 'Save Company Details'}
                   </Button>
                   {companySaved && <span className="text-success small">Saved</span>}
+                  {companyError && <span className="text-danger small">{companyError}</span>}
                 </div>
-                <DocRow docType="gst" label="GST Certificate" verified={docVerified.gst} isLast />
+                {DocRow({ docType: 'gst', label: 'GST Certificate', verified: docVerified.gst, isLast: true })}
               </div>
             )}
           </Card.Body>
@@ -564,8 +582,8 @@ export default function ProfilePage() {
               </Alert>
             )}
 
-            <IdDocRow docType="pan" label="PAN Card" numberLabel="PAN Number" masked={user?.panNumberMasked} verified={docVerified.pan} />
-            <IdDocRow docType="aadhar" label="Aadhar Proof" numberLabel="Aadhar Number" masked={user?.aadharNumberMasked} verified={docVerified.aadhar} isLast />
+            {IdDocRow({ docType: 'pan', label: 'PAN Card', numberLabel: 'PAN Number', masked: user?.panNumberMasked, verified: docVerified.pan })}
+            {IdDocRow({ docType: 'aadhar', label: 'Aadhar Proof', numberLabel: 'Aadhar Number', masked: user?.aadharNumberMasked, verified: docVerified.aadhar, isLast: true })}
           </Card.Body>
         </Card>
 
@@ -622,6 +640,7 @@ export default function ProfilePage() {
                 <div><span className="text-muted">Account:</span> {user?.bankAccountNumberMasked || '—'}</div>
                 <div><span className="text-muted">IFSC:</span> {user?.bankIFSC || '—'} &nbsp; <span className="text-muted">UPI:</span> {user?.upiId || '—'}</div>
                 {bankSaved && <div className="text-success mt-1">Bank details saved</div>}
+                {bankError && <div className="text-danger mt-1">{bankError}</div>}
               </div>
             )}
           </Card.Body>
@@ -663,8 +682,8 @@ export default function ProfilePage() {
                 </thead>
                 <tbody>
                   {payouts.map(p => (
-                    <>
-                      <tr key={p._id}>
+                    <Fragment key={p._id}>
+                      <tr>
                         <td>{new Date(p.periodStart).toLocaleDateString()} – {new Date(p.periodEnd).toLocaleDateString()}</td>
                         <td>₹{p.grossProfit.toFixed(2)}</td>
                         <td>₹{p.tdsAmount.toFixed(2)}</td>
@@ -721,7 +740,7 @@ export default function ProfilePage() {
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   ))}
                 </tbody>
               </Table>

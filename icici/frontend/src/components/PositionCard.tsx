@@ -13,15 +13,38 @@ export default function PositionCard({ trade, closed }: { trade: Trade; closed?:
   const pnlColor = pnl >= 0 ? 'text-success' : 'text-danger';
   const rightLabel = trade.right === 'call' || trade.right === 'CE' ? 'CE' : 'PE';
 
-  const hasTargetSet = !!trade.targetPrice || !!trade.stopLossPrice;
+  const hasTarget = !!trade.targetPrice;
+  const hasStopLoss = !!trade.stopLossPrice;
+  const hasTargetSet = hasTarget && hasStopLoss;
+  const [busy, setBusy] = useState(false);
 
-  const handleSetTargetSL = () => {
+  // Only the side(s) the user filled in are sent (0 = leave unset); inputs are cleared only if the server accepted it.
+  const handleSetTargetSL = async () => {
+    if (busy) return;
     const tp = targetPoints ? parseFloat(targetPoints) : 0;
     const sl = slPoints ? parseFloat(slPoints) : 0;
-    if (tp <= 0 && sl <= 0) return;
-    setTargetStopLoss(trade.token, tp, sl);
-    setTargetPoints('');
-    setSlPoints('');
+    if (!(Number.isFinite(tp) && tp >= 0) || !(Number.isFinite(sl) && sl >= 0) || (tp <= 0 && sl <= 0)) return;
+    setBusy(true);
+    try {
+      const ok = await setTargetStopLoss(trade.token, tp, sl);
+      if (ok) {
+        setTargetPoints('');
+        setSlPoints('');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSquareOff = async () => {
+    if (busy) return;
+    if (!window.confirm(`Square off ${trade.tsym} (qty ${trade.quantity})? This cannot be undone.`)) return;
+    setBusy(true);
+    try {
+      await squareOff(trade.token, trade.quantity);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -67,11 +90,8 @@ export default function PositionCard({ trade, closed }: { trade: Trade; closed?:
             <Col xs="auto">
               <Button
                 variant="outline-danger"
-                onClick={() => {
-                  if (window.confirm(`Square off ${trade.tsym} (qty ${trade.quantity})? This cannot be undone.`)) {
-                    squareOff(trade.tsym, trade.quantity);
-                  }
-                }}
+                disabled={busy}
+                onClick={handleSquareOff}
               >
                 Square Off
               </Button>
@@ -82,37 +102,42 @@ export default function PositionCard({ trade, closed }: { trade: Trade; closed?:
         {/* Target Price & Stop Loss */}
         {!closed && (
           <div className="mt-2 pt-2 border-top">
-            {hasTargetSet ? (
-              <small className="text-muted">
-                Target: <span className="fw-bold text-success">&#8377;{trade.targetPrice?.toFixed(2)}</span>
+            {(hasTarget || hasStopLoss) && (
+              <small className="text-muted d-block mb-1">
+                Target: <span className="fw-bold text-success">{hasTarget ? <>&#8377;{trade.targetPrice?.toFixed(2)}</> : 'not set'}</span>
                 {' '}&middot;{' '}
-                Stop Loss: <span className="fw-bold text-danger">&#8377;{trade.stopLossPrice?.toFixed(2)}</span>
+                Stop Loss: <span className="fw-bold text-danger">{hasStopLoss ? <>&#8377;{trade.stopLossPrice?.toFixed(2)}</> : 'not set'}</span>
               </small>
-            ) : (
+            )}
+            {!hasTargetSet && (
               <div className="d-flex align-items-center gap-2 flex-wrap">
-                <InputGroup size="sm" style={{ width: 120 }}>
-                  <InputGroup.Text>T</InputGroup.Text>
-                  <Form.Control
-                    type="number"
-                    placeholder="pts"
-                    value={targetPoints}
-                    onChange={(e) => setTargetPoints(e.target.value)}
-                    min="0"
-                    step="0.5"
-                  />
-                </InputGroup>
-                <InputGroup size="sm" style={{ width: 120 }}>
-                  <InputGroup.Text>SL</InputGroup.Text>
-                  <Form.Control
-                    type="number"
-                    placeholder="pts"
-                    value={slPoints}
-                    onChange={(e) => setSlPoints(e.target.value)}
-                    min="0"
-                    step="0.5"
-                  />
-                </InputGroup>
-                <Button variant="outline-primary" size="sm" onClick={handleSetTargetSL}>
+                {!hasTarget && (
+                  <InputGroup size="sm" style={{ width: 120 }}>
+                    <InputGroup.Text>T</InputGroup.Text>
+                    <Form.Control
+                      type="number"
+                      placeholder="pts"
+                      value={targetPoints}
+                      onChange={(e) => setTargetPoints(e.target.value)}
+                      min="0"
+                      step="0.5"
+                    />
+                  </InputGroup>
+                )}
+                {!hasStopLoss && (
+                  <InputGroup size="sm" style={{ width: 120 }}>
+                    <InputGroup.Text>SL</InputGroup.Text>
+                    <Form.Control
+                      type="number"
+                      placeholder="pts"
+                      value={slPoints}
+                      onChange={(e) => setSlPoints(e.target.value)}
+                      min="0"
+                      step="0.5"
+                    />
+                  </InputGroup>
+                )}
+                <Button variant="outline-primary" size="sm" disabled={busy} onClick={handleSetTargetSL}>
                   Set
                 </Button>
               </div>

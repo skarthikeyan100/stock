@@ -99,11 +99,6 @@ function resolveScan(
     stopLoss: number
 ): 'good' | 'bad' | 'oscillating' | 'continue' {
     const effectiveEnd = Math.min(currentTime, scan.scanEndTime);
-    const mask = rawLtt.filter((t, i) => t > scan.candleTime && t <= effectiveEnd).map((_, i) => {
-        const idx = rawLtt.findIndex((t, j) => t > scan.candleTime && t <= effectiveEnd && j >= i);
-        return idx;
-    });
-
     // Collect prices in window
     const windowPrices: number[] = [];
     const windowIdxs: number[] = [];

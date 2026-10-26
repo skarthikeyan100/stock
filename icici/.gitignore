@@ -55,3 +55,4 @@ debug.log
 debug.txt
 server_logs*.txt
 requestOtp*
+.gapscreener_cover_placed.json

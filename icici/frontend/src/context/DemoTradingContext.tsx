@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { Trade, TradingContext } from './TradingContext';
+import { apiFetch } from '../utils/api';
 
 // In-memory demo trading state - no auth, no real orders, no /positionstream.
 // Feeds the SAME TradingContext object TradingContext.tsx creates (not a
@@ -17,11 +18,6 @@ const maxLoss = 15000;
 const lotLimit = 10;
 const NIFTY_LOT_SIZE = 65;
 
-interface PendingPoints {
-  targetPoints?: number;
-  stopLossPoints?: number;
-}
-
 export function DemoTradingProvider({ children }: { children: ReactNode }) {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [closedTrades, setClosedTrades] = useState<Trade[]>([]);
@@ -35,10 +31,9 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   // Tokens the demo currently cares about (pending or open), so the shared
   // /optionstream broadcast can be filtered without re-subscribing per tick.
   const watchedTokensRef = useRef<Set<string>>(new Set());
-  // Target/SL points requested at Buy time, applied once the pending trade
-  // actually fills (there's no reference price to compute an absolute
-  // target/stop-loss price from until the first live tick arrives).
-  const pendingPointsRef = useRef<Map<string, PendingPoints>>(new Map());
+  // Server-side subscriptions are shared per token, so they are ref-counted: two rows on the same contract each hold
+  // one, and only the last release actually unsubscribes (closing one row must not freeze the other's LTP).
+  const subscriptionCountRef = useRef<Map<string, number>>(new Map());
 
   const applyTrades = useCallback((next: Trade[]) => {
     tradesRef.current = next;
@@ -59,12 +54,29 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   const tradedLots = trades.reduce((sum, t) => sum + Math.ceil(t.quantity / NIFTY_LOT_SIZE), 0);
   const isOrderDisabled = tradedLots >= lotLimit || totalPnL <= -maxLoss || placingOrder;
 
-  const unsubscribeToken = (token: string) => {
-    watchedTokensRef.current.delete(token);
-    fetch(`/demo/subscribe?token=${encodeURIComponent(token)}&subscribe=false`).catch((e) =>
-      console.error('[Demo] unsubscribe failed:', e)
-    );
+  const releaseToken = (token: string) => {
+    const count = subscriptionCountRef.current.get(token) ?? 0;
+    if (count <= 1) {
+      subscriptionCountRef.current.delete(token);
+      watchedTokensRef.current.delete(token);
+      apiFetch(`/demo/subscribe?token=${encodeURIComponent(token)}&subscribe=false`).catch((e) =>
+        console.error('[Demo] unsubscribe failed:', e)
+      );
+    } else {
+      subscriptionCountRef.current.set(token, count - 1);
+    }
   };
+
+  // Leaving the demo (Exit Demo, tab close, route change) must not leave server-side tick subscriptions behind.
+  useEffect(() => {
+    const counts = subscriptionCountRef.current;
+    return () => {
+      for (const token of counts.keys()) {
+        apiFetch(`/demo/subscribe?token=${encodeURIComponent(token)}&subscribe=false`, { keepalive: true }).catch(() => undefined);
+      }
+      counts.clear();
+    };
+  }, []);
 
   // First matching tick after subscribe fills a pending trade ("price
   // crosses" confirmation) and applies any requested target/SL points as
@@ -80,15 +92,14 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
       }
       let next: Trade;
       if (t.status === 'pending') {
-        const points = pendingPointsRef.current.get(token);
-        pendingPointsRef.current.delete(token);
+        // Each row carries its own requested points, so two rows on one contract never share/lose them.
         next = {
           ...t,
           status: 'open',
           price: ltp,
           lastTradePrice: ltp,
-          targetPrice: points?.targetPoints ? ltp + points.targetPoints : undefined,
-          stopLossPrice: points?.stopLossPoints ? ltp - points.stopLossPoints : undefined,
+          targetPrice: t.pendingTargetPoints ? ltp + t.pendingTargetPoints : undefined,
+          stopLossPrice: t.pendingStopLossPoints ? ltp - t.pendingStopLossPoints : undefined,
         };
       } else {
         next = { ...t, lastTradePrice: ltp };
@@ -103,7 +114,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
     }
     applyTrades(updated);
     for (const hit of hits) {
-      unsubscribeToken(hit.token);
+      releaseToken(hit.token);
       setClosedTrades((prev) => [...prev, { ...hit, open: false, realizedPnL: (ltp - hit.price) * hit.quantity }]);
     }
   }, [applyTrades]);
@@ -163,15 +174,15 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   // on the first live ANT tick (handleTick). There is no earlier "displayed"
   // price to treat as a reference, since the token wasn't subscribed before.
   const startPendingTrade = useCallback(
-    async (token: string, tradingSymbol: string, right: string, quantity: number, targetPoints?: number, stopLossPoints?: number) => {
+    async (token: string, tradingSymbol: string, right: string, quantity: number, targetPoints?: number, stopLossPoints?: number): Promise<boolean> => {
       setPlacingOrder(true);
       setOrderError(null);
       try {
-        await fetch(`/demo/subscribe?token=${encodeURIComponent(token)}&subscribe=true`);
+        const sub = await apiFetch(`/demo/subscribe?token=${encodeURIComponent(token)}&subscribe=true`);
+        // A rejected subscribe would leave a pending trade waiting for ticks that never come.
+        if (!sub.ok) throw new Error(`subscribe failed (${sub.status})`);
+        subscriptionCountRef.current.set(token, (subscriptionCountRef.current.get(token) ?? 0) + 1);
         watchedTokensRef.current.add(token);
-        if (targetPoints || stopLossPoints) {
-          pendingPointsRef.current.set(token, { targetPoints, stopLossPoints });
-        }
 
         const pendingTrade: Trade = {
           tsym: tradingSymbol,
@@ -188,9 +199,11 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
           pendingStopLossPoints: stopLossPoints,
         };
         applyTrades([...tradesRef.current, pendingTrade]);
+        return true;
       } catch (err) {
         console.error('[Demo] Order failed:', err);
         setOrderError('Failed to place demo order');
+        return false;
       } finally {
         setPlacingOrder(false);
       }
@@ -201,7 +214,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   const placeOrder = useCallback(
     async (right: string) => {
       try {
-        const res = await fetch(`/demo/resolve?right=${right}`);
+        const res = await fetch(`/demo/resolve?right=${encodeURIComponent(right)}`);
         if (!res.ok) throw new Error('Failed to resolve contract');
         const { token, tradingSymbol } = await res.json();
         if (!token) throw new Error('No contract found');
@@ -218,37 +231,35 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   // DemoOrderEntry's ANT-native symbol picker (see DemoOrderEntry.tsx) - not
   // a bare Kite tsym like the real OrderEntry passes.
   const placeContractOrder = useCallback(
-    async (contract: string, targetPoints?: number, stopLossPoints?: number) => {
+    async (contract: string, targetPoints?: number, stopLossPoints?: number): Promise<boolean> => {
       const [token, tradingSymbol, optionType] = contract.split('|');
       const right = optionType === 'PE' ? 'put' : 'call';
-      await startPendingTrade(token, tradingSymbol, right, NIFTY_LOT_SIZE, targetPoints, stopLossPoints);
+      return startPendingTrade(token, tradingSymbol, right, NIFTY_LOT_SIZE, targetPoints, stopLossPoints);
     },
     [startPendingTrade]
   );
 
-  // PositionCard.tsx (shared, unmodified) calls squareOff(trade.tsym, ...) -
-  // it passes the human-readable symbol, not the ANT token (unlike
-  // setTargetStopLoss, which passes trade.token). That's a no-op distinction
-  // for real/Kite trades, where tsym === token, but not here - so match on
-  // tsym and use the found trade's own .token for the actual unsubscribe.
+  // Closes ONE row: the first open/pending trade on this token (rows can share a contract), releasing exactly one
+  // subscription. Both PositionCard and DemoPositionCard pass the trade's token.
   const squareOff = useCallback(
-    async (tsym: string) => {
-      const trade = tradesRef.current.find((t) => t.tsym === tsym);
-      if (!trade) return;
-      unsubscribeToken(trade.token);
-      pendingPointsRef.current.delete(trade.token);
-      applyTrades(tradesRef.current.filter((t) => t.tsym !== tsym));
+    async (token: string): Promise<boolean> => {
+      const idx = tradesRef.current.findIndex((t) => t.token === token);
+      if (idx === -1) return false;
+      const trade = tradesRef.current[idx];
+      releaseToken(trade.token);
+      applyTrades(tradesRef.current.filter((_, i) => i !== idx));
       const exitPrice = trade.lastTradePrice || trade.price;
       setClosedTrades((prev) => [
         ...prev,
         { ...trade, lastTradePrice: exitPrice, open: false, realizedPnL: (exitPrice - trade.price) * trade.quantity },
       ]);
+      return true;
     },
     [applyTrades]
   );
 
   const setTargetStopLoss = useCallback(
-    async (token: string, targetPoints: number, stopLossPoints: number) => {
+    async (token: string, targetPoints: number, stopLossPoints: number): Promise<boolean> => {
       applyTrades(
         tradesRef.current.map((t) =>
           t.token === token
@@ -260,6 +271,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
             : t
         )
       );
+      return true;
     },
     [applyTrades]
   );

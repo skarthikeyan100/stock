@@ -706,9 +706,16 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
     const trade = bookkeeping.trades.find((t) => t.token === token && t.user === userId);
     if (!trade) throw new Error(`No open trade for token ${token} and user ${userId}`);
 
-    trade.targetPrice = trade.price + targetPoints;
-    trade.stopLossPrice = trade.price - stopLossPoints;
-    trade.targetPoints = targetPoints;
+    // 0 / missing / non-numeric means "leave that side unset" (the UI may set only one side). Without this a 0 became
+    // price -/+ 0 = the entry price, i.e. an exit at the first tick.
+    const hasTarget = Number.isFinite(targetPoints) && targetPoints > 0;
+    const hasStop = Number.isFinite(stopLossPoints) && stopLossPoints > 0;
+    if (!hasTarget && !hasStop) throw new Error('setTargetStopLoss: targetPoints and/or stopLossPoints must be a positive number');
+    if (hasTarget) {
+        trade.targetPrice = trade.price + targetPoints;
+        trade.targetPoints = targetPoints;
+    }
+    if (hasStop) trade.stopLossPrice = trade.price - stopLossPoints;
 
     if (trade.antOrderNo) {
         Log.log(`[order] setTargetStopLoss updated local bookkeeping for ANT order ${trade.antOrderNo} - live BO leg re-price not yet implemented (unverified endpoint shape)`);

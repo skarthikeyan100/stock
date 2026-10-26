@@ -30,8 +30,8 @@ export default function DemoOrderEntry() {
 
   useEffect(() => {
     fetch('/demo/symbols?symbol=NIFTY')
-      .then((res) => res.json())
-      .then((data: AntOption[]) => setOptions(data))
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
+      .then((data: AntOption[]) => { if (Array.isArray(data)) setOptions(data); })
       .catch((err) => console.error('Failed to load demo symbols:', err));
   }, []);
 
@@ -41,8 +41,9 @@ export default function DemoOrderEntry() {
   // live OrderEntry page's copy rather than the vague, unexplained "(default)".
   useEffect(() => {
     fetch('/config')
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : null)) // /config is admin-only: anonymous visitors just get no hint
       .then((data) => {
+        if (!data) return;
         setDefaultTargetPoints(data?.settings?.targetPriceDiff ?? null);
         setDefaultStopLossPoints(data?.settings?.stopLossPriceDiff ?? null);
       })

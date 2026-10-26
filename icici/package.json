@@ -28,7 +28,6 @@
     "pipeline:full": "tsc && node ./dist/tools/pipeline.js --reverseRsi --combinations",
     "momentum:fetch": "tsc && node ./dist/momentum/fetchDaily.js",
     "momentum:rank": "tsc && node ./dist/momentum/weeklyMomentum.js",
-    "migrate:actualDay": "tsc && node ./dist/tools/migrate_actualDay.js",
     "sentiment": "tsc && node ./dist/tools/sentiment.js",
     "sentiment:slow": "tsc && node ./dist/tools/sentiment.js --concurrency 2 --delay 2500",
     "gapscreener:generate": "tsc && node ./dist/tools/gapscreener/GapScreenerGenerate.js",

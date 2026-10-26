@@ -83,12 +83,18 @@ const MARKET_DATA_CUTOFF_HOUR = 15;
 const MARKET_DATA_CUTOFF_MINUTE = 30;
 const REST_QUOTE_DELAY_MS = 1000;
 
+// Wall-clock hour/minute in IST regardless of the host's zone (a UTC host would flip this decision by 5.5h).
+function istHourMinute(): { hour: number; minute: number } {
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
+    return {
+        hour: Number(parts.find((p) => p.type === 'hour')?.value) % 24,
+        minute: Number(parts.find((p) => p.type === 'minute')?.value),
+    };
+}
+
 function isBeforeMarketDataCutoff(): boolean {
-    const now = new Date();
-    return (
-        now.getHours() < MARKET_DATA_CUTOFF_HOUR ||
-        (now.getHours() === MARKET_DATA_CUTOFF_HOUR && now.getMinutes() < MARKET_DATA_CUTOFF_MINUTE)
-    );
+    const { hour, minute } = istHourMinute();
+    return hour < MARKET_DATA_CUTOFF_HOUR || (hour === MARKET_DATA_CUTOFF_HOUR && minute < MARKET_DATA_CUTOFF_MINUTE);
 }
 
 
@@ -99,7 +105,10 @@ async function collectQuotesViaRest(pending: PendingQuote[]): Promise<Map<string
         try {
             const ltp = await ant.getScripQuote('NFO', p.token);
             console.log(`[antBatchQuote]   getScripQuote NFO|${p.token} ltp=${ltp}`);
-            quotes.set(p.token, ltp);
+            // A 0/NaN answer (e.g. a non-trading response) is "no quote", never a valid EOD price (the websocket path
+            // already filters lp > 0).
+            if (Number.isFinite(ltp) && ltp > 0) quotes.set(p.token, ltp);
+            else console.warn(`[gapScreenerOptionQuoteEod] ignoring non-positive ltp ${ltp} for ${p.antStockCode} (${p.optionContract})`);
         } catch (e: any) {
             console.warn(`[gapScreenerOptionQuoteEod] getScripQuote failed for ${p.antStockCode} (${p.optionContract}):`, e.message);
         }

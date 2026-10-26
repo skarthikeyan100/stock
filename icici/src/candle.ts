@@ -12,7 +12,6 @@ import { NiftyQuote, OptionQuote, Trade } from './model/model';
 import util from 'util';
 const spawn = require('child_process').spawn;
 import myEmitter from './tools/emitter';
-import Browser from './trade/browser';
 import Mongo from './tools/mongo'
 import Prism from './prism';
 import Util from './util';

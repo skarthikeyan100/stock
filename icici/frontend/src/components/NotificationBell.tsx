@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { apiFetch } from '../utils/api';
 
 interface Notification {
   _id: string;
@@ -20,10 +21,21 @@ export default function NotificationBell() {
 
   useEffect(() => {
     if (!user) return;
-    fetch(`/users/${encodeURIComponent(user.email)}/notifications?unreadOnly=true`)
-      .then(res => res.json())
-      .then(data => { if (Array.isArray(data)) setNotifications(data); })
-      .catch(() => {});
+    // Merge (dedupe by _id): a notification pushed over SSE while this fetch was in flight must not appear twice.
+    const loadUnread = () =>
+      fetch(`/users/${encodeURIComponent(user.email)}/notifications?unreadOnly=true`)
+        .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
+        .then((data: Notification[]) => {
+          if (!Array.isArray(data)) return;
+          setNotifications(prev => {
+            const seen = new Set(prev.map(n => n._id));
+            return [...prev, ...data.filter(n => !seen.has(n._id))].sort(
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            );
+          });
+        })
+        .catch(() => {});
+    loadUnread();
 
     let failCount = 0;
     let source: EventSource | null = null;
@@ -31,11 +43,12 @@ export default function NotificationBell() {
 
     const connect = () => {
       source = new EventSource('/notificationstream');
-      source.onopen = () => { failCount = 0; };
+      // Anything emitted while the stream was down is only reachable by refetching on (re)connect.
+      source.onopen = () => { failCount = 0; loadUnread(); };
       source.onmessage = (e) => {
         try {
           const notification = JSON.parse(e.data) as Notification;
-          setNotifications(prev => [notification, ...prev]);
+          setNotifications(prev => (prev.some(n => n._id === notification._id) ? prev : [notification, ...prev]));
         } catch { /* ignore malformed event */ }
       };
       source.onerror = () => {
@@ -64,8 +77,13 @@ export default function NotificationBell() {
 
   const markRead = async (id: string) => {
     if (!user) return;
-    await fetch(`/users/${encodeURIComponent(user.email)}/notifications/${id}/read`, { method: 'PATCH' });
-    setNotifications(prev => prev.filter(n => n._id !== id));
+    try {
+      const res = await apiFetch(`/users/${encodeURIComponent(user.email)}/notifications/${id}/read`, { method: 'PATCH' });
+      if (!res.ok) return; // keep it listed: the server did not record it as read
+      setNotifications(prev => prev.filter(n => n._id !== id));
+    } catch {
+      /* network error: keep it listed */
+    }
   };
 
   const unreadCount = notifications.length;

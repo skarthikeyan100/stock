@@ -12,7 +12,6 @@ import delay from 'delay';
 import { NiftyQuote, Trade, Order, OrderInfo, OrderStatus } from './model/model';
 import util from 'util';
 const spawn = require('child_process').spawn;
-import Browser from './trade/browser';
 import Decision from './decision';
 import bookkeeping from './processes/order/bookkeeping';
 import AntStream from './ant/AntStream';
@@ -284,12 +283,6 @@ export default class Prism {
         this.niftyQuote = await this.getQuote(NIFTY);
         Log.log('Logged in')
         this.connect().catch((e) => Log.log('[Prism] connect after login failed:', e));
-    }
-
-    getOtp = async () => {
-        const browser = new Browser(false);
-        const otp = await browser.getPrismOtp();
-        return otp;
     }
 
     getQuote = async (index: string) => {

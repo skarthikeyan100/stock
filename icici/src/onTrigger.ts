@@ -5,7 +5,6 @@ import { NiftyQuote, OptionQuote, Trade, Order } from './model/model';
 import moment from 'moment'
 import * as fs from 'fs';
 import delay from 'delay';
-import Option from 'trade/option';
 
 const orderQuantity = 900
 

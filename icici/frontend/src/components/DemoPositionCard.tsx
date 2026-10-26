@@ -83,7 +83,7 @@ export default function DemoPositionCard({ trade, closed }: { trade: Trade; clos
                 variant="outline-danger"
                 onClick={() => {
                   if (window.confirm(`Square off ${trade.tsym} (qty ${trade.quantity})? This cannot be undone.`)) {
-                    squareOff(trade.tsym, trade.quantity);
+                    squareOff(trade.token, trade.quantity);
                   }
                 }}
               >

@@ -30,15 +30,11 @@ export default class Mongo {
 
     //TODO when to close db
 
-    _init = async (collection: string[]) => {
+    _init = async (_collection: string[]) => {
+        // Idempotent: a second init() must not open another client (and leak the first).
+        if (this.client && this.db) return this;
         this.client = await MongoClient.connect(this.dbUrl, { useUnifiedTopology: true, ignoreUndefined: true })
         this.db = this.client.db(this.dbName);
-        //Create initial collections
-        const start = async () => {
-            await this.asyncForEach(collection, async (element) => {
-                await this.createCollection(element)
-            });
-        }
         Log.log('Mongo is initialized')
         return this;
     }
@@ -46,12 +42,7 @@ export default class Mongo {
     listCollections = async () => {
 
         const docs = await this.db.listCollections().toArray()
-        Log.log(docs)
-        docs.forEach((doc, idx, array) => {
-            Log.log(doc.name);
-            Log.log(idx)
-            Log.log(array)
-        })
+        docs.forEach((doc) => Log.log(doc.name))
     }
 
     createCollection = async (name) => {
@@ -64,7 +55,10 @@ export default class Mongo {
     }
 
     close = async () => {
-        await this.client.close()
+        if (!this.client) return;
+        const client = this.client;
+        this.client = undefined as any; // a second close() (or a later init()) must not touch a closed client
+        await client.close();
     }
 
     getAll = (collectionName) => {

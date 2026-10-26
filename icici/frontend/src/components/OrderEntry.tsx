@@ -24,8 +24,9 @@ export default function OrderEntry() {
   // placeholder shows the real value that will be used, not a vague "(default)".
   useEffect(() => {
     fetch('/config')
-      .then(res => res.json())
+      .then(res => (res.ok ? res.json() : null)) // /config is admin-only: a trader just gets no placeholder hint
       .then(data => {
+        if (!data) return;
         setDefaultTargetPoints(data?.settings?.targetPriceDiff ?? null);
         setDefaultStopLossPoints(data?.settings?.stopLossPriceDiff ?? null);
       })
@@ -88,13 +89,19 @@ export default function OrderEntry() {
   const handleContractBuy = async (e: FormEvent) => {
     e.preventDefault();
     if (!selectedSymbol) return;
-    await placeContractOrder(
-      selectedSymbol,
-      targetPoints ? Number(targetPoints) : undefined,
-      stopLossPoints ? Number(stopLossPoints) : undefined
-    );
-    setInput('');
-    setSelectedSymbol('');
+    // Points must be positive finite numbers (a negative/zero value would put the target/stop on the wrong side).
+    const tp = targetPoints ? Number(targetPoints) : undefined;
+    const sl = stopLossPoints ? Number(stopLossPoints) : undefined;
+    if ((tp !== undefined && !(Number.isFinite(tp) && tp > 0)) || (sl !== undefined && !(Number.isFinite(sl) && sl > 0))) {
+      window.alert('Target and stop-loss points must be positive numbers.');
+      return;
+    }
+    // Keep the selection if the order was rejected, so the user can correct and retry.
+    const ok = await placeContractOrder(selectedSymbol, tp, sl);
+    if (ok) {
+      setInput('');
+      setSelectedSymbol('');
+    }
   };
 
   const handleTrendBuy = async (right: string) => {

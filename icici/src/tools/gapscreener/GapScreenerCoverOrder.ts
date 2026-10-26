@@ -37,10 +37,37 @@ import { sleep } from '../../util/sleep';
 // this CSV in the build-output tree instead of alongside its TS source.
 const RESULT_CSV = path.join(process.cwd(), 'src', 'tools', 'gapscreener', 'gap_screener_option_quote.csv');
 const CONNECT_TIMEOUT_MS = 5000;
+// Symbols already covered today, so a re-run (cron + manual, or a retry) can never place the same order twice.
+const PLACED_LOG = path.join(process.cwd(), '.gapscreener_cover_placed.json');
+
+function istDay(d: Date = new Date()): string {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+
+function istWeekdayAndMinutes(): { weekday: string; minutes: number } {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
+    return {
+        weekday: parts.find((p) => p.type === 'weekday')?.value ?? '',
+        minutes: (Number(parts.find((p) => p.type === 'hour')?.value) % 24) * 60 + Number(parts.find((p) => p.type === 'minute')?.value),
+    };
+}
+
+function readPlaced(): Set<string> {
+    try {
+        const doc = JSON.parse(fs.readFileSync(PLACED_LOG, 'utf8'));
+        if (doc?.day === istDay() && Array.isArray(doc.symbols)) return new Set<string>(doc.symbols);
+    } catch { /* none yet / unreadable: start empty */ }
+    return new Set<string>();
+}
+
+function writePlaced(symbols: Set<string>): void {
+    fs.writeFileSync(PLACED_LOG, JSON.stringify({ day: istDay(), symbols: Array.from(symbols) }));
+}
 
 interface MorningRow {
     antStockCode: string;
     optionContract: string;
+    premium: number; // the morning option quote the screener recorded
 }
 
 function readMorningRows(csvPath: string): MorningRow[] {
@@ -58,6 +85,7 @@ function readMorningRows(csvPath: string): MorningRow[] {
         .map((row) => ({
             antStockCode: (row['ANT Stock Code'] || '').trim().toUpperCase(),
             optionContract: (row['Option Contract'] || '').trim(),
+            premium: Number(row['Option Quote']),
         }))
         .filter((row) => row.antStockCode.length > 0 && row.optionContract.length > 0);
 }
@@ -89,6 +117,21 @@ async function main(): Promise<void> {
         throw new Error('gapScreenerCoverOrderEnabled is true but gapScreenerCoverOrderUserEmail/Quantity/StopLossPoints are not fully configured in config.yml.');
     }
 
+    // Safety gates (this places REAL orders from a file): trading day + market hours in IST, and a CSV written today.
+    // GAP_COVER_FORCE=true bypasses them for a deliberate manual run.
+    const force = process.env.GAP_COVER_FORCE === 'true';
+    const { weekday, minutes } = istWeekdayAndMinutes();
+    if (!force && (weekday === 'Sat' || weekday === 'Sun' || minutes < 9 * 60 + 15 || minutes >= 15 * 60 + 20)) {
+        console.error('[gapScreenerCoverOrder] Outside Mon-Fri 09:15-15:20 IST - refusing to place orders (set GAP_COVER_FORCE=true to override).');
+        process.exitCode = 1;
+        return;
+    }
+    if (!force && fs.existsSync(RESULT_CSV) && istDay(fs.statSync(RESULT_CSV).mtime) !== istDay()) {
+        console.error(`[gapScreenerCoverOrder] ${RESULT_CSV} was not written today (${fs.statSync(RESULT_CSV).mtime.toISOString()}) - stale quotes, refusing to place orders.`);
+        process.exitCode = 1;
+        return;
+    }
+
     const rows = readMorningRows(RESULT_CSV);
     if (rows.length === 0) {
         console.log('No rows with a resolved Option Contract found.');
@@ -106,12 +149,32 @@ async function main(): Promise<void> {
     }
 
     let placed = 0;
+    const alreadyPlaced = readPlaced();
     for (const row of rows) {
+        if (alreadyPlaced.has(row.antStockCode)) {
+            console.warn(`[gapScreenerCoverOrder] skipping ${row.antStockCode}: a cover order was already placed for it today`);
+            continue;
+        }
         const contract = AntContractMaster.getInstance().findByTradingSymbol(row.optionContract, 'NFO');
         if (!contract) {
             console.warn(`[gapScreenerCoverOrder] skipping ${row.antStockCode}: contract ${row.optionContract} not found in NFO contract master`);
             continue;
         }
+        // The configured quantity must be whole lots of THIS contract (lot sizes differ per stock), and a flat stop-loss
+        // at or above the premium is meaningless (the option cannot lose more than its price).
+        const lotSize = Number(contract.lotSize);
+        if (!(lotSize > 0) || quantity % lotSize !== 0) {
+            console.warn(`[gapScreenerCoverOrder] skipping ${row.antStockCode}: quantity ${quantity} is not a multiple of lot size ${contract.lotSize}`);
+            continue;
+        }
+        if (Number.isFinite(row.premium) && row.premium > 0 && stopLossPoints >= row.premium) {
+            console.warn(`[gapScreenerCoverOrder] skipping ${row.antStockCode}: stop-loss ${stopLossPoints} pts >= premium ${row.premium}`);
+            continue;
+        }
+        // Recorded BEFORE the call: if it fails ambiguously (timeout) the order may be live, and a rerun must not
+        // repeat it. Check the order book before clearing this by hand.
+        alreadyPlaced.add(row.antStockCode);
+        writePlaced(alreadyPlaced);
         try {
             await client.antPlaceCoverOrder(userEmail, {
                 tradingSymbol: row.optionContract,

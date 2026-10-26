@@ -464,9 +464,11 @@ app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (
         if (investmentAmount !== undefined && !(finite(investmentAmount) && investmentAmount > 0 && investmentAmount <= MAX_INVESTMENT_AMOUNT)) return bad(`investmentAmount must be a number in (0, ${MAX_INVESTMENT_AMOUNT}]`);
         if (useGTT !== undefined && typeof useGTT !== 'boolean') return bad('useGTT must be a boolean');
         if (enabled !== undefined && typeof enabled !== 'boolean') return bad('enabled must be a boolean');
-        for (const [k, v] of Object.entries({ perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent })) {
-            if (v !== undefined && !(finite(v) && (v as number) >= 0)) return bad(`${k} must be a number >= 0`);
+        for (const [k, v] of Object.entries({ perOrderCap, allottedCapital, targetPoints, stopLossPoints })) {
+            // null clears the override
+            if (v !== undefined && v !== null && !(finite(v) && (v as number) >= 0)) return bad(`${k} must be a number >= 0 (or null to clear)`);
         }
+        if (profitSplitPercent !== undefined && !(finite(profitSplitPercent) && profitSplitPercent >= 0)) return bad('profitSplitPercent must be a number >= 0');
         if (profitSplitPercent !== undefined && profitSplitPercent > 100) return bad('profitSplitPercent must be <= 100');
         if (Object.values({ lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled }).every((v) => v === undefined)) return bad('No settings supplied');
         if (broker !== undefined && !['ant', 'kite', 'breeze'].includes(normalizeBrokerName(broker))) {

@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Container, Table, Form, Button, Spinner, Tabs, Tab, Card, Row, Col, Alert, OverlayTrigger, Tooltip, Modal, Accordion } from 'react-bootstrap';
 import { useAuth, AuthUser } from '../context/AuthContext';
 import DateRangeFilter, { DateRange, resolveDateRange, formatRangeLabel } from '../components/DateRangeFilter';
+import { apiFetch, apiPost, readError } from '../utils/api';
 
 interface UserRow extends AuthUser {
   sessionPnL: number;
@@ -37,11 +38,36 @@ const STRATEGY_PNL_USER: Record<string, string> = {
 // to those opened today - open positions have no historical/Mongo concept,
 // see /admin/trades/open's comment in server.ts, so "today's unrealized" is
 // just "currently open, opened today").
+// Calendar day in IST (the trading day), independent of the browser's own zone - UTC would drop trades opened
+// 00:00-05:30 IST and disagree with the local-date range the closed-trades query uses.
+function istDay(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
 function isToday(dateStr: string | undefined): boolean {
-  if (!dateStr) return true;
+  if (!dateStr) return false;
   const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return true;
-  return d.toISOString().split('T')[0] === new Date().toISOString().split('T')[0];
+  if (isNaN(d.getTime())) return false;
+  return istDay(d) === istDay(new Date());
+}
+
+// Paths (and new values) at which `next` differs from `base` - arrays and scalars are leaves. Lets a config save send
+// only what the admin actually changed, applied on top of the server's CURRENT config.
+function diffPaths(base: any, next: any, prefix: string[] = []): { path: string[]; value: any }[] {
+  const isObj = (v: any) => v && typeof v === 'object' && !Array.isArray(v);
+  if (!isObj(base) || !isObj(next)) {
+    return JSON.stringify(base) === JSON.stringify(next) ? [] : [{ path: prefix, value: next }];
+  }
+  const out: { path: string[]; value: any }[] = [];
+  for (const key of Object.keys(next)) out.push(...diffPaths(base[key], next[key], [...prefix, key]));
+  return out;
+}
+function setIn(target: any, path: string[], value: any) {
+  let cur = target;
+  for (let i = 0; i < path.length - 1; i++) {
+    if (!cur[path[i]] || typeof cur[path[i]] !== 'object') cur[path[i]] = {};
+    cur = cur[path[i]];
+  }
+  cur[path[path.length - 1]] = value;
 }
 
 // Pins the Actions column to the right edge of the horizontally-scrollable
@@ -82,6 +108,13 @@ export default function AdminPage() {
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
   const [configSuccess, setConfigSuccess] = useState(false);
+  const [configSaveError, setConfigSaveError] = useState<string | null>(null);
+  const [configSaving, setConfigSaving] = useState(false);
+  // The config as last loaded/saved: a save sends only the leaves that differ from it, applied on top of the server's
+  // CURRENT config - so a flag a strategy flipped itself since this page loaded (enabled:false after a one-shot entry)
+  // is never overwritten with a stale value.
+  const configBaseRef = useRef<any>(null);
+  const [numDrafts, setNumDrafts] = useState<Record<string, string>>({});
   const [indicatorsJsonError, setIndicatorsJsonError] = useState<string | null>(null);
   const [antConnecting, setAntConnecting] = useState(false);
   const [antResult, setAntResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -133,6 +166,7 @@ export default function AdminPage() {
         fetch(`/admin/trades/closed?user=${encodeURIComponent(pnlUser)}&from=${today}&to=${today}`),
         fetch(`/admin/trades/open?user=${encodeURIComponent(pnlUser)}`),
       ]);
+      if (!closedRes.ok || !openRes.ok) throw new Error('status fetch failed');
       const [closedData, openData] = await Promise.all([closedRes.json(), openRes.json()]);
       const closedToday = Array.isArray(closedData) ? closedData : [];
       const openToday = (Array.isArray(openData) ? openData : []).filter((t: any) => isToday(t.entryTime || t.openedAt || t.date));
@@ -150,7 +184,7 @@ export default function AdminPage() {
     setPayoutsLoading(true);
     const qs = payoutsFilter ? `?status=${encodeURIComponent(payoutsFilter)}` : '';
     fetch(`/admin/payouts${qs}`)
-      .then(res => res.json())
+      .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
       .then(data => { if (Array.isArray(data)) setAdminPayouts(data); })
       .catch(() => {})
       .finally(() => setPayoutsLoading(false));
@@ -164,12 +198,15 @@ export default function AdminPage() {
   useEffect(() => {
     if (activeTab !== 'trades') return;
     fetch('/strategies')
-      .then(res => res.json())
+      .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
       .then(data => { if (Array.isArray(data)) setStrategies(data); })
       .catch(() => {});
   }, [activeTab]);
 
+  // Overlapping loads (user/date changes in quick succession): only the newest request may write state.
+  const tradesRequestId = useRef(0);
   const loadTrades = async () => {
+    const requestId = ++tradesRequestId.current;
     setTradesError(null);
     setTradesLoading(true);
     try {
@@ -182,13 +219,20 @@ export default function AdminPage() {
         fetch(`/admin/trades/open${userQs ? `?${userQs}` : ''}`),
         fetch(`/admin/trades/closed?${closedQs.toString()}`),
       ]);
+      if (!openRes.ok) throw new Error(await readError(openRes));
+      if (!closedRes.ok) throw new Error(await readError(closedRes));
       const [openData, closedData] = await Promise.all([openRes.json(), closedRes.json()]);
+      if (requestId !== tradesRequestId.current) return; // a newer load superseded this one
       setOpenTradesList(Array.isArray(openData) ? openData : []);
       setClosedTradesList(Array.isArray(closedData) ? closedData : []);
     } catch (e: any) {
+      if (requestId !== tradesRequestId.current) return;
+      // Don't leave the previous selection's rows on screen next to an error.
+      setOpenTradesList([]);
+      setClosedTradesList([]);
       setTradesError(e.message || 'Failed to load trades');
     } finally {
-      setTradesLoading(false);
+      if (requestId === tradesRequestId.current) setTradesLoading(false);
     }
   };
 
@@ -212,13 +256,15 @@ export default function AdminPage() {
     }
     const qs = new URLSearchParams({ user: tradeUser, from: tradeDateRange.from, to: tradeDateRange.to });
     if (tradeDateRange.mode === 'month') qs.set('breakdown', 'week');
+    setPnlSummary(null); // never show the previous selection's summary under new filters
+    let stale = false;
     const timer = setTimeout(() => {
       fetch(`/admin/trades/pnl-summary?${qs.toString()}`)
-        .then(res => res.json())
-        .then(data => setPnlSummary(data))
-        .catch(() => setPnlSummary(null));
+        .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
+        .then(data => { if (!stale && data && typeof data.eligibleTotal === 'number') setPnlSummary(data); })
+        .catch(() => { if (!stale) setPnlSummary(null); });
     }, 300);
-    return () => clearTimeout(timer);
+    return () => { stale = true; clearTimeout(timer); };
   }, [activeTab, tradeUser, tradeDateRange.mode, tradeDateRange.from, tradeDateRange.to]);
 
   useEffect(() => {
@@ -255,41 +301,55 @@ export default function AdminPage() {
     }
   };
 
+  const [creatingPayout, setCreatingPayout] = useState(false);
+  // The preview belongs to the exact user/period it was computed for: changing either invalidates it, so Create can
+  // never post values different from what the admin reviewed.
+  useEffect(() => { setComputed(null); }, [payoutUser, payoutPeriod.from, payoutPeriod.to]);
+
   const createPayout = async () => {
+    if (creatingPayout || !computed) return;
     setComputeError(null);
+    setCreatingPayout(true);
     try {
-      const res = await fetch('/admin/payouts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: payoutUser, periodStart: payoutPeriod.from, periodEnd: payoutPeriod.to }),
+      // Post the computed snapshot's own user/period (not whatever the inputs say now).
+      const res = await apiPost('/admin/payouts', {
+        user: computed.user, periodStart: computed.periodStart, periodEnd: computed.periodEnd, note: payoutNote || undefined,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to create payout');
+      if (!res.ok) throw new Error(await readError(res));
       setComputed(null);
+      setPayoutNote('');
       fetchAdminPayouts();
     } catch (e: any) {
       setComputeError(e.message);
+    } finally {
+      setCreatingPayout(false);
     }
   };
 
+  const [decisionNote, setDecisionNote] = useState('');
   const decidePayout = async (id: string, status: 'paid' | 'rejected') => {
+    if (decidingId) return;
+    if (!window.confirm(status === 'paid' ? 'Mark this payout as PAID? This cannot be undone.' : 'Reject this payout? This cannot be undone.')) return;
     setDecidingId(id);
     try {
-      await fetch(`/admin/payouts/${id}`, {
+      const res = await apiFetch(`/admin/payouts/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status, note: payoutNote }),
+        body: JSON.stringify({ status, note: decisionNote }),
       });
-      setPayoutNote('');
-      fetchAdminPayouts();
+      if (!res.ok) throw new Error(await readError(res));
+      setDecisionNote('');
+    } catch (e: any) {
+      setComputeError(e.message || 'Failed to update payout');
     } finally {
       setDecidingId(null);
+      fetchAdminPayouts();
     }
   };
 
   const fetchUsers = () => {
     fetch('/users')
-      .then(res => res.json())
+      .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
       .then(data => {
         if (Array.isArray(data)) setUsers(data);
       })
@@ -300,9 +360,6 @@ export default function AdminPage() {
   // Per-row debounce timers for the Users table's autosave.
   const editAutoSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
-  // Skips the config-autosave effect when `config` changes because we just
-  // fetched it (initial load / Reset), not because the admin edited a field.
-  const skipNextConfigAutoSaveRef = useRef(true);
 
   useEffect(() => {
     fetchUsers();
@@ -314,10 +371,13 @@ export default function AdminPage() {
   const fetchConfig = () => {
     setConfigLoading(true);
     setConfigError(null);
-    skipNextConfigAutoSaveRef.current = true; // this setConfig call is a load, not an edit - don't autosave it back
     fetch('/config')
-      .then(res => res.json())
-      .then(data => setConfig(data))
+      .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
+      .then(data => {
+        configBaseRef.current = JSON.parse(JSON.stringify(data));
+        setNumDrafts({});
+        setConfig(data);
+      })
       .catch(err => {
         console.error('Failed to load config:', err);
         setConfigError('Failed to load configuration');
@@ -371,46 +431,70 @@ export default function AdminPage() {
   // `editing[email]` - needed by the autosave debounce, since by the time its
   // timer fires the `editing` state closure it would otherwise read from can
   // be one keystroke stale relative to what was just typed.
-  const saveEdit = async (email: string, valsOverride?: UserEditRow) => {
+  // Saves run strictly one after another: overlapping requests could otherwise land out of order (last write wins).
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const saveEdit = (email: string, valsOverride?: UserEditRow): Promise<void> => {
     const vals = valsOverride ?? editing[email];
-    if (!vals) return;
+    if (!vals) return Promise.resolve();
+    const run = saveChainRef.current.then(() => doSaveEdit(email, vals));
+    saveChainRef.current = run.catch(() => undefined);
+    return run;
+  };
+
+  // '' / non-numeric => undefined (the field is simply not sent; a half-typed or cleared box must never become 0).
+  const numOrUndef = (raw: string): number | undefined => {
+    if (raw.trim() === '') return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  };
+
+  const doSaveEdit = async (email: string, vals: UserEditRow) => {
     try {
-      // A field left equal to its resolved default stays "no override" so it
-      // keeps tracking the global/strategy default if that changes later.
-      const allottedCapital = vals.allottedCapital === '' || Number(vals.allottedCapital) === userDefaults.allottedCapital
-        ? undefined : Number(vals.allottedCapital);
-      const targetPoints = vals.targetPoints === '' || Number(vals.targetPoints) === userDefaults.targetPoints
-        ? undefined : Number(vals.targetPoints);
-      const stopLossPoints = vals.stopLossPoints === '' || Number(vals.stopLossPoints) === userDefaults.stopLossPoints
-        ? undefined : Number(vals.stopLossPoints);
-      await fetch(`/users/${encodeURIComponent(email)}/settings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          lossLimit: Number(vals.lossLimit),
-          lotCount: Number(vals.lotCount),
-          enabled: vals.enabled,
-          useGTT: vals.useGTT,
-          profitSplitPercent: Number(vals.profitSplitPercent),
-          perOrderCap: vals.perOrderCap === '' ? undefined : Number(vals.perOrderCap),
-          allottedCapital,
-          targetPoints,
-          stopLossPoints,
-          investmentAmount: Number(vals.investmentAmount),
-        }),
-      });
+      // An override box left blank, or equal to its resolved default, means "no override": send null so the server
+      // clears any stored override (undefined would be dropped and the old override would silently survive).
+      const override = (raw: string, resolvedDefault: number | undefined): number | null | undefined => {
+        if (raw.trim() === '') return null;
+        const n = Number(raw);
+        if (!Number.isFinite(n)) return undefined; // garbage: leave as is
+        return n === resolvedDefault ? null : n;
+      };
+      const body: Record<string, unknown> = {
+        enabled: vals.enabled,
+        useGTT: vals.useGTT,
+        lossLimit: numOrUndef(vals.lossLimit),
+        lotCount: numOrUndef(vals.lotCount),
+        profitSplitPercent: numOrUndef(vals.profitSplitPercent),
+        investmentAmount: numOrUndef(vals.investmentAmount),
+        perOrderCap: override(vals.perOrderCap, undefined),
+        allottedCapital: override(vals.allottedCapital, userDefaults.allottedCapital),
+        targetPoints: override(vals.targetPoints, userDefaults.targetPoints),
+        stopLossPoints: override(vals.stopLossPoints, userDefaults.stopLossPoints),
+      };
+      const res = await apiPost(`/users/${encodeURIComponent(email)}/settings`, body);
+      if (!res.ok) throw new Error(await readError(res));
       // Update role if changed
       const currentUser = users.find(u => u.email === email);
       if (currentUser && currentUser.role !== vals.role) {
-        await fetch(`/users/${encodeURIComponent(email)}/role`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ role: vals.role }),
-        });
+        if (email === user?.email && vals.role !== 'admin') {
+          throw new Error('You cannot remove your own admin role');
+        }
+        if (!window.confirm(`Change ${email}'s role to ${vals.role}?`)) {
+          setEditing(prev => (prev[email] ? { ...prev, [email]: { ...prev[email], role: currentUser.role } } : prev));
+        } else {
+          const roleRes = await apiFetch(`/users/${encodeURIComponent(email)}/role`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role: vals.role }),
+          });
+          if (!roleRes.ok) throw new Error(await readError(roleRes));
+        }
       }
+      setUserError(null);
       fetchUsers();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Save failed:', err);
+      setUserError(`Saving ${email} failed: ${err?.message ?? err}`);
+      fetchUsers(); // show what the server actually has
     }
   };
 
@@ -428,44 +512,42 @@ export default function AdminPage() {
     }, 800);
   };
 
+  const configDirty = config != null && configBaseRef.current != null && diffPaths(configBaseRef.current, config).length > 0;
+
   const saveConfig = async () => {
-    setConfigError(null);
+    if (configSaving || !config) return;
+    setConfigSaveError(null);
     setConfigSuccess(false);
+    const changes = diffPaths(configBaseRef.current, config);
+    if (changes.length === 0) return;
+    setConfigSaving(true);
     try {
-      const res = await fetch('/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      });
-      if (!res.ok) throw new Error('Failed to save config');
+      // Merge onto the server's current config, not the snapshot fetched at page load.
+      const latestRes = await fetch('/config');
+      if (!latestRes.ok) throw new Error(await readError(latestRes));
+      const merged = await latestRes.json();
+      for (const c of changes) setIn(merged, c.path, c.value);
+      const res = await apiPost('/config', merged);
+      if (!res.ok) throw new Error(await readError(res));
+      configBaseRef.current = JSON.parse(JSON.stringify(merged));
+      setConfig(merged); // show exactly what is now live (includes anything changed server-side meanwhile)
+      setNumDrafts({});
       setConfigSuccess(true);
-      const t = setTimeout(() => setConfigSuccess(false), 3000);
-      return () => clearTimeout(t);
-    } catch (err) {
+      setTimeout(() => setConfigSuccess(false), 3000);
+    } catch (err: any) {
       console.error('Config save failed:', err);
-      setConfigError('Failed to save configuration');
+      // A banner above the form - the form (and the admin's edits) stay put so they can fix and retry.
+      setConfigSaveError(err?.message || 'Failed to save configuration');
+    } finally {
+      setConfigSaving(false);
     }
   };
-
-  // Autosaves the Strategy Configuration form (debounced) whenever `config`
-  // changes from an edit - skipped for the setConfig calls fetchConfig makes
-  // (initial load / Reset), which aren't edits.
-  useEffect(() => {
-    if (!config) return;
-    if (skipNextConfigAutoSaveRef.current) {
-      skipNextConfigAutoSaveRef.current = false;
-      return;
-    }
-    const t = setTimeout(() => { saveConfig(); }, 800);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config]);
 
   const connectAnt = async () => {
     setAntConnecting(true);
     setAntResult(null);
     try {
-      const res = await fetch('/ant/connect');
+      const res = await apiPost('/ant/connect');
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.details || data.error || 'Failed to connect');
@@ -480,12 +562,8 @@ export default function AdminPage() {
 
   const updateConfigValue = (path: string[], value: any) => {
     setConfig((prev: any) => {
-      const updated = JSON.parse(JSON.stringify(prev));
-      let current = updated;
-      for (let i = 0; i < path.length - 1; i++) {
-        current = current[path[i]];
-      }
-      current[path[path.length - 1]] = value;
+      const updated = JSON.parse(JSON.stringify(prev ?? {}));
+      setIn(updated, path, value); // creates any missing intermediate objects instead of throwing mid-render
       return updated;
     });
   };
@@ -535,7 +613,7 @@ export default function AdminPage() {
   const handleResetContinuousStrategy = async () => {
     if (!confirm('Reset Continuous Strategy? This clears ALL in-memory leg tracking (open positions become untracked at the app level, though they remain open at the broker) and re-arms new entries from scratch. Only use this if you understand the current open-position state.')) return;
     try {
-      const res = await fetch('/strategies/ContinuousStrategy/reset');
+      const res = await apiPost('/strategies/ContinuousStrategy/reset');
       if (!res.ok) throw new Error('Failed to reset strategy');
     } catch (err) {
       console.error('Reset strategy error:', err);
@@ -546,7 +624,7 @@ export default function AdminPage() {
   const handleResetBulkPcrStrategy = async () => {
     if (!confirm('Reset Bulk PCR Strategy? This clears its persisted per-broker state (including any broker stuck in manual-review/error) and re-arms a fresh entry from scratch. Only use this if you have independently confirmed every broker is actually flat - this does NOT square off any live position, it only clears the app\'s own tracking.')) return;
     try {
-      const res = await fetch('/strategies/BulkPcrStrategy/reset');
+      const res = await apiPost('/strategies/BulkPcrStrategy/reset');
       if (!res.ok) throw new Error('Failed to reset strategy');
     } catch (err) {
       console.error('Reset strategy error:', err);
@@ -557,7 +635,7 @@ export default function AdminPage() {
   const handleResetTopStockOptionsOpeningGapStrategy = async () => {
     if (!confirm("Reset Top Stock Options Opening Gap Strategy? This only clears the in-memory phase tracking - it does NOT clear today's already-fired record or re-enable the strategy if it durably disabled itself after entering. If it already traded today, flip Enabled back on above and this will still skip until tomorrow (same-day re-entry is blocked by a separate on-disk marker, not this reset). Only use this if you understand the current state.")) return;
     try {
-      const res = await fetch('/strategies/TopStockOptionsOpeningGapStrategy/reset');
+      const res = await apiPost('/strategies/TopStockOptionsOpeningGapStrategy/reset');
       if (!res.ok) throw new Error('Failed to reset strategy');
     } catch (err) {
       console.error('Reset strategy error:', err);
@@ -733,7 +811,7 @@ export default function AdminPage() {
         <Form.Check
           type="switch"
           label={fieldLabel(label, path)}
-          checked={value}
+          checked={!!value}
           onChange={e => updateConfigValue(path, e.target.checked)}
         />
       );
@@ -742,9 +820,34 @@ export default function AdminPage() {
       return (
         <Form.Group className="mb-3">
           <Form.Label>{fieldLabel(label, path)}</Form.Label>
-          <Form.Select value={value} onChange={e => updateConfigValue(path, e.target.value)}>
+          <Form.Select value={value ?? ''} onChange={e => updateConfigValue(path, e.target.value)}>
             {(options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
           </Form.Select>
+        </Form.Group>
+      );
+    }
+    const draftKey = path.join('.');
+    if (type === 'number') {
+      // Keep what is being typed as text: a cleared box or half-typed number must not be stored as 0/NaN. A valid
+      // number is committed to the form state; an invalid one reverts on blur.
+      const shown = draftKey in numDrafts ? numDrafts[draftKey] : (value ?? '');
+      return (
+        <Form.Group className="mb-3">
+          <Form.Label>{fieldLabel(label, path)}</Form.Label>
+          <Form.Control
+            type="number"
+            value={shown}
+            onChange={e => {
+              const raw = e.target.value;
+              setNumDrafts(prev => ({ ...prev, [draftKey]: raw }));
+              if (raw.trim() !== '' && Number.isFinite(Number(raw))) updateConfigValue(path, Number(raw));
+            }}
+            onBlur={() => setNumDrafts(prev => {
+              const next = { ...prev };
+              delete next[draftKey];
+              return next;
+            })}
+          />
         </Form.Group>
       );
     }
@@ -753,8 +856,8 @@ export default function AdminPage() {
         <Form.Label>{fieldLabel(label, path)}</Form.Label>
         <Form.Control
           type={type}
-          value={value}
-          onChange={e => updateConfigValue(path, type === 'number' ? Number(e.target.value) : e.target.value)}
+          value={value ?? ''}
+          onChange={e => updateConfigValue(path, e.target.value)}
         />
       </Form.Group>
     );
@@ -783,6 +886,8 @@ export default function AdminPage() {
                 {showAddUser ? 'Cancel' : 'Add User'}
               </Button>
             </div>
+
+            {!showAddUser && userError && <Alert variant="danger" dismissible onClose={() => setUserError(null)}>{userError}</Alert>}
 
             {showAddUser && (
               <Card className="mb-3">
@@ -1144,6 +1249,8 @@ export default function AdminPage() {
             ) : config ? (
               <>
                 {configSuccess && <Alert variant="success">Configuration saved successfully!</Alert>}
+                {configSaveError && <Alert variant="danger" dismissible onClose={() => setConfigSaveError(null)}>Could not save: {configSaveError}</Alert>}
+                {configDirty && <Alert variant="warning" className="py-2">You have unsaved changes - nothing is applied to the live config until you press Save.</Alert>}
 
                 <Card className="mb-3">
                   <Card.Header className="fw-bold">ANT Streaming</Card.Header>
@@ -1550,9 +1657,9 @@ export default function AdminPage() {
                 })()}
 
                 <div className="d-flex align-items-center gap-2">
-                  <Button variant="primary" onClick={saveConfig}>Save Now</Button>
-                  <Button variant="secondary" onClick={fetchConfig}>Reset</Button>
-                  <span className="text-muted small">Changes auto-save a moment after you stop typing.</span>
+                  <Button variant="primary" onClick={saveConfig} disabled={configSaving || !configDirty}>{configSaving ? 'Saving…' : 'Save'}</Button>
+                  <Button variant="secondary" onClick={fetchConfig} disabled={configSaving}>Discard changes</Button>
+                  <span className="text-muted small">Only the fields you changed are sent, merged onto the live config.</span>
                 </div>
 
                 <Modal show={!!strategyStatusModal} onHide={() => setStrategyStatusModal(null)} centered>
@@ -1663,7 +1770,7 @@ export default function AdminPage() {
                         onChange={e => setPayoutNote(e.target.value)}
                         className="mb-2"
                       />
-                      <Button size="sm" variant="success" onClick={createPayout}>
+                      <Button size="sm" variant="success" onClick={createPayout} disabled={creatingPayout}>
                         {computed.blocked ? 'Record as Rejected' : 'Create Pending Payout'}
                       </Button>
                     </div>
@@ -1683,6 +1790,14 @@ export default function AdminPage() {
                 </Form.Select>
               </Card.Header>
               <Card.Body className="p-0">
+                <div className="p-2 border-bottom">
+                  <Form.Control
+                    size="sm"
+                    placeholder="Note for the next Mark Paid / Reject (optional)"
+                    value={decisionNote}
+                    onChange={e => setDecisionNote(e.target.value)}
+                  />
+                </div>
                 {payoutsLoading ? (
                   <div className="text-center py-4"><Spinner animation="border" /></div>
                 ) : adminPayouts.length === 0 ? (

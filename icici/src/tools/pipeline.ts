@@ -96,7 +96,7 @@ function buildFeatures(
     const highs: number[]  = [];
     const lows: number[]   = [];
     const needHighLow = indicatorFilter.size === 0
-        || [...indicatorFilter].some(n => n.startsWith('ADX_') || n.startsWith('STOCH_'));
+        || [...indicatorFilter].some(n => /^(adx_|stoch_)/i.test(n)); // indicator names are 'ADX_..' / 'Stoch_..'
 
     for (const c of candles) {
         closes.push(c.close);
@@ -141,11 +141,6 @@ function buildFeatures(
                 if (indicatorFilter.size > 0 && !indicatorFilter.has(name)) continue;
                 row[name] = calcRSIReversed(closes, p.period, p.overbought, p.oversold)?.trend ?? null;
             }
-        }
-
-        console.log(`[VERIFY] Candle: interval=${intervalSeconds} time=${c.time} open=${c.open} high=${c.high} low=${c.low} close=${c.close}`);
-        if ('RSI_5_90_10' in row && row['RSI_5_90_10'] !== null) {
-            console.log(`[VERIFY] Signal: interval=${intervalSeconds} time=${c.time} close=${c.close} RSI_5_90_10=${row['RSI_5_90_10']}`);
         }
 
         rows.push(row);
@@ -269,7 +264,9 @@ function perIndicatorSuccessRates(
                 scanning      = true;
                 scanDir       = direction;
                 scanClose     = row.close;
-                scanStartTime = row.time;
+                // Price outcomes are judged from AFTER the signal candle closes: the candle's own ticks are what the
+                // signal was computed from (row.time is the candle START, close is the last tick inside it).
+                scanStartTime = row.time + row.interval;
                 target        = direction === 'UP' ? scanClose + threshold : scanClose - threshold;
                 stop          = direction === 'UP' ? scanClose - stopLoss  : scanClose + stopLoss;
                 targetHit     = false;
@@ -330,7 +327,10 @@ async function main() {
     // Live ticks are persisted to 'NiftyQuote' (NiftyQuote.fromAnt(), see
     // src/model/model.ts + src/ant/AntStream.ts / src/processes/data/AntDataStream.ts)
     // - 'Quote' is not written by any active path.
-    const rawQuotes = await db.collection('NiftyQuote').find(query).sort({ ltt: 1 }).toArray();
+    // ltt is stored as a string in some documents and a number in others, so a database-side sort misorders them:
+    // sort numerically here.
+    const rawQuotes = (await db.collection('NiftyQuote').find(query).toArray())
+        .sort((a, b) => Number(a.ltt) - Number(b.ltt));
     console.error(`Loaded ${rawQuotes.length} raw quotes`);
 
     const rawLtt = rawQuotes.map(q => Number(q.ltt));

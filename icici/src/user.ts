@@ -212,7 +212,7 @@ export async function getAllUsers(): Promise<User[]> {
     return docs as User[];
 }
 
-export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotCount?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; enabled?: boolean; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number; profitSplitPercent?: number }): Promise<User | null> {
+export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotCount?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; enabled?: boolean; perOrderCap?: number | null; allottedCapital?: number | null; targetPoints?: number | null; stopLossPoints?: number | null; profitSplitPercent?: number }): Promise<User | null> {
     const update: any = {};
     if (settings.lossLimit !== undefined) update.lossLimit = settings.lossLimit;
     if (settings.lotCount !== undefined) update.lotCount = settings.lotCount;
@@ -225,12 +225,18 @@ export async function updateUserSettings(email: string, settings: { lossLimit?: 
         update.broker = broker;
     }
     if (settings.enabled !== undefined) update.enabled = settings.enabled;
-    if (settings.perOrderCap !== undefined) update.perOrderCap = settings.perOrderCap;
-    if (settings.allottedCapital !== undefined) update.allottedCapital = settings.allottedCapital;
-    if (settings.targetPoints !== undefined) update.targetPoints = settings.targetPoints;
-    if (settings.stopLossPoints !== undefined) update.stopLossPoints = settings.stopLossPoints;
+    // null = clear a per-user override (falls back to the global/strategy default); undefined = leave as is.
+    const unset: any = {};
+    for (const key of ['perOrderCap', 'allottedCapital', 'targetPoints', 'stopLossPoints'] as const) {
+        const v = (settings as any)[key];
+        if (v === null) unset[key] = '';
+        else if (v !== undefined) update[key] = v;
+    }
     if (settings.profitSplitPercent !== undefined) update.profitSplitPercent = settings.profitSplitPercent;
-    await collection().updateOne({ email }, { $set: update });
+    const ops: any = {};
+    if (Object.keys(update).length > 0) ops.$set = update;
+    if (Object.keys(unset).length > 0) ops.$unset = unset;
+    if (Object.keys(ops).length > 0) await collection().updateOne({ email }, ops);
     return getUser(email);
 }
 

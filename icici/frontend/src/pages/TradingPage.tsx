@@ -114,8 +114,8 @@ export default function TradingPage() {
               }
             >
               {trades.length > 0 ? (
-                trades.map((trade) => (
-                  <PositionCard key={trade.tsym} trade={trade} />
+                trades.map((trade, i) => (
+                  <PositionCard key={`${trade.token}-${i}`} trade={trade} />
                 ))
               ) : (
                 <div className="text-center text-muted py-4">
@@ -135,7 +135,7 @@ export default function TradingPage() {
             >
               {closedTrades.length > 0 ? (
                 closedTrades.map((trade, i) => (
-                  <PositionCard key={`${trade.tsym}-closed-${i}`} trade={trade} closed />
+                  <PositionCard key={`${trade.token}-closed-${i}`} trade={trade} closed />
                 ))
               ) : (
                 <div className="text-center text-muted py-4">
