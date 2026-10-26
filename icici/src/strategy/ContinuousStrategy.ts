@@ -7,6 +7,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
 import { LegManager, LegManagerConfig } from './LegManager';
 import MomentumSignal from './MomentumSignal';
+import { sleep } from '../util/sleep';
 
 // PCR (Put/Call OI ratio) re-check cadence and near-the-money window for T1's
 // alignment gate - see isPcrAligned(). Not config-driven: exact values agreed
@@ -128,7 +129,7 @@ export default class ContinuousStrategy extends Strategy {
                     this.ordered = true;
                     return;
                 }
-                await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+                await sleep(retryDelayMs);
             }
         }
         if (openTrades!.length === 0) return; // fresh in-memory defaults already correct

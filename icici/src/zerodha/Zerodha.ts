@@ -2,6 +2,7 @@ import { KiteConnect } from 'kiteconnect';
 import Log from '../util/Log';
 import fs from 'fs';
 import path from 'path';
+import { sleep } from '../util/sleep';
 
 // NFO/BFO options tick size - Zerodha rejects GTT trigger/order prices that
 // aren't an exact multiple of this (confirmed live: "Stoploss trigger price
@@ -416,7 +417,7 @@ class Zerodha {
                 }
             }
 
-            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            await sleep(intervalMs);
         }
         // Give up waiting - but an order left resting at the broker after we
         // stop watching it is an orphan: no bookkeeping, no target/SL, no

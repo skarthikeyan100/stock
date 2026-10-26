@@ -2,6 +2,7 @@ import Log from '../util/Log';
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
+import { sleep } from '../util/sleep';
 
 // breezeconnect ships no TypeScript types and is a plain CommonJS export
 // (exports.BreezeConnect = ...), so it's required untyped here rather than
@@ -512,7 +513,7 @@ class Breeze {
             if (record?.status && /rejected|cancelled/i.test(String(record.status))) {
                 throw new Error(`Breeze order ${orderId} ${record.status}`);
             }
-            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            await sleep(intervalMs);
         }
         // Give up waiting - but an order left resting at the broker after we
         // stop watching it is an orphan, same risk Zerodha.getFillPrice's own

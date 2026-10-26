@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 // Use a separate axios instance to avoid Shoonya interceptors
 import axiosModule from 'axios';
+import { sleep } from '../util/sleep';
 // Default per-call timeout for every ANT broker HTTP call (order placement,
 // quotes, option chain, fill polling, etc). Applies automatically to every
 // axios.get/axios.post made through the shared instance below - previously
@@ -45,7 +46,7 @@ class ANT {
     private throttleOhlc(): Promise<void> {
         const slot = this.ohlcChain.then(async () => {
             const wait = this.lastOhlcCallAt + ANT.OHLC_MIN_GAP_MS - Date.now();
-            if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+            if (wait > 0) await sleep(wait);
             this.lastOhlcCallAt = Date.now();
         });
         this.ohlcChain = slot.catch(() => undefined);
@@ -358,7 +359,7 @@ class ANT {
             if (attempt > 0) {
                 const waitMs = Math.max(ANT.retryAfterMs(lastErr, 3000) ?? 0, retryDelaysMs[attempt - 1]);
                 Log.log(`[ANT] OHLC endpoint rate-limited (429), retry ${attempt}/${retryDelaysMs.length} in ${waitMs}ms`);
-                await new Promise((resolve) => setTimeout(resolve, waitMs));
+                await sleep(waitMs);
             }
             await this.throttleOhlc();
             try {
@@ -796,7 +797,7 @@ class ANT {
                 // well have filled and the next poll would see it.
                 lastPollError = pollErr;
                 Log.log(`[ANT.getFillPrice] poll ${attempt + 1}/${maxAttempts} for ${orderNo} transient error, retrying: ${pollErr?.message ?? pollErr}`);
-                if (!isLast) await new Promise((resolve) => setTimeout(resolve, intervalMs));
+                if (!isLast) await sleep(intervalMs);
                 continue;
             }
             const completed = records.find((r) => r.orderStatus === 'COMPLETE');
@@ -811,7 +812,7 @@ class ANT {
             if (rejected) {
                 throw new Error(`ANT order ${orderNo} ${rejected.orderStatus}: ${JSON.stringify(rejected)}`);
             }
-            if (!isLast) await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            if (!isLast) await sleep(intervalMs);
         }
         // Only claim UNKNOWN when no poll ever reached the broker. If some polls succeeded
         // and showed a non-terminal status, the order is known to be open, not unknown.
@@ -914,7 +915,7 @@ class ANT {
             } catch (e: any) {
                 if (!ANT.isTransientPollError(e) || attempt === maxAttempts - 1) throw e;
                 Log.log(`[ANT.getOrderStatus] attempt ${attempt + 1}/${maxAttempts} for ${orderNo} transient error, retrying: ${e?.message ?? e}`);
-                await new Promise((resolve) => setTimeout(resolve, 1000));
+                await sleep(1000);
             }
         }
         const completed = records.find((r) => r.orderStatus === 'COMPLETE');

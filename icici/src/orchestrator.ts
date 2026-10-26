@@ -8,6 +8,7 @@ import 'dotenv/config';
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { sleep } from './util/sleep';
 
 // NOTE: do NOT force IPv4 globally here (e.g. via NODE_OPTIONS=--dns-result-
 // order=ipv4first) - tried that 2026-09-25 to fix Kite's IPv4-only IP
@@ -114,7 +115,7 @@ async function main() {
 
     // Give order a moment to bind its socket before strategies/frontend try to
     // connect (both reconnect-on-drop anyway, so this is an optimization).
-    await new Promise((r) => setTimeout(r, 500));
+    await sleep(500);
 
     // --- frontend (server.ts): stdin = tick feed from data; stdout = control
     // commands back to data (e.g. 'reconnect' for /ant/connect), mirroring how

@@ -5,6 +5,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
+import { sleep } from '../util/sleep';
 
 // Iron Butterfly (standard, net credit) / Reverse Iron Butterfly (net debit) 4-leg combo on
 // NIFTY/SENSEX. Manual arm only (config.yml `enabled: true`, fires once on the next tick),
@@ -482,7 +483,7 @@ export default class ButterflyStrategy extends Strategy {
                         this.positions.set(broker, pos);
                         this.persistState();
                     } else {
-                        await new Promise((r) => setTimeout(r, retryDelayMs));
+                        await sleep(retryDelayMs);
                     }
                 }
             }

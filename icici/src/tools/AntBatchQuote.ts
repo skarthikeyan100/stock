@@ -25,6 +25,7 @@ installIpv4OnlyHostOverride();
 import ANT from '../ant/ANT';
 import AntSession from '../ant/AntSession';
 import AntWebSocket from '../ant/AntWebSocket';
+import { sleep } from '../util/sleep';
 
 // How long to wait, after subscribing, for AliceBlue's websocket to deliver
 // the initial snapshot tick ('tk') for every subscribed token before giving
@@ -32,9 +33,6 @@ import AntWebSocket from '../ant/AntWebSocket';
 // this leaves headroom for network jitter across a batch of ~20-40 tokens.
 export const QUOTE_WAIT_MS = 6000;
 
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export async function collectLiveQuotes(tokens: string[]): Promise<Map<string, number>> {
     const quotes = new Map<string, number>();

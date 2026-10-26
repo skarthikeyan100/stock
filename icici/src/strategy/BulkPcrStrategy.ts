@@ -10,6 +10,7 @@ import MomentumSignal from './MomentumSignal';
 import { isPastMarketClose } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { PnlStop } from './PnlStop';
+import { sleep } from '../util/sleep';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
 
@@ -762,7 +763,7 @@ export default class BulkPcrStrategy extends Strategy {
             }
             if (nothingWasBought && !isRetry) {
                 Log.log(`[BulkPcrStrategy] [${broker}] Chunked entry failed with nothing bought - retrying once in 10s: ${message || e}`);
-                await new Promise((resolve) => setTimeout(resolve, 10000));
+                await sleep(10000);
                 // The first attempt's PCR read and LTP are stale by now (the order-notify wait,
                 // cancel and 10s sleep can be ~2 min). Re-resolve direction and use the latest
                 // tick's LTP. Proceed with whatever direction is confirmed now, even if it
@@ -1415,7 +1416,7 @@ export default class BulkPcrStrategy extends Strategy {
         if ((pos.exitRejectCount ?? 0) > 1) {
             // Back off before resubmitting a repeat rejection, instead of tight-looping
             // identical orders (2026-10-15: 4 resubmissions in under 30s with no delay).
-            await new Promise((resolve) => setTimeout(resolve, EXIT_REJECT_RETRY_DELAY_MS));
+            await sleep(EXIT_REJECT_RETRY_DELAY_MS);
         }
         await this.placeExitSellAtTargetPrice(this.keyOf(pos), notification.quantity, false);
     };
@@ -1486,7 +1487,7 @@ export default class BulkPcrStrategy extends Strategy {
                                 Log.log('[BulkPcrStrategy] reconcile: order query exhausted retries - failing closed for every broker still pending reconciliation');
                                 return undefined;
                             }
-                            await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+                            await sleep(retryDelayMs);
                         }
                     }
                     return undefined;

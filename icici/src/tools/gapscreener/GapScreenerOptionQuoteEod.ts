@@ -62,6 +62,7 @@ import { stringify } from 'csv-stringify/sync';
 import AntContractMaster from '../../ant/AntContractMaster';
 import ANT from '../../ant/ANT';
 import { collectLiveQuotes, QUOTE_WAIT_MS } from '../AntBatchQuote';
+import { sleep } from '../../util/sleep';
 
 // Anchored to process.cwd() (always the repo root - every gapscreener:*
 // npm script, and both cron wrapper scripts, run from there), NOT __dirname:
@@ -90,9 +91,6 @@ function isBeforeMarketDataCutoff(): boolean {
     );
 }
 
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function collectQuotesViaRest(pending: PendingQuote[]): Promise<Map<string, number>> {
     const quotes = new Map<string, number>();

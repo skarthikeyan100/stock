@@ -5,6 +5,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import { subscribeTokenDepth, unsubscribeTokenDepth } from '../processes/strategies/DataClient';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { CALL, PUT } from '../constants';
+import { sleep } from '../util/sleep';
 
 interface PendingLeg {
     tbq?: number;
@@ -79,7 +80,7 @@ export default class MomentumSignal {
                     if (putFavored) return PUT;
                     return null; // inconclusive - CE/PE order books disagree with each other
                 }
-                await new Promise((resolve) => setTimeout(resolve, pollMs));
+                await sleep(pollMs);
             }
             Log.log(`[MomentumSignal] Timed out after ${timeoutMs}ms waiting for ATM CE/PE depth ticks - momentum unavailable this window`);
             return null;

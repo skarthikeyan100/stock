@@ -6,6 +6,7 @@ import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck } from './BrokerExecutor';
 import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder } from './pendingPrismLimitOrders';
+import { sleep } from '../../util/sleep';
 
 // Prism/Shoonya's contract-by-price-range order path - the secondary/legacy
 // broker path (Zerodha is primary, see zerodhaExecutor.ts). `Prism.getInstance()`
@@ -155,7 +156,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
         if (status === 'REJECTED' || status === 'CANCELED' || status === 'CANCELLED') {
             throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) ${status} - not filled`);
         }
-        if (attempt < BUY_FILL_POLL_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, BUY_FILL_POLL_DELAY_MS));
+        if (attempt < BUY_FILL_POLL_ATTEMPTS) await sleep(BUY_FILL_POLL_DELAY_MS);
     }
     try {
         await Prism.getInstance().cancelOrder(orderId);

@@ -11,6 +11,7 @@ import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder } from './pendingAntLimitOrders';
+import { sleep } from '../../util/sleep';
 
 // AliceBlue/ANT execution, mirroring zerodhaExecutor.ts's shape and the same
 // per-user useGTT gating (bookkeeping.getUserUseGTT) - but the actual
@@ -94,7 +95,7 @@ async function resolveUnconfirmedAntBuy(
             const status = await ant.getOrderStatus(orderNo).catch(() => null);
             settled = !!status && terminal(status.status);
             if (settled) statusFilledQty = status!.filledQuantity ?? 0;
-            else await new Promise((resolve) => setTimeout(resolve, 1000));
+            else await sleep(1000);
         }
         if (!settled) throw manualReview('cancel accepted but order never reached a terminal status');
     }
@@ -803,7 +804,7 @@ async function cancelRestingSellForExit(orderId: string, userId: string, tsym: s
         }
         st = await ant.getOrderStatus(orderId);
         for (let i = 0; i < 10 && !isTerminal(st.status); i++) {
-            await new Promise((resolve) => setTimeout(resolve, 1000));
+            await sleep(1000);
             st = await ant.getOrderStatus(orderId);
         }
     } catch (e) {
@@ -892,7 +893,7 @@ async function recheckUnfilledExit(order: PendingAntLimitOrder, counters: ExitRe
         }
         let st = await ANT.getInstance().getOrderStatus(order.orderId).catch(() => null);
         for (let i = 0; !st && i < 2; i++) {
-            await new Promise((resolve) => setTimeout(resolve, 2000));
+            await sleep(2000);
             st = await ANT.getInstance().getOrderStatus(order.orderId).catch(() => null);
         }
         if (!st) {

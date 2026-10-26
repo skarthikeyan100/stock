@@ -29,6 +29,7 @@ import { parse } from 'csv-parse/sync';
 import configService from '../../prism/ConfigService';
 import AntContractMaster from '../../ant/AntContractMaster';
 import OrderClient from '../../processes/strategies/OrderClient';
+import { sleep } from '../../util/sleep';
 
 // Anchored to process.cwd() (always the repo root - every gapscreener:*
 // npm script, and both cron wrapper scripts, run from there), NOT __dirname:
@@ -61,9 +62,6 @@ function readMorningRows(csvPath: string): MorningRow[] {
         .filter((row) => row.antStockCode.length > 0 && row.optionContract.length > 0);
 }
 
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function waitUntilConnected(client: OrderClient, timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;

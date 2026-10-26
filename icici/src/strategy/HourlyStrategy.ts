@@ -6,6 +6,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
 import { roundToTick } from '../zerodha/Zerodha';
+import { sleep } from '../util/sleep';
 
 // Hourly NIFTY support/resistance breakout, confirmed on a 10-minute candle,
 // traded independently and in FULL configured quantity on every configured
@@ -537,7 +538,7 @@ export default class HourlyStrategy extends Strategy {
 
         Log.log(`[Hourly] [${broker}] Order cancelled: ${notification.tradingSymbol} qty=${notification.quantity} (${notification.reason}${rejectReason ? `: ${rejectReason}` : ''}) - re-placing resting sell`);
         if ((pos.exitRejectCount ?? 0) > 1) {
-            await new Promise((resolve) => setTimeout(resolve, EXIT_REJECT_RETRY_DELAY_MS));
+            await sleep(EXIT_REJECT_RETRY_DELAY_MS);
         }
         await this.placeExitSellAtTargetPrice(broker, notification.quantity, false);
     };
@@ -592,7 +593,7 @@ export default class HourlyStrategy extends Strategy {
                     this.persistState();
                     return;
                 }
-                await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+                await sleep(retryDelayMs);
             }
         }
 

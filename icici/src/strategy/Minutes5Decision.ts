@@ -9,10 +9,8 @@ import myEmitter from '../tools/emitter';
 import { TouchSequence } from "selenium-webdriver";
 import { round } from "lodash";
 import moment from "moment";
+import { sleep } from '../util/sleep';
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 
 class BuyerInterestModel{

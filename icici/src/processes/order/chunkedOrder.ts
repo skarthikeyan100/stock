@@ -2,10 +2,8 @@ import { BrokerExecutor, BuyRequest, Exchange } from './BrokerExecutor';
 import { NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY } from '../../constants';
 import { splitIntoFreezeQtyChunks } from '../../util/quantityChunks';
 import Log from '../../util/Log';
+import { sleep } from '../../util/sleep';
 
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 // Confirmed live 2026-09-23: a burst of back-to-back chunk placements (an
 // 8-chunk manual square-off immediately followed by an 8-chunk buyChunked

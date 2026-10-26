@@ -1,4 +1,5 @@
 import puppeteer, { Browser, Page } from 'puppeteer-core';
+import { sleep } from '../util/sleep';
 
 const BASE_URL = 'https://www.nseindia.com';
 
@@ -30,7 +31,7 @@ class NseClient {
         // Visit homepage first to establish session cookies
         await this.page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
         // Small delay for cookies to settle
-        await new Promise(r => setTimeout(r, 2000));
+        await sleep(2000);
     }
 
     async getIndexStocks(indexName: string): Promise<StockData[]> {

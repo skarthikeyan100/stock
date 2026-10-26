@@ -17,6 +17,7 @@ import axios from 'axios';
 import Parser from 'rss-parser';
 import pLimit from 'p-limit';
 import { SentimentIntensityAnalyzer } from 'vader-sentiment';
+import { sleep } from '../util/sleep';
 
 // ─── CLI Argument Parsing ────────────────────────────────────────────────────
 
@@ -338,9 +339,6 @@ class SentimentAnalyzer {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 function errorRow(stock: StockEntry): ResultRow {
     return {

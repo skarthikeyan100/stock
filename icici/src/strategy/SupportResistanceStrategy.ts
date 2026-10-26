@@ -6,6 +6,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import { CALL, PUT } from '../constants';
 import { LegManager, LegManagerConfig } from './LegManager';
 import { initSRState, processTick, SRConfig, SRState } from '../lib/supportResistance';
+import { sleep } from '../util/sleep';
 
 // Trades NIFTY options on Zerodha off the dynamic support/resistance breach
 // detector (src/lib/supportResistance.ts, the same SEEKING/LOCKED/BREACH
@@ -105,7 +106,7 @@ export default class SupportResistanceStrategy extends Strategy {
                     this.ordered = true;
                     return;
                 }
-                await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+                await sleep(retryDelayMs);
             }
         }
         if (openTrades!.length === 0) return;
