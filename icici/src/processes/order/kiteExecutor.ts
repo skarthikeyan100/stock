@@ -337,9 +337,11 @@ export async function squareOffOnKite(userId: string, tsym: string, quantity: nu
         // landed in the race window is still unbooked (the poller books it), so it's subtracted here.
         const openBefore = existing.quantity;
         let filledNotBooked = 0;
+        let cancelledAny = false;
         for (const resting of findPendingOrdersForSymbol(userId, tsym).filter((o) => o.action === 'Sell')) {
             try {
                 await cancelOrderOnKite(resting.orderId);
+                cancelledAny = true;
             } catch (e) {
                 if (e instanceof OrderAlreadyFilledError) filledNotBooked += e.filledQuantity;
                 else throw e; // state of the resting sell unknown: selling now could double-sell
@@ -363,8 +365,14 @@ export async function squareOffOnKite(userId: string, tsym: string, quantity: nu
             return done;
         }
 
-        const sellPrice = await getMarketableKitePrice(token, exchange, 'SELL');
-        const { orderId } = await kite.placeLimitSellOption(tsym, quantity, sellPrice, exchange);
+        let orderId: string;
+        try {
+            const sellPrice = await getMarketableKitePrice(token, exchange, 'SELL');
+            ({ orderId } = await kite.placeLimitSellOption(tsym, quantity, sellPrice, exchange));
+        } catch (e) {
+            if (cancelledAny) Log.log(`[order] ALERT: resting sell(s) for ${tsym} (${userId}) were cancelled but the replacement sell failed - the position has no exit order until retried:`, e);
+            throw e;
+        }
         // Tracked until its fill is booked: if the fill wait below times out the order may still fill, and the
         // pending poller then books it instead of leaving the sale unrecorded.
         trackPendingLimitOrder({ orderId, userId, tradingSymbol: tsym, instrumentToken: token, quantity, exchange, action: 'Sell' });
@@ -747,6 +755,9 @@ exitMonitor.onExit('kite', async (trade: Trade, exchange: 'NFO' | 'BFO') => {
 // raw payloads on the first real trigger and correct field names here if the
 // broker's actual shape disagrees.
 let gttPollInFlight = false;
+// Consecutive polls in which a trade's GTT was absent from the broker's list.
+const gttMissCount = new Map<string, number>();
+const GTT_MISSING_FALLBACK_POLLS = 3;
 const GTT_DEAD_STATUSES = new Set(['disabled', 'expired', 'cancelled', 'rejected', 'deleted']);
 
 export async function pollGttFills(): Promise<void> {
@@ -772,9 +783,22 @@ async function pollGttFillsOnce(): Promise<void> {
     for (const trade of openGttTrades) {
         const gtt = byId.get(trade.gttTriggerId);
         if (!gtt) {
-            Log.log(`[order] GTT poll: GTT ${trade.gttTriggerId} for ${trade.tsym} (${trade.user}) not in the broker's list - leaving the position as is`);
+            const missKey = String(trade.gttTriggerId);
+            const misses = (gttMissCount.get(missKey) ?? 0) + 1;
+            gttMissCount.set(missKey, misses);
+            if (misses < GTT_MISSING_FALLBACK_POLLS) {
+                Log.log(`[order] GTT poll: GTT ${trade.gttTriggerId} for ${trade.tsym} (${trade.user}) not in the broker's list (${misses}/${GTT_MISSING_FALLBACK_POLLS}) - leaving the position as is for now`);
+                continue;
+            }
+            gttMissCount.delete(missKey);
+            Log.log(`[order] ALERT: GTT ${trade.gttTriggerId} for ${trade.tsym} (${trade.user}) missing from the broker for ${misses} polls - falling back to in-app target/SL monitoring`);
+            trade.gttTriggerId = undefined;
+            if (trade.token && (trade.targetPrice != null || trade.stopLossPrice != null)) {
+                exitMonitor.registerTrade(trade, trade.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO', 'kite');
+            }
             continue;
         }
+        gttMissCount.delete(String(trade.gttTriggerId));
         if (gtt.status === 'active') continue; // still live, not closed
 
         if (GTT_DEAD_STATUSES.has(gtt.status)) {

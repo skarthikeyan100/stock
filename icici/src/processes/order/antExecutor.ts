@@ -957,16 +957,18 @@ const EXIT_MAX_REPLACEMENT_FAILURES = 5;
 
 // Retries a replacement exit whose placement definitely did not reach the broker. Same one-exit-per-position
 // gate as the re-price check; re-reads the open quantity and defers to any sell that has appeared meanwhile.
-function scheduleReplacementRetry(order: PendingAntLimitOrder, lastLimit: number, attempt: number, failures: number): void {
+function scheduleReplacementRetry(order: PendingAntLimitOrder, lastLimit: number, attempt: number, failures: number, busy = 0): void {
     setTimeout(() => {
-        void retryReplacementExit(order, lastLimit, attempt, failures);
+        void retryReplacementExit(order, lastLimit, attempt, failures, busy);
     }, 15000);
 }
 
-async function retryReplacementExit(order: PendingAntLimitOrder, lastLimit: number, attempt: number, failures: number): Promise<void> {
+async function retryReplacementExit(order: PendingAntLimitOrder, lastLimit: number, attempt: number, failures: number, busy = 0): Promise<void> {
     const key = `${order.userId}:${order.tradingSymbol}`;
     if (bookkeeping.pendingSquareOffs.has(key)) {
-        scheduleReplacementRetry(order, lastLimit, attempt, failures);
+        // Bounded: another exit operation owns the position; stop waiting after ~10 minutes.
+        if (busy < 40) scheduleReplacementRetry(order, lastLimit, attempt, failures, busy + 1);
+        else Log.log(`[order] ALERT: replacement exit for ${order.tradingSymbol} (${order.userId}) gave up waiting for another exit operation - check the position`);
         return;
     }
     bookkeeping.pendingSquareOffs.add(key);
@@ -1014,7 +1016,9 @@ async function placeReplacementExit(order: PendingAntLimitOrder, remaining: numb
             product: order.product,
         }));
     } catch (e: any) {
-        const answered = !!e?.response || /^ANT placeOrder failed/.test(String(e?.message ?? ''));
+        // A 5xx/gateway reply can still mean the order was accepted - only a 4xx or the explicit no-order-id body is definitive.
+        const status = Number(e?.response?.status);
+        const answered = (Number.isFinite(status) && status >= 400 && status < 500) || /^ANT placeOrder failed/.test(String(e?.message ?? ''));
         throw answered ? Object.assign(e instanceof Error ? e : new Error(String(e)), { orderNotPlaced: true }) : e;
     }
     const next: PendingAntLimitOrder = { orderId: orderNo, userId: order.userId, tradingSymbol: order.tradingSymbol, instrumentId: order.instrumentId, quantity: remaining, exchange: order.exchange, action: 'Sell', product: order.product };

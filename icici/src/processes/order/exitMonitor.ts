@@ -56,6 +56,10 @@ export function setAggregateResolver(resolver: AggregateResolver): void {
     aggregateResolver = resolver;
 }
 
+function feedSourceOf(broker: Broker): string {
+    return BROKER_TO_FEED_SOURCE[broker] ?? DEFAULT_FEED_SOURCE;
+}
+
 // True if any entry in `monitored` (for any user) is currently watching this
 // token. Used to decide whether a subscribe/unsubscribe IPC command actually
 // needs to go out: with the composite key above, two users can both hold
@@ -65,9 +69,9 @@ export function setAggregateResolver(resolver: AggregateResolver): void {
 // watcher for that token is gone. Otherwise unregistering one user's trade
 // would silently kill live ticks (and therefore target/SL monitoring) for
 // another user's still-open trade on the same token.
-function isTokenWatched(token: string, exchange?: 'NFO' | 'BFO'): boolean {
+function isTokenWatched(token: string, exchange?: 'NFO' | 'BFO', source?: string): boolean {
     for (const entry of monitored.values()) {
-        if (entry.trade.token === token && (exchange === undefined || entry.exchange === exchange)) return true;
+        if (entry.trade.token === token && (exchange === undefined || entry.exchange === exchange) && (source === undefined || feedSourceOf(entry.broker) === source)) return true;
     }
     return false;
 }
@@ -160,7 +164,7 @@ export function registerTrade(trade: Trade, exchange: 'NFO' | 'BFO', broker: Bro
     // Check BEFORE inserting this entry - if some other entry (e.g. another
     // user's trade) already watches this token, the underlying token
     // subscription is already live and must not be requested again.
-    const alreadySubscribed = isTokenWatched(trade.token, exchange);
+    const alreadySubscribed = isTokenWatched(trade.token, exchange, feedSourceOf(broker));
     monitored.set(key, { trade, exchange, broker, watchOnly });
     if (!alreadySubscribed) {
         // exchange + source must be explicit: a SENSEX (BFO) token subscribed without
@@ -184,7 +188,7 @@ export function unregisterTrade(user: string, token: string, broker?: Broker): v
     // silently cut off live ticks for another user still holding a
     // position in the same contract.
     for (const entry of removed) {
-        if (!isTokenWatched(token, entry.exchange)) {
+        if (!isTokenWatched(token, entry.exchange, feedSourceOf(entry.broker))) {
             writeJsonLine(process.stdout, { cmd: 'unsubscribe', token, source: BROKER_TO_FEED_SOURCE[entry.broker] ?? DEFAULT_FEED_SOURCE, exchange: entry.exchange });
         }
     }

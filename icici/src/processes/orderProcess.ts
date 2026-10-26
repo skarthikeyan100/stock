@@ -114,7 +114,7 @@ onPendingPrismCancelled((userId, tradingSymbol, instrumentToken, quantity, excha
 exitMonitor.onPriceUpdate(() => bookkeeping.triggerPositionsChanged());
 // Chunked entries register one detached Trade per chunk - exits and live prices must act on the bookkeeping aggregate.
 exitMonitor.setAggregateResolver((t, broker) =>
-    bookkeeping.trades.find((x) => x.tsym === t.tsym && x.user === t.user && (x.broker ?? broker) === broker));
+    bookkeeping.trades.find((x) => x.tsym === t.tsym && x.user === t.user && x.broker === broker || (x.broker === undefined && broker === 'kite')));
 
 // AntOrderNotifyStream.connect() throws (rather than retrying) when the ANT
 // session isn't there yet or was issued on an earlier day (ANT.loadSession
@@ -504,6 +504,8 @@ async function squareOffByToken(userId: string, token: any, quantity: number | u
     const results: Trade[] = [];
     for (const row of rows) {
         if (!(remaining > 0)) break;
+        // The sells below are awaited one by one: re-check the row is still open and use its CURRENT quantity.
+        if (!bookkeeping.trades.includes(row) || !(row.quantity > 0)) continue;
         const q = Math.min(row.quantity, remaining);
         const ex = exchange ?? (row.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO');
         const done = only === 'ant'
@@ -512,6 +514,7 @@ async function squareOffByToken(userId: string, token: any, quantity: number | u
         results.push(done);
         remaining -= q;
     }
+    if (results.length === 0) return { error: `Open trade(s) for token ${token} were already closed` };
     if (results.length === 1) return results[0];
     return Object.assign(new Trade(), results[0], { quantity: results.reduce((sum, r) => sum + (r.quantity || 0), 0) });
 }
