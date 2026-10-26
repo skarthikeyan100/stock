@@ -61,7 +61,7 @@ class Config {
             const value = trimmed.slice(eq + 1).trim();
             if (value === 'true' || value === 'false') {
               this[key] = value === 'true';
-            } else if (value !== '' && Number.isFinite(Number(value))) {
+            } else if (/^-?(0|[1-9]\d*)(\.\d+)?$/.test(value)) {
               this[key] = Number(value);
             } else if (key === 'NFOSymbolsPath') {
               this[key] = path.resolve(path.join(__dirname, '../..'), value);

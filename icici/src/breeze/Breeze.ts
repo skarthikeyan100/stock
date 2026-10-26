@@ -45,9 +45,18 @@ axios.interceptors.response.use(
 // Terminal verdicts from getFillPrice's poll loop, tagged so they are never confused with a
 // transient poll error (message-regex classification missed e.g. 'Order Rejected'/'Expired').
 class BreezeTerminalOrderError extends Error {
-    constructor(message: string) {
+    // Carries the partial fill (same shape as Kite's driftCancelled errors) so executors can book it.
+    driftCancelled = false;
+    filledQuantity = 0;
+    averagePrice = 0;
+    constructor(message: string, partial?: { filled: number; price: number }) {
         super(message);
         this.name = 'BreezeTerminalOrderError';
+        if (partial && partial.filled > 0) {
+            this.driftCancelled = true;
+            this.filledQuantity = partial.filled;
+            this.averagePrice = partial.price;
+        }
     }
 }
 
@@ -582,22 +591,28 @@ class Breeze {
             return Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
         };
         // 'full' = whole quantity filled, 'partial' = some filled then the rest cancelled/rejected.
-        const classify = (record: any): { kind: 'full'; price: number } | { kind: 'partial'; price: number; filled: number } | { kind: 'dead' } | { kind: 'open' } => {
+        const classify = (record: any, cancelIssued = false): { kind: 'full'; price: number } | { kind: 'partial'; price: number; filled: number } | { kind: 'dead' } | { kind: 'open' } => {
             const price = Number(record?.average_price);
             const pending = Number(record?.pending_quantity ?? 0);
             const cancelled = Number(record?.cancelled_quantity ?? 0);
             const qty = Number(record?.quantity ?? 0);
+            // Filled so far: explicit field if the API gives one, else quantity minus what is pending/cancelled.
+            const explicitFilled = Number(record?.filled_quantity ?? record?.executed_quantity);
+            const filledNow = Number.isFinite(explicitFilled) && explicitFilled > 0 ? explicitFilled : Math.max(0, qty - pending - cancelled);
+            // Our cancel succeeded but the order record may not have caught up: pending > 0 with a price
+            // means a partial fill whose remainder is being cancelled.
+            if (cancelIssued && price > 0 && pending > 0) return { kind: 'partial', price, filled: filledNow };
             if (price > 0 && pending === 0 && !(cancelled > 0)) return { kind: 'full', price };
             if (price > 0 && pending === 0 && cancelled > 0) {
-                return { kind: 'partial', price, filled: Math.max(0, qty - cancelled) };
+                return { kind: 'partial', price, filled: filledNow };
             }
             if (record?.status && /reject|cancel|expire/i.test(String(record.status))) {
-                return price > 0 ? { kind: 'partial', price, filled: Math.max(0, qty - cancelled) } : { kind: 'dead' };
+                return price > 0 ? { kind: 'partial', price, filled: filledNow } : { kind: 'dead' };
             }
             return { kind: 'open' };
         };
         const partialError = (c: { price: number; filled: number }) =>
-            new BreezeTerminalOrderError(`Breeze order ${orderId} only partially filled (filled=${c.filled} @ ${c.price}) before the remainder was cancelled`);
+            new BreezeTerminalOrderError(`Breeze order ${orderId} only partially filled (filled=${c.filled} @ ${c.price}) before the remainder was cancelled`, { filled: c.filled, price: c.price });
 
         let lastError: unknown = null;
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -632,7 +647,7 @@ class Breeze {
             // cancel may have left a partial fill behind (cancelled_quantity > 0) that must not be
             // reported as either a full fill or as nothing.
             try {
-                const c = classify(await readRecord());
+                const c = classify(await readRecord(), cancelFailed === null);
                 if (c.kind === 'full') {
                     Log.log(`[Breeze] Order ${orderId} actually filled fully at ${c.price} during the timeout-cancel race - using it instead of discarding it`);
                     return c.price;

@@ -498,7 +498,14 @@ class NorenRestApi {
 
     let reply = await this.post_request("orderbook", values);
     // Shoonya answers an empty book with an object ({stat:'Not_Ok', emsg:'no data'}), not [].
-    return Array.isArray(reply) ? reply : [];
+    if (Array.isArray(reply)) return reply;
+    // Only a genuine "no data" reply means an empty book; any other Not_Ok (e.g. session expired)
+    // must surface rather than read as "no orders".
+    const r: any = reply;
+    if (r && r.stat === 'Not_Ok' && !/no data/i.test(String(r.emsg ?? ''))) {
+      throw new Error(`Prism orderbook not Ok: ${r.emsg ?? JSON.stringify(r)}`);
+    }
+    return [];
   };
   /**
        * Description

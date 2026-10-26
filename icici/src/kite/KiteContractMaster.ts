@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import Log from '../util/Log';
 
 type Index = 'NIFTY' | 'SENSEX';
@@ -96,9 +96,27 @@ class KiteContractMaster {
         });
     }
 
+    // Startup only: block (bounded) so the first lookups never run on a previous day's expiries
+    // (the 2026-10-19 wrong-expiry incident). Runtime refreshes stay async.
+    private refreshAtStartup(exchange: Exchange): void {
+        const filePath = path.join(__dirname, '../../data/kite', `${exchange}_instruments.csv`);
+        if (this.isFileFromToday(filePath)) return;
+        const tmp = `${filePath}.${process.pid}.tmp`;
+        try {
+            execFileSync('curl', ['-sf', '-m', '20', '-o', tmp, `https://api.kite.trade/instruments/${exchange}`], { timeout: 25000 });
+            const lines = fs.readFileSync(tmp, 'utf-8').split('\n').length;
+            if (lines < 1000) throw new Error(`downloaded ${exchange} master has only ${lines} lines`);
+            fs.renameSync(tmp, filePath);
+            Log.log(`[KiteContractMaster] refreshed stale ${exchange} master (${lines} lines)`);
+        } catch (e: any) {
+            try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+            Log.log(`[KiteContractMaster] ALERT: could not refresh the ${exchange} instrument master at startup - using the existing file: ${e?.message ?? e}`);
+        }
+    }
+
     preload(): void {
         for (const exchange of ['NFO', 'BFO'] as Exchange[]) {
-            void this.refreshIfStale(exchange);
+            this.refreshAtStartup(exchange);
             const t0 = Date.now();
             try {
                 const rows = this.loadInstruments(exchange).length;

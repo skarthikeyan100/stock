@@ -117,7 +117,10 @@ export default class Prism {
     socket_open = (data) => {
         Log.log('[Prism] onOpen: ', data)
         this.started = true;
+        this.wsReconnectDelayMs = 2000; // healthy again: reset the backoff
     };
+
+    private wsReconnectDelayMs = 2000;
 
     socket_close = (data) => {
         Log.log('[Prism] onClose: ', data)
@@ -126,7 +129,13 @@ export default class Prism {
             Log.log('[Prism] Past market close - not reconnecting');
             return;
         }
-        this.connect().catch((e) => Log.log('[Prism] reconnect after socket close failed:', e?.message ?? e));
+        // Exponential backoff (2s..60s): a handshake that never opens would otherwise reconnect in a hot loop.
+        const wait = this.wsReconnectDelayMs;
+        this.wsReconnectDelayMs = Math.min(wait * 2, 60000);
+        Log.log(`[Prism] Reconnecting websocket in ${wait}ms`);
+        setTimeout(() => {
+            this.connect().catch((e) => Log.log('[Prism] reconnect after socket close failed:', e?.message ?? e));
+        }, wait);
     };
 
     socket_error = (data) => {
@@ -756,7 +765,7 @@ export default class Prism {
     getOrderBook = async (): Promise<any[]> => {
         const book: any = await NorenRestApi.get_orderbook();
         // An empty book comes back as an object ({stat:'Not_Ok'}), not an array.
-        return Array.isArray(book) ? book : [];
+        return Array.isArray(book) ? book : [];  // (RestAPI.get_orderbook already throws on non-"no data" Not_Ok)
     }
 
     // Single-shot order-status check, mirroring ANT.getOrderStatus's shape
@@ -1016,7 +1025,15 @@ export default class Prism {
         Log.log(`[Order] Cover order placed ${response?.contract} orderId=${response?.norenordno} qty=${response?.qty}`);
 
         if (response?.norenordno) {
-            response.price = await this.getOrderFillPrice(response.norenordno, limitPrice);
+            try {
+                response.price = await this.getOrderFillPrice(response.norenordno, limitPrice);
+            } catch (e: any) {
+                if (!e?.timedOut) throw e;
+                // Order was placed and is tracked via its norenordno; don't discard it just because the
+                // fill wasn't confirmed in time - fall back to the requested limit price as before.
+                Log.log(`[Order] Cover order ${response.norenordno} fill not confirmed in time - using requested price ${limitPrice}`);
+                response.price = limitPrice;
+            }
         }
         return response;
     }
@@ -1065,7 +1082,11 @@ export default class Prism {
             await delay(intervalMs);
         }
         // Never confirmed filled: surface that instead of booking the requested price as a fill.
-        throw new Error(`Prism order ${orderNo} fill not confirmed within ${maxAttempts * intervalMs}ms (requested price ${requestedPrice})`);
+        // The order is still live at the broker; callers decide what to do (tagged `timedOut`).
+        throw Object.assign(
+            new Error(`Prism order ${orderNo} fill not confirmed within ${maxAttempts * intervalMs}ms (requested price ${requestedPrice})`),
+            { timedOut: true }
+        );
     }
 
     // Closes a cover-order position - Shoonya/Noren's exit_order (already

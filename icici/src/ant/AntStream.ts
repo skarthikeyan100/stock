@@ -3,6 +3,7 @@ import { isPastMarketClose } from '../util/marketHours';
 import AntSession from './AntSession';
 import AntWebSocket from './AntWebSocket';
 import ANT from './ANT';
+import AntContractMaster from './AntContractMaster';
 import myEmitter from '../tools/emitter';
 import Mongo from '../tools/mongo';
 import configService from '../prism/ConfigService';
@@ -228,8 +229,19 @@ class AntStream {
 
   // Dynamic per-position touchline subscribe/unsubscribe - same NFO|<token> key
   // shape used for the fixed TARGET_INSTRUMENTS at connect time.
-  async subscribeOption(token: string, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<void> {
+  // Existing callers pass only the token; resolve its exchange from the contract master so SENSEX (BFO)
+  // tokens subscribe under BFO instead of silently getting no ticks as NFO.
+  private resolveExchange(token: string): 'NFO' | 'BFO' {
+    try {
+      return AntContractMaster.getInstance().findByToken(token)?.exch === 'BFO' ? 'BFO' : 'NFO';
+    } catch {
+      return 'NFO';
+    }
+  }
+
+  async subscribeOption(token: string, exchange?: 'NFO' | 'BFO'): Promise<void> {
     if (this.dynamicOptionTokens.has(token)) return;
+    exchange = exchange ?? this.resolveExchange(token);
     this.dynamicOptionTokens.set(token, exchange);
     this.ws?.subscribe([`${exchange}|${token}`]);
   }

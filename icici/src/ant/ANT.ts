@@ -603,11 +603,12 @@ class ANT {
     private async submitOrder(label: string, body: any[]): Promise<{ orderNo: string }> {
         Log.log(`[ANT] ${label} request:`, JSON.stringify(body));
         let resp;
+        const headers = { ...this.authHeader(), 'Content-Type': 'application/json' }; // throws (not ambiguous) with no session
         try {
             resp = await axios.post(
                 'https://a3.aliceblueonline.com/open-api/od/v1/orders/placeorder',
                 body,
-                { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+                { headers }
             );
         } catch (e: any) {
             if (!e?.response) {

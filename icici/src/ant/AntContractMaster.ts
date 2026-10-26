@@ -114,7 +114,14 @@ class AntContractMaster {
   private loadNFO(): ContractRecord[] {
     if (this.nfoCache && !this.cacheIsFresh(this.NFO_PATH)) {
       Log.log('[AntContractMaster] NFO master file changed on disk - reloading');
-      this.nfoCache = null;
+      // Parse first, swap only on success: a half-written/corrupt file keeps the working cache.
+      try {
+        const data = JSON.parse(fs.readFileSync(this.NFO_PATH, 'utf-8'));
+        this.nfoCache = data.NFO || [];
+        this.noteLoaded(this.NFO_PATH);
+      } catch (e: any) {
+        Log.log(`[AntContractMaster] NFO reload failed, keeping the previous cache: ${e?.message ?? e}`);
+      }
     }
     if (!this.nfoCache) {
       this.checkStaleness(this.NFO_PATH);
@@ -128,7 +135,13 @@ class AntContractMaster {
   private loadBFO(): ContractRecord[] {
     if (this.bfoCache && !this.cacheIsFresh(this.BFO_PATH)) {
       Log.log('[AntContractMaster] BFO master file changed on disk - reloading');
-      this.bfoCache = null;
+      try {
+        const data = JSON.parse(fs.readFileSync(this.BFO_PATH, 'utf-8'));
+        this.bfoCache = data.BFO || [];
+        this.noteLoaded(this.BFO_PATH);
+      } catch (e: any) {
+        Log.log(`[AntContractMaster] BFO reload failed, keeping the previous cache: ${e?.message ?? e}`);
+      }
     }
     if (!this.bfoCache) {
       this.checkStaleness(this.BFO_PATH);

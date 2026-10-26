@@ -106,10 +106,12 @@ class Kite {
                     Log.log('Kite session loaded from file');
                 } else {
                     this.accessToken = null; // file parsed but holds no token: drop the stale in-memory one
+                try { this.kc.setAccessToken(''); } catch { /* ignore */ }
                 }
             } else if (this.accessToken) {
                 Log.log('Kite session file is gone - clearing the in-memory token');
                 this.accessToken = null;
+                try { this.kc.setAccessToken(''); } catch { /* ignore */ }
             }
         } catch (e) {
             Log.log('Failed to load Kite session:', e);
@@ -420,7 +422,16 @@ class Kite {
                     // review - the original version threw driftCancelled
                     // unconditionally here, in both the cancel-succeeded and
                     // cancel-failed cases, which would have silently lost a fill).
-                    const recheck = await this.kc.getOrderHistory(orderId);
+                    let recheck: any[];
+                    try {
+                        recheck = await this.kc.getOrderHistory(orderId);
+                    } catch (re) {
+                        // Fill state is unknown - say so loudly rather than a bare transport error.
+                        throw Object.assign(
+                            new Error(`Kite order ${orderId} drift-cancel issued but the status re-check failed (fill state UNKNOWN): ${(re as any)?.message ?? re}`),
+                            { driftCancelled: true, fillStateUnknown: true, filledQuantity: 0, averagePrice: 0 }
+                        );
+                    }
                     const recheckLatest = recheck[recheck.length - 1];
                     if (recheckLatest?.status === 'COMPLETE' && recheckLatest.average_price) {
                         Log.log(`[Kite] Order ${orderId} actually filled fully during the drift-cancel race - using real fill price ${recheckLatest.average_price}`);
