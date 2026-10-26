@@ -25,16 +25,23 @@ export function normalizeBrokerList(list: unknown): string[] {
 // Deep read-side shim for persisted documents (strategy state, trade rows): rewrites the legacy
 // vendor name used as an object key ('zerodha', 'zerodha_put', 'zerodha:maxProfit') or as a string
 // value ('zerodha') to the canonical one. Pure; returns a new structure, leaves other values alone.
-const LEGACY_PREFIX = /^(zerodha)(?=$|[_:])/i;
+// Keys: 'zerodha', 'zerodha_put', 'zerodha:maxProfit' (slot/scope keys). Values: only the exact broker name, so ids
+// or labels that merely start with 'zerodha_'/'zerodha:' are left alone. If a document already has the canonical key
+// as well as the legacy one, the canonical entry wins and the legacy one is dropped (never overwrite newer data).
+const LEGACY_KEY = /^(zerodha)(?=$|[_:])/i;
+const LEGACY_VALUE = /^\s*zerodha\s*$/i;
 export function normalizePersistedBrokers<T>(value: T): T {
     if (Array.isArray(value)) return value.map(normalizePersistedBrokers) as unknown as T;
     if (value && typeof value === 'object' && (value as any).constructor === Object) {
+        const src = value as Record<string, unknown>;
         const out: Record<string, unknown> = {};
-        for (const k of Object.keys(value as object)) {
-            out[k.replace(LEGACY_PREFIX, 'kite')] = normalizePersistedBrokers((value as any)[k]);
+        for (const k of Object.keys(src)) {
+            const nk = k.replace(LEGACY_KEY, 'kite');
+            if (nk !== k && Object.prototype.hasOwnProperty.call(src, nk)) continue; // canonical key present: it wins
+            out[nk] = normalizePersistedBrokers(src[k]);
         }
         return out as T;
     }
-    if (typeof value === 'string') return value.replace(LEGACY_PREFIX, 'kite') as unknown as T;
+    if (typeof value === 'string' && LEGACY_VALUE.test(value)) return 'kite' as unknown as T;
     return value;
 }

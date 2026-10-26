@@ -1015,13 +1015,15 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'reloadSession': {
                 // Each broker reload is isolated: one throwing (e.g. a corrupt session file) must not skip the others,
                 // in particular the ANT order-notify reconnect that fill pushes depend on.
-                const safely = (name: string, fn: () => void) => { try { fn(); } catch (e) { Log.log(`[order] reloadSession: ${name} failed (continuing with the others):`, e); } };
+                const failedReloads: string[] = [];
+                const safely = (name: string, fn: () => void) => { try { fn(); } catch (e) { failedReloads.push(name); Log.log(`[order] reloadSession: ${name} failed (continuing with the others):`, e); } };
                 safely('kite', () => Kite.getInstance().reloadSession());
                 safely('prism', () => NorenRestApi.reloadToken());
                 safely('ant', () => ANT.getInstance().reloadSession());
                 safely('ant order-notify', () => connectAntOrderNotifyIfSessionValid('reloadSession'));
                 safely('breeze', () => Breeze.getInstance().reloadSession());
                 connectBreezeOrderNotifyIfSessionValid('reloadSession').catch((e) => Log.log('[order] connectBreezeOrderNotifyIfSessionValid failed:', e));
+                if (failedReloads.length > 0) return { kind: 'response', id: req.id, ok: false, error: `reloadSession: ${failedReloads.join(', ')} failed to reload (others succeeded)` };
                 // Broker-position reconciliation is NOT run here any more - a
                 // login no longer triggers it. It's an explicit step, invoked
                 // via the 'reconcileBrokerPositions' IPC case (POST /reconcile

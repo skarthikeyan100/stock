@@ -423,7 +423,8 @@ export default class ButterflyStrategy extends Strategy {
 
     // ---- EOD force-close + recurring reset ----
     private async eodCheck(): Promise<void> {
-        const dayKey = `${new Date().getFullYear()}-${new Date().getMonth()}-${new Date().getDate()}`;
+        const nowForDay = new Date();
+        const dayKey = `${nowForDay.getFullYear()}-${nowForDay.getMonth() + 1}-${nowForDay.getDate()}`;
         if (this.eodDone && this.eodDay !== dayKey) this.eodDone = false;
         if (this.eodDone) return;
         const now = new Date();

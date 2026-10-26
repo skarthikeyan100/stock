@@ -296,7 +296,7 @@ export default class Monitor {
             tradeEvent.status = data.status
             // Option type is the suffix ('...PE'/'...CE') or the letter before the strike ('...P17500'); a bare 'P' search
             // mis-reads a call in an APR/SEP/... expiry as a put.
-            tradeEvent.right = /PE$/.test(tradeEvent.tsym) || /P\d+$/.test(tradeEvent.tsym) ? PUT : CALL;
+            tradeEvent.right = /PE$/i.test(tradeEvent.tsym) || /\bPE\b/i.test(tradeEvent.tsym) || /P[\d.]+$/.test(tradeEvent.tsym) ? PUT : CALL;
             tradeEvent.user = user;
 
             if (tradeEvent.action == 'Buy') {

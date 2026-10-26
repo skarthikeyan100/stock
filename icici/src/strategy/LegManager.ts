@@ -349,6 +349,8 @@ export class LegManager {
     private rollDayIfNeeded(): void {
         const today = LegManager.latchDay();
         if (today === this.activeDay) return;
+        // Legs still open (e.g. an EOD/stop close that failed) keep the latches that are closing them; roll once flat.
+        if (this.legsByToken.size > 0) return;
         Log.log(`[${this.deps.ownerType}] new trading day ${today} (was ${this.activeDay}) - clearing yesterday's capital/profit/loss/EOD latches`);
         this.activeDay = today;
         this.capitalGateTripped = false;

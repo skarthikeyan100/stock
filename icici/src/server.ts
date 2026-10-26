@@ -955,6 +955,7 @@ myEmitter.on('breeze-quote', (tick: any) => {
 // own header comment on the IPC process split).
 async function getBrokerTrades(broker: string): Promise<any[]> {
     if (normalizeBrokerName(broker) === 'kite') return Kite.getInstance().getTrades();
+    broker = normalizeBrokerName(broker);
     if (broker === 'ant') return ANT.getInstance().getTrades();
     if (broker === 'prism') return Prism.getInstance().getTradeList();
     if (broker === 'breeze') {
@@ -968,6 +969,7 @@ async function getBrokerTrades(broker: string): Promise<any[]> {
 }
 async function getBrokerPositions(broker: string): Promise<any[]> {
     if (normalizeBrokerName(broker) === 'kite') return Kite.getInstance().getPositions();
+    broker = normalizeBrokerName(broker);
     if (broker === 'ant') return ANT.getInstance().getPositions();
     if (broker === 'prism') return Prism.getInstance().getPositions();
     if (broker === 'breeze') {
