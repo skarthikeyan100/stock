@@ -24,7 +24,7 @@ env -u GTK_MODULES firefox "$PRISM_URL" &
 echo "Opening ANT (AliceBlue) login: $ANT_URL"
 env -u GTK_MODULES firefox "$ANT_URL" &
 
-echo "Opening Kite (Zerodha) login: $KITE_URL"
+echo "Opening Kite (Kite) login: $KITE_URL"
 env -u GTK_MODULES firefox "$KITE_URL" &
 
 echo "Opening Breeze (ICICI Direct) login: $BREEZE_URL"

@@ -43,7 +43,7 @@ class MockOrderClient {
         return {
             tradingSymbol: `NIFTY-${optionType}-${strike}`,
             instrumentToken: 9000 + this.tokenCounter,
-            // Deliberately a different range than instrumentToken - Zerodha and ANT
+            // Deliberately a different range than instrumentToken - Kite and ANT
             // number contracts independently in reality (see ContinuousStrategy.ts's
             // T1-entry comment); this catches a regression to reading instrumentToken
             // instead of antToken for a leg's tick-subscription token.

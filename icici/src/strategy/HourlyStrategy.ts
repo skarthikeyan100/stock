@@ -5,12 +5,13 @@ import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
-import { roundToTick } from '../zerodha/Zerodha';
+import { roundToTick } from '../kite/Kite';
 import { sleep } from '../util/sleep';
+import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
 
 // Hourly NIFTY support/resistance breakout, confirmed on a 10-minute candle,
 // traded independently and in FULL configured quantity on every configured
-// broker (config `brokers: [zerodha, ant, breeze]`, falling back to a single
+// broker (config `brokers: [kite, ant, breeze]`, falling back to a single
 // legacy `broker:` field) - same multi-broker fan-out shape BulkPcrStrategy
 // uses (chunkedBuyIndex/chunkedSquareOffLimit/chunkedSquareOff, Promise.allSettled
 // so one broker's failure never touches another's), but single-direction,
@@ -60,7 +61,7 @@ import { sleep } from '../util/sleep';
 // open at the broker is flagged 'error' for manual review rather than
 // risking a second exit sell stacked on top of one that might already be
 // resting.
-type BrokerName = 'zerodha' | 'breeze' | 'ant' | 'prism';
+type BrokerName = 'kite' | 'breeze' | 'ant' | 'prism';
 
 const STATE_COLLECTION = 'hourlyStrategyState';
 
@@ -146,12 +147,12 @@ export default class HourlyStrategy extends Strategy {
         return null; // self-monitored, no GTT/bracket - see file header
     }
 
-    // `brokers: [zerodha, ant, breeze]` takes priority when present and
+    // `brokers: [kite, ant, breeze]` takes priority when present and
     // non-empty; falls back to the legacy single `broker:` field, same
     // convention as BulkPcrStrategy.configuredBrokers().
     private configuredBrokers(): BrokerName[] {
         const cfg = this.cfg();
-        const list: string[] = Array.isArray(cfg.brokers) && cfg.brokers.length > 0 ? cfg.brokers : [cfg.broker ?? 'zerodha'];
+        const list: string[] = normalizeBrokerList(Array.isArray(cfg.brokers) && cfg.brokers.length > 0 ? cfg.brokers : [cfg.broker ?? 'kite']);
         return list as BrokerName[];
     }
 
@@ -447,7 +448,7 @@ export default class HourlyStrategy extends Strategy {
         const remaining = pos.targetQuantity - pos.soldQty;
         try {
             if (remaining > 0) {
-                const result = await OrderClient.getInstance().chunkedSquareOff(this.userId, { tsym, quantity: remaining, broker: broker as 'zerodha' | 'ant' | 'breeze' });
+                const result = await OrderClient.getInstance().chunkedSquareOff(this.userId, { tsym, quantity: remaining, broker: broker as 'kite' | 'ant' | 'breeze' });
                 pos.soldQty += remaining;
                 pos.soldValue += remaining * (result?.avgPrice ?? targetPrice);
             }

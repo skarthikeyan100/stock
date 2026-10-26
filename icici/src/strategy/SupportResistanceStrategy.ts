@@ -8,7 +8,7 @@ import { LegManager, LegManagerConfig } from './LegManager';
 import { initSRState, processTick, SRConfig, SRState } from '../lib/supportResistance';
 import { sleep } from '../util/sleep';
 
-// Trades NIFTY options on Zerodha off the dynamic support/resistance breach
+// Trades NIFTY options on Kite off the dynamic support/resistance breach
 // detector (src/lib/supportResistance.ts, the same SEEKING/LOCKED/BREACH
 // state machine SupportResistanceHypothesisTest.ts validates offline): a
 // confirmed resistance breach buys a CALL, a confirmed support breach buys a

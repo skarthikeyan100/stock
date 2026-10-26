@@ -53,7 +53,7 @@ import myEmitter from './tools/emitter';
 import Prism from './prism';
 import ANT from './ant/ANT';
 import AntContractMaster from './ant/AntContractMaster';
-import Zerodha from './zerodha/Zerodha';
+import Kite from './kite/Kite';
 import Breeze from './breeze/Breeze';
 import BreezeStream from './breeze/BreezeStream';
 import OrderClient from './processes/strategies/OrderClient';
@@ -61,15 +61,16 @@ import StrategiesClient from './ipc/StrategiesClient';
 import { readJsonLines, writeJsonLine } from './ipc/jsonLines';
 import { cloudflareOnly, isLoopback } from './middleware/cloudflareOnly';
 import { OAuth2Client } from 'google-auth-library';
+import { normalizeBrokerName, normalizeBrokerList } from './util/brokerName';
 
 // `frontend` process (server.ts, unchanged name/entry point - see the plan:
 // "frontend should be server.ts itself, edited in place"). Every route below
 // keeps its original path/response shape; only the internals changed - broker
 // order-execution and strategy state now go over IPC to `order`/`strategies`
 // (OrderClient/StrategiesClient) instead of in-process Monitor/strategies.getList()
-// calls. Quote-only and OAuth methods on Prism/ANT/Zerodha stay direct library
+// calls. Quote-only and OAuth methods on Prism/ANT/Kite stay direct library
 // calls here (stateless w.r.t. order's bookkeeping) - after a fresh login,
-// OrderClient.reloadSession() tells `order`'s already-running Prism/Zerodha
+// OrderClient.reloadSession() tells `order`'s already-running Prism/Kite
 // singletons to re-read the session file so they don't need a restart to see it.
 //
 // Dropped during this port (see features.md section 13 for the full list):
@@ -778,13 +779,13 @@ app.get('/ant/callback', async function (req, res) {
 
 app.get('/kite/login', async function (req, res) {
     try {
-        const zerodha = Zerodha.getInstance();
-        const loginUrl = zerodha.getLoginURL();
-        Log.log('Redirecting to Zerodha login:', loginUrl);
+        const kite = Kite.getInstance();
+        const loginUrl = kite.getLoginURL();
+        Log.log('Redirecting to Kite login:', loginUrl);
         res.redirect(302, loginUrl);
     } catch (e: any) {
-        Log.log('Zerodha login error:', e);
-        res.status(500).json({ error: 'Failed to initiate Zerodha login' });
+        Log.log('Kite login error:', e);
+        res.status(500).json({ error: 'Failed to initiate Kite login' });
     }
 });
 
@@ -792,19 +793,19 @@ app.get('/kite/callback', async function (req, res) {
     try {
         const requestToken = req.query.request_token as string;
         if (!requestToken) {
-            Log.log('Missing request_token in Zerodha callback');
-            res.status(400).json({ error: 'Missing request_token from Zerodha' });
+            Log.log('Missing request_token in Kite callback');
+            res.status(400).json({ error: 'Missing request_token from Kite' });
             return;
         }
-        Log.log('Zerodha Callback received - exchanging request_token for access_token');
-        const zerodha = Zerodha.getInstance();
-        const result = await zerodha.exchangeRequestTokenForSession(requestToken);
-        res.cookie('zerodha_session', result.access_token, { signed: true, httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
+        Log.log('Kite Callback received - exchanging request_token for access_token');
+        const kite = Kite.getInstance();
+        const result = await kite.exchangeRequestTokenForSession(requestToken);
+        res.cookie('kite_session', result.access_token, { signed: true, httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
         await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
-        Log.log('Zerodha Authentication successful. Token stored.');
+        Log.log('Kite Authentication successful. Token stored.');
         res.redirect(302, '/');
     } catch (e: any) {
-        Log.log('Zerodha callback error:', e);
+        Log.log('Kite callback error:', e);
         res.status(500).json({ error: 'Authentication failed', details: e.message });
     }
 });
@@ -929,14 +930,14 @@ myEmitter.on('breeze-quote', (tick: any) => {
 // /kite/positions+/ant/positions (plus /kite/token+/ant/token, deleted
 // outright - raw session-token exposure over HTTP with zero callers) into
 // one parameterized pair - a bonus: this also adds Prism support these debug
-// routes never had. Deliberately calls ANT/Zerodha/Prism's own
+// routes never had. Deliberately calls ANT/Kite/Prism's own
 // getTrades()/getPositions() directly (same as the routes this replaces),
 // NOT the order-process-only BrokerExecutor abstraction (brokerExecutors.ts)
 // - that pulls in bookkeeping.ts/exitMonitor.ts, which are `order`-process
 // state this `frontend` process has no business touching (see this file's
 // own header comment on the IPC process split).
 async function getBrokerTrades(broker: string): Promise<any[]> {
-    if (broker === 'zerodha') return Zerodha.getInstance().getTrades();
+    if (normalizeBrokerName(broker) === 'kite') return Kite.getInstance().getTrades();
     if (broker === 'ant') return ANT.getInstance().getTrades();
     if (broker === 'prism') return Prism.getInstance().getTradeList();
     if (broker === 'breeze') {
@@ -946,17 +947,17 @@ async function getBrokerTrades(broker: string): Promise<any[]> {
         const result = await Breeze.getInstance().getTradeList({ fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), exchangeCode: 'NFO' });
         return Array.isArray(result?.Success) ? result.Success : [];
     }
-    throw new Error(`Unknown broker '${broker}' - expected zerodha, ant, prism, or breeze`);
+    throw new Error(`Unknown broker '${broker}' - expected kite, ant, prism, or breeze`);
 }
 async function getBrokerPositions(broker: string): Promise<any[]> {
-    if (broker === 'zerodha') return Zerodha.getInstance().getPositions();
+    if (normalizeBrokerName(broker) === 'kite') return Kite.getInstance().getPositions();
     if (broker === 'ant') return ANT.getInstance().getPositions();
     if (broker === 'prism') return Prism.getInstance().getPositions();
     if (broker === 'breeze') {
         const result = await Breeze.getInstance().getPortfolioPositions();
         return Array.isArray(result?.Success) ? result.Success : [];
     }
-    throw new Error(`Unknown broker '${broker}' - expected zerodha, ant, prism, or breeze`);
+    throw new Error(`Unknown broker '${broker}' - expected kite, ant, prism, or breeze`);
 }
 
 app.get('/broker/:broker/trades', requireAdmin, async function (req, res) {
@@ -1026,7 +1027,7 @@ app.get('/prism/orderbook', requireAdmin, async function (req: express.Request, 
 
 // ============================== Order Placement & Execution ==============================
 
-// Generic order placement - dispatches Zerodha-or-ANT internally via
+// Generic order placement - dispatches Kite-or-ANT internally via
 // bookkeeping.getUserBroker (manualBuy/squareOff/setTargetStopLoss). Renamed
 // from /prism/order/buy, /prism/squareoff, /prism/settarget - despite the
 // old name, none of these ever called prismExecutor.ts; the "prism" prefix
@@ -1224,7 +1225,7 @@ app.get('/refreshtrades', requireAdmin, async function (req, res) {
 app.get('/subscribetrades', requireAdmin, async function (req, res) {
     try {
         // Re-subscription for live per-tick tracking is obsolete now that exits
-        // are GTT-driven (see zerodhaExecutor.ts) - kept as a refresh alias for
+        // are GTT-driven (see kiteExecutor.ts) - kept as a refresh alias for
         // API parity.
         await orderClient.refreshTradeList();
         res.sendStatus(200);
@@ -1288,7 +1289,7 @@ app.get('/demo/subscribe', async function (req, res) {
 // Demo mode: resolves the ATM NIFTY CE/PE contract for the Up/Down flash-trade
 // buttons using the ANT-native contract master + the ANT-sourced live NIFTY
 // LTP already cached in `lastNiftyQuote` - deliberately NOT the Shoonya-based
-// /search (that returns a Zerodha instrument token, which AntDataStream can't
+// /search (that returns a Kite instrument token, which AntDataStream can't
 // subscribe: see the "must never be stored as trade.token" warning in
 // AntContractMaster.ts).
 app.get('/demo/resolve', async function (req, res) {
@@ -1309,7 +1310,7 @@ app.get('/demo/resolve', async function (req, res) {
 
 // Demo mode: ANT-native contract list (nearest expiry, both CE/PE, all
 // strikes) for the manual contract-search Buy flow - same reasoning as
-// /demo/resolve above, a Zerodha symbols.txt entry can't be ANT-subscribed.
+// /demo/resolve above, a Kite symbols.txt entry can't be ANT-subscribed.
 app.get('/demo/symbols', async function (req, res) {
     try {
         const { symbol } = req.query;

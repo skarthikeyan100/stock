@@ -4,7 +4,7 @@ import { writeJsonLine, readJsonLines } from '../../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderRequestType, OrderResponse, FillNotification, OrderCancelledNotification } from '../../ipc/orderProtocol';
 import { Trade } from '../../model/model';
 
-// The strategies process's only path to broker execution - no Prism/Zerodha
+// The strategies process's only path to broker execution - no Prism/Kite
 // dependency lives here at all, by design (see plan). Connects to `order`'s
 // Unix socket as a client and reconnects on drop, since `order` is the stable
 // side and `strategies` is the one that gets restarted on every code change.
@@ -22,8 +22,8 @@ class OrderClient {
     // slowest legitimate round trip: an order-placing request can
     // internally wait for a broker fill confirmation with its own budget of
     // up to ~60s (see AntOrderNotifyStream.waitForFill's 60000ms default in
-    // src/ant/AntOrderNotifyStream.ts and Zerodha.getFillPrice's 12
-    // attempts * 5000ms poll in src/zerodha/Zerodha.ts), stacked on top of
+    // src/ant/AntOrderNotifyStream.ts and Kite.getFillPrice's 12
+    // attempts * 5000ms poll in src/kite/Kite.ts), stacked on top of
     // the ANT HTTP call itself (capped at 15s - see ANT_HTTP_TIMEOUT_MS in
     // src/ant/ANT.ts). 90s gives headroom above that combined ~75s worst
     // case without leaving a wedged `order` process able to block a
@@ -274,13 +274,13 @@ class OrderClient {
     // place independent orders on several brokers at once (BulkPcrStrategy's
     // multi-broker support). Omitted by every other caller, which keeps
     // today's per-userId resolution unchanged.
-    async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number; broker?: 'zerodha' | 'ant' | 'breeze' | 'prism'; driftCancelPoints?: number; index?: 'NIFTY' | 'SENSEX' }): Promise<any> {
+    async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism'; driftCancelPoints?: number; index?: 'NIFTY' | 'SENSEX' }): Promise<any> {
         const res = await this.request('chunkedBuyIndex', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
-    async chunkedSquareOff(userId: string, payload: { tsym: string; quantity: number; freezeQuantity?: number; broker?: 'zerodha' | 'ant' | 'breeze' }): Promise<any> {
+    async chunkedSquareOff(userId: string, payload: { tsym: string; quantity: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' }): Promise<any> {
         const res = await this.request('chunkedSquareOff', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
         if (!res.ok) throw new Error(res.error);
         return res.result;
@@ -291,7 +291,7 @@ class OrderClient {
     // squareOffLimitChunked). Reuses the same generous chunked timeout since
     // placement is still up to 8 sequential broker calls, even though it
     // shouldn't normally take anywhere near as long as a fill-waiting call.
-    async chunkedSquareOffLimit(userId: string, payload: { tsym: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number; broker?: 'zerodha' | 'ant' | 'breeze' | 'prism' }): Promise<any> {
+    async chunkedSquareOffLimit(userId: string, payload: { tsym: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<any> {
         const res = await this.request('chunkedSquareOffLimit', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
         if (!res.ok) throw new Error(res.error);
         return res.result;
@@ -331,7 +331,7 @@ class OrderClient {
     }
 
     // Broker-parameterized counterpart of antPlaceLimitSellBare - see orderProtocol.ts's comment.
-    async brokerPlaceLimitSellBare(userId: string, payload: { broker: 'zerodha' | 'breeze' | 'ant'; tradingSymbol: string; instrumentToken: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
+    async brokerPlaceLimitSellBare(userId: string, payload: { broker: 'kite' | 'breeze' | 'ant'; tradingSymbol: string; instrumentToken: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
         const res = await this.request('brokerPlaceLimitSellBare', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
@@ -356,44 +356,44 @@ class OrderClient {
         if (!res.ok) throw new Error(res.error);
     }
 
-    async cancelRestingLimitSells(userId: string, payload: { tsym: string; broker: 'zerodha' | 'ant' | 'breeze' | 'prism' }): Promise<{ filledQty: number; cancelFailed: boolean }> {
+    async cancelRestingLimitSells(userId: string, payload: { tsym: string; broker: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<{ filledQty: number; cancelFailed: boolean }> {
         const res = await this.request('cancelRestingLimitSells', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
-    // ButterflyStrategy's narrow sell-to-open exception ONLY - see Zerodha.ts's
+    // ButterflyStrategy's narrow sell-to-open exception ONLY - see Kite.ts's
     // NEVER-SHORT GUARD comment. Deliberately NOT a generic "sell" method - do not call
     // this from any other strategy.
     // Long-side (buy-to-open/sell-to-close) legs, explicit-broker dispatch - see
     // orderProtocol.ts's comment for why these are separate from 'buyContractBare'/
     // 'sellContractBare' (which resolve broker per-user, wrong for one strategy
     // instance running several brokers' legs concurrently).
-    async butterflyBuyLeg(userId: string, payload: { broker: 'zerodha' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+    async butterflyBuyLeg(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
         const res = await this.request('butterflyBuyLeg', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
-    async butterflyCloseLeg(userId: string, payload: { broker: 'zerodha' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+    async butterflyCloseLeg(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
         const res = await this.request('butterflyCloseLeg', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
-    async butterflySellToOpen(userId: string, payload: { broker: 'zerodha' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+    async butterflySellToOpen(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
         const res = await this.request('butterflySellToOpen', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
-    async butterflyBuyToClose(userId: string, payload: { broker: 'zerodha' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+    async butterflyBuyToClose(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
         const res = await this.request('butterflyBuyToClose', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
 
-    async resolveOptionContract(userId: string, payload: { broker: 'zerodha' | 'ant' | 'breeze' | 'prism'; index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE' }): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
+    async resolveOptionContract(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE' }): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
         const res = await this.request('resolveOptionContract', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
@@ -429,7 +429,7 @@ class OrderClient {
         return res.result;
     }
 
-    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'zerodha' | 'ant' | 'breeze'; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number }): Promise<void> {
+    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number }): Promise<void> {
         const res = await this.request('updateUserSettings', userId, settings);
         if (!res.ok) throw new Error(res.error);
     }
@@ -493,7 +493,7 @@ class OrderClient {
 
     // Bare (unprotected, self-monitored) execution path used by LegManager
     // (ContinuousStrategy/SupportResistanceStrategy) - see
-    // src/processes/order/zerodhaExecutor.ts/breezeExecutor.ts. Bypasses the
+    // src/processes/order/kiteExecutor.ts/breezeExecutor.ts. Bypasses the
     // GTT/exitMonitor bracket the other entry points (buyIndex, manualBuy) go
     // through - these strategies self-monitor every leg from live option ticks
     // instead. Broker is resolved server-side in orderProcess.ts, keyed off

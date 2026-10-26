@@ -3,7 +3,7 @@
  * an OptionQuote.csv export of per-contract option ticks) through a live
  * SupportResistanceStrategy instance (src/strategy/SupportResistanceStrategy.ts),
  * with a broker mock that resolves contracts/fills against the actual
- * historical premiums instead of a live Zerodha call. Mirrors
+ * historical premiums instead of a live Kite call. Mirrors
  * ContinuousStrategyBacktest.ts's structure/CLI - see that file's header for
  * the shared caveats (Strategy.isCooldownElapsed/recordTriggerTime use real
  * Date.now(), not simulated tick time; isTimeInRange()'s mock-mode bypass).

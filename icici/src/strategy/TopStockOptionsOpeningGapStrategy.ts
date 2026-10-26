@@ -5,14 +5,15 @@ import configService from '../prism/ConfigService';
 import { toPercentNumber } from '../prism/percentConfig';
 import AntContractMaster from '../ant/AntContractMaster';
 import ANT from '../ant/ANT';
-import ZerodhaContractMaster from '../zerodha/ZerodhaContractMaster';
+import KiteContractMaster from '../kite/KiteContractMaster';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
-import { roundToTick } from '../zerodha/Zerodha';
+import { roundToTick } from '../kite/Kite';
 import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
 import fs from 'fs';
 import path from 'path';
 import moment from 'moment';
+import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
 
 // NIFTY 50 + NIFTY Next 50 constituents (100 symbols), snapshotted from
 // NSE's own unauthenticated index-constituent CSVs (the same source
@@ -58,13 +59,13 @@ interface RankedStock {
 
 type OptionContract = { token: string; exch: string; tradingSymbol: string; lotSize: string; strike: number; expiry: string };
 
-type BrokerName = 'zerodha' | 'breeze' | 'ant';
+type BrokerName = 'kite' | 'breeze' | 'ant';
 
 // One resolved, broker-specific tradable contract for a ranked stock -
 // `instrumentToken` is always the ANT-native common token (see
 // AntContractMaster.ts's resolveCommonToken comment on why - live
 // ticks/restart-reconciliation elsewhere in the app key off this, not a
-// broker-native token), even for a zerodha/breeze leg; `tradingSymbol` is
+// broker-native token), even for a kite/breeze leg; `tradingSymbol` is
 // that broker's OWN trading symbol, used to actually place the order.
 interface BrokerLeg {
     stock: RankedStock;
@@ -109,11 +110,10 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
         return s.replace(/[^a-zA-Z0-9_-]/g, '_');
     }
 
-    // config.yml's `brokers: [zerodha, breeze, ant]` (or the legacy single
+    // config.yml's `brokers: [kite, breeze, ant]` (or the legacy single
     // `broker: ant` field, kept as a fallback for a not-yet-migrated config)
-    // normalized to this strategy's own canonical broker names - 'kite' is
-    // accepted as an alias for 'zerodha' (BulkPcr/Hourly/Butterfly's own
-    // convention), unknown names are dropped (logged, not thrown - one bad
+    // normalized to the canonical broker names (legacy 'zerodha' is accepted
+    // as an alias for 'kite' via normalizeBrokerName), unknown names are dropped (logged, not thrown - one bad
     // entry must not block the other configured brokers), and an empty/
     // missing config falls back to ['ant'] (this strategy's original,
     // ANT-only behavior).
@@ -121,12 +121,9 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
         const raw: string[] = Array.isArray(config.brokers) && config.brokers.length > 0
             ? config.brokers
             : (config.broker ? [config.broker] : []);
-        const normalized = raw.map((b: string) => {
-            const lower = String(b).toLowerCase();
-            return lower === 'kite' ? 'zerodha' : lower;
-        });
+        const normalized = normalizeBrokerList(raw);
         const deduped = Array.from(new Set(normalized));
-        const valid: BrokerName[] = deduped.filter((b): b is BrokerName => b === 'zerodha' || b === 'breeze' || b === 'ant');
+        const valid: BrokerName[] = deduped.filter((b): b is BrokerName => b === 'kite' || b === 'breeze' || b === 'ant');
         const invalid = deduped.filter((b) => !valid.includes(b as BrokerName));
         if (invalid.length > 0) {
             Log.log(`[${this.userId}] ALERT: config lists unknown broker(s) [${invalid.join(',')}] - dropping. Running only: ${valid.join(',') || 'none'}`);
@@ -361,9 +358,9 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                     });
                     continue;
                 }
-                if (broker === 'zerodha') {
+                if (broker === 'kite') {
                     try {
-                        const z = await ZerodhaContractMaster.getInstance().findExactOptionBySymbol(stock.symbol, antContract.strike, antContract.expiry, optionType);
+                        const z = await KiteContractMaster.getInstance().findExactOptionBySymbol(stock.symbol, antContract.strike, antContract.expiry, optionType);
                         resolvedLegs.push({
                             stock, optionType, broker,
                             tradingSymbol: z.tradingSymbol,
@@ -372,7 +369,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                             lotSize: z.lotSize,
                         });
                     } catch (e: any) {
-                        Log.log(`[${this.userId}] ${stock.symbol} zerodha contract resolution failed, skipping this broker's leg only: ${e?.message ?? e}`);
+                        Log.log(`[${this.userId}] ${stock.symbol} kite contract resolution failed, skipping this broker's leg only: ${e?.message ?? e}`);
                     }
                     continue;
                 }
@@ -575,10 +572,10 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                 return { entered: true };
             }
 
-            // zerodha/breeze: no broker-native target-only order type either (and
+            // kite/breeze: no broker-native target-only order type either (and
             // these "bare" buy primitives are themselves already a marketable
             // LIMIT at the live best bid/ask, not a true MARKET order - see
-            // marketBuyBareOnZerodha/marketBuyBareOnBreeze's own header comments).
+            // marketBuyBareOnKite/marketBuyBareOnBreeze's own header comments).
             // Mirrors the ant branch's own shape: buy -> real fill -> own resting
             // target-only limit sell, sized from the ACTUAL fill price exactly
             // like antExecutor's marketEntry formula - min(0.25 delta x 1% of the

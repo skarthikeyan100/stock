@@ -19,19 +19,19 @@ READER=(tail $TAIL_OPTS "$LOG_FILE")
 # --- buy placed (one shape per broker) ---
 s/^\[([0-9:]{8})\] .*Buying (\S+) qty=([0-9]+) for \S+ via ANT regular order \(ltp=([0-9.]+) limit=([0-9.]+)\).*/\1 ANT     BUY  placed \2 qty=\3 limit=\5/p;t
 s/^\[([0-9:]{8})\] .*Buying (\S+) qty=([0-9]+) @ ([0-9.]+) \(limit.*via Breeze.*/\1 BREEZE  BUY  placed \2 qty=\3 limit=\4/p;t
-s/^\[([0-9:]{8})\] .*Buying (\S+) qty=([0-9]+) for \S+ \(BrokerExecutor\.buy\).*/\1 ZERODHA BUY  placed \2 qty=\3/p;t
+s/^\[([0-9:]{8})\] .*Buying (\S+) qty=([0-9]+) for \S+ \(BrokerExecutor\.buy\).*/\1 KITE BUY  placed \2 qty=\3/p;t
 # --- buy filled ---
-s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] Entry complete: (\S+) qty=([0-9]+) avg=([0-9.]+).*/\1 \U\2\E BUY  FILLED \3 qty=\4 @\5/p;t
+s/^\[([0-9:]{8})\] .*\[(ant|kite|breeze)\] Entry complete: (\S+) qty=([0-9]+) avg=([0-9.]+).*/\1 \U\2\E BUY  FILLED \3 qty=\4 @\5/p;t
 # --- sell placed ---
-s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] Placing resting limit sell for (\S+) qty=([0-9]+) @ ([0-9.]+).*/\1 \U\2\E SELL placed \3 qty=\4 @\5/p;t
+s/^\[([0-9:]{8})\] .*\[(ant|kite|breeze)\] Placing resting limit sell for (\S+) qty=([0-9]+) @ ([0-9.]+).*/\1 \U\2\E SELL placed \3 qty=\4 @\5/p;t
 # --- sell filled ---
-s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] Exit fill: (\S+) qty=([0-9]+) @ ([0-9.]+).*/\1 \U\2\E SELL FILLED \3 qty=\4 @\5/p;t
+s/^\[([0-9:]{8})\] .*\[(ant|kite|breeze)\] Exit fill: (\S+) qty=([0-9]+) @ ([0-9.]+).*/\1 \U\2\E SELL FILLED \3 qty=\4 @\5/p;t
 # --- loss-stop / trade-cap close fills (square-off part of eodSquareOff) ---
-s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] Close fill: (\S+) qty=([0-9]+) @([0-9.]+).*/\1 \U\2\E CLOSE FILLED \3 qty=\4 @\5/p;t
+s/^\[([0-9:]{8})\] .*\[(ant|kite|breeze)\] Close fill: (\S+) qty=([0-9]+) @([0-9.]+).*/\1 \U\2\E CLOSE FILLED \3 qty=\4 @\5/p;t
 # --- hedge / re-buy of the opposite side ---
-s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] (\w+) \+2 filled while (\w+) is still open - re-buying.*/\1 \U\2\E HEDGE re-buy \3 (\4 still open)/p;t
-s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] (\S+) is ([0-9]+) points below its entry ([0-9.]+) - opening (\w+) qty=([0-9]+).*/\1 \U\2\E HEDGE OPEN \6 qty=\7 (\3 -\4 below entry \5)/p;t
-s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] (\w+) buy did not fill - will retry.*(Margin Shortfall[^"]{0,60}|REJECTED|timeout)?.*/\1 \U\2\E !!! \3 buy NOT filled - retrying/p;t
+s/^\[([0-9:]{8})\] .*\[(ant|kite|breeze)\] (\w+) \+2 filled while (\w+) is still open - re-buying.*/\1 \U\2\E HEDGE re-buy \3 (\4 still open)/p;t
+s/^\[([0-9:]{8})\] .*\[(ant|kite|breeze)\] (\S+) is ([0-9]+) points below its entry ([0-9.]+) - opening (\w+) qty=([0-9]+).*/\1 \U\2\E HEDGE OPEN \6 qty=\7 (\3 -\4 below entry \5)/p;t
+s/^\[([0-9:]{8})\] .*\[(ant|kite|breeze)\] (\w+) buy did not fill - will retry.*(Margin Shortfall[^"]{0,60}|REJECTED|timeout)?.*/\1 \U\2\E !!! \3 buy NOT filled - retrying/p;t
 # --- direction + slots ---
 s/^\[([0-9:]{8})\] .*PCR=([0-9.]+) .*resolved direction (\w+).*/\1 PCR=\2 -> \3/p;t
 s/^\[([0-9:]{8})\] .*MomentumSignal\] CE tbq=([0-9.]+) tsq=([0-9.]+) \| PE tbq=([0-9.]+) tsq=([0-9.]+) -> (\w+).*/\1 MOMENTUM CE b\/s=\2\/\3 PE b\/s=\4\/\5 -> \6/p;t

@@ -42,7 +42,7 @@ export type OrderRequestType =
     // (ContinuousStrategy/SupportResistanceStrategy) - broker-resolved per userId
     // via bookkeeping.getUserBroker in orderProcess.ts's handlers, the same
     // convention buyIndex/manualBuy/squareOff already use for real users. Not
-    // broker-specific despite the historical "Zerodha" naming these replaced -
+    // broker-specific despite the historical "Kite" naming these replaced -
     // see orderProcess.ts's case 'buyContractBare' etc.
     | 'buyContractBare'
     | 'sellContractBare'
@@ -65,7 +65,7 @@ export type OrderRequestType =
     // current-bid exit (see chunkedOrder.ts's squareOffLimitChunked).
     | 'chunkedSquareOffLimit'
     // Broker-uniform query of this app's own pending-order trackers (pendingAntLimitOrders.ts
-    // and its zerodha/breeze/prism siblings - all four share the same {quantity, action, ...}
+    // and its kite/breeze/prism siblings - all four share the same {quantity, action, ...}
     // shape) for a given tsym, filtered to SELL orders only. Added for BulkPcrStrategy.reconcile()
     // to check whether an exit sell already survived from before a crash (live 2026-10-21 -
     // reconcile's no-persisted-state fallback was placing a brand-new sell on top of one still
@@ -85,8 +85,8 @@ export type OrderRequestType =
     | 'antPlaceLimitSellBare'
     // Broker-parameterized counterpart of 'antPlaceLimitSellBare' - same
     // plain resting-limit-sell-only shape, dispatched by an explicit
-    // `broker` field (zerodha/breeze/ant) instead of being ANT-only, so
-    // TopStockOptionsOpeningGapStrategy's zerodha/breeze legs can place
+    // `broker` field (kite/breeze/ant) instead of being ANT-only, so
+    // TopStockOptionsOpeningGapStrategy's kite/breeze legs can place
     // their own target-only resting sell too.
     | 'brokerPlaceLimitSellBare'
     // ANT bare ops for BulkPcrStrategy's hedge tree (LegManager via
@@ -101,7 +101,7 @@ export type OrderRequestType =
     // the antXBare family above despite living in the same block.
     | 'cancelRestingLimitSells'
     // ButterflyStrategy's narrow sell-to-open/buy-to-close exception (see
-    // Zerodha.ts's NEVER-SHORT GUARD comment and bookkeeping.recordShortFill) -
+    // Kite.ts's NEVER-SHORT GUARD comment and bookkeeping.recordShortFill) -
     // dispatches per-broker in orderProcess.ts. 'resolveOptionContract' is a
     // read-only strike+right -> {tsym, token, exchange} lookup, broker-dispatched
     // to each broker's own contract master, used by ButterflyStrategy to resolve
@@ -112,7 +112,7 @@ export type OrderRequestType =
     // existing 'buyContractBare'/'sellContractBare' (those resolve broker via
     // bookkeeping.getUserBroker(userId) - a per-USER setting, wrong for one strategy
     // instance that runs several brokers' legs concurrently within one tick) nor
-    // 'antBuyContractBare'/'buyContract' alone (ant/prism-only, no zerodha/breeze
+    // 'antBuyContractBare'/'buyContract' alone (ant/prism-only, no kite/breeze
     // equivalent with this same explicit-broker shape). Mechanically identical to the
     // existing bare buy/sell primitives per broker - just dispatched by an explicit
     // `broker` field in the payload instead of a per-user default.
@@ -163,7 +163,7 @@ export interface OrderCancelledNotification {
     quantity: number;        // qty that was resting in the cancelled/rejected order
     exchange: 'NFO' | 'BFO';
     action: 'Buy' | 'Sell';
-    broker: 'zerodha' | 'breeze' | 'ant' | 'prism';
+    broker: 'kite' | 'breeze' | 'ant' | 'prism';
     orderId: string;
     reason: 'CANCELLED' | 'REJECTED';
     // The broker's own rejection remark (e.g. a margin-shortfall message), when available.

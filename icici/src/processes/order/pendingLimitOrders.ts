@@ -1,14 +1,14 @@
 import Log from '../../util/Log';
-import Zerodha from '../../zerodha/Zerodha';
+import Kite from '../../kite/Kite';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import Mongo from '../../tools/mongo';
 import { isPastMarketClose } from '../../util/marketHours';
 
 // In-memory tracker (mirrored to Mongo, see loadPendingLimitOrdersFromMongo)
-// for limit orders placed via placeLimitBuyBareOnZerodha (zerodhaExecutor.ts)
+// for limit orders placed via placeLimitBuyBareOnKite (kiteExecutor.ts)
 // - ContinuousStrategy's target-hit re-entries - and, since 2026-09-22, via
-// placeLimitSellBareOnZerodha - BulkPcrStrategy's target-hit exit, which
+// placeLimitSellBareOnKite - BulkPcrStrategy's target-hit exit, which
 // needs a resting SELL leg instead of a blind market order. `action`
 // distinguishes the two so a fill is recorded as the right side. No
 // automatic timeout - a resting order polls indefinitely unless explicitly
@@ -38,7 +38,7 @@ interface PendingLimitOrder {
 
 const pending = new Map<string, PendingLimitOrder>();
 
-type CancelledListener = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: 'zerodha', orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
+type CancelledListener = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: 'kite', orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
 const cancelledListeners: CancelledListener[] = [];
 
 export function onCancelled(listener: CancelledListener): void {
@@ -63,7 +63,7 @@ export function trackPendingLimitOrder(order: PendingLimitOrder): void {
         .catch((e) => Log.log('[order] pendingLimitOrders: Mongo persist failed for', order.orderId, e));
 }
 
-// Called after an explicit cancel (cancelOrderOnZerodha) so pollPendingLimitOrders
+// Called after an explicit cancel (cancelOrderOnKite) so pollPendingLimitOrders
 // doesn't keep polling an order we just told the broker to drop.
 export function untrackPendingLimitOrder(orderId: string): void {
     pending.delete(orderId);
@@ -99,12 +99,12 @@ export async function loadPendingLimitOrdersFromMongo(): Promise<void> {
 // a re-entry filling promptly matters more to a live chain).
 export async function pollPendingLimitOrders(): Promise<void> {
     if (pending.size === 0) return;
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) return;
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) return;
 
     for (const [orderId, order] of pending) {
         try {
-            const history = await zerodha.getKiteConnect().getOrderHistory(orderId);
+            const history = await kite.getKiteConnect().getOrderHistory(orderId);
             const latest = history[history.length - 1];
             if (!latest) continue;
 
@@ -119,7 +119,7 @@ export async function pollPendingLimitOrders(): Promise<void> {
                 trade.action = order.action;
                 trade.status = 'COMPLETE';
                 trade.user = order.userId;
-                trade.broker = 'zerodha';
+                trade.broker = 'kite';
                 trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
                 Log.log(`[order] Pending limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
@@ -148,7 +148,7 @@ export async function pollPendingLimitOrders(): Promise<void> {
                 // placeExitSellAtTargetPrice) against a closed exchange,
                 // which will fail and drive the position into phase='error'
                 // every single EOD (live incident 2026-09-24, both the
-                // Zerodha and Breeze legs expired unfilled at EOD). Skip the
+                // Kite and Breeze legs expired unfilled at EOD). Skip the
                 // listener call here and let the next morning's reconcile()
                 // (BulkPcrStrategy.ts's sellPlacedAt/
                 // isStillWithinSameTradingSession check) re-place it instead.
@@ -157,7 +157,7 @@ export async function pollPendingLimitOrders(): Promise<void> {
                 } else {
                     const reason = latest.status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
                     for (const listener of cancelledListeners) {
-                        listener(order.userId, order.tradingSymbol, order.instrumentToken, order.quantity, order.exchange, order.action, 'zerodha', orderId, reason);
+                        listener(order.userId, order.tradingSymbol, order.instrumentToken, order.quantity, order.exchange, order.action, 'kite', orderId, reason);
                     }
                     Log.log(`[order] Pending limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${latest.status}`);
                 }

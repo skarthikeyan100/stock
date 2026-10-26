@@ -1,7 +1,7 @@
 import Log from '../../util/Log';
 import ANT from '../../ant/ANT';
 import { cancelOrderWithFillRecheck } from './BrokerExecutor';
-import { roundToTick } from '../../zerodha/Zerodha';
+import { roundToTick } from '../../kite/Kite';
 import AntOrderNotifyStream from '../../ant/AntOrderNotifyStream';
 import AntContractMaster from '../../ant/AntContractMaster';
 import configService from '../../prism/ConfigService';
@@ -13,11 +13,11 @@ import * as exitMonitor from './exitMonitor';
 import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder } from './pendingAntLimitOrders';
 import { sleep } from '../../util/sleep';
 
-// AliceBlue/ANT execution, mirroring zerodhaExecutor.ts's shape and the same
+// AliceBlue/ANT execution, mirroring kiteExecutor.ts's shape and the same
 // per-user useGTT gating (bookkeeping.getUserUseGTT) - but the actual
-// broker-side bracket mechanism differs structurally from Zerodha's GTT:
+// broker-side bracket mechanism differs structurally from Kite's GTT:
 //
-// Zerodha: buy (market) -> learn fill price -> place a SEPARATE two-leg GTT
+// Kite: buy (market) -> learn fill price -> place a SEPARATE two-leg GTT
 // referencing that fill price. The GTT is placed AFTER entry.
 //
 // AliceBlue: a Bracket Order (orderComplexity=BO) IS the entry order itself -
@@ -305,7 +305,7 @@ export async function enterPosition(
     if (marketEntry?.product) trade.product = marketEntry.product;
 
     if (useCover || (targetPoints > 0 && stopLossPoints > 0)) {
-        // Tick-rounded for consistency with the Zerodha path and with
+        // Tick-rounded for consistency with the Kite path and with
         // whatever exitMonitor/frontend display expects - AliceBlue itself
         // computes the actual bracket/cover trigger prices server-side from
         // targetLegPrice/slLegPrice point offsets (see placeBracketOrder/
@@ -519,7 +519,7 @@ export async function buyIndexOnAnt(req: BuyIndexRequest): Promise<Trade> {
     );
 }
 
-// Mirrors manualBuyOnZerodha's three branches: canonical `contract` string,
+// Mirrors manualBuyOnKite's three branches: canonical `contract` string,
 // else `strikePrice` (ATM-by-strike), else index-ATM fallback.
 export interface ManualBuyRequest {
     userId: string;
@@ -559,7 +559,7 @@ async function safeAntQuote(exch: string, token: string, retryDelaysMs: number[]
     try {
         // Live ScripDetails LTP first: the cached OHLC quote below ran far behind on a fast expiry-day option
         // (live 2026-10-22: sized and priced a buy off 109-128 while the contract traded ~197, so the limit
-        // never filled and the paired Zerodha leg was oversized). getLiveQuote refuses a non-positive LTP.
+        // never filled and the paired Kite leg was oversized). getLiveQuote refuses a non-positive LTP.
         try {
             return (await ANT.getInstance().getLiveQuote(exch, token)).ltp;
         } catch (liveErr: any) {
@@ -583,9 +583,9 @@ async function requireAntLtp(exch: string, token: string, retryDelaysMs: number[
 }
 
 // Live price estimate for investment-amount-based manual-buy sizing,
-// resolved via ANT regardless of execution broker - Zerodha's own
+// resolved via ANT regardless of execution broker - Kite's own
 // quote/LTP endpoints return 403 for this account's Kite Connect
-// subscription (see Zerodha.placeLimitBuyOption's comment), so ANT (already
+// subscription (see Kite.placeLimitBuyOption's comment), so ANT (already
 // the app's sole live tick source) is the pricing reference for both executors.
 export async function estimateOptionPrice(symbol: string, strike: number, optionType: string): Promise<number> {
     try {
@@ -636,15 +636,15 @@ export function getATMTokens(niftyLtp: number, index: string = 'NIFTY'): AtmToke
 // estimateOptionPrice's 0-on-failure, without polluting the map with a
 // misleading zero premium).
 //
-// Surfaces the ANT token per candidate (not just its premium) - Zerodha and
+// Surfaces the ANT token per candidate (not just its premium) - Kite and
 // ANT number the same contract completely differently (confirmed live: the
-// same NIFTY 24300 PE is Zerodha instrumentToken 15795970 but ANT token
+// same NIFTY 24300 PE is Kite instrumentToken 15795970 but ANT token
 // 61703), and it's the ANT token that live option ticks are keyed by
 // (OptionQuote.fromAnt sets quote.token = response.tk). A caller that resolves
 // a contract here for a leg it will self-monitor via live ANT ticks (e.g.
-// ContinuousStrategy) needs this ANT token, not Zerodha's, wired into
+// ContinuousStrategy) needs this ANT token, not Kite's, wired into
 // whatever it later registers for tick subscription/matching - passing
-// Zerodha's token there means the subscription and every incoming tick land
+// Kite's token there means the subscription and every incoming tick land
 // in a token space the leg's own map can never match.
 export async function estimateOptionPricesBatch(
     symbol: string,
@@ -701,7 +701,7 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
 // legs hasn't been confirmed against a live response, so this only updates
 // local bookkeeping for now - the broker-side BO leg prices are NOT
 // re-priced. Once the modify shape is verified, add the live call here
-// (mirroring zerodhaExecutor.setTargetStopLoss's modifyTargetStopLossGTT call).
+// (mirroring kiteExecutor.setTargetStopLoss's modifyTargetStopLossGTT call).
 export async function setTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number): Promise<void> {
     const trade = bookkeeping.trades.find((t) => t.token === token && t.user === userId);
     if (!trade) throw new Error(`No open trade for token ${token} and user ${userId}`);
@@ -721,7 +721,7 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
 // 'Confirmed live' per its own comment) at a caller-chosen price, unlike
 // squareOffOnAnt below which either exits a bracket order's own legs or
 // places a regular order with no price floor. Used for a target-hit exit
-// that must lock in a specific price - see placeLimitSellBareOnZerodha's
+// that must lock in a specific price - see placeLimitSellBareOnKite's
 // comment for why (2026-09-22 incident).
 export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO', product?: 'INTRADAY' | 'LONGTERM'): Promise<{ orderId: string }> {
     const ant = ANT.getInstance();
@@ -740,7 +740,7 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
 }
 
 // Cancels a resting ANT limit order (e.g. cancelAnyRestingLimitSell ahead of
-// a force-close) and untracks it - mirrors zerodhaExecutor.cancelOrderOnZerodha.
+// a force-close) and untracks it - mirrors kiteExecutor.cancelOrderOnKite.
 // Without the untrack, the next pollPendingAntLimitOrders tick would
 // independently discover the same order CANCELLED and fire the
 // cancelled-listener chain, re-placing a brand new resting sell for the

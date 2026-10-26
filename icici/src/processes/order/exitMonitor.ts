@@ -4,22 +4,22 @@ import { OptionQuote, Trade } from '../../model/model';
 import configService from '../../prism/ConfigService';
 
 // In-app target/SL exit monitoring, for trades placed with useGTT=false (see
-// bookkeeping.getUserUseGTT / zerodhaExecutor.finalizeEntry, antExecutor.finalizeEntry).
+// bookkeeping.getUserUseGTT / kiteExecutor.finalizeEntry, antExecutor.finalizeEntry).
 // Mirrors strategies' tokenRouter.ts+DataClient.ts pattern one level up:
 // subscribe/unsubscribe commands go out on `order`'s own stdout, which the
 // orchestrator relays into `data`'s stdin, and ticks come back in on `order`'s
 // stdin (see orderProcess.ts). The actual squareoff call is injected per-broker
 // via onExit() rather than imported directly, to avoid a circular dependency
-// with zerodhaExecutor.ts/antExecutor.ts.
+// with kiteExecutor.ts/antExecutor.ts.
 
-export type Broker = 'zerodha' | 'ant' | 'prism';
+export type Broker = 'kite' | 'ant' | 'prism';
 
 interface MonitoredTrade {
     trade: Trade;
     exchange: 'NFO' | 'BFO';
     broker: Broker;
     // True for trades whose actual exit is owned by a broker-side bracket
-    // (Zerodha GTT / ANT bracket order, useGTT=true) - handleOptionTick still
+    // (Kite GTT / ANT bracket order, useGTT=true) - handleOptionTick still
     // refreshes trade.lastTradePrice for these (so the frontend's live P&L
     // keeps moving) but must never itself trigger a square-off, since the
     // broker already will.
@@ -86,14 +86,14 @@ export function onPriceUpdate(listener: PriceUpdateListener): void {
 // must NEVER be picked up by this generic target/SL watch, in either
 // direction: not at entry time, and not on a restart-triggered
 // reconcileFromTrades() restore from a possibly-stale persisted Trade doc.
-// Live incident 2026-09-24: a Zerodha BulkPcrStrategy Buy doc had
+// Live incident 2026-09-24: a Kite BulkPcrStrategy Buy doc had
 // targetPrice=stopLossPrice=entryPrice persisted (a since-fixed
-// zerodhaExecutor.finalizeEntry bug, see its comment), and every process
+// kiteExecutor.finalizeEntry bug, see its comment), and every process
 // restart re-armed this watch from that doc regardless of the entry-time fix
 // - it fired almost immediately (price only has to move off entry by a
 // tick) and called the wrong, unchunked squareoff, which always exceeds the
 // exchange's per-order freeze-quantity limit for a position this size and
-// retried with no backoff, hammering Zerodha's API. This is the single choke
+// retried with no backoff, hammering Kite's API. This is the single choke
 // point every registerTrade() caller goes through, so excluding here closes
 // the gap regardless of what's already sitting in Mongo.
 //
@@ -106,7 +106,7 @@ export function onPriceUpdate(listener: PriceUpdateListener): void {
 // moment someone adds one; deriving it from live config every call can't
 // drift out of sync. ConfigService is safe to read directly here - it's a
 // plain fs.watch-backed singleton per process (already used elsewhere in
-// this same `order` process, e.g. bookkeeping.ts/zerodhaExecutor.ts), not an
+// this same `order` process, e.g. bookkeeping.ts/kiteExecutor.ts), not an
 // IPC call into the separate `strategies` process.
 // TopStockOptionsOpeningGapStrategy added here for the identical reason -
 // its legs are entered via enterPosition's 'target-only' orderMode (no
@@ -182,16 +182,16 @@ export function reconcileFromTrades(trades: Trade[]): void {
         // Exchange/broker aren't stored on Trade - infer exchange the same
         // way setTargetStopLoss does (tsym prefix), and broker from
         // whichever executor's Trade shape this is (antOrderNo present -> ant,
-        // prismCoverOrderNo present -> prism, otherwise zerodha - matches
+        // prismCoverOrderNo present -> prism, otherwise kite - matches
         // this file's existing Broker union).
         const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
-        const broker: Broker = trade.antOrderNo ? 'ant' : trade.prismCoverOrderNo ? 'prism' : 'zerodha';
+        const broker: Broker = trade.antOrderNo ? 'ant' : trade.prismCoverOrderNo ? 'prism' : 'kite';
         // A GTT/bracket/cover trade already has its exit owned by the broker -
         // reconcile it watch-only (mark-to-market only) so a restart doesn't
         // also arm an in-app square-off that would race the broker's own
-        // bracket/cover. Previously only checked gttTriggerId (Zerodha-only),
+        // bracket/cover. Previously only checked gttTriggerId (Kite-only),
         // which meant a restored ANT bracket/cover trade (no gttTriggerId -
-        // that field is Zerodha-specific) was wrongly reconciled as
+        // that field is Kite-specific) was wrongly reconciled as
         // NOT watch-only - the same gap a Prism cover-order restore would hit
         // too, since Prism has no gttTriggerId either.
         const watchOnly = trade.gttTriggerId != null || trade.antOrderNo != null || trade.prismCoverOrderNo != null;

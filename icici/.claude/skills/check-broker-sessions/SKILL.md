@@ -1,19 +1,19 @@
 ---
 name: check-broker-sessions
-description: Use when asked to check ANT/AliceBlue, Kite/Zerodha, or Breeze/ICICI Direct session/token/login status, whether re-login is needed, or whether the ANT/Breeze market-data WebSocket is connected/streaming.
+description: Use when asked to check ANT/AliceBlue, Kite/Kite, or Breeze/ICICI Direct session/token/login status, whether re-login is needed, or whether the ANT/Breeze market-data WebSocket is connected/streaming.
 ---
 
 # Check Broker Sessions
 
 ## Overview
 Verifies, against the live running server, whether ANT (AliceBlue), Kite
-(Zerodha), and Breeze (ICICI Direct) session tokens are valid, and whether
+(Kite), and Breeze (ICICI Direct) session tokens are valid, and whether
 ANT's and Breeze's market-data WebSockets are currently connected (Kite has no
 live tick stream in this codebase - all NIFTY/SENSEX/option ticks are
 ANT- or Breeze-sourced, per `dataProcess.ts`). Session files existing on disk
-is not sufficient proof — Zerodha tokens expire daily and any broker's token
+is not sufficient proof — Kite tokens expire daily and any broker's token
 can be revoked server-side, so this always makes a live read-only API call
-rather than just inspecting `.ant_session.json` / `.zerodha_session.json` /
+rather than just inspecting `.ant_session.json` / `.kite_session.json` /
 `.breeze_session.json`. Results are printed as a single table, one row per
 broker.
 
@@ -44,21 +44,21 @@ Output looks like:
 Broker     | Session File             | Token Valid | WS Streaming
 ---------- | ------------------------ | ------------ | ------------
 ANT        | OK (2026-09-21 12:32:20) | OK           | OK (12:32:21)
-Zerodha    | OK (2026-09-03 07:46:44) | FAIL (...)   | N/A (no live tick stream for this broker)
+Kite    | OK (2026-09-03 07:46:44) | FAIL (...)   | N/A (no live tick stream for this broker)
 Breeze     | OK (2026-09-21 12:34:23) | OK           | OK (12:21:24)
 ```
 
 It checks, per broker, in order:
-1. `.ant_session.json` / `.zerodha_session.json` / `.breeze_session.json` exist, reporting last-written time
-2. `GET /broker/<ant|zerodha|breeze>/<trades|positions>` actually succeeds (live token probe, not just file presence)
-3. `orchestrator.log` for the most recent `[AntDataStream] Connected and streaming` / `[BreezeDataStream] Connected and streaming` line with no disconnect/error after it (Zerodha has no such stream — always `N/A`)
+1. `.ant_session.json` / `.kite_session.json` / `.breeze_session.json` exist, reporting last-written time
+2. `GET /broker/<ant|kite|breeze>/<trades|positions>` actually succeeds (live token probe, not just file presence)
+3. `orchestrator.log` for the most recent `[AntDataStream] Connected and streaming` / `[BreezeDataStream] Connected and streaming` line with no disconnect/error after it (Kite has no such stream — always `N/A`)
 
 ## Interpreting Failures
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Session file missing/stale | Never logged in, or process restarted and lost in-memory token reference | Re-run `scripts/login.sh` (opens `/prism/login`, `/ant/login`, `/kite/login`, `/breeze/login`) |
-| Token check fails despite a recent session file | Token expired (Zerodha tokens expire daily, ~6am) or revoked | Re-login via `scripts/login.sh` |
+| Token check fails despite a recent session file | Token expired (Kite tokens expire daily, ~6am) or revoked | Re-login via `scripts/login.sh` |
 | WS shows no connect line, or a disconnect after the last connect | `AntDataStream`/`BreezeDataStream` never connected this run, or dropped and hasn't reconnected | Hit `GET /ant/connect` (ANT) or `GET /breeze/connect` (Breeze) to re-trigger, or check `orchestrator.log` around the disconnect for the reason |
 | Script reports server unreachable | `server`/orchestrator process not running | Start it (`npm run server` / `npm run processes`) |
 

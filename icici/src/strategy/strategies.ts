@@ -97,10 +97,16 @@ class Strategies {
     // per-position runtime state, e.g. BulkPcrStrategy's phase/heldTsym for an
     // open position). Refreshes only config-derived state: expandedConfigs
     // (which tokenRouter.ts's resolveSource reads for broker->feed routing)
-    // and each existing strategy's enabled flag. A strategy type newly added
+    // and each existing strategy's enabled flag. A strategy newly added
     // to config.yml while running still needs a restart to get an instance.
     syncFromConfig() {
-        configService.reloadNow(); // don't wait on fs.watchFile's own poll - see ConfigService.reloadNow's comment
+        configService.reloadNow(); // reload now; its onChange listener also refreshes (idempotent)
+        this.refreshFromConfig();
+    }
+
+    // Hooked to ConfigService.onChange (see subscribeToConfig) so a hand edit
+    // of config.yml reaches enabled flags / expandedConfigs with no manual sync.
+    refreshFromConfig() {
         const config = configService.getConfig();
         const expandedConfigArray = (config.strategies || []).flatMap(expandRuleBasedConfig);
         this.expandedConfigs.clear();
@@ -115,6 +121,10 @@ class Strategies {
     }
 
     private constructor() {
+        configService.onChange(() => {
+            // Before initialize() there is no list to refresh yet.
+            if (this.list.length > 0) this.refreshFromConfig();
+        });
     }
 
     static instance: Strategies | null = null;

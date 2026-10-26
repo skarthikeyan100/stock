@@ -37,7 +37,7 @@ const RECONCILE_AFTER_HOUR = 9;
 const RECONCILE_AFTER_MINUTE = 10;
 
 // Login/startup-triggered broker-position reconciliation (bookkeeping's
-// reconcileZerodhaPositions/reconcileAntPositions/reconcileBreezePositions,
+// reconcileKitePositions/reconcileAntPositions/reconcileBreezePositions,
 // each strategy's own reconcile()) must not run against pre-market broker
 // state - a login done before the market opens (as happened 2026-09-24,
 // ~08:44-08:51) can see incomplete/stale broker responses and, worse, firing

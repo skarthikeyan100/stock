@@ -66,8 +66,8 @@ class PrismContractMaster {
     // Canonical-symbol resolution: exact (symbol, strike, optionType), no
     // expiry given - resolves to the nearest expiry (expiryOffset=0) or the
     // Nth-nearest (expiryOffset=1 => "next", etc), same shape as
-    // ZerodhaContractMaster.findNearestExpiryOption / AntContractMaster's
-    // equivalent. Prism is the secondary/legacy execution path (Zerodha is
+    // KiteContractMaster.findNearestExpiryOption / AntContractMaster's
+    // equivalent. Prism is the secondary/legacy execution path (Kite is
     // primary) - resolution only wired into order execution if/when that path
     // is used, per src/processes/order/prismExecutor.ts.
     findNearestExpiryOption(symbol: string, strike: number, optionType: 'CE' | 'PE', expiryOffset = 0): { token: string; tradingSymbol: string } {
@@ -85,7 +85,7 @@ class PrismContractMaster {
         return { token: row.token, tradingSymbol: row.tradingSymbol };
     }
 
-    // Per-index strike step, mirroring ZerodhaContractMaster's STRIKE_STEP map -
+    // Per-index strike step, mirroring KiteContractMaster's STRIKE_STEP map -
     // only NIFTY is wired into any current caller (orderProcess.ts's
     // chunkedBuyIndex prism branch hardcodes 'NIFTY'), but findATMOption's
     // public signature accepts any symbol, so a future BANKNIFTY/SENSEX
@@ -93,7 +93,7 @@ class PrismContractMaster {
     // NIFTY's and resolve the wrong (or no) strike.
     private static readonly STRIKE_STEP: Record<string, number> = { NIFTY: 50, BANKNIFTY: 100, FINNIFTY: 50, SENSEX: 100 };
 
-    // ATM-by-LTP lookup, mirroring ZerodhaContractMaster.findATMOption: round
+    // ATM-by-LTP lookup, mirroring KiteContractMaster.findATMOption: round
     // to the nearest strike step for this symbol and delegate to the
     // exact-strike resolver above. Added for BulkPcrAutoStartStrategy's
     // prism support - BulkPcrStrategy only ever resolves by current spot

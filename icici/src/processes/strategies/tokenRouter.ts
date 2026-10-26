@@ -2,6 +2,7 @@ import { Strategy } from '../../strategy/strategy';
 import { OptionQuote } from '../../model/model';
 import { subscribeToken, unsubscribeToken } from './DataClient';
 import { FeedSource, DEFAULT_FEED_SOURCE, BROKER_TO_FEED_SOURCE } from '../../ipc/feedSource';
+import { normalizeBrokerName } from '../../util/brokerName';
 
 // Local (in-process) replacement for Monitor's watchTokens/strategyMap-based
 // option-tick routing, now that trades/watch-state live only inside the
@@ -27,7 +28,7 @@ function getStrategies() {
 // signature.
 function resolveSource(strategy: Strategy): FeedSource {
     const broker = getStrategies().getExpandedConfig(strategy.userId)?.broker;
-    return (broker && BROKER_TO_FEED_SOURCE[broker]) || DEFAULT_FEED_SOURCE;
+    return (broker && BROKER_TO_FEED_SOURCE[normalizeBrokerName(broker) as keyof typeof BROKER_TO_FEED_SOURCE]) || DEFAULT_FEED_SOURCE;
 }
 
 function key(source: FeedSource, token: string): string {

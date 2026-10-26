@@ -25,7 +25,7 @@ function makePosition(strategy: any, mode: 'standard' | 'reverse', quantity = 65
     const atmStrike = 24000;
     const wingOffset = 100;
     return {
-        broker: 'zerodha',
+        broker: 'kite',
         phase: 'open',
         index: 'NIFTY',
         mode,

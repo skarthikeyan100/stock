@@ -58,7 +58,7 @@ class AntContractMaster {
     NIFTY: { exch: 'NSE', token: '26000' },
   };
 
-  // Matches ZerodhaContractMaster's strike-rounding table.
+  // Matches KiteContractMaster's strike-rounding table.
   static readonly STRIKE_STEP: Record<string, number> = {
     NIFTY: 50,
     SENSEX: 100,
@@ -187,7 +187,7 @@ class AntContractMaster {
 
   // ATM-by-LTP resolution: rounds to the nearest strike step for the given
   // symbol, then delegates to findNearestExpiryOption. Mirrors
-  // ZerodhaContractMaster.findATMOption.
+  // KiteContractMaster.findATMOption.
   findATMOption(underlyingLtp: number, optionType: string, symbol: string = 'NIFTY'): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
     const step = AntContractMaster.STRIKE_STEP[symbol] ?? 50;
     const atmStrike = Math.round(underlyingLtp / step) * step;
@@ -236,7 +236,7 @@ class AntContractMaster {
   }
 
   // Exact (symbol, strike, expiry, optionType) resolution, expiry given as a
-  // date string (not epoch-ms) - mirrors ZerodhaContractMaster.findExactOption's
+  // date string (not epoch-ms) - mirrors KiteContractMaster.findExactOption's
   // caller contract. Converts internally to findOption's epoch-ms comparison.
   findExactOption(params: { symbol: string; strike: number; expiry: string; optionType: string }): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
     const exch = params.symbol === 'SENSEX' ? 'BFO' : 'NFO';
@@ -253,7 +253,7 @@ class AntContractMaster {
   // Canonical-symbol resolution: exact (symbol, strike, optionType), no
   // expiry given - resolves to the nearest expiry (expiryOffset=0) or the
   // Nth-nearest (expiryOffset=1 => "next", etc), same shape as
-  // ZerodhaContractMaster.findNearestExpiryOption. Now wired to the ANT order
+  // KiteContractMaster.findNearestExpiryOption. Now wired to the ANT order
   // path (see src/processes/order/antExecutor.ts).
   findNearestExpiryOption(params: {
     symbol: string;
@@ -269,7 +269,7 @@ class AntContractMaster {
     // against the raw current instant excluded a contract expiring LATER
     // TODAY for the rest of the trading day, every single week, since market
     // hours are entirely after 5:30am IST. Compare against the start of
-    // today (UTC) instead, mirroring ZerodhaContractMaster's day-truncated
+    // today (UTC) instead, mirroring KiteContractMaster's day-truncated
     // comparison (`today.setHours(0,0,0,0)`) so a same-day expiry still counts.
     const todayStartUtc = Math.floor(Date.now() / 86400000) * 86400000;
 
@@ -300,13 +300,13 @@ class AntContractMaster {
   // The ANT-native token is the common/canonical token used everywhere
   // outside of a broker-specific API call (trade.token, exitMonitor's
   // live-tick subscription via dataProcess.ts) - ANT is the sole live-tick
-  // source and only understands its own token scheme. A Zerodha
+  // source and only understands its own token scheme. A Kite
   // instrument_token must never be stored as trade.token: see
   // ToDo.md 2026-08-27, where a manual PE buy did exactly that, subscribed a
   // nonexistent instrument on ANT's feed, and the live price froze at the
   // fill price forever even though the position was actively trading.
   //
-  // Every Zerodha-side contract lookup (findATMOption/findExactOption/
+  // Every Kite-side contract lookup (findATMOption/findExactOption/
   // findNearestExpiryOption) has a same-shaped counterpart here - call this
   // alongside whichever one was used, with the same selector, to get the
   // common token to store instead of that call's instrument_token.

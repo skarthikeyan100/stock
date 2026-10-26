@@ -22,7 +22,7 @@ import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 import { FeedSource, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
 
-// Entry point for the `strategies` process. No Prism/Zerodha dependency at all -
+// Entry point for the `strategies` process. No Prism/Kite dependency at all -
 // ticks arrive over stdin (piped from `data` by the orchestrator), orders go out
 // over OrderClient's IPC socket to `order`, fills come back the same way. This is
 // the process meant to be killed and respawned on every strategy code change,

@@ -9,11 +9,11 @@ import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder } from './pe
 import { sleep } from '../../util/sleep';
 
 // Prism/Shoonya's contract-by-price-range order path - the secondary/legacy
-// broker path (Zerodha is primary, see zerodhaExecutor.ts). `Prism.getInstance()`
+// broker path (Kite is primary, see kiteExecutor.ts). `Prism.getInstance()`
 // itself is reused as-is (its internal Monitor coupling was removed in favor of
 // bookkeeping.ts - see src/prism.ts); this module just exposes the read-only
 // lookups and order placement over IPC and folds fills into the same
-// bookkeeping/fill-notification path buyIndexOnZerodha uses.
+// bookkeeping/fill-notification path buyIndexOnKite uses.
 
 export async function getContractByPriceRange(right: string): Promise<string | null> {
     return Prism.getInstance().getContractByPriceRange(right);
@@ -205,7 +205,7 @@ export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
         if (response.norenordno) {
             trade.prismCoverOrderNo = response.norenordno;
             // Broker owns the actual exit - watch-only so the frontend's live
-            // P&L still moves with the market, same pattern zerodhaExecutor/
+            // P&L still moves with the market, same pattern kiteExecutor/
             // antExecutor use for their own GTT/bracket entries.
             // 'NSE' in Exchange is Breeze-only - Prism never trades NSE cash
             // through this path, cast is safe.
@@ -337,7 +337,7 @@ export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: s
     return { orderId };
 }
 
-// Cancels and untracks - mirrors zerodhaExecutor.cancelOrderOnZerodha.
+// Cancels and untracks - mirrors kiteExecutor.cancelOrderOnKite.
 // Without the untrack, the next pollPendingPrismLimitOrders tick would
 // independently discover the same order CANCELLED and fire the
 // cancelled-listener chain, re-placing a brand new resting sell for the
@@ -383,7 +383,7 @@ export async function getTradesOnPrism(): Promise<Trade[]> {
 }
 
 // No session-validity concept exists in Prism/RestAPI.ts today (unlike
-// Zerodha.hasValidSession's real token check) - always reports valid until a
+// Kite.hasValidSession's real token check) - always reports valid until a
 // real check is worth adding. See ToDo.md.
 export async function hasValidSessionOnPrism(): Promise<boolean> {
     return true;

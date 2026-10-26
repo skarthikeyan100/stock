@@ -9,9 +9,9 @@ import bookkeeping from './bookkeeping';
 import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange, cancelOrderWithFillRecheck, OrderAlreadyFilledError } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange } from './breezePendingLimitOrders';
-import { roundToTick } from '../../zerodha/Zerodha';
+import { roundToTick } from '../../kite/Kite';
 
-// ICICI Breeze execution, mirroring zerodhaExecutor.ts/antExecutor.ts's shape.
+// ICICI Breeze execution, mirroring kiteExecutor.ts/antExecutor.ts's shape.
 // Structurally different from both in one way: Breeze identifies a contract
 // by a *structured* {stockCode, expiryDate, strikePrice, right} tuple, not a
 // single numeric token/tradingsymbol - BreezeContractMaster.FnoRecord.token
@@ -93,7 +93,7 @@ export function exchangeOfOrder(orderId: string): BreezeExchange {
 // use of this in the plan.
 // SENSEX contracts use the 'SENSEX' index name in their tsym (not ICICI's 'BSESEN' stockCode)
 // so every tsym-keyed path in the app (bookkeeping lot size, BFO-vs-NFO inference via
-// startsWith('SENSEX'), ANT-style tsyms) treats them the same as the ANT/Zerodha SENSEX legs.
+// startsWith('SENSEX'), ANT-style tsyms) treats them the same as the ANT/Kite SENSEX legs.
 export function tsymFor(record: FnoRecord): string {
     return `${indexNameFor(record.shortName)}${record.strikePrice}${record.optionType}`;
 }
@@ -139,7 +139,7 @@ export async function getOptionQuote(record: FnoRecord): Promise<{ bestBid: numb
         // Breeze's contract-quote endpoint intermittently returns a generic nginx error page
         // (seen live 2026-09-23 and 2026-10-19) while the rest of its API keeps working. Every
         // caller here (buy at ask, sell at bid, square-off retries) needs a marketable limit, so
-        // price off ANT's option-chain LTP with the same 5% buffer as the Zerodha path instead
+        // price off ANT's option-chain LTP with the same 5% buffer as the Kite path instead
         // of failing the entry/exit outright. Placement itself still goes through Breeze.
         Log.log(`[order] Breeze option quote failed for ${tsymFor(record)} (${String(e?.message ?? e).slice(0, 120)}) - falling back to ANT-priced bid/ask`);
         // ANT's option chain covers only each index's nearest expiry - for anything else a strike
@@ -162,11 +162,11 @@ export async function getOptionQuote(record: FnoRecord): Promise<{ bestBid: numb
 // generic nginx "resource unavailable" page for this exact contract-quote
 // call - genuine API/infra flakiness (Breeze's session/auth/trades endpoints
 // kept working in the same window), not a business error there's a param fix
-// for. zerodhaExecutor.ts's getMarketableZerodhaPrice already works around
-// the identical class of problem for Zerodha (whose own quote/LTP endpoint
+// for. kiteExecutor.ts's getMarketableKitePrice already works around
+// the identical class of problem for Kite (whose own quote/LTP endpoint
 // isn't usable at all for this account) by pricing off ANT's feed instead -
 // applying the same pattern here for Breeze's BUY entry pricing: ANT's LTP,
-// buffered 1% and tick-rounded, exactly like getMarketableZerodhaPrice's own
+// buffered 1% and tick-rounded, exactly like getMarketableKitePrice's own
 // BUY case. Breeze's own API is still used for the actual order placement -
 // only pricing is rerouted.
 //
@@ -183,7 +183,7 @@ export async function getMarketableBreezeBuyPrice(contract: FnoRecord): Promise<
     if (!data) throw new Error(`No ANT price estimate available for ${tsymFor(contract)}`);
     // The option chain's LTP lags a fast expiry-day option (live 2026-10-22 13:00: priced the Breeze buy
     // at 125.05 while the contract traded ~129-132, so the limit never filled, twice). Prefer ANT's live
-    // ScripDetails LTP for the same contract, as zerodhaExecutor/antExecutor do; fall back to the chain.
+    // ScripDetails LTP for the same contract, as kiteExecutor/antExecutor do; fall back to the chain.
     let ltp = data.premium;
     try {
         const exch = indexNameFor(contract.shortName) === 'SENSEX' ? 'BFO' : 'NFO';
@@ -296,8 +296,8 @@ export async function buyIndexOnBreeze(req: BuyIndexOnBreezeRequest): Promise<Tr
 }
 
 // Restart-safety fallback: bookkeeping.trades is in-memory only and has no
-// Breeze restart-reconciliation yet (unlike Zerodha/ANT's
-// reconcileZerodhaPositions/reconcileAntPositions - a real, deliberately
+// Breeze restart-reconciliation yet (unlike Kite/ANT's
+// reconcileKitePositions/reconcileAntPositions - a real, deliberately
 // deferred gap, not this pass's scope). Rather than leave a position that
 // happens to outlive an `order` restart unclosable, fall back to asking
 // Breeze's own live positions for the contract details directly - the same
@@ -578,7 +578,7 @@ async function getBreezeOrderFillInfo(orderId: string): Promise<{ filledQuantity
     return { filledQuantity: avgPrice > 0 ? Math.max(0, quantity - pending - cancelled) : 0, avgPrice, terminal: pending === 0 };
 }
 
-// Cancels and untracks - mirrors zerodhaExecutor.cancelOrderOnZerodha.
+// Cancels and untracks - mirrors kiteExecutor.cancelOrderOnKite.
 // Without the untrack, the next pollPendingBreezeLimitOrders tick would
 // independently discover the same order cancelled/rejected and fire the
 // cancelled-listener chain, re-placing a brand new resting sell for the
@@ -646,10 +646,10 @@ async function buyResolvedOnBreeze(request: BuyRequest): Promise<Trade> {
 }
 
 // --- Bare execution primitives (LegManager: ContinuousStrategy/SupportResistanceStrategy) ---
-// Mirrors zerodhaExecutor.ts's marketBuyBareOnZerodha/marketSellBareOnZerodha/
-// placeLimitBuyBareOnZerodha/getContractByPriceRangeOnZerodha exactly in signature
+// Mirrors kiteExecutor.ts's marketBuyBareOnKite/marketSellBareOnKite/
+// placeLimitBuyBareOnKite/getContractByPriceRangeOnKite exactly in signature
 // shape, so orderProcess.ts's bare-execution IPC handlers only branch on which of
-// these (vs. the Zerodha equivalents) to call, based on bookkeeping.getUserBroker -
+// these (vs. the Kite equivalents) to call, based on bookkeeping.getUserBroker -
 // see orderProcess.ts's case 'buyContractBare' etc. Every "market" primitive below
 // is actually a LIMIT at the current best bid/ask (see file header) - ICICI rejects
 // true MARKET orders on options.
@@ -661,7 +661,7 @@ function parseTsym(tradingSymbol: string): { shortName: string; strike: number; 
 }
 
 // tradingSymbol/antToken here match the shape LegManager already threads through the
-// Zerodha bare path (see LegManager.ts's "ANT token, not Zerodha's instrumentToken"
+// Kite bare path (see LegManager.ts's "ANT token, not Kite's instrumentToken"
 // comment) - trade.token is deliberately set to antToken, not contract.token, since
 // live option ticks and LegManager's legsByToken map are keyed by ANT's token.
 export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
@@ -717,7 +717,7 @@ export async function marketSellBareOnBreeze(userId: string, tradingSymbol: stri
 // exception here is purely at the bookkeeping layer: recordShortFill (not recordFill),
 // so this fill is tracked as a short, not swallowed by the long-only Sell branch's
 // "no existing entry" no-op. Never call placeLimitOptionOrder with 'sell' for a fresh
-// entry from anywhere outside this function and the equivalent zerodha/ant/prism functions.
+// entry from anywhere outside this function and the equivalent kite/ant/prism functions.
 export async function enterShortOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
@@ -786,7 +786,7 @@ export async function getLiveNetQuantity(tradingSymbol: string): Promise<number>
 }
 
 // Returns immediately with {orderId} - fill arrives later via
-// breezePendingLimitOrders' poller, mirroring placeLimitBuyBareOnZerodha's contract
+// breezePendingLimitOrders' poller, mirroring placeLimitBuyBareOnKite's contract
 // exactly. Deliberately NOT wait-for-fill despite every other bare primitive here
 // doing so: a root-refill limit sits below current LTP hoping for a retrace, which
 // can take arbitrarily long or never happen (see LegManager's checkRefillDrift) -
@@ -818,11 +818,11 @@ export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: 
     return { orderId };
 }
 
-// Breeze premium-floor strike walk - mirrors getContractByPriceRangeOnZerodha's shape
-// exactly (zerodhaExecutor.ts:424-458), including reusing the SAME ANT cross-reference
+// Breeze premium-floor strike walk - mirrors getContractByPriceRangeOnKite's shape
+// exactly (kiteExecutor.ts:424-458), including reusing the SAME ANT cross-reference
 // (estimateOptionPricesBatch) for premiums/antToken, for consistency and to avoid a
 // second, redundant rate-limited data source. Only the final contract-resolution step
-// differs (BreezeContractMaster.findNearestExpiryOption instead of ZerodhaContractMaster's).
+// differs (BreezeContractMaster.findNearestExpiryOption instead of KiteContractMaster's).
 export async function getContractByPriceRangeOnBreeze(
     underlyingLtp: number,
     optionType: 'CE' | 'PE',
@@ -865,7 +865,7 @@ async function getPositionsOnBreeze(): Promise<BrokerPosition[]> {
     // Field names confirmed live 2026-09-17 against a real open position:
     // {stock_code, expiry_date, strike_price, right: "Call"|"Put", quantity,
     //  average_price, exchange_code, ...} - notably NO token field, unlike
-    // Zerodha/ANT's position responses, so instrumentId is resolved via
+    // Kite/ANT's position responses, so instrumentId is resolved via
     // BreezeContractMaster rather than read directly off the row.
     return Promise.all(
         rows.map(async (r: any) => {

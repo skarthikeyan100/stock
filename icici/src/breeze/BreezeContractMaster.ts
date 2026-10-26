@@ -54,7 +54,7 @@ export function breezeExchangeFor(shortName: string): BreezeExchange {
     return shortName === SENSEX_BREEZE_SHORT_NAME ? 'BFO' : 'NFO';
 }
 
-// SENSEX strikes are 100 apart, NIFTY's are 50 (same split ANT/Zerodha/Prism use).
+// SENSEX strikes are 100 apart, NIFTY's are 50 (same split ANT/Kite/Prism use).
 export function strikeStepFor(shortName: string): number {
     return shortName === SENSEX_BREEZE_SHORT_NAME ? 100 : 50;
 }
@@ -69,13 +69,13 @@ export function strikeStepFor(shortName: string): number {
 //
 // ICICI's stockCode is its own short identifier, not the NSE trading symbol
 // (e.g. ShortName "VEDLIM" for NSE symbol "VEDL") - this is why Breeze needs
-// its own contract-master lookup at all, unlike Ant/Zerodha's numeric-token
+// its own contract-master lookup at all, unlike Ant/Kite's numeric-token
 // systems.
 class BreezeContractMaster {
     private static instance: BreezeContractMaster;
 
     // Cached under data/breeze/ (downloaded zip + its extracted .txt files) -
-    // matches the data/ant/, data/zerodha/ convention for broker contract
+    // matches the data/ant/, data/kite/ convention for broker contract
     // masters. Re-downloaded whenever stale (see STALE_THRESHOLD_MS below),
     // so nothing here needs to be committed/backed up.
     private readonly DATA_DIR = path.join(__dirname, '../../data/breeze');
@@ -249,7 +249,7 @@ class BreezeContractMaster {
         return this.loadDerivatives('NFO').find((r) => r.token === token) ?? this.loadDerivatives('BFO').find((r) => r.token === token);
     }
 
-    // Mirrors AntContractMaster.findATMOption/ZerodhaContractMaster.findATMOption
+    // Mirrors AntContractMaster.findATMOption/KiteContractMaster.findATMOption
     // exactly (same "nearest expiry >= today" rule, strike step per underlying) -
     // same logic backing the frontend's Up/Down flash-trade buttons
     // (server.ts's /demo/resolve), just resolving against Breeze's own
@@ -279,7 +279,7 @@ class BreezeContractMaster {
     }
 
     // Resolves a specific (strike, optionType) to its nearest-upcoming-expiry contract -
-    // mirrors ZerodhaContractMaster.findNearestExpiryOption. Needed because the bare-
+    // mirrors KiteContractMaster.findNearestExpiryOption. Needed because the bare-
     // execution IPC surface (breezeExecutor.ts) only carries a flat tradingSymbol string
     // (no expiry) into sell/limit-buy calls, so the full contract tuple must be
     // re-resolved from just strike+optionType - safe since both LegManager-driven

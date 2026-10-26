@@ -25,12 +25,12 @@ const RETRY_MINUTES = 30;
 const MAX_CONFIRM_HOUR = 14;
 const MAX_CONFIRM_MINUTE = 45;
 
-// Trades NIFTY options on Zerodha based on whether the opening move (9:15 vs
+// Trades NIFTY options on Kite based on whether the opening move (9:15 vs
 // previous day's close) is still intact at 9:20. Fed ticks via the standard
 // Strategy.processNiftyQuote hook (piped in from the `data` process). Order
 // execution goes through OrderClient -> the `order` process, which places the
 // entry buy and a two-leg target/stop-loss GTT together (see
-// src/processes/order/zerodhaExecutor.ts) - no direct Zerodha dependency here.
+// src/processes/order/kiteExecutor.ts) - no direct Kite dependency here.
 export default class GoodMorningStrategy extends Strategy {
     private tradingDay: string | null = null;
     private prevClose: number | null = null;
@@ -51,7 +51,7 @@ export default class GoodMorningStrategy extends Strategy {
     }
 
     // Fires when a GTT-based entry closes (target/SL hit, detected by
-    // zerodhaExecutor's pollGttFills since GTT itself is fire-and-forget) -
+    // kiteExecutor's pollGttFills since GTT itself is fire-and-forget) -
     // opens a fresh same-day window instead of waiting for tomorrow's
     // calendar-date reset (resetIfNewDay).
     updateTrade = async (trade: Trade): Promise<void> => {

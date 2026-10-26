@@ -4,12 +4,12 @@ import fs from 'fs';
 import path from 'path';
 import { sleep } from '../util/sleep';
 
-// NFO/BFO options tick size - Zerodha rejects GTT trigger/order prices that
+// NFO/BFO options tick size - Kite rejects GTT trigger/order prices that
 // aren't an exact multiple of this (confirmed live: "Stoploss trigger price
 // should be a multiple of tick size 0.05" - a plain 2-decimal round isn't
 // enough, e.g. a multi-fill average entry price like 133.61363636363637
 // rounds to 122.61 after subtracting stopLossPoints, which is NOT a multiple
-// of 0.05). Exported so callers (e.g. zerodhaExecutor.ts) can pre-round
+// of 0.05). Exported so callers (e.g. kiteExecutor.ts) can pre-round
 // values that end up in bookkeeping/exitMonitor comparisons too, so they stay
 // consistent with whatever the broker actually enforces.
 export const NFO_TICK_SIZE = 0.05;
@@ -21,16 +21,18 @@ export function roundToTick(price: number, tick: number = NFO_TICK_SIZE): number
     return Math.round(Math.round(price / tick) * tick * 100) / 100;
 }
 
-class Zerodha {
-    private static instance: Zerodha;
+class Kite {
+    private static instance: Kite;
 
-    // Zerodha Configuration - Update these with your actual credentials
+    // Kite Configuration - Update these with your actual credentials
     private apiKey = '8ugdwlq4fz81o218';
     private apiSecret = '914b3mcaxlx94jfmleikmexysueqohmn';
     private redirectUri = 'http://localhost:3000/kite/callback';
     private kc: KiteConnect;
     private accessToken: string | null = null;
-    private sessionFile = path.join(__dirname, '../../.zerodha_session.json');
+    private sessionFile = path.join(__dirname, '../../.kite_session.json');
+    // Pre-rename session file name; read as a fallback only so an existing login survives the rename.
+    private legacySessionFile = path.join(__dirname, '../../.zerodha_session.json');
 
     // Set once the broker rejects a buy with an "ageing debit balance" error
     // (InputException - collateral margin for option buying is blocked until
@@ -54,7 +56,7 @@ class Zerodha {
 
     private assertBuysNotHalted(): void {
         if (this.buyHaltReason) {
-            throw new Error(`Zerodha buying halted - ${this.buyHaltReason}`);
+            throw new Error(`Kite buying halted - ${this.buyHaltReason}`);
         }
     }
 
@@ -62,7 +64,7 @@ class Zerodha {
         const message = e?.message ?? String(e);
         if (/ageing debit balance/i.test(message)) {
             this.buyHaltReason = message;
-            Log.log(`[Zerodha] FATAL: ${message} - halting ALL further buy orders until the order process is restarted (sell/square-off is unaffected)`);
+            Log.log(`[Kite] FATAL: ${message} - halting ALL further buy orders until the order process is restarted (sell/square-off is unaffected)`);
         }
     }
 
@@ -71,11 +73,11 @@ class Zerodha {
         this.loadSession();
     }
 
-    static getInstance(): Zerodha {
-        if (!Zerodha.instance) {
-            Zerodha.instance = new Zerodha();
+    static getInstance(): Kite {
+        if (!Kite.instance) {
+            Kite.instance = new Kite();
         }
-        return Zerodha.instance;
+        return Kite.instance;
     }
 
     // Public re-read hook: `order` calls this after `frontend` completes a fresh
@@ -87,16 +89,17 @@ class Zerodha {
 
     private loadSession(): void {
         try {
-            if (fs.existsSync(this.sessionFile)) {
-                const data = JSON.parse(fs.readFileSync(this.sessionFile, 'utf-8'));
+            const file = fs.existsSync(this.sessionFile) ? this.sessionFile : fs.existsSync(this.legacySessionFile) ? this.legacySessionFile : null;
+            if (file) {
+                const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
                 if (data.access_token) {
                     this.accessToken = data.access_token;
                     this.kc.setAccessToken(this.accessToken);
-                    Log.log('Zerodha session loaded from file');
+                    Log.log('Kite session loaded from file');
                 }
             }
         } catch (e) {
-            Log.log('Failed to load Zerodha session:', e);
+            Log.log('Failed to load Kite session:', e);
         }
     }
 
@@ -104,22 +107,22 @@ class Zerodha {
         try {
             if (this.accessToken) {
                 fs.writeFileSync(this.sessionFile, JSON.stringify({ access_token: this.accessToken }));
-                Log.log('Zerodha session saved');
+                Log.log('Kite session saved');
             }
         } catch (e) {
-            Log.log('Failed to save Zerodha session:', e);
+            Log.log('Failed to save Kite session:', e);
         }
     }
 
     getLoginURL(): string {
         const url = this.kc.getLoginURL();
-        Log.log('Generated Zerodha login URL:', url);
+        Log.log('Generated Kite login URL:', url);
         return url;
     }
 
     async exchangeRequestTokenForSession(requestToken: string): Promise<{ access_token: string; profile: any }> {
         try {
-            Log.log('=== Zerodha Token Exchange Starting ===');
+            Log.log('=== Kite Token Exchange Starting ===');
             Log.log('Request token:', requestToken.substring(0, 20) + '...');
 
             const session = await this.kc.generateSession(requestToken, this.apiSecret);
@@ -131,19 +134,19 @@ class Zerodha {
             this.saveSession();
 
             Log.log('✓ Access token obtained and saved');
-            Log.log('=== Zerodha Token Exchange Successful! ===');
+            Log.log('=== Kite Token Exchange Successful! ===');
 
             return {
                 access_token: this.accessToken,
                 profile: session
             };
         } catch (e: any) {
-            Log.log('❌ Zerodha Token Exchange Failed!');
+            Log.log('❌ Kite Token Exchange Failed!');
             Log.log('Error message:', e.message);
             Log.log('Error:', e);
 
             const errorMsg = e.message || 'Token exchange failed';
-            throw new Error(`Zerodha token exchange failed: ${errorMsg}`);
+            throw new Error(`Kite token exchange failed: ${errorMsg}`);
         }
     }
 
@@ -186,7 +189,7 @@ class Zerodha {
             if (!this.accessToken) {
                 throw new Error('No active session. Please login first.');
             }
-            Log.log('Fetching Zerodha trades...');
+            Log.log('Fetching Kite trades...');
             const trades = await (this.kc as any).getTrades();
             Log.log('Trades fetched:', trades.length);
             return trades;
@@ -213,7 +216,7 @@ class Zerodha {
             if (!this.accessToken) {
                 throw new Error('No active session. Please login first.');
             }
-            Log.log('Fetching Zerodha positions...');
+            Log.log('Fetching Kite positions...');
             const positions = await (this.kc as any).getPositions();
             Log.log('Positions fetched');
             return positions;
@@ -226,9 +229,9 @@ class Zerodha {
     // Standalone LIMIT buy - no market_protection (that's a MARKET/SL-M-only param; a plain
     // `price` is what Kite expects for LIMIT). Originally added for ContinuousStrategy's
     // target-hit re-entries; since 2026-09-22 this is also the ONLY entry point every
-    // Zerodha buy anywhere in the app funnels through - the old buyOption() (blind
+    // Kite buy anywhere in the app funnels through - the old buyOption() (blind
     // MARKET + market_protection:-1) was removed, since a market order has no price
-    // floor at all (see zerodhaExecutor.ts's getMarketableZerodhaPrice comment for why).
+    // floor at all (see kiteExecutor.ts's getMarketableKitePrice comment for why).
     // Every caller now fetches a live ANT-sourced quote first and prices a marketable
     // limit here instead.
     async placeLimitBuyOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
@@ -236,7 +239,7 @@ class Zerodha {
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
         }
-        Log.log(`[Zerodha] Placing NRML limit buy: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
+        Log.log(`[Kite] Placing NRML limit buy: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
         try {
             const response = await this.kc.placeOrder('regular', {
                 exchange,
@@ -247,7 +250,7 @@ class Zerodha {
                 order_type: 'LIMIT',
                 price,
             });
-            Log.log(`[Zerodha] Limit buy order placed: ${response.order_id}`);
+            Log.log(`[Kite] Limit buy order placed: ${response.order_id}`);
             return { orderId: response.order_id };
         } catch (e) {
             this.haltBuysOnDebitBalance(e);
@@ -300,14 +303,14 @@ class Zerodha {
         try {
             const sellable = await this.getSellableQuantity(tradingSymbol);
             if (sellable <= 0) {
-                Log.log(`[Zerodha] ALERT: NEVER-SHORT GUARD refused a sell of ${quantity} ${tradingSymbol} - nothing sellable (sellable=${sellable}); the caller's position tracking is out of sync with the broker`);
+                Log.log(`[Kite] ALERT: NEVER-SHORT GUARD refused a sell of ${quantity} ${tradingSymbol} - nothing sellable (sellable=${sellable}); the caller's position tracking is out of sync with the broker`);
                 throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${tradingSymbol} (sellable=${sellable}) - refusing to sell ${quantity}`);
             }
             if (quantity > sellable) {
-                Log.log(`[Zerodha] ALERT: NEVER-SHORT GUARD clamped a sell of ${tradingSymbol} from ${quantity} to ${sellable} - the caller's position tracking is out of sync with the broker`);
+                Log.log(`[Kite] ALERT: NEVER-SHORT GUARD clamped a sell of ${tradingSymbol} from ${quantity} to ${sellable} - the caller's position tracking is out of sync with the broker`);
                 quantity = sellable;
             }
-            Log.log(`[Zerodha] Placing NRML limit sell: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
+            Log.log(`[Kite] Placing NRML limit sell: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
             const response = await this.kc.placeOrder('regular', {
                 exchange,
                 tradingsymbol: tradingSymbol,
@@ -317,7 +320,7 @@ class Zerodha {
                 order_type: 'LIMIT',
                 price,
             });
-            Log.log(`[Zerodha] Limit sell order placed: ${response.order_id}`);
+            Log.log(`[Kite] Limit sell order placed: ${response.order_id}`);
             return { orderId: response.order_id };
         } finally {
             this.sellsInFlight.delete(tradingSymbol);
@@ -341,7 +344,7 @@ class Zerodha {
                 return latest.average_price;
             }
             if (latest?.status === 'REJECTED' || latest?.status === 'CANCELLED') {
-                throw new Error(`Zerodha order ${orderId} ${latest.status}`);
+                throw new Error(`Kite order ${orderId} ${latest.status}`);
             }
 
             // Skip the drift check on the very first attempt: the resting
@@ -361,17 +364,17 @@ class Zerodha {
                 try {
                     ltp = await driftCheck.getLtp();
                 } catch (e) {
-                    Log.log(`[Zerodha] Drift-check LTP fetch failed for order ${orderId} - skipping this check, will retry next poll:`, e);
+                    Log.log(`[Kite] Drift-check LTP fetch failed for order ${orderId} - skipping this check, will retry next poll:`, e);
                 }
                 const drift = ltp !== undefined ? ltp - driftCheck.limitPrice : -Infinity; // one-directional, mirrors LegManager.checkRefillDrift
                 if (drift > driftCheck.driftPoints) {
                     let cancelFailed = false;
                     try {
                         await this.cancelOrder(orderId);
-                        Log.log(`[Zerodha] Cancelled order ${orderId} - price drifted ${drift.toFixed(2)} above limit ${driftCheck.limitPrice} (threshold ${driftCheck.driftPoints})`);
+                        Log.log(`[Kite] Cancelled order ${orderId} - price drifted ${drift.toFixed(2)} above limit ${driftCheck.limitPrice} (threshold ${driftCheck.driftPoints})`);
                     } catch (e) {
                         cancelFailed = true;
-                        Log.log(`[Zerodha] Failed to cancel order ${orderId} after drift detected - re-checking status:`, e);
+                        Log.log(`[Kite] Failed to cancel order ${orderId} after drift detected - re-checking status:`, e);
                     }
                     // Re-check status regardless of whether cancel succeeded or
                     // failed - a cancel can legitimately succeed after a PARTIAL
@@ -387,7 +390,7 @@ class Zerodha {
                     const recheck = await this.kc.getOrderHistory(orderId);
                     const recheckLatest = recheck[recheck.length - 1];
                     if (recheckLatest?.status === 'COMPLETE' && recheckLatest.average_price) {
-                        Log.log(`[Zerodha] Order ${orderId} actually filled fully during the drift-cancel race - using real fill price ${recheckLatest.average_price}`);
+                        Log.log(`[Kite] Order ${orderId} actually filled fully during the drift-cancel race - using real fill price ${recheckLatest.average_price}`);
                         return recheckLatest.average_price;
                     }
                     // Trust the recheck's own filled_quantity regardless of
@@ -405,11 +408,11 @@ class Zerodha {
                     const filledQuantity = Number(recheckLatest?.filled_quantity ?? 0);
                     const averagePrice = Number(recheckLatest?.average_price ?? 0);
                     if (cancelFailed) {
-                        Log.log(`[Zerodha] Order ${orderId} may still be resting live at the broker after a failed drift-cancel - filled_quantity as of recheck: ${filledQuantity}`);
+                        Log.log(`[Kite] Order ${orderId} may still be resting live at the broker after a failed drift-cancel - filled_quantity as of recheck: ${filledQuantity}`);
                     }
                     throw Object.assign(
                         new Error(
-                            `Zerodha order ${orderId} cancelled - price drifted ${drift.toFixed(2)} points above limit ${driftCheck.limitPrice} (threshold ${driftCheck.driftPoints})` +
+                            `Kite order ${orderId} cancelled - price drifted ${drift.toFixed(2)} points above limit ${driftCheck.limitPrice} (threshold ${driftCheck.driftPoints})` +
                                 (filledQuantity > 0 ? ` (partial fill ${filledQuantity} @ ${averagePrice} before cancel)` : '')
                         ),
                         { driftCancelled: true, filledQuantity, averagePrice }
@@ -429,9 +432,9 @@ class Zerodha {
         // original timeout so the caller aborts the trade either way.
         try {
             await this.cancelOrder(orderId);
-            Log.log(`[Zerodha] Cancelled unfilled order ${orderId} after fill-price timeout`);
+            Log.log(`[Kite] Cancelled unfilled order ${orderId} after fill-price timeout`);
         } catch (e) {
-            Log.log(`[Zerodha] Failed to cancel unfilled order ${orderId} after fill-price timeout:`, e);
+            Log.log(`[Kite] Failed to cancel unfilled order ${orderId} after fill-price timeout:`, e);
         }
         // Re-check regardless of the cancel's outcome: the order may have filled in the race window
         // (cancel then fails "already filled"), and reporting "did not fill" makes the caller retry the
@@ -441,22 +444,22 @@ class Zerodha {
             const recheck = await this.kc.getOrderHistory(orderId);
             const recheckLatest = recheck[recheck.length - 1];
             if (recheckLatest?.status === 'COMPLETE' && recheckLatest.average_price) {
-                Log.log(`[Zerodha] Order ${orderId} actually filled fully during the timeout-cancel race - using real fill price ${recheckLatest.average_price}`);
+                Log.log(`[Kite] Order ${orderId} actually filled fully during the timeout-cancel race - using real fill price ${recheckLatest.average_price}`);
                 return recheckLatest.average_price;
             }
             const filledQuantity = Number(recheckLatest?.filled_quantity ?? 0);
             if (filledQuantity > 0) {
                 const averagePrice = Number(recheckLatest?.average_price ?? 0);
                 throw Object.assign(
-                    new Error(`Zerodha order ${orderId} only partially filled within timeout (${filledQuantity} @ ${averagePrice}), remainder cancelled`),
+                    new Error(`Kite order ${orderId} only partially filled within timeout (${filledQuantity} @ ${averagePrice}), remainder cancelled`),
                     { timeoutPartial: true, filledQuantity, averagePrice }
                 );
             }
         } catch (e: any) {
             if (e?.timeoutPartial) throw e;
-            Log.log(`[Zerodha] Post-timeout status re-check failed for order ${orderId}:`, e);
+            Log.log(`[Kite] Post-timeout status re-check failed for order ${orderId}:`, e);
         }
-        throw new Error(`Zerodha order ${orderId} did not fill within timeout`);
+        throw new Error(`Kite order ${orderId} did not fill within timeout`);
     }
 
     // Two-leg GTT (OCO): whichever trigger fires first (stop-loss or target) places
@@ -474,7 +477,7 @@ class Zerodha {
         const targetPrice = roundToTick(entryPrice + targetPoints);
         const stopLossPrice = roundToTick(entryPrice - stopLossPoints);
 
-        Log.log(`[Zerodha] Placing GTT OCO for ${tradingSymbol}: stopLoss=${stopLossPrice} target=${targetPrice}`);
+        Log.log(`[Kite] Placing GTT OCO for ${tradingSymbol}: stopLoss=${stopLossPrice} target=${targetPrice}`);
 
         const response = await this.kc.placeGTT({
             trigger_type: 'two-leg', // KiteConnect.GTT_TYPE_OCO - not in the SDK's type defs
@@ -488,11 +491,11 @@ class Zerodha {
             ],
         });
 
-        Log.log(`[Zerodha] GTT placed: trigger_id=${response.trigger_id}`);
+        Log.log(`[Kite] GTT placed: trigger_id=${response.trigger_id}`);
         return response.trigger_id;
     }
 
-    // Replaces an existing GTT's target/stop-loss (POST /prism/settarget's Zerodha
+    // Replaces an existing GTT's target/stop-loss (POST /prism/settarget's Kite
     // path) - modifyGTT requires the full trigger definition, not just the changed
     // fields, so this re-sends the same two-leg OCO shape placeTargetStopLossGTT
     // uses, with new trigger_values.
@@ -511,7 +514,7 @@ class Zerodha {
         // on modify as on initial placement.
         targetPrice = roundToTick(targetPrice);
         stopLossPrice = roundToTick(stopLossPrice);
-        Log.log(`[Zerodha] Modifying GTT ${triggerId} for ${tradingSymbol}: stopLoss=${stopLossPrice} target=${targetPrice}`);
+        Log.log(`[Kite] Modifying GTT ${triggerId} for ${tradingSymbol}: stopLoss=${stopLossPrice} target=${targetPrice}`);
         await this.kc.modifyGTT(triggerId, {
             trigger_type: 'two-leg',
             tradingsymbol: tradingSymbol,
@@ -532,7 +535,7 @@ class Zerodha {
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
         }
-        Log.log(`[Zerodha] Cancelling order ${orderId}`);
+        Log.log(`[Kite] Cancelling order ${orderId}`);
         await this.kc.cancelOrder('regular', orderId);
     }
 
@@ -546,7 +549,7 @@ class Zerodha {
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
         }
-        Log.log(`[Zerodha] [BUTTERFLY SHORT-ENTRY] Placing NRML limit sell-to-open: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
+        Log.log(`[Kite] [BUTTERFLY SHORT-ENTRY] Placing NRML limit sell-to-open: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
         const response = await this.kc.placeOrder('regular', {
             exchange,
             tradingsymbol: tradingSymbol,
@@ -556,14 +559,14 @@ class Zerodha {
             order_type: 'LIMIT',
             price,
         });
-        Log.log(`[Zerodha] [BUTTERFLY SHORT-ENTRY] Limit sell-to-open order placed: ${response.order_id}`);
+        Log.log(`[Kite] [BUTTERFLY SHORT-ENTRY] Limit sell-to-open order placed: ${response.order_id}`);
         return { orderId: response.order_id };
     }
 
     // Read-only live net quantity for `tradingSymbol`, for ButterflyStrategy's reconcile() to
     // cross-check a persisted leg's status against the real broker position - deliberately
     // NOT getSellableQuantity (that's guard-bearing logic for a different decision: how much
-    // can still be sold without going short). Mirrors bookkeeping.reconcileZerodhaPositions'
+    // can still be sold without going short). Mirrors bookkeeping.reconcileKitePositions'
     // own direct getPositions() read.
     async getLiveNetQuantity(tradingSymbol: string): Promise<number> {
         const positions = await this.getPositions();
@@ -572,4 +575,4 @@ class Zerodha {
     }
 }
 
-export default Zerodha;
+export default Kite;

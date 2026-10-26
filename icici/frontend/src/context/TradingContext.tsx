@@ -171,7 +171,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
 
   const describeOrderError = (body: any): string => {
     // Backend sends { error: string }, not { message: string } - read the
-    // field it actually sends. Zerodha's raw insufficient-funds message
+    // field it actually sends. Kite's raw insufficient-funds message
     // ("ageing debit balance ... collateral margin ...") is accurate but not
     // user-friendly, so it's mapped to a plain-language equivalent.
     const message: string = body?.error || body?.message || '';

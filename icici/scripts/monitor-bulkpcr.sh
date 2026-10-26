@@ -79,7 +79,7 @@ tail $TAIL_OPTS "$LOG_FILE" | awk -W interactive '
         if (index(line, "buyChunked:") > 0 && index(line, "drift-cancelled") > 0 && index(line, "for BulkPcrStrategy") > 0) {
             line = stripBuyChunkedPrefix(line)
             # No trailing-space requirement here (unlike the BUY-fill branch
-            # below) - this message reads "...for BulkPcrStrategy. Zerodha
+            # below) - this message reads "...for BulkPcrStrategy. Kite
             # order..." (a period right after, not a space), so a pattern
             # requiring " for BulkPcrStrategy " would never match.
             sub(/ for BulkPcrStrategy/, "", line)

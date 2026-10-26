@@ -20,7 +20,7 @@ Mistakes made while working on this project, written down so they are not repeat
 This project supports multiple broker integrations with OAuth-based authentication. Each broker has its own service class:
 
 - **ANT** - Alice Blue's Advanced Nest Technology (OAuth with checksum)
-- **Zerodha** - Zerodha's Kite API (request_token exchange)
+- **Kite** - Kite's Kite API (request_token exchange)
 
 ### ANT (Alice Blue) Authentication
 
@@ -369,17 +369,17 @@ const { access_token } = await response.json();
 localStorage.setItem('ant_token', access_token);
 ```
 
-### Zerodha (Kite API) Authentication
+### Kite (Kite API) Authentication
 
 #### Overview
-Zerodha uses request_token-based authentication. Users login to Zerodha, which returns a request_token that's exchanged for an access_token using the API secret.
+Kite uses request_token-based authentication. Users login to Kite, which returns a request_token that's exchanged for an access_token using the API secret.
 
 #### Service Location
-`src/zerodha/Zerodha.ts` - Singleton service wrapping KiteConnect library
+`src/kite/Kite.ts` - Singleton service wrapping KiteConnect library
 
 #### Configuration
 
-Update credentials in `src/zerodha/Zerodha.ts` (lines 11-12):
+Update credentials in `src/kite/Kite.ts` (lines 11-12):
 
 ```typescript
 private apiKey = '8ugdwlq4fz81o218';
@@ -390,41 +390,41 @@ Same pattern as ANT - credentials hardcoded in the service class, no .env depend
 
 #### Authentication Flow
 
-1. **User initiates login** → `GET /auth/zerodha-login`
-   - Redirects to Zerodha login page
+1. **User initiates login** → `GET /auth/kite-login`
+   - Redirects to Kite login page
 
-2. **User authenticates with Zerodha**
-   - Enters credentials on Zerodha's page
+2. **User authenticates with Kite**
+   - Enters credentials on Kite's page
 
-3. **Zerodha redirects back** (transparent)
-   - URL: `GET /auth/zerodha-callback?request_token=TOKEN&status=success`
+3. **Kite redirects back** (transparent)
+   - URL: `GET /auth/kite-callback?request_token=TOKEN&status=success`
    - Server calls `kc.generateSession(requestToken, apiSecret)`
    - Receives access_token
    - Stores in memory and HTTP-only cookie
    - Redirects to `/app`
 
 4. **Token available for API calls**
-   - Cookie: `zerodha_session`
-   - Endpoint: `GET /auth/zerodha-token`
+   - Cookie: `kite_session`
+   - Endpoint: `GET /auth/kite-token`
    - Use for Kite API operations
 
 #### API Endpoints
 
-**GET /auth/zerodha-login**
-- Redirects to Zerodha login page
+**GET /auth/kite-login**
+- Redirects to Kite login page
 
-**GET /auth/zerodha-callback**  
-- Handles callback from Zerodha (automatic)
+**GET /auth/kite-callback**  
+- Handles callback from Kite (automatic)
 - Stores access_token
 - Redirects to `/app`
 
-**GET /auth/zerodha-token**
+**GET /auth/kite-token**
 - Returns stored access token
 - Response: `{ "access_token": "..." }`
 
 #### Broker Comparison
 
-| Feature | ANT | Zerodha |
+| Feature | ANT | Kite |
 |---------|-----|---------|
 | Type | OAuth with checksum | Request token |
 | Endpoint | A3 API | Kite API |

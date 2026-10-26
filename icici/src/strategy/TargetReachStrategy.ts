@@ -17,7 +17,7 @@ const round = (num: number) => Math.round(num * 100) / 100;
 // AntContractMaster, synchronous/local) and registers as a Monitor "watcher"
 // for that token (see Monitor.watchToken) so it receives live ticks before it
 // holds any position - normal quote routing only fires for tokens with an
-// open trade. Reuses GoodMorningStrategy's Zerodha entry+GTT exit; fires at
+// open trade. Reuses GoodMorningStrategy's Kite entry+GTT exit; fires at
 // most once per arming, until reset() re-arms the watch (see GET /strategies/:type/reset).
 export default class TargetReachStrategy extends Strategy {
     private fired = false;

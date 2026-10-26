@@ -50,10 +50,10 @@ async function main() {
     let failNextCall = true;
 
     // Register the exit handler for a broker name unique to this test so it
-    // can't collide with a real zerodha/ant handler if this module were ever
+    // can't collide with a real kite/ant handler if this module were ever
     // imported alongside orderProcess.ts (it isn't, by design - exitMonitor
     // avoids importing the executors to prevent a circular dependency).
-    exitMonitor.onExit('zerodha', async (_trade: Trade, _exchange: 'NFO' | 'BFO') => {
+    exitMonitor.onExit('kite', async (_trade: Trade, _exchange: 'NFO' | 'BFO') => {
         exitCallCount++;
         if (failNextCall) {
             failNextCall = false;
@@ -62,7 +62,7 @@ async function main() {
         // second call succeeds - resolves normally
     });
 
-    exitMonitor.registerTrade(trade, 'NFO', 'zerodha', false);
+    exitMonitor.registerTrade(trade, 'NFO', 'kite', false);
 
     // Tick 1: crosses target, exit handler throws. Before the fix, this
     // would drop the trade from monitoring permanently.

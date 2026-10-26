@@ -16,18 +16,18 @@ interface CsvInstrument {
     lot_size: number;
 }
 
-// Reads the locally-downloaded instrument master (data/zerodha/{NFO,BFO}_instruments.csv
-// - see scripts/download-zerodha-master.sh) instead of calling Zerodha's API live,
+// Reads the locally-downloaded instrument master (data/kite/{NFO,BFO}_instruments.csv
+// - see scripts/download-all-masters.sh) instead of calling Kite's API live,
 // mirroring AntContractMaster's convention (src/ant/AntContractMaster.ts) of
 // resolving against a downloaded file. Re-run the download script to refresh
 // when the file is stale; nothing in this class calls out to the network.
-class ZerodhaContractMaster {
-    private static instance: ZerodhaContractMaster;
+class KiteContractMaster {
+    private static instance: KiteContractMaster;
     private instrumentsCache: Map<Exchange, CsvInstrument[]> = new Map();
 
     // Index -> exchange segment / strike step. SENSEX options trade on BFO
     // (BSE F&O), not NFO, with a 100-point strike step vs NIFTY's 50 - see
-    // src/broker/ZerodhaBroker.ts's INDEX_EXCHANGE for the same mapping.
+    // src/broker/KiteBroker.ts's INDEX_EXCHANGE for the same mapping.
     private readonly INDEX_EXCHANGE: Record<Index, Exchange> = { NIFTY: 'NFO', SENSEX: 'BFO' };
     private readonly STRIKE_STEP: Record<Index, number> = { NIFTY: 50, SENSEX: 100 };
 
@@ -40,7 +40,7 @@ class ZerodhaContractMaster {
             const ageMs = Date.now() - fs.statSync(filePath).mtimeMs;
             if (ageMs > this.STALE_THRESHOLD_MS) {
                 const days = Math.floor(ageMs / (24 * 60 * 60 * 1000));
-                console.warn(`[ZerodhaContractMaster] WARNING: ${filePath} is ${days} days old - run scripts/download-zerodha-master.sh to refresh`);
+                console.warn(`[KiteContractMaster] WARNING: ${filePath} is ${days} days old - run scripts/download-all-masters.sh to refresh`);
             }
             this.warnedStale.add(filePath);
         } catch (e) {
@@ -51,12 +51,12 @@ class ZerodhaContractMaster {
     // Warms the NFO and BFO instrument caches at startup (see AntContractMaster.preload).
     // Fail-soft per exchange: a missing BFO file must not block NFO.
     // The master changes every trading day (new weekly expiries are listed ahead of time) and nothing else
-    // refreshes it: on 2026-10-19 a file dated Aug 20 had no 19-Oct weekly, so the Zerodha symbol resolved to the
+    // refreshes it: on 2026-10-19 a file dated Aug 20 had no 19-Oct weekly, so the Kite symbol resolved to the
     // 27-Oct monthly while the strike was priced on ANT's 19-Oct expiry. If the file was not written today, download
     // it again before loading (public endpoint, no auth). Written to a temp file and renamed, so a process reading
     // it concurrently never sees a half-written file. Any failure keeps the existing file.
     private refreshIfStale(exchange: Exchange): void {
-        const filePath = path.join(__dirname, '../../data/zerodha', `${exchange}_instruments.csv`);
+        const filePath = path.join(__dirname, '../../data/kite', `${exchange}_instruments.csv`);
         try {
             const mtime = fs.existsSync(filePath) ? fs.statSync(filePath).mtime : new Date(0);
             const now = new Date();
@@ -66,9 +66,9 @@ class ZerodhaContractMaster {
             const lines = fs.readFileSync(tmp, 'utf-8').split('\n').length;
             if (lines < 1000) throw new Error(`downloaded ${exchange} master has only ${lines} lines`);
             fs.renameSync(tmp, filePath);
-            Log.log(`[ZerodhaContractMaster] refreshed stale ${exchange} master (${lines} lines)`);
+            Log.log(`[KiteContractMaster] refreshed stale ${exchange} master (${lines} lines)`);
         } catch (e: any) {
-            Log.log(`[ZerodhaContractMaster] ALERT: could not refresh the ${exchange} instrument master - using the existing file: ${e?.message ?? e}`);
+            Log.log(`[KiteContractMaster] ALERT: could not refresh the ${exchange} instrument master - using the existing file: ${e?.message ?? e}`);
         }
     }
 
@@ -78,27 +78,27 @@ class ZerodhaContractMaster {
             const t0 = Date.now();
             try {
                 const rows = this.loadInstruments(exchange).length;
-                Log.log(`[ZerodhaContractMaster] preload ${exchange}: ${rows} rows in ${Date.now() - t0}ms`);
+                Log.log(`[KiteContractMaster] preload ${exchange}: ${rows} rows in ${Date.now() - t0}ms`);
             } catch (e: any) {
-                Log.log(`[ZerodhaContractMaster] ALERT: preload ${exchange} failed - lookups will retry lazily: ${e?.message ?? e}`);
+                Log.log(`[KiteContractMaster] ALERT: preload ${exchange} failed - lookups will retry lazily: ${e?.message ?? e}`);
             }
         }
     }
 
-    static getInstance(): ZerodhaContractMaster {
-        if (!ZerodhaContractMaster.instance) {
-            ZerodhaContractMaster.instance = new ZerodhaContractMaster();
+    static getInstance(): KiteContractMaster {
+        if (!KiteContractMaster.instance) {
+            KiteContractMaster.instance = new KiteContractMaster();
         }
-        return ZerodhaContractMaster.instance;
+        return KiteContractMaster.instance;
     }
 
     private loadInstruments(exchange: Exchange): CsvInstrument[] {
         let cached = this.instrumentsCache.get(exchange);
         if (cached) return cached;
 
-        const filePath = path.join(__dirname, '../../data/zerodha', `${exchange}_instruments.csv`);
+        const filePath = path.join(__dirname, '../../data/kite', `${exchange}_instruments.csv`);
         if (!fs.existsSync(filePath)) {
-            throw new Error(`${filePath} not found - run scripts/download-zerodha-master.sh first`);
+            throw new Error(`${filePath} not found - run scripts/download-all-masters.sh first`);
         }
         this.checkStaleness(filePath);
         const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
@@ -247,4 +247,4 @@ class ZerodhaContractMaster {
     }
 }
 
-export default ZerodhaContractMaster;
+export default KiteContractMaster;

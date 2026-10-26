@@ -3,7 +3,7 @@
  * an OptionQuote.csv export of per-contract option ticks) through a live
  * ContinuousStrategy instance (src/strategy/ContinuousStrategy.ts), with a
  * broker mock that resolves contracts/fills against the actual historical
- * premiums instead of a live Zerodha call.
+ * premiums instead of a live Kite call.
  *
  * Not wired into live trading - this is a manual backtest tool, following
  * the same replay-a-CSV convention as SupportResistanceHypothesisTest.ts /

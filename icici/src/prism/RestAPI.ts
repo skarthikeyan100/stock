@@ -11,7 +11,7 @@ import WS from './WebSocket'
 import MockAPI from './MockAPI';
 import { MOCK_BROKER, MOCK_QUOTES } from '../constants';
 
-// __dirname-relative (repo root), matching ANT's/Zerodha's session file
+// __dirname-relative (repo root), matching ANT's/Kite's session file
 // resolution - previously a bare 'userToken.txt' resolved against
 // process.cwd(), which silently broke if any two processes launched from
 // different working directories (see src/orchestrator.ts's explicit cwd fix).

@@ -10,7 +10,7 @@ import { RSI_PARAMS, MACD_PARAMS, EMA_PARAMS, BOLLINGER_PARAMS, ADX_PARAMS, STOC
 // pipeline is unreachable in live trading (Decision is only ever
 // instantiated inside GET /replay with replayMode forced true). This module
 // has none of decision.ts's Prism/Mongo/child_process baggage - matches
-// strategiesProcess.ts's own "no Prism/Zerodha dependency at all" design.
+// strategiesProcess.ts's own "no Prism/Kite dependency at all" design.
 
 const BUCKET_SECONDS = 300;
 

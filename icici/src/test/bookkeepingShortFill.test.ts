@@ -27,7 +27,7 @@ function sellToOpen(brokerOrderId: string, price: number, quantity = 65): Trade 
     t.action = 'SellToOpen';
     t.status = 'COMPLETE';
     t.user = 'ShortFillTestUser';
-    t.broker = 'zerodha';
+    t.broker = 'kite';
     t.brokerOrderId = brokerOrderId;
     return t;
 }
@@ -41,7 +41,7 @@ function buyToClose(brokerOrderId: string, price: number, quantity = 65): Trade 
     t.action = 'BuyToClose';
     t.status = 'COMPLETE';
     t.user = 'ShortFillTestUser';
-    t.broker = 'zerodha';
+    t.broker = 'kite';
     t.brokerOrderId = brokerOrderId;
     return t;
 }

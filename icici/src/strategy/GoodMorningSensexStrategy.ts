@@ -27,7 +27,7 @@ const MAX_CONFIRM_MINUTE = 45;
 
 // SENSEX sibling of GoodMorningStrategy - same opening-move-still-intact logic,
 // but driven off SensexQuote ticks (Strategy.processSensexQuote) instead of
-// NiftyQuote, and trading SENSEX options on Zerodha's BFO segment instead of
+// NiftyQuote, and trading SENSEX options on Kite's BFO segment instead of
 // NFO. Kept as an independent config block/instance (not an index toggle on
 // GoodMorningStrategy) because ConfigService.getStrategyConfig(type) and the
 // admin UI's configToFlat()/flatToConfig() both key on a single config block
@@ -35,7 +35,7 @@ const MAX_CONFIRM_MINUTE = 45;
 // types. Also lets SENSEX have its own quantity (20-share lot vs NIFTY's 65)
 // and target/stopLoss/minMovement scale (SENSEX trades ~3x NIFTY's level).
 // Position tracking/target/SL bypasses Monitor, same as GoodMorningStrategy -
-// the target+stop-loss here is a two-leg GTT placed directly with Zerodha
+// the target+stop-loss here is a two-leg GTT placed directly with Kite
 // right after entry fills.
 export default class GoodMorningSensexStrategy extends Strategy {
     private tradingDay: string | null = null;

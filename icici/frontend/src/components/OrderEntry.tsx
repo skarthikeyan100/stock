@@ -18,7 +18,7 @@ export default function OrderEntry() {
   const [defaultStopLossPoints, setDefaultStopLossPoints] = useState<number | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Mirrors the fallback chain manualBuyOnZerodha/manualBuyOnAnt apply server-side
+  // Mirrors the fallback chain manualBuyOnKite/manualBuyOnAnt apply server-side
   // when targetPoints/stopLossPoints are omitted: the user's own override, else
   // config.yml's global settings.targetPriceDiff/stopLossPriceDiff - so the
   // placeholder shows the real value that will be used, not a vague "(default)".
@@ -36,9 +36,9 @@ export default function OrderEntry() {
   const effectiveDefaultStopLoss = user?.stopLossPoints ?? defaultStopLossPoints;
 
   // Load symbols list once. Expiry filtering happens server-side now, at
-  // generation time (see update-symbols.sh, which filters Zerodha's real
+  // generation time (see frontend/update-symbols.sh, which filters Kite's real
   // `expiry` date column) - a client-side regex can't reliably parse
-  // Zerodha's trading symbols the way it could Shoonya's, since Zerodha uses
+  // Kite's trading symbols the way it could Shoonya's, since Kite uses
   // two different encodings depending on expiry type (e.g. monthly
   // NIFTY26AUG24100CE vs weekly NIFTY2690124100CE).
   useEffect(() => {

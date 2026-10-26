@@ -565,7 +565,7 @@ Broker-position and strategy reconciliation is **on-demand only**: it is not run
 
 **Auth:** Admin
 
-**Response:** `{ brokers: { zerodha, ant, breeze }, strategies: { ran } }` (booleans per broker)
+**Response:** `{ brokers: { kite, ant, breeze }, strategies: { ran } }` (booleans per broker)
 
 **Status Codes:**
 - 200 - reconciled

@@ -1,4 +1,4 @@
-// Assembles the three broker-specific modules (zerodhaExecutor.ts,
+// Assembles the three broker-specific modules (kiteExecutor.ts,
 // antExecutor.ts, prismExecutor.ts) behind the common BrokerExecutor
 // interface - see BrokerExecutor.ts for what's common vs. deliberately left
 // broker-specific. Thin wrapping only: no behavior change to any of the
@@ -6,36 +6,37 @@
 
 import { Trade } from '../../model/model';
 import { BrokerExecutor, BuyRequest, BrokerPosition } from './BrokerExecutor';
-import Zerodha from '../../zerodha/Zerodha';
+import Kite from '../../kite/Kite';
 import ANT from '../../ant/ANT';
-import * as zerodhaExecutor from './zerodhaExecutor';
+import * as kiteExecutor from './kiteExecutor';
 import * as antExecutor from './antExecutor';
 import * as prismExecutor from './prismExecutor';
 import { BreezeExecutor } from './breezeExecutor';
 import bookkeeping from './bookkeeping';
+import { normalizeBrokerName, normalizeBrokerList } from '../../util/brokerName';
 
-export const ZerodhaExecutor: BrokerExecutor = {
-    brokerName: 'zerodha',
+export const KiteExecutor: BrokerExecutor = {
+    brokerName: 'kite',
 
-    hasValidSession: () => Zerodha.getInstance().hasValidSession(),
+    hasValidSession: () => Kite.getInstance().hasValidSession(),
 
-    buy: (request: BuyRequest): Promise<Trade> => zerodhaExecutor.buyResolvedOnZerodha(request),
+    buy: (request: BuyRequest): Promise<Trade> => kiteExecutor.buyResolvedOnKite(request),
 
-    // Zerodha never trades NSE cash through this path (Exchange was widened
+    // Kite never trades NSE cash through this path (Exchange was widened
     // to include 'NSE' only for Breeze) - cast is safe, this dispatch only
-    // ever reaches here for Zerodha-broker users.
+    // ever reaches here for Kite-broker users.
     squareOff: (userId, tradingSymbol, quantity, exchange) =>
-        zerodhaExecutor.squareOffOnZerodha(userId, tradingSymbol, quantity, exchange as 'NFO' | 'BFO'),
+        kiteExecutor.squareOffOnKite(userId, tradingSymbol, quantity, exchange as 'NFO' | 'BFO'),
 
     squareOffLimit: (userId, tradingSymbol, instrumentId, quantity, exchange, limitPrice) =>
-        zerodhaExecutor.placeLimitSellBareOnZerodha(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as 'NFO' | 'BFO'),
+        kiteExecutor.placeLimitSellBareOnKite(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as 'NFO' | 'BFO'),
 
-    cancelOrder: (orderId) => zerodhaExecutor.cancelOrderOnZerodha(orderId),
+    cancelOrder: (orderId) => kiteExecutor.cancelOrderOnKite(orderId),
 
-    getFillPrice: (orderId) => Zerodha.getInstance().getFillPrice(orderId),
+    getFillPrice: (orderId) => Kite.getInstance().getFillPrice(orderId),
 
     getPositions: async (): Promise<BrokerPosition[]> => {
-        const positions = await Zerodha.getInstance().getPositions();
+        const positions = await Kite.getInstance().getPositions();
         const net: any[] = positions?.net ?? positions ?? [];
         return (Array.isArray(net) ? net : []).map((p: any) => ({
             tradingSymbol: p.tradingsymbol,
@@ -46,7 +47,7 @@ export const ZerodhaExecutor: BrokerExecutor = {
         }));
     },
 
-    getTrades: () => Zerodha.getInstance().getTrades(),
+    getTrades: () => Kite.getInstance().getTrades(),
 };
 
 export const AntExecutor: BrokerExecutor = {
@@ -60,7 +61,7 @@ export const AntExecutor: BrokerExecutor = {
             request.targetPoints ?? 0, request.stopLossPoints ?? 0,
         ),
 
-    // Same 'NSE'-is-Breeze-only reasoning as ZerodhaExecutor above.
+    // Same 'NSE'-is-Breeze-only reasoning as KiteExecutor above.
     squareOff: (userId, tradingSymbol, quantity, exchange) =>
         antExecutor.squareOffOnAnt(userId, tradingSymbol, quantity, exchange as 'NFO' | 'BFO'),
 
@@ -109,9 +110,9 @@ export const PrismExecutor: BrokerExecutor = {
 
 // Resolves a user's configured broker to its BrokerExecutor - replaces the
 // repeated `bookkeeping.getUserBroker(userId) === 'ant' ? antExecutor.X(...)
-// : zerodhaExecutor.X(...)` branch that used to live at every orderProcess.ts
+// : kiteExecutor.X(...)` branch that used to live at every orderProcess.ts
 // IPC handler. Per-userId resolution (bookkeeping.getUserBroker) is still
-// 'zerodha' | 'ant' | 'breeze' only - Prism has its own separate
+// 'kite' | 'ant' | 'breeze' only - Prism has its own separate
 // 'buyContract'/'sellContract' IPC actions and isn't a per-user broker
 // choice. `brokerOverride` widens to also accept 'prism', letting a single
 // call bypass per-userId resolution entirely - needed by BulkPcrStrategy's
@@ -119,10 +120,10 @@ export const PrismExecutor: BrokerExecutor = {
 // full-quantity orders on several brokers at once, so no single per-userId
 // broker can describe "which broker this specific call is for." Every other
 // caller omits it and gets today's per-userId behavior unchanged.
-export function getBrokerExecutor(userId: string, brokerOverride?: 'zerodha' | 'ant' | 'breeze' | 'prism'): BrokerExecutor {
-    const broker = brokerOverride ?? bookkeeping.getUserBroker(userId);
+export function getBrokerExecutor(userId: string, brokerOverride?: 'kite' | 'ant' | 'breeze' | 'prism'): BrokerExecutor {
+    const broker = normalizeBrokerName(brokerOverride ?? bookkeeping.getUserBroker(userId));
     if (broker === 'ant') return AntExecutor;
     if (broker === 'breeze') return BreezeExecutor;
     if (broker === 'prism') return PrismExecutor;
-    return ZerodhaExecutor;
+    return KiteExecutor;
 }

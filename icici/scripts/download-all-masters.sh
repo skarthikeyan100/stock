@@ -1,6 +1,6 @@
 #!/bin/bash
 # Refreshes every broker's local contract/symbol master in one pass: ANT
-# (AliceBlue), Kite (Zerodha), Breeze (ICICI Direct), and Prism (Shoonya).
+# (AliceBlue), Kite (Kite), Breeze (ICICI Direct), and Prism (Shoonya).
 # Each is the known-stale-prone file behind that broker's option/expiry
 # resolution - see CLAUDE.md's "Data Files" section and AntContractMaster's
 # own STALE_THRESHOLD_MS warning. Confirmed live 2026-10-13: a 57-day-old
@@ -46,18 +46,18 @@ else
 fi
 rm -rf "$TMP_ANT"
 
-echo "=== Kite (Zerodha) ==="
-ZERODHA_DIR="$REPO_ROOT/data/zerodha"
-mkdir -p "$ZERODHA_DIR"
+echo "=== Kite (Kite) ==="
+KITE_DIR="$REPO_ROOT/data/kite"
+mkdir -p "$KITE_DIR"
 for SEGMENT in NFO BFO; do
-    DEST="$ZERODHA_DIR/${SEGMENT}_instruments.csv"
+    DEST="$KITE_DIR/${SEGMENT}_instruments.csv"
     TMP="$(mktemp)"
     if curl -sf "https://api.kite.trade/instruments/$SEGMENT" -o "$TMP"; then
         backup "$DEST"
         mv "$TMP" "$DEST"
         echo "Downloaded $(wc -l < "$DEST") lines to $DEST"
     else
-        echo "[download-all-masters] Zerodha $SEGMENT download failed - leaving existing file untouched" >&2
+        echo "[download-all-masters] Kite $SEGMENT download failed - leaving existing file untouched" >&2
         rm -f "$TMP"
         fail=$((fail + 1))
     fi
@@ -107,7 +107,7 @@ done
 
 echo "=== Done (failures: $fail) ==="
 
-# Every contract-master cache above (AntContractMaster, ZerodhaContractMaster,
+# Every contract-master cache above (AntContractMaster, KiteContractMaster,
 # BreezeContractMaster, Prism.cacheFile) is loaded once and cached in-memory
 # per process - a running order/strategies process will NOT pick up these new
 # files until it restarts (e.g. `npm run processes` again, or let tsc-watch's

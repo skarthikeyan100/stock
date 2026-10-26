@@ -223,7 +223,7 @@ class ANT {
 
     // Public re-read hook: called after a fresh OAuth login completes in a different
     // process (frontend), so this already-running singleton (e.g. in `data`) picks
-    // up the new token without a restart. Mirrors Zerodha.ts's reloadSession.
+    // up the new token without a restart. Mirrors Kite.ts's reloadSession.
     reloadSession(): void {
         this.loadSession();
     }
@@ -233,7 +233,7 @@ class ANT {
     }
 
     // No dedicated lightweight "am I logged in" endpoint exists for ANT the
-    // way Zerodha.hasValidSession has getProfile() - mirrors that same
+    // way Kite.hasValidSession has getProfile() - mirrors that same
     // pattern (a cheap authenticated call, fail closed on any error) using
     // getPositions() instead. Added for BrokerExecutor parity - not
     // previously called anywhere, so its actual behavior against a real
@@ -300,7 +300,7 @@ class ANT {
             // trades today". Callers (the /ant/trades route, and anything
             // that later depends on this as a live session probe) need the
             // failure to actually surface. Mirrors getPositions() below and
-            // Zerodha.getPositions()'s existing throw-on-failure pattern.
+            // Kite.getPositions()'s existing throw-on-failure pattern.
             throw new Error(`Failed to fetch trades: ${e.message}`);
         }
     }
@@ -385,8 +385,8 @@ class ANT {
     //
     // skipCache=true forces a fresh fetch - needed by any caller that must
     // detect real price movement rather than reuse a recent snapshot, e.g.
-    // zerodhaExecutor.ts's drift-cancel poll, which deliberately bypassed
-    // getMarketableZerodhaPrice's own now-removed cache for exactly this
+    // kiteExecutor.ts's drift-cancel poll, which deliberately bypassed
+    // getMarketableKitePrice's own now-removed cache for exactly this
     // reason before this method grew its own cache.
     async getQuote(exchange: string, token: string, opts?: { skipCache?: boolean; retryDelaysMs?: number[] }): Promise<number> {
         this.sweepQuoteCache();
@@ -403,7 +403,7 @@ class ANT {
         }
         const price = Number(ltp);
         // Throws on a zero or non-numeric LTP. Callers must treat that as "no usable price": a 0 or NaN
-        // limit price would be sent to the broker. (zerodhaExecutor's getMarketableZerodhaPrice and the drift
+        // limit price would be sent to the broker. (kiteExecutor's getMarketableKitePrice and the drift
         // getLtp used to receive 0 here; they now receive this exception and fail the order.)
         if (!(price > 0)) throw new Error(`ANT getQuote unusable ltp for ${exchange}|${token}: ${JSON.stringify(ltp)}`);
         // Only cache a usable price: a cached 0 would be re-served to every caller for the
@@ -629,13 +629,13 @@ class ANT {
         return { orderNo };
     }
 
-    // NOTE ON targetLegPrice/slLegPrice: unlike Zerodha's GTT (placed AFTER
+    // NOTE ON targetLegPrice/slLegPrice: unlike Kite's GTT (placed AFTER
     // entry, once the fill price is known, with absolute trigger prices), a
     // Bracket Order on ANT IS the entry order itself - the fill price isn't
     // known yet when this is called, so absolute leg prices can't be computed
     // up front. These are passed through as POINT OFFSETS from the eventual
     // fill (matching this codebase's existing targetPoints/stopLossPoints
-    // convention, and Zerodha's old pre-2021 Kite BO API, which used the same
+    // convention, and Kite's old pre-2021 Kite BO API, which used the same
     // point-offset convention for its squareoff/stoploss fields) - NOT
     // verified against a live AliceBlue response yet. Confirm on first real
     // use; if AliceBlue actually expects absolute prices here, this will
@@ -772,7 +772,7 @@ class ANT {
     }
 
     // Polls order history until the order is COMPLETE (or REJECTED/CANCELED),
-    // mirroring Zerodha.getFillPrice's poll/timeout shape. Confirmed live:
+    // mirroring Kite.getFillPrice's poll/timeout shape. Confirmed live:
     // `result` is an array of order-state-transition records (PENDING/OPEN/
     // COMPLETE/...), NOT chronologically ordered (COMPLETE was observed first
     // in one response) - so every record must be scanned for a terminal
@@ -890,7 +890,7 @@ class ANT {
 
     // Single-shot status check (no retry loop) - for a poller that checks a
     // resting order once per interval tick rather than blocking until it
-    // fills, mirroring Zerodha.getOrderHistory's role in pollPendingLimitOrders.
+    // fills, mirroring Kite.getOrderHistory's role in pollPendingLimitOrders.
     // Same field/shape caveats as getFillPrice above.
     //
     // filledQuantity: confirmed live 2026-10-13 against a real order

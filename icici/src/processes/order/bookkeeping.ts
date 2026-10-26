@@ -1,7 +1,7 @@
 import Log from '../../util/Log';
 import { randomUUID } from 'crypto';
 import Mongo from '../../tools/mongo';
-import Zerodha from '../../zerodha/Zerodha';
+import Kite from '../../kite/Kite';
 import ANT from '../../ant/ANT';
 import Breeze from '../../breeze/Breeze';
 import { Trade } from '../../model/model';
@@ -12,6 +12,7 @@ import configService from '../../prism/ConfigService';
 import { drawdownLimit, drawdownDecision } from '../../prism/percentConfig';
 import { startOfWeek } from '../../util/weekWindow';
 import AntContractMaster from '../../ant/AntContractMaster';
+import { normalizeBrokerName, normalizeBrokerList } from '../../util/brokerName';
 
 // Open-P&L pricing gets a short budget: it runs inside every buy's drawdown check, so a slow quote must not stall an order.
 const OPEN_PNL_TIMEOUT_MS = 4_000;
@@ -26,7 +27,7 @@ function dayKeyLocal(): string {
 // Order-process-local replacement for Monitor's bookkeeping (trades/closedTrades,
 // risk limits, order<->user attribution, P&L). Ported from src/monitor.ts, with
 // everything quote-driven removed: no AntStream subscribe/unsubscribe. Target/SL
-// exits are a GTT placed once at entry (see zerodhaExecutor.ts) for users with
+// exits are a GTT placed once at entry (see kiteExecutor.ts) for users with
 // useGTT=true; for useGTT=false users, exitMonitor.ts watches the tick feed
 // piped in from `data` (see orderProcess.ts) and squares off in-app instead.
 // Strategy notification (Monitor.strategyMap) is replaced by fillListeners,
@@ -61,7 +62,7 @@ interface UserSettings {
     investmentMode?: string;
     investmentAmount?: number;
     useGTT?: boolean;
-    broker?: 'zerodha' | 'ant' | 'breeze';
+    broker?: 'kite' | 'ant' | 'breeze';
     perOrderCap?: number;
     allottedCapital?: number;
     targetPoints?: number;
@@ -204,20 +205,21 @@ class OrderBookkeeping {
     // for that pseudo-user, so userSettingsCache (populated from the Users
     // collection, keyed by email) never has an entry for it, and every
     // strategy's own `broker:` config field was silently ignored, always
-    // falling back to the 'zerodha' default below regardless of what was
+    // falling back to the 'kite' default below regardless of what was
     // configured. Used only as a FALLBACK, after userSettingsCache, in
     // getUserBroker below - a real user's own account-level broker
     // preference must still win over a strategy's config broker if that
     // strategy was ever given an explicit `userId:` equal to a real email
     // (config's broker overriding a human's own setting with no log/error
     // would be a silent, surprising precedence hazard otherwise).
-    private getStrategyConfigBroker(user: string): 'zerodha' | 'ant' | 'breeze' | undefined {
+    private getStrategyConfigBroker(user: string): 'kite' | 'ant' | 'breeze' | undefined {
         const strategy = configService.getConfig().strategies?.find((s) => (s.userId || s.type) === user);
-        return strategy?.broker;
+        return strategy?.broker ? (normalizeBrokerName(strategy.broker) as 'kite' | 'ant' | 'breeze') : undefined;
     }
 
-    getUserBroker(user: string): 'zerodha' | 'ant' | 'breeze' {
-        return this.userSettingsCache.get(user)?.broker ?? this.getStrategyConfigBroker(user) ?? 'zerodha';
+    getUserBroker(user: string): 'kite' | 'ant' | 'breeze' {
+        const userBroker = this.userSettingsCache.get(user)?.broker;
+        return userBroker ? (normalizeBrokerName(userBroker) as 'kite' | 'ant' | 'breeze') : this.getStrategyConfigBroker(user) ?? 'kite';
     }
 
     getUserPerOrderCap(user: string): number | undefined {
@@ -232,7 +234,7 @@ class OrderBookkeeping {
 
     // undefined signals "no per-user override" - callers fall back to
     // config.yml's global settings.targetPriceDiff/stopLossPriceDiff (see
-    // zerodhaExecutor.ts/antExecutor.ts's target/stopLoss point resolution).
+    // kiteExecutor.ts/antExecutor.ts's target/stopLoss point resolution).
     getUserTargetPoints(user: string): number | undefined {
         return this.userSettingsCache.get(user)?.targetPoints;
     }
@@ -255,7 +257,7 @@ class OrderBookkeeping {
     }
 
     // Fallback only - callers that already resolved a contract from a broker's own contract
-    // master (AntContractMaster/ZerodhaContractMaster/BreezeContractMaster) should pass that
+    // master (AntContractMaster/KiteContractMaster/BreezeContractMaster) should pass that
     // contract's own lotSize instead (see orderProcess.ts's resolveChunkedBuyQuantity), since
     // this name-based guess doesn't recognize every index and a wrong guess sizes an order to
     // a quantity the broker rejects as not a multiple of the real lot size (live 2026-10-21,
@@ -371,7 +373,7 @@ class OrderBookkeeping {
     // When `broker` is given, releases the oldest reservation tagged with
     // THAT broker, not just the oldest overall - a plain user-wide FIFO would
     // otherwise sometimes release a different broker's reservation (e.g. two
-    // concurrent legs for the same strategy pseudo-user on zerodha and
+    // concurrent legs for the same strategy pseudo-user on kite and
     // breeze), permanently leaking the broker whose own order this call is
     // actually for while wrongly freeing up headroom for the other. Falls
     // back to the oldest entry overall if no entry tagged with this broker is
@@ -478,7 +480,7 @@ class OrderBookkeeping {
     }
 
     // Open P&L of this user's positions at live ANT prices (maxloss.md B4.1). Long: (ltp - price) * qty; short: the reverse.
-    // The token comes from the trading symbol via AntContractMaster, not Trade.token: Zerodha and Breeze rows carry their own
+    // The token comes from the trading symbol via AntContractMaster, not Trade.token: Kite and Breeze rows carry their own
     // broker's instrument token there, which ANT would price as a different contract. Returns null when no row could be priced.
     // Never throws; a row whose quote fails counts as 0 (a failed quote must never by itself breach the limit).
     private openPnlLogAt = 0;
@@ -673,7 +675,7 @@ class OrderBookkeeping {
     // trades/pending reservations on THAT broker only, instead of pooling
     // every broker a multi-broker strategy pseudo-user trades under one
     // shared cap - e.g. TopStockOptionsOpeningGapStrategy/BulkPcrStrategy
-    // running the same userId across zerodha/breeze/ant, each with its own
+    // running the same userId across kite/breeze/ant, each with its own
     // maxInvestment headroom rather than racing (and potentially starving
     // each other out of) one pooled number. Every OTHER check here (lot
     // limit, per-order cap, drawdown, daily trade count) stays user-wide -
@@ -837,7 +839,7 @@ class OrderBookkeeping {
         this.trades.forEach((t) => (t.lastTradePrice = t.price));
     }
 
-    // Records a fill directly (used by the Zerodha buy/GTT-trigger path, which
+    // Records a fill directly (used by the Kite buy/GTT-trigger path, which
     // doesn't go through Prism's websocket 'om' message shape at all).
     async recordFill(tradeEvent: Trade): Promise<void> {
         if (tradeEvent.brokerOrderId) {
@@ -1109,7 +1111,7 @@ class OrderBookkeeping {
     // open broker position, restoreOpenTradesForTsym (below) recovers the
     // app-only fields the broker doesn't know (user/targetPrice/
     // stopLossPrice/gttTriggerId/strategy/antOrderNo/prismCoverOrderNo) from
-    // Mongo's raw Buy fills - finalizeEntry (zerodhaExecutor.ts/
+    // Mongo's raw Buy fills - finalizeEntry (kiteExecutor.ts/
     // antExecutor.ts)/prismExecutor.ts's buyOnPrism always set those on the
     // Trade object before calling recordFill, so the raw Mongo insert
     // already captured them. Split per-user (not just per-tsym) - see that
@@ -1170,20 +1172,20 @@ class OrderBookkeeping {
     // it after a login (2026-09-03
     // incident: session was invalid at startup, a same-session re-login later
     // fixed it, but nothing re-ran this, so bookkeeping.trades stayed empty
-    // against 4 real open Zerodha positions).
+    // against 4 real open Kite positions).
     // Returns true only when the broker's positions were fetched and restored;
     // false means this broker could not be read (reported back to the
     // POST /reconcile caller).
-    async reconcileZerodhaPositions(): Promise<boolean> {
+    async reconcileKitePositions(): Promise<boolean> {
         const restored: Trade[] = [];
         try {
-            const positions = await Zerodha.getInstance().getPositions();
+            const positions = await Kite.getInstance().getPositions();
             const open = (positions?.net || []).filter((p: any) => p.quantity !== 0 && OrderBookkeeping.isOptionContract(p.tradingsymbol));
             for (const p of open) {
-                restored.push(...(await this.restoreOpenTradesForTsym(p.tradingsymbol, p.quantity, p.instrument_token != null ? String(p.instrument_token) : undefined, 'zerodha')));
+                restored.push(...(await this.restoreOpenTradesForTsym(p.tradingsymbol, p.quantity, p.instrument_token != null ? String(p.instrument_token) : undefined, 'kite')));
             }
         } catch (e) {
-            Log.log('[order] reconcileZerodhaPositions: Zerodha getPositions failed (continuing without restore):', e);
+            Log.log('[order] reconcileKitePositions: Kite getPositions failed (continuing without restore):', e);
             return false;
         }
         this.mergeRestored(restored);
@@ -1201,7 +1203,7 @@ class OrderBookkeeping {
     // so this filter excluded every single ANT position regardless of quantity or
     // symbol - reconcileAntPositions had never actually restored anything. Called
     // both at startup and reactively after a successful ANT login (see
-    // reconcileZerodhaPositions's comment for why).
+    // reconcileKitePositions's comment for why).
     async reconcileAntPositions(): Promise<boolean> {
         const restored: Trade[] = [];
         try {
@@ -1273,11 +1275,11 @@ class OrderBookkeeping {
     // visibly untracked rather than guessing at its fields.
     // `broker` scopes every query here alongside tsym/user - without it, two
     // brokers holding the identical tsym+user (e.g. BulkPcrStrategy trading
-    // NIFTY23450PE on both Zerodha and Breeze at once) would pool both
+    // NIFTY23450PE on both Kite and Breeze at once) would pool both
     // brokers' Mongo Buy/Sell docs into one blended restored position on
     // restart, corrupting quantity/avgPrice and losing which broker a
     // resting exit order belongs to.
-    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number, brokerToken: string | undefined, broker: 'zerodha' | 'ant' | 'breeze' | 'prism'): Promise<Trade[]> {
+    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number, brokerToken: string | undefined, broker: 'kite' | 'ant' | 'breeze' | 'prism'): Promise<Trade[]> {
         const db = Mongo.getInstance()?.db;
         if (!db || !tsym) return [];
 
@@ -1349,7 +1351,7 @@ class OrderBookkeeping {
             // Prefer the common/ANT-native token already recorded on the Mongo doc
             // (trade.token is always ANT-native since the 2026-08-27 fix - see
             // ToDo.md) over the broker's own token, which may use a different
-            // scheme (e.g. Zerodha's instrument_token).
+            // scheme (e.g. Kite's instrument_token).
             trade.token = row.token ?? brokerToken ?? '';
             trade.right = row.right;
             trade.quantity = totalQty; // this user's own portion, not the broker's aggregate total
@@ -1486,7 +1488,7 @@ class OrderBookkeeping {
         for (const id of [...this.unpersistedClosed.keys()]) await this.writeClosedRow(id);
     }
 
-    // Called after zerodhaExecutor.setTargetStopLoss (or the Prism-routed
+    // Called after kiteExecutor.setTargetStopLoss (or the Prism-routed
     // equivalent, if ever added) mutates a trade's target/SL fields in place -
     // matches Monitor.setTargetStopLoss's old myEmitter.emit('position', ...).
     notifyTargetStopLossChanged() {

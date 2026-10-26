@@ -5,14 +5,14 @@ import bookkeeping from './bookkeeping';
 import Mongo from '../../tools/mongo';
 import { isPastMarketClose } from '../../util/marketHours';
 
-// Mirrors pendingLimitOrders.ts (Zerodha) exactly, for ANT limit orders
+// Mirrors pendingLimitOrders.ts (Kite) exactly, for ANT limit orders
 // placed via placeLimitSellBareOnAnt (antExecutor.ts) - BulkPcrStrategy's
 // target-hit exit. ANT can't place true MARKET orders at all ("Market
 // orders are not allowed" - confirmed live, see antExecutor.ts's
 // enterPosition comment), so this only needs to cover the SELL side added
 // 2026-09-22; a Buy variant can be added the same way if a bare ANT limit
 // buy primitive is ever needed. Own Mongo collection, not shared with
-// Zerodha's/Breeze's pending trackers.
+// Kite's/Breeze's pending trackers.
 const PENDING_COLLECTION = 'pendingAntLimitOrders';
 
 export interface PendingAntLimitOrder {
@@ -118,7 +118,7 @@ export async function loadPendingAntLimitOrdersFromMongo(): Promise<void> {
 }
 
 // Called on an interval from orderProcess.ts, using ANT.getOrderStatus's
-// single-shot check (unlike Zerodha's kc.getOrderHistory/Breeze's
+// single-shot check (unlike Kite's kc.getOrderHistory/Breeze's
 // getOrderDetail, ANT has no separate "poll status" vs "poll until fill"
 // distinction in this codebase yet - getOrderStatus is the one-shot form
 // added specifically for this poller, see ANT.ts).

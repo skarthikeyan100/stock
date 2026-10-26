@@ -100,7 +100,7 @@ async function main() {
     order.stdout.pipe(data.stdin, { end: false });
     watchAndRestart('order', [
         path.join(DIST, 'processes', 'order'), path.join(DIST, 'processes', 'orderProcess.js'),
-        path.join(DIST, 'ant'), path.join(DIST, 'zerodha'), path.join(DIST, 'model'),
+        path.join(DIST, 'ant'), path.join(DIST, 'kite'), path.join(DIST, 'model'),
         path.join(DIST, 'util'), path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'),
     ], () => {
         log('dev', 'Restarting order (data/strategies/frontend untouched)...');
@@ -126,7 +126,7 @@ async function main() {
     frontend.stdout.pipe(data.stdin, { end: false });
     watchAndRestart('frontend', [
         path.join(DIST, 'server.js'),
-        path.join(DIST, 'ant'), path.join(DIST, 'zerodha'), path.join(DIST, 'model'),
+        path.join(DIST, 'ant'), path.join(DIST, 'kite'), path.join(DIST, 'model'),
         path.join(DIST, 'util'), path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'),
     ], () => {
         log('dev', 'Restarting frontend (data/order/strategies untouched)...');

@@ -8,8 +8,8 @@ import { Trade, TradingContext } from './TradingContext';
 // whichever provider (real or demo) is actually mounted.
 //
 // Contract resolution goes through /demo/resolve and /demo/symbols (ANT-
-// native tokens), never /search or /quote (Shoonya/Zerodha-based) - ANT is
-// the sole live-tick source (src/processes/dataProcess.ts), and a Zerodha
+// native tokens), never /search or /quote (Shoonya/Kite-based) - ANT is
+// the sole live-tick source (src/processes/dataProcess.ts), and a Kite
 // instrument token can't be subscribed on it. See AntContractMaster.ts's
 // "must never be stored as trade.token" warning.
 
@@ -216,7 +216,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
 
   // `contract` is a "<token>|<tradingSymbol>|<optionType>" triple produced by
   // DemoOrderEntry's ANT-native symbol picker (see DemoOrderEntry.tsx) - not
-  // a bare Zerodha tsym like the real OrderEntry passes.
+  // a bare Kite tsym like the real OrderEntry passes.
   const placeContractOrder = useCallback(
     async (contract: string, targetPoints?: number, stopLossPoints?: number) => {
       const [token, tradingSymbol, optionType] = contract.split('|');
@@ -229,7 +229,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   // PositionCard.tsx (shared, unmodified) calls squareOff(trade.tsym, ...) -
   // it passes the human-readable symbol, not the ANT token (unlike
   // setTargetStopLoss, which passes trade.token). That's a no-op distinction
-  // for real/Zerodha trades, where tsym === token, but not here - so match on
+  // for real/Kite trades, where tsym === token, but not here - so match on
   // tsym and use the found trade's own .token for the actual unsubscribe.
   const squareOff = useCallback(
     async (tsym: string) => {

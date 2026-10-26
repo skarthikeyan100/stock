@@ -14,7 +14,7 @@ import { toPercentNumber } from '../prism/percentConfig';
 export interface PnlStopDeps {
     ownerType: string;                 // e.g. 'BulkPcrStrategy'
     userId: string;                    // strategy instance userId, e.g. 'BulkPcr-SENSEX'
-    scope: string;                     // 'ant' | 'zerodha' | 'ant:maxProfit' | ... - part of the latch key
+    scope: string;                     // 'ant' | 'kite' | 'ant:maxProfit' | ... - part of the latch key
     kind: 'loss' | 'profit';
     getCapPct: () => unknown;          // raw config value, e.g. '10%' | 10 | undefined | null
     getMaxInvestment: () => number;    // configured maxInvestment (rupees)

@@ -30,7 +30,7 @@ const BREEZE_API_URL = 'https://api.icicidirect.com/breezeapi/api/v1/';
 // callers. NOT concurrency-safe (a second concurrent Breeze call can
 // overwrite this before the first one's catch block reads it) - acceptable
 // here since this app places orders for one ICICI account mostly serially,
-// matching the same single-account assumption Zerodha.buyHaltReason makes.
+// matching the same single-account assumption Kite.buyHaltReason makes.
 let lastBreezeHttpError: { url?: string; status?: number; data?: any } | null = null;
 axios.interceptors.response.use(
     (response) => response,
@@ -103,7 +103,7 @@ class Breeze {
         return result;
     }
 
-    // Public re-read hook, mirroring Zerodha.reloadSession/ANT's session
+    // Public re-read hook, mirroring Kite.reloadSession/ANT's session
     // reload - lets a long-running process (e.g. `order`) pick up a fresh
     // login done by a different process (`frontend`) without restarting.
     reloadSession(): void {
@@ -472,7 +472,7 @@ class Breeze {
     }
 
     // Polls getOrderDetail until the fill price is known - mirrors
-    // Zerodha.getFillPrice's poll loop. Field names confirmed live 2026-09-17
+    // Kite.getFillPrice's poll loop. Field names confirmed live 2026-09-17
     // against a real order (see the raw response captured below): `status`
     // starts as "Ordered", `average_price` stays "0" until filled; a rejected/
     // cancelled order's real status text wasn't observed live (no such order
@@ -516,7 +516,7 @@ class Breeze {
             await sleep(intervalMs);
         }
         // Give up waiting - but an order left resting at the broker after we
-        // stop watching it is an orphan, same risk Zerodha.getFillPrice's own
+        // stop watching it is an orphan, same risk Kite.getFillPrice's own
         // timeout branch guards against. Best-effort - if this fails (already
         // filled/cancelled in the interim), the timeout error below still
         // surfaces either way.

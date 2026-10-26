@@ -135,12 +135,12 @@ export class Trade {
     open: boolean = true
     realizedPnL: number
     unrealizedPnL: number // live mark-to-market on an open position - distinct from realizedPnL, which is only ever set once, at close
-    gttTriggerId: number // Zerodha GTT trigger id, if a bracket was placed at entry (setTargetStopLoss modifies it later)
+    gttTriggerId: number // Kite GTT trigger id, if a bracket was placed at entry (setTargetStopLoss modifies it later)
     antOrderNo?: string // AliceBlue BO order number, if a bracket was placed at entry
     prismCoverOrderNo?: string // Shoonya/Noren cover-order (prd 'H') entry order number, if a cover order was placed at entry - see prism.ts's placeCoverOrder/exitCoverOrder
     product?: 'INTRADAY' | 'LONGTERM' // ANT only: the product the entry was placed under, so exits are placed under the same one (a mismatched product would open a new position instead of closing). Unset = INTRADAY.
     brokerOrderId?: string // broker's own order id for this specific fill, when the caller has one - used by bookkeeping.recordFill to dedup a redelivered fill event (reconnect replay, webhook retry)
-    broker?: 'zerodha' | 'ant' | 'prism' | 'breeze' // which broker executed this specific fill (see BrokerExecutor.brokerName) - set by the broker-specific executor/poller that constructed this Trade, never derived centrally. Needed so bookkeeping can tell apart two brokers' fills for the identical (tsym, user) pair - e.g. BulkPcrStrategy trading the same contract on both Zerodha and Breeze under one strategy identity.
+    broker?: 'kite' | 'ant' | 'prism' | 'breeze' // which broker executed this specific fill (see BrokerExecutor.brokerName) - set by the broker-specific executor/poller that constructed this Trade, never derived centrally. Needed so bookkeeping can tell apart two brokers' fills for the identical (tsym, user) pair - e.g. BulkPcrStrategy trading the same contract on both Kite and Breeze under one strategy identity.
     entryTime?: Date // set once, at the first fill that opens the position
     exitTime?: Date // set when the position is closed
     originalEntryPrice?: number // set by restoreOneOpenTrade: the current leg's true first-fill price, distinct from `price` (which may be a multi-fill blended average) - see ContinuousStrategy.reconcile()

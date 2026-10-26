@@ -12,7 +12,7 @@ interface AntOption {
 
 // Demo-mode copy of OrderEntry.tsx - same UI/flow, but the contract search
 // sources ANT-native contracts (/demo/symbols) instead of symbols.txt
-// (Zerodha-format, not subscribable on ANT's live feed). See
+// (Kite-format, not subscribable on ANT's live feed). See
 // DemoTradingContext.tsx's header comment.
 export default function DemoOrderEntry() {
   const { placeOrder, placeContractOrder, isOrderDisabled, placingOrder, totalPnL, orderError, clearError } = useTrading();

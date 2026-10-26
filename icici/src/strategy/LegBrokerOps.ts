@@ -18,7 +18,7 @@ export interface LegBrokerOps {
     buyLimit(userId: string, tradingSymbol: string, token: string, quantity: number, exchange: 'NFO' | 'BFO', price: number): Promise<{ orderId: string }>;
 }
 
-// Default = exactly today's Zerodha/Breeze behaviour (ContinuousStrategy uses this,
+// Default = exactly today's Kite/Breeze behaviour (ContinuousStrategy uses this,
 // unchanged). placeLimitBuyBare's own parameter order is (userId, tsym, token,
 // quantity, price, exchange) - price BEFORE exchange, unlike every other method
 // here - so the forwarding call below deliberately does not just spread args

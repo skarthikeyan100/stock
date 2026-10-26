@@ -6,17 +6,18 @@ import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { sleep } from '../util/sleep';
+import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
 
 // Iron Butterfly (standard, net credit) / Reverse Iron Butterfly (net debit) 4-leg combo on
 // NIFTY/SENSEX. Manual arm only (config.yml `enabled: true`, fires once on the next tick),
 // multi-broker, tick-driven self-monitored exit on net combo premium vs targetPoints/
 // stopLossPoints. See ToDo.md/the implementation plan this was built from for the full design
-// rationale - most notably the never-short-guard exception (Zerodha.ts's placeShortEntryOption,
+// rationale - most notably the never-short-guard exception (Kite.ts's placeShortEntryOption,
 // the equivalent new per-broker functions, and bookkeeping.recordShortFill) that this strategy
 // is the ONLY caller of: a butterfly intrinsically requires selling 2 of its 4 legs to open,
 // which this codebase otherwise refuses everywhere else.
 
-type BrokerName = 'zerodha' | 'breeze' | 'ant' | 'prism';
+type BrokerName = 'kite' | 'breeze' | 'ant' | 'prism';
 type Mode = 'standard' | 'reverse';
 type LegRole = 'wingLower' | 'wingUpper' | 'centerCall' | 'centerPut';
 const ALL_LEG_ROLES: LegRole[] = ['wingLower', 'wingUpper', 'centerCall', 'centerPut'];
@@ -88,26 +89,26 @@ export default class ButterflyStrategy extends Strategy {
     private targetPoints(): number { return Number(this.cfg().targetPoints ?? 10); }
     private stopLossPoints(): number { return Number(this.cfg().stopLossPoints ?? 15); }
     private strikeStep(): number { return this.index() === 'SENSEX' ? 100 : 50; }
-    // Only zerodha/ant are verified for this strategy's broker path today. breeze/prism are
+    // Only kite/ant are verified for this strategy's broker path today. breeze/prism are
     // explicitly rejected here rather than silently run - found on review: this strategy
     // always resolves tick-subscription tokens as ANT-native (resolveOptionContractForBroker),
     // but strategiesProcess.onFill's automatic registerTrade/unregisterTrade on every Buy/Sell
     // fill derives its feed from BROKER_TO_FEED_SOURCE[trade.broker], which is 'breeze'/'prism'
     // for those brokers - treating this strategy's ANT-native token as a breeze/prism-native
-    // one for that side-channel subscription. For zerodha/ant, BROKER_TO_FEED_SOURCE maps both
+    // one for that side-channel subscription. For kite/ant, BROKER_TO_FEED_SOURCE maps both
     // to 'ant' too, so there is no mismatch. Separately, prismExecutor.buyContract/sellContract
     // (used by the butterflyBuyLeg/butterflyCloseLeg prism branches) resolve their OWN
     // Prism-native token internally, discarding the ANT-native token this strategy tracks -
     // breaking the same invariant for prism specifically. Mirrors BulkPcrStrategy/
     // HourlyStrategy's own explicit broker/exchange rejections elsewhere in this codebase.
-    private static readonly VERIFIED_BROKERS: BrokerName[] = ['zerodha', 'ant'];
+    private static readonly VERIFIED_BROKERS: BrokerName[] = ['kite', 'ant'];
     private configuredBrokers(): BrokerName[] {
         const cfg = this.cfg();
-        const list: string[] = Array.isArray(cfg.brokers) && cfg.brokers.length > 0 ? cfg.brokers : [cfg.broker ?? 'zerodha'];
+        const list: string[] = normalizeBrokerList(Array.isArray(cfg.brokers) && cfg.brokers.length > 0 ? cfg.brokers : [cfg.broker ?? 'kite']);
         const requested = Array.from(new Set(list.map((b: string) => String(b).toLowerCase()))) as BrokerName[];
         const unverified = requested.filter((b) => !ButterflyStrategy.VERIFIED_BROKERS.includes(b));
         if (unverified.length > 0) {
-            Log.log(`[ButterflyStrategy:${this.userId}] ALERT: config lists unverified broker(s) [${unverified.join(',')}] - refusing to run them (only zerodha/ant are verified for this strategy's tick-subscription/token path; see configuredBrokers' own comment). Running only: ${requested.filter((b) => ButterflyStrategy.VERIFIED_BROKERS.includes(b)).join(',') || 'none'}`);
+            Log.log(`[ButterflyStrategy:${this.userId}] ALERT: config lists unverified broker(s) [${unverified.join(',')}] - refusing to run them (only kite/ant are verified for this strategy's tick-subscription/token path; see configuredBrokers' own comment). Running only: ${requested.filter((b) => ButterflyStrategy.VERIFIED_BROKERS.includes(b)).join(',') || 'none'}`);
         }
         return requested.filter((b) => ButterflyStrategy.VERIFIED_BROKERS.includes(b));
     }
@@ -269,7 +270,7 @@ export default class ButterflyStrategy extends Strategy {
         const leg = pos.legs[role];
         leg.status = 'entering';
         // The ONLY call site in the whole codebase allowed to open a short position - see
-        // Zerodha.ts's NEVER-SHORT GUARD comment and bookkeeping.recordShortFill.
+        // Kite.ts's NEVER-SHORT GUARD comment and bookkeeping.recordShortFill.
         const trade = await OrderClient.getInstance().butterflySellToOpen(this.userId, {
             broker: pos.broker, tradingSymbol: leg.tsym!, instrumentToken: leg.token!, quantity: leg.quantity, exchange: leg.exchange!,
         });
@@ -499,9 +500,9 @@ export default class ButterflyStrategy extends Strategy {
     private async getLiveQuantity(pos: BrokerButterflyPosition, leg: Leg): Promise<number> {
         if (!leg.tsym) return 0;
         try {
-            if (pos.broker === 'zerodha') {
-                const Zerodha = (await import('../zerodha/Zerodha')).default;
-                return Math.abs(await Zerodha.getInstance().getLiveNetQuantity(leg.tsym));
+            if (pos.broker === 'kite') {
+                const Kite = (await import('../kite/Kite')).default;
+                return Math.abs(await Kite.getInstance().getLiveNetQuantity(leg.tsym));
             }
             if (pos.broker === 'ant') {
                 const antExecutor = await import('../processes/order/antExecutor');

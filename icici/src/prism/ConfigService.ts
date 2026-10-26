@@ -1,5 +1,6 @@
 import Log from '../util/Log';
 import fs, { readFileSync, writeFileSync } from 'fs';
+import path from 'path';
 import { load, dump } from 'js-yaml';
 import AppConfig, { StrategyInstanceConfig } from './AppConfig';
 import { normalizePercentFields, formatPercentFields } from './percentConfig';
@@ -9,6 +10,8 @@ class ConfigService {
   private configPath = process.env.CONFIG_PATH || './config.yml';
   public config: AppConfig;
   private static instance: ConfigService;
+  private listeners: Array<() => void> = [];
+  private reloadTimer: NodeJS.Timeout | null = null;
 
   private constructor() {
     this.loadConfig();
@@ -88,35 +91,56 @@ class ConfigService {
     }
     this.config = parsed as AppConfig;
     Log.log('Config Updated:', this.config);
+    for (const cb of this.listeners) {
+      try { cb(); } catch (e) { Log.log(`[ConfigService] onChange listener failed: ${(e as Error).message}`); }
+    }
   }
 
-  // Forces an immediate re-read, bypassing fs.watchFile's polling interval
-  // (~5s by default). Needed by any live-sync path that must act on a config
-  // write immediately (e.g. server.ts's POST /config calling into the
-  // `strategies`/`order` processes' own syncFromConfig/loadUserLimits right
-  // after writing) - each process has its own ConfigService instance with
-  // its own independent poller, so without this, a sync call could read
-  // stale in-memory config if it runs before that process's own poll happens
-  // to fire, silently reintroducing the staleness this is meant to fix.
+  // Runs after every successful (re)load, so config-derived state held outside
+  // this class (strategy enabled flags, the order process's user-settings
+  // cache) follows config.yml edits without a manual sync. Not called for a
+  // rejected file. Listeners must not call reloadNow() (would recurse).
+  public onChange(cb: () => void): void {
+    this.listeners.push(cb);
+  }
+
+  // Forces an immediate re-read for callers that must act on a write they just
+  // made, without waiting for the watcher's debounce.
   public reloadNow(): void {
     this.loadConfig();
   }
 
-  // fs.watch (inotify-backed on Linux) instead of fs.watchFile's stat-polling -
-  // event-driven, near-instant, and avoids polling every process for a file
-  // that changes rarely. fs.watch can fire more than once for a single save
-  // (a well-known Node quirk) - harmless here since loadConfig() is a cheap,
-  // idempotent re-read. Watches the file directly rather than its parent
-  // directory: correct for this app's own writes (writeConfig always
-  // overwrites in place via writeFileSync, never replaces the inode via
-  // rename), which is the only writer that matters in practice.
+  // Watches the parent directory (inotify, event-driven) filtered on the file
+  // name, not the file itself: editors, `sed -i` and `git checkout` save by
+  // replacing the inode, which silently kills a watch on the file path after
+  // the first change. Events are debounced since one save fires several.
   private watchConfig() {
-    fs.watch(this.configPath, () => {
-        Log.log('Config file changed. Reloading...');
-        this.loadConfig();
-      });
+    const dir = path.dirname(this.configPath);
+    const base = path.basename(this.configPath);
+    const arm = () => {
+      try {
+        const w = fs.watch(dir, (_evt, name) => {
+          if (name && name !== base) return;
+          if (this.reloadTimer) clearTimeout(this.reloadTimer);
+          this.reloadTimer = setTimeout(() => {
+            this.reloadTimer = null;
+            Log.log('Config file changed. Reloading...');
+            this.loadConfig();
+          }, 200);
+        });
+        w.on('error', (e) => {
+          Log.log(`[ConfigService] config watcher error: ${e.message} - re-arming`);
+          w.close();
+          setTimeout(arm, 1000);
+        });
+      } catch (e) {
+        Log.log(`[ConfigService] could not watch ${dir}: ${(e as Error).message} - retrying`);
+        setTimeout(arm, 5000);
+      }
+    };
+    arm();
   }
-  
+
 }
 
 export default ConfigService.getInstance()

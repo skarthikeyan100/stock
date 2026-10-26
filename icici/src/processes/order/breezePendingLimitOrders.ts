@@ -8,7 +8,7 @@ import { isPastMarketClose } from '../../util/marketHours';
 // Mirrors pendingLimitOrders.ts exactly, for limit orders placed via
 // placeLimitBuyBareOnBreeze (breezeExecutor.ts) - root-refill re-entries for
 // LegManager-driven strategies routed to Breeze. Own Mongo collection (not
-// shared with Zerodha's pendingLimitOrders) and tracked by antToken (the
+// shared with Kite's pendingLimitOrders) and tracked by antToken (the
 // cross-broker token LegManager's tick routing keys off), not a Breeze-
 // specific instrument token - see breezeExecutor.ts's marketBuyBareOnBreeze
 // comment on why.

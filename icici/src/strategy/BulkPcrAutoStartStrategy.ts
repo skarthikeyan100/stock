@@ -7,6 +7,7 @@ import { NiftyQuote, OptionQuote } from '../model/model';
 import configService from '../prism/ConfigService';
 import strategies from './strategies';
 import BulkPcrStrategy from './BulkPcrStrategy';
+import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
 
 // Scheduled auto-arm wrapper: at each configured HH:mm time, arms a
 // BulkPcrStrategy instance (its own config.yml block - quantity/brokers
@@ -205,7 +206,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
             return;
         }
         // A loss-stopped broker is not armed for today (maxloss.md B3.8). cfg itself is not mutated.
-        const wanted: string[] = Array.isArray(cfg.brokers) ? cfg.brokers : [cfg.broker ?? 'zerodha'];
+        const wanted: string[] = normalizeBrokerList(Array.isArray(cfg.brokers) ? cfg.brokers : [cfg.broker ?? 'kite']);
         const armable = wanted.filter((b) => !target.isBrokerStopped(String(b).toLowerCase()));
         if (armable.length === 0) {
             Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: every configured broker is loss-stopped for today - skipping`);

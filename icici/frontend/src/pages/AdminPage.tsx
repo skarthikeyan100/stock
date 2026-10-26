@@ -691,8 +691,8 @@ export default function AdminPage() {
     'ruleBasedStrategy.indicators': { description: 'Technical indicators this rule evaluates to decide entries — one string per indicator, encoding its parameters.', values: "e.g. 'RSI_5_80_20' (RSI, period 5, overbought 80, oversold 20), 'MACD_12_26_9', 'EMA_5_13', 'Bollinger_20_2', 'ADX_14', 'Stochastic_14_3'. Must be valid JSON array of strings." },
 
     'bulkPcrStrategy.enabled': { description: 'Turn this one-shot strategy on/off. It durably disables itself (writes enabled: false back to config.yml) after completing one full buy → target → sell cycle.', values: 'On/Off.' },
-    'bulkPcrStrategy.broker': { description: "Legacy single-broker field - only used as a fallback when no boxes are checked below.", values: "'breeze' or 'zerodha'." },
-    'bulkPcrStrategy.brokers': { description: 'Which broker(s) place this block order. Checking more than one places the FULL configured quantity independently on each broker at once (not a split) - e.g. 13975 qty on Zerodha AND 13975 qty on Breeze. One PCR decision drives all of them; the cycle only self-disables once every checked broker is fully sold.', values: 'One or more of: Zerodha, Breeze.' },
+    'bulkPcrStrategy.broker': { description: "Legacy single-broker field - only used as a fallback when no boxes are checked below.", values: "'breeze' or 'kite'." },
+    'bulkPcrStrategy.brokers': { description: 'Which broker(s) place this block order. Checking more than one places the FULL configured quantity independently on each broker at once (not a split) - e.g. 13975 qty on Kite AND 13975 qty on Breeze. One PCR decision drives all of them; the cycle only self-disables once every checked broker is fully sold.', values: 'One or more of: Kite, Breeze.' },
     'bulkPcrStrategy.quantity': { description: 'Total quantity bought in one go, on each selected broker; split into exchange-compliant chunks automatically (NIFTY freeze quantity is 1755).', values: 'Integer, must be a multiple of the instrument lot size. Default 13975 (215 lots × 65).' },
     'bulkPcrStrategy.targetPoints': { description: 'Profit target, in points above entry average, that triggers the exit. There is no stop-loss — the position holds indefinitely until this is hit.', values: 'Integer points.' },
     'bulkPcrStrategy.right': { description: 'Fixed entry direction, or auto-resolve from PCR (put/call OI ratio) when left as none.', values: "'call', 'put', or 'none' for PCR-based auto-resolve." },
@@ -1432,14 +1432,14 @@ export default function AdminPage() {
                             <Col md={6}>
                               <Form.Group className="mb-3">
                                 <Form.Label>{fieldLabel('Brokers', ['bulkPcrStrategy', 'brokers'])}</Form.Label>
-                                {(['zerodha', 'breeze'] as const).map(broker => (
+                                {(['kite', 'breeze'] as const).map(broker => (
                                   <Form.Check
                                     key={broker}
                                     type="checkbox"
-                                    label={broker === 'zerodha' ? 'Zerodha' : 'Breeze'}
-                                    checked={(config.bulkPcrStrategy?.brokers ?? []).includes(broker)}
+                                    label={broker === 'kite' ? 'Kite' : 'Breeze'}
+                                    checked={(config.bulkPcrStrategy?.brokers ?? []).map((b: string) => (b === 'zerodha' ? 'kite' : b)).includes(broker)}
                                     onChange={e => {
-                                      const current: string[] = config.bulkPcrStrategy?.brokers ?? [];
+                                      const current: string[] = (config.bulkPcrStrategy?.brokers ?? []).map((b: string) => (b === 'zerodha' ? 'kite' : b));
                                       const next = e.target.checked ? [...current, broker] : current.filter((b: string) => b !== broker);
                                       updateConfigValue(['bulkPcrStrategy', 'brokers'], next);
                                     }}

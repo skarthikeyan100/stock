@@ -1,6 +1,6 @@
 import Log from '../../util/Log';
-import Zerodha, { roundToTick } from '../../zerodha/Zerodha';
-import ZerodhaContractMaster from '../../zerodha/ZerodhaContractMaster';
+import Kite, { roundToTick } from '../../kite/Kite';
+import KiteContractMaster from '../../kite/KiteContractMaster';
 import AntContractMaster from '../../ant/AntContractMaster';
 import ANT from '../../ant/ANT';
 import configService from '../../prism/ConfigService';
@@ -13,11 +13,11 @@ import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingLimitOrder, untrackPendingLimitOrder } from './pendingLimitOrders';
 import { BuyRequest, cancelOrderWithFillRecheck } from './BrokerExecutor';
 
-// Zerodha is the primary execution broker (per current product decision - Prism
+// Kite is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
-// buy->fill->GTT sequence every Zerodha-calling strategy duplicated inline before
+// buy->fill->GTT sequence every Kite-calling strategy duplicated inline before
 // the split (see e.g. src/strategy/GoodMorningStrategy.ts:186-224) - now the one
-// place that does it, since `strategies` no longer has a Zerodha dependency at all.
+// place that does it, since `strategies` no longer has a Kite dependency at all.
 //
 // Exit mechanism is a per-user choice (bookkeeping.getUserUseGTT): the default
 // is a broker-side GTT bracket placed once at entry (the broker, not this
@@ -28,13 +28,13 @@ import { BuyRequest, cancelOrderWithFillRecheck } from './BrokerExecutor';
 // 2026-09-22: there should be no true MARKET orders placed at the broker,
 // anywhere - a blind market order has no price floor at all, which is
 // exactly what turned a single bad/stale tick into a real trading loss (see
-// BulkPcrStrategy's exit fix earlier this session). Every remaining Zerodha
+// BulkPcrStrategy's exit fix earlier this session). Every remaining Kite
 // MARKET call site below now instead fetches the latest quote and places a
 // MARKETABLE LIMIT order priced just beyond it - fills immediately against
 // current liquidity, same as a market order would from the user's point of
 // view, but always carries a real price bound.
 //
-// Zerodha's own quote/LTP endpoints 403 for this account's Kite Connect
+// Kite's own quote/LTP endpoints 403 for this account's Kite Connect
 // subscription (see the removed buyOption's old comment - Kite Connect
 // doesn't grant this), so ANT.getQuote is the pricing reference instead -
 // the same "confirmed live" primitive ANT's own bracket-order entries
@@ -42,7 +42,7 @@ import { BuyRequest, cancelOrderWithFillRecheck } from './BrokerExecutor';
 // comment). ANT.getQuote itself short-TTL-caches by exchange+token now (see
 // its own comment), so a CHUNKED order's several calls for the SAME contract
 // already collapse to one HTTP call there - no separate cache needed here.
-async function getMarketableZerodhaPrice(antToken: string, exchange: 'NFO' | 'BFO', direction: 'BUY' | 'SELL'): Promise<number> {
+async function getMarketableKitePrice(antToken: string, exchange: 'NFO' | 'BFO', direction: 'BUY' | 'SELL'): Promise<number> {
     // Live bid/ask first (the cached OHLC getQuote lags a fast option by a minute or more - see
     // ANT.getLiveQuote); fall back to getQuote if the live call fails (e.g. a 429).
     let ltp: number;
@@ -51,13 +51,13 @@ async function getMarketableZerodhaPrice(antToken: string, exchange: 'NFO' | 'BF
         // The price a taker actually crosses: the ask for a buy, the bid for a sell (never worse than LTP).
         ltp = direction === 'BUY' ? Math.max(live.ltp, live.ask) : (live.bid > 0 ? Math.min(live.ltp, live.bid) : live.ltp);
     } catch (e) {
-        Log.log(`[order] getMarketableZerodhaPrice: live quote failed for ${exchange}|${antToken}, falling back to cached getQuote:`, e);
+        Log.log(`[order] getMarketableKitePrice: live quote failed for ${exchange}|${antToken}, falling back to cached getQuote:`, e);
         ltp = await ANT.getInstance().getQuote(exchange, antToken);
     }
     // Buffer beyond LTP: aggressive enough to fill immediately, not a resting order waiting for a
     // specific price. 5% (was 1%, then 3%): ANT's REST quote lags a fast-moving expiry-day option by 3-4 points
     // (an 88 quote vs a 91 market at 12:30 on 2026-10-19), so even a 3% cap sat below the ask and 'did not fill
-    // within timeout' about once a minute. Zerodha fills a marketable limit at the best available price, so a wider
+    // within timeout' about once a minute. Kite fills a marketable limit at the best available price, so a wider
     // cap costs no extra slippage.
     const buffered = direction === 'BUY' ? ltp * 1.05 : ltp * 0.95;
     return roundToTick(buffered);
@@ -76,12 +76,12 @@ async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BF
         // GTT failure falls back to exitMonitor's in-app target/SL comparison
         // below - a multi-fill average entryPrice (e.g. 133.61363636363637)
         // otherwise produces a stopLossPrice that isn't a tick multiple, which
-        // Zerodha's GTT API rejects outright (confirmed live: "Stoploss trigger
+        // Kite's GTT API rejects outright (confirmed live: "Stoploss trigger
         // price should be a multiple of tick size 0.05").
         //
         // Deliberately scoped inside this guard (not set unconditionally
         // above it): a caller with no real target/SL (targetPoints=0,
-        // stopLossPoints=0 - e.g. BulkPcrStrategy's buyResolvedOnZerodha,
+        // stopLossPoints=0 - e.g. BulkPcrStrategy's buyResolvedOnKite,
         // which manages its own separate chunked resting-limit-sell exit)
         // must leave trade.targetPrice/stopLossPrice unset. Setting them to
         // entryPrice+/-0 here used to persist a target=stopLoss=entryPrice
@@ -92,7 +92,7 @@ async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BF
         // unchunked order that always exceeds the exchange's per-order
         // freeze-quantity limit for a BulkPcrStrategy-sized position. Live
         // incident 2026-09-24: this fired hundreds of times/sec against
-        // Zerodha with no backoff before being caught.
+        // Kite with no backoff before being caught.
         trade.stopLossPrice = roundToTick(entryPrice - stopLossPoints);
         trade.targetPrice = roundToTick(entryPrice + targetPoints);
 
@@ -100,7 +100,7 @@ async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BF
             try {
                 // Kept on the trade (not discarded) so setTargetStopLoss can modify
                 // this same GTT later instead of only updating local bookkeeping.
-                trade.gttTriggerId = await Zerodha.getInstance().placeTargetStopLossGTT(
+                trade.gttTriggerId = await Kite.getInstance().placeTargetStopLossGTT(
                     trade.tsym,
                     exchange,
                     trade.quantity,
@@ -112,7 +112,7 @@ async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BF
                 // GTT owns the actual exit, but nothing else keeps trade.lastTradePrice
                 // fresh after entry - register watch-only so the frontend's live P&L
                 // still moves with the market instead of freezing at the fill price.
-                if (trade.token) exitMonitor.registerTrade(trade, exchange, 'zerodha', true);
+                if (trade.token) exitMonitor.registerTrade(trade, exchange, 'kite', true);
             } catch (e) {
                 Log.log('[order] GTT placement failed - falling back to in-app target/SL monitoring:', e);
                 // Without this, a GTT failure left the position with zero
@@ -121,13 +121,13 @@ async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BF
                 // call) - degrade to the same in-app monitoring useGTT=false
                 // users get, instead of leaving it completely unwatched.
                 if (trade.token) {
-                    exitMonitor.registerTrade(trade, exchange, 'zerodha');
+                    exitMonitor.registerTrade(trade, exchange, 'kite');
                 } else {
                     Log.log(`[order] GTT failed for ${userId} and trade has no token (${trade.tsym}) - exit will not be monitored`);
                 }
             }
         } else if (trade.token) {
-            exitMonitor.registerTrade(trade, exchange, 'zerodha');
+            exitMonitor.registerTrade(trade, exchange, 'kite');
         } else {
             Log.log(`[order] useGTT=false for ${userId} but trade has no token (${trade.tsym}) - exit will not be monitored`);
         }
@@ -149,15 +149,15 @@ export interface BuyIndexRequest {
     strike?: number;
     expiry?: string;
     // SupportResistanceStrategy: refuse if a CE/PE position is already open,
-    // checked against live Zerodha positions (not local bookkeeping) so it's
+    // checked against live Kite positions (not local bookkeeping) so it's
     // correct across restarts regardless of which strike a prior entry used.
     skipIfOpenPositionType?: 'CE' | 'PE';
 }
 
-export async function buyIndexOnZerodha(req: BuyIndexRequest): Promise<Trade> {
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) {
-        throw new Error('Zerodha session not active - complete /kite/login first.');
+export async function buyIndexOnKite(req: BuyIndexRequest): Promise<Trade> {
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) {
+        throw new Error('Kite session not active - complete /kite/login first.');
     }
 
     const settings = configService.getConfig().settings;
@@ -167,7 +167,7 @@ export async function buyIndexOnZerodha(req: BuyIndexRequest): Promise<Trade> {
     const index = req.index ?? 'NIFTY';
 
     if (req.skipIfOpenPositionType) {
-        const positions = await zerodha.getPositions();
+        const positions = await kite.getPositions();
         const hasOpenPosition = (positions?.net || []).some(
             (p: any) => p.quantity !== 0 && p.exchange === 'NFO' && p.tradingsymbol?.endsWith(req.skipIfOpenPositionType)
         );
@@ -177,16 +177,16 @@ export async function buyIndexOnZerodha(req: BuyIndexRequest): Promise<Trade> {
     }
 
     const contract = req.strike && req.expiry
-        ? await ZerodhaContractMaster.getInstance().findExactOption(req.strike, req.expiry, optionType, index)
-        : await ZerodhaContractMaster.getInstance().findATMOption(req.niftyLtp, optionType, index);
+        ? await KiteContractMaster.getInstance().findExactOption(req.strike, req.expiry, optionType, index)
+        : await KiteContractMaster.getInstance().findATMOption(req.niftyLtp, optionType, index);
     const commonToken = req.strike && req.expiry
         ? AntContractMaster.getInstance().resolveCommonToken(index, optionType, { strike: req.strike, expiry: req.expiry })
         : AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.niftyLtp });
     Log.log(`[order] Buying ${contract.tradingSymbol} qty=${req.quantity} for ${req.userId}`);
 
-    const buyPrice = await getMarketableZerodhaPrice(commonToken, contract.exchange, 'BUY');
-    const { orderId } = await zerodha.placeLimitBuyOption(contract.tradingSymbol, req.quantity, buyPrice, contract.exchange);
-    const entryPrice = await zerodha.getFillPrice(orderId);
+    const buyPrice = await getMarketableKitePrice(commonToken, contract.exchange, 'BUY');
+    const { orderId } = await kite.placeLimitBuyOption(contract.tradingSymbol, req.quantity, buyPrice, contract.exchange);
+    const entryPrice = await kite.getFillPrice(orderId);
     Log.log(`[order] Filled ${contract.tradingSymbol} at ${entryPrice} for ${req.userId}`);
 
     const trade = new Trade();
@@ -199,22 +199,22 @@ export async function buyIndexOnZerodha(req: BuyIndexRequest): Promise<Trade> {
     trade.status = 'COMPLETE';
     trade.right = req.right;
     trade.user = req.userId;
-    trade.broker = 'zerodha';
+    trade.broker = 'kite';
     trade.brokerOrderId = orderId;
 
     await finalizeEntry(trade, req.userId, contract.exchange, targetPoints, stopLossPoints);
     return trade;
 }
 
-// /prism/order/buy's three branches, Zerodha-routed. `contract` (now a
+// /prism/order/buy's three branches, Kite-routed. `contract` (now a
 // canonical symbol, e.g. "NIFTY_24100_CE" - see src/model/CanonicalSymbol.ts,
 // not a raw broker tradingsymbol) takes precedence, resolved to the nearest
 // expiry; else `strikePrice` selects an exact strike via
-// ZerodhaContractMaster.findATMOption; else it's the ATM auto-strike path
-// (buyIndexOnZerodha above). Always resolved via Zerodha - no broker
+// KiteContractMaster.findATMOption; else it's the ATM auto-strike path
+// (buyIndexOnKite above). Always resolved via Kite - no broker
 // selection here. Once orders can route to other brokers, this is where a
 // per-user broker lookup (extending bookkeeping's userSettingsCache) would
-// decide which ContractMaster/executor to use instead of always Zerodha.
+// decide which ContractMaster/executor to use instead of always Kite.
 export interface ManualBuyRequest {
     userId: string;
     index?: 'NIFTY' | 'SENSEX';
@@ -227,14 +227,14 @@ export interface ManualBuyRequest {
     stopLossPoints?: number;
 }
 
-export async function manualBuyOnZerodha(req: ManualBuyRequest): Promise<Trade> {
+export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade> {
     if (req.contract) {
         const canonical = parseCanonicalSymbol(req.contract);
-        const resolved = await ZerodhaContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
+        const resolved = await KiteContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
         const price = await estimateOptionPrice(canonical.symbol, canonical.strike, canonical.optionType);
         const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity);
-        return buyContractOnZerodha(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.price, req.targetPoints, req.stopLossPoints);
+        return buyContractOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.price, req.targetPoints, req.stopLossPoints);
     }
 
     if (!req.right) throw new Error('manualBuy requires either contract or right');
@@ -246,26 +246,26 @@ export async function manualBuyOnZerodha(req: ManualBuyRequest): Promise<Trade> 
         // findATMOption rounds its underlyingLtp arg to the nearest strike step -
         // strike prices are already multiples of that step, so feeding it the
         // strike directly lands exactly on it without needing a live NIFTY quote.
-        const contract = await ZerodhaContractMaster.getInstance().findATMOption(req.strikePrice, optionType, index);
+        const contract = await KiteContractMaster.getInstance().findATMOption(req.strikePrice, optionType, index);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.strikePrice });
         const price = await estimateOptionPrice(index, req.strikePrice, optionType);
         const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity);
-        return buyContractOnZerodha(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.price, req.targetPoints, req.stopLossPoints);
+        return buyContractOnKite(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.price, req.targetPoints, req.stopLossPoints);
     }
 
     const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
-    return buyIndexOnZerodha({ userId: req.userId, index: req.index, niftyLtp: 0, right: req.right, quantity, targetPoints: req.targetPoints, stopLossPoints: req.stopLossPoints });
+    return buyIndexOnKite({ userId: req.userId, index: req.index, niftyLtp: 0, right: req.right, quantity, targetPoints: req.targetPoints, stopLossPoints: req.stopLossPoints });
 }
 
-async function buyContractOnZerodha(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number, targetPoints?: number, stopLossPoints?: number): Promise<Trade> {
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) {
-        throw new Error('Zerodha session not active - complete /kite/login first.');
+async function buyContractOnKite(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number, targetPoints?: number, stopLossPoints?: number): Promise<Trade> {
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) {
+        throw new Error('Kite session not active - complete /kite/login first.');
     }
     Log.log(`[order] Buying (manual) ${tradingSymbol} qty=${quantity} for ${userId}`);
-    const buyPrice = await getMarketableZerodhaPrice(commonToken, exchange, 'BUY');
-    const { orderId } = await zerodha.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
-    const entryPrice = price ?? (await zerodha.getFillPrice(orderId));
+    const buyPrice = await getMarketableKitePrice(commonToken, exchange, 'BUY');
+    const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
+    const entryPrice = price ?? (await kite.getFillPrice(orderId));
 
     const trade = new Trade();
     trade.tsym = tradingSymbol;
@@ -276,7 +276,7 @@ async function buyContractOnZerodha(userId: string, tradingSymbol: string, commo
     trade.action = 'Buy';
     trade.status = 'COMPLETE';
     trade.user = userId;
-    trade.broker = 'zerodha';
+    trade.broker = 'kite';
     trade.brokerOrderId = orderId;
 
     const settings = configService.getConfig().settings;
@@ -286,7 +286,7 @@ async function buyContractOnZerodha(userId: string, tradingSymbol: string, commo
     return trade;
 }
 
-// POST /prism/settarget's Zerodha path: update bookkeeping's local target/SL
+// POST /prism/settarget's Kite path: update bookkeeping's local target/SL
 // fields and, if this trade has a live GTT (gttTriggerId), modify it in place.
 export async function setTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number): Promise<void> {
     const trade = bookkeeping.trades.find((t) => t.token === token && t.user === userId);
@@ -297,9 +297,9 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
     trade.targetPoints = targetPoints;
 
     if (trade.gttTriggerId) {
-        const zerodha = Zerodha.getInstance();
+        const kite = Kite.getInstance();
         const exchange = trade.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO';
-        await zerodha.modifyTargetStopLossGTT(
+        await kite.modifyTargetStopLossGTT(
             trade.gttTriggerId,
             trade.tsym,
             exchange,
@@ -312,18 +312,18 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
     bookkeeping.notifyTargetStopLossChanged();
 }
 
-export async function squareOffOnZerodha(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
-    const zerodha = Zerodha.getInstance();
+export async function squareOffOnKite(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const kite = Kite.getInstance();
     Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId}`);
-    // ANT commonToken for pricing (see getMarketableZerodhaPrice) - every open
-    // Zerodha trade in bookkeeping.trades carries one, set at entry by every
+    // ANT commonToken for pricing (see getMarketableKitePrice) - every open
+    // Kite trade in bookkeeping.trades carries one, set at entry by every
     // buy path above.
     const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
     if (!existing?.token) {
-        throw new Error(`squareOffOnZerodha: no tracked open trade (with a token) found for ${tsym} (${userId}) - cannot price a marketable limit sell without it`);
+        throw new Error(`squareOffOnKite: no tracked open trade (with a token) found for ${tsym} (${userId}) - cannot price a marketable limit sell without it`);
     }
-    const sellPrice = await getMarketableZerodhaPrice(existing.token, exchange, 'SELL');
-    const { orderId } = await zerodha.placeLimitSellOption(tsym, quantity, sellPrice, exchange);
+    const sellPrice = await getMarketableKitePrice(existing.token, exchange, 'SELL');
+    const { orderId } = await kite.placeLimitSellOption(tsym, quantity, sellPrice, exchange);
 
     const trade = new Trade();
     trade.tsym = tsym;
@@ -331,9 +331,9 @@ export async function squareOffOnZerodha(userId: string, tsym: string, quantity:
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
     trade.user = userId;
-    trade.broker = 'zerodha';
+    trade.broker = 'kite';
     trade.brokerOrderId = orderId;
-    const fillPrice = await zerodha.getFillPrice(orderId);
+    const fillPrice = await kite.getFillPrice(orderId);
     trade.price = fillPrice;
 
     await bookkeeping.recordFill(trade);
@@ -342,28 +342,28 @@ export async function squareOffOnZerodha(userId: string, tsym: string, quantity:
 
 // BrokerExecutor.buy() implementation (see BrokerExecutor.ts) - places a
 // market buy for an already-resolved contract (caller did strike/expiry
-// selection; buyIndexOnZerodha/manualBuyOnZerodha above do their own
+// selection; buyIndexOnKite/manualBuyOnKite above do their own
 // resolution before ever reaching a Trade), then finalizeEntry protects it
 // (GTT or exitMonitor watch) when both target/stopLossPoints are set, or
 // leaves it unprotected when they aren't - the same "bare" semantics
-// marketBuyBareOnZerodha below hand-implements by skipping finalizeEntry
+// marketBuyBareOnKite below hand-implements by skipping finalizeEntry
 // entirely, unified here into one function since finalizeEntry already
 // no-ops protection on its own when targetPoints/stopLossPoints are 0.
-export async function buyResolvedOnZerodha(request: BuyRequest): Promise<Trade> {
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) {
-        throw new Error('Zerodha session not active - complete /kite/login first.');
+export async function buyResolvedOnKite(request: BuyRequest): Promise<Trade> {
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) {
+        throw new Error('Kite session not active - complete /kite/login first.');
     }
-    // 'NSE' in Exchange is Breeze-only (Zerodha never trades NSE cash through
+    // 'NSE' in Exchange is Breeze-only (Kite never trades NSE cash through
     // this path) - cast is safe, this dispatch only reaches here for
-    // Zerodha-broker users.
+    // Kite-broker users.
     const exchange = request.exchange as 'NFO' | 'BFO';
     Log.log(`[order] Buying ${request.tradingSymbol} qty=${request.quantity} for ${request.userId} (BrokerExecutor.buy)`);
     // ANT.getQuote's own TTL cache means a chunked buy (buyChunked calling
     // this once per chunk, same request.instrumentId every time) naturally
     // reuses one ANT quote fetch across the whole chunk batch instead of one
     // per chunk.
-    const buyPrice = await getMarketableZerodhaPrice(request.instrumentId, exchange, 'BUY');
+    const buyPrice = await getMarketableKitePrice(request.instrumentId, exchange, 'BUY');
     // Shared by the full-fill path below and the partial-fill-on-drift-cancel
     // path in the catch block - both build an identical Trade shape, differing
     // only in quantity/price.
@@ -377,15 +377,15 @@ export async function buyResolvedOnZerodha(request: BuyRequest): Promise<Trade> 
         trade.action = 'Buy';
         trade.status = 'COMPLETE';
         trade.user = request.userId;
-        trade.broker = 'zerodha';
+        trade.broker = 'kite';
         trade.brokerOrderId = orderId;
         return trade;
     };
 
-    const { orderId } = await zerodha.placeLimitBuyOption(request.tradingSymbol, request.quantity, buyPrice, exchange);
+    const { orderId } = await kite.placeLimitBuyOption(request.tradingSymbol, request.quantity, buyPrice, exchange);
     let entryPrice: number;
     try {
-        entryPrice = await zerodha.getFillPrice(
+        entryPrice = await kite.getFillPrice(
             orderId,
             undefined,
             undefined,
@@ -403,7 +403,7 @@ export async function buyResolvedOnZerodha(request: BuyRequest): Promise<Trade> 
         );
     } catch (e: any) {
         // A drift-cancel can carry a genuine partial fill (Kite cancelled only
-        // the remaining unfilled qty - see Zerodha.getFillPrice's driftCheck
+        // the remaining unfilled qty - see Kite.getFillPrice's driftCheck
         // block). That quantity is real money at the broker and must be
         // recorded the same way every other successful chunk is (finalizeEntry
         // -> bookkeeping.recordFill), or it becomes an untracked position with
@@ -428,24 +428,24 @@ export async function buyResolvedOnZerodha(request: BuyRequest): Promise<Trade> 
 // Deliberately bypass finalizeEntry (no GTT, no exitMonitor registration) -
 // ContinuousStrategy self-monitors every leg's target/1x-5x thresholds from
 // live option ticks instead. "Bare" = just buy/sell + record the fill.
-// Left as its own separate path (not migrated onto buyResolvedOnZerodha
+// Left as its own separate path (not migrated onto buyResolvedOnKite
 // above) rather than touching ContinuousStrategy's already-working, live
 // call sites as part of this change - see the BrokerExecutor plan's
 // migration notes.
 
-export async function marketBuyBareOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) {
-        throw new Error('Zerodha session not active - complete /kite/login first.');
+export async function marketBuyBareOnKite(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) {
+        throw new Error('Kite session not active - complete /kite/login first.');
     }
     Log.log(`[order] Bare market buy ${tradingSymbol} qty=${quantity} for ${userId}`);
     // instrumentToken here is the ANT commonToken (LegManager's callers
     // always resolve it that way - live option ticks are keyed by ANT's
-    // token, not Zerodha's own instrumentToken), which is what
-    // getMarketableZerodhaPrice needs to query ANT for a live quote.
-    const buyPrice = await getMarketableZerodhaPrice(instrumentToken, exchange, 'BUY');
-    const { orderId } = await zerodha.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
-    const entryPrice = await zerodha.getFillPrice(orderId);
+    // token, not Kite's own instrumentToken), which is what
+    // getMarketableKitePrice needs to query ANT for a live quote.
+    const buyPrice = await getMarketableKitePrice(instrumentToken, exchange, 'BUY');
+    const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
+    const entryPrice = await kite.getFillPrice(orderId);
 
     const trade = new Trade();
     trade.tsym = tradingSymbol;
@@ -456,22 +456,22 @@ export async function marketBuyBareOnZerodha(userId: string, tradingSymbol: stri
     trade.action = 'Buy';
     trade.status = 'COMPLETE';
     trade.user = userId;
-    trade.broker = 'zerodha';
+    trade.broker = 'kite';
     trade.brokerOrderId = orderId;
 
     await bookkeeping.recordFill(trade);
     return trade;
 }
 
-// Unlike squareOffOnZerodha, this sets trade.token - needed so tokenRouter's
+// Unlike squareOffOnKite, this sets trade.token - needed so tokenRouter's
 // unregisterTrade (called from strategiesProcess.ts's onFill on every Sell
 // fill) actually finds the right token to unsubscribe.
-export async function marketSellBareOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
-    const zerodha = Zerodha.getInstance();
+export async function marketSellBareOnKite(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const kite = Kite.getInstance();
     Log.log(`[order] Bare market sell ${tradingSymbol} qty=${quantity} for ${userId}`);
-    const sellPrice = await getMarketableZerodhaPrice(instrumentToken, exchange, 'SELL');
-    const { orderId } = await zerodha.placeLimitSellOption(tradingSymbol, quantity, sellPrice, exchange);
-    const fillPrice = await zerodha.getFillPrice(orderId);
+    const sellPrice = await getMarketableKitePrice(instrumentToken, exchange, 'SELL');
+    const { orderId } = await kite.placeLimitSellOption(tradingSymbol, quantity, sellPrice, exchange);
+    const fillPrice = await kite.getFillPrice(orderId);
 
     const trade = new Trade();
     trade.tsym = tradingSymbol;
@@ -481,29 +481,29 @@ export async function marketSellBareOnZerodha(userId: string, tradingSymbol: str
     trade.action = 'Sell';
     trade.status = 'COMPLETE';
     trade.user = userId;
-    trade.broker = 'zerodha';
+    trade.broker = 'kite';
     trade.brokerOrderId = orderId;
 
     await bookkeeping.recordFill(trade);
     return trade;
 }
 
-// ButterflyStrategy's narrow sell-to-open exception ONLY - see Zerodha.ts's
+// ButterflyStrategy's narrow sell-to-open exception ONLY - see Kite.ts's
 // placeShortEntryOption/NEVER-SHORT GUARD comment. Mechanically mirrors
-// marketSellBareOnZerodha exactly, but calls placeShortEntryOption (never
+// marketSellBareOnKite exactly, but calls placeShortEntryOption (never
 // placeLimitSellOption/getSellableQuantity) and records via
 // bookkeeping.recordShortFill (never recordFill - see that function's own
 // comment on why a plain Sell/Buy would be wrong here). Do not call this from
 // any strategy other than ButterflyStrategy.
-export async function enterShortOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) {
-        throw new Error('Zerodha session not active - complete /kite/login first.');
+export async function enterShortOnKite(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) {
+        throw new Error('Kite session not active - complete /kite/login first.');
     }
     Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) ${tradingSymbol} qty=${quantity} for ${userId}`);
-    const sellPrice = await getMarketableZerodhaPrice(instrumentToken, exchange, 'SELL');
-    const { orderId } = await zerodha.placeShortEntryOption(tradingSymbol, quantity, sellPrice, exchange);
-    const fillPrice = await zerodha.getFillPrice(orderId);
+    const sellPrice = await getMarketableKitePrice(instrumentToken, exchange, 'SELL');
+    const { orderId } = await kite.placeShortEntryOption(tradingSymbol, quantity, sellPrice, exchange);
+    const fillPrice = await kite.getFillPrice(orderId);
 
     const trade = new Trade();
     trade.tsym = tradingSymbol;
@@ -514,27 +514,27 @@ export async function enterShortOnZerodha(userId: string, tradingSymbol: string,
     trade.action = 'SellToOpen';
     trade.status = 'COMPLETE';
     trade.user = userId;
-    trade.broker = 'zerodha';
+    trade.broker = 'kite';
     trade.brokerOrderId = orderId;
 
     await bookkeeping.recordShortFill(trade);
     return trade;
 }
 
-// Closes a short opened by enterShortOnZerodha - a plain marketable LIMIT BUY via the
+// Closes a short opened by enterShortOnKite - a plain marketable LIMIT BUY via the
 // EXISTING, unguarded placeLimitBuyOption (closing a short via a BUY has no guard to begin
 // with - never needs a new broker-level primitive). Records via recordShortFill with
 // action='BuyToClose' so bookkeeping's long-only Buy branch never mistakes this for a new
 // long position. Do not call this from any strategy other than ButterflyStrategy.
-export async function buyToCloseOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) {
-        throw new Error('Zerodha session not active - complete /kite/login first.');
+export async function buyToCloseOnKite(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) {
+        throw new Error('Kite session not active - complete /kite/login first.');
     }
     Log.log(`[order] [BUTTERFLY] Buy-to-close ${tradingSymbol} qty=${quantity} for ${userId}`);
-    const buyPrice = await getMarketableZerodhaPrice(instrumentToken, exchange, 'BUY');
-    const { orderId } = await zerodha.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
-    const fillPrice = await zerodha.getFillPrice(orderId);
+    const buyPrice = await getMarketableKitePrice(instrumentToken, exchange, 'BUY');
+    const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
+    const fillPrice = await kite.getFillPrice(orderId);
 
     const trade = new Trade();
     trade.tsym = tradingSymbol;
@@ -545,7 +545,7 @@ export async function buyToCloseOnZerodha(userId: string, tradingSymbol: string,
     trade.action = 'BuyToClose';
     trade.status = 'COMPLETE';
     trade.user = userId;
-    trade.broker = 'zerodha';
+    trade.broker = 'kite';
     trade.brokerOrderId = orderId;
 
     await bookkeeping.recordShortFill(trade);
@@ -556,31 +556,31 @@ export async function buyToCloseOnZerodha(userId: string, tradingSymbol: string,
 // (unlike the market-order primitives above). The fill arrives later via
 // pollPendingLimitOrders -> bookkeeping.recordFill -> the normal fill-listener
 // chain (IPC broadcast -> OrderClient.onFill -> strategy.updateTrade).
-export async function placeLimitBuyBareOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) {
-        throw new Error('Zerodha session not active - complete /kite/login first.');
+export async function placeLimitBuyBareOnKite(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) {
+        throw new Error('Kite session not active - complete /kite/login first.');
     }
     Log.log(`[order] Bare limit buy ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
-    const { orderId } = await zerodha.placeLimitBuyOption(tradingSymbol, quantity, price, exchange);
+    const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, price, exchange);
     trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity, exchange, action: 'Buy' });
     return { orderId };
 }
 
 // Returns immediately with {orderId} - fill arrives later via
-// pollPendingLimitOrders, mirroring placeLimitBuyBareOnZerodha exactly but
+// pollPendingLimitOrders, mirroring placeLimitBuyBareOnKite exactly but
 // for a SELL leg. Used for a target-hit exit that must lock in a specific
-// price - unlike squareOffOnZerodha (blind MARKET order, no price floor at
+// price - unlike squareOffOnKite (blind MARKET order, no price floor at
 // all), a caller here controls exactly what price the position can close
 // at; if the market never actually reaches it, the order simply rests
 // rather than selling into a loss.
-export async function placeLimitSellBareOnZerodha(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) {
-        throw new Error('Zerodha session not active - complete /kite/login first.');
+export async function placeLimitSellBareOnKite(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) {
+        throw new Error('Kite session not active - complete /kite/login first.');
     }
     Log.log(`[order] Bare limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
-    const { orderId } = await zerodha.placeLimitSellOption(tradingSymbol, quantity, price, exchange);
+    const { orderId } = await kite.placeLimitSellOption(tradingSymbol, quantity, price, exchange);
     trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity, exchange, action: 'Sell' });
     return { orderId };
 }
@@ -597,28 +597,28 @@ export async function placeLimitSellBareOnZerodha(userId: string, tradingSymbol:
 // Untracking unconditionally in that case would silently drop the fill
 // (pollPendingLimitOrders would never see it again to call
 // bookkeeping.recordFill).
-export async function cancelOrderOnZerodha(orderId: string): Promise<void> {
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) {
-        throw new Error('Zerodha session not active - complete /kite/login first.');
+export async function cancelOrderOnKite(orderId: string): Promise<void> {
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) {
+        throw new Error('Kite session not active - complete /kite/login first.');
     }
     await cancelOrderWithFillRecheck({
         orderId,
-        label: 'cancelOrderOnZerodha',
-        cancel: () => zerodha.cancelOrder(orderId),
+        label: 'cancelOrderOnKite',
+        cancel: () => kite.cancelOrder(orderId),
         // filled_quantity reflects the broker's true cumulative filled amount
         // regardless of the order's final status - correct for both a full
         // COMPLETE fill AND a partial-fill-then-CANCELLED record (confirmed
-        // live elsewhere in this file - see Zerodha.getFillPrice's own
+        // live elsewhere in this file - see Kite.getFillPrice's own
         // driftCheck recheck, which already trusts this same field). Checking
         // status === 'COMPLETE' alone (the old version) returned false for a
         // genuine partial fill, since Kite reports that as 'CANCELLED' - see
         // gaps.md's "Partial-fill accounting" entry. terminal mirrors
-        // Zerodha.getFillPrice's own terminal-status check - COMPLETE/
+        // Kite.getFillPrice's own terminal-status check - COMPLETE/
         // CANCELLED/REJECTED are all final, anything else (OPEN etc.) means
         // the order can still fill further.
         isFilled: async () => {
-            const history = await zerodha.getKiteConnect().getOrderHistory(orderId);
+            const history = await kite.getKiteConnect().getOrderHistory(orderId);
             const latest = history[history.length - 1];
             return {
                 filledQuantity: Number(latest?.filled_quantity ?? 0),
@@ -629,11 +629,11 @@ export async function cancelOrderOnZerodha(orderId: string): Promise<void> {
     });
 }
 
-// Zerodha-side premium-range strike lookup (mirrors Prism.getContractByPriceRange's
+// Kite-side premium-range strike lookup (mirrors Prism.getContractByPriceRange's
 // OTM-then-ITM strike-walk shape - src/prism.ts:666-721), but sources the
-// tradable contract from ZerodhaContractMaster (CSV-backed, no live premium
+// tradable contract from KiteContractMaster (CSV-backed, no live premium
 // data) and the live premium from the ANT cross-reference (estimateOptionPrice)
-// since this account's Zerodha quote API 403s. Floor-only check (no upper
+// since this account's Kite quote API 403s. Floor-only check (no upper
 // bound) - unlike Prism's min/max range, a ContinuousStrategy leg can move up
 // to 5x its SL distance further from its own entry, so headroom above the
 // floor is wanted, not capped.
@@ -643,7 +643,7 @@ export async function cancelOrderOnZerodha(orderId: string): Promise<void> {
 // candidate in the walk loop - AliceBlue's OHLC endpoint rate-limits (429)
 // after just 1-2 rapid sequential calls (confirmed live), which silently
 // starved out real, qualifying candidates when this walked one-at-a-time.
-export async function getContractByPriceRangeOnZerodha(
+export async function getContractByPriceRangeOnKite(
     underlyingLtp: number,
     optionType: 'CE' | 'PE',
     index: 'NIFTY' | 'SENSEX' = 'NIFTY',
@@ -670,10 +670,10 @@ export async function getContractByPriceRangeOnZerodha(
         const data = premiumData.get(`${strike}_${optionType}`);
         if (data == null || data.premium < minPremium) continue;
         try {
-            const contract = await ZerodhaContractMaster.getInstance().findNearestExpiryOption(strike, optionType, index);
+            const contract = await KiteContractMaster.getInstance().findNearestExpiryOption(strike, optionType, index);
             return { ...contract, strike, premium: data.premium, antToken: data.antToken };
         } catch (e) {
-            Log.log('[order] Zerodha contract resolution failed for a priced-in strike:', strike, optionType, e);
+            Log.log('[order] Kite contract resolution failed for a priced-in strike:', strike, optionType, e);
         }
     }
 
@@ -681,10 +681,10 @@ export async function getContractByPriceRangeOnZerodha(
 }
 
 // exitMonitor calls this when a useGTT=false trade crosses target/SL. Wired
-// here (rather than exitMonitor importing squareOffOnZerodha directly) to
+// here (rather than exitMonitor importing squareOffOnKite directly) to
 // avoid a circular import between the two modules.
-exitMonitor.onExit('zerodha', async (trade: Trade, exchange: 'NFO' | 'BFO') => {
-    await squareOffOnZerodha(trade.user, trade.tsym, trade.quantity, exchange);
+exitMonitor.onExit('kite', async (trade: Trade, exchange: 'NFO' | 'BFO') => {
+    await squareOffOnKite(trade.user, trade.tsym, trade.quantity, exchange);
 });
 
 // GTT placement (above, useGTT=true path) is fire-and-forget - the broker
@@ -699,20 +699,20 @@ exitMonitor.onExit('zerodha', async (trade: Trade, exchange: 'NFO' | 'BFO') => {
 // raw payloads on the first real trigger and correct field names here if the
 // broker's actual shape disagrees.
 export async function pollGttFills(): Promise<void> {
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) return;
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) return;
 
     const openGttTrades = bookkeeping.trades.filter((t) => t.gttTriggerId != null);
     if (openGttTrades.length === 0) return;
 
-    const liveGtts = await zerodha.getGTTs();
+    const liveGtts = await kite.getGTTs();
     const activeIds = new Set(liveGtts.filter((g: any) => g.status === 'active').map((g: any) => g.id));
 
     for (const trade of openGttTrades) {
         if (activeIds.has(trade.gttTriggerId)) continue; // still live, not closed
 
         try {
-            const orders = await zerodha.getKiteConnect().getOrders();
+            const orders = await kite.getKiteConnect().getOrders();
             const sellFill = (orders as any[])
                 .filter((o: any) => o.tradingsymbol === trade.tsym && o.transaction_type === 'SELL' && o.status === 'COMPLETE')
                 .sort((a: any, b: any) => new Date(b.order_timestamp).getTime() - new Date(a.order_timestamp).getTime())[0];
@@ -725,7 +725,7 @@ export async function pollGttFills(): Promise<void> {
             sellTrade.action = 'Sell';
             sellTrade.status = 'COMPLETE';
             sellTrade.user = trade.user;
-            sellTrade.broker = 'zerodha';
+            sellTrade.broker = 'kite';
 
             await bookkeeping.recordFill(sellTrade);
             Log.log(`[order] GTT poll: ${trade.tsym} (${trade.user}) closed, recorded exit at ${sellTrade.price}`);
@@ -748,13 +748,13 @@ export async function pollGttFills(): Promise<void> {
 // trade's entryTime and lets recordFill sort out which (if any) are actually
 // new. Called on an interval from orderProcess.ts, same cadence as pollGttFills.
 export async function reconcileManualSells(): Promise<void> {
-    const zerodha = Zerodha.getInstance();
-    if (!(await zerodha.hasValidSession())) return;
+    const kite = Kite.getInstance();
+    if (!(await kite.hasValidSession())) return;
     if (bookkeeping.trades.length === 0) return;
 
     let orders: any[];
     try {
-        orders = await zerodha.getKiteConnect().getOrders();
+        orders = await kite.getKiteConnect().getOrders();
     } catch (e) {
         Log.log('[order] reconcileManualSells: failed to fetch orders:', e);
         return;
@@ -777,7 +777,7 @@ export async function reconcileManualSells(): Promise<void> {
                 sellTrade.action = 'Sell';
                 sellTrade.status = 'COMPLETE';
                 sellTrade.user = trade.user;
-                sellTrade.broker = 'zerodha';
+                sellTrade.broker = 'kite';
                 sellTrade.brokerOrderId = fill.order_id;
 
                 await bookkeeping.recordFill(sellTrade);

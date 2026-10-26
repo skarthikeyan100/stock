@@ -28,7 +28,7 @@ strategy code** — grep confirms no `cfg.broker` reference for those two
 anywhere in `src/strategy/`. The actual broker used for a given user's orders
 is resolved per-user at order-placement time via
 `bookkeeping.getUserBroker(user)` (`src/processes/order/bookkeeping.ts:138-140`,
-defaults to `'zerodha'`). **`BulkPcrStrategy` is the one exception**: it does
+defaults to `'kite'`). **`BulkPcrStrategy` is the one exception**: it does
 read its own `brokers`/`broker` config keys directly (`configuredBrokers()`)
 rather than going through per-user resolution, since it fans out to every
 configured broker independently rather than picking one. For every other
@@ -130,7 +130,7 @@ one bucket stale is dropped as expired) — gated by `isCooldownElapsed`,
 `isSentimentAligned` (reused as the "avoid choppy hours" momentum filter the
 source conversation calls for), and `hasOpenPosition()` (at most one open
 trade cycle at a time, across hour boundaries).
-**Multi-broker**: `brokers: [zerodha, ant, breeze]` (falls back to legacy
+**Multi-broker**: `brokers: [kite, ant, breeze]` (falls back to legacy
 single `broker:`, same convention as `BulkPcrStrategy.configuredBrokers()`)
 — the full configured `quantity` is entered independently and in parallel on
 every configured broker via `chunkedBuyIndex`, `Promise.allSettled` so one
@@ -204,7 +204,7 @@ GTT/bracket). Multi-broker fan-out via config `brokers: [...]` (falls back to
 the legacy single `broker:` field if `brokers` is empty/absent) — runs each
 configured broker's full buy→exit lifecycle independently
 (`configuredBrokers()`, `enterOnBroker()`). `BrokerName` supports all four:
-`zerodha`, `breeze`, `ant`, `prism` — `ant`/`prism` support (contract
+`kite`, `breeze`, `ant`, `prism` — `ant`/`prism` support (contract
 resolution + pricing branches in `orderProcess.ts`'s `chunkedBuyIndex`, and a
 real `squareOffLimit` implementation added for Prism, which previously had
 none) was added alongside `BulkPcrAutoStartStrategy` below.
@@ -216,7 +216,7 @@ fallback), `brokers` (preferred, multi-broker array), `quantity`,
 ignored, with a one-time WARN in the log. Use `maxLossPerTrade`.)
 
 **Loss stop (`maxLossPerTrade`, optional, ships unset)**: a percent of this block's `maxInvestment`
-(`10%` = 10000 on 100000), applied **per pair broker** (`ant`, `zerodha`). A trade is one auto-start slot on
+(`10%` = 10000 on 100000), applied **per pair broker** (`ant`, `kite`). A trade is one auto-start slot on
 one broker, i.e. everything since the last `reset()` (the auto-start calls `reset({ keepStops: true })`
 before each slot). Loss figure = open P&L only: the unrealized P&L of that broker's selling slots (both
 sides) at the last live tick. Closed cycles (earlier re-buy exits) and partial fills do not offset it,
@@ -316,7 +316,7 @@ position per side at a time (`hasOpenLegOfRight`, `:145`) plus a cooldown.
 **Exit**: delegated to `LegManager`, same as `ContinuousStrategy` — CE and PE
 share **one** `LegManager` instance so `maxProfit` is a single combined latch
 across both sides. `getMonitorConfig()` returns `null` (`:70`).
-**Broker**: `config.yml` says `broker: zerodha` (also unread by code — see
+**Broker**: `config.yml` says `broker: kite` (also unread by code — see
 gotcha).
 **Restart safety**: `reconcile()` (`:95`), same pattern as `ContinuousStrategy`.
 **Config keys**: `enabled`, `broker` (informational), `quantity`,
@@ -338,14 +338,14 @@ a stale price firing instantly on restart.
 **Sizing**: fixed `quantity` config key.
 **Exit**: `OrderClient.buyIndex()` is called with `targetPoints`/
 `stopLossPoints` from config directly (`executeTrade`, `:218`) — this places
-a broker-side two-leg **GTT bracket** at entry (`zerodhaExecutor.ts`'s
+a broker-side two-leg **GTT bracket** at entry (`kiteExecutor.ts`'s
 buy→fill→GTT sequence) or, per-user, gets routed to in-app `exitMonitor.ts`
 polling if that user has `useGTT=false`. No stop-loss/target logic lives in
 the strategy itself.
 **Self-rearm**: on a GTT-closed trade, `updateTrade` → `rearmAfterClose`
 (`:124`) opens a fresh same-day window (new `previousClose` = the exit
 price) rather than waiting for tomorrow — capped at the same 14:45 limit.
-**Broker**: Zerodha-specific (order path goes through `zerodhaExecutor.ts`
+**Broker**: Kite-specific (order path goes through `kiteExecutor.ts`
 directly via `OrderClient.buyIndex`, not broker-agnostic).
 **Config keys**: `enabled`, `quantity`, `targetPoints`, `stopLossPoints`,
 `logEnabled`, `snapshotTime`, `confirmTime`, `previousClose`,
@@ -375,11 +375,11 @@ an open trade). Fires once the option's own LTP crosses `config.targetPrice`
 (`processOptionQuote`, `:73`) — a price-target trigger, not a NIFTY-based
 signal.
 **Sizing**: fixed `quantity` config key.
-**Exit**: reuses `GoodMorningStrategy`'s Zerodha GTT-bracket entry path
+**Exit**: reuses `GoodMorningStrategy`'s Kite GTT-bracket entry path
 (`OrderClient.buyIndex` with `targetPoints`/`stopLossPoints`, `:87-95`).
 **One-shot**: fires at most once per arming (`this.fired`); `reset()`
 (`:65`) re-arms the watch via `watchToken` again.
-**Broker**: Zerodha (same path as GoodMorningStrategy).
+**Broker**: Kite (same path as GoodMorningStrategy).
 **Config keys**: `enabled`, `symbol`, `strike`, `expiry`, `optionType`,
 `targetPrice` (the *entry* trigger price, distinct from `targetPoints` which
 is the post-entry exit target), `quantity`, `targetPoints`, `stopLossPoints`,
@@ -494,24 +494,24 @@ buys the nearest-strike CE (gap up) or PE (gap down) option — one leg per
 (stock, broker) pair, isolated via `Promise.allSettled` so one leg's
 contract-resolution/order failure doesn't abort the others.
 **Product (overnight, not intraday)**: the position is meant to be held
-past the session. Zerodha places `NRML` and Breeze `options` (both carry
+past the session. Kite places `NRML` and Breeze `options` (both carry
 forward). ANT's buy and resting target sell pass `product: 'LONGTERM'`
 explicitly (`ANT.placeOrder`'s default is `INTRADAY`, which AliceBlue squares
 off at ~3:20pm). The product is stored on the Trade so exits and restores
 reuse it. `LONGTERM` is the unverified value from AliceBlue's v2 docs; if
 the first live ANT entry is rejected, check the logged response and try
 `NORMAL`.
-**Multi-broker (`brokers: [zerodha, breeze, ant]`)**: ranking stays
+**Multi-broker (`brokers: [kite, breeze, ant]`)**: ranking stays
 broker-independent — the single ANT OHLC batch call picks the stocks and
 `AntContractMaster.findNearestStrikeOption` picks the reference strike +
 nearest expiry for each one; every configured broker then resolves its OWN
 tradable contract for that SAME (strike, expiry) pair
-(`ZerodhaContractMaster.findExactOptionBySymbol`,
+(`KiteContractMaster.findExactOptionBySymbol`,
 `BreezeContractMaster.findOption` via `getEquityStockCode` for the ICICI
 shortName) rather than independently re-picking a strike, so a stale
 weekly-vs-monthly master on one broker can't silently diverge from what ANT
-chose (the exact failure class flagged in `ZerodhaContractMaster.ts`'s own
-`refreshIfStale` comment). `kite` is accepted as an alias for `zerodha`;
+chose (the exact failure class flagged in `KiteContractMaster.ts`'s own
+`refreshIfStale` comment). `kite` is accepted as an alias for `kite`;
 unknown broker names are dropped with a log; an empty/missing config falls
 back to `['ant']`. `lots` applies **per stock per broker** — 3 stocks × 3
 brokers = up to 9 positions — and the shared per-user capital/loss caps
@@ -533,15 +533,15 @@ between ranking and the first buy to well under a second. If ANT rejects the
 MARKET+protection order (`EC965`/"Market orders are not allowed"),
 `antExecutor.enterPosition` falls back to a marketable LIMIT priced off
 `ANT.getScripQuote` (not OHLC-throttled).
-**Entry/exit — zerodha/breeze**: bought via the broker-dispatched
-`butterflyBuyLeg` IPC (`marketBuyBareOnZerodha`/`marketBuyBareOnBreeze` —
+**Entry/exit — kite/breeze**: bought via the broker-dispatched
+`butterflyBuyLeg` IPC (`marketBuyBareOnKite`/`marketBuyBareOnBreeze` —
 themselves a marketable LIMIT at the live best bid/ask, not a true broker
 MARKET order), using the ANT-native token for the live-quote lookup and
 that broker's own trading symbol to place the order. The target is computed
 strategy-side from the real fill, with the identical formula ANT's
 `antExecutor` uses server-side, and placed as a separate resting sell via
 the broker-dispatched `brokerPlaceLimitSellBare` IPC
-(`placeLimitSellBareOnZerodha`/`placeLimitSellBareOnBreeze`).
+(`placeLimitSellBareOnKite`/`placeLimitSellBareOnBreeze`).
 **All brokers**: the resting target-only exit is a separate limit sell
 placed after the real fill, at `min(0.0025 * stockOpen, fillPrice)` points
 above the fill price (0.25 assumed delta × 1% of the underlying's open,
@@ -550,7 +550,7 @@ limit sell per leg, no re-place-on-cancel, no reconcile), not broker-owned;
 `getMonitorConfig()` returns `null` and `canHandleOptionQuote()` is always
 `false` accordingly. `exitMonitor.ts`'s `SELF_MANAGED_STRATEGY_TYPES` lists
 this strategy's type so a restart's `reconcileFromTrades()` never
-re-registers these trades as broker-owned; the zerodha/breeze fills on the
+re-registers these trades as broker-owned; the kite/breeze fills on the
 resting sell are picked up by `pendingLimitOrders.ts`'s/
 `breezePendingLimitOrders.ts`'s own pollers like any other bare limit sell.
 **Fire-and-forget**: `executeTrade()` dispatches every leg's buy+fill-wait+

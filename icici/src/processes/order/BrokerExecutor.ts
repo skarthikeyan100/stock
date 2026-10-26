@@ -3,7 +3,7 @@ import Log from '../../util/Log';
 
 export type Exchange = 'NFO' | 'BFO' | 'NSE'; // NSE added for Breeze cash-equity orders
 
-// Thrown by every broker's cancelOrderOnX (zerodhaExecutor.ts, antExecutor.ts,
+// Thrown by every broker's cancelOrderOnX (kiteExecutor.ts, antExecutor.ts,
 // prismExecutor.ts, breezeExecutor.ts) specifically when a post-cancel status
 // recheck confirms the order actually filled, regardless of whether the
 // broker's own cancel call succeeded or failed. A distinct type (not a plain
@@ -14,7 +14,7 @@ export type Exchange = 'NFO' | 'BFO' | 'NSE'; // NSE added for Breeze cash-equit
 // string-matching an error message.
 // filledQuantity is the actual confirmed-filled quantity as of the status
 // recheck - NOT necessarily the order's full original quantity. A resting
-// sell/buy can partially fill before the remainder is cancelled (Zerodha
+// sell/buy can partially fill before the remainder is cancelled (Kite
 // reports this as a 'CANCELLED' history record with a nonzero
 // filled_quantity; AliceBlue/Breeze equivalently via filledQuantity/
 // quantity-pending-cancelled), and a caller that assumes "already filled"
@@ -34,7 +34,7 @@ export class OrderAlreadyFilledError extends Error {
 }
 
 // Shared cancel-then-recheck implementation for every broker's cancelOrderOnX
-// (zerodhaExecutor/antExecutor/prismExecutor/breezeExecutor) - factored out
+// (kiteExecutor/antExecutor/prismExecutor/breezeExecutor) - factored out
 // after the same fix (always recheck status regardless of cancel
 // success/failure; throw OrderAlreadyFilledError on a confirmed fill rather
 // than swallowing or returning normally) had to be applied to all four
@@ -120,25 +120,25 @@ export async function cancelOrderWithFillRecheck(params: {
     params.untrack();
 }
 
-// Broker-agnostic order-placement contract - see zerodhaExecutor.ts,
+// Broker-agnostic order-placement contract - see kiteExecutor.ts,
 // antExecutor.ts, prismExecutor.ts for the concrete implementations, and
 // getBrokerExecutor() (bookkeeping.ts) for how a user's configured broker
 // resolves to one of these. Deliberately excludes broker-specific mechanics
-// (Zerodha's GTT/buy-halt latch, ANT's bracket/cover order fields and
+// (Kite's GTT/buy-halt latch, ANT's bracket/cover order fields and
 // AntOrderNotifyStream push-fill detection, Prism's raw Noren order fields)
-// and contract *resolution* (AntContractMaster/ZerodhaContractMaster/
+// and contract *resolution* (AntContractMaster/KiteContractMaster/
 // PrismContractMaster all differ genuinely) - both stay internal to each
 // executor. Only the "place/close/cancel/poll a resolved order" surface is
 // common.
 export interface BuyRequest {
     userId: string;
     tradingSymbol: string;
-    instrumentId: string; // broker-specific contract id (ANT token / Zerodha instrument_token / Prism token) - already resolved by the caller, opaque here
+    instrumentId: string; // broker-specific contract id (ANT token / Kite instrument_token / Prism token) - already resolved by the caller, opaque here
     quantity: number;
     exchange: Exchange;
     // Optional protection - when both are set, the implementation protects the
     // position however that broker natively can:
-    //   Zerodha: places a GTT after entry (or registers an in-app exitMonitor
+    //   Kite: places a GTT after entry (or registers an in-app exitMonitor
     //     watch instead, per the placing user's useGTT setting).
     //   ANT: places a native bracket order (BO) at entry instead of a plain order.
     //   Prism: places a native cover order (product_type 'H') at entry.
@@ -146,7 +146,7 @@ export interface BuyRequest {
     // it self-monitors every leg's target/adverse-level thresholds itself).
     targetPoints?: number;
     stopLossPoints?: number;
-    // Zerodha-only (for now): when set, each chunk's resting limit buy is
+    // Kite-only (for now): when set, each chunk's resting limit buy is
     // cancelled early if live LTP drifts this many points above that chunk's
     // own limit price, rather than waiting out getFillPrice's full timeout.
     // Omitted (or any other broker) = today's unmodified timeout-only behavior.
@@ -162,13 +162,13 @@ export interface BrokerPosition {
 }
 
 export interface BrokerExecutor {
-    readonly brokerName: 'zerodha' | 'ant' | 'prism' | 'breeze';
+    readonly brokerName: 'kite' | 'ant' | 'prism' | 'breeze';
 
     hasValidSession(): Promise<boolean>;
 
     buy(request: BuyRequest): Promise<Trade>;
 
-    // Matches the signature zerodhaExecutor.squareOffOnZerodha/antExecutor.squareOffOnAnt
+    // Matches the signature kiteExecutor.squareOffOnKite/antExecutor.squareOffOnAnt
     // already both happen to share exactly today - no change needed to this shape.
     squareOff(userId: string, tradingSymbol: string, quantity: number, exchange: Exchange): Promise<Trade>;
 
@@ -184,7 +184,7 @@ export interface BrokerExecutor {
     // for this position, needed by the pending-order tracker for the eventual fill.
     // Optional on the interface for callers that can't assume it (a future
     // broker executor need not implement it) - every current executor
-    // (Zerodha, ANT, Breeze, Prism) does implement it as of this writing.
+    // (Kite, ANT, Breeze, Prism) does implement it as of this writing.
     squareOffLimit?(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: Exchange, limitPrice: number): Promise<{ orderId: string }>;
 
     // Each broker's cancelOrderOnX implementation throws OrderAlreadyFilledError

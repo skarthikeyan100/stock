@@ -11,7 +11,7 @@ export interface User {
     investmentMode: 'lotCount' | 'investmentAmount';
     investmentAmount: number;
     useGTT: boolean;
-    broker?: 'zerodha' | 'ant' | 'breeze';
+    broker?: 'kite' | 'ant' | 'breeze';
     role: string;
     enabled: boolean;
     // Set when the user's realized loss in a trading week breached the weekly
@@ -38,12 +38,12 @@ export interface User {
     // "use the strategy's own config.yml value" (see ContinuousStrategy.capitalCheck).
     allottedCapital?: number;
     // Per-user override of config.yml's global settings.targetPriceDiff/
-    // stopLossPriceDiff, used by every Zerodha/ANT entry path
-    // (buyIndexOnZerodha/On Ant, manualBuyOnZerodha/OnAnt, buyContractOnZerodha)
+    // stopLossPriceDiff, used by every Kite/ANT entry path
+    // (buyIndexOnKite/On Ant, manualBuyOnKite/OnAnt, buyContractOnKite)
     // when the individual request doesn't specify explicit target/stopLoss
     // points. Resolution order is: request-level points > this per-user
     // override > the global config.yml default. Unset means "use the global
-    // default" - see zerodhaExecutor.ts/antExecutor.ts.
+    // default" - see kiteExecutor.ts/antExecutor.ts.
     targetPoints?: number;
     stopLossPoints?: number;
     // KYC identity numbers - the *documents* above (panCardId etc.) only ever
@@ -187,7 +187,7 @@ export async function getAllUsers(): Promise<User[]> {
     return docs as User[];
 }
 
-export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotCount?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'zerodha' | 'ant' | 'breeze'; enabled?: boolean; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number; profitSplitPercent?: number }): Promise<User | null> {
+export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotCount?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; enabled?: boolean; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number; profitSplitPercent?: number }): Promise<User | null> {
     const update: any = {};
     if (settings.lossLimit !== undefined) update.lossLimit = settings.lossLimit;
     if (settings.lotCount !== undefined) update.lotCount = settings.lotCount;

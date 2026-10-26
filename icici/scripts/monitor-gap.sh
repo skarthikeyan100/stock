@@ -10,7 +10,7 @@
 #
 # Unlike BulkPcrStrategy (which logs everything from inside its own class -
 # see monitor-bulkpcr.sh), GapStrategy's flow is spread across several
-# actors (Zerodha's GTT placement, OrderBookkeeping's fill events,
+# actors (Kite's GTT placement, OrderBookkeeping's fill events,
 # pollGttFills' poll-detected close) that don't all mention "GapStrategy" by
 # name. This script tracks the currently-held contract symbol (captured from
 # the "Buying <tsym> qty=... for GapStrategy" line every broker executor
@@ -94,7 +94,7 @@ tail $TAIL_OPTS "$LOG_FILE" | awk -W interactive '
         if (is_gap_own) relevant = 1
         if (mentions_gap) relevant = 1
         if (contract != "" && index(raw, contract) > 0) relevant = 1
-        if (expect_gtt_id && callsite == "Zerodha.placeTargetStopLossGTT") relevant = 1
+        if (expect_gtt_id && callsite == "Kite.placeTargetStopLossGTT") relevant = 1
 
         if (!relevant) next
 
@@ -123,7 +123,7 @@ tail $TAIL_OPTS "$LOG_FILE" | awk -W interactive '
 
         # --- GTT trigger_id bookkeeping (that line never mentions tsym) --
         if (index(line, "Placing GTT OCO for") == 1) expect_gtt_id = 1
-        else if (callsite == "Zerodha.placeTargetStopLossGTT" && index(line, "GTT placed:") == 1) expect_gtt_id = 0
+        else if (callsite == "Kite.placeTargetStopLossGTT" && index(line, "GTT placed:") == 1) expect_gtt_id = 0
 
         # --- skip noisy/redundant lines -----------------------------------
         if (callsite == "OrderBookkeeping._processTradeEvent") {

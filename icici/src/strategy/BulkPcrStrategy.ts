@@ -5,12 +5,13 @@ import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
-import { roundToTick } from '../zerodha/Zerodha';
+import { roundToTick } from '../kite/Kite';
 import MomentumSignal from './MomentumSignal';
 import { isPastMarketClose } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { PnlStop } from './PnlStop';
 import { sleep } from '../util/sleep';
+import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
 
@@ -67,12 +68,12 @@ const STATE_COLLECTION = 'bulkPcrStrategyState';
 // chunkedBuyIndex/chunkedSquareOffLimit (orderProcess.ts) support all four
 // brokers - ant and prism were added alongside BulkPcrAutoStartStrategy
 // (the scheduled auto-arm wrapper) to let that wrapper run this strategy
-// against ant/prism instead of zerodha/breeze.
-type BrokerName = 'zerodha' | 'breeze' | 'ant' | 'prism';
+// against ant/prism instead of kite/breeze.
+type BrokerName = 'kite' | 'breeze' | 'ant' | 'prism';
 
 // Brokers that run the opposite-direction pair: one slot per option side per broker
-// (zerodha_call / zerodha_put, breeze_call, ant_put, ...). Prism stays a single slot.
-const PAIR_BROKERS: ReadonlySet<BrokerName> = new Set<BrokerName>(['ant', 'zerodha', 'breeze']);
+// (kite_call / kite_put, breeze_call, ant_put, ...). Prism stays a single slot.
+const PAIR_BROKERS: ReadonlySet<BrokerName> = new Set<BrokerName>(['ant', 'kite', 'breeze']);
 function isPairBroker(broker: BrokerName): boolean {
     return PAIR_BROKERS.has(broker);
 }
@@ -92,7 +93,7 @@ function brokerOfKey(key: string): BrokerName {
 }
 
 // The id live option ticks and resting-sell tracking are keyed on: the ANT common token for this
-// contract. Every pair broker's chunkedBuyIndex result carries it - zerodha/ant return it as
+// contract. Every pair broker's chunkedBuyIndex result carries it - kite/ant return it as
 // `token`, breeze as `feedToken` (its own `token` is Breeze's instrument id, which only Breeze's
 // bookkeeping/squareOff paths understand).
 function feedTokenOf(result: { token: unknown; feedToken?: unknown }): string {
@@ -227,7 +228,7 @@ function isStillWithinSameTradingSession(epochMs: number): boolean {
 // resolveMaxInvestmentQuantity in orderProcess.ts/bookkeeping.ts compute the
 // largest lot-aligned quantity that fits under `maxInvestment` once that
 // broker's option premium is known) of a NIFTY option independently and in
-// FULL on every configured broker (config `brokers: [zerodha, breeze]`,
+// FULL on every configured broker (config `brokers: [kite, breeze]`,
 // falling back to a single legacy `broker:` field) - not a split of one
 // pooled quantity. One PCR-driven direction decision drives every broker's
 // entry; each broker then runs its own entirely independent chunked
@@ -340,14 +341,14 @@ export default class BulkPcrStrategy extends Strategy {
         ) ?? { type: 'BulkPcrStrategy', enabled: false };
     }
 
-    // `brokers: [zerodha, breeze]` (new, multi-broker) takes priority when
+    // `brokers: [kite, breeze]` (new, multi-broker) takes priority when
     // present and non-empty; falls back to the legacy single `broker:`
-    // field (defaulting to zerodha) for backward compatibility. Deduped and
+    // field (defaulting to kite) for backward compatibility. Deduped and
     // lowercased so a config typo/duplicate can't silently double-run a
     // broker.
     private configuredBrokers(): BrokerName[] {
         const cfg = this.cfg();
-        const list: string[] = Array.isArray(cfg.brokers) && cfg.brokers.length > 0 ? cfg.brokers : [cfg.broker ?? 'zerodha'];
+        const list: string[] = normalizeBrokerList(Array.isArray(cfg.brokers) && cfg.brokers.length > 0 ? cfg.brokers : [cfg.broker ?? 'kite']);
         return Array.from(new Set(list.map((b: string) => String(b).toLowerCase()))) as BrokerName[];
     }
 
@@ -826,9 +827,9 @@ export default class BulkPcrStrategy extends Strategy {
         // filledValue/filledQty) and essentially never lands on an exact
         // multiple of NFO's 0.05 tick size, so entryAvg + targetPoints must
         // be rounded before it's used as an order price - confirmed live
-        // 2026-09-23: an unrounded price was REJECTED by Zerodha on all 8
+        // 2026-09-23: an unrounded price was REJECTED by Kite on all 8
         // resting sell chunks, leaving the full position with no exit order
-        // at all. Same helper zerodhaExecutor.ts/antExecutor.ts already use
+        // at all. Same helper kiteExecutor.ts/antExecutor.ts already use
         // for this.
         const targetPrice = roundToTick(pos.entryAvg + targetPoints);
 
@@ -1232,7 +1233,7 @@ export default class BulkPcrStrategy extends Strategy {
                     if (broker === 'ant') {
                         const trade = await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: tsym.startsWith('SENSEX') ? 'BFO' : 'NFO' });
                         squareOffAvg = trade?.price;
-                    } else if (broker === 'zerodha' || broker === 'breeze') {
+                    } else if (broker === 'kite' || broker === 'breeze') {
                         const res = await OrderClient.getInstance().chunkedSquareOff(this.userId, { tsym, quantity: remaining, broker });
                         squareOffAvg = res?.avgPrice;
                     } else {
@@ -1497,7 +1498,7 @@ export default class BulkPcrStrategy extends Strategy {
         };
 
         // Pair brokers are restored per side (<broker>_call / <broker>_put). A pre-pair bare-name
-        // record (e.g. 'ant', 'zerodha') is migrated to its side (inferred from the tsym's CE/PE
+        // record (e.g. 'ant', 'kite') is migrated to its side (inferred from the tsym's CE/PE
         // suffix); anything else non-done is kept as a manual-review slot.
         const persistedPositions: Record<string, any> = { ...(persisted?.positions ?? {}) };
         for (const b of PAIR_BROKERS) {
@@ -1554,7 +1555,7 @@ export default class BulkPcrStrategy extends Strategy {
                 // closed since (a same-day restart after 15:25 - calendar
                 // date alone isn't enough), the resting order is certainly
                 // gone already, not "still resting" - live incident
-                // 2026-09-24: both the Zerodha and Breeze legs' chunks from
+                // 2026-09-24: both the Kite and Breeze legs' chunks from
                 // 23-Sep expired unfilled at that day's EOD (Breeze's own
                 // order book showed status "Expired" on all of them), leaving
                 // the position with zero exit protection into the next day.

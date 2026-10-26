@@ -12,7 +12,7 @@ console.log = console.error;
 // registered "static IP" is apparently the IPv6 address, not IPv4 - see
 // orchestrator.ts's note. So the override is scoped to just the specific
 // hostnames that need it (see kiteDns.ts) - `order` is the only process that
-// calls api.kite.trade (Zerodha) AND the one that places/cancels/exits ANT
+// calls api.kite.trade (Kite) AND the one that places/cancels/exits ANT
 // orders via a3.aliceblueonline.com, so it's installed here.
 import { installIpv4OnlyHostOverride } from './order/kiteDns';
 installIpv4OnlyHostOverride();
@@ -25,8 +25,8 @@ import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
-import { buyIndexOnZerodha, manualBuyOnZerodha, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnZerodha, marketSellBareOnZerodha, placeLimitBuyBareOnZerodha, placeLimitSellBareOnZerodha, cancelOrderOnZerodha, getContractByPriceRangeOnZerodha, enterShortOnZerodha, buyToCloseOnZerodha } from './order/zerodhaExecutor';
-import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingZerodhaOrdersForSymbol, onCancelled as onPendingZerodhaCancelled } from './order/pendingLimitOrders';
+import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnKite, marketSellBareOnKite, placeLimitBuyBareOnKite, placeLimitSellBareOnKite, cancelOrderOnKite, getContractByPriceRangeOnKite, enterShortOnKite, buyToCloseOnKite } from './order/kiteExecutor';
+import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingKiteOrdersForSymbol, onCancelled as onPendingKiteCancelled } from './order/pendingLimitOrders';
 import { pollPendingAntLimitOrders, loadPendingAntLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingAntOrdersForSymbol, onCancelled as onPendingAntCancelled } from './order/pendingAntLimitOrders';
 import { pollPendingPrismLimitOrders, loadPendingPrismLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingPrismOrdersForSymbol, onCancelled as onPendingPrismCancelled } from './order/pendingPrismLimitOrders';
 import * as antExecutor from './order/antExecutor';
@@ -35,7 +35,7 @@ import { pollPendingBreezeLimitOrders, loadPendingBreezeLimitOrdersFromMongo, fi
 import { buyChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
 import Breeze from '../breeze/Breeze';
-import ZerodhaContractMaster from '../zerodha/ZerodhaContractMaster';
+import KiteContractMaster from '../kite/KiteContractMaster';
 import AntContractMaster from '../ant/AntContractMaster';
 import PrismContractMaster from '../prism/PrismContractMaster';
 import BreezeOrderNotifyStream from '../breeze/BreezeOrderNotifyStream';
@@ -44,13 +44,14 @@ import * as exitMonitor from './order/exitMonitor';
 import * as prismExecutor from './order/prismExecutor';
 import { getBrokerExecutor } from './order/brokerExecutors';
 import { BrokerExecutor, OrderAlreadyFilledError } from './order/BrokerExecutor';
-import Zerodha from '../zerodha/Zerodha';
+import Kite from '../kite/Kite';
 import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
 import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, CALL } from '../constants';
 import { getUser, getAllUsers } from '../user';
 import { OptionQuote, Trade } from '../model/model';
 import { isPastExpirySquareOffTime, isPastReconcileTime } from '../util/marketHours';
+import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
 
 // Defense-in-depth: an unhandled promise rejection anywhere in this process
 // (e.g. a fire-and-forget Mongo write - see bookkeeping.ts's
@@ -86,7 +87,7 @@ bookkeeping.onPositionsChanged(() => {
     broadcast({ kind: 'positionsChanged' });
 });
 
-onPendingZerodhaCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason) => {
+onPendingKiteCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason) => {
     broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason });
 });
 
@@ -201,7 +202,7 @@ function resolveRequestBroker(req: OrderRequest): string {
 }
 
 // `knownLotSize` is the contract's own lot size as resolved by that broker's contract master
-// (AntContractMaster/ZerodhaContractMaster/BreezeContractMaster all already carry it on the
+// (AntContractMaster/KiteContractMaster/BreezeContractMaster all already carry it on the
 // resolved contract) - preferred over bookkeeping.getInstrumentLotSize(tsym), which only
 // recognizes BANKNIFTY/FINNIFTY by name and silently falls back to 65 (NIFTY's lot size) for
 // everything else, including SENSEX (actual lot size 20). That mismatch sized a real SENSEX
@@ -294,7 +295,7 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
     // API, silently relying on that broker's API to reject it rather than on
     // correct routing.
     const pendingByBroker: Record<string, { orderId: string; action: string; quantity: number }[]> = {
-        zerodha: findPendingZerodhaOrdersForSymbol(userId, tsym),
+        kite: findPendingKiteOrdersForSymbol(userId, tsym),
         breeze: findPendingBreezeOrdersForSymbol(userId, tsym),
         ant: findPendingAntOrdersForSymbol(userId, tsym),
         prism: findPendingPrismOrdersForSymbol(userId, tsym),
@@ -387,7 +388,7 @@ async function forceCloseTrade(trade: Trade): Promise<boolean> {
 // uniform return shape across all 4 brokers). Prism's contract master carries no exchange
 // field at all - hardcoded here, same as the 'BFO' fallback below.
 async function resolveOptionContractForBroker(
-    broker: 'zerodha' | 'ant' | 'breeze' | 'prism',
+    broker: 'kite' | 'ant' | 'breeze' | 'prism',
     index: 'NIFTY' | 'SENSEX',
     strike: number,
     right: 'CE' | 'PE'
@@ -397,14 +398,14 @@ async function resolveOptionContractForBroker(
         const r = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
         return { tsym: r.tradingSymbol, token: r.token, exchange: r.exch as 'NFO' | 'BFO' };
     }
-    if (broker === 'zerodha') {
+    if (broker === 'kite') {
         // trade.token/tick subscriptions must always carry the ANT common token, never
-        // Zerodha's own instrument_token - ANT is the sole live-tick source and the only
+        // Kite's own instrument_token - ANT is the sole live-tick source and the only
         // thing exitMonitor/tokenRouter's subscriptions understand (see ToDo.md 2026-08-27
-        // and AntContractMaster's own comment on this exact invariant). Zerodha's
-        // instrumentToken is discarded here; getMarketableZerodhaPrice also needs the ANT
-        // token specifically, since ANT is the price source Zerodha orders are priced from.
-        const r = await ZerodhaContractMaster.getInstance().findNearestExpiryOption(strike, right, index, 0);
+        // and AntContractMaster's own comment on this exact invariant). Kite's
+        // instrumentToken is discarded here; getMarketableKitePrice also needs the ANT
+        // token specifically, since ANT is the price source Kite orders are priced from.
+        const r = await KiteContractMaster.getInstance().findNearestExpiryOption(strike, right, index, 0);
         const exch = index === 'SENSEX' ? 'BFO' : 'NFO';
         const antMatch = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
         return { tsym: r.tradingSymbol, token: antMatch.token, exchange: r.exchange };
@@ -418,7 +419,7 @@ async function resolveOptionContractForBroker(
     if (broker === 'prism') {
         // Prism's own contract master (NFO_symbols.txt) carries no exchange field and is a
         // DIFFERENT token scheme from ANT's (confirmed: it's the Shoonya/Prism token, not
-        // cross-referenced) - resolve ANT's token separately, same as the zerodha/breeze
+        // cross-referenced) - resolve ANT's token separately, same as the kite/breeze
         // branches above, so trade.token/tick subscriptions are always ANT-keyed (every
         // live tick in this codebase, across every broker, flows through ANT - see
         // BulkPcrStrategy's watchTokenOnSource('ant', ...) calls, the only live multi-
@@ -440,7 +441,7 @@ async function resolveOptionContractForBroker(
 async function buyToCloseShortLegForUser(user: string, shortTrade: Trade): Promise<void> {
     const broker = shortTrade.broker;
     const exchange: 'NFO' | 'BFO' = shortTrade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
-    if (broker === 'zerodha') await buyToCloseOnZerodha(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
+    if (broker === 'kite') await buyToCloseOnKite(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
     else if (broker === 'ant') await antExecutor.buyToClosePosition(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
     else if (broker === 'breeze') await buyToCloseOnBreeze(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
     else if (broker === 'prism') await prismExecutor.buyToClosePrism(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
@@ -463,7 +464,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     const broker = bookkeeping.getUserBroker(req.userId);
                     return broker === 'ant'
                         ? antExecutor.buyIndexOnAnt({ userId: req.userId, ...req.payload })
-                        : buyIndexOnZerodha({ userId: req.userId, ...req.payload });
+                        : buyIndexOnKite({ userId: req.userId, ...req.payload });
                 });
             }
 
@@ -471,7 +472,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // /prism/squareoff historically took a broker `token`, not a
                 // trading symbol - resolve it against the live position so
                 // callers can keep passing whatever token /openTrades gave them
-                // (Zerodha's instrumentToken now, not the old Prism/ANT token
+                // (Kite's instrumentToken now, not the old Prism/ANT token
                 // space, but the same "look up by what the client already has"
                 // shape).
                 // See reconcileInFlight's comment on 'openTrades' below - a
@@ -518,7 +519,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             // Broker-agnostic freeze-quantity-chunked buy/squareoff (see
             // chunkedOrder.ts) - BulkPcrStrategy's use case (13975 qty, over
-            // NIFTY's 1755 exchange freeze cap). Breeze and Zerodha are wired
+            // NIFTY's 1755 exchange freeze cap). Breeze and Kite are wired
             // up; the getBrokerExecutor(...) dispatch already makes extending
             // to other brokers additive, not a rewrite.
             case 'chunkedBuyIndex': {
@@ -531,7 +532,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     // actually gate it, not just record it after the fact.
                     //
                     // Uses the caller-supplied niftyLtp (ANT-sourced, same as the
-                    // zerodha branch below) instead of an independent Breeze spot
+                    // kite branch below) instead of an independent Breeze spot
                     // quote, and getMarketableBreezeBuyPrice (also ANT-sourced) for
                     // the option premium estimate - Breeze's own getQuotes has been
                     // observed live 2026-09-23 returning a generic nginx "resource
@@ -544,7 +545,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                         return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (breeze): niftyLtp is required and must be a finite number' };
                     }
                     // index threaded through (not hardcoded NIFTY) - a SENSEX-configured instance resolves a BFO
-                    // contract against the SENSEX spot it passes as niftyLtp, same as the zerodha/ant/prism branches.
+                    // contract against the SENSEX spot it passes as niftyLtp, same as the kite/ant/prism branches.
                     const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
                     const contract = await BreezeContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
                     const buyPrice = await getMarketableBreezeBuyPrice(contract);
@@ -553,7 +554,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     const quantity = resolvedQty.quantity;
                     const estimatedOrderValue = quantity * buyPrice;
                     // feedToken: the ANT common token for this same contract - the id live ticks
-                    // and resting-sell tracking key off (zerodha's branch returns it as `token`).
+                    // and resting-sell tracking key off (kite's branch returns it as `token`).
                     // `token` stays Breeze's own id, which bookkeeping/squareOff use. Resolved
                     // before the order is placed so a lookup failure can't follow a live fill.
                     const feedToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: niftyLtp });
@@ -574,26 +575,26 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     });
                 }
 
-                if (executor.brokerName === 'zerodha') {
-                    // Live option ticks for a zerodha-routed strategy arrive over the
-                    // ANT feed, not Zerodha's own (tokenRouter.ts's resolveSource maps
-                    // broker 'zerodha' -> feed 'ant'), so the token recorded on the
+                if (executor.brokerName === 'kite') {
+                    // Live option ticks for a kite-routed strategy arrive over the
+                    // ANT feed, not Kite's own (tokenRouter.ts's resolveSource maps
+                    // broker 'kite' -> feed 'ant'), so the token recorded on the
                     // Trade - and therefore what registerTrade subscribes to and what
                     // the strategy's canHandleOptionQuote matches against - must be
-                    // ANT's commonToken, not ZerodhaContractMaster's instrumentToken.
-                    // Mirrors buyIndexOnZerodha's exact same resolution.
+                    // ANT's commonToken, not KiteContractMaster's instrumentToken.
+                    // Mirrors buyIndexOnKite's exact same resolution.
                     const niftyLtp = req.payload.niftyLtp;
                     if (!Number.isFinite(niftyLtp)) {
-                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (zerodha): niftyLtp is required and must be a finite number' };
+                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (kite): niftyLtp is required and must be a finite number' };
                     }
                     // index threaded through exactly like the ant branch below - found on review:
                     // this used to hardcode 'NIFTY' regardless of req.payload.index, which for a
                     // SENSEX-configured instance would resolve a NIFTY contract (wrong strike/
                     // exchange entirely) against a SENSEX spot price.
                     const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
-                    const contract = await ZerodhaContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
+                    const contract = await KiteContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
                     const commonToken = String(AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: niftyLtp }));
-                    // Strike step mirrors ZerodhaContractMaster.findATMOption's own rounding -
+                    // Strike step mirrors KiteContractMaster.findATMOption's own rounding -
                     // needed here only for the pre-trade price estimate.
                     const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
                     const atmStrike = Math.round(niftyLtp / step) * step;
@@ -622,7 +623,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
                 if (executor.brokerName === 'ant') {
                     // AntContractMaster resolves directly (no separate
-                    // commonToken-resolution step like the zerodha branch
+                    // commonToken-resolution step like the kite branch
                     // above needs - ANT's own token IS the live-tick token
                     // here, since this order executes on ANT itself).
                     const niftyLtp = req.payload.niftyLtp;
@@ -660,18 +661,18 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     // PrismContractMaster has no live-tick concept of its own -
                     // this order's fill/exit still flows through bookkeeping
                     // keyed by this tsym/token like every other broker. Pricing
-                    // estimate reuses ANT (same reasoning as the zerodha/ant
+                    // estimate reuses ANT (same reasoning as the kite/ant
                     // branches above - Prism has no reliable live quote path of
                     // its own wired in here).
                     const niftyLtp = req.payload.niftyLtp;
                     if (!Number.isFinite(niftyLtp)) {
                         return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (prism): niftyLtp is required and must be a finite number' };
                     }
-                    // index threaded through exactly like the ant/zerodha branches above - found on
+                    // index threaded through exactly like the ant/kite branches above - found on
                     // review: this used to hardcode 'NIFTY' regardless of req.payload.index, which for
                     // a SENSEX-configured instance would resolve a NIFTY contract against a SENSEX
                     // spot price (PrismContractMaster.STRIKE_STEP's own comment already flagged this
-                    // exact gap). exchange derived the same way AntContractMaster/ZerodhaContractMaster
+                    // exact gap). exchange derived the same way AntContractMaster/KiteContractMaster
                     // do elsewhere - PrismContractMaster.findATMOption doesn't return one.
                     const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
                     const prismExchange = index === 'SENSEX' ? 'BFO' : 'NFO';
@@ -701,7 +702,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     });
                 }
 
-                return { kind: 'response', id: req.id, ok: false, error: `chunkedBuyIndex: broker '${executor.brokerName}' not yet supported (breeze/zerodha/ant/prism only)` };
+                return { kind: 'response', id: req.id, ok: false, error: `chunkedBuyIndex: broker '${executor.brokerName}' not yet supported (breeze/kite/ant/prism only)` };
             }
 
             case 'chunkedSquareOff': {
@@ -742,7 +743,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // trackers already share the same {quantity, action, ...} shape.
                 const findFns: Record<string, (userId: string, tsym: string) => { quantity: number; action: 'Buy' | 'Sell' }[]> = {
                     ant: findPendingAntOrdersForSymbol,
-                    zerodha: findPendingZerodhaOrdersForSymbol,
+                    kite: findPendingKiteOrdersForSymbol,
                     breeze: findPendingBreezeOrdersForSymbol,
                     prism: findPendingPrismOrdersForSymbol,
                 };
@@ -814,7 +815,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             // Broker-parameterized counterpart of 'antPlaceLimitSellBare' - used by
-            // TopStockOptionsOpeningGapStrategy's zerodha/breeze legs, which (unlike
+            // TopStockOptionsOpeningGapStrategy's kite/breeze legs, which (unlike
             // ant's antBuyTargetOnly) have no broker-side target computation, so the
             // strategy itself sizes the target and places its own resting sell here.
             // Mechanically identical to each broker's existing bare limit-sell
@@ -823,7 +824,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'brokerPlaceLimitSellBare': {
                 const { broker, tradingSymbol, instrumentToken, quantity, price, exchange } = req.payload;
                 let result: { orderId: string };
-                if (broker === 'zerodha') result = await placeLimitSellBareOnZerodha(req.userId, tradingSymbol, instrumentToken, quantity, price, exchange);
+                if (broker === 'kite') result = await placeLimitSellBareOnKite(req.userId, tradingSymbol, instrumentToken, quantity, price, exchange);
                 else if (broker === 'breeze') result = await placeLimitSellBareOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, price, exchange);
                 else if (broker === 'ant') result = await antExecutor.placeLimitSellBareOnAnt(req.userId, tradingSymbol, instrumentToken, quantity, price, exchange);
                 else throw new Error(`brokerPlaceLimitSellBare: unsupported broker ${broker}`);
@@ -831,7 +832,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             // ANT-specific bare ops for BulkPcrStrategy's hedge tree (LegManager via
-            // antLegOps.ts) - BulkPcr trades on ANT, so the Zerodha/Breeze-only
+            // antLegOps.ts) - BulkPcr trades on ANT, so the Kite/Breeze-only
             // getContractByPriceRangeBare/buyContractBare/etc 'Bare' family above can't
             // be reused for it (see antLegOps.ts's header comment).
             case 'antBuyContractBare': {
@@ -854,9 +855,9 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             // Cancels any resting limit sell(s) for this tsym ahead of a hand-off to
             // the hedge tree (BulkPcrStrategy, ANT-only) or a plain invalidation-close
-            // (HourlyStrategy, zerodha/ant/breeze) - same closure the drawdown-breach/
+            // (HourlyStrategy, kite/ant/breeze) - same closure the drawdown-breach/
             // expiry-squareoff paths below use. Dispatched via the caller-supplied
-            // broker rather than hardcoded to 'ant': HourlyStrategy runs zerodha/ant/
+            // broker rather than hardcoded to 'ant': HourlyStrategy runs kite/ant/
             // breeze legs, and forcing a non-ant position's cancel onto the ANT
             // executor would miss the real resting order entirely, letting the
             // market force-close double-sell.
@@ -866,7 +867,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
-            // ButterflyStrategy's narrow sell-to-open exception (see Zerodha.ts's
+            // ButterflyStrategy's narrow sell-to-open exception (see Kite.ts's
             // NEVER-SHORT GUARD comment) - the only two IPC cases allowed to open a
             // short position, reachable only from ButterflyStrategy's own code path.
             // Routed through placeOrderWithPendingGuard like every other real-money entry
@@ -876,7 +877,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'butterflySellToOpen': {
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
                 return placeOrderWithPendingGuard(req, undefined, () => {
-                    if (broker === 'zerodha') return enterShortOnZerodha(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                    if (broker === 'kite') return enterShortOnKite(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                     if (broker === 'ant') return antExecutor.enterShortPosition(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                     if (broker === 'breeze') return enterShortOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                     if (broker === 'prism') return prismExecutor.enterShortOnPrism(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
@@ -893,7 +894,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'butterflyBuyLeg': {
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
                 return placeOrderWithPendingGuard(req, undefined, () => {
-                    if (broker === 'zerodha') return marketBuyBareOnZerodha(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                    if (broker === 'kite') return marketBuyBareOnKite(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                     if (broker === 'ant') return antExecutor.enterPosition(req.userId, tradingSymbol, instrumentToken, quantity, exchange, 0, 0, 'target-only');
                     if (broker === 'breeze') return marketBuyBareOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                     if (broker === 'prism') return prismExecutor.buyContract(req.userId, tradingSymbol, quantity);
@@ -907,7 +908,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'butterflyCloseLeg': {
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
                 let result: Trade;
-                if (broker === 'zerodha') result = await marketSellBareOnZerodha(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                if (broker === 'kite') result = await marketSellBareOnKite(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                 else if (broker === 'ant') result = await antExecutor.squareOffOnAnt(req.userId, tradingSymbol, quantity, exchange);
                 else if (broker === 'breeze') result = await marketSellBareOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                 else if (broker === 'prism') result = await prismExecutor.sellContract(req.userId, tradingSymbol, quantity);
@@ -918,7 +919,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'butterflyBuyToClose': {
                 const { broker, tradingSymbol, instrumentToken, exchange } = req.payload;
                 let result: Trade;
-                if (broker === 'zerodha') result = await buyToCloseOnZerodha(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
+                if (broker === 'kite') result = await buyToCloseOnKite(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
                 else if (broker === 'ant') result = await antExecutor.buyToClosePosition(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
                 else if (broker === 'breeze') result = await buyToCloseOnBreeze(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
                 else if (broker === 'prism') result = await prismExecutor.buyToClosePrism(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
@@ -1000,7 +1001,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     const manualBuyBroker = bookkeeping.getUserBroker(req.userId);
                     return manualBuyBroker === 'ant'
                         ? antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload })
-                        : manualBuyOnZerodha({ userId: req.userId, ...req.payload });
+                        : manualBuyOnKite({ userId: req.userId, ...req.payload });
                 });
             }
 
@@ -1010,7 +1011,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'reloadSession': {
-                Zerodha.getInstance().reloadSession();
+                Kite.getInstance().reloadSession();
                 NorenRestApi.reloadToken();
                 ANT.getInstance().reloadSession();
                 connectAntOrderNotifyIfSessionValid('reloadSession');
@@ -1109,7 +1110,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     const broker = bookkeeping.getUserBroker(req.userId);
                     return broker === 'breeze'
                         ? marketBuyBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange)
-                        : marketBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
+                        : marketBuyBareOnKite(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
                 });
             }
 
@@ -1117,7 +1118,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 const broker = bookkeeping.getUserBroker(req.userId);
                 const result = broker === 'breeze'
                     ? await marketSellBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange)
-                    : await marketSellBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
+                    : await marketSellBareOnKite(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -1127,14 +1128,14 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     const broker = bookkeeping.getUserBroker(req.userId);
                     return broker === 'breeze'
                         ? placeLimitBuyBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange)
-                        : placeLimitBuyBareOnZerodha(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange);
+                        : placeLimitBuyBareOnKite(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange);
                 });
             }
 
             case 'cancelOrderBare': {
                 const broker = bookkeeping.getUserBroker(req.userId);
                 if (broker === 'breeze') await cancelOrderOnBreeze(req.payload.orderId);
-                else await cancelOrderOnZerodha(req.payload.orderId);
+                else await cancelOrderOnKite(req.payload.orderId);
                 return { kind: 'response', id: req.id, ok: true, result: undefined };
             }
 
@@ -1143,7 +1144,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 const excludeStrikes = new Set<number>(req.payload.excludeStrikes || []);
                 const result = broker === 'breeze'
                     ? await getContractByPriceRangeOnBreeze(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes)
-                    : await getContractByPriceRangeOnZerodha(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes);
+                    : await getContractByPriceRangeOnKite(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -1171,8 +1172,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     }
 }
 
-async function loadUserLimits() {
-    configService.reloadNow(); // don't wait on fs.watchFile's own poll - see ConfigService.reloadNow's comment
+// Config-derived per-strategy settings only (no Mongo user preload). Hooked to
+// configService.onChange so a hand edit of config.yml reaches the cache with
+// no manual sync; must not call reloadNow() (the hook fires from a reload).
+async function applyConfigStrategyLimits() {
     const config = configService.getConfig();
     for (const cfg of config.strategies || []) {
         const userId = cfg.userId || cfg.type;
@@ -1182,9 +1185,14 @@ async function loadUserLimits() {
             lotLimit: mongoUser?.lotCount ?? DEFAULT_LOT_LIMIT,
             maxInvestment: (cfg as any).maxInvestment || DEFAULT_MAX_INVESTMENT,
             useGTT: cfg.useGTT ?? mongoUser?.useGTT ?? true,
-            broker: (cfg as any).broker ?? (mongoUser as any)?.broker ?? 'zerodha',
+            broker: normalizeBrokerName((cfg as any).broker ?? (mongoUser as any)?.broker ?? 'kite') as any,
         });
     }
+}
+
+async function loadUserLimits() {
+    configService.reloadNow(); // reload now rather than wait on the watcher's debounce
+    await applyConfigStrategyLimits();
 
     // Real Mongo users are otherwise only synced into this cache reactively
     // (login/create/settings-save - see server.ts) - never at order-process
@@ -1227,17 +1235,17 @@ let reconcileQueued = false;
 // Per-broker outcome of the most recent completed reconcile, returned to the
 // POST /reconcile caller. true only when that broker's positions were actually
 // fetched and restored. Informational only - nothing is gated on it.
-type ReconcilableBroker = 'zerodha' | 'ant' | 'breeze';
-const lastReconcileResult: Record<ReconcilableBroker, boolean> = { zerodha: false, ant: false, breeze: false };
+type ReconcilableBroker = 'kite' | 'ant' | 'breeze';
+const lastReconcileResult: Record<ReconcilableBroker, boolean> = { kite: false, ant: false, breeze: false };
 
 async function reconcileAllBrokersOnce(logContext: string): Promise<void> {
     Log.log(`[order] Running broker-position reconciliation (${logContext})`);
-    const [zerodha, ant, breeze] = await Promise.all([
-        bookkeeping.reconcileZerodhaPositions().catch((e) => { Log.log('[order] reconcileZerodhaPositions failed:', e); return false; }),
+    const [kite, ant, breeze] = await Promise.all([
+        bookkeeping.reconcileKitePositions().catch((e) => { Log.log('[order] reconcileKitePositions failed:', e); return false; }),
         bookkeeping.reconcileAntPositions().catch((e) => { Log.log('[order] reconcileAntPositions failed:', e); return false; }),
         bookkeeping.reconcileBreezePositions().catch((e) => { Log.log('[order] reconcileBreezePositions failed:', e); return false; }),
     ]);
-    lastReconcileResult.zerodha = zerodha;
+    lastReconcileResult.kite = kite;
     lastReconcileResult.ant = ant;
     lastReconcileResult.breeze = breeze;
     exitMonitor.reconcileFromTrades(bookkeeping.trades);
@@ -1279,7 +1287,7 @@ async function runBrokerReconcileNow(logContext: string): Promise<Record<Reconci
 }
 
 // Only useGTT=false trades ever end up in exitMonitor's watch list (see
-// zerodhaExecutor.finalizeEntry), so this is a no-op for the GTT-brokered
+// kiteExecutor.finalizeEntry), so this is a no-op for the GTT-brokered
 // majority of trades - most ticks arriving here simply have no matching entry.
 async function onTick(tick: any) {
     if (tick.type === 'option') {
@@ -1293,12 +1301,15 @@ async function main() {
     // order inside a trading window doesn't pay the file parse. Breeze's daily refresh runs
     // in the background (void) so a slow download can't delay startup.
     AntContractMaster.getInstance().preload({ bfo: true });
-    ZerodhaContractMaster.getInstance().preload();
+    KiteContractMaster.getInstance().preload();
     PrismContractMaster.getInstance().preload();
     void BreezeContractMaster.getInstance().preload();
 
     await Mongo.init().catch((e) => Log.log('[order] Mongo.init failed (continuing without persistence):', e));
     await loadUserLimits();
+    configService.onChange(() => {
+        applyConfigStrategyLimits().catch((e) => Log.log(`[order] config-change limit refresh failed: ${e?.message ?? e}`));
+    });
     // bookkeeping.closedTrades is in-memory only - reload today's realized
     // trades from Mongo so /closedtrades and /positionstream don't go blank
     // on every restart even though nothing was actually lost (see
@@ -1331,9 +1342,9 @@ async function main() {
     // fill re-enters this same check, which is safe: it only ever acts on
     // trades still open at that moment, so it converges once none are left.
     // Routed via getBrokerExecutor (same dispatch case 'squareOff' uses) rather
-    // than a hand-rolled ant/else-zerodha branch, so a breeze-routed position
+    // than a hand-rolled ant/else-kite branch, so a breeze-routed position
     // (e.g. ContinuousStrategy with config.yml broker: breeze) doesn't get
-    // misrouted to a Zerodha square-off call for a symbol it never bought there.
+    // misrouted to a Kite square-off call for a symbol it never bought there.
     // Trade has no `exchange` field, so it's inferred from tsym - same
     // SENSEX/BFO convention used everywhere else in this file (onFill,
     // resolveOptionContractForBroker, buyToCloseShortLegForUser) since

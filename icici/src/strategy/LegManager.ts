@@ -82,7 +82,7 @@ export interface PendingReEntry {
     right: string;
     quantity: number;
     limitPrice: number; // = the original entry price E being re-entered at
-    orderId: string; // Zerodha order id, for cancelling on drift (see checkRefillDrift)
+    orderId: string; // Kite order id, for cancelling on drift (see checkRefillDrift)
     isRoot: boolean; // mirrors Leg.isRoot - which identity to reconstruct once this fills (see handleFillOrExternalSell)
     parentLegId: string | null; // mirrors Leg.parentLegId - null for a root refill
     parentLevel: number | null; // mirrors Leg.parentLevel - which slot to reoccupy on fill
@@ -131,7 +131,7 @@ export interface LegManagerDeps {
     getConfig: () => LegManagerConfig;
     getLastUnderlyingLtp: () => number;
     recordOutcome: (outcome: 'win' | 'loss' | 'timeout', pnl: number) => void;
-    ops?: LegBrokerOps; // default: defaultLegOps (today's Zerodha/Breeze 'Bare' IPCs)
+    ops?: LegBrokerOps; // default: defaultLegOps (today's Kite/Breeze 'Bare' IPCs)
     // Called from trySpawnLevel's catch with the raw error whenever a hedge-spawn buy
     // fails - lets an owning strategy notice a '[HEDGE_UNCONFIRMED]'-prefixed error
     // (antLegOps.ts's buy: the fill wait timed out, so the order may still be live -
@@ -522,7 +522,7 @@ export class LegManager {
             if (!(await this.capitalCheck(params.quantity, contract.premium, params.entryLabel))) {
                 return null;
             }
-            // ANT token, not Zerodha's instrumentToken - live option ticks are keyed by
+            // ANT token, not Kite's instrumentToken - live option ticks are keyed by
             // ANT's own token (OptionQuote.fromAnt), so this leg's tick subscription and
             // canHandle matching (both keyed off this token) must use it too.
             const trade: Trade = await this.currentOps().buy(
@@ -763,7 +763,7 @@ export class LegManager {
                     leg.childByLevel.delete(level); // free the slot regardless - harmless even though the capital gate (now tripped) means it won't actually be retried
                     return;
                 }
-                // ANT token, not Zerodha's instrumentToken - see openRootLeg's comment.
+                // ANT token, not Kite's instrumentToken - see openRootLeg's comment.
                 const trade: Trade = await this.currentOps().buy(
                     this.deps.userId, contract.tradingSymbol, contract.token, spawnQty, contract.exchange, contract.premium
                 );

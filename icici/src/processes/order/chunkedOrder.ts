@@ -7,7 +7,7 @@ import { sleep } from '../../util/sleep';
 
 // Confirmed live 2026-09-23: a burst of back-to-back chunk placements (an
 // 8-chunk manual square-off immediately followed by an 8-chunk buyChunked
-// retry) got a chunk rejected with HTTP 429 (Zerodha order-rate limit) -
+// retry) got a chunk rejected with HTTP 429 (Kite order-rate limit) -
 // there was previously zero delay between chunks. A per-call "skip the
 // delay after the last chunk" loop isn't enough on its own, since it does
 // nothing to space out the boundary BETWEEN two separate chunked calls -
@@ -39,7 +39,7 @@ async function throttleOrderPlacement(): Promise<void> {
 }
 
 // Broker-agnostic freeze-quantity chunking, built directly on the existing
-// BrokerExecutor interface - every broker (Zerodha/ANT/Prism/Breeze) already
+// BrokerExecutor interface - every broker (Kite/ANT/Prism/Breeze) already
 // implements buy()/squareOff() as "resolve, place one order, wait for fill,
 // record it" for an already-resolved contract, so the chunking loop itself
 // needs zero broker-specific code. Any strategy on any broker gets
@@ -72,7 +72,7 @@ export async function buyChunked(
         } catch (e: any) {
             if (e?.driftCancelled) {
                 // Fold in any partial fill THIS chunk contributed before being
-                // cancelled (zerodhaExecutor.ts already recorded it via
+                // cancelled (kiteExecutor.ts already recorded it via
                 // finalizeEntry/bookkeeping - this is just keeping buyChunked's
                 // own running total in sync so the caller sizes its exit sell
                 // for what's actually held, not less).

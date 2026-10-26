@@ -8,7 +8,7 @@ import { isPastMarketClose } from '../../util/marketHours';
 // Mirrors pendingAntLimitOrders.ts exactly, for Prism limit orders placed
 // via placeLimitSellBareOnPrism (prismExecutor.ts) - BulkPcrStrategy's
 // target-hit exit, now also supported on Prism. Own Mongo collection, not
-// shared with Zerodha's/Breeze's/ANT's pending trackers.
+// shared with Kite's/Breeze's/ANT's pending trackers.
 const PENDING_COLLECTION = 'pendingPrismLimitOrders';
 
 interface PendingPrismLimitOrder {

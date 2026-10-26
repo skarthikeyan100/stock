@@ -1,22 +1,22 @@
 #!/bin/bash
 # Regenerates the frontend's canonical-symbol dropdown list from the locally
-# downloaded Zerodha instrument master (run scripts/download-zerodha-master.sh
+# downloaded Kite instrument master (run scripts/download-all-masters.sh
 # first, and periodically to refresh - this script never calls the network).
 # Emits one canonical SYMBOL_STRIKE_CE|PE line per contract that still has at
 # least one non-expired listing - the specific (nearest) expiry is resolved
-# later, at order time, by ZerodhaContractMaster.findNearestExpiryOption; the
+# later, at order time, by KiteContractMaster.findNearestExpiryOption; the
 # frontend never sees or chooses a date (see src/model/CanonicalSymbol.ts).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DATA_DIR="$SCRIPT_DIR/../data/zerodha"
+DATA_DIR="$SCRIPT_DIR/../data/kite"
 TODAY=$(date +%Y-%m-%d)
 
 : > public/symbols.txt
 for SEGMENT in NFO BFO; do
   SRC="$DATA_DIR/${SEGMENT}_instruments.csv"
   if [ ! -f "$SRC" ]; then
-    echo "Error: $SRC not found - run scripts/download-zerodha-master.sh first"
+    echo "Error: $SRC not found - run scripts/download-all-masters.sh first"
     exit 1
   fi
   awk -F',' -v today="$TODAY" \
