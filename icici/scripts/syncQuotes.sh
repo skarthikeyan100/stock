@@ -1,12 +1,16 @@
 #!/bin/bash
+set -euo pipefail
 
-# Sync Quote collection from remote MongoDB (karthik@karthik) to local MongoDB
-# Remote: stocks.Quote
-# Local:  stocks.Quote
+# Sync the NiftyQuote collection (the one the code reads/writes - see src/model/model.ts NiftyQuote.fromAnt and /replay)
+# from remote MongoDB (karthik@karthik) to local MongoDB.
+# Remote: stocks.NiftyQuote
+# Local:  stocks.NiftyQuote  (restored into a temp collection first, then swapped in, so a failed
+#         transfer never leaves the local collection dropped/empty)
 
 REMOTE_HOST="karthik@karthik"
 REMOTE_DB="stocks"
-COLLECTION="Quote"
+COLLECTION="NiftyQuote"
+TMP_COLLECTION="${COLLECTION}_sync_tmp"
 LOCAL_DB="stocks"
 
 echo "Syncing '$COLLECTION' collection from $REMOTE_HOST..."
@@ -18,14 +22,12 @@ ssh "$REMOTE_HOST" \
         --archive \
     | mongorestore \
         --archive \
-        --db "$LOCAL_DB" \
-        --collection "$COLLECTION" \
+        --nsFrom "${LOCAL_DB}.${COLLECTION}" \
+        --nsTo "${LOCAL_DB}.${TMP_COLLECTION}" \
         --drop \
         --quiet
 
-if [ $? -eq 0 ]; then
-    echo "Sync complete: $REMOTE_DB.$COLLECTION → local $LOCAL_DB.$COLLECTION"
-else
-    echo "Sync failed." >&2
-    exit 1
-fi
+# Swap only after the restore fully succeeded (set -e + pipefail abort above otherwise).
+mongosh --quiet "mongodb://localhost:27017/${LOCAL_DB}" --eval "db.getCollection('${TMP_COLLECTION}').renameCollection('${COLLECTION}', true)"
+
+echo "Sync complete: $REMOTE_DB.$COLLECTION -> local $LOCAL_DB.$COLLECTION"

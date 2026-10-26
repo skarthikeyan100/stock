@@ -87,7 +87,11 @@ export function toClientUser(user: User): Omit<User, 'aadharNumber' | 'panNumber
     panNumberMasked?: string;
     bankAccountNumberMasked?: string;
 } {
-    const { aadharNumber, panNumber, bankAccountNumber, ...rest } = user;
+    const { aadharNumber: aadharRaw, panNumber: panRaw, bankAccountNumber: bankRaw, ...rest } = user;
+    // Stored values are not guaranteed to be strings (older writes were unvalidated): never let a malformed one throw.
+    const aadharNumber = aadharRaw == null ? undefined : String(aadharRaw);
+    const panNumber = panRaw == null ? undefined : String(panRaw);
+    const bankAccountNumber = bankRaw == null ? undefined : String(bankRaw);
     return {
         ...rest,
         aadharNumberMasked: maskLast4(aadharNumber),
@@ -109,20 +113,39 @@ export interface UserContext {
 
 // Admin emails - can be configured via environment variable or default list
 const ADMIN_EMAILS = process.env.ADMIN_EMAILS
-    ? process.env.ADMIN_EMAILS.split(',').map(e => e.trim())
+    ? process.env.ADMIN_EMAILS.split(',').map(e => e.trim().toLowerCase()).filter(Boolean)
     : ['skarthikeyan100@gmail.com'];
 
 function isAdminEmail(email: string): boolean {
-    return ADMIN_EMAILS.includes(email);
+    return ADMIN_EMAILS.includes(email.trim().toLowerCase());
+}
+
+export function normalizeEmail(email: string): string {
+    return String(email ?? '').trim().toLowerCase();
+}
+
+let userIndexEnsured = false;
+async function ensureUserIndex(): Promise<void> {
+    if (userIndexEnsured) return;
+    try {
+        await collection().createIndex({ email: 1 }, { unique: true });
+        userIndexEnsured = true;
+    } catch (e) {
+        Log.log('[User] could not create unique email index (duplicate users already exist?) - continuing:', e);
+    }
 }
 
 function collection() {
     return Mongo.getInstance().db.collection('users');
 }
 
-export async function getOrCreateUser(email: string, name: string, picture: string): Promise<User> {
+export async function getOrCreateUser(rawEmail: string, name: string, picture: string): Promise<User> {
     const col = collection();
-    const existing = await col.findOne({ email });
+    await ensureUserIndex();
+    const normalized = normalizeEmail(rawEmail);
+    // An account created before emails were lower-cased may be stored under its original spelling.
+    const existing = await col.findOne({ email: { $in: [normalized, rawEmail] } });
+    const email = existing?.email ?? normalized;
     if (existing) {
         const updates: Partial<User> & { lotSize?: number } = {};
         if (existing.name !== name || existing.picture !== picture) { updates.name = name; updates.picture = picture; }
@@ -173,9 +196,10 @@ export async function getOrCreateUser(email: string, name: string, picture: stri
         entityType: 'individual',
         gstVerified: false,
     };
-    await col.insertOne(user);
+    // Upsert-on-insert so two simultaneous first logins cannot create two users.
+    await col.updateOne({ email }, { $setOnInsert: user }, { upsert: true });
     Log.log(`[User] Created new user: ${email} with role: ${role}`);
-    return user;
+    return (await col.findOne({ email })) as unknown as User;
 }
 
 export async function getUser(email: string): Promise<User | null> {
@@ -226,22 +250,51 @@ const PAN_PATTERN = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 // (updateUserRole below). aadharNumber/panNumber are never echoed back raw -
 // see toClientUser.
 export async function updateSensitiveField(email: string, field: 'aadharNumber' | 'panNumber', value: string): Promise<User | null> {
+    if (typeof value !== 'string') throw new Error(`${field} must be a string`);
+    value = value.trim();
     if (field === 'aadharNumber' && !AADHAR_PATTERN.test(value)) {
         throw new Error('Aadhar number must be exactly 12 digits');
     }
     if (field === 'panNumber' && !PAN_PATTERN.test(value)) {
         throw new Error('PAN number must match the format AAAAA9999A');
     }
-    await collection().updateOne({ email }, { $set: { [field]: value } });
+    // A changed number is no longer the one an admin verified.
+    const set: any = { [field]: value };
+    const prev: any = await collection().findOne({ email });
+    if (prev && prev[field] !== value) set[field === 'aadharNumber' ? 'aadharVerified' : 'panVerified'] = false;
+    await collection().updateOne({ email }, { $set: set });
+    return getUser(email);
+}
+
+function cleanString(name: string, v: unknown, max: number, pattern?: RegExp, upper = false): string {
+    if (typeof v !== 'string') throw new Error(`${name} must be a string`);
+    let out = v.trim();
+    if (upper) out = out.toUpperCase();
+    if (out.length > max) throw new Error(`${name} is too long (max ${max})`);
+    if (pattern && out !== '' && !pattern.test(out)) throw new Error(`${name} has an invalid format`);
+    return out;
+}
+
+export async function updateProfileFields(email: string, f: { phone?: unknown; legalName?: unknown }): Promise<User | null> {
+    const user = await getUser(email);
+    if (!user) return null;
+    const update: any = {};
+    if (f.phone !== undefined) {
+        update.phone = cleanString('phone', f.phone, 20, /^[0-9+\-\s()]{6,20}$/);
+        if (update.phone !== user.phone) update.phoneVerified = false;
+    }
+    if (f.legalName !== undefined) update.legalName = cleanString('legalName', f.legalName, 100);
+    if (Object.keys(update).length > 0) await collection().updateOne({ email }, { $set: update });
     return getUser(email);
 }
 
 export async function updateBankDetails(email: string, details: { bankAccountHolderName?: string; bankAccountNumber?: string; bankIFSC?: string; upiId?: string }): Promise<User | null> {
     const update: any = {};
-    if (details.bankAccountHolderName !== undefined) update.bankAccountHolderName = details.bankAccountHolderName;
-    if (details.bankAccountNumber !== undefined) update.bankAccountNumber = details.bankAccountNumber;
-    if (details.bankIFSC !== undefined) update.bankIFSC = details.bankIFSC;
-    if (details.upiId !== undefined) update.upiId = details.upiId;
+    if (details.bankAccountHolderName !== undefined) update.bankAccountHolderName = cleanString('bankAccountHolderName', details.bankAccountHolderName, 100);
+    if (details.bankAccountNumber !== undefined) update.bankAccountNumber = cleanString('bankAccountNumber', details.bankAccountNumber, 20, /^\d{6,20}$/);
+    if (details.bankIFSC !== undefined) update.bankIFSC = cleanString('bankIFSC', details.bankIFSC, 11, /^[A-Z]{4}0[A-Z0-9]{6}$/, true);
+    if (details.upiId !== undefined) update.upiId = cleanString('upiId', details.upiId, 100, /^[\w.\-]{2,}@[\w.\-]{2,}$/);
+    if (Object.keys(update).length === 0) return getUser(email);
     await collection().updateOne({ email }, { $set: update });
     return getUser(email);
 }
@@ -266,13 +319,22 @@ export async function updateCompanyProfile(email: string, profile: { gstin?: str
         throw new Error('Company profile fields only apply to company accounts');
     }
     const update: any = {};
-    if (profile.gstin !== undefined) update.gstin = profile.gstin;
-    if (profile.companyRegisteredName !== undefined) update.companyRegisteredName = profile.companyRegisteredName;
+    if (profile.gstin !== undefined) {
+        update.gstin = cleanString('gstin', profile.gstin, 15, /^[0-9A-Z]{15}$/, true);
+        // GST status drives zero-TDS tax treatment: a changed GSTIN must be re-verified.
+        if (update.gstin !== user.gstin) update.gstVerified = false;
+    }
+    if (profile.companyRegisteredName !== undefined) update.companyRegisteredName = cleanString('companyRegisteredName', profile.companyRegisteredName, 150);
     await collection().updateOne({ email }, { $set: update });
     return getUser(email);
 }
 
 export async function createUser(email: string, name: string, lossLimit: number, lotCount: number, role: string, investmentMode: 'lotCount' | 'investmentAmount' = 'investmentAmount', investmentAmount: number = 100000, useGTT: boolean = true): Promise<User> {
+    if (role !== 'admin' && role !== 'user') throw new Error('Invalid role. Must be "admin" or "user"');
+    email = normalizeEmail(email);
+    name = String(name ?? '').trim();
+    if (!email || !name) throw new Error('Email and name are required');
+    await ensureUserIndex();
     const existing = await getUser(email);
     if (existing) {
         throw new Error('User already exists');
@@ -299,7 +361,12 @@ export async function createUser(email: string, name: string, lossLimit: number,
         entityType: 'individual',
         gstVerified: false,
     };
-    await collection().insertOne(user);
+    try {
+        await collection().insertOne(user);
+    } catch (e: any) {
+        if (e?.code === 11000) throw new Error('User already exists');
+        throw e;
+    }
     return user;
 }
 

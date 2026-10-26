@@ -49,6 +49,15 @@ function isAllowed(remoteAddress: string | undefined): boolean {
 export function cloudflareOnly(req: express.Request, res: express.Response, next: express.NextFunction) {
     const remoteAddress = req.socket.remoteAddress;
     if (isAllowed(remoteAddress)) {
+        // The IP allowlist only proves the request came through SOME Cloudflare zone, not ours. When
+        // CF_ORIGIN_SECRET is set, non-loopback requests must also carry it in X-Origin-Secret (inject it with a
+        // Cloudflare Transform Rule / Origin Rule on this zone). Unset = the previous behaviour.
+        const secret = process.env.CF_ORIGIN_SECRET;
+        if (secret && !isLoopback(remoteAddress) && req.get('x-origin-secret') !== secret) {
+            SecurityLog.log('BLOCKED_ORIGIN_SECRET', { ip: remoteAddress, method: req.method, path: req.originalUrl });
+            res.status(403).end();
+            return;
+        }
         next();
         return;
     }

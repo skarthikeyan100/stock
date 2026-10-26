@@ -1,6 +1,6 @@
 import Log from './util/Log';
 import StackUtils = require("stack-utils");
-import { NIFTY, FINNIFTY, BANKNIFTY } from "./constants";
+import { NIFTY, FINNIFTY, BANKNIFTY, NIFTY_FREEZE_QUANTITY } from "./constants";
 import Prism from "./prism";
 import { UserContext } from "./user";
 let config = require("./prism/config").default;
@@ -25,7 +25,7 @@ export class Index {
             case this.niftyToken: 
                 this.index = NIFTY; 
                 this.factor = 50; 
-                this.maxQuantity = 1800;
+                this.maxQuantity = NIFTY_FREEZE_QUANTITY;
                 break;
             case this.finNiftyToken: 
                 this.index = FINNIFTY;
@@ -42,15 +42,26 @@ export class Index {
         this.increment = increment;
     }
 
+    // First Tuesday on or after `date`. Works on a copy: the old version mutated its argument.
     _nextTuesday = (date: Date) => {
-        if (date.getDay() == 2) {
-            return date;
+        const d = new Date(date);
+        if (d.getDay() == 2) {
+            return d;
         }
-        return new Date(
-            date.setDate(
-                date.getDate() + ((7 - date.getDay() + 2) % 7 || 7),
-            ),
-        );
+        d.setDate(d.getDate() + ((7 - d.getDay() + 2) % 7 || 7));
+        return d;
+    }
+
+    // The Nth (0-based) weekly expiry: step to the next Tuesday, and for every further week move past the one already
+    // found first - otherwise a date that IS a Tuesday is returned unchanged and the loop never advances.
+    _tuesdayAfterWeeks = (start: Date, weeks: number) => {
+        let date = this._nextTuesday(start);
+        for (let i = 1; i <= weeks; i++) {
+            const dayAfter = new Date(date);
+            dayAfter.setDate(dayAfter.getDate() + 1);
+            date = this._nextTuesday(dayAfter);
+        }
+        return date;
     }
 
     _nextWednesday = (date: Date) => {
@@ -94,9 +105,7 @@ export class Index {
         var now = new Date();
         var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-        for (var i = 0; i <= this.expiryWeekDiff; i++) {
-            date = this._nextTuesday(date);
-        }
+        date = this._tuesdayAfterWeeks(date, this.expiryWeekDiff);
         return this._toShortFormat(date);
     }
 
@@ -107,7 +116,7 @@ export class Index {
         const expiryDate = this._findPrismExpiryDate();
 
         const callput = "call" === right ? 'C' : 'P'
-        token = `NIFTY${expiryDate}${callput}${strikePrice}`;
+        token = `${index}${expiryDate}${callput}${strikePrice}`;
         Log.log('token in findTokenFor: ', token)
 
         token = await prism.search(token, index, expiryDate, strikePrice, right);
@@ -156,11 +165,7 @@ export class Index {
         // Log.log("Thursday date: " + this._nextThursday(date));
 
 
-        for (var i = 0; i <= this.expiryWeekDiff; i++) {
-            Log.log("Today's date: ", date )
-            date = this._nextTuesday(date);
-            Log.log('Date for next Tuesday: ', date)
-        }
+        date = this._tuesdayAfterWeeks(date, this.expiryWeekDiff);
         let monthNames = ["JAN", "FEB", "MAR", "APR",
             "MAY", "JUN", "JUL", "AUG",
             "SEP", "OCT", "NOV", "DEC"];

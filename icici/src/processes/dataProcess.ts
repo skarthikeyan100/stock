@@ -10,6 +10,7 @@ console.log = console.error;
 // set up the tick WebSocket's session, so this process needs the override
 // too (see kiteDns.ts's comment for the full root-cause writeup and why this
 // is scoped to specific hostnames rather than forced process-wide).
+import '../util/tz'; // pin TZ=Asia/Kolkata before any other module reads the clock
 import { installIpv4OnlyHostOverride } from './order/kiteDns';
 installIpv4OnlyHostOverride();
 

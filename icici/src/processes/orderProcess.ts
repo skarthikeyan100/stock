@@ -14,6 +14,7 @@ console.log = console.error;
 // hostnames that need it (see kiteDns.ts) - `order` is the only process that
 // calls api.kite.trade (Kite) AND the one that places/cancels/exits ANT
 // orders via a3.aliceblueonline.com, so it's installed here.
+import '../util/tz'; // pin TZ=Asia/Kolkata before any other module reads the clock
 import { installIpv4OnlyHostOverride } from './order/kiteDns';
 installIpv4OnlyHostOverride();
 
@@ -1415,6 +1416,15 @@ async function onTick(tick: any) {
     }
 }
 
+// Unlink the socket on shutdown ONLY if it is still the file THIS process created: during a hot restart the replacement
+// may already have bound the same path, and deleting that would cut every IPC client off from a healthy process.
+let ownSocketIno: number | null = null;
+function unlinkOwnSocket(socketPath: string): void {
+    try {
+        if (ownSocketIno !== null && fs.statSync(socketPath).ino === ownSocketIno) fs.unlinkSync(socketPath);
+    } catch { /* already gone */ }
+}
+
 async function main() {
     // Warm every broker's contract master before the IPC socket accepts requests, so the first
     // order inside a trading window doesn't pay the file parse. Breeze's daily refresh runs
@@ -1598,6 +1608,7 @@ async function main() {
     });
 
     server.listen(ORDER_SOCKET_PATH, () => {
+        try { ownSocketIno = fs.statSync(ORDER_SOCKET_PATH).ino; } catch { /* ignore */ }
         Log.log('[order] Listening on', ORDER_SOCKET_PATH);
     });
 }
@@ -1608,6 +1619,6 @@ main().catch((e) => {
 });
 
 process.on('SIGTERM', () => {
-    if (fs.existsSync(ORDER_SOCKET_PATH)) fs.unlinkSync(ORDER_SOCKET_PATH);
+    unlinkOwnSocket(ORDER_SOCKET_PATH);
     process.exit(0);
 });

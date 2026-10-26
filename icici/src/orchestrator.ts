@@ -3,6 +3,7 @@
 // ...extraEnv }`), so loading it here covers order/data/strategies/frontend
 // too without each needing its own dotenv call. See .env.example for the full
 // variable list and CLAUDE.md's Environment section for which are required.
+import './util/tz'; // pin TZ=Asia/Kolkata before any other module reads the clock
 import 'dotenv/config';
 
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
@@ -60,14 +61,69 @@ function log(tag: string, ...args: any[]) {
 // cwd is explicit (not inherited) so every child resolves repo-root-relative
 // files (userToken.txt, .ant_session.json, config.yml, ...) the same way
 // regardless of where `npm run processes` was invoked from.
-function spawnChild(name: string, scriptRelPath: string, stdio: ('pipe' | 'inherit' | 'ignore')[], extraEnv: Record<string, string> = {}): ChildProcessWithoutNullStreams {
+// Every live child, so a shutdown signal can stop them all (and a hot restart can wait for the old one to be gone).
+const liveChildren = new Set<ChildProcessWithoutNullStreams>();
+let shuttingDown = false;
+
+interface ManagedChild extends ChildProcessWithoutNullStreams {
+    intentionalStop?: boolean;
+}
+
+// onCrash: called (once) when the child exits without the orchestrator having asked it to - the role's own restart
+// routine, so a dead process is respawned and re-piped with backoff instead of staying dead until the next code edit.
+function spawnChild(name: string, scriptRelPath: string, stdio: ('pipe' | 'inherit' | 'ignore')[], extraEnv: Record<string, string> = {}, onCrash?: () => void): ChildProcessWithoutNullStreams {
     const child = spawn('node', [path.join(DIST, scriptRelPath)], {
         stdio,
         cwd: REPO_ROOT,
         env: { ...process.env, ...extraEnv },
-    }) as ChildProcessWithoutNullStreams;
-    child.on('exit', (code, signal) => log(name, `exited (code=${code} signal=${signal})`));
+    }) as ManagedChild;
+    liveChildren.add(child);
+    // A dead child's pipes raise EPIPE on write; unhandled, that would throw inside the orchestrator and take it (and
+    // every sibling) down with it.
+    for (const stream of [child.stdin, child.stdout]) {
+        stream?.on('error', (e) => log(name, `pipe error (ignored): ${(e as Error).message}`));
+    }
+    child.on('error', (e) => log(name, `process error: ${e.message}`));
+    child.on('exit', (code, signal) => {
+        liveChildren.delete(child);
+        log(name, `exited (code=${code} signal=${signal})`);
+        if (!child.intentionalStop && !shuttingDown && onCrash) onCrash();
+    });
     return child;
+}
+
+// Stops a child and resolves once it has really exited (SIGKILL after 5s), so a replacement is never spawned while the
+// old process still holds its socket/port.
+function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+    const managed = child as ManagedChild;
+    managed.intentionalStop = true;
+    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } }, 5000);
+        child.once('exit', () => { clearTimeout(timer); resolve(); });
+        try { child.kill('SIGTERM'); } catch { clearTimeout(timer); resolve(); }
+    });
+}
+
+// Backoff for crash respawns: 1s, 2s, 4s ... capped at 30s; reset once a process has stayed up for a minute.
+function makeRespawner(name: string, restart: () => Promise<void>): () => void {
+    let failures = 0;
+    let lastStart = Date.now();
+    let pending = false;
+    return () => {
+        if (pending || shuttingDown) return;
+        pending = true;
+        if (Date.now() - lastStart > 60_000) failures = 0;
+        const delay = Math.min(30_000, 1000 * 2 ** failures);
+        failures++;
+        log(name, `crashed - respawning in ${delay}ms`);
+        setTimeout(async () => {
+            pending = false;
+            if (shuttingDown) return;
+            lastStart = Date.now();
+            try { await restart(); } catch (e) { log(name, 'respawn failed:', e); }
+        }, delay);
+    };
 }
 
 // Watches `watchPaths` (compiled dist/ output) and calls onChange (debounced)
@@ -85,32 +141,101 @@ function watchAndRestart(name: string, watchPaths: string[], onChange: () => voi
     log('boot', `Watching ${name}:`, existing);
 }
 
-async function main() {
-    // --- data (stdin: commands from strategies; stdout: tick feed - both real protocol channels) ---
-    log('boot', 'Starting data...');
-    let data = spawnChild('data', 'processes/dataProcess.js', ['pipe', 'pipe', 'inherit']);
+// Top-level compiled modules (dist/*.js) that several processes import directly.
+const topLevel = (...files: string[]) => files.map((f) => path.join(DIST, f));
 
-    // --- order: the Unix-socket IPC server (strategies/frontend place orders
-    // through it) is the main reason it exists, but its stdin/stdout are also
-    // wired into the tick-feed pipe like strategies/frontend, solely so
+async function main() {
+    // Each role is (re)started by one routine used for the first boot, a hot restart on a code change AND a crash
+    // respawn: it stops the old process (waiting for it to be really gone), spawns the new one and re-pipes it.
+    let data!: ChildProcessWithoutNullStreams;
+    let order!: ChildProcessWithoutNullStreams;
+    let frontend!: ChildProcessWithoutNullStreams;
+    let strategies!: ChildProcessWithoutNullStreams;
+
+    // Restarts of one role are serialised so a crash respawn and a hot restart can never overlap.
+    const chains = new Map<string, Promise<void>>();
+    const serial = (role: string, fn: () => Promise<void>): Promise<void> => {
+        const next = (chains.get(role) ?? Promise.resolve()).then(fn, fn).catch((e) => log(role, 'restart failed:', e));
+        chains.set(role, next);
+        return next;
+    };
+
+    // --- data (stdin: commands from strategies; stdout: tick feed - both real protocol channels) ---
+    const startData = () => {
+        data = spawnChild('data', 'processes/dataProcess.js', ['pipe', 'pipe', 'inherit'], {}, respawnData);
+        if (order) { data.stdout.pipe(order.stdin, { end: false }); order.stdout.pipe(data.stdin, { end: false }); }
+        if (frontend) { data.stdout.pipe(frontend.stdin, { end: false }); frontend.stdout.pipe(data.stdin, { end: false }); }
+        if (strategies) { data.stdout.pipe(strategies.stdin, { end: false }); strategies.stdout.pipe(data.stdin, { end: false }); }
+    };
+    const restartData = () => serial('data', async () => {
+        const old = data;
+        for (const other of [order, frontend, strategies]) {
+            if (!other) continue;
+            old.stdout.unpipe(other.stdin);
+            other.stdout.unpipe(old.stdin);
+        }
+        await stopChild(old);
+        startData();
+    });
+    const respawnData = makeRespawner('data', restartData);
+
+    // --- order: the Unix-socket IPC server (strategies/frontend place orders through it) is the main reason it
+    // exists, but its stdin/stdout are also wired into the tick-feed pipe like strategies/frontend, solely so
     // exitMonitor.ts can watch useGTT=false trades against live option ticks. ---
-    log('boot', 'Starting order...');
-    let order = spawnChild('order', 'processes/orderProcess.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV);
-    data.stdout.pipe(order.stdin, { end: false });
-    order.stdout.pipe(data.stdin, { end: false });
-    watchAndRestart('order', [
-        path.join(DIST, 'processes', 'order'), path.join(DIST, 'processes', 'orderProcess.js'),
-        path.join(DIST, 'ant'), path.join(DIST, 'kite'), path.join(DIST, 'model'),
-        path.join(DIST, 'util'), path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'),
-    ], () => {
-        log('dev', 'Restarting order (data/strategies/frontend untouched)...');
+    const startOrder = () => {
+        order = spawnChild('order', 'processes/orderProcess.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV, respawnOrder);
+        data.stdout.pipe(order.stdin, { end: false });
+        order.stdout.pipe(data.stdin, { end: false });
+    };
+    const restartOrder = () => serial('order', async () => {
         const old = order;
         data.stdout.unpipe(old.stdin);
         old.stdout.unpipe(data.stdin);
-        old.kill('SIGTERM');
-        order = spawnChild('order', 'processes/orderProcess.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV);
-        data.stdout.pipe(order.stdin, { end: false });
-        order.stdout.pipe(data.stdin, { end: false });
+        await stopChild(old);
+        startOrder();
+    });
+    const respawnOrder = makeRespawner('order', restartOrder);
+
+    const startFrontend = () => {
+        frontend = spawnChild('frontend', 'server.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV, respawnFrontend);
+        data.stdout.pipe(frontend.stdin, { end: false });
+        frontend.stdout.pipe(data.stdin, { end: false });
+    };
+    const restartFrontend = () => serial('frontend', async () => {
+        const old = frontend;
+        data.stdout.unpipe(old.stdin);
+        old.stdout.unpipe(data.stdin);
+        await stopChild(old);
+        startFrontend();
+    });
+    const respawnFrontend = makeRespawner('frontend', restartFrontend);
+
+    const startStrategies = () => {
+        strategies = spawnChild('strategies', 'processes/strategiesProcess.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV, respawnStrategies);
+        data.stdout.pipe(strategies.stdin, { end: false });
+        strategies.stdout.pipe(data.stdin, { end: false });
+    };
+    const restartStrategies = () => serial('strategies', async () => {
+        const old = strategies;
+        data.stdout.unpipe(old.stdin);
+        old.stdout.unpipe(data.stdin);
+        await stopChild(old);
+        startStrategies();
+    });
+    const respawnStrategies = makeRespawner('strategies', restartStrategies);
+
+    log('boot', 'Starting data...');
+    startData();
+    log('boot', 'Starting order...');
+    startOrder();
+    watchAndRestart('order', [
+        path.join(DIST, 'processes', 'order'), path.join(DIST, 'processes', 'orderProcess.js'),
+        path.join(DIST, 'ant'), path.join(DIST, 'kite'), path.join(DIST, 'breeze'), path.join(DIST, 'model'),
+        path.join(DIST, 'util'), path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'), path.join(DIST, 'lib'),
+        ...topLevel('constants.js', 'symbols.js', 'orderList.js', 'nse_index.js'),
+    ], () => {
+        log('dev', 'Restarting order (data/strategies/frontend untouched)...');
+        void restartOrder();
     });
 
     // Give order a moment to bind its socket before strategies/frontend try to
@@ -121,48 +246,32 @@ async function main() {
     // commands back to data (e.g. 'reconnect' for /ant/connect), mirroring how
     // strategies talks to data. Both directions are real protocol channels now.
     log('boot', 'Starting frontend (server.ts)...');
-    let frontend = spawnChild('frontend', 'server.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV);
-    data.stdout.pipe(frontend.stdin, { end: false });
-    frontend.stdout.pipe(data.stdin, { end: false });
+    startFrontend();
     watchAndRestart('frontend', [
         path.join(DIST, 'server.js'),
-        path.join(DIST, 'ant'), path.join(DIST, 'kite'), path.join(DIST, 'model'),
+        path.join(DIST, 'ant'), path.join(DIST, 'kite'), path.join(DIST, 'breeze'), path.join(DIST, 'model'),
         path.join(DIST, 'util'), path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'),
+        path.join(DIST, 'middleware'), path.join(DIST, 'lib'),
+        ...topLevel('user.js', 'payout.js', 'tax.js', 'constants.js', 'monitor.js', 'decision.js', 'candle.js', 'nse_index.js', 'orderList.js', 'symbols.js'),
     ], () => {
         log('dev', 'Restarting frontend (data/order/strategies untouched)...');
-        data.stdout.unpipe(frontend.stdin);
-        frontend.stdout.unpipe(data.stdin);
-        frontend.kill('SIGTERM');
-        frontend = spawnChild('frontend', 'server.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV);
-        data.stdout.pipe(frontend.stdin, { end: false });
-        frontend.stdout.pipe(data.stdin, { end: false });
+        void restartFrontend();
     });
 
     // --- strategies (the one meant to change most often) ---
-    let strategies = startStrategies();
-
-    function startStrategies(): ChildProcessWithoutNullStreams {
-        log('boot', 'Starting strategies...');
-        const child = spawnChild('strategies', 'processes/strategiesProcess.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV);
-        data.stdout.pipe(child.stdin, { end: false });
-        child.stdout.pipe(data.stdin, { end: false });
-        return child;
-    }
-
+    log('boot', 'Starting strategies...');
+    startStrategies();
     watchAndRestart(
         'strategies',
         [
             path.join(DIST, 'strategy'), path.join(DIST, 'processes', 'strategiesProcess.js'), path.join(DIST, 'processes', 'strategies'),
             path.join(DIST, 'ant'), path.join(DIST, 'model'), path.join(DIST, 'util'),
             path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'), path.join(DIST, 'lib'),
+            ...topLevel('constants.js', 'nse_index.js', 'symbols.js'),
         ],
         () => {
             log('dev', 'Restarting strategies (data/order untouched)...');
-            const old = strategies;
-            data.stdout.unpipe(old.stdin);
-            old.stdout.unpipe(data.stdin);
-            old.kill('SIGTERM');
-            strategies = startStrategies();
+            void restartStrategies();
         }
     );
 
@@ -179,21 +288,7 @@ async function main() {
         path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'),
     ], () => {
         log('dev', 'Restarting data (order/strategies/frontend untouched)...');
-        const oldData = data;
-        oldData.stdout.unpipe(frontend.stdin);
-        oldData.stdout.unpipe(strategies.stdin);
-        oldData.stdout.unpipe(order.stdin);
-        strategies.stdout.unpipe(oldData.stdin);
-        frontend.stdout.unpipe(oldData.stdin);
-        order.stdout.unpipe(oldData.stdin);
-        oldData.kill('SIGTERM');
-        data = spawnChild('data', 'processes/dataProcess.js', ['pipe', 'pipe', 'inherit']);
-        data.stdout.pipe(frontend.stdin, { end: false });
-        data.stdout.pipe(strategies.stdin, { end: false });
-        data.stdout.pipe(order.stdin, { end: false });
-        strategies.stdout.pipe(data.stdin, { end: false });
-        frontend.stdout.pipe(data.stdin, { end: false });
-        order.stdout.pipe(data.stdin, { end: false });
+        void restartData();
     });
 }
 
@@ -202,5 +297,16 @@ main().catch((e) => {
     process.exit(1);
 });
 
-process.on('SIGTERM', () => process.exit(0));
-process.on('SIGINT', () => process.exit(0));
+// Stop every child (waiting for them) before exiting, so no orphan keeps a port/socket and a following
+// `npm run processes` does not start a duplicate set.
+async function shutdown(signal: string) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log('shutdown', `${signal} received - stopping children`);
+    await Promise.all([...liveChildren].map((c) => stopChild(c)));
+    process.exit(0);
+}
+process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+process.on('SIGINT', () => { void shutdown('SIGINT'); });
+process.on('uncaughtException', (e) => log('error', 'uncaughtException (kept running):', e));
+process.on('unhandledRejection', (e) => log('error', 'unhandledRejection (kept running):', e));

@@ -6,8 +6,8 @@ This project operates with full permissions in accept edits mode. No permission 
 - Reading any files in the project or referenced directories
 - Editing project files
 
-## Temporary Freeze: No Code Review or Tests Until 2026-10-28
-**Do not run the `code-review` skill or any test scripts (`npm run test:*`, `jest`, etc.) until 2026-10-28.** This was set on 2026-10-21 and applies to the whole week. Use type-checks (`tsc --noEmit`) and reading the code instead. Commit and push still follow the normal rules, but without a code-review pass in between. Once 2026-10-28 has passed, the normal review and testing rules apply again.
+## Temporary Freeze: LIFTED
+The freeze on the `code-review` skill and test scripts (originally "until 2026-10-28", set 2026-10-21) was **lifted by the user's explicit instruction on 2026-10-26**. The normal review and testing rules apply again: run `code-review` on live-trading-affecting changes and run the relevant test scripts.
 
 ## Full Ownership
 **You are the project manager, architect, senior developer, and senior tester of this project.** This means you have complete ownership. You do not get to think like "flagging a fix," "worth knowing," "not my code," "not introduced by my change," or any other framing that stops short of actually resolving an issue. If you find a real bug, gap, or risk anywhere in the codebase — whether or not it's in a file you touched, whether or not it predates your current task — take ownership and resolve it, the same way you would if it were in the diff you were already writing. Surface what you found and what you did about it, but the default action is to fix it, not to describe it and wait.
@@ -77,6 +77,8 @@ This is a Node.js/TypeScript-based options trading platform built for automated 
 - Manages OAuth flow and session management
 - Provides methods for order placement, quote retrieval
 
+**Note:** the live trading path runs in the separate `order` process (`src/processes/orderProcess.ts`, risk/state in `src/processes/order/bookkeeping.ts`), `data` (`AntDataStream`) and `strategies` processes. `Monitor` and `AntStream` below are the older in-process implementations, kept for tests/legacy tools.
+
 **Monitor** - Risk Management & State Tracking
 - Location: `src/monitor.ts`
 - Tracks per-user P&L and position limits
@@ -110,7 +112,7 @@ This is a Node.js/TypeScript-based options trading platform built for automated 
 - Endpoints: `GET /ant/connect` (starts streaming), `GET /ant/stream` (SSE of `'ant-quote'`), plus existing `/ant/login`, `/ant/callback`, `/ant/token` (OAuth login) and `/ant/trades`, `/ant/positions` (REST).
 - **This account is OAuth-only** — AliceBlue's older "classic" `userId`+`apiKey` flow (used by the `pya3` Python SDK and the unused `src/broker/AntBroker.ts` scaffold) is *not* provisioned for it; `getAPIEncpkey` always returns "API key not available" regardless of input. Don't reintroduce that flow without first confirming the account has a classic key.
 - **Gotcha:** `src/prism/RestAPI.ts` installs an interceptor on the *global* `axios` instance that silently unwraps `response.data`. Any new ANT code making HTTP calls must use its own `axios.create()` (as `ANT.ts` and `AntSession.ts` already do), or `response.data` will be `undefined`.
-- **Gotcha:** `AntStream`'s connection is in-memory only — it does not survive a server restart (including `tsc-watch` auto-restarts in dev). Call `GET /ant/connect` again after every restart.
+- **Gotcha:** `AntStream`'s connection is in-memory only — it does not survive a server restart (including `tsc-watch` auto-restarts in dev). (The `data` process auto-connects and reconnects ANT's market-data stream on its own; `/ant/connect` is only a manual trigger.)
 
 ### Data Models
 
@@ -140,7 +142,7 @@ This is a Node.js/TypeScript-based options trading platform built for automated 
 ### Setup
 ```bash
 npm install
-npm run build  # one-time TypeScript compilation
+npx tsc  # one-time TypeScript compilation (there is no `npm run build` at the repo root; `npm run build` exists only under frontend/)
 ```
 
 ### Running the Server
@@ -149,7 +151,7 @@ npm run processes
 ```
 **Use this, not `npm run server`, for anything involving live trading, order placement, or broker WebSocket streaming (ANT/Breeze market-data ticks, order-notify pushes).** It's the full orchestrator: spawns `order`/`data`/`strategies`/`frontend` as child processes (`orchestrator.ts`), watches/rebuilds via `tsc -w`, and logs to `orchestrator.log`. `npm run server` only starts the standalone `frontend`-equivalent process (`server.ts` directly) with no `order`/`data`/`strategies` processes behind it — broker order execution and stream auto-connect (e.g. `BreezeOrderNotifyStream`, `AntStream`'s order side) live in those other processes, so `npm run server` alone can't exercise them. Reach for plain `npm run server` only for UI/API-only work that doesn't touch orders or streaming.
 
-Both listen on port 3000 (or `process.env.PORT`) and serve the trading platform API and UI; `npm run processes` additionally always listens on 80/443.
+Both listen on port 3000 (or `process.env.PORT`) and serve the trading platform API and UI; `npm run processes` additionally tries to listen on 80/443 (443 only if key.pem/cert.pem exist).
 
 ### Environment
 
@@ -242,25 +244,25 @@ Common settings:
 
 ## User Authentication Flow
 
-1. **Frontend Login:** POST /auth/login with email, name, picture
+1. **Frontend Login:** POST /auth/login with the Google ID token (`credential`); the server verifies it (audience, `email_verified`) and sets the signed session cookie
 2. **Session Cookie:** Signed cookie 'session' set with user email
 3. **OAuth (optional):** GET /prism/oauthurl → callback → /prism/token
 4. **Verification:** GET /auth/me to verify current session
 
 ## Trading Flow
 
-1. User places order via GET /prism/order/buy with parameters
+1. User places order via POST /order/buy (query parameters; legacy GET is still accepted from loopback or with an `X-Requested-With` header)
 2. Monitor validates constraints (loss limit, lot limit)
 3. Prism executes order via ICICI Direct API
 4. Monitor tracks active position
 5. Real-time quotes stream via /niftystream, /optionstream
 6. Monitor broadcasts position updates via /positionstream
-7. User closes position via GET /prism/squareoff
+7. User closes position via POST /order/squareoff
 8. Monitor records P&L and moves trade to closed list
 
 ## Important Notes
 
-- **User Context:** Resolved from session cookie or X-User-Id header
+- **User Context:** Resolved from the server-signed session cookie only (the X-User-Id header is no longer trusted); loopback callers skip auth. State-changing routes need POST or an `X-Requested-With` header unless called from loopback
 - **Risk Management:** Per-user loss limits and lot constraints enforced
 - **Event Streaming:** Uses Server-Sent Events (SSE) for real-time data
 - **Database:** MongoDB stores all persistent state

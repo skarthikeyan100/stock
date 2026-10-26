@@ -36,8 +36,8 @@
     "gapscreener:end": "tsc && node ./dist/tools/gapscreener/GapScreenerOptionQuoteEod.js",
     "gapscreener:coverorder": "tsc && node ./dist/tools/gapscreener/GapScreenerCoverOrder.js",
     "tradeTree": "tsc && node ./dist/tools/ContinuousStrategyTradeTree.js",
-    "logs": "tail -f server.log",
-    "logs:errors": "tail -f server.log | grep -i error",
+    "logs": "tail -f orchestrator.log",
+    "logs:errors": "tail -f orchestrator.log | grep -i error",
     "monitor:bulkPcr": "bash scripts/monitor-bulkpcr.sh"
   },
   "author": "",

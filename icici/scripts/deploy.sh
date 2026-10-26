@@ -43,6 +43,7 @@ rsync -avz --progress \
   --exclude 'config.yml' \
   --exclude '.*_session*.json' \
   --exclude 'userToken.txt' \
+  --exclude '*.pem' \
   --exclude '.bulkpcr_armed_slots.*' \
   --exclude '.topStockOptionsOpeningGap_firedToday.*' \
   "${LOCAL_SERVER_PATH}/" \
@@ -62,8 +63,8 @@ if [ $? -eq 0 ]; then
   echo "  npm install"
   echo "  cd frontend && npm install && cd .."
   echo ""
-  echo "To start with pm2 (first time):"
-  echo "  pm2 start dist/server.js --name icici"
+  echo "To start with pm2 (first time) - run the orchestrator, which spawns order/data/strategies/frontend:"
+  echo "  pm2 start dist/orchestrator.js --name icici"
   echo "  pm2 save"
   echo "  pm2 startup   # follow the printed command to enable auto-start on reboot"
   echo ""
@@ -71,8 +72,9 @@ if [ $? -eq 0 ]; then
   echo "  pm2 restart icici"
   echo ""
   echo "Note: the frontend is served as static files by the Express server"
-  echo "  (built output is in public/app/, no separate process needed)"
-  echo "  Access at: http://${REMOTE_HOST}:3000/app/"
+  echo "  (built output is in public/, no separate process needed)"
+  echo "  Access at: http://${REMOTE_HOST}:3000/"
+  echo "  The remote host must keep its own key.pem/cert.pem (they are excluded from this sync) and TZ is pinned to Asia/Kolkata by the app"
   echo ""
   echo "Other useful pm2 commands:"
   echo "  pm2 logs icici       # tail live logs"

@@ -109,7 +109,8 @@ class CandleHolder {
     }
 
     update(quote: NiftyQuote) {
-        if (quote.token == 'NIFTY') {
+        // Each holder tracks its OWN index (NIFTY / BANKNIFTY / FINNIFTY), not just NIFTY.
+        if (quote.token == this.candle.index) {
             if (quote.ltt) {
                 // Log.log('Update: ', quote);
                 // Log.log('diff: ', this.candle.diff);
@@ -118,6 +119,8 @@ class CandleHolder {
                     this.candle.seqNumber = this.candles.length + 1;
                     this.candles.push(this.candle);
                     this.candle = new Candle(this.candle.index, this.candle.diffInMinutes)
+                    // The tick that closed the previous candle belongs to the new one - don't drop it.
+                    this.candle.update(quote);
                 }
             }
         }

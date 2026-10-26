@@ -13,6 +13,7 @@ console.log = console.error;
 // spawned by orchestrator.ts (which already loaded .env into its own
 // process.env, inherited by every child it spawns) - dotenv never overwrites
 // a variable that's already set.
+import './util/tz'; // pin TZ=Asia/Kolkata before any other module reads the clock
 import 'dotenv/config';
 
 // This host is dual-stack; Node's Happy-Eyeballs connection logic prefers
@@ -40,8 +41,8 @@ import fs from 'fs';
 import { Trade } from './model/model';
 import configService from './prism/ConfigService';
 import { validateFlatConfig, validateConfigFile } from './prism/configValidation';
-import { getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile } from './user';
-import { computePayout, createPayoutRecord, markPayoutDecision, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary } from './payout';
+import { getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields, normalizeEmail } from './user';
+import { computePayout, createPayoutRecord, markPayoutDecision, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary, periodFromInputs } from './payout';
 import multer from 'multer';
 import { GridFSBucket, ObjectId } from 'mongodb';
 import Tesseract from 'tesseract.js';
@@ -95,12 +96,56 @@ const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 var app = express();
 
 app.use(cloudflareOnly);
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, '../public')));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
-app.use(bodyParser());
 app.use(cookieParser(SESSION_COOKIE_SECRET));
 app.disable('etag');
+
+// Express 4 does not catch a rejected promise from an async handler/middleware: left alone it becomes an unhandled
+// rejection that can take the whole frontend down. Wrap every handler registered through app.get/post/... so a
+// rejection is forwarded to the error middleware at the bottom of this file instead.
+for (const verb of ['get', 'post', 'put', 'patch', 'delete'] as const) {
+    const original = (app as any)[verb].bind(app);
+    (app as any)[verb] = (...args: any[]) => {
+        if (verb === 'get' && args.length === 1) return original(...args); // app.get(setting)
+        const wrapped = args.map((a) => {
+            if (typeof a !== 'function' || a.length === 4) return a;
+            return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+                try {
+                    const r = a(req, res, next);
+                    if (r && typeof r.catch === 'function') r.catch(next);
+                } catch (e) {
+                    next(e);
+                }
+            };
+        });
+        return original(...wrapped);
+    };
+}
+
+process.on('unhandledRejection', (reason) => {
+    Log.log('[frontend] Unhandled promise rejection (process kept alive):', reason);
+});
+process.on('uncaughtException', (e) => {
+    Log.log('[frontend] Uncaught exception (process kept alive):', e);
+});
+
+// State-changing routes used to be GET (a cross-site top-level navigation carries the SameSite=lax session cookie).
+// They now also accept POST, and either way a non-loopback caller must send a custom header, which a cross-site page
+// cannot add without a CORS preflight that this server never grants. Loopback callers (ops scripts) are exempt, as
+// everywhere else in this file.
+function requireCsrfHeader(req: express.Request, res: express.Response, next: express.NextFunction): void {
+    if (requestIsLoopback(req) || req.get('x-requested-with')) { next(); return; }
+    res.status(403).json({ error: 'X-Requested-With header required for this state-changing request' });
+}
+const MAX_INVESTMENT_AMOUNT = 100_000_000; // server-side ceiling for a user-set investmentAmount
+
+// Registers a handler for both GET (legacy, header-guarded) and POST.
+function getOrPost(route: string, ...handlers: any[]): void {
+    app.get(route, requireCsrfHeader, ...handlers);
+    app.post(route, requireCsrfHeader, ...handlers);
+}
 
 const orderClient = OrderClient.getInstance();
 const strategiesClient = StrategiesClient.getInstance();
@@ -125,9 +170,28 @@ function requestIsLoopback(req: express.Request): boolean {
     return isLoopback(req.socket.remoteAddress);
 }
 
-function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): void {
+// A signed 30-day cookie must not outlive the account: the user is re-read (briefly cached) so a deleted or disabled
+// user is rejected on their next request instead of keeping access until the cookie expires.
+const USER_CACHE_TTL_MS = 15_000;
+const userCache = new Map<string, { at: number; user: Awaited<ReturnType<typeof getUser>> }>();
+async function getActiveUser(email: string) {
+    const hit = userCache.get(email);
+    if (hit && Date.now() - hit.at < USER_CACHE_TTL_MS) return hit.user;
+    const user = await getUser(email);
+    userCache.set(email, { at: Date.now(), user });
+    return user;
+}
+function invalidateUserCache(email?: string): void {
+    if (email) userCache.delete(email); else userCache.clear();
+}
+
+async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
     if (requestIsLoopback(req)) { next(); return; }
-    if (!resolveUser(req)) { res.status(401).json({ error: 'Not logged in' }); return; }
+    const email = resolveUser(req);
+    if (!email) { res.status(401).json({ error: 'Not logged in' }); return; }
+    const user = await getActiveUser(email);
+    if (!user) { res.status(401).json({ error: 'Unknown user' }); return; }
+    if (user.enabled === false) { res.status(403).json({ error: 'Account disabled' }); return; }
     next();
 }
 
@@ -135,8 +199,8 @@ async function requireAdmin(req: express.Request, res: express.Response, next: e
     if (requestIsLoopback(req)) { next(); return; }
     const email = resolveUser(req);
     if (!email) { res.status(401).json({ error: 'Not logged in' }); return; }
-    const user = await getUser(email);
-    if (!user || user.role !== 'admin') { res.status(403).json({ error: 'Forbidden' }); return; }
+    const user = await getActiveUser(email);
+    if (!user || user.role !== 'admin' || user.enabled === false) { res.status(403).json({ error: 'Forbidden' }); return; }
     next();
 }
 
@@ -145,9 +209,11 @@ function requireSelfOrAdmin(paramName = 'email') {
         if (requestIsLoopback(req)) { next(); return; }
         const email = resolveUser(req);
         if (!email) { res.status(401).json({ error: 'Not logged in' }); return; }
+        const caller = await getActiveUser(email);
+        if (!caller) { res.status(401).json({ error: 'Unknown user' }); return; }
+        if (caller.enabled === false) { res.status(403).json({ error: 'Account disabled' }); return; }
         if (email === req.params[paramName]) { next(); return; }
-        const user = await getUser(email);
-        if (user?.role === 'admin') { next(); return; }
+        if (caller.role === 'admin') { next(); return; }
         res.status(403).json({ error: 'Forbidden' });
     };
 }
@@ -161,7 +227,7 @@ app.post('/auth/login', async function (req, res) {
             res.status(400).json({ error: 'credential (Google ID token) is required' });
             return;
         }
-        let payload: { email?: string; name?: string; picture?: string };
+        let payload: { email?: string; email_verified?: boolean; name?: string; picture?: string };
         try {
             const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID });
             payload = ticket.getPayload() ?? {};
@@ -175,15 +241,25 @@ app.post('/auth/login', async function (req, res) {
             res.status(400).json({ error: 'Verified token had no email' });
             return;
         }
-        const user = await getOrCreateUser(email, name, picture);
-        await orderClient.updateUserSettings(email, {
+        // An unverified Google address can be set to anything the account holder likes (including an ADMIN_EMAILS entry).
+        if (payload.email_verified !== true) {
+            res.status(401).json({ error: 'Google account email is not verified' });
+            return;
+        }
+        const user = await getOrCreateUser(email, name as string, picture as string);
+        if (user.enabled === false) {
+            res.status(403).json({ error: 'Account disabled' });
+            return;
+        }
+        invalidateUserCache(user.email);
+        await orderClient.updateUserSettings(user.email, {
             lossLimit: user.lossLimit,
             lotLimit: user.lotCount,
             investmentMode: user.investmentMode,
             investmentAmount: user.investmentAmount,
             useGTT: user.useGTT,
         }).catch((e) => Log.log('[frontend] updateUserSettings on login failed:', e));
-        res.cookie('session', email, { signed: true, httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
+        res.cookie('session', user.email, { signed: true, httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
         res.json(toClientUser(user));
     } catch (e) {
         Log.log('Login error:', e);
@@ -200,6 +276,10 @@ app.get('/auth/me', async function (req, res) {
     const user = await getUser(email);
     if (!user) {
         res.status(401).json({ error: 'Unknown user' });
+        return;
+    }
+    if (user.enabled === false) {
+        res.status(403).json({ error: 'Account disabled' });
         return;
     }
     // A resumed session (cookie only, no fresh POST /auth/login) would
@@ -257,8 +337,14 @@ app.post('/users', requireAdmin, async function (req, res) {
             res.status(400).json({ error: 'Email and name are required' });
             return;
         }
-        const user = await createUser(email, name, lossLimit || 15000, lotCount || 10, role || 'user');
-        await orderClient.updateUserSettings(email, {
+        const ll = lossLimit ?? 15000;
+        const lc = lotCount ?? 10;
+        if (typeof email !== 'string' || typeof name !== 'string' || !Number.isFinite(Number(ll)) || Number(ll) < 0 || !Number.isInteger(Number(lc)) || Number(lc) <= 0) {
+            res.status(400).json({ error: 'Invalid email, name, lossLimit (>= 0) or lotCount (positive integer)' });
+            return;
+        }
+        const user = await createUser(email, name, Number(ll), Number(lc), role ?? 'user');
+        await orderClient.updateUserSettings(user.email, {
             lossLimit: user.lossLimit,
             lotLimit: user.lotCount,
             investmentMode: user.investmentMode,
@@ -270,6 +356,8 @@ app.post('/users', requireAdmin, async function (req, res) {
         console.error('Create user error:', e);
         if (e.message === 'User already exists') {
             res.status(409).json({ error: 'User already exists' });
+        } else if (/^Invalid role|are required$/.test(e.message)) {
+            res.status(400).json({ error: e.message });
         } else {
             res.sendStatus(500);
         }
@@ -279,7 +367,35 @@ app.post('/users', requireAdmin, async function (req, res) {
 app.delete('/users/:email', requireAdmin, async function (req, res) {
     try {
         const { email } = req.params;
+        const caller = resolveUser(req);
+        if (caller && caller.toLowerCase() === email.toLowerCase()) {
+            res.status(400).json({ error: 'You cannot delete your own account' });
+            return;
+        }
+        const target = await getUser(email);
+        if (target?.role === 'admin') {
+            const admins = (await getAllUsers()).filter((u) => u.role === 'admin');
+            if (admins.length <= 1) {
+                res.status(400).json({ error: 'Cannot delete the last admin' });
+                return;
+            }
+        }
+        // A user with an open position must be squared off first - deleting them would orphan it.
+        const stats = await orderClient.stats();
+        if (stats.trades.some((t: any) => t.user === email)) {
+            res.status(409).json({ error: 'User has open trades - square them off before deleting the account' });
+            return;
+        }
+        // Uploaded KYC documents are deleted with the account (payout records stay: they are financial history).
+        if (target) {
+            const bucket = new GridFSBucket(Mongo.getInstance().db, { bucketName: 'documents' });
+            for (const f of ['addressProofId', 'dobProofId', 'panCardId', 'aadharDocId', 'gstDocId']) {
+                const id = (target as any)[f];
+                if (id && ObjectId.isValid(id)) await bucket.delete(new ObjectId(id)).catch(() => undefined);
+            }
+        }
         const success = await deleteUser(email);
+        invalidateUserCache(email);
         if (!success) {
             res.status(404).json({ error: 'User not found' });
             return;
@@ -299,7 +415,15 @@ app.patch('/users/:email/role', requireAdmin, async function (req, res) {
             res.status(400).json({ error: 'Role is required' });
             return;
         }
+        if (role !== 'admin') {
+            const admins = (await getAllUsers()).filter((u) => u.role === 'admin');
+            if (admins.length <= 1 && admins[0]?.email === email) {
+                res.status(400).json({ error: 'Cannot demote the last admin' });
+                return;
+            }
+        }
         const user = await updateUserRole(email, role);
+        invalidateUserCache(email);
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;
@@ -332,6 +456,19 @@ app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (
                 }
             }
         }
+        const bad = (msg: string) => { res.status(400).json({ error: msg }); };
+        const finite = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
+        if (lossLimit !== undefined && !(finite(lossLimit) && lossLimit >= 0)) return bad('lossLimit must be a number >= 0');
+        if (lotCount !== undefined && !(Number.isInteger(lotCount) && lotCount > 0)) return bad('lotCount must be a positive integer');
+        if (investmentMode !== undefined && investmentMode !== 'lotCount' && investmentMode !== 'investmentAmount') return bad("investmentMode must be 'lotCount' or 'investmentAmount'");
+        if (investmentAmount !== undefined && !(finite(investmentAmount) && investmentAmount > 0 && investmentAmount <= MAX_INVESTMENT_AMOUNT)) return bad(`investmentAmount must be a number in (0, ${MAX_INVESTMENT_AMOUNT}]`);
+        if (useGTT !== undefined && typeof useGTT !== 'boolean') return bad('useGTT must be a boolean');
+        if (enabled !== undefined && typeof enabled !== 'boolean') return bad('enabled must be a boolean');
+        for (const [k, v] of Object.entries({ perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent })) {
+            if (v !== undefined && !(finite(v) && (v as number) >= 0)) return bad(`${k} must be a number >= 0`);
+        }
+        if (profitSplitPercent !== undefined && profitSplitPercent > 100) return bad('profitSplitPercent must be <= 100');
+        if (Object.values({ lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled }).every((v) => v === undefined)) return bad('No settings supplied');
         if (broker !== undefined && !['ant', 'kite', 'breeze'].includes(normalizeBrokerName(broker))) {
             res.status(400).json({ error: `Invalid broker '${broker}' (expected ant, kite or breeze)` });
             return;
@@ -364,16 +501,13 @@ app.patch('/users/:email/profile', requireSelfOrAdmin('email'), async function (
     try {
         const { email } = req.params;
         const { phone, legalName } = req.body;
-        const user = await getUser(email);
+        if (phone === undefined && legalName === undefined) { res.status(400).json({ error: 'phone or legalName is required' }); return; }
+        const user = await updateProfileFields(email, { phone, legalName });
         if (!user) { res.status(404).json({ error: 'User not found' }); return; }
-        const update: any = {};
-        if (phone !== undefined) update.phone = phone;
-        if (legalName !== undefined) update.legalName = legalName;
-        await Mongo.getInstance().db.collection('users').updateOne({ email }, { $set: update });
-        res.json(toClientUser({ ...user, ...update }));
-    } catch (e) {
+        res.json(toClientUser(user));
+    } catch (e: any) {
         console.error('Profile update error:', e);
-        res.sendStatus(500);
+        res.status(/must be|invalid|too long/.test(e?.message ?? '') ? 400 : 500).json({ error: e?.message ?? 'Failed to update profile' });
     }
 });
 
@@ -402,9 +536,9 @@ app.patch('/users/:email/bank-details', requireSelfOrAdmin('email'), async funct
         const user = await updateBankDetails(email, { bankAccountHolderName, bankAccountNumber, bankIFSC, upiId });
         if (!user) { res.status(404).json({ error: 'User not found' }); return; }
         res.json(toClientUser(user));
-    } catch (e) {
+    } catch (e: any) {
         console.error('Bank details update error:', e);
-        res.sendStatus(500);
+        res.status(/must be|invalid|too long/.test(e?.message ?? '') ? 400 : 500).json({ error: e?.message ?? 'Failed to update bank details' });
     }
 });
 
@@ -446,9 +580,10 @@ app.patch('/users/:email/verify', requireAdmin, async function (req, res) {
             address: 'addressVerified', dob: 'dobVerified', pan: 'panVerified',
             aadhar: 'aadharVerified', gst: 'gstVerified',
         };
-        if (!validFields[field]) {
+        if (typeof field !== 'string' || !Object.prototype.hasOwnProperty.call(validFields, field)) {
             res.status(400).json({ error: 'field must be email, phone, address, dob, pan, aadhar, or gst' }); return;
         }
+        if (typeof verified !== 'boolean') { res.status(400).json({ error: 'verified must be a boolean' }); return; }
         const update = { [validFields[field]]: verified };
         const user = await getUser(email);
         if (!user) { res.status(404).json({ error: 'User not found' }); return; }
@@ -485,6 +620,27 @@ const AADHAR_NUMBER_PATTERN = /\d{4}[\s-]?\d{4}[\s-]?\d{4}/;
 const OCR_TRIM_THRESHOLD = 50;
 const OCR_ROTATIONS = [0, 90, 180, 270] as const;
 
+// Magic-byte sniffing for the KYC upload allow-list (JPEG / PNG / PDF).
+function detectDocumentType(buf: Buffer): 'image/jpeg' | 'image/png' | 'application/pdf' | null {
+    if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+    if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+    if (buf.length >= 5 && buf.subarray(0, 5).toString('latin1') === '%PDF-') return 'application/pdf';
+    return null;
+}
+
+// OCR is CPU-heavy and runs in this single-threaded process: one at a time (the rest queue), each bounded by a timeout,
+// so a burst of uploads cannot stall SSE/API/auth for everyone.
+const OCR_TIMEOUT_MS = 60_000;
+let ocrChain: Promise<unknown> = Promise.resolve();
+function runOcrExclusive<T>(job: () => Promise<T>): Promise<T> {
+    const run = ocrChain.then(() => Promise.race([
+        job(),
+        new Promise<T>((_, reject) => setTimeout(() => reject(new Error('OCR timed out')), OCR_TIMEOUT_MS)),
+    ]));
+    ocrChain = run.catch(() => undefined);
+    return run;
+}
+
 async function extractIdNumber(docType: 'pan' | 'aadhar', buffer: Buffer, mimetype: string): Promise<string | null> {
     let imageBuffer: Buffer = buffer;
     if (mimetype === 'application/pdf') {
@@ -520,10 +676,16 @@ app.post('/users/:email/documents/:docType', requireSelfOrAdmin('email'), upload
         if (!req.file) { res.status(400).json({ error: 'No file uploaded' }); return; }
         const user = await getUser(email);
         if (!user) { res.status(404).json({ error: 'User not found' }); return; }
+        // Only real JPEG/PNG/PDF bytes are accepted - the client-declared mimetype is not trusted, so an HTML/SVG
+        // payload cannot be stored and later served from this origin.
+        const detectedType = detectDocumentType(req.file.buffer);
+        if (!detectedType) { res.status(400).json({ error: 'Only JPEG, PNG or PDF files are accepted' }); return; }
+        req.file.mimetype = detectedType;
 
         const bucket = new GridFSBucket(Mongo.getInstance().db, { bucketName: 'documents' });
-        const filename = `${email}_${docType}_${Date.now()}_${req.file.originalname}`;
-        const uploadStream = bucket.openUploadStream(filename, { contentType: req.file.mimetype });
+        const safeName = String(req.file.originalname ?? 'file').replace(/[^A-Za-z0-9._-]/g, '_').slice(-80);
+        const filename = `${email}_${docType}_${Date.now()}_${safeName}`;
+        const uploadStream = bucket.openUploadStream(filename, { contentType: detectedType });
         uploadStream.end(req.file.buffer);
 
         await new Promise<void>((resolve, reject) => {
@@ -533,12 +695,16 @@ app.post('/users/:email/documents/:docType', requireSelfOrAdmin('email'), upload
 
         const fieldMap: Record<string, string> = { address: 'addressProofId', dob: 'dobProofId', pan: 'panCardId', aadhar: 'aadharDocId', gst: 'gstDocId' };
         const field = fieldMap[docType];
-        await Mongo.getInstance().db.collection('users').updateOne({ email }, { $set: { [field]: uploadStream.id.toString() } });
+        // A replaced document is no longer the one an admin verified, and the old file must not be orphaned.
+        const verifiedField: Record<string, string> = { address: 'addressVerified', dob: 'dobVerified', pan: 'panVerified', aadhar: 'aadharVerified', gst: 'gstVerified' };
+        const previousId = (user as any)[field];
+        await Mongo.getInstance().db.collection('users').updateOne({ email }, { $set: { [field]: uploadStream.id.toString(), [verifiedField[docType]]: false } });
+        if (previousId && ObjectId.isValid(previousId)) await bucket.delete(new ObjectId(previousId)).catch(() => undefined);
 
         let numberExtracted = false;
         if ((docType === 'pan' || docType === 'aadhar') && (req.file.mimetype.startsWith('image/') || req.file.mimetype === 'application/pdf')) {
             try {
-                const extracted = await extractIdNumber(docType, req.file.buffer, req.file.mimetype);
+                const extracted = await runOcrExclusive(() => extractIdNumber(docType, req.file!.buffer, req.file!.mimetype));
                 if (extracted) {
                     await updateSensitiveField(email, docType === 'pan' ? 'panNumber' : 'aadharNumber', extracted);
                     numberExtracted = true;
@@ -572,8 +738,14 @@ app.get('/users/:email/documents/:docType', requireSelfOrAdmin('email'), async f
         const files = await bucket.find({ _id: new ObjectId(fileId) }).toArray();
         if (!files.length) { res.status(404).json({ error: 'File not found' }); return; }
 
-        res.setHeader('Content-Type', files[0].contentType || 'application/octet-stream');
-        res.setHeader('Content-Disposition', `inline; filename="${files[0].filename}"`);
+        // Stored bytes are user-supplied: never let the browser sniff or run them on this origin.
+        const storedType = files[0].contentType;
+        const type = storedType === 'image/jpeg' || storedType === 'image/png' || storedType === 'application/pdf' ? storedType : 'application/octet-stream';
+        const downloadName = String(files[0].filename ?? 'document').replace(/[^A-Za-z0-9._-]/g, '_');
+        res.setHeader('Content-Type', type);
+        res.setHeader('Content-Disposition', `${type.startsWith('image/') ? 'inline' : 'attachment'}; filename="${downloadName}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
         bucket.openDownloadStream(new ObjectId(fileId)).pipe(res);
     } catch (e) {
         console.error('Document download error:', e);
@@ -600,7 +772,7 @@ app.get('/users/:email/payouts', requireSelfOrAdmin('email'), async function (re
 
 app.get('/users/:email/payouts/:id/invoice', requireSelfOrAdmin('email'), async function (req, res) {
     try {
-        const html = await generateInvoiceHtml(req.params.id);
+        const html = await generateInvoiceHtml(req.params.id, req.params.email);
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
     } catch (e: any) {
@@ -611,7 +783,7 @@ app.get('/users/:email/payouts/:id/invoice', requireSelfOrAdmin('email'), async 
 
 app.get('/users/:email/payouts/:id/decision-log', requireSelfOrAdmin('email'), async function (req, res) {
     try {
-        const entries = await getPayoutDecisionLog(req.params.id);
+        const entries = await getPayoutDecisionLog(req.params.id, req.params.email);
         res.json(entries);
     } catch (e) {
         console.error('Get payout decision log error:', e);
@@ -639,7 +811,8 @@ app.post('/admin/payouts/compute', requireAdmin, async function (req, res) {
         if (!user || !periodStart || !periodEnd) {
             res.status(400).json({ error: 'user, periodStart, and periodEnd are required' }); return;
         }
-        const computation = await computePayout(user, new Date(periodStart), new Date(periodEnd));
+        const period = periodFromInputs(periodStart, periodEnd);
+        const computation = await computePayout(user, period.start, period.end);
         res.json(computation);
     } catch (e: any) {
         console.error('Compute payout error:', e);
@@ -653,7 +826,8 @@ app.post('/admin/payouts', requireAdmin, async function (req, res) {
         if (!user || !periodStart || !periodEnd) {
             res.status(400).json({ error: 'user, periodStart, and periodEnd are required' }); return;
         }
-        const payout = await createPayoutRecord(user, new Date(periodStart), new Date(periodEnd));
+        const period = periodFromInputs(periodStart, periodEnd);
+        const payout = await createPayoutRecord(user, period.start, period.end);
         res.json(payout);
     } catch (e: any) {
         console.error('Create payout error:', e);
@@ -667,12 +841,14 @@ app.patch('/admin/payouts/:id', requireAdmin, async function (req, res) {
         if (status !== 'paid' && status !== 'rejected') {
             res.status(400).json({ error: 'status must be paid or rejected' }); return;
         }
-        const adminEmail = resolveUser(req);
+        // Loopback callers have no session: attribute the decision to 'loopback' rather than to nobody.
+        const adminEmail = resolveUser(req) ?? (requestIsLoopback(req) ? 'loopback' : null);
         const payout = await markPayoutDecision(req.params.id, status, note, adminEmail);
         res.json(payout);
     } catch (e: any) {
         console.error('Mark payout decision error:', e);
-        res.status(400).json({ error: e.message || 'Failed to update payout' });
+        const msg = e.message || 'Failed to update payout';
+        res.status(/not found/i.test(msg) ? 404 : /already/i.test(msg) ? 409 : 400).json({ error: msg });
     }
 });
 
@@ -716,7 +892,7 @@ const shoonyaCallback = async function (req: express.Request, res: express.Respo
         res.redirect(302, '/');
     } catch (e: any) {
         Log.log('Shoonya callback error:', e);
-        res.status(500).json({ error: 'Authentication failed', details: e.message });
+        res.status(500).json({ error: 'Authentication failed' });
     }
 };
 
@@ -726,7 +902,7 @@ app.get('/prism/callback', shoonyaCallback);
 // handler rather than requiring the app registration to change.
 app.get('/shoonya/callback', shoonyaCallback);
 
-app.get('/prism/authcode', function (_req, res) {
+app.get('/prism/authcode', requireAdmin, function (_req, res) {
     if (!authorizationCode) {
         res.status(404).json({ error: 'No authorization code stored' });
         return;
@@ -734,7 +910,7 @@ app.get('/prism/authcode', function (_req, res) {
     res.json({ code: authorizationCode });
 });
 
-app.get('/prism/token', async function (req, res) {
+app.get('/prism/token', requireAdmin, async function (req, res) {
     Log.log('Logging in with GenAcsTok');
     try {
         const { code } = req.query;
@@ -775,7 +951,8 @@ app.get('/ant/callback', async function (req, res) {
         Log.log('ANT Callback received - exchanging authCode for token');
         const ant = ANT.getInstance();
         const result = await ant.exchangeAuthCodeForToken(userId, authCode);
-        res.cookie('ant_session', result.userSession, { signed: true, httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
+        // (No ant_session cookie: the broker token lives server-side only; nothing reads a browser copy.)
+        void result;
         // Tell `data` to (re)connect now that a session exists - same mechanism
         // /ant/connect uses (see below), needed here since `data` typically
         // started before this login flow completed and may not be connected yet.
@@ -790,7 +967,7 @@ app.get('/ant/callback', async function (req, res) {
         res.redirect(302, '/');
     } catch (e: any) {
         Log.log('ANT callback error:', e);
-        res.status(500).json({ error: 'Authentication failed', details: e.message });
+        res.status(500).json({ error: 'Authentication failed' });
     }
 });
 
@@ -817,13 +994,13 @@ app.get('/kite/callback', async function (req, res) {
         Log.log('Kite Callback received - exchanging request_token for access_token');
         const kite = Kite.getInstance();
         const result = await kite.exchangeRequestTokenForSession(requestToken);
-        res.cookie('kite_session', result.access_token, { signed: true, httpOnly: true, maxAge: 30 * 24 * 60 * 60 * 1000 });
+        void result; // broker token stays server-side only - no cookie copy
         await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
         Log.log('Kite Authentication successful. Token stored.');
         res.redirect(302, '/');
     } catch (e: any) {
         Log.log('Kite callback error:', e);
-        res.status(500).json({ error: 'Authentication failed', details: e.message });
+        res.status(500).json({ error: 'Authentication failed' });
     }
 });
 
@@ -865,7 +1042,7 @@ async function handleBreezeCallback(req: express.Request, res: express.Response)
         res.redirect(302, '/');
     } catch (e: any) {
         Log.log('Breeze callback error:', e);
-        res.status(500).json({ error: 'Authentication failed', details: e.message });
+        res.status(500).json({ error: 'Authentication failed' });
     }
 }
 app.get('/breeze/callback', handleBreezeCallback);
@@ -886,7 +1063,7 @@ app.post('/breeze/callback', handleBreezeCallback);
 // applied to resolveUser() itself or to /order/squareoff - narrowly scoped to
 // these two debug routes only, so it can't reintroduce the X-User-Id-header
 // trust that was deliberately removed elsewhere (see ToDo.md, 2026-09-10).
-app.get('/breeze/order/buy', requireAdmin, async function (req, res) {
+getOrPost('/breeze/order/buy', requireAdmin, async function (req, res) {
     try {
         const { right, user: userOverride } = req.query;
         const user = (userOverride as string) || resolveUser(req);
@@ -900,7 +1077,7 @@ app.get('/breeze/order/buy', requireAdmin, async function (req, res) {
 
 // Dedicated Breeze square-off (see orderProcess.ts's 'breezeSquareOff' case
 // for why this bypasses the generic /order/squareoff route).
-app.get('/breeze/order/squareoff', requireAdmin, async function (req, res) {
+getOrPost('/breeze/order/squareoff', requireAdmin, async function (req, res) {
     try {
         const { tsym, qty, user: userOverride } = req.query;
         const user = (userOverride as string) || resolveUser(req);
@@ -919,23 +1096,24 @@ app.get('/breeze/order/squareoff', requireAdmin, async function (req, res) {
 // waitForBreezeFill's push path) connects separately, automatically, at
 // `order` process startup/reloadSession (see orderProcess.ts's
 // connectBreezeOrderNotifyIfSessionValid) - nothing to trigger here for that.
-app.get('/breeze/connect', requireAdmin, async function (req, res) {
+getOrPost('/breeze/connect', requireAdmin, async function (req, res) {
     try {
         BreezeStream.getInstance().connect();
         res.json({ status: 'connected' });
     } catch (e: any) {
         Log.log('Breeze connect error:', e);
-        res.status(500).json({ error: 'Failed to connect to Breeze streaming', details: e.message });
+        res.status(500).json({ error: 'Failed to connect to Breeze streaming' });
     }
 });
 
 const breezeStreamClients = new Set<express.Response>();
 app.get('/breeze/stream', requireAdmin, function (req, res) {
+    req.on('close', () => breezeStreamClients.delete(res));
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
     breezeStreamClients.add(res);
-    req.on('close', () => breezeStreamClients.delete(res));
 });
 myEmitter.on('breeze-quote', (tick: any) => {
     const payload = `data: ${JSON.stringify(tick)}\n\n`;
@@ -985,7 +1163,7 @@ app.get('/broker/:broker/trades', requireAdmin, async function (req, res) {
         res.json({ success: true, broker: req.params.broker, trades });
     } catch (e: any) {
         Log.log(`${req.params.broker} trades error:`, e);
-        res.status(e.message.startsWith('Unknown broker') ? 400 : 500).json({ error: 'Failed to fetch trades', details: e.message });
+        res.status(e.message.startsWith('Unknown broker') ? 400 : 500).json({ error: 'Failed to fetch trades' });
     }
 });
 
@@ -995,7 +1173,7 @@ app.get('/broker/:broker/positions', requireAdmin, async function (req, res) {
         res.json({ success: true, broker: req.params.broker, positions });
     } catch (e: any) {
         Log.log(`${req.params.broker} positions error:`, e);
-        res.status(e.message.startsWith('Unknown broker') ? 400 : 500).json({ error: 'Failed to fetch positions', details: e.message });
+        res.status(e.message.startsWith('Unknown broker') ? 400 : 500).json({ error: 'Failed to fetch positions' });
     }
 });
 
@@ -1005,23 +1183,24 @@ app.get('/broker/:broker/positions', requireAdmin, async function (req, res) {
 // the only way to get connected - it writes a control command on frontend's
 // own stdout, which the orchestrator pipes into `data`'s stdin (mirroring how
 // `strategies` talks to `data`).
-app.get('/ant/connect', requireAdmin, async function (req, res) {
+getOrPost('/ant/connect', requireAdmin, async function (req, res) {
     try {
         writeJsonLine(process.stdout, { cmd: 'reconnect' });
         res.json({ status: 'connected' });
     } catch (e: any) {
         Log.log('ANT connect error:', e);
-        res.status(500).json({ error: 'Failed to connect to ANT streaming', details: e.message });
+        res.status(500).json({ error: 'Failed to connect to ANT streaming' });
     }
 });
 
 const antStreamClients = new Set<express.Response>();
 app.get('/ant/stream', requireAdmin, function (req, res) {
+    req.on('close', () => antStreamClients.delete(res));
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
     antStreamClients.add(res);
-    req.on('close', () => antStreamClients.delete(res));
 });
 
 app.get('/prism/canPlaceOrder', requireAuth, async function (req: express.Request, res) {
@@ -1046,16 +1225,37 @@ app.get('/prism/orderbook', requireAdmin, async function (req: express.Request, 
 
 // ============================== Order Placement & Execution ==============================
 
+// Shared validator for /order/buy's query string: a non-finite or non-positive number must be refused here (400) rather
+// than reach the order process as NaN/null.
+function validateBuyQuery(q: Record<string, unknown>): string | null {
+    const num = (v: unknown) => (v === undefined || v === '' ? undefined : Number(v));
+    const strike = num(q.strikePrice);
+    if (strike !== undefined && !(Number.isInteger(strike) && strike > 0)) return 'strikePrice must be a positive integer';
+    const price = num(q.price);
+    if (price !== undefined && !(Number.isFinite(price) && price > 0)) return 'price must be a positive number';
+    for (const k of ['targetPoints', 'stopLossPoints']) {
+        const v = num(q[k]);
+        if (v !== undefined && !(Number.isFinite(v) && v >= 0)) return `${k} must be a number >= 0`;
+    }
+    for (const k of ['right', 'index', 'contract']) {
+        if (q[k] !== undefined && typeof q[k] !== 'string') return `${k} must be a string`;
+    }
+    if (q.index !== undefined && !['NIFTY', 'SENSEX', 'BANKNIFTY', 'FINNIFTY'].includes(String(q.index).toUpperCase())) return 'index must be NIFTY, SENSEX, BANKNIFTY or FINNIFTY';
+    return null;
+}
+
 // Generic order placement - dispatches Kite-or-ANT internally via
 // bookkeeping.getUserBroker (manualBuy/squareOff/setTargetStopLoss). Renamed
 // from /prism/order/buy, /prism/squareoff, /prism/settarget - despite the
 // old name, none of these ever called prismExecutor.ts; the "prism" prefix
 // was actively misleading now that Prism is a real third broker with its own
 // distinct routes elsewhere.
-app.get('/order/buy', requireAuth, async function (req: express.Request, res) {
+getOrPost('/order/buy', requireAuth, async function (req: express.Request, res) {
     try {
         const { right, index, strikePrice, price, contract, targetPoints, stopLossPoints } = req.query;
         const user = resolveUser(req);
+        const invalid = validateBuyQuery({ right, index, strikePrice, price, contract, targetPoints, stopLossPoints });
+        if (invalid) { res.status(400).json({ error: invalid }); return; }
         Log.log('Resolved order while placing an order ', user);
         const result = await orderClient.manualBuy(user, {
             index: index as any,
@@ -1073,10 +1273,12 @@ app.get('/order/buy', requireAuth, async function (req: express.Request, res) {
     }
 });
 
-app.get('/order/squareoff', requireAuth, async function (req, res) {
+getOrPost('/order/squareoff', requireAuth, async function (req, res) {
     try {
         const { token, qty, tsym } = req.query;
         const user = resolveUser(req);
+        if (qty !== undefined && !(Number.isInteger(Number(qty)) && Number(qty) > 0)) { res.status(400).json({ error: 'qty must be a positive integer' }); return; }
+        if ((token !== undefined && typeof token !== 'string') || (tsym !== undefined && typeof tsym !== 'string') || (!token && !tsym)) { res.status(400).json({ error: 'token or tsym is required' }); return; }
         await orderClient.squareOff(user, {
             token: token as string,
             tsym: tsym as string,
@@ -1089,11 +1291,15 @@ app.get('/order/squareoff', requireAuth, async function (req, res) {
     }
 });
 
-app.post('/order/settarget', requireAuth, express.json(), async function (req: express.Request, res) {
+app.post('/order/settarget', requireAuth, requireCsrfHeader, async function (req: express.Request, res) {
     try {
         const { token, targetPoints, stopLossPoints } = req.body;
         if (!token || targetPoints == null || stopLossPoints == null) {
             res.status(400).json({ error: 'Missing token, targetPoints, or stopLossPoints' });
+            return;
+        }
+        if (typeof token !== 'string' || !(typeof targetPoints === 'number' && Number.isFinite(targetPoints) && targetPoints >= 0) || !(typeof stopLossPoints === 'number' && Number.isFinite(stopLossPoints) && stopLossPoints >= 0)) {
+            res.status(400).json({ error: 'token must be a string; targetPoints and stopLossPoints must be numbers >= 0' });
             return;
         }
         const user = resolveUser(req);
@@ -1105,7 +1311,7 @@ app.post('/order/settarget', requireAuth, express.json(), async function (req: e
     }
 });
 
-app.get('/connect', requireAdmin, async function (req: express.Request, res) {
+getOrPost('/connect', requireAdmin, async function (req: express.Request, res) {
     try {
         await orderClient.connectPrism();
         res.sendStatus(200);
@@ -1231,7 +1437,7 @@ app.get('/admin/trades/open', requireAdmin, async function (req, res) {
     }
 });
 
-app.get('/refreshtrades', requireAdmin, async function (req, res) {
+getOrPost('/refreshtrades', requireAdmin, async function (req, res) {
     try {
         const openTrades = await orderClient.refreshTradeList();
         res.send(openTrades);
@@ -1241,7 +1447,7 @@ app.get('/refreshtrades', requireAdmin, async function (req, res) {
     }
 });
 
-app.get('/subscribetrades', requireAdmin, async function (req, res) {
+getOrPost('/subscribetrades', requireAdmin, async function (req, res) {
     try {
         // Re-subscription for live per-tick tracking is obsolete now that exits
         // are GTT-driven (see kiteExecutor.ts) - kept as a refresh alias for
@@ -1286,22 +1492,41 @@ app.get('/optionstream', requireAuth, async function (req, res) {
 // an arbitrary option token, so /optionstream carries live ticks for whatever
 // contract the demo user picked. No auth/order side effect - same anonymous-
 // safe posture as /search, /quote, /optionstream itself.
+// Anonymous callers may only manage the tokens THEY subscribed: a bounded, ref-counted set, so the demo can never
+// unsubscribe a token live strategies/exit monitors depend on, nor exhaust the shared feed's subscription cap.
+const demoSubscribed = new Map<string, number>(); // token -> demo subscriber count
+const DEMO_MAX_TOKENS = 20;
+const demoHits = new Map<string, { n: number; resetAt: number }>();
 app.get('/demo/subscribe', async function (req, res) {
     try {
+        const ip = req.socket.remoteAddress ?? 'unknown';
+        const now = Date.now();
+        const hit = demoHits.get(ip);
+        if (!hit || hit.resetAt < now) demoHits.set(ip, { n: 1, resetAt: now + 60_000 });
+        else if (++hit.n > 30) { res.status(429).json({ error: 'Too many requests' }); return; }
         const { token, subscribe } = req.query;
-        if (!token) {
-            res.status(400).json({ error: 'Missing token' });
+        if (typeof token !== 'string' || !/^\d{1,12}$/.test(token)) {
+            res.status(400).json({ error: 'Missing or invalid token' });
             return;
         }
         if (subscribe === 'false') {
-            await strategiesClient.unsubscribeToken(token as string);
+            const count = demoSubscribed.get(token) ?? 0;
+            if (count === 0) { res.status(403).json({ error: 'Token was not subscribed by the demo' }); return; }
+            if (count === 1) {
+                demoSubscribed.delete(token);
+                await strategiesClient.unsubscribeToken(token);
+            } else {
+                demoSubscribed.set(token, count - 1);
+            }
         } else {
-            await strategiesClient.subscribeToken(token as string);
+            if (!demoSubscribed.has(token) && demoSubscribed.size >= DEMO_MAX_TOKENS) { res.status(429).json({ error: 'Demo subscription limit reached' }); return; }
+            demoSubscribed.set(token, (demoSubscribed.get(token) ?? 0) + 1);
+            await strategiesClient.subscribeToken(token);
         }
         res.sendStatus(200);
     } catch (e: any) {
         Log.log(e);
-        res.status(500).json({ error: e?.message ?? String(e) });
+        res.status(500).json({ error: 'Subscription failed' });
     }
 });
 
@@ -1341,9 +1566,9 @@ app.get('/demo/symbols', async function (req, res) {
     }
 });
 
-async function pushPositionSnapshot(res: express.Response, user: string) {
+async function pushPositionSnapshot(res: express.Response, user: string, sharedStats?: any) {
     try {
-        const stats = await orderClient.stats();
+        const stats = sharedStats ?? await orderClient.stats();
         const userActiveTrades = stats.trades.filter((t: Trade) => t.user === user);
         const userClosedTrades = stats.closedTrades.filter((t: Trade) => t.user === user);
         const allUserTrades = [
@@ -1361,14 +1586,22 @@ app.get('/positionstream', requireAuth, async function (req, res) {
     res.set({ 'Cache-Control': 'no-cache', 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
     res.flushHeaders();
     res.write('retry: 10000\n\n');
+    // Registered before the first await: a client that disconnects during the snapshot fetch must still be removed.
+    req.on('close', () => positionStreamClients.delete(res));
     positionStreamClients.set(res, user);
     await pushPositionSnapshot(res, user);
-    req.on('close', () => positionStreamClients.delete(res));
 });
 
-orderClient.onPositionsChanged(() => {
-    for (const [res, user] of positionStreamClients) {
-        pushPositionSnapshot(res, user);
+// One stats() round trip per change, fanned out to every connected client (was one per client).
+orderClient.onPositionsChanged(async () => {
+    if (positionStreamClients.size === 0) return;
+    try {
+        const stats = await orderClient.stats();
+        for (const [res, user] of positionStreamClients) {
+            pushPositionSnapshot(res, user, stats);
+        }
+    } catch (e) {
+        Log.log('[frontend] positions fan-out failed:', e);
     }
 });
 
@@ -1399,8 +1632,9 @@ app.get('/users/:email/notifications', requireSelfOrAdmin('email'), async functi
 
 app.patch('/users/:email/notifications/:id/read', requireSelfOrAdmin('email'), async function (req, res) {
     try {
-        const { ObjectId } = require('mongodb');
-        await Mongo.getInstance().db.collection('notifications').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { read: true } });
+        if (!ObjectId.isValid(req.params.id)) { res.status(400).json({ error: 'Invalid notification id' }); return; }
+        const r = await Mongo.getInstance().db.collection('notifications').updateOne({ _id: new ObjectId(req.params.id), user: req.params.email }, { $set: { read: true } });
+        if (r.matchedCount === 0) { res.status(404).json({ error: 'Notification not found' }); return; }
         res.sendStatus(200);
     } catch (e) {
         console.error('Mark notification read error:', e);
@@ -1452,6 +1686,7 @@ setInterval(async () => {
 setInterval(() => {
     const heartbeat = ': heartbeat\n\n';
     for (const res of antStreamClients) res.write(heartbeat);
+    for (const res of breezeStreamClients) res.write(heartbeat);
     for (const res of niftyStreamClients) res.write(heartbeat);
     for (const res of optionStreamClients) res.write(heartbeat);
     for (const res of positionStreamClients.keys()) res.write(heartbeat);
@@ -1484,11 +1719,15 @@ app.get('/stats', requireAdmin, async function (req: express.Request, res) {
     }
 });
 
-app.get('/strategies', requireAdmin, async function (req: express.Request, res) {
+const strategiesRoute = async function (req: express.Request, res: express.Response) {
     try {
         const { strategy, userId, enable } = req.query;
         const identifier = (userId || strategy) as string;
         if (identifier && enable !== undefined) {
+            if (!requestIsLoopback(req) && !req.get('x-requested-with')) {
+                res.status(403).json({ error: 'X-Requested-With header required to change a strategy' });
+                return;
+            }
             const result = await strategiesClient.setEnabled(identifier, enable === 'true');
             res.json(result);
             return;
@@ -1498,9 +1737,11 @@ app.get('/strategies', requireAdmin, async function (req: express.Request, res) 
         Log.log(e);
         res.sendStatus(500);
     }
-});
+};
+app.get('/strategies', requireAdmin, strategiesRoute);
+app.post('/strategies', requireAdmin, strategiesRoute);
 
-app.get('/strategies/:type/reset', requireAdmin, async function (req: express.Request, res) {
+getOrPost('/strategies/:type/reset', requireAdmin, async function (req: express.Request, res) {
     try {
         const { type } = req.params;
         res.json(await strategiesClient.reset(type));
@@ -1559,7 +1800,7 @@ app.get('/search', requireAuth, async function (req, res) {
     }
 });
 
-app.get('/logout', requireAdmin, async function (req, res) {
+getOrPost('/logout', requireAdmin, async function (req, res) {
     try {
         await Prism.getInstance().logout();
         res.sendStatus(200);
@@ -1623,11 +1864,19 @@ app.post('/config', requireAdmin, async (req, res) => {
     // Refuse a save that the reload would reject (ConfigService.loadConfig runs
     // the same file-level check), so the admin is told instead of the file
     // being written and the old config silently staying live.
-    const fileErrors = validateConfigFile(configService.flatToConfig(flat));
+    const nextConfig = configService.flatToConfig(flat);
+    const fileErrors = validateConfigFile(nextConfig);
     if (fileErrors.length > 0) {
         return res.status(400).json({ error: fileErrors.join('; ') });
     }
-    configService.writeConfig(configService.flatToConfig(flat));
+    // A save must never silently drop a strategy instance (it would be removed from the running processes, possibly
+    // with an open position). Removal is only allowed when explicitly requested with ?allowRemove=true.
+    const kept = new Set((nextConfig.strategies || []).map((s: any) => configService.instanceKey(s)));
+    const dropped = (configService.getConfig().strategies || []).filter((s: any) => !kept.has(configService.instanceKey(s)));
+    if (dropped.length > 0 && req.query.allowRemove !== 'true') {
+        return res.status(400).json({ error: `Save would remove strategy instance(s): ${dropped.map((s: any) => `${s.type}:${s.userId || s.type}`).join(', ')}. Re-send with ?allowRemove=true if intended.` });
+    }
+    configService.writeConfig(nextConfig);
     configService.reloadNow(); // this process's own in-memory copy shouldn't lag its own write either
 
     // config.yml is hot-*read* (ConfigService.watchConfig), but several
@@ -1658,6 +1907,9 @@ app.post('/config', requireAdmin, async (req, res) => {
 app.get('/replay', requireAdmin, async (req, res) => {
     const date = req.query.date as string;
     if (!date) return res.status(400).json({ error: 'date query param required' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(`${date}T00:00:00Z`).getTime())) {
+        return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+    }
 
     const db = Mongo.getInstance().db;
     // Live ticks are persisted to the 'NiftyQuote' collection (NiftyQuote.fromAnt(),
@@ -1681,7 +1933,20 @@ app.get('/replay', requireAdmin, async (req, res) => {
 // ============================== Static UI ==============================
 
 app.get('*', (req, res) => {
+    // Only browser navigations get the SPA shell; an API-style request to an unknown path is a 404, not a 200 page.
+    if (!req.accepts('html') || /\.[a-z0-9]{1,5}$/i.test(req.path)) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+    }
     res.sendFile(path.join(__dirname, '../public/index.html'));
+});
+
+// Last resort for anything the handlers did not answer themselves (see the async-wrapper at the top of the file):
+// a JSON 500 with no stack and no internal message.
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    Log.log(`[frontend] Unhandled error in ${req.method} ${req.path}:`, err);
+    if (res.headersSent) { res.end(); return; }
+    res.status(500).json({ error: 'Internal server error' });
 });
 
 // ============================== Boot ==============================
@@ -1713,7 +1978,13 @@ async function main() {
     );
 
     const port = Number(process.env.PORT) || 3000;
-    app.listen(port, () => Log.log(`[frontend] Listening on ${port}`));
+    const mainServer = app.listen(port, () => Log.log(`[frontend] Listening on ${port}`));
+    // A replacement process can race its predecessor for the port (hot restart): fail loudly so the orchestrator
+    // restarts it, instead of an unhandled 'error' event.
+    mainServer.on('error', (err) => {
+        Log.log(`[frontend] Failed to listen on port ${port}: ${err.message}`);
+        process.exit(1);
+    });
 
     const port80Server = app.listen(80, () => Log.log(`[frontend] Listening on 80`));
     port80Server.on('error', (err) => Log.log(`[frontend] Failed to listen on port 80: ${err.message}`));

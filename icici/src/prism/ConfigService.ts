@@ -1,5 +1,5 @@
 import Log from '../util/Log';
-import fs, { readFileSync, writeFileSync } from 'fs';
+import fs, { readFileSync } from 'fs';
 import path from 'path';
 import { load, dump } from 'js-yaml';
 import AppConfig, { StrategyInstanceConfig } from './AppConfig';
@@ -33,7 +33,23 @@ class ConfigService {
       settings: formatPercentFields(config.settings as any),
       strategies: (config.strategies || []).map(s => formatPercentFields(s)),
     } as AppConfig;
-    writeFileSync(this.configPath, dump(shaped, { noRefs: true }), 'utf8');
+    // Atomic: write a temp file in the same directory, fsync, then rename over the target. A watcher/reader (or a crash,
+    // ENOSPC) can therefore never see an empty or half-written config.yml. Synchronous end to end, so two POST /config
+    // handlers in this process cannot interleave their writes either.
+    const tmp = `${this.configPath}.tmp-${process.pid}`;
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeFileSync(fd, dump(shaped, { noRefs: true }), 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    try {
+      fs.renameSync(tmp, this.configPath);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+      throw e;
+    }
   }
 
   public getConfig(): AppConfig {
@@ -44,7 +60,14 @@ class ConfigService {
     const flat: Record<string, any> = { settings: this.config.settings };
     for (const strategy of this.config.strategies || []) {
       const { type, ...rest } = strategy;
-      const key = type.charAt(0).toLowerCase() + type.slice(1);
+      const base = type.charAt(0).toLowerCase() + type.slice(1);
+      // The first instance of a type keeps the plain key (what the admin UI already uses); further instances of the
+      // same type (told apart by userId) get `<key>:<userId>` so none is collapsed onto another.
+      let key = base;
+      if (key in flat) {
+        key = `${base}:${(rest as any).userId ?? ''}`;
+        for (let i = 2; key in flat; i++) key = `${base}:${(rest as any).userId ?? ''}#${i}`;
+      }
       flat[key] = { type, ...rest };
     }
     return flat;
@@ -54,6 +77,12 @@ class ConfigService {
     const { settings, ...rest } = flat;
     const strategies = Object.values(rest).filter((v): v is StrategyInstanceConfig => !!v && typeof v.type === 'string');
     return { settings, strategies } as AppConfig;
+  }
+
+  // Identity of a strategy instance for save-time comparisons: type + userId (userId defaults to the type, as
+  // Strategies.initialize does).
+  public instanceKey(s: { type: string; userId?: string }): string {
+    return `${s.type}|${s.userId || s.type}`;
   }
 
   public getStrategyConfig(type: string): StrategyInstanceConfig {
@@ -90,7 +119,7 @@ class ConfigService {
       parsed.strategies = parsed.strategies.map((s: any) => normalizeBlock(s));
     }
     this.config = parsed as AppConfig;
-    Log.log('Config Updated:', this.config);
+    Log.log(`Config Updated: ${(this.config.strategies || []).length} strategies (${(this.config.strategies || []).map((s: any) => `${s.type}${s.userId ? ':' + s.userId : ''}${s.enabled ? '' : '(off)'}`).join(', ')})`);
     for (const cb of this.listeners) {
       try { cb(); } catch (e) { Log.log(`[ConfigService] onChange listener failed: ${(e as Error).message}`); }
     }

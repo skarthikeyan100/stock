@@ -73,8 +73,15 @@ export default class Monitor {
         }
         this.pendingUsers.add(userId);
         Log.log(`[Monitor] Placing buy order for ${userId}: ${contract} qty=${qty} price=${price}`);
-        const response = await Prism.getInstance().buyContract(contract, qty, price, this.getUserContext(userId));
-        return response;
+        try {
+            const response = await Prism.getInstance().buyContract(contract, qty, price, this.getUserContext(userId));
+            // Nothing placed: the user must not stay "pending" forever (the fill path is the only other place that clears it).
+            if (!response) this.pendingUsers.delete(userId);
+            return response;
+        } catch (e) {
+            this.pendingUsers.delete(userId);
+            throw e;
+        }
     }
 
     async requestSell(userId: string, contract: string, qty: number, price?: number) {
@@ -90,7 +97,14 @@ export default class Monitor {
         }
         this.pendingUsers.add(userId);
         Log.log(`[Monitor] Placing buyIndex order for ${userId}: ${index} right=${right} qty=${qty}`);
-        return await Prism.getInstance().buyIndex({ userContext: this.getUserContext(userId), index, ltp, right, qty });
+        try {
+            const result = await Prism.getInstance().buyIndex({ userContext: this.getUserContext(userId), index, ltp, right, qty });
+            if (!result) this.pendingUsers.delete(userId);
+            return result;
+        } catch (e) {
+            this.pendingUsers.delete(userId);
+            throw e;
+        }
     }
 
     // --- Quote Broadcasting ---
@@ -166,7 +180,11 @@ export default class Monitor {
     getInstrumentLotSize(tsym: string): number {
         if (tsym.startsWith('BANKNIFTY')) return 15;
         if (tsym.startsWith('FINNIFTY')) return 25;
-        return 65; // NIFTY default
+        if (tsym.startsWith('SENSEX')) return 20;
+        if (tsym.startsWith('NIFTY')) return 65;
+        // Unknown underlying: count one unit per lot (over-counts lots, so the lot limit errs on the strict side).
+        Log.log(`[Monitor] WARNING: no lot size known for ${tsym} - counting each unit as a lot`);
+        return 1;
     }
 
     getTradedLots(user: string): number {
@@ -232,6 +250,11 @@ export default class Monitor {
     }
 
     canPlaceOrder(user: string): { allowed: boolean; reason?: string } {
+        // An order already in flight for this user is not in this.trades yet: without this two concurrent requests
+        // both pass the lot check.
+        if (this.pendingUsers.has(user)) {
+            return { allowed: false, reason: `User '${user}' already has an order in flight.` };
+        }
         const tradedLots = this.getTradedLots(user);
         const lotLimit = this.getUserLotLimit(user);
         if (tradedLots >= lotLimit) {
@@ -305,7 +328,7 @@ export default class Monitor {
             let isCompleted = data.fillshares == data.qty && data.status == 'COMPLETE';
 
             if (isCompleted) {
-                this._processTradeEvent(tradeEvent)
+                await this._processTradeEvent(tradeEvent).catch((e) => Log.log('[Monitor] _processTradeEvent failed:', e));
                 this.clearOrder(data.norenordno);
                 // Route confirmation to the owning strategy
                 const strategy = this.strategyMap.get(tradeEvent.user);
@@ -455,14 +478,20 @@ export default class Monitor {
                 }
 
                 const realizedPnL = (tradeEvent.price - buyTrade.price) * sellQty;
-                buyTrade.realizedPnL = realizedPnL
+                // Accumulate across partial sells (the closed row must carry the whole position's realized P&L).
+                buyTrade.realizedPnL = (buyTrade.realizedPnL || 0) + realizedPnL
                 const cumulative = (this.userPnL.get(user) || 0) + realizedPnL;
                 this.userPnL.set(user, cumulative);
                 Log.log(`[Monitor] User '${user}' closed. P&L: ${realizedPnL.toFixed(2)}, Cumulative: ${cumulative.toFixed(2)}`);
 
                 Log.log('Trade is closed ', tradeEvent.tsym, ' ', tradeEvent.quantity, ' Enabled auto trade: ', Config.auto)
 
+                if (buyTrade.originalEntryQuantity === undefined) buyTrade.originalEntryQuantity = buyTrade.quantity; // closed rows keep the size they were opened with
                 buyTrade.quantity -= sellQty;
+                if (buyTrade.quantity > 0) {
+                    // The remainder is still open: let updateQuote evaluate it against target/SL again.
+                    buyTrade.isSellPending = false;
+                }
                 if (buyTrade.quantity <= 0) {
                     buyTrade.open = false;
                     this.closedTrades.push(buyTrade);

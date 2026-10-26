@@ -81,10 +81,14 @@ function closedTradesCollection() {
 // Groups a period's closed trades by exitTime's calendar date (UTC) and sums
 // realizedPnL per day - used by both the consistency-rule check and the
 // trader-facing "why was my payout blocked" breakdown.
+function istDayKey(d: Date): string {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+
 function groupByDay(trades: any[]): Map<string, { pnl: number; tradeIds: any[] }> {
     const byDay = new Map<string, { pnl: number; tradeIds: any[] }>();
     for (const t of trades) {
-        const day = new Date(t.exitTime).toISOString().slice(0, 10);
+        const day = istDayKey(new Date(t.exitTime));
         const entry = byDay.get(day) ?? { pnl: 0, tradeIds: [] };
         entry.pnl += t.realizedPnL || 0;
         entry.tradeIds.push(t._id);
@@ -165,15 +169,17 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
     if (!userDoc) throw new Error(`User not found: ${user}`);
 
     const periodTrades = await closedTradesCollection()
-        .find({ user, exitTime: { $gte: periodStart, $lte: periodEnd } })
+        .find({ user, exitTime: { $gte: periodStart, $lt: periodEnd } }) // end is EXCLUSIVE (see periodFromDates)
         .toArray();
     const grossProfit = periodTrades.reduce((sum, t) => sum + (t.realizedPnL || 0), 0);
     const profitSplitPercent = userDoc.profitSplitPercent;
     const splitAmount = Math.round(grossProfit * (profitSplitPercent / 100) * 100) / 100;
 
     const settings = configService.getConfig().settings as any;
-    const safetyBufferAmount: number = settings.safetyBufferAmount;
-    const consistencyLimitPercent: number = settings.consistencyLimitPercent;
+    // Missing/garbled settings must not disable the rules (comparisons against undefined are always false): fall back
+    // to the AppConfig defaults.
+    const safetyBufferAmount: number = Number.isFinite(Number(settings.safetyBufferAmount)) ? Number(settings.safetyBufferAmount) : 5000;
+    const consistencyLimitPercent: number = Number.isFinite(Number(settings.consistencyLimitPercent)) ? Number(settings.consistencyLimitPercent) : 40;
 
     let blocked = false;
     let blockReason: string | undefined;
@@ -341,15 +347,66 @@ export async function computePnlSummary(user: string, from: Date, to: Date, brea
     return { rawTotal, eligibleTotal, forfeited: weeks.some((w) => w.forfeited), weeks };
 }
 
+let payoutIndexesEnsured = false;
+async function ensurePayoutIndexes(): Promise<void> {
+    if (payoutIndexesEnsured) return;
+    try {
+        await payoutsCollection().createIndex({ invoiceNumber: 1 }, { unique: true, sparse: true });
+        payoutIndexesEnsured = true;
+    } catch (e) {
+        console.error('payouts: could not create unique invoiceNumber index (continuing):', e);
+    }
+}
+
+// Calendar year in IST, regardless of the server's zone.
+function istYear(d: Date = new Date()): number {
+    return Number(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric' }).format(d));
+}
+
+// Atomic per-year counter (findOneAndUpdate $inc) - concurrent creates can never be handed the same number.
 async function nextInvoiceNumber(): Promise<string> {
-    const year = new Date().getFullYear();
-    const count = await payoutsCollection().countDocuments({ invoiceNumber: { $regex: `^INV-${year}-` } });
-    return `INV-${year}-${String(count + 1).padStart(6, '0')}`;
+    const year = istYear();
+    const res: any = await Mongo.getInstance().db.collection('counters').findOneAndUpdate(
+        { _id: `invoice-${year}` as any },
+        { $inc: { seq: 1 } },
+        { upsert: true, returnDocument: 'after' }
+    );
+    const doc = res?.value ?? res; // driver versions differ on whether the doc is wrapped
+    const seq = Number(doc?.seq);
+    if (!Number.isFinite(seq)) throw new Error('could not allocate an invoice number');
+    return `INV-${year}-${String(seq).padStart(6, '0')}`;
+}
+
+// Date-only inputs (YYYY-MM-DD) are IST calendar days: [start 00:00 IST, end+1 day 00:00 IST). A full timestamp is used
+// as given (end exclusive). Back-to-back periods that share a boundary therefore never double-count a trade.
+export function periodFromInputs(periodStart: unknown, periodEnd: unknown): { start: Date; end: Date } {
+    const dateOnly = /^\d{4}-\d{2}-\d{2}$/;
+    const startStr = String(periodStart ?? '');
+    const endStr = String(periodEnd ?? '');
+    const start = dateOnly.test(startStr) ? new Date(`${startStr}T00:00:00+05:30`) : new Date(startStr);
+    let end = dateOnly.test(endStr) ? new Date(`${endStr}T00:00:00+05:30`) : new Date(endStr);
+    if (dateOnly.test(endStr)) end = new Date(end.getTime() + 24 * 60 * 60 * 1000);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('periodStart/periodEnd must be valid dates');
+    if (!(start.getTime() < end.getTime())) throw new Error('periodStart must be before periodEnd');
+    return { start, end };
 }
 
 // Server always recomputes rather than trusting client-submitted math - the
 // admin UI's "compute" preview and this persist step both call computePayout.
 export async function createPayoutRecord(user: string, periodStart: Date, periodEnd: Date): Promise<any> {
+    if (typeof user !== 'string' || !user) throw new Error('user is required');
+    if (!(periodStart instanceof Date) || !(periodEnd instanceof Date) || Number.isNaN(periodStart.getTime()) || Number.isNaN(periodEnd.getTime()) || !(periodStart < periodEnd)) {
+        throw new Error('periodStart must be a valid date before periodEnd');
+    }
+    await ensurePayoutIndexes();
+    // The same closedTrades must never be paid twice: refuse a period that overlaps any payout that is not rejected.
+    const overlapping = await payoutsCollection().findOne({
+        user,
+        status: { $ne: 'rejected' },
+        periodStart: { $lt: periodEnd },
+        periodEnd: { $gt: periodStart },
+    });
+    if (overlapping) throw new Error(`This period overlaps an existing ${overlapping.status} payout (${overlapping.invoiceNumber}) for ${user}`);
     const computation = await computePayout(user, periodStart, periodEnd);
     const userDoc = await getUser(user);
     const invoiceNumber = await nextInvoiceNumber();
@@ -362,6 +419,7 @@ export async function createPayoutRecord(user: string, periodStart: Date, period
         profitSplitPercent: computation.profitSplitPercent,
         splitAmount: computation.splitAmount,
         entityType: computation.entityType,
+        gstVerified: computation.gstVerified,
         tdsAmount: computation.tdsAmount,
         gstAmount: computation.gstAmount,
         netAmount: computation.netAmount,
@@ -398,26 +456,59 @@ export async function createPayoutRecord(user: string, periodStart: Date, period
             read: false,
             createdAt: new Date(),
         };
-        await Mongo.getInstance().db.collection('notifications').insertOne(notification);
-        myEmitter.emit('notification', { user, notification });
+        // The same blocked period can be submitted repeatedly: notify once per distinct message.
+        const already = await Mongo.getInstance().db.collection('notifications').findOne({ user, type: 'payout_status', message: notification.message });
+        if (!already) {
+            await Mongo.getInstance().db.collection('notifications').insertOne(notification);
+            myEmitter.emit('notification', { user, notification });
+        }
     }
 
     return { ...payout, _id: payoutId };
 }
 
-export async function markPayoutDecision(payoutId: any, status: 'paid' | 'rejected', note: string | undefined, adminEmail: string): Promise<any> {
+function toObjectId(payoutId: any): any {
     const { ObjectId } = require('mongodb');
-    const id = typeof payoutId === 'string' ? new ObjectId(payoutId) : payoutId;
-    await payoutsCollection().updateOne(
-        { _id: id },
-        { $set: { status, adminNote: note, decidedAt: new Date(), decidedBy: adminEmail } }
-    );
-    return payoutsCollection().findOne({ _id: id });
+    if (typeof payoutId === 'string') {
+        if (!ObjectId.isValid(payoutId)) throw new Error('Invalid payout id');
+        return new ObjectId(payoutId);
+    }
+    return payoutId;
 }
 
-export async function getPayoutDecisionLog(payoutId: any): Promise<any[]> {
-    const { ObjectId } = require('mongodb');
-    const id = typeof payoutId === 'string' ? new ObjectId(payoutId) : payoutId;
+// Compare-and-set: only a PENDING payout can be decided, exactly once. A payout the rules rejected at creation, an
+// already-paid one, or an unknown id cannot be (re)decided - so a rule block can't be bypassed by marking it paid.
+export async function markPayoutDecision(payoutId: any, status: 'paid' | 'rejected', note: string | undefined, adminEmail: string | null | undefined): Promise<any> {
+    if (!adminEmail) throw new Error('A decision must be attributed to an admin');
+    const id = toObjectId(payoutId);
+    const existing = await payoutsCollection().findOne({ _id: id });
+    if (!existing) throw new Error('Payout not found');
+    const res: any = await payoutsCollection().findOneAndUpdate(
+        { _id: id, status: 'pending' },
+        { $set: { status, adminNote: note, decidedAt: new Date(), decidedBy: adminEmail } },
+        { returnDocument: 'after' }
+    );
+    const updated = res?.value ?? (res && res._id ? res : null);
+    if (!updated) throw new Error(`Payout is already ${existing.status} - only a pending payout can be decided`);
+    await decisionLogCollection().insertOne({
+        user: updated.user,
+        payoutId: id,
+        type: status === 'paid' ? 'payout_paid' : 'payout_rejected',
+        reason: note,
+        detail: { decidedBy: adminEmail },
+        createdAt: new Date(),
+    });
+    return updated;
+}
+
+// `email` (when given) must own the payout, otherwise it is treated as not found - the route only authorises the :email
+// segment, so without this any user could read another user's payout by id.
+export async function getPayoutDecisionLog(payoutId: any, email?: string): Promise<any[]> {
+    const id = toObjectId(payoutId);
+    if (email !== undefined) {
+        const payout = await payoutsCollection().findOne({ _id: id });
+        if (!payout || String(payout.user).toLowerCase() !== email.toLowerCase()) return [];
+    }
     const entries = await decisionLogCollection().find({ payoutId: id }).sort({ createdAt: -1 }).toArray();
     for (const entry of entries) {
         if (entry.detail?.tradeIds?.length) {
@@ -433,14 +524,14 @@ function escapeHtml(value: any): string {
 
 // Self-contained printable HTML (inline CSS, no external assets) - browser
 // print-to-PDF covers "downloadable" without adding a PDF dependency.
-export async function generateInvoiceHtml(payoutId: any): Promise<string> {
-    const { ObjectId } = require('mongodb');
-    const id = typeof payoutId === 'string' ? new ObjectId(payoutId) : payoutId;
+export async function generateInvoiceHtml(payoutId: any, email?: string): Promise<string> {
+    const id = toObjectId(payoutId);
     const payout = await payoutsCollection().findOne({ _id: id });
-    if (!payout) throw new Error('Payout not found');
+    if (!payout || (email !== undefined && String(payout.user).toLowerCase() !== email.toLowerCase())) throw new Error('Payout not found');
     const userDoc = await getUser(payout.user);
 
-    const taxLine = payout.entityType === 'company'
+    // Rendered from what was persisted at creation (gstVerified), not today's user doc: it must match the tax actually applied.
+    const taxLine = payout.entityType === 'company' && payout.gstVerified !== false
         ? `<tr><td>GST Registered — No TDS Applicable${userDoc?.gstin ? `, GSTIN: ${escapeHtml(userDoc.gstin)}` : ''}</td><td style="text-align:right">₹0.00</td></tr>`
         : `<tr><td>TDS Deducted (10%)</td><td style="text-align:right">₹${payout.tdsAmount.toFixed(2)}</td></tr>`;
 

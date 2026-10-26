@@ -6,7 +6,7 @@
 import { PERCENT_KEYS, toPercentNumber } from './percentConfig';
 
 function isNum(v: any): v is number {
-    return typeof v === 'number' && !Number.isNaN(v);
+    return typeof v === 'number' && Number.isFinite(v);
 }
 
 // Fields that must never be negative wherever they appear (in `settings` or
@@ -231,7 +231,9 @@ export function validateFlatConfig(flat: Record<string, any>, current: Record<st
         const incoming = flat[key];
         if (!incoming || typeof incoming !== 'object') continue;
 
-        errors.push(...validateNumericRanges(key, incoming));
+        // Label by the block's strategy type (not the flat key) so type-keyed rules (quantity sentinel, BulkPcr) apply.
+        const label = typeof incoming.type === 'string' ? incoming.type : key;
+        errors.push(...validateNumericRanges(label, incoming));
 
         const prev = (current && current[key]) || {};
         for (const [targetField, stopField] of TARGET_STOPLOSS_PAIRS) {

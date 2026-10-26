@@ -181,7 +181,7 @@ export function calcRSIReversed(
 
 /**
  * Matches Python ema_crossover_trend() in indicators.py.
- * Slices to longPeriod, scans for first crossover event.
+ * Slices to longPeriod, scans (newest first) for the most recent crossover event.
  */
 export function calcEMACrossover(
     closes: number[],
@@ -194,8 +194,10 @@ export function calcEMACrossover(
     const shortEMA = seededEMA(prices, shortPeriod);
     const longEMA  = seededEMA(prices, longPeriod);
 
+    // Newest crossover wins: scanning from the oldest bar reported a stale cross even when the short EMA has since
+    // crossed back the other way.
     let trend = 'NEUTRAL';
-    for (let i = 1; i < prices.length; i++) {
+    for (let i = prices.length - 1; i >= 1; i--) {
         if (shortEMA[i - 1] <= longEMA[i - 1] && shortEMA[i] > longEMA[i]) {
             trend = 'UP';
             break;
