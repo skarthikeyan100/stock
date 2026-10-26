@@ -21,6 +21,14 @@ export function roundToTick(price: number, tick: number = NFO_TICK_SIZE): number
     return Math.round(Math.round(price / tick) * tick * 100) / 100;
 }
 
+// GTT stop leg limit sits this fraction below the trigger so the sell still fills on a gap-down
+// (a LIMIT at exactly the trigger can sit unfilled while price falls through it).
+export const GTT_STOP_LIMIT_BUFFER = 0.03;
+
+export function stopLimitPrice(stopTrigger: number): number {
+    return Math.max(NFO_TICK_SIZE, roundToTick(stopTrigger * (1 - GTT_STOP_LIMIT_BUFFER)));
+}
+
 class Kite {
     private static instance: Kite;
 
@@ -96,7 +104,12 @@ class Kite {
                     this.accessToken = data.access_token;
                     this.kc.setAccessToken(this.accessToken);
                     Log.log('Kite session loaded from file');
+                } else {
+                    this.accessToken = null; // file parsed but holds no token: drop the stale in-memory one
                 }
+            } else if (this.accessToken) {
+                Log.log('Kite session file is gone - clearing the in-memory token');
+                this.accessToken = null;
             }
         } catch (e) {
             Log.log('Failed to load Kite session:', e);
@@ -283,14 +296,14 @@ class Kite {
             if (o.tradingsymbol !== tradingSymbol) continue;
             const filled = Number(o.filled_quantity ?? 0);
             ordersNet += o.transaction_type === 'BUY' ? filled : -filled;
-            if (o.transaction_type === 'SELL' && (o.status === 'OPEN' || o.status === 'TRIGGER PENDING')) {
+            if (o.transaction_type === 'SELL' && !['COMPLETE', 'CANCELLED', 'REJECTED'].includes(String(o.status).toUpperCase())) {
                 openSells += Math.max(0, Number(o.quantity ?? 0) - filled);
             }
         }
         return Math.min(positionNet, ordersNet) - openSells;
     }
 
-    async placeLimitSellOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+    async placeLimitSellOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string; quantity: number; clamped: boolean }> {
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
         }
@@ -306,6 +319,7 @@ class Kite {
                 Log.log(`[Kite] ALERT: NEVER-SHORT GUARD refused a sell of ${quantity} ${tradingSymbol} - nothing sellable (sellable=${sellable}); the caller's position tracking is out of sync with the broker`);
                 throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${tradingSymbol} (sellable=${sellable}) - refusing to sell ${quantity}`);
             }
+            const requestedQuantity = quantity;
             if (quantity > sellable) {
                 Log.log(`[Kite] ALERT: NEVER-SHORT GUARD clamped a sell of ${tradingSymbol} from ${quantity} to ${sellable} - the caller's position tracking is out of sync with the broker`);
                 quantity = sellable;
@@ -321,7 +335,8 @@ class Kite {
                 price,
             });
             Log.log(`[Kite] Limit sell order placed: ${response.order_id}`);
-            return { orderId: response.order_id };
+            // quantity/clamped let callers see that less than requested was actually placed.
+            return { orderId: response.order_id, quantity, clamped: quantity < requestedQuantity };
         } finally {
             this.sellsInFlight.delete(tradingSymbol);
         }
@@ -337,13 +352,31 @@ class Kite {
         driftCheck?: { limitPrice: number; driftPoints: number; getLtp: () => Promise<number> }
     ): Promise<number> {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            const history = await this.kc.getOrderHistory(orderId);
-            const latest = history[history.length - 1];
+            // A transient history-fetch failure must not abort the wait: that would skip the
+            // timeout-cancel below and leave a live order resting, untracked.
+            let latest: any;
+            try {
+                const history = await this.kc.getOrderHistory(orderId);
+                latest = history[history.length - 1];
+            } catch (e) {
+                Log.log(`[Kite] getOrderHistory failed for order ${orderId} (attempt ${attempt + 1}/${maxAttempts}) - will retry:`, e);
+                await sleep(intervalMs);
+                continue;
+            }
 
             if (latest?.status === 'COMPLETE' && latest.average_price) {
                 return latest.average_price;
             }
             if (latest?.status === 'REJECTED' || latest?.status === 'CANCELLED') {
+                const filledQuantity = Number(latest.filled_quantity ?? 0);
+                if (filledQuantity > 0) {
+                    // Partially filled, then cancelled/rejected: that quantity is real at the broker.
+                    const averagePrice = Number(latest.average_price ?? 0);
+                    throw Object.assign(
+                        new Error(`Kite order ${orderId} ${latest.status} after a partial fill (${filledQuantity} @ ${averagePrice})`),
+                        { driftCancelled: true, filledQuantity, averagePrice }
+                    );
+                }
                 throw new Error(`Kite order ${orderId} ${latest.status}`);
             }
 
@@ -452,7 +485,7 @@ class Kite {
                 const averagePrice = Number(recheckLatest?.average_price ?? 0);
                 throw Object.assign(
                     new Error(`Kite order ${orderId} only partially filled within timeout (${filledQuantity} @ ${averagePrice}), remainder cancelled`),
-                    { timeoutPartial: true, filledQuantity, averagePrice }
+                    { timeoutPartial: true, driftCancelled: true, filledQuantity, averagePrice }
                 );
             }
         } catch (e: any) {
@@ -476,6 +509,8 @@ class Kite {
     ): Promise<number> {
         const targetPrice = roundToTick(entryPrice + targetPoints);
         const stopLossPrice = roundToTick(entryPrice - stopLossPoints);
+        lastPrice = roundToTick(lastPrice);
+        Kite.assertGttPrices(stopLossPrice, lastPrice, targetPrice);
 
         Log.log(`[Kite] Placing GTT OCO for ${tradingSymbol}: stopLoss=${stopLossPrice} target=${targetPrice}`);
 
@@ -486,13 +521,21 @@ class Kite {
             last_price: lastPrice,
             trigger_values: [stopLossPrice, targetPrice],
             orders: [
-                { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: stopLossPrice },
+                { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: stopLimitPrice(stopLossPrice) },
                 { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: targetPrice },
             ],
         });
 
         Log.log(`[Kite] GTT placed: trigger_id=${response.trigger_id}`);
         return response.trigger_id;
+    }
+
+    // Kite's two-leg GTT requires stop trigger < last price < target trigger (all on the tick grid);
+    // fail locally with a clear message instead of an opaque broker rejection.
+    private static assertGttPrices(stopLoss: number, last: number, target: number): void {
+        if (!(stopLoss > 0) || !(stopLoss < last) || !(last < target)) {
+            throw new Error(`Invalid GTT prices: need 0 < stopLoss < lastPrice < target (stopLoss=${stopLoss}, last=${last}, target=${target})`);
+        }
     }
 
     // Replaces an existing GTT's target/stop-loss (POST /prism/settarget's Kite
@@ -514,6 +557,8 @@ class Kite {
         // on modify as on initial placement.
         targetPrice = roundToTick(targetPrice);
         stopLossPrice = roundToTick(stopLossPrice);
+        lastPrice = roundToTick(lastPrice);
+        Kite.assertGttPrices(stopLossPrice, lastPrice, targetPrice);
         Log.log(`[Kite] Modifying GTT ${triggerId} for ${tradingSymbol}: stopLoss=${stopLossPrice} target=${targetPrice}`);
         await this.kc.modifyGTT(triggerId, {
             trigger_type: 'two-leg',
@@ -522,7 +567,7 @@ class Kite {
             last_price: lastPrice,
             trigger_values: [stopLossPrice, targetPrice],
             orders: [
-                { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: stopLossPrice },
+                { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: stopLimitPrice(stopLossPrice) },
                 { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: targetPrice },
             ],
         });
@@ -546,19 +591,26 @@ class Kite {
     // NOT call getSellableQuantity/sellsInFlight and never should - any caller reaching this
     // other than the butterflySellToOpen IPC case (orderProcess.ts) is a bug.
     async placeShortEntryOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+        this.assertBuysNotHalted();
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
         }
         Log.log(`[Kite] [BUTTERFLY SHORT-ENTRY] Placing NRML limit sell-to-open: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
-        const response = await this.kc.placeOrder('regular', {
-            exchange,
-            tradingsymbol: tradingSymbol,
-            transaction_type: 'SELL',
-            quantity,
-            product: 'NRML',
-            order_type: 'LIMIT',
-            price,
-        });
+        let response;
+        try {
+            response = await this.kc.placeOrder('regular', {
+                exchange,
+                tradingsymbol: tradingSymbol,
+                transaction_type: 'SELL',
+                quantity,
+                product: 'NRML',
+                order_type: 'LIMIT',
+                price,
+            });
+        } catch (e) {
+            this.haltBuysOnDebitBalance(e);
+            throw e;
+        }
         Log.log(`[Kite] [BUTTERFLY SHORT-ENTRY] Limit sell-to-open order placed: ${response.order_id}`);
         return { orderId: response.order_id };
     }

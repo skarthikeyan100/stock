@@ -1,6 +1,7 @@
 import Log from '../util/Log';
 import fs from 'fs';
 import readLine from 'readline';
+import path from 'path';
 
 
 class Config {
@@ -12,7 +13,7 @@ class Config {
     timeout = 7000
     heartbeat = 3000
     
-    NFOSymbolsPath = '/home/karthikeyan/work/icici/data/prism/NFO_symbols.txt'
+    NFOSymbolsPath = path.join(__dirname, '../../data/prism/NFO_symbols.txt')
     stocksPath = 'stocks.csv'
 
     startHour = 10
@@ -50,13 +51,22 @@ class Config {
 
       try {
           for await (const line of lineReader) {
-            if (line && !line.startsWith('#')) {
-              const values = line.split('=');
-              if (values[1] == 'true' || values[1] == 'false') {
-                this[values[0]] = values[1] === 'true'
-              } else {
-                this[values[0]] = values[1].trim()
-              }
+            const trimmed = line ? line.trim() : '';
+            if (!trimmed || trimmed.startsWith('#')) continue;
+            // Split on the FIRST '=' only (values may contain '='); a line without '=' is skipped,
+            // not fatal for the rest of the file.
+            const eq = trimmed.indexOf('=');
+            if (eq <= 0) continue;
+            const key = trimmed.slice(0, eq).trim();
+            const value = trimmed.slice(eq + 1).trim();
+            if (value === 'true' || value === 'false') {
+              this[key] = value === 'true';
+            } else if (value !== '' && Number.isFinite(Number(value))) {
+              this[key] = Number(value);
+            } else if (key === 'NFOSymbolsPath') {
+              this[key] = path.resolve(path.join(__dirname, '../..'), value);
+            } else {
+              this[key] = value;
             }
           }
       } catch (e) {

@@ -59,6 +59,8 @@ export type DrawdownState = 'ok' | 'breached' | 'unknown';
 
 export function drawdownDecision(pnl: number | null, investmentAmount: number, limitPercent: number): DrawdownState {
     if (pnl === null) return 'unknown';
+    // No investment base (0/NaN): a 0 threshold would call every flat day a breach.
+    if (!(investmentAmount > 0)) return 'unknown';
     return pnl <= -(investmentAmount * limitPercent) / 100 ? 'breached' : 'ok';
 }
 

@@ -110,6 +110,10 @@ class ANT {
                 if (data.userSession && this.isSessionStale(data.userSession)) {
                     Log.log('ANT session was issued on an earlier date - discarding, re-login required (/ant/login)');
                     fs.unlinkSync(this.sessionFile);
+                    // Also drop the in-memory copy: a reload on a long-lived process must not keep
+                    // using the expired token.
+                    this.userSession = null;
+                    this.userId = null;
                     return;
                 }
                 if (data.userSession) {
@@ -167,8 +171,6 @@ class ANT {
             Log.log('userId:', userId);
             Log.log('authCode:', authCode.substring(0, 20) + '...');
 
-            this.userId = userId;
-
             // Step 1: Compute checksum
             Log.log('\n--- Step 1: Computing checksum ---');
             const checksumInput = userId + authCode + this.apiSecret;
@@ -190,10 +192,13 @@ class ANT {
             Log.log('Response status:', tokenResp.status);
             Log.log('Response data: userSession', tokenResp.data?.userSession ? '(received)' : '(missing)', 'status', tokenResp.data?.stat ?? tokenResp.data?.status);
 
-            this.userSession = tokenResp.data?.userSession;
-            if (!this.userSession) {
+            const newSession = tokenResp.data?.userSession;
+            if (!newSession) {
+                // A failed exchange must leave the existing session/userId untouched.
                 throw new Error(`Failed to get userSession. Response: ${JSON.stringify(tokenResp.data)}`);
             }
+            this.userSession = newSession;
+            this.userId = userId;
 
             this.saveSession();
 
@@ -242,7 +247,8 @@ class ANT {
     async hasValidSession(): Promise<boolean> {
         if (!this.userSession) return false;
         try {
-            await this.getPositions();
+            // strict: a 200 carrying an error envelope (expired/invalid session) must not read as valid.
+            await this.getPositions({ strict: true });
             return true;
         } catch {
             return false;
@@ -323,6 +329,9 @@ class ANT {
             Log.log('ANT Positions response:', posResp.data?.status);
             if (posResp.data?.status === 'Ok' && posResp.data?.result) {
                 return posResp.data.result;
+            }
+            if (posResp.data?.status === 'EC926' && /No (positions|trades) found/i.test(String(posResp.data?.message ?? ''))) {
+                return []; // definitive "no positions" (mirrors the trade book's empty reply), not a failure
             }
             if (opts?.strict) {
                 throw new Error(`ANT positions not Ok: ${JSON.stringify(posResp.data).slice(0, 200)}`);
@@ -425,7 +434,9 @@ class ANT {
         const resp = await this.postOhlc(requests.map((r) => ({ exchange: r.exchange, token: r.token })));
         const map = new Map<string, number>();
         for (const row of resp.data?.result ?? []) {
-            if (row?.tk != null && row?.ltp != null) map.set(String(row.tk), Number(row.ltp));
+            // Same "no usable price" guard as getQuote: never hand back 0/NaN as a price.
+            const ltp = Number(row?.ltp);
+            if (row?.tk != null && ltp > 0) map.set(String(row.tk), ltp);
         }
         return map;
     }
@@ -465,7 +476,7 @@ class ANT {
     // instead of getQuote (see GapScreenerOptionQuoteEod.ts) - not used
     // during live market hours, where getQuote/getQuotes (used for BO limit
     // pricing and strike-range walks) are unaffected and already proven.
-    async getScripQuote(exchange: string, token: string): Promise<number> {
+    private async fetchScripDetails(exchange: string, token: string): Promise<any> {
         if (!this.userSession || !this.userId) {
             throw new Error('No active session. Please login first.');
         }
@@ -479,36 +490,29 @@ class ANT {
                 },
             }
         );
-        const ltp = resp.data?.LTP;
-        if (ltp == null) {
-            throw new Error(`ANT getScripQuote failed for ${exchange}|${token}: ${JSON.stringify(resp.data)}`);
+        return resp.data;
+    }
+
+    async getScripQuote(exchange: string, token: string): Promise<number> {
+        const data = await this.fetchScripDetails(exchange, token);
+        const ltp = Number(data?.LTP);
+        if (data?.LTP == null || !(ltp > 0)) {
+            throw new Error(`ANT getScripQuote failed for ${exchange}|${token}: ${JSON.stringify(data)}`);
         }
-        return Number(ltp);
+        return ltp;
     }
 
     // Live (uncached) ScripDetails quote with the best bid/ask, for pricing marketable limits. getQuote's OHLC
     // endpoint ran a minute or more behind on a fast expiry-day option (54 quoted vs a 65 ask on 2026-10-19),
     // so a limit priced off it never reached the ask. bid/ask are 0 when a side is empty or the market is closed.
     async getLiveQuote(exchange: string, token: string): Promise<{ ltp: number; bid: number; ask: number }> {
-        if (!this.userSession || !this.userId) {
-            throw new Error('No active session. Please login first.');
-        }
-        const resp = await axios.post(
-            'https://ant.aliceblueonline.com/rest/AliceBlueAPIService/api/ScripDetails/getScripQuoteDetails',
-            { exch: exchange, symbol: String(token) },
-            {
-                headers: {
-                    'X-SAS-Version': '2.0',
-                    Authorization: `Bearer ${this.userId.toUpperCase()} ${this.userSession}`,
-                },
-            }
-        );
-        const ltp = Number(resp.data?.LTP);
+        const data = await this.fetchScripDetails(exchange, token);
+        const ltp = Number(data?.LTP);
         if (!(ltp > 0)) {
-            throw new Error(`ANT getLiveQuote unusable LTP for ${exchange}|${token}: ${JSON.stringify(resp.data).slice(0, 200)}`);
+            throw new Error(`ANT getLiveQuote unusable LTP for ${exchange}|${token}: ${JSON.stringify(data).slice(0, 200)}`);
         }
-        const bid = Number(resp.data?.BRate);
-        const ask = Number(resp.data?.SRate);
+        const bid = Number(data?.BRate);
+        const ask = Number(data?.SRate);
         return { ltp, bid: bid > 0 ? bid : 0, ask: ask > 0 ? ask : 0 };
     }
 
@@ -591,6 +595,39 @@ class ANT {
     // response. Log the raw request/response on the first real call and
     // correct field names here if the broker rejects the shape.
 
+    // Single submission path for placeOrder/placeBracketOrder/placeCoverOrder. The order
+    // endpoint has no idempotency key, so a transport failure with NO HTTP response (e.g. the 15s
+    // timeout) is ambiguous: the broker may well have accepted the order. It is tagged
+    // `ambiguousPlacement` and must NOT be blindly retried by callers - verify against the
+    // order/trade book first. This method itself never retries a placement.
+    private async submitOrder(label: string, body: any[]): Promise<{ orderNo: string }> {
+        Log.log(`[ANT] ${label} request:`, JSON.stringify(body));
+        let resp;
+        try {
+            resp = await axios.post(
+                'https://a3.aliceblueonline.com/open-api/od/v1/orders/placeorder',
+                body,
+                { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
+            );
+        } catch (e: any) {
+            if (!e?.response) {
+                throw Object.assign(
+                    new Error(`ANT ${label} outcome UNKNOWN (no response: ${e?.message ?? e}) - the order may have been placed; verify before retrying`),
+                    { ambiguousPlacement: true }
+                );
+            }
+            throw e;
+        }
+        Log.log(`[ANT] ${label} response:`, JSON.stringify(resp.data));
+        // Confirmed live: the field is brokerOrderId, not orderNo (AliceBlue's
+        // own doc pages disagreed here too).
+        const orderNo = resp.data?.result?.[0]?.brokerOrderId;
+        if (!orderNo) {
+            throw new Error(`ANT ${label} failed: ${JSON.stringify(resp.data)}`);
+        }
+        return { orderNo };
+    }
+
     async placeOrder(params: {
         exchange: 'NFO' | 'BFO';
         instrumentId: string;
@@ -614,20 +651,7 @@ class ANT {
             validity: 'DAY',
             ...(params.marketProtectionPercent && !params.price ? { marketProtectionPercent: params.marketProtectionPercent } : {}),
         }];
-        Log.log('[ANT] placeOrder request:', JSON.stringify(body));
-        const resp = await axios.post(
-            'https://a3.aliceblueonline.com/open-api/od/v1/orders/placeorder',
-            body,
-            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
-        );
-        Log.log('[ANT] placeOrder response:', JSON.stringify(resp.data));
-        // Confirmed live: the field is brokerOrderId, not orderNo (AliceBlue's
-        // own doc pages disagreed here too).
-        const orderNo = resp.data?.result?.[0]?.brokerOrderId;
-        if (!orderNo) {
-            throw new Error(`ANT placeOrder failed: ${JSON.stringify(resp.data)}`);
-        }
-        return { orderNo };
+        return this.submitOrder('placeOrder', body);
     }
 
     // NOTE ON targetLegPrice/slLegPrice: unlike Kite's GTT (placed AFTER
@@ -665,20 +689,7 @@ class ANT {
             targetLegPrice: params.targetPoints,
             slLegPrice: params.stopLossPoints,
         }];
-        Log.log('[ANT] placeBracketOrder request:', JSON.stringify(body));
-        const resp = await axios.post(
-            'https://a3.aliceblueonline.com/open-api/od/v1/orders/placeorder',
-            body,
-            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
-        );
-        Log.log('[ANT] placeBracketOrder response:', JSON.stringify(resp.data));
-        // Confirmed live: the field is brokerOrderId, not orderNo (AliceBlue's
-        // own doc pages disagreed here too).
-        const orderNo = resp.data?.result?.[0]?.brokerOrderId;
-        if (!orderNo) {
-            throw new Error(`ANT placeBracketOrder failed: ${JSON.stringify(resp.data)}`);
-        }
-        return { orderNo };
+        return this.submitOrder('placeBracketOrder', body);
     }
 
     // Same unverified-against-a-live-response caveat as placeBracketOrder
@@ -708,18 +719,7 @@ class ANT {
             validity: 'DAY',
             slLegPrice: params.stopLossPoints,
         }];
-        Log.log('[ANT] placeCoverOrder request:', JSON.stringify(body));
-        const resp = await axios.post(
-            'https://a3.aliceblueonline.com/open-api/od/v1/orders/placeorder',
-            body,
-            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
-        );
-        Log.log('[ANT] placeCoverOrder response:', JSON.stringify(resp.data));
-        const orderNo = resp.data?.result?.[0]?.brokerOrderId;
-        if (!orderNo) {
-            throw new Error(`ANT placeCoverOrder failed: ${JSON.stringify(resp.data)}`);
-        }
-        return { orderNo };
+        return this.submitOrder('placeCoverOrder', body);
     }
 
     // Closes BOTH legs of a live BO/CO position - distinct from cancelOrder,
@@ -811,7 +811,13 @@ class ANT {
             }
             const rejected = records.find((r) => ANT.isTerminalRejectOrCancel(r.orderStatus));
             if (rejected) {
-                throw new Error(`ANT order ${orderNo} ${rejected.orderStatus}: ${JSON.stringify(rejected)}`);
+                // Carry what filled before the cancel/reject so a caller can book a partial fill.
+                const filledQuantity = Math.max(0, ...records.map((r) => Number(r.filledQuantity ?? 0) || 0));
+                const averagePrice = Number(rejected.averageTradedPrice ?? rejected.averagePrice ?? rejected.avgPrice ?? 0) || 0;
+                throw Object.assign(
+                    new Error(`ANT order ${orderNo} ${rejected.orderStatus}: ${JSON.stringify(rejected)}`),
+                    { filledQuantity, averagePrice }
+                );
             }
             if (!isLast) await sleep(intervalMs);
         }
@@ -936,9 +942,12 @@ class ANT {
             // transient broker hiccup apart from a rejection that will never succeed by retrying
             // unchanged (e.g. the position no longer exists to cover a sell against).
             const rejectReason = rejected.rejreason || rejected.remarks || undefined;
-            return { status: ANT.canonicalStatus(rejected.orderStatus), filledQuantity: Number(rejected.filledQuantity ?? 0), rejectReason };
+            const filledQuantity = Math.max(0, ...records.map((r) => Number(r.filledQuantity ?? 0) || 0));
+            return { status: ANT.canonicalStatus(rejected.orderStatus), filledQuantity, rejectReason };
         }
-        return { status: 'PENDING', filledQuantity: 0 };
+        // Still open: report any partial fill so far instead of a hard 0.
+        const partialFilled = Math.max(0, ...records.map((r) => Number(r.filledQuantity ?? 0) || 0));
+        return { status: 'PENDING', filledQuantity: partialFilled };
     }
 }
 

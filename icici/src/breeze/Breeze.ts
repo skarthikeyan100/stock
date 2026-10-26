@@ -42,6 +42,15 @@ axios.interceptors.response.use(
     }
 );
 
+// Terminal verdicts from getFillPrice's poll loop, tagged so they are never confused with a
+// transient poll error (message-regex classification missed e.g. 'Order Rejected'/'Expired').
+class BreezeTerminalOrderError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'BreezeTerminalOrderError';
+    }
+}
+
 class Breeze {
     private static instance: Breeze;
 
@@ -90,12 +99,15 @@ class Breeze {
     //     back, never as a throw.
     private async callSdk<T>(methodName: string, fn: () => Promise<T>): Promise<any> {
         let result: any;
+        // Reset so a diagnostic captured by an EARLIER failed call is never attributed to this one.
+        lastBreezeHttpError = null;
         try {
             result = await fn();
         } catch (e) {
-            const captured = lastBreezeHttpError;
+            const captured = lastBreezeHttpError as { url?: string; status?: number; data?: any } | null;
+            lastBreezeHttpError = null;
             const message = captured?.data?.Error ?? (captured?.data ? JSON.stringify(captured.data) : undefined);
-            throw new Error(`Breeze ${methodName} failed: ${message ?? 'breezeconnect SDK threw with no recoverable diagnostic'}`);
+            throw new Error(`Breeze ${methodName} failed: ${message ?? (e instanceof Error ? e.message : undefined) ?? 'breezeconnect SDK threw with no recoverable diagnostic'}`);
         }
         if (result?.Error || (result?.Status && result.Status !== 200)) {
             throw new Error(`Breeze ${methodName} failed: ${result.Error ?? `unexpected status ${result.Status}`}`);
@@ -151,8 +163,10 @@ class Breeze {
     // Distinguished by shape: an order notification (parseData's order_dict
     // branch) always carries `orderStatus`; a price tick (parseData's
     // dataDict branch) never does.
-    private quoteListeners: ((tick: any) => void)[] = [];
-    private orderNotifyListeners: ((notification: any) => void)[] = [];
+    // Sets, not arrays: registering the same callback twice (e.g. a stream re-running connect())
+    // must not deliver every tick/fill twice.
+    private quoteListeners = new Set<(tick: any) => void>();
+    private orderNotifyListeners = new Set<(notification: any) => void>();
     private wsDispatcherInstalled = false;
 
     private installWsDispatcher(): void {
@@ -169,24 +183,39 @@ class Breeze {
 
     onQuote(callback: (tick: any) => void): void {
         this.installWsDispatcher();
-        this.quoteListeners.push(callback);
+        this.quoteListeners.add(callback);
     }
 
     onOrderNotification(callback: (notification: any) => void): void {
         this.installWsDispatcher();
-        this.orderNotifyListeners.push(callback);
+        this.orderNotifyListeners.add(callback);
     }
 
     // wsConnect/wsDisconnect are synchronous, fire-and-forget per the SDK
     // (socket.io connect/disconnect - no REST round-trip, so callSdk's
     // envelope handling doesn't apply here).
-    wsConnect(): void {
+    // The SDK owns ONE socket shared by price ticks and order notifications, so connect/disconnect
+    // is ref-counted by owner: one consumer disconnecting must not kill the other's feed.
+    private wsOwners = new Set<string>();
+    private wsSocketOpen = false;
+
+    wsConnect(owner = 'default'): void {
         this.installWsDispatcher();
-        this.breeze.wsConnect();
+        this.wsOwners.add(owner);
+        if (!this.wsSocketOpen) {
+            this.breeze.wsConnect();
+            this.wsSocketOpen = true;
+        }
+        this.attachSocketHooks();
     }
 
-    wsDisconnect(): void {
-        this.breeze.wsDisconnect();
+    wsDisconnect(owner = 'default'): void {
+        this.wsOwners.delete(owner);
+        if (this.wsOwners.size > 0) return; // someone else still needs the socket
+        if (this.wsSocketOpen) {
+            this.breeze.wsDisconnect();
+            this.wsSocketOpen = false;
+        }
     }
 
     // Raw socket.io lifecycle hooks - `this.breeze.socket` is a plain public
@@ -198,16 +227,36 @@ class Breeze {
     // network blip would silently and permanently stop ticks for every open
     // Breeze leg. Also used to catch the very first 'connect' (BreezeDataStream
     // subscribes only after this fires).
+    // Callbacks are stored and attached whenever a socket exists (now, or once wsConnect() creates
+    // it), so registering before the socket exists no longer silently drops the hook.
+    private socketHooks: { event: string; cb: (...a: any[]) => void; attachedTo: Set<any> }[] = [];
+
+    private addSocketHook(event: string, cb: (...a: any[]) => void): void {
+        if (this.socketHooks.some((h) => h.event === event && h.cb === cb)) return;
+        this.socketHooks.push({ event, cb, attachedTo: new Set() });
+        this.attachSocketHooks();
+    }
+
+    private attachSocketHooks(): void {
+        const sock = this.breeze.socket;
+        if (!sock) return;
+        for (const h of this.socketHooks) {
+            if (h.attachedTo.has(sock)) continue;
+            sock.on(h.event, h.cb);
+            h.attachedTo.add(sock);
+        }
+    }
+
     onSocketConnect(callback: () => void): void {
-        this.breeze.socket?.on('connect', callback);
+        this.addSocketHook('connect', callback);
     }
 
     onSocketDisconnect(callback: (reason: any) => void): void {
-        this.breeze.socket?.on('disconnect', callback);
+        this.addSocketHook('disconnect', callback);
     }
 
     onSocketError(callback: (err: any) => void): void {
-        this.breeze.socket?.on('connect_error', callback);
+        this.addSocketHook('connect_error', callback);
     }
 
     // stockToken form ("4.1!<token>") or the structured
@@ -289,9 +338,18 @@ class Breeze {
     // safe since nothing here uses the SDK's stock-code lookup tables.
     async generateSession(apiSession: string): Promise<void> {
         Log.log('[Breeze] Generating session...');
+        const prevSessionKey = this.breeze.sessionKey;
+        const prevSecretKey = this.breeze.secretKey;
         this.breeze.sessionKey = apiSession;
         this.breeze.secretKey = this.appSecret;
-        await this.callSdk('generateSession', () => this.breeze.apiUtil());
+        try {
+            await this.callSdk('generateSession', () => this.breeze.apiUtil());
+        } catch (e) {
+            // Don't leave the SDK holding a rejected session's keys (would poison later calls).
+            this.breeze.sessionKey = prevSessionKey;
+            this.breeze.secretKey = prevSecretKey;
+            throw e;
+        }
         this.apiSession = apiSession;
         this.saveSession();
         Log.log('[Breeze] Session generated and saved');
@@ -380,7 +438,10 @@ class Breeze {
         }
         Log.log(`[Breeze] Placing ${params.action} ${params.orderType} order: ${params.stockCode} qty=${params.quantity}`);
         const response = await this.callSdk('placeOrder', () => this.breeze.placeOrder(params));
-        const orderId = response.Success.order_id;
+        const orderId = response?.Success?.order_id;
+        if (!orderId) {
+            throw new Error(`Breeze placeOrder returned no order_id: ${JSON.stringify(response)}`);
+        }
         Log.log(`[Breeze] Order placed: ${orderId}`);
         return { orderId };
     }
@@ -406,7 +467,11 @@ class Breeze {
         }
         Log.log(`[Breeze] Squaring off: ${params.stockCode} qty=${params.quantity}`);
         const response = await this.callSdk('squareOff', () => this.breeze.squareOff(params));
-        return { orderId: response.Success.order_id };
+        const orderId = response?.Success?.order_id;
+        if (!orderId) {
+            throw new Error(`Breeze squareOff returned no order_id: ${JSON.stringify(response)}`);
+        }
+        return { orderId };
     }
 
     async cancelOrder(exchangeCode: string, orderId: string): Promise<void> {
@@ -421,6 +486,15 @@ class Breeze {
             const body = { exchange_code: exchangeCode, order_id: orderId };
             const headers = this.breeze.generateHeaders(body);
             const res = await axios.create().delete(`${BREEZE_API_URL}order`, { data: body, headers, validateStatus: () => true });
+            // An HTTP failure must not be mistaken for a successful cancel (callSdk only inspects the
+            // envelope, and a non-JSON / empty error body has neither Error nor Status).
+            if (res.status < 200 || res.status >= 300) {
+                const detail = typeof res.data === 'string' ? res.data.slice(0, 200) : JSON.stringify(res.data);
+                throw new Error(`HTTP ${res.status}: ${detail}`);
+            }
+            if (!res.data || typeof res.data !== 'object') {
+                throw new Error(`unexpected cancel response: ${String(res.data).slice(0, 200)}`);
+            }
             return res.data;
         });
     }
@@ -503,47 +577,74 @@ class Breeze {
     // double-cancel-and-recheck round trip and the confusing log sequence
     // that produces.
     async getFillPrice(exchangeCode: string, orderId: string, maxAttempts = 12, intervalMs = 5000, cancelOnTimeout = true): Promise<number> {
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const readRecord = async () => {
             const result = await this.getOrderDetail(exchangeCode, orderId);
-            const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
+            return Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
+        };
+        // 'full' = whole quantity filled, 'partial' = some filled then the rest cancelled/rejected.
+        const classify = (record: any): { kind: 'full'; price: number } | { kind: 'partial'; price: number; filled: number } | { kind: 'dead' } | { kind: 'open' } => {
             const price = Number(record?.average_price);
-            if (price > 0 && Number(record?.pending_quantity ?? 0) === 0) {
-                return price;
+            const pending = Number(record?.pending_quantity ?? 0);
+            const cancelled = Number(record?.cancelled_quantity ?? 0);
+            const qty = Number(record?.quantity ?? 0);
+            if (price > 0 && pending === 0 && !(cancelled > 0)) return { kind: 'full', price };
+            if (price > 0 && pending === 0 && cancelled > 0) {
+                return { kind: 'partial', price, filled: Math.max(0, qty - cancelled) };
             }
-            if (record?.status && /rejected|cancelled/i.test(String(record.status))) {
-                throw new Error(`Breeze order ${orderId} ${record.status}`);
+            if (record?.status && /reject|cancel|expire/i.test(String(record.status))) {
+                return price > 0 ? { kind: 'partial', price, filled: Math.max(0, qty - cancelled) } : { kind: 'dead' };
+            }
+            return { kind: 'open' };
+        };
+        const partialError = (c: { price: number; filled: number }) =>
+            new BreezeTerminalOrderError(`Breeze order ${orderId} only partially filled (filled=${c.filled} @ ${c.price}) before the remainder was cancelled`);
+
+        let lastError: unknown = null;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            try {
+                const record = await readRecord();
+                const c = classify(record);
+                if (c.kind === 'full') return c.price;
+                if (c.kind === 'partial') throw partialError(c);
+                if (c.kind === 'dead') throw new BreezeTerminalOrderError(`Breeze order ${orderId} ${record.status}`);
+            } catch (e: any) {
+                // Terminal verdicts propagate; a transient poll error just burns one attempt - it
+                // must NOT skip the timeout cancel below and leave the order resting at the broker.
+                if (e instanceof BreezeTerminalOrderError) throw e;
+                lastError = e;
+                Log.log(`[Breeze] getFillPrice poll error for ${orderId} (attempt ${attempt + 1}/${maxAttempts}):`, e);
             }
             await sleep(intervalMs);
         }
         // Give up waiting - but an order left resting at the broker after we
         // stop watching it is an orphan, same risk Kite.getFillPrice's own
-        // timeout branch guards against. Best-effort - if this fails (already
-        // filled/cancelled in the interim), the timeout error below still
-        // surfaces either way.
+        // timeout branch guards against.
         if (cancelOnTimeout) {
+            let cancelFailed: unknown = null;
             try {
                 await this.cancelOrder(exchangeCode, orderId);
                 Log.log(`[Breeze] Cancelled unfilled/partially-filled order ${orderId} after fill-price timeout`);
             } catch (e) {
-                // A cancel can fail specifically BECAUSE the order just fully
-                // filled in this exact race window (last poll saw it still
-                // open, then it completed before this cancel call landed) -
-                // confirmed via code review: unconditionally throwing "did
-                // not fill" afterward would silently drop a real, live,
-                // paid-for fill from bookkeeping (money spent, no tracked
-                // position, no target/SL) instead of surfacing it. One more
-                // check before giving up.
+                cancelFailed = e;
                 Log.log(`[Breeze] Failed to cancel order ${orderId} after fill-price timeout - re-checking status:`, e);
-                const recheck = await this.getOrderDetail(exchangeCode, orderId);
-                const recheckRecord = Array.isArray(recheck?.Success) ? recheck.Success[0] : recheck?.Success;
-                const recheckPrice = Number(recheckRecord?.average_price);
-                if (recheckPrice > 0 && Number(recheckRecord?.pending_quantity ?? 0) === 0) {
-                    Log.log(`[Breeze] Order ${orderId} actually filled fully at ${recheckPrice} during the timeout-cancel race - using it instead of discarding it`);
-                    return recheckPrice;
-                }
             }
+            // Re-check in BOTH cases: a failed cancel may mean it just fully filled; a successful
+            // cancel may have left a partial fill behind (cancelled_quantity > 0) that must not be
+            // reported as either a full fill or as nothing.
+            try {
+                const c = classify(await readRecord());
+                if (c.kind === 'full') {
+                    Log.log(`[Breeze] Order ${orderId} actually filled fully at ${c.price} during the timeout-cancel race - using it instead of discarding it`);
+                    return c.price;
+                }
+                if (c.kind === 'partial') throw partialError(c);
+            } catch (e: any) {
+                if (e instanceof BreezeTerminalOrderError) throw e;
+                Log.log(`[Breeze] Post-timeout re-check of ${orderId} failed:`, e);
+            }
+            if (cancelFailed) lastError = lastError ?? cancelFailed;
         }
-        throw new Error(`Breeze order ${orderId} did not fill within timeout`);
+        throw new Error(`Breeze order ${orderId} did not fill within timeout${lastError ? ` (last error: ${(lastError as any)?.message ?? lastError})` : ''}`);
     }
 }
 

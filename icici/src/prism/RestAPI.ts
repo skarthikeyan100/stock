@@ -17,6 +17,27 @@ import { MOCK_BROKER, MOCK_QUOTES } from '../constants';
 // different working directories (see src/orchestrator.ts's explicit cwd fix).
 const TOKEN_FILE = path.join(__dirname, '../../userToken.txt');
 
+// Strips secrets (tokens, passwords, checksums, OTP/PAN) out of anything that gets logged.
+// Only log output is redacted - the credentials themselves are untouched.
+const SENSITIVE_KEYS = /^(susertoken|access_token|accesstoken|token|pwd|passwd|password|checksum|appkey|factor2|pan|authorization|apikey|secret.*)$/i;
+function redact(value: any, depth = 0): any {
+  if (value === null || value === undefined || depth > 6) return value;
+  if (typeof value === 'string') {
+    // jData=<json> request bodies
+    if (value.startsWith('jData=')) {
+      try { return 'jData=' + JSON.stringify(redact(JSON.parse(value.slice(6)), depth + 1)); } catch { return 'jData=<unparseable>'; }
+    }
+    return value;
+  }
+  if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1));
+  if (typeof value === 'object') {
+    const out: any = {};
+    for (const [k, v] of Object.entries(value)) out[k] = SENSITIVE_KEYS.test(k) ? '<redacted>' : redact(v, depth + 1);
+    return out;
+  }
+  return value;
+}
+
 class NorenRestApi {
 
 
@@ -33,6 +54,7 @@ class NorenRestApi {
   userToken = '';   // susertoken — used as Bearer token for REST and WebSocket auth
   accessToken = ''; // alias kept for clarity; same value as userToken after login
   websocket: WS;
+  private wsStarting = false;
 
 
   private routes = {
@@ -78,25 +100,22 @@ class NorenRestApi {
     // everyone else that can't.
     axios.interceptors.request.use(req => {
       if (!req.url?.startsWith(this.endpoint)) return req;
-      console.log(`[REQ] ${req.method?.toUpperCase()} ${req.url}`, req.data);
+      console.log(`[REQ] ${req.method?.toUpperCase()} ${req.url}`, redact(req.data));
       return req;
     });
 
     axios.interceptors.response.use(response => {
       if (!response.config.url?.startsWith(this.endpoint)) return response;
-      console.log(`[RES] ${response.status} ${response.config.url}`, response.data);
-      if (response.status === 200) {
-        if (response.data.success || response.data.status) {
-          return response.data;
-        } else {
-          return response.data;
-        }
-      }
+      console.log(`[RES] ${response.status} ${response.config.url}`, redact(response.data));
+      // Unwrap to the body for every (2xx) response; callers inspect `stat`/`norenordno` themselves.
+      return response.data;
     }, error => {
       if (!error.config?.url?.startsWith(this.endpoint)) return Promise.reject(error);
-      console.log(`[ERR] ${error.config?.url}`, error.response?.data ?? error.message);
-      Log.log(error)
-      // ... rest of error handling
+      console.log(`[ERR] ${error.config?.url}`, redact(error.response?.data) ?? error.message);
+      Log.log(`Prism request failed: ${error.message}`);
+      // Propagate the failure. Swallowing it here used to resolve the call with `undefined`, which
+      // callers then booked as a successful order placement/cancel.
+      return Promise.reject(error);
     });
     
 
@@ -125,8 +144,9 @@ class NorenRestApi {
 
   setUserToken = async (token) => {
     const { writeFile } = require('fs/promises')
-    Log.log('Writing token ', token)
-    await writeFile(TOKEN_FILE, token);
+    Log.log('Writing Shoonya access token to userToken.txt');
+    await writeFile(TOKEN_FILE, token, { mode: 0o600 });
+    try { require('fs').chmodSync(TOKEN_FILE, 0o600); } catch { /* best effort for pre-existing file */ }
   }
 
   post_request = async (route, params) => {
@@ -183,7 +203,7 @@ class NorenRestApi {
 
     try {
       const auth_data: any = await this.post_request('gen_acs_tok', authparams);
-      Log.log('GenAcsTok Auth Data: ', auth_data);
+      Log.log('GenAcsTok Auth Data: ', redact(auth_data));
       this.userToken = auth_data.susertoken;
       this.accessToken = auth_data.access_token || this.userToken;
       this.userId = auth_data.actid || auth_data.USERID || this.userId;
@@ -219,7 +239,7 @@ class NorenRestApi {
 
     try {
       const auth_data: any = await this.post_request('authorize', authparams);
-      Log.log('Auth Data: ', auth_data);
+      Log.log('Auth Data: ', redact(auth_data));
       this.userToken = auth_data.susertoken;
       this.accessToken = this.userToken;
       this.userId = auth_data.actid || this.userId;
@@ -397,12 +417,12 @@ class NorenRestApi {
 
     let values = { 'ordersource': 'API' };
     values["uid"] = this.userId;
-    values["actid"] = this.accountid;
+    values["actid"] = this.userId;
     values["norenordno"] = modifyparams.orderno;
-    values["exch"] = 'NFO';
+    values["exch"] = modifyparams.exch ?? 'NFO';
     values["tsym"] = modifyparams.tsym;
     values["qty"] = modifyparams.quantity.toString();
-    values["prctyp"] = 'LMT';
+    values["prctyp"] = modifyparams.prctyp ?? 'LMT';
     values["prc"] = modifyparams.price.toString();
 
     // if ((modifyparams.newprice_type == 'SL-LMT') || (modifyparams.newprice_type == 'SL-MKT')) {
@@ -476,8 +496,9 @@ class NorenRestApi {
     let values = {};
     values["uid"] = this.userId;
 
-    let reply = this.post_request("orderbook", values);
-    return reply;
+    let reply = await this.post_request("orderbook", values);
+    // Shoonya answers an empty book with an object ({stat:'Not_Ok', emsg:'no data'}), not [].
+    return Array.isArray(reply) ? reply : [];
   };
   /**
        * Description
@@ -507,7 +528,7 @@ class NorenRestApi {
 
     let values = {};
     values["uid"] = this.userId;
-    values["actid"] = this.accountid;
+    values["actid"] = this.userId;
     values["prd"] = product_type;
 
     let reply = this.post_request("holdings", values);
@@ -541,7 +562,7 @@ class NorenRestApi {
 
     let values = {};
     values["uid"] = this.userId;
-    values["actid"] = this.accountid;
+    values["actid"] = this.userId;
 
     if (product_type != '') {
       values["prd"] = product_type
@@ -576,10 +597,18 @@ class NorenRestApi {
       // Option A: real WS continues below but mock callbacks are stored
     }
 
-    if (!this.websocket) {
+    // Always build a fresh client: a previous (closed) socket or an old token must not be reused
+    // (socket_close -> reconnect used to be a no-op because `this.websocket` was already set).
+    if (this.wsStarting) return;
+    this.wsStarting = true;
+    try {
       const userToken = await this.getUserToken();
+      const old = this.websocket;
+      this.websocket = undefined as any;
+      try { old?.close(); } catch { /* already closed */ }
 
-      this.websocket = new WS({ 'url': Config.websocket, 'apikey': userToken});
+      const client = new WS({ 'url': Config.websocket, 'apikey': userToken});
+      this.websocket = client;
 
       let params = {
         'uid': this.userId,
@@ -587,11 +616,13 @@ class NorenRestApi {
         'apikey': userToken,
       }
 
-      this.websocket.connect(params, callbacks)
+      client.connect(params, callbacks)
         .then(() => {
           Log.log('ws is connected');
-        });
-
+        })
+        .catch((e) => Log.log('ws connect failed:', e?.message ?? e));
+    } finally {
+      this.wsStarting = false;
     }
 
   };

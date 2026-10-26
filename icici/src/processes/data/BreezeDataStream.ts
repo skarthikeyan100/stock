@@ -37,6 +37,14 @@ class BreezeDataStream implements DataStream {
         return BreezeDataStream.instance;
     }
 
+    private onTick = (tick: any) => this.emitTick(tick);
+    private onSocketConnected = () => {
+        Log.log('[BreezeDataStream] socket connected, (re)subscribing to', this.dynamicOptionTokens.size, 'token(s)');
+        for (const token of this.dynamicOptionTokens) this.sendSubscribe(token);
+    };
+    private onSocketDisconnected = (reason: any) => Log.log('[BreezeDataStream] socket disconnected:', reason);
+    private onSocketErr = (e: any) => Log.log('[BreezeDataStream] socket connect_error:', e?.message ?? e);
+
     async connect(): Promise<void> {
         if (this.connected) {
             Log.log('[BreezeDataStream] Already connected');
@@ -49,15 +57,16 @@ class BreezeDataStream implements DataStream {
             throw new Error('Breeze session not available. Complete OAuth login first (/breeze/login).');
         }
 
-        breeze.onQuote((tick) => this.emitTick(tick));
-        breeze.onSocketConnect(() => {
-            Log.log('[BreezeDataStream] socket connected, (re)subscribing to', this.dynamicOptionTokens.size, 'token(s)');
-            for (const token of this.dynamicOptionTokens) this.sendSubscribe(token);
-        });
-        breeze.onSocketDisconnect((reason) => Log.log('[BreezeDataStream] socket disconnected:', reason));
-        breeze.onSocketError((e) => Log.log('[BreezeDataStream] socket connect_error:', e?.message ?? e));
+        // Stable handlers (deduped by identity in Breeze) - registering fresh closures on every
+        // connect() duplicated every tick/resubscribe. The socket hooks are stored by Breeze and
+        // attached as soon as wsConnect() creates the socket, so they are not lost by registering
+        // before the socket exists.
+        breeze.onQuote(this.onTick);
+        breeze.onSocketConnect(this.onSocketConnected);
+        breeze.onSocketDisconnect(this.onSocketDisconnected);
+        breeze.onSocketError(this.onSocketErr);
 
-        breeze.wsConnect();
+        breeze.wsConnect('BreezeDataStream');
         this.connected = true;
         Log.log('[BreezeDataStream] Connected and streaming');
         this.startStallWatchdog();
@@ -205,7 +214,7 @@ class BreezeDataStream implements DataStream {
     }
 
     disconnect(): void {
-        Breeze.getInstance().wsDisconnect();
+        Breeze.getInstance().wsDisconnect('BreezeDataStream');
         this.connected = false;
         if (this.watchdogTimer) {
             clearInterval(this.watchdogTimer);

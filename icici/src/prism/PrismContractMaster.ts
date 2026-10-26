@@ -72,7 +72,9 @@ class PrismContractMaster {
     // is used, per src/processes/order/prismExecutor.ts.
     findNearestExpiryOption(symbol: string, strike: number, optionType: 'CE' | 'PE', expiryOffset = 0): { token: string; tradingSymbol: string } {
         const rows = this.load();
-        const now = Date.now();
+        // Start of today: a contract expiring TODAY is still tradable all day (Date.parse gives
+        // midnight, which is < now for the whole expiry day).
+        const now = new Date().setHours(0, 0, 0, 0);
 
         const candidates = rows
             .filter((r) => r.symbol === symbol && r.strike === strike && r.optionType === optionType && Date.parse(r.expiry) >= now)

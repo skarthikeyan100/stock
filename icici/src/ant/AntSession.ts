@@ -1,12 +1,12 @@
 import axiosModule from 'axios';
 import { createHash } from 'crypto';
 import Log from '../util/Log';
-import ANT from './ANT';
+import ANT, { ANT_HTTP_TIMEOUT_MS } from './ANT';
 
 // Separate instance to avoid the global axios response interceptor registered
 // by src/prism/RestAPI.ts (Shoonya), which unwraps response.data and returns
 // it in place of the full AxiosResponse - see ANT.ts for the same workaround.
-const axios = axiosModule.create({ timeout: 15000 });
+const axios = axiosModule.create({ timeout: ANT_HTTP_TIMEOUT_MS });
 
 class AntSession {
   private static instance: AntSession;

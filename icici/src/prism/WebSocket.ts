@@ -1,14 +1,6 @@
 import Log from '../util/Log';
 let web_socket = require("ws");
 
-let triggers = {
-    "open": [],
-    "quote": [],
-    "order": [],
-    "close": []
-
-};
-
 let API = require("./config").default;
 
 
@@ -18,6 +10,17 @@ class WebSocketClient {
     private apikey;
     private url;
     private timeout;
+    private heartbeat: NodeJS.Timeout | null = null;
+    private disposed = false;
+    // Per-instance (was a module-level global): a second client would otherwise inherit and
+    // double-fire every callback registered by the first.
+    private triggers: Record<string, ((...a: any[]) => void)[]> = {
+        "open": [],
+        "quote": [],
+        "order": [],
+        "close": [],
+        "error": [],
+    };
     constructor(cred) {
         this.apikey = cred.apikey;
         this.url = cred.url
@@ -34,10 +37,13 @@ class WebSocketClient {
 
             this.ws = new web_socket(this.url, undefined, { rejectUnauthorized: false });
 
+            const ws = this.ws;
             this.ws.onopen = (evt) => {
-                setInterval(() =>  {
+                if (this.heartbeat) clearInterval(this.heartbeat);
+                this.heartbeat = setInterval(() =>  {
+                    if (ws.readyState !== 1) return;
                     var _hb_req = '{"t":"h"}';
-                    this.ws.send(_hb_req);
+                    try { ws.send(_hb_req); } catch (e) { Log.log('Prism WS heartbeat send failed:', e); }
                 }, this.timeout);
 
                 //prepare the data
@@ -53,32 +59,39 @@ class WebSocketClient {
 
             };
             this.ws.onmessage = (evt) => {
-                var result = JSON.parse(evt.data);
+                let result;
+                try {
+                    result = JSON.parse(evt.data);
+                } catch (e) {
+                    Log.log('Prism WS: unparseable message ignored');
+                    return;
+                }
                 // Log.log('Result from socket: ', result);
 
                 if (result.t == 'ck' || result.t == 'ak') {
-                    trigger("open", [result]);
+                    this.trigger("open", [result]);
                 }
                 if (result.t == 'tk' || result.t == 'tf') {
-                    trigger("quote", [result]);
+                    this.trigger("quote", [result]);
                 }
                 if (result.t == 'dk' || result.t == 'df') {
-                    trigger("quote", [result]);
+                    this.trigger("quote", [result]);
                 }
                 if (result.t == 'om') {
-                    trigger("order", [result]);
+                    this.trigger("order", [result]);
                 }
 
             };
             this.ws.onerror = (evt) => {
                 Log.log("error::", evt)
-                trigger("error", [JSON.stringify(evt.data)]);
-                this.ws.connect();
+                this.trigger("error", [JSON.stringify(evt.data)]);
+                // The 'close' event that follows drives reconnection (via socket_close); ws has no connect().
                 reject(evt)
             };
             this.ws.onclose =  (evt) => {
                 Log.log("Socket closed")
-                trigger("close", [JSON.stringify(evt.data)]);
+                if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+                this.trigger("close", [JSON.stringify(evt.data)]);
             };
         })
     }
@@ -106,24 +119,31 @@ class WebSocketClient {
     };
 
     on = (e, callback) => {
-        if (triggers.hasOwnProperty(e)) {
-            triggers[e].push(callback);
+        if (this.triggers.hasOwnProperty(e)) {
+            this.triggers[e].push(callback);
         }
     };
 
 
     close = () => {
-        this.ws.close()
+        // Retired deliberately: suppress its close event so it can't trigger a reconnect.
+        this.disposed = true;
+        if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+        this.ws?.close()
+    }
+
+    // trigger event callbacks; one throwing callback must not break the rest or the socket.
+    private trigger(e, args) {
+        if (this.disposed || !this.triggers[e]) return
+        for (const cb of [...this.triggers[e]]) {
+            try {
+                cb.apply(cb, args ? args : []);
+            } catch (err) {
+                Log.log(`Prism WS '${e}' callback threw:`, err);
+            }
+        }
     }
 }
 
-
-// trigger event callbacks
-function trigger(e, args) {
-    if (!triggers[e]) return
-    for (var n = 0; n < triggers[e].length; n++) {
-        triggers[e][n].apply(triggers[e][n], args ? args : []);
-    }
-}
 
 export default WebSocketClient;

@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import Log from '../util/Log';
 
 type Index = 'NIFTY' | 'SENSEX';
@@ -55,26 +55,50 @@ class KiteContractMaster {
     // 27-Oct monthly while the strike was priced on ANT's 19-Oct expiry. If the file was not written today, download
     // it again before loading (public endpoint, no auth). Written to a temp file and renamed, so a process reading
     // it concurrently never sees a half-written file. Any failure keeps the existing file.
-    private refreshIfStale(exchange: Exchange): void {
-        const filePath = path.join(__dirname, '../../data/kite', `${exchange}_instruments.csv`);
+    private refreshing = new Set<Exchange>();
+    private cacheDay = new Map<Exchange, string>();
+
+    private isFileFromToday(filePath: string): boolean {
         try {
-            const mtime = fs.existsSync(filePath) ? fs.statSync(filePath).mtime : new Date(0);
-            const now = new Date();
-            if (mtime.toDateString() === now.toDateString()) return;
-            const tmp = `${filePath}.${process.pid}.tmp`;
-            execFileSync('curl', ['-sf', '-m', '60', '-o', tmp, `https://api.kite.trade/instruments/${exchange}`], { timeout: 70000 });
-            const lines = fs.readFileSync(tmp, 'utf-8').split('\n').length;
-            if (lines < 1000) throw new Error(`downloaded ${exchange} master has only ${lines} lines`);
-            fs.renameSync(tmp, filePath);
-            Log.log(`[KiteContractMaster] refreshed stale ${exchange} master (${lines} lines)`);
-        } catch (e: any) {
-            Log.log(`[KiteContractMaster] ALERT: could not refresh the ${exchange} instrument master - using the existing file: ${e?.message ?? e}`);
+            return fs.existsSync(filePath) && fs.statSync(filePath).mtime.toDateString() === new Date().toDateString();
+        } catch {
+            return false;
         }
+    }
+
+    // Non-blocking (async curl, so a slow/hung endpoint can no longer freeze the event loop for up
+    // to 140s); deduped per exchange. On success the in-memory cache is dropped so the next lookup
+    // reloads the fresh file.
+    private refreshIfStale(exchange: Exchange): Promise<void> {
+        const filePath = path.join(__dirname, '../../data/kite', `${exchange}_instruments.csv`);
+        if (this.isFileFromToday(filePath) || this.refreshing.has(exchange)) return Promise.resolve();
+        this.refreshing.add(exchange);
+        const tmp = `${filePath}.${process.pid}.tmp`;
+        return new Promise<void>((resolve) => {
+            execFile('curl', ['-sf', '-m', '60', '-o', tmp, `https://api.kite.trade/instruments/${exchange}`], { timeout: 70000 }, (err) => {
+                try {
+                    if (err) throw err;
+                    const lines = fs.readFileSync(tmp, 'utf-8').split('\n').length;
+                    if (lines < 1000) throw new Error(`downloaded ${exchange} master has only ${lines} lines`);
+                    fs.renameSync(tmp, filePath);
+                    this.instrumentsCache.delete(exchange);
+                    Log.log(`[KiteContractMaster] refreshed stale ${exchange} master (${lines} lines)`);
+                } catch (e: any) {
+                    try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+                    Log.log(`[KiteContractMaster] ALERT: could not refresh the ${exchange} instrument master - using the existing file: ${e?.message ?? e}`);
+                } finally {
+                    this.refreshing.delete(exchange);
+                    // Whatever happened, don't re-attempt on every lookup again today.
+                    this.cacheDay.set(exchange, new Date().toDateString());
+                    resolve();
+                }
+            });
+        });
     }
 
     preload(): void {
         for (const exchange of ['NFO', 'BFO'] as Exchange[]) {
-            this.refreshIfStale(exchange);
+            void this.refreshIfStale(exchange);
             const t0 = Date.now();
             try {
                 const rows = this.loadInstruments(exchange).length;
@@ -94,7 +118,14 @@ class KiteContractMaster {
 
     private loadInstruments(exchange: Exchange): CsvInstrument[] {
         let cached = this.instrumentsCache.get(exchange);
-        if (cached) return cached;
+        if (cached) {
+            // Long-lived process: once the calendar day rolls over, kick off a background refresh
+            // (the cache is replaced when it lands) instead of serving yesterday's expiries forever.
+            if (this.cacheDay.get(exchange) !== new Date().toDateString()) {
+                void this.refreshIfStale(exchange);
+            }
+            return cached;
+        }
 
         const filePath = path.join(__dirname, '../../data/kite', `${exchange}_instruments.csv`);
         if (!fs.existsSync(filePath)) {
@@ -130,6 +161,7 @@ class KiteContractMaster {
             });
         }
         this.instrumentsCache.set(exchange, cached);
+        this.cacheDay.set(exchange, new Date().toDateString());
         return cached;
     }
 

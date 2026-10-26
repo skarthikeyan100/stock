@@ -31,7 +31,10 @@ class AntStream {
   // (mirrors what Prism.subscribeOption/unsubscribeOption used to do over its
   // own WS) - the only option tokens AntStream ever subscribes to; the fixed
   // TARGET_INSTRUMENTS above are indices only.
-  private dynamicOptionTokens: Set<string> = new Set();
+  // Maps bare token -> exchange ('NFO'/'BFO') so BFO (SENSEX) tokens resubscribe
+  // and unsubscribe under the exchange they were subscribed with.
+  private dynamicOptionTokens: Map<string, 'NFO' | 'BFO'> = new Map();
+  private connecting: Promise<void> | null = null;
 
   static getInstance(): AntStream {
     if (!AntStream.instance) {
@@ -45,6 +48,15 @@ class AntStream {
       Log.log('[AntStream] Already connected');
       return;
     }
+    // In-flight guard: concurrent callers (reconnect timer + /ant/connect) share one attempt.
+    if (this.connecting) return this.connecting;
+    this.connecting = this.doConnect().finally(() => {
+      this.connecting = null;
+    });
+    return this.connecting;
+  }
+
+  private async doConnect(): Promise<void> {
     this.manualDisconnect = false;
 
     try {
@@ -65,35 +77,38 @@ class AntStream {
         throw new Error('userId not available');
       }
 
-      this.ws = new AntWebSocket();
+      // Drop any previous socket first so its late 'close' cannot schedule a duplicate reconnect.
+      if (this.ws) {
+        const old = this.ws;
+        this.ws = null;
+        try { old.close(); } catch (e) { /* already closed */ }
+      }
 
-      await this.ws.connect({
-        susertoken,
-        actid: userId + '_API',
-        uid: userId + '_API',
-      });
-
-      Log.log('[AntStream] WebSocket connected, subscribing to instruments...');
-
-      this.ws.on('open', () => {
+      const ws = new AntWebSocket();
+      // Handlers are bound to THIS socket; events from a superseded socket are ignored.
+      ws.on('open', () => {
+        if (this.ws !== ws) return;
         Log.log('[AntStream] WebSocket open, subscribing...');
         const fixedKeys = this.TARGET_INSTRUMENTS.map((i) => `${i.exch}|${i.token}`);
-        const dynamicKeys = Array.from(this.dynamicOptionTokens).map((t) => `NFO|${t}`);
-        this.ws!.subscribe([...fixedKeys, ...dynamicKeys]);
+        const dynamicKeys = Array.from(this.dynamicOptionTokens, ([t, exch]) => `${exch}|${t}`);
+        ws.subscribe([...fixedKeys, ...dynamicKeys]);
       });
 
-      this.ws.on('quote', (_event, data) => {
+      ws.on('quote', (_event, data) => {
+        if (this.ws !== ws) return;
         myEmitter.emit('ant-quote', data);
         this.persistQuote(data);
         this.broadcastQuote(data);
       });
 
-      this.ws.on('error', (_event, error) => {
+      ws.on('error', (_event, error) => {
         Log.log('[AntStream] WebSocket error:', error);
       });
 
-      this.ws.on('close', () => {
+      ws.on('close', () => {
+        if (this.ws !== ws) return; // superseded/manually closed socket
         Log.log('[AntStream] WebSocket closed');
+        this.ws = null;
         this.connected = false;
         if (this.manualDisconnect) return;
         if (isPastMarketClose()) {
@@ -102,6 +117,22 @@ class AntStream {
         }
         this.scheduleReconnect();
       });
+
+      this.ws = ws;
+      try {
+        await ws.connect({
+          susertoken,
+          actid: userId + '_API',
+          uid: userId + '_API',
+        });
+      } catch (e) {
+        if (this.ws === ws) this.ws = null;
+        try { ws.close(); } catch (_) { /* ignore */ }
+        throw e;
+      }
+      if (this.ws !== ws) return; // disconnect() raced the connect
+
+      Log.log('[AntStream] WebSocket connected, subscribing to instruments...');
 
       this.connected = true;
       this.reconnectDelayMs = 2000; // reset backoff on a successful connect
@@ -134,10 +165,14 @@ class AntStream {
 
   // Mirrors AntDataStream.reconnect()'s semantics (manual /ant/connect-parity trigger).
   async reconnect(): Promise<void> {
-    this.manualDisconnect = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    // Wait out any in-flight attempt so we don't tear it down mid-handshake;
+    // superseded sockets' close events are ignored via the identity check.
+    if (this.connecting) {
+      try { await this.connecting; } catch (e) { /* retry below */ }
     }
     this.disconnect();
     this.manualDisconnect = false;
@@ -193,16 +228,17 @@ class AntStream {
 
   // Dynamic per-position touchline subscribe/unsubscribe - same NFO|<token> key
   // shape used for the fixed TARGET_INSTRUMENTS at connect time.
-  async subscribeOption(token: string): Promise<void> {
+  async subscribeOption(token: string, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<void> {
     if (this.dynamicOptionTokens.has(token)) return;
-    this.dynamicOptionTokens.add(token);
-    this.ws?.subscribe([`NFO|${token}`]);
+    this.dynamicOptionTokens.set(token, exchange);
+    this.ws?.subscribe([`${exchange}|${token}`]);
   }
 
-  async unsubscribeOption(token: string): Promise<void> {
-    if (!this.dynamicOptionTokens.has(token)) return;
+  async unsubscribeOption(token: string, _exchange?: 'NFO' | 'BFO'): Promise<void> {
+    const exch = this.dynamicOptionTokens.get(token);
+    if (!exch) return;
     this.dynamicOptionTokens.delete(token);
-    this.ws?.unsubscribe([`NFO|${token}`]);
+    this.ws?.unsubscribe([`${exch}|${token}`]);
   }
 
   disconnect(): void {

@@ -3,9 +3,9 @@ import axiosModule from 'axios';
 import Log from '../util/Log';
 import { isPastMarketClose } from '../util/marketHours';
 import PendingFillRegistry from '../util/PendingFillRegistry';
-import ANT from './ANT';
+import ANT, { ANT_HTTP_TIMEOUT_MS } from './ANT';
 
-const axios = axiosModule.create({ timeout: 15000 });
+const axios = axiosModule.create({ timeout: ANT_HTTP_TIMEOUT_MS });
 
 // Push-based order-fill notification, replacing ANT.getFillPrice's REST
 // polling of orders/history. This is a SEPARATE websocket from AntDataStream
@@ -58,6 +58,7 @@ class AntOrderNotifyStream {
     private reconnectDelayMs = 2000;
     private readonly MAX_RECONNECT_DELAY_MS = 30000;
     private manualDisconnect = false;
+    private connecting: Promise<void> | null = null;
 
     // Keyed by brokerOrderId. Handles both settling an already-registered waitForFill call and
     // buffering a terminal push that arrived with no waiter registered yet - see this file's
@@ -99,23 +100,43 @@ class AntOrderNotifyStream {
             Log.log('[AntOrderNotify] Already connected');
             return;
         }
+        // In-flight guard: concurrent callers (reconnect timer + manual connect) share one attempt
+        // instead of each opening their own socket.
+        if (this.connecting) return this.connecting;
+        this.connecting = this.doConnect().finally(() => {
+            this.connecting = null;
+        });
+        return this.connecting;
+    }
 
+    private async doConnect(): Promise<void> {
         // A previous disconnect() leaves this set; without the reset no later close would ever reconnect.
         this.manualDisconnect = false;
         const orderToken = await this.getWsToken();
         const userId = ANT.getInstance().getUserId();
         if (!userId) throw new Error('userId not available');
 
-        this.ws = new WebSocket('wss://a3.aliceblueonline.com/open-api/order-notify/websocket', undefined, { rejectUnauthorized: false });
+        // Retire any previous socket: its late close must not clear heartbeat/connected state of the
+        // new socket or schedule a duplicate reconnect (identity-checked in the handlers below).
+        if (this.ws) {
+            const old = this.ws;
+            this.ws = null;
+            if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+            try { old.close(); } catch (e) { /* already closed */ }
+        }
 
-        this.ws.onopen = () => {
+        const ws = new WebSocket('wss://a3.aliceblueonline.com/open-api/order-notify/websocket', undefined, { rejectUnauthorized: false });
+        this.ws = ws;
+
+        ws.onopen = () => {
+            if (this.ws !== ws) return;
             Log.log('[AntOrderNotify] Connected, subscribing...');
-            this.ws!.send(JSON.stringify({ orderToken, userId }));
+            ws.send(JSON.stringify({ orderToken, userId }));
 
             if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
             this.heartbeatInterval = setInterval(() => {
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({ heartbeat: 'h', userId }));
+                if (this.ws === ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ heartbeat: 'h', userId }));
                 }
             }, 60000); // docs: "every minute" or the connection is closed as idle
 
@@ -123,13 +144,14 @@ class AntOrderNotifyStream {
             this.reconnectDelayMs = 2000;
         };
 
-        this.ws.onmessage = (event) => {
+        ws.onmessage = (event) => {
+            if (this.ws !== ws) return;
             const text = typeof event.data === 'string' ? event.data : event.data.toString('utf-8');
             Log.log('[AntOrderNotify] Message:', text);
             this.handleMessage(text);
         };
 
-        this.ws.onerror = (event) => {
+        ws.onerror = (event) => {
             Log.log('[AntOrderNotify] WebSocket error:', (event as any)?.message ?? event);
         };
 
@@ -138,8 +160,10 @@ class AntOrderNotifyStream {
         // apart from an abnormal one - added while investigating a 100% order-notify push-miss
         // rate (zero raw messages ever received, not even the subscribe ack) alongside a steady
         // ~5-minute close/reconnect cycle all afternoon.
-        this.ws.onclose = (event: any) => {
+        ws.onclose = (event: any) => {
+            if (this.ws !== ws) return; // superseded/manually closed socket
             Log.log(`[AntOrderNotify] WebSocket closed (code=${event?.code ?? 'unknown'}, reason=${event?.reason || 'none'}, wasClean=${event?.wasClean ?? 'unknown'})`);
+            this.ws = null;
             this.connected = false;
             if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
             if (this.manualDisconnect) return;
@@ -149,6 +173,21 @@ class AntOrderNotifyStream {
             }
             this.scheduleReconnect();
         };
+
+        // Resolve once the socket is open (or fail) so the in-flight guard spans the handshake.
+        await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                reject(new Error('ANT order-notify socket connect timed out'));
+                try { ws.terminate(); } catch (_) { /* ignore */ }
+            }, 20000);
+            const prevOpen = ws.onopen as any;
+            const prevClose = ws.onclose as any;
+            ws.onopen = (ev: any) => { clearTimeout(timer); prevOpen(ev); resolve(); };
+            ws.onclose = (ev: any) => { clearTimeout(timer); prevClose(ev); reject(new Error('ANT order-notify socket closed before open')); };
+        }).catch((e) => {
+            // The close handler above already scheduled a reconnect where appropriate.
+            throw e;
+        });
     }
 
     private scheduleReconnect(): void {
@@ -193,9 +232,9 @@ class AntOrderNotifyStream {
             // Noren convention (matches Shoonya's fill messages elsewhere in this repo -
             // bookkeeping.updateTradeFromPrismMessage): flprc is the fill price - confirmed
             // live 2026-10-15 against a real fill push.
-            const fillPrice = data.flprc ?? data.averageTradedPrice ?? data.avgprc;
+            const fillPrice = [data.flprc, data.averageTradedPrice, data.avgprc].map(Number).find((n) => Number.isFinite(n) && n > 0);
             outcome = fillPrice
-                ? { fillPrice: Number(fillPrice) }
+                ? { fillPrice }
                 : { error: new Error(`ANT order ${orderNo} COMPLETE but no recognizable fill-price field: ${raw}`) };
         } else if (ANT.isTerminalRejectOrCancel(status)) {
             const reason = data.rejreason ? ` (${data.rejreason})` : '';

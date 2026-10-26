@@ -77,8 +77,8 @@ declare module 'kiteconnect' {
     getOrders(): Promise<Order[]>;
     getOrderHistory(orderId: string): Promise<any[]>;
     placeOrder(variety: string, params: any): Promise<{ order_id: string }>;
-    modifyOrder(orderId: string, variety: string, params: any): Promise<any>;
-    cancelOrder(orderId: string, variety: string): Promise<any>;
+    modifyOrder(variety: string, orderId: string, params?: any): Promise<any>;
+    cancelOrder(variety: string, orderId: string, params?: any): Promise<any>;
 
     getPositions(): Promise<{ net: Position[]; day: Position[] }>;
     getHoldings(): Promise<any[]>;

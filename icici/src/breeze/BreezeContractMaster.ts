@@ -71,6 +71,11 @@ export function strikeStepFor(shortName: string): number {
 // (e.g. ShortName "VEDLIM" for NSE symbol "VEDL") - this is why Breeze needs
 // its own contract-master lookup at all, unlike Ant/Kite's numeric-token
 // systems.
+// 'DD-MMM-YYYY' -> local-midnight ms (NaN when unparseable, which fails every >= comparison).
+function expiryMs(expiryDate: string): number {
+    return new Date(expiryDate).getTime();
+}
+
 class BreezeContractMaster {
     private static instance: BreezeContractMaster;
 
@@ -109,22 +114,55 @@ class BreezeContractMaster {
         return BreezeContractMaster.instance;
     }
 
+    // Staleness is judged by the downloaded zip's own mtime (stamped at download time), NOT the
+    // extracted .txt: `unzip -o` restores the archive entries' original (old) mtimes, which made
+    // the extracted file look stale on every lookup and re-download each time.
     private isStale(filePath: string): boolean {
         try {
-            return Date.now() - fs.statSync(filePath).mtimeMs > this.STALE_THRESHOLD_MS;
+            if (!fs.existsSync(filePath)) return true;
+            const stampPath = fs.existsSync(this.ZIP_PATH) ? this.ZIP_PATH : filePath;
+            return Date.now() - fs.statSync(stampPath).mtimeMs > this.STALE_THRESHOLD_MS;
         } catch {
             return true; // doesn't exist yet
         }
     }
 
+    private downloading: Promise<void> | null = null;
+    // Throttle retries after a failed refresh so a down server isn't hammered on every lookup.
+    private lastFailedRefreshAt = 0;
+    private readonly RETRY_BACKOFF_MS = 60 * 1000;
+
+    // Downloads to a temp zip, extracts into a temp dir, then renames into place, so a failure at
+    // any step leaves the previous (working) files untouched.
     private async downloadAndExtract(): Promise<void> {
         Log.log('[BreezeContractMaster] Downloading Security Master...');
-        const response = await httpClient.get(this.ZIP_URL, { responseType: 'arraybuffer' });
-        fs.writeFileSync(this.ZIP_PATH, response.data);
-        // Shells out to the system `unzip` rather than pulling in a new npm
-        // dependency for a one-off extraction - matches this codebase's
-        // existing child_process usage elsewhere (candle.ts, decision.ts).
-        execFileSync('unzip', ['-o', this.ZIP_PATH, '-d', this.DATA_DIR]);
+        const response = await httpClient.get(this.ZIP_URL, { responseType: 'arraybuffer', timeout: 60000 });
+        const buf = Buffer.from(response.data);
+        if (buf.length < 1024) throw new Error(`Security Master download too small (${buf.length} bytes)`);
+        const tmpZip = this.ZIP_PATH + '.tmp';
+        const tmpDir = path.join(this.DATA_DIR, '.extract_tmp');
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        fs.mkdirSync(tmpDir, { recursive: true });
+        try {
+            fs.writeFileSync(tmpZip, buf);
+            // Shells out to the system `unzip` rather than pulling in a new npm
+            // dependency for a one-off extraction - matches this codebase's
+            // existing child_process usage elsewhere (candle.ts, decision.ts).
+            execFileSync('unzip', ['-o', tmpZip, '-d', tmpDir], { timeout: 60000 });
+            for (const f of [this.FNO_FILE, this.BFO_FILE, this.NSE_FILE]) {
+                const extracted = path.join(tmpDir, path.basename(f));
+                if (!fs.existsSync(extracted) || fs.statSync(extracted).size === 0) {
+                    throw new Error(`Security Master zip is missing ${path.basename(f)}`);
+                }
+            }
+            for (const name of fs.readdirSync(tmpDir)) {
+                fs.renameSync(path.join(tmpDir, name), path.join(this.DATA_DIR, name));
+            }
+            fs.renameSync(tmpZip, this.ZIP_PATH); // stamps the refresh time last
+        } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+            fs.rmSync(tmpZip, { force: true });
+        }
         this.fnoCache = null;
         this.bfoCache = null;
         this.nseCache = null;
@@ -132,9 +170,23 @@ class BreezeContractMaster {
     }
 
     async ensureLoaded(): Promise<void> {
-        if (this.isStale(this.FNO_FILE)) {
-            await this.downloadAndExtract();
+        if (!this.isStale(this.FNO_FILE)) return;
+        // In-flight dedupe: concurrent lookups share one download.
+        if (!this.downloading) {
+            const haveOld = fs.existsSync(this.FNO_FILE);
+            if (haveOld && Date.now() - this.lastFailedRefreshAt < this.RETRY_BACKOFF_MS) return;
+            this.downloading = this.downloadAndExtract()
+                .catch((e) => {
+                    this.lastFailedRefreshAt = Date.now();
+                    // Fall back to the previous file if there is one; only fail when there is nothing to use.
+                    if (!haveOld) throw e;
+                    Log.log(`[BreezeContractMaster] ALERT: refresh failed, using stale cached Security Master: ${e?.message ?? e}`);
+                })
+                .finally(() => {
+                    this.downloading = null;
+                });
         }
+        await this.downloading;
     }
 
     // Warms the FNO, BFO and NSE caches at startup. Runs the daily stale-refresh first, same as
@@ -262,15 +314,15 @@ class BreezeContractMaster {
 
         const todayStartMs = new Date().setHours(0, 0, 0, 0);
         const candidates = this.optionsFor(shortName).filter(
-            (r) => r.series === 'OPTION' && r.shortName === shortName && new Date(r.expiryDate).getTime() >= todayStartMs
+            (r) => r.series === 'OPTION' && r.shortName === shortName && expiryMs(r.expiryDate) >= todayStartMs
         );
         if (candidates.length === 0) {
             throw new Error(`No ${shortName} option contracts found in Security Master`);
         }
-        const nearestExpiryMs = Math.min(...candidates.map((r) => new Date(r.expiryDate).getTime()));
+        const nearestExpiryMs = Math.min(...candidates.map((r) => expiryMs(r.expiryDate)));
 
         const match = candidates.find(
-            (r) => new Date(r.expiryDate).getTime() === nearestExpiryMs && Number(r.strikePrice) === atmStrike && r.optionType === optionType
+            (r) => expiryMs(r.expiryDate) === nearestExpiryMs && Number(r.strikePrice) === atmStrike && r.optionType === optionType
         );
         if (!match) {
             throw new Error(`No ${shortName} ${atmStrike}${optionType} contract found for nearest expiry`);
@@ -294,12 +346,12 @@ class BreezeContractMaster {
                 r.shortName === shortName &&
                 Number(r.strikePrice) === strike &&
                 r.optionType === optionType &&
-                new Date(r.expiryDate).getTime() >= todayStartMs
+                expiryMs(r.expiryDate) >= todayStartMs
         );
         if (candidates.length === 0) {
             throw new Error(`No ${shortName} ${strike}${optionType} contract found for any upcoming expiry`);
         }
-        candidates.sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+        candidates.sort((a, b) => expiryMs(a.expiryDate) - expiryMs(b.expiryDate));
         return candidates[0];
     }
 
@@ -311,10 +363,10 @@ class BreezeContractMaster {
         const shortName = breezeShortNameFor(underlyingShortName);
         const todayStartMs = new Date().setHours(0, 0, 0, 0);
         const candidates = this.optionsFor(shortName).filter(
-            (r) => r.series === 'OPTION' && r.shortName === shortName && new Date(r.expiryDate).getTime() >= todayStartMs
+            (r) => r.series === 'OPTION' && r.shortName === shortName && expiryMs(r.expiryDate) >= todayStartMs
         );
         if (candidates.length === 0) throw new Error(`No ${shortName} option contracts found in Security Master`);
-        candidates.sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+        candidates.sort((a, b) => expiryMs(a.expiryDate) - expiryMs(b.expiryDate));
         return candidates[0];
     }
 }

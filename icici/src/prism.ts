@@ -18,7 +18,8 @@ import bookkeeping from './processes/order/bookkeeping';
 import AntStream from './ant/AntStream';
 import strategies from './strategy/strategies';
 
-import { VIRTUAL, NIFTY, FINNIFTY, BANKNIFTY, SIMULATION, CALL, PUT, MOCK_BROKER } from './constants'
+import { VIRTUAL, NIFTY, FINNIFTY, BANKNIFTY, SIMULATION, CALL, PUT, MOCK_BROKER, NIFTY_FREEZE_QUANTITY } from './constants'
+import { sleep } from './util/sleep';
 import Mongo from './tools/mongo'
 import indexMap, {Index} from './nse_index';
 import { parse } from 'csv-parse';
@@ -64,7 +65,9 @@ class StrikePrice {
 }
 
 function splitQty(qty) {
-    const max = 1800;
+    // NIFTY exchange freeze quantity (1755 = 27 lots of 65). The old hardcoded 1800 exceeded the
+    // freeze limit and is not a lot multiple, so every full chunk would have been rejected.
+    const max = NIFTY_FREEZE_QUANTITY;
     const result = [];
     while (qty > 0) {
         result.push(Math.min(qty, max));
@@ -109,11 +112,7 @@ export default class Prism {
     trades: Trade[] = [];
 
 
-    sleep = async (milliseconds) => {
-        await new Promise(resolve => {
-            return setTimeout(resolve, milliseconds)
-        });
-    };
+    sleep = (milliseconds: number) => sleep(milliseconds);
 
     socket_open = (data) => {
         Log.log('[Prism] onOpen: ', data)
@@ -127,7 +126,7 @@ export default class Prism {
             Log.log('[Prism] Past market close - not reconnecting');
             return;
         }
-        this.connect()
+        this.connect().catch((e) => Log.log('[Prism] reconnect after socket close failed:', e?.message ?? e));
     };
 
     socket_error = (data) => {
@@ -182,7 +181,7 @@ export default class Prism {
     close = async () => {
         Log.log('[Prism] Closing the socket')
         await delay(5000);
-        this.connect();
+        this.connect().catch((e) => Log.log('[Prism] reconnect failed:', e?.message ?? e));
     }
 
     // Quote streaming (touchline data + Monitor/Decision broadcast) has moved to
@@ -233,7 +232,7 @@ export default class Prism {
     static getInstance() {
         if (!Prism.instance) {
             Prism.instance = new Prism();
-            Prism.instance.cacheFile();
+            Prism.instance.cacheFile().catch((e) => Log.log("[Prism] symbol cache load failed:", e?.message ?? e));
         }
         return Prism.instance;
     }
@@ -399,8 +398,6 @@ export default class Prism {
         try {
             for await (const line of lineReader) {
                 const values = line.split(',');
-                Log.log('line: ' + line);
-                Log.log('Values: ' + values);
                 if (symbol === values[3]) {
                     return values[1];
                 }
@@ -439,17 +436,29 @@ export default class Prism {
     }
 
     lines = [];
+    private cachePromise: Promise<void> | null = null;
     cacheFile = async () => {
-        if (this.lines.length == 0) {
-            var lineReader = readLine.createInterface({
-                input: fs.createReadStream(Config.NFOSymbolsPath)
-            });
-            for await (const line of lineReader) {
-                this.lines.push(line);
-            }
-            lineReader.close();
-            Log.log('[Symbols] Loaded', this.lines.length, 'NFO symbols')
+        if (this.lines.length > 0) return;
+        // Single in-flight load: concurrent callers (startup race) used to each append the whole
+        // file, duplicating every line.
+        if (!this.cachePromise) {
+            this.cachePromise = (async () => {
+                const loaded: string[] = [];
+                const lineReader = readLine.createInterface({
+                    input: fs.createReadStream(Config.NFOSymbolsPath)
+                });
+                try {
+                    for await (const line of lineReader) {
+                        loaded.push(line);
+                    }
+                } finally {
+                    lineReader.close();
+                }
+                this.lines = loaded;
+                Log.log('[Symbols] Loaded', this.lines.length, 'NFO symbols')
+            })().finally(() => { this.cachePromise = null; });
         }
+        await this.cachePromise;
     }
 
 
@@ -653,6 +662,7 @@ export default class Prism {
 
         let filledQty = 0;
         let lastError: any = null;
+        if (!(qty > 0)) throw new Error(`sellContract: invalid quantity ${qty} for ${contract}`);
         const parts = splitQty(qty)
         for (let i = 0; i < parts.length; i++) {
             const order = {
@@ -744,7 +754,9 @@ export default class Prism {
     // rate limit from exactly this kind of redundant back-to-back call
     // pattern, see chunkedOrder.ts's own throttle comment).
     getOrderBook = async (): Promise<any[]> => {
-        return (await NorenRestApi.get_orderbook()) ?? [];
+        const book: any = await NorenRestApi.get_orderbook();
+        // An empty book comes back as an object ({stat:'Not_Ok'}), not an array.
+        return Array.isArray(book) ? book : [];
     }
 
     // Single-shot order-status check, mirroring ANT.getOrderStatus's shape
@@ -925,6 +937,7 @@ export default class Prism {
         let filledQty = 0;
         let lastError: any = null;
 
+        if (!(qty > 0)) throw new Error(`buyContract: invalid quantity ${qty} for ${contract}`);
         const parts = splitQty(qty)
         for (let i = 0; i < parts.length; i++) {
             const partQty = parts[i];
@@ -1022,7 +1035,7 @@ export default class Prism {
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             let match: any;
             try {
-                const orders: any[] = await NorenRestApi.get_orderbook() ?? [];
+                const orders: any[] = await this.getOrderBook();
                 match = orders.find((o) => o.norenordno === orderNo);
             } catch (e) {
                 Log.log(`[Order] getOrderFillPrice poll attempt ${attempt + 1}/${maxAttempts} failed for ${orderNo}:`, e);
@@ -1051,8 +1064,8 @@ export default class Prism {
             }
             await delay(intervalMs);
         }
-        Log.log(`[Order] getOrderFillPrice timed out for ${orderNo} - using requested price ${requestedPrice}`);
-        return requestedPrice;
+        // Never confirmed filled: surface that instead of booking the requested price as a fill.
+        throw new Error(`Prism order ${orderNo} fill not confirmed within ${maxAttempts * intervalMs}ms (requested price ${requestedPrice})`);
     }
 
     // Closes a cover-order position - Shoonya/Noren's exit_order (already
@@ -1305,7 +1318,7 @@ export default class Prism {
             "prc": price
         }
 
-        this._placeOrder(order)
+        await this._placeOrder(order)
 
     }
 
@@ -1327,8 +1340,11 @@ export default class Prism {
         }
 
         Log.log('Place Order in sell ', order);
-        await NorenRestApi.place_order(order) as any;
-        await AntStream.getInstance().unsubscribeOption(tsym);
+        const reply = await NorenRestApi.place_order(order) as any;
+        this._assertOrderAccepted(reply, order);
+        // AntStream keys its dynamic subscriptions by token, not tsym.
+        const token = await this.getToken(tsym);
+        if (token) await AntStream.getInstance().unsubscribeOption(token);
     }
 
     cancel = async (orderno) => {
@@ -1355,8 +1371,8 @@ export default class Prism {
             qty = indexObj.getQuantity(price, userContext);
         }
         
-        if (qty == 0) {
-            Log.log('Order is not placed, qty: ', qty, ' price: ', price)
+        if (!(qty > 0)) {
+            throw new Error(`Order is not placed, qty: ${qty} price: ${price}`);
         }
         const nse = "NFO"
         const callput = "call" === right ? 'C' : 'P'
@@ -1396,8 +1412,12 @@ export default class Prism {
             bookkeeping.trackPendingOrder(order.tsym, user);
         }
         try {
+            if (!(Number(order.qty) > 0)) {
+                throw new Error(`Prism: refusing to place a zero/invalid-quantity order for ${order.tsym} (qty=${order.qty})`);
+            }
             const response = await NorenRestApi.place_order(order) as any;
             Log.log('User: ', user, 'Response from place_order: ', response)
+            this._assertOrderAccepted(response, order);
             if (user && response?.norenordno) {
                 bookkeeping.trackOrder(response.norenordno, user);
             }
@@ -1422,9 +1442,18 @@ export default class Prism {
         }
     }
 
+    // A Noren reply is only an accepted order when stat is 'Ok' AND it carries an order number;
+    // {stat:'Not_Ok', emsg} (or an empty reply) means nothing was placed.
+    _assertOrderAccepted = (reply: any, order: any) => {
+        if (!reply || (reply.stat !== undefined && reply.stat !== 'Ok') || !reply.norenordno) {
+            throw new Error(`Prism order for ${order?.tsym} was not accepted: ${reply?.emsg ?? JSON.stringify(reply) ?? 'no reply'}`);
+        }
+    }
+
     _getIndexFromToken = (token: string) => token.startsWith('BANK') ? 'BANKNIFTY' : token.startsWith('NIFTY') ? 'NIFTY' : 'FINNIFTY'
 
     squareOffOrder = async (token, qty, user?: string, price?: number) => {
+        let tsymForCleanup: string | undefined;
         try {
             const tsym = await this.getContract(token);
             if (!tsym) {
@@ -1445,20 +1474,24 @@ export default class Prism {
             Log.log('Square off Order ', order);
             if (user) {
                 bookkeeping.trackPendingOrder(tsym, user);
+                tsymForCleanup = tsym;
             }
+            // The axios interceptor in RestAPI.ts already unwraps `.data`.
             const orderReply = await NorenRestApi.place_order(order) as any;
-            if (user && orderReply?.data?.norenordno) {
-                bookkeeping.trackOrder(orderReply.data.norenordno, user);
-                bookkeeping.clearPendingOrder(tsym, user);
+            this._assertOrderAccepted(orderReply, order);
+            if (user) {
+                bookkeeping.trackOrder(orderReply.norenordno, user);
             }
         } catch (e) {
             Log.log(`[Prism] squareOffOrder failed for token ${token}:`, e?.message ?? e);
+        } finally {
+            if (user && tsymForCleanup) bookkeeping.clearPendingOrder(tsymForCleanup, user);
         }
     }
 
     getOrders = async () => {
         const orders : Order[] = []
-        const response = await NorenRestApi.get_orderbook() as any
+        const response = await this.getOrderBook()
         // Log.log('Response: ', response)
         for(let i = 0; i < response.length; i++) {
             const orderItem = response[i];
@@ -1488,17 +1521,18 @@ export default class Prism {
         Log.log('Positions: ', response)
 
         const trades: Trade[] = []
-        if (response.stat == 'Not_Ok') {
+        if (!Array.isArray(response)) {
             return;
         }
         response.forEach(element => {
-            if (parseInt(element.netqty, 10) > 0)
+            if (parseInt(element.netqty, 10) > 0) {
                 Log.log('Construct trade now in refresh trades')
                 var trade = Trade.fromPrism(element);
                 Log.log('Trade sym: ', trade.tsym, ' trade.quantity: ', trade.quantity)
                 if (trade.tsym.startsWith('NIFTY') && trade.quantity > 0) {
                     trades.push(trade)
                 }
+            }
         });
         bookkeeping.refreshTrades(trades);
         return bookkeeping.trades;

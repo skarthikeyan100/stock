@@ -50,15 +50,25 @@ class BreezeOrderNotifyStream {
         return BreezeOrderNotifyStream.instance;
     }
 
+    private onNotification = (data: any) => this.handleMessage(data);
+
     async connect(): Promise<void> {
         if (this.connected) {
             Log.log('[BreezeOrderNotifyStream] Already connected');
             return;
         }
         const breeze = Breeze.getInstance();
-        breeze.onOrderNotification((data: any) => this.handleMessage(data));
-        breeze.wsConnect();
-        await breeze.subscribeFeeds({ getOrderNotification: true });
+        // Stable handler: Breeze.onOrderNotification dedupes by identity, so a retried connect()
+        // can't double-deliver every fill.
+        breeze.onOrderNotification(this.onNotification);
+        breeze.wsConnect('BreezeOrderNotifyStream');
+        try {
+            await breeze.subscribeFeeds({ getOrderNotification: true });
+        } catch (e) {
+            // Release our hold on the shared socket so a retry starts clean.
+            breeze.wsDisconnect('BreezeOrderNotifyStream');
+            throw e;
+        }
         this.connected = true;
         Log.log('[BreezeOrderNotifyStream] Connected and subscribed to order notifications');
     }
@@ -151,7 +161,7 @@ class BreezeOrderNotifyStream {
     }
 
     disconnect(): void {
-        Breeze.getInstance().wsDisconnect();
+        Breeze.getInstance().wsDisconnect('BreezeOrderNotifyStream');
         this.connected = false;
     }
 }

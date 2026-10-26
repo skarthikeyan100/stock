@@ -89,23 +89,57 @@ class AntContractMaster {
     if (opts.bfo) tryLoad('BFO', () => this.loadBFO());
   }
 
+  // Long-lived processes never saw a re-downloaded master (scripts/download-all-masters.sh replaces
+  // the file in place): drop the cache when the file on disk is newer than what was loaded. The
+  // stat is throttled to once per minute per file.
+  private loadedMtime = new Map<string, number>();
+  private lastMtimeCheck = new Map<string, number>();
+
+  private cacheIsFresh(filePath: string): boolean {
+    const now = Date.now();
+    if (now - (this.lastMtimeCheck.get(filePath) ?? 0) < 60000) return true;
+    this.lastMtimeCheck.set(filePath, now);
+    try {
+      return fs.statSync(filePath).mtimeMs <= (this.loadedMtime.get(filePath) ?? 0);
+    } catch {
+      return true; // can't stat: keep serving what we have
+    }
+  }
+
+  private noteLoaded(filePath: string): void {
+    try { this.loadedMtime.set(filePath, fs.statSync(filePath).mtimeMs); } catch { /* ignore */ }
+    this.lastMtimeCheck.set(filePath, Date.now());
+  }
+
   private loadNFO(): ContractRecord[] {
+    if (this.nfoCache && !this.cacheIsFresh(this.NFO_PATH)) {
+      Log.log('[AntContractMaster] NFO master file changed on disk - reloading');
+      this.nfoCache = null;
+    }
     if (!this.nfoCache) {
       this.checkStaleness(this.NFO_PATH);
       const data = JSON.parse(fs.readFileSync(this.NFO_PATH, 'utf-8'));
       this.nfoCache = data.NFO || [];
+      this.noteLoaded(this.NFO_PATH);
     }
     return this.nfoCache;
   }
 
   private loadBFO(): ContractRecord[] {
+    if (this.bfoCache && !this.cacheIsFresh(this.BFO_PATH)) {
+      Log.log('[AntContractMaster] BFO master file changed on disk - reloading');
+      this.bfoCache = null;
+    }
     if (!this.bfoCache) {
       this.checkStaleness(this.BFO_PATH);
       const data = JSON.parse(fs.readFileSync(this.BFO_PATH, 'utf-8'));
       this.bfoCache = data.BFO || [];
+      this.noteLoaded(this.BFO_PATH);
     }
     return this.bfoCache;
   }
+
+  private nseFailedAt = 0;
 
   // NSE cash-segment (equity) contract master - unlike NFO/BFO, no expiry
   // concept, so no staleness-driven missing-contract risk the way a stale
@@ -113,6 +147,10 @@ class AntContractMaster {
   // comment on that 2026-10-13 incident) - still warned the same way as a
   // courtesy, since a delisted/renamed symbol could otherwise go unnoticed.
   private loadNSE(): EquityRecord[] {
+    // A failed load is retried after a cooldown instead of being cached as empty forever.
+    if (!this.nseCache && this.nseFailedAt && Date.now() - this.nseFailedAt < 5 * 60 * 1000) {
+      return [];
+    }
     if (!this.nseCache) {
       // Missing/unreadable file (e.g. a fresh checkout - the NSE master is gitignored) degrades to an
       // empty table, cached, with one ALERT. Otherwise every findEquityToken call re-throws, which
@@ -123,9 +161,11 @@ class AntContractMaster {
         this.nseCache = data.NSE || [];
       } catch (e: any) {
         Log.log(`[AntContractMaster] ALERT: NSE equity contract master unavailable at ${this.NSE_PATH} (${e?.message ?? e}) - equity token lookups will return nothing until it is downloaded`);
-        this.nseCache = [];
+        this.nseFailedAt = Date.now();
         this.nseBysymbol = new Map();
+        return [];
       }
+      this.nseFailedAt = 0;
       // Built once per process lifetime, not per lookup - ~9900 equity rows,
       // a linear scan per symbol (as findNearestStrikeOption does for options)
       // would be wasteful for a 100-symbol batch called once per trading day.
@@ -165,7 +205,7 @@ class AntContractMaster {
       (r) =>
         r.Symbol === symbol &&
         r.Exch === exch &&
-        r['Strike Price'] === strike &&
+        Number(r['Strike Price']) === Number(strike) &&
         r['Option Type'] === optionType &&
         parseInt(r['Expiry Date']) === expiryEpochMs
     );

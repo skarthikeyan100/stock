@@ -29,7 +29,13 @@ class AntWebSocket {
   connect(params: { susertoken: string; actid: string; uid: string }): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new WebSocket(this.url, undefined, { rejectUnauthorized: false });
+        // Belt and braces over ws's handshakeTimeout: never leave connect() pending forever
+        // (callers' in-flight guards would then wedge).
+        const connectTimer = setTimeout(() => {
+          reject(new Error('AntWS connect timed out'));
+          try { this.ws?.terminate(); } catch (_) { /* ignore */ }
+        }, 20000);
+        this.ws = new WebSocket(this.url, undefined, { rejectUnauthorized: false, handshakeTimeout: 15000 });
 
         // Transport-level liveness signal: fires whenever a ping we sent
         // (via ws.ping() in the heartbeat below) is answered by the peer,
@@ -77,6 +83,7 @@ class AntWebSocket {
             }
           }, this.heartbeatMs);
 
+          clearTimeout(connectTimer);
           resolve();
         };
 
@@ -105,6 +112,7 @@ class AntWebSocket {
         this.ws.onerror = (event) => {
           Log.log('[AntWS] WebSocket error:', event);
           this.trigger('error', event);
+          clearTimeout(connectTimer);
           reject(event);
         };
 
@@ -112,6 +120,7 @@ class AntWebSocket {
           Log.log('[AntWS] WebSocket closed');
           if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
           if (this.watchdogInterval) clearInterval(this.watchdogInterval);
+          clearTimeout(connectTimer);
           this.trigger('close');
         };
       } catch (e) {

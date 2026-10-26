@@ -19,6 +19,7 @@ class AntDataStream implements DataStream {
     private reconnectDelayMs = 2000;
     private readonly MAX_RECONNECT_DELAY_MS = 30000;
     private manualDisconnect = false;
+    private connecting: Promise<void> | null = null;
 
     private readonly INDEX_TOKEN = '26000'; // NIFTY
     private readonly SENSEX_TOKEN = '1';
@@ -53,7 +54,16 @@ class AntDataStream implements DataStream {
             Log.log('[AntDataStream] Already connected');
             return;
         }
+        // In-flight guard: concurrent callers share one attempt.
+        if (this.connecting) return this.connecting;
+        this.connecting = this.doConnect().finally(() => {
+            this.connecting = null;
+        });
+        return this.connecting;
+    }
 
+    private async doConnect(): Promise<void> {
+        this.manualDisconnect = false;
         Log.log('[AntDataStream] Connecting to ANT streaming...');
         const session = AntSession.getInstance();
         const sessionId = await session.getSessionId();
@@ -63,30 +73,40 @@ class AntDataStream implements DataStream {
         const userId = ant.getUserId();
         if (!userId) throw new Error('userId not available');
 
-        this.ws = new AntWebSocket();
-        await this.ws.connect({ susertoken, actid: userId + '_API', uid: userId + '_API' });
+        // Drop any previous socket first so its late 'close' cannot schedule a duplicate reconnect.
+        if (this.ws) {
+            const old = this.ws;
+            this.ws = null;
+            try { old.close(); } catch (e) { /* already closed */ }
+        }
 
-        this.ws.on('open', () => {
+        const ws = new AntWebSocket();
+        // Handlers are bound to THIS socket; events from a superseded socket are ignored.
+        ws.on('open', () => {
+            if (this.ws !== ws) return;
             Log.log('[AntDataStream] WebSocket open, subscribing to always-on instruments...');
             const fixedKeys = this.ALWAYS_ON.map((i) => `${i.exch}|${i.token}`);
             const dynamicKeys = Array.from(this.dynamicOptionTokens, ([t, exch]) => `${exch}|${t}`);
-            this.ws!.subscribe([...fixedKeys, ...dynamicKeys]);
+            ws.subscribe([...fixedKeys, ...dynamicKeys]);
             if (this.dynamicDepthTokens.size > 0) {
-                this.ws!.subscribeDepth(Array.from(this.dynamicDepthTokens, ([t, exch]) => `${exch}|${t}`));
+                ws.subscribeDepth(Array.from(this.dynamicDepthTokens, ([t, exch]) => `${exch}|${t}`));
             }
         });
 
-        this.ws.on('quote', (_event, data) => {
+        ws.on('quote', (_event, data) => {
+            if (this.ws !== ws) return;
             this.persistQuote(data);
             this.emitTick(data);
         });
 
-        this.ws.on('error', (_event, error) => {
+        ws.on('error', (_event, error) => {
             Log.log('[AntDataStream] WebSocket error:', error);
         });
 
-        this.ws.on('close', () => {
+        ws.on('close', () => {
+            if (this.ws !== ws) return; // superseded/manually closed socket
             Log.log('[AntDataStream] WebSocket closed');
+            this.ws = null;
             this.connected = false;
             if (this.manualDisconnect) return;
             if (isPastMarketClose()) {
@@ -95,6 +115,16 @@ class AntDataStream implements DataStream {
             }
             this.scheduleReconnect();
         });
+
+        this.ws = ws;
+        try {
+            await ws.connect({ susertoken, actid: userId + '_API', uid: userId + '_API' });
+        } catch (e) {
+            if (this.ws === ws) this.ws = null;
+            try { ws.close(); } catch (_) { /* ignore */ }
+            throw e;
+        }
+        if (this.ws !== ws) return; // disconnect() raced the connect
 
         this.connected = true;
         this.reconnectDelayMs = 2000; // reset backoff on a successful connect
@@ -125,10 +155,12 @@ class AntDataStream implements DataStream {
     // Forces a fresh connection even if one is already considered active -
     // mirrors the old /ant/connect route's semantics (idempotent-ish manual trigger).
     async reconnect(): Promise<void> {
-        this.manualDisconnect = true;
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
+        }
+        if (this.connecting) {
+            try { await this.connecting; } catch (e) { /* retry below */ }
         }
         this.disconnect();
         this.manualDisconnect = false;
@@ -200,8 +232,14 @@ class AntDataStream implements DataStream {
     }
 
     disconnect(): void {
-        this.ws?.close();
+        this.manualDisconnect = true;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        const ws = this.ws;
         this.ws = null;
+        ws?.close();
         this.connected = false;
     }
 }
