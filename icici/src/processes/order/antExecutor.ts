@@ -1107,15 +1107,25 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
             } else {
                 throw new Error(`Square-off for ${tsym}: no live quote and no trigger price - exit NOT placed, manual action required`);
             }
-            const { orderNo } = await ant.placeOrder({
-                exchange,
-                instrumentId,
-                tradingSymbol: tsym,
-                quantity,
-                transactionType: 'SELL',
-                price: limitPrice,
-                product: existing?.product,
-            });
+            let orderNo: string;
+            try {
+                ({ orderNo } = await ant.placeOrder({
+                    exchange,
+                    instrumentId,
+                    tradingSymbol: tsym,
+                    quantity,
+                    transactionType: 'SELL',
+                    price: limitPrice,
+                    product: existing?.product,
+                }));
+            } catch (e: any) {
+                // Timed out with no response: the sell may be live at the broker. ANT has no order-book/idempotency
+                // lookup to reconcile against, so surface it loudly - callers must not blindly re-sell.
+                if (e?.ambiguousPlacement) {
+                    Log.log(`[order] ALERT: ANT square-off sell for ${tsym} qty=${quantity} (${userId}) outcome UNKNOWN - verify positions before retrying`);
+                }
+                throw e;
+            }
             squareOffOrderNo = orderNo;
             // Tracked so the pending-order poller books the fill if this wait misses it - same as a bare limit sell.
             placedExit = { orderId: orderNo, userId, tradingSymbol: tsym, instrumentId, quantity, exchange, action: 'Sell', product: existing?.product };
