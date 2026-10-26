@@ -11,7 +11,7 @@ import { isPastMarketClose } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { PnlStop } from './PnlStop';
 import { sleep } from '../util/sleep';
-import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
+import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
 
@@ -403,7 +403,7 @@ export default class BulkPcrStrategy extends Strategy {
     private async loadState(): Promise<PersistedState | null> {
         try {
             const doc = await Mongo.getInstance()?.db.collection(STATE_COLLECTION).findOne({ userId: this.userId });
-            return (doc as any) ?? null;
+            return doc ? normalizePersistedBrokers(doc as any) : null;
         } catch (e) {
             Log.log('[BulkPcrStrategy] loadState failed:', e);
             return null;

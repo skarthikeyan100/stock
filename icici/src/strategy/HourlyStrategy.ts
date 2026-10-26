@@ -7,7 +7,7 @@ import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
 import { roundToTick } from '../kite/Kite';
 import { sleep } from '../util/sleep';
-import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
+import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
 
 // Hourly NIFTY support/resistance breakout, confirmed on a 10-minute candle,
 // traded independently and in FULL configured quantity on every configured
@@ -558,7 +558,7 @@ export default class HourlyStrategy extends Strategy {
     private async loadState(): Promise<PersistedState | null> {
         try {
             const doc = await Mongo.getInstance()?.db.collection(STATE_COLLECTION).findOne({ userId: this.userId });
-            return (doc as any) ?? null;
+            return doc ? normalizePersistedBrokers(doc as any) : null;
         } catch (e) {
             Log.log('[Hourly] loadState failed:', e);
             return null;

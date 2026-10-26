@@ -68,6 +68,9 @@ interface UserEditRow {
   stopLossPoints: string; investmentAmount: string;
 }
 
+// Legacy broker names still present in older config.yml files; mirrors src/util/brokerName.ts.
+const LEGACY_BROKER_ALIASES: Record<string, string> = { zerodha: 'kite', aliceblue: 'ant', icici: 'breeze', shoonya: 'prism' };
+
 export default function AdminPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -1437,9 +1440,9 @@ export default function AdminPage() {
                                     key={broker}
                                     type="checkbox"
                                     label={broker === 'kite' ? 'Kite' : 'Breeze'}
-                                    checked={(config.bulkPcrStrategy?.brokers ?? []).map((b: string) => (b === 'zerodha' ? 'kite' : b)).includes(broker)}
+                                    checked={(config.bulkPcrStrategy?.brokers ?? []).map((b: string) => LEGACY_BROKER_ALIASES[b?.toLowerCase()] ?? b).includes(broker)}
                                     onChange={e => {
-                                      const current: string[] = (config.bulkPcrStrategy?.brokers ?? []).map((b: string) => (b === 'zerodha' ? 'kite' : b));
+                                      const current: string[] = (config.bulkPcrStrategy?.brokers ?? []).map((b: string) => LEGACY_BROKER_ALIASES[b?.toLowerCase()] ?? b);
                                       const next = e.target.checked ? [...current, broker] : current.filter((b: string) => b !== broker);
                                       updateConfigValue(['bulkPcrStrategy', 'brokers'], next);
                                     }}

@@ -319,6 +319,10 @@ app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (
     try {
         const { email } = req.params;
         const { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled } = req.body;
+        if (broker !== undefined && !['ant', 'kite', 'breeze'].includes(normalizeBrokerName(broker))) {
+            res.status(400).json({ error: `Invalid broker '${broker}' (expected ant, kite or breeze)` });
+            return;
+        }
         const user = await updateUserSettings(email, { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled });
         if (!user) {
             res.status(404).json({ error: 'User not found' });

@@ -6,7 +6,7 @@ import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { sleep } from '../util/sleep';
-import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
+import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
 
 // Iron Butterfly (standard, net credit) / Reverse Iron Butterfly (net debit) 4-leg combo on
 // NIFTY/SENSEX. Manual arm only (config.yml `enabled: true`, fires once on the next tick),
@@ -458,7 +458,7 @@ export default class ButterflyStrategy extends Strategy {
     private async loadState(): Promise<PersistedState | null> {
         try {
             const doc = await Mongo.getInstance()?.db.collection(STATE_COLLECTION).findOne({ userId: this.userId });
-            return (doc as any) ?? null;
+            return doc ? normalizePersistedBrokers(doc as any) : null;
         } catch (e) {
             Log.log(`[ButterflyStrategy:${this.userId}] loadState failed:`, e);
             return null;

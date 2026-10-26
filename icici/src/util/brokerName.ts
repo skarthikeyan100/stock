@@ -21,3 +21,20 @@ export function normalizeBrokerName(name: unknown): string {
 export function normalizeBrokerList(list: unknown): string[] {
     return Array.isArray(list) ? list.map(normalizeBrokerName).filter(Boolean) : [];
 }
+
+// Deep read-side shim for persisted documents (strategy state, trade rows): rewrites the legacy
+// vendor name used as an object key ('zerodha', 'zerodha_put', 'zerodha:maxProfit') or as a string
+// value ('zerodha') to the canonical one. Pure; returns a new structure, leaves other values alone.
+const LEGACY_PREFIX = /^(zerodha)(?=$|[_:])/i;
+export function normalizePersistedBrokers<T>(value: T): T {
+    if (Array.isArray(value)) return value.map(normalizePersistedBrokers) as unknown as T;
+    if (value && typeof value === 'object' && (value as any).constructor === Object) {
+        const out: Record<string, unknown> = {};
+        for (const k of Object.keys(value as object)) {
+            out[k.replace(LEGACY_PREFIX, 'kite')] = normalizePersistedBrokers((value as any)[k]);
+        }
+        return out as T;
+    }
+    if (typeof value === 'string') return value.replace(LEGACY_PREFIX, 'kite') as unknown as T;
+    return value;
+}

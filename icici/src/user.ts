@@ -1,6 +1,7 @@
 import Log from './util/Log';
 import Mongo from './tools/mongo';
 import { DEFAULT_PROFIT_SPLIT_PERCENT } from './constants';
+import { normalizeBrokerName } from './util/brokerName';
 
 export interface User {
     email: string;
@@ -194,7 +195,11 @@ export async function updateUserSettings(email: string, settings: { lossLimit?: 
     if (settings.investmentMode !== undefined) update.investmentMode = settings.investmentMode;
     if (settings.investmentAmount !== undefined) update.investmentAmount = settings.investmentAmount;
     if (settings.useGTT !== undefined) update.useGTT = settings.useGTT;
-    if (settings.broker !== undefined) update.broker = settings.broker;
+    if (settings.broker !== undefined) {
+        const broker = normalizeBrokerName(settings.broker);
+        if (!['ant', 'kite', 'breeze'].includes(broker)) throw new Error(`Invalid broker '${settings.broker}' (expected ant, kite or breeze)`);
+        update.broker = broker;
+    }
     if (settings.enabled !== undefined) update.enabled = settings.enabled;
     if (settings.perOrderCap !== undefined) update.perOrderCap = settings.perOrderCap;
     if (settings.allottedCapital !== undefined) update.allottedCapital = settings.allottedCapital;

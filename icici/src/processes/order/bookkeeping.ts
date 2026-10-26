@@ -1081,7 +1081,7 @@ class OrderBookkeeping {
                 trade.action = 'Sell';
                 trade.status = 'COMPLETE';
                 trade.user = row.user;
-                trade.broker = row.broker;
+                trade.broker = normalizeBrokerName(row.broker) as any;
                 trade.open = false;
                 trade.realizedPnL = row.realizedPnL;
                 trade.entryTime = row.entryTime;
@@ -1293,7 +1293,8 @@ class OrderBookkeeping {
         // here - multi-broker overlap for one tsym+user is only possible from
         // this change onward, so a legacy fieldless doc can never actually be
         // one half of a genuine two-broker collision.
-        const brokerOrLegacy = { $or: [{ broker }, { broker: { $exists: false } }] };
+        // 'zerodha' = rows persisted before the Kite rename (scripts/migrate-broker-names.js); match both spellings.
+        const brokerOrLegacy = { $or: [{ broker: broker === 'kite' ? { $in: ['kite', 'zerodha'] } : broker }, { broker: { $exists: false } }] };
 
         // Every user who has ever bought this tsym on this broker - each
         // reconciled independently below (including their own last-Sell

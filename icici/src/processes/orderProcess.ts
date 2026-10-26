@@ -450,6 +450,8 @@ async function buyToCloseShortLegForUser(user: string, shortTrade: Trade): Promi
 
 async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     try {
+        // Accept legacy broker names (e.g. 'zerodha') from any caller before anything dispatches on them.
+        if (req.payload && typeof (req.payload as any).broker === 'string') (req.payload as any).broker = normalizeBrokerName((req.payload as any).broker);
         switch (req.type) {
             case 'canPlaceOrder':
                 // See reconcileInFlight's comment on 'openTrades' below - a
