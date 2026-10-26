@@ -21,8 +21,12 @@ interface Candle {
 const candles: Candle[] = [];
 
 export function record(quote: NiftyQuote): void {
-    if (!quote?.ltp) return;
-    const bucket = Math.floor(Date.now() / INTERVAL_MS) * INTERVAL_MS;
+    if (!(Number.isFinite(quote?.ltp) && quote.ltp > 0)) return;
+    // Bucket by the tick's own exchange time (same clock as niftyStatsBuilder), falling back to arrival time only
+    // when it is missing/garbled - a lagging feed would otherwise shift every boundary.
+    const n = Number(quote.ltt);
+    const tickMs = Number.isFinite(n) && n > 0 ? (n < 1e12 ? n * 1000 : n) : Date.now();
+    const bucket = Math.floor(tickMs / INTERVAL_MS) * INTERVAL_MS;
     const last = candles[candles.length - 1];
     if (last && last.timestamp === bucket) {
         last.high = Math.max(last.high, quote.ltp);

@@ -68,13 +68,13 @@ export default class ContinuousStrategy extends Strategy {
     isTimeInRange(): boolean {
         if (MOCK_BROKER) return true; // bypass in mock/test/backtest mode, same as the base class
         const now = moment();
-        const startTime = moment().hour(9).minute(30);
-        const endTime = moment().hour(15).minute(0);
+        const startTime = moment().hour(9).minute(30).second(0).millisecond(0);
+        const endTime = moment().hour(15).minute(0).second(0).millisecond(0);
         return now.isAfter(startTime) && now.isBefore(endTime);
     }
 
     private cfg() {
-        return configService.getStrategyConfig('ContinuousStrategy');
+        return this.instanceConfig();
     }
 
     // Temporary diagnostic: T1's gate checks (enabled/time-window/ordered/
@@ -113,6 +113,12 @@ export default class ContinuousStrategy extends Strategy {
     // than a transient startup race that resolved itself a second later - see
     // ToDo.md's 2026-08-31 live incident (blocked from 08:57 through the 09:30
     // window open with 0 open positions the whole time).
+    // Called by strategiesProcess at startup, independent of reconcile() (which only runs on an explicit POST
+    // /reconcile): a restart after a max-profit/max-loss trip must not re-open the strategy.
+    async restoreLatches(): Promise<void> {
+        await this.legManager.loadPersistedLatches();
+    }
+
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
         // Restore today's max-profit stop first, so a restart does not re-open a strategy that already hit its cap.
         await this.legManager.loadPersistedLatches();
@@ -233,6 +239,10 @@ export default class ContinuousStrategy extends Strategy {
     }
 
     private lastEodAttempt = 0;
+    // True from the moment processNiftyQuote claims `ordered` until its root-leg attempt resolves. The root buy's own
+    // fill echo (updateTrade) and the leg ticks arrive while the leg is not yet registered with LegManager
+    // (isIdle() still true) and must not clear `ordered` and let a second T1 stack on top.
+    private entering = false;
 
     async processNiftyQuote(quote: NiftyQuote): Promise<void> {
         this.lastNiftyLtp = quote.ltp;
@@ -259,7 +269,15 @@ export default class ContinuousStrategy extends Strategy {
         this.logGateOnce('all T1 gates clear - attempting entry');
 
         this.ordered = true;
+        this.entering = true;
+        try {
+            await this.attemptEntry(quote, cfg);
+        } finally {
+            this.entering = false;
+        }
+    }
 
+    private async attemptEntry(quote: NiftyQuote, cfg: any): Promise<void> {
         const configuredRight = (cfg.right && cfg.right !== 'none') ? cfg.right : undefined;
         const right = await this.resolveEntryRight(quote, configuredRight);
         if (right == null) {
@@ -291,12 +309,12 @@ export default class ContinuousStrategy extends Strategy {
             return; // not a leg - never reaches LegManager
         }
         await this.legManager.onOptionTick(String(quote.token), quote.ltp);
-        if (this.legManager.isIdle()) this.ordered = false;
+        if (!this.entering && this.legManager.isIdle()) this.ordered = false;
     };
 
     updateTrade = async (trade: Trade): Promise<void> => {
         await this.legManager.handleFillOrExternalSell(trade);
-        if (this.legManager.isIdle()) this.ordered = false;
+        if (!this.entering && this.legManager.isIdle()) this.ordered = false;
     };
 
     getMonitorConfig() {
@@ -307,5 +325,6 @@ export default class ContinuousStrategy extends Strategy {
         super.reset();
         this.legManager.reset();
         this.ordered = false;
+        this.entering = false;
     }
 }

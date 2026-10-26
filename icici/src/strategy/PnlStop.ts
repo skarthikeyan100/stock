@@ -1,3 +1,4 @@
+import { localDayKey } from './dayKey';
 import Log from '../util/Log';
 import Mongo from '../tools/mongo';
 import { toPercentNumber } from '../prism/percentConfig';
@@ -137,7 +138,6 @@ export class PnlStop {
 
     // Same local-date key as LegManager.latchDay().
     private static latchDay(): string {
-        const d = new Date();
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        return localDayKey();
     }
 }

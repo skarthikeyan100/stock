@@ -4,6 +4,7 @@ import configService from '../prism/ConfigService';
 import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, SensexQuote, Trade } from "../model/model";
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import moment from "moment";
+import { StrategyInstanceConfig } from '../prism/AppConfig';
 import OrderClient from "../processes/strategies/OrderClient";
 
 export enum Outcome {
@@ -74,6 +75,26 @@ export abstract class Strategy {
         return n < 1e12 ? n * 1000 : n;
     }
 
+    // This instance's own config block. configService.getStrategyConfig(type) returns only the FIRST block of a
+    // type, so a second instance (distinct userId) of Continuous/SR/Hourly/... would silently run on instance #1's
+    // quantity/right/limits. Strategies.expandedConfigs is keyed by the same userId the instance was built with.
+    // Lazy require: strategies.ts -> StrategyFactory -> concrete strategies -> this file would otherwise be a cycle.
+    private static strategiesModule: any;
+    private static instanceConfigErrorLogged = false;
+    protected instanceConfig(): StrategyInstanceConfig {
+        let expanded: StrategyInstanceConfig | undefined;
+        try {
+            if (!Strategy.strategiesModule) Strategy.strategiesModule = require('./strategies').default;
+            expanded = Strategy.strategiesModule.getExpandedConfig(this.userId);
+        } catch (e) {
+            if (!Strategy.instanceConfigErrorLogged) {
+                Strategy.instanceConfigErrorLogged = true;
+                Log.log('[Strategy] instanceConfig: could not read this instance\'s expanded config, falling back to the first config block of its type (not initialised, or a real error):', e);
+            }
+        }
+        return expanded ?? configService.getStrategyConfig(this.getClassName());
+    }
+
     getMonitorConfig(): { targetPoints: number; stopLossPoints: number; trailingDistance: number } | null {
         return {
             targetPoints: configService.getConfig().settings.targetPriceDiff,
@@ -129,8 +150,8 @@ export abstract class Strategy {
     isTimeInRange(): boolean {
         if (MOCK_BROKER) return true;  // bypass time check in mock/test mode
         const now = moment();
-        const startTime = moment().hour(10).minute(0);
-        const endTime = moment().hour(15).minute(0);
+        const startTime = moment().hour(10).minute(0).second(0).millisecond(0);
+        const endTime = moment().hour(15).minute(0).second(0).millisecond(0);
 
         return now.isAfter(startTime) && now.isBefore(endTime);
     }

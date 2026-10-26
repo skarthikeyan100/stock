@@ -3,6 +3,7 @@ import moment from 'moment';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Strategy } from './strategy';
+import { localDayKey } from './dayKey';
 import { NiftyQuote, OptionQuote } from '../model/model';
 import configService from '../prism/ConfigService';
 import strategies from './strategies';
@@ -65,7 +66,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
     }
 
     private resetIfNewDay(now: moment.Moment) {
-        const today = now.format('YYYY-MM-DD');
+        const today = localDayKey();
         if (this.tradingDay !== today) {
             this.tradingDay = today;
             this.firedToday.clear();
@@ -143,7 +144,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
     // Returns false if the record could not be written. The caller must then not arm: arming without the
     // record would let a restart re-arm this slot.
     private recordArmedSlot(key: string): boolean {
-        const today = moment().format('YYYY-MM-DD');
+        const today = localDayKey();
         const keep = [...this.loadArmedSlots()].filter((k) => k.startsWith(today));
         keep.push(key);
         try {
@@ -156,7 +157,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
     }
 
     private async attemptStart(timeStr: string): Promise<void> {
-        const slotKey = `${moment().format('YYYY-MM-DD')} ${timeStr}`;
+        const slotKey = `${localDayKey()} ${timeStr}`;
         if (this.loadArmedSlots().has(slotKey)) {
             Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot already attempted earlier today - skipping (process restart does not re-attempt it)`);
             return;
@@ -214,7 +215,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         }
         bulkPcrCfg.quantity = cfg.quantity;
         bulkPcrCfg.targetPoints = cfg.targetPoints;
-        bulkPcrCfg.brokers = Array.isArray(cfg.brokers) ? [...armable] : cfg.brokers;
+        bulkPcrCfg.brokers = [...armable]; // always the resolved list: a block using the legacy single `broker:` key has no `brokers` array
         // Unconditional, like every other field above - found on review: `if (cfg.index)` left a
         // previous slot's persisted `index: SENSEX` write in place for a later slot that omits
         // `index` (reverting to NIFTY), silently continuing to trade SENSEX under a NIFTY-intended

@@ -1,6 +1,8 @@
 import Log from '../util/Log';
 import moment from 'moment';
 import { Strategy } from './strategy';
+import { localDayKey } from './dayKey';
+import { stashRetryBase, stampRetry, recoverFromStaleRetry } from './goodMorningRetry';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
@@ -38,10 +40,11 @@ export default class GoodMorningStrategy extends Strategy {
     private snapshotLtp: number | null = null;
     private snapshotTaken = false;
     private traded = false;
+    private entered = false; // a buy actually went out today (only then can a Sell fill re-arm a window)
 
     constructor(userId?: string) {
         super(userId);
-        this.enabled = configService.getStrategyConfig('GoodMorningStrategy').enabled;
+        this.enabled = this.instanceConfig().enabled;
     }
 
     receive(oldStats: any, newStats: any) {}
@@ -55,8 +58,8 @@ export default class GoodMorningStrategy extends Strategy {
     // opens a fresh same-day window instead of waiting for tomorrow's
     // calendar-date reset (resetIfNewDay).
     updateTrade = async (trade: Trade): Promise<void> => {
-        if (!this.traded || trade.action !== 'Sell') return;
-        const config = configService.getStrategyConfig('GoodMorningStrategy');
+        if (!this.traded || !this.entered || trade.action !== 'Sell') return;
+        const config = this.instanceConfig();
         this.rearmAfterClose(config, trade.price);
     };
 
@@ -67,10 +70,11 @@ export default class GoodMorningStrategy extends Strategy {
         this.snapshotLtp = null;
         this.snapshotTaken = false;
         this.traded = false;
+        this.entered = false;
     }
 
     private resetIfNewDay(now: moment.Moment) {
-        const today = now.format('YYYY-MM-DD');
+        const today = localDayKey();
         if (this.tradingDay !== today) {
             this.tradingDay = today;
             this.prevClose = null;
@@ -78,6 +82,9 @@ export default class GoodMorningStrategy extends Strategy {
             this.snapshotLtp = null;
             this.snapshotTaken = false;
             this.traded = false;
+            this.entered = false;
+            // Undo yesterday's persisted same-day retry (pushed-out times, intraday previousClose).
+            if (recoverFromStaleRetry(this.instanceConfig(), 'GoodMorning') === 'stale') this.traded = true;
         }
     }
 
@@ -91,7 +98,7 @@ export default class GoodMorningStrategy extends Strategy {
     // for the next attempt (30 minutes earlier than the new snapshot time).
     private retryOrGiveUp(config: any, snapshotTime: moment.Moment, confirmTime: moment.Moment, confirmLtp: number) {
         const nextConfirmTime = confirmTime.clone().add(RETRY_MINUTES, 'minutes');
-        const maxConfirmTime = moment().hour(MAX_CONFIRM_HOUR).minute(MAX_CONFIRM_MINUTE).second(0);
+        const maxConfirmTime = moment().hour(MAX_CONFIRM_HOUR).minute(MAX_CONFIRM_MINUTE).second(0).millisecond(0);
 
         if (nextConfirmTime.isAfter(maxConfirmTime)) {
             this.traded = true; // don't keep retrying for the rest of the day
@@ -104,9 +111,11 @@ export default class GoodMorningStrategy extends Strategy {
         }
 
         const nextSnapshotTime = snapshotTime.clone().add(RETRY_MINUTES, 'minutes');
+        stashRetryBase(config);
         config.snapshotTime = nextSnapshotTime.format('HH:mm');
         config.confirmTime = nextConfirmTime.format('HH:mm');
         config.previousClose = round(confirmLtp);
+        stampRetry(config);
         configService.writeConfig(configService.getConfig());
 
         this.snapshotTaken = false; // retake the snapshot at the new time
@@ -123,7 +132,7 @@ export default class GoodMorningStrategy extends Strategy {
     // RETRY_MINUTES from now (capped at MAX_CONFIRM_HOUR:MAX_CONFIRM_MINUTE).
     private rearmAfterClose(config: any, exitLtp: number) {
         const now = moment();
-        const maxConfirmTime = moment().hour(MAX_CONFIRM_HOUR).minute(MAX_CONFIRM_MINUTE).second(0);
+        const maxConfirmTime = moment().hour(MAX_CONFIRM_HOUR).minute(MAX_CONFIRM_MINUTE).second(0).millisecond(0);
         const nextSnapshotTime = now.clone().add(RETRY_MINUTES, 'minutes');
         const nextConfirmTime = nextSnapshotTime.clone().add(5, 'minutes');
 
@@ -132,15 +141,18 @@ export default class GoodMorningStrategy extends Strategy {
             return;
         }
 
+        stashRetryBase(config);
         config.snapshotTime = nextSnapshotTime.format('HH:mm');
         config.confirmTime = nextConfirmTime.format('HH:mm');
         config.previousClose = round(exitLtp);
+        stampRetry(config);
         configService.writeConfig(configService.getConfig());
 
         this.snapshotTaken = false;
         this.snapshotDirection = null;
         this.snapshotLtp = null;
         this.traded = false;
+        this.entered = false;
         Log.log(`[GoodMorning] Trade closed at ${round(exitLtp)} - opening a new window: snapshot=${config.snapshotTime} confirm=${config.confirmTime}`);
     }
 
@@ -159,11 +171,11 @@ export default class GoodMorningStrategy extends Strategy {
         if (this.traded) return;
 
         const ltp = quote.ltp;
-        const config = configService.getStrategyConfig('GoodMorningStrategy');
+        const config = this.instanceConfig();
         const [snapH, snapM] = (config.snapshotTime || '09:15').split(':').map(Number);
         const [confH, confM] = (config.confirmTime || '09:20').split(':').map(Number);
-        const snapshotTime = moment().hour(snapH).minute(snapM).second(0);
-        const confirmTime = moment().hour(confH).minute(confM).second(0);
+        const snapshotTime = moment().hour(snapH).minute(snapM).second(0).millisecond(0);
+        const confirmTime = moment().hour(confH).minute(confM).second(0).millisecond(0);
 
         if (!this.snapshotTaken && now.isSameOrAfter(snapshotTime)) {
             if (now.diff(snapshotTime, 'minutes') > LATE_WINDOW_MINUTES) {
@@ -225,6 +237,7 @@ export default class GoodMorningStrategy extends Strategy {
                 stopLossPoints: config.stopLossPoints,
             });
 
+            this.entered = true;
             if (config.logEnabled) {
                 Log.log(`[GoodMorning] Bought ${trade.tsym} qty=${config.quantity} at ${trade.price} (GTT placed by order process)`);
             }

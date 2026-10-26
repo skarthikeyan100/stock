@@ -12,7 +12,7 @@ import { readJsonLines, writeJsonLine } from '../ipc/jsonLines';
 import { STRATEGIES_SOCKET_PATH, StrategiesRequest, StrategiesResponse } from '../ipc/strategiesProtocol';
 import strategies from '../strategy/strategies';
 import OrderClient from './strategies/OrderClient';
-import { registerTrade, unregisterTrade, routeOptionTick } from './strategies/tokenRouter';
+import { registerTrade, unregisterTrade, optionTickTargets, deliverOptionTick } from './strategies/tokenRouter';
 import { BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
 import { subscribeToken, unsubscribeToken } from './strategies/DataClient';
 import * as niftyQuoteHistory from './strategies/niftyQuoteHistory';
@@ -27,6 +27,35 @@ import { OrderCancelledNotification } from '../ipc/orderProtocol';
 // over OrderClient's IPC socket to `order`, fills come back the same way. This is
 // the process meant to be killed and respawned on every strategy code change,
 // without ever touching `data`'s or `order`'s live broker connections.
+
+// Net open quantity per (userId, feed, token), built from this process's own fill stream. A position can be
+// opened in several chunks (and sold the same way); a Sell fill for ONE chunk must not drop the token's
+// subscription while the other chunks are still held, or their exit/stop logic goes blind. The strategy
+// stays registered until the running net hits zero. After a restart the map starts empty, so a first Sell
+// falls through to the old behaviour (unregister) - never leaves a subscription dangling forever.
+const openQty = new Map<string, number>();
+const openQtyExchange = new Map<string, 'NFO' | 'BFO'>();
+// Fills already applied, so a duplicate delivery (same broker order + side) cannot double-count the net quantity.
+const seenFillKeys = new Set<string>();
+function isDuplicateFill(trade: Trade): boolean {
+    if (!trade.brokerOrderId) return false;
+    const key = `${trade.brokerOrderId}|${trade.action}|${trade.quantity}`;
+    if (seenFillKeys.has(key)) return true;
+    seenFillKeys.add(key);
+    if (seenFillKeys.size > 5000) seenFillKeys.delete(seenFillKeys.values().next().value as string);
+    return false;
+}
+// A reset strategy abandons its positions' bookkeeping: drop the net quantities and trade-holder registrations.
+function clearOpenQtyFor(strategy: { userId?: string }): void {
+    for (const key of Array.from(openQty.keys())) {
+        const [uid, feed, token] = key.split('|');
+        if (uid !== strategy.userId) continue;
+        const owner = strategies.getByUserId(uid);
+        if (owner) unregisterTrade(token, owner, feed === 'default' ? undefined : (feed as FeedSource), openQtyExchange.get(key));
+        openQty.delete(key);
+        openQtyExchange.delete(key);
+    }
+}
 
 async function onFill(userId: string, raw: any) {
     const trade = Object.assign(new Trade(), raw) as Trade;
@@ -44,10 +73,25 @@ async function onFill(userId: string, raw: any) {
     // this, a held BFO token's subscription here would default to NFO and
     // never receive a tick back from AliceBlue.
     const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
+    if (isDuplicateFill(trade)) {
+        Log.log(`[strategies] Ignoring duplicate fill delivery for order ${trade.brokerOrderId} (${trade.action} ${trade.quantity} ${trade.tsym})`);
+        return;
+    }
+    const qtyKey = `${userId}|${feed ?? 'default'}|${trade.token}`;
+    const fillQty = Number.isFinite(Number(trade.quantity)) && Number(trade.quantity) > 0 ? Number(trade.quantity) : 0;
     if (trade.action === 'Buy' && trade.token) {
+        openQty.set(qtyKey, (openQty.get(qtyKey) ?? 0) + fillQty);
+        openQtyExchange.set(qtyKey, exchange);
         registerTrade(trade.token, strategy, feed, exchange);
     } else if (trade.action === 'Sell' && trade.token) {
-        unregisterTrade(trade.token, strategy, feed, exchange);
+        const remaining = (openQty.get(qtyKey) ?? 0) - fillQty;
+        if (remaining > 0) {
+            openQty.set(qtyKey, remaining);
+        } else {
+            openQty.delete(qtyKey);
+            openQtyExchange.delete(qtyKey);
+            unregisterTrade(trade.token, strategy, feed, exchange);
+        }
     }
     await strategy.updateTrade(trade);
 }
@@ -103,28 +147,79 @@ async function isolate(strategy: { userId?: string; getClassName(): string }, wh
     }
 }
 
+// Ticks and fills arrive as fire-and-forget callbacks; without ordering, tick N+1 could start (and a later
+// fill could be applied) while tick N / the earlier fill is still awaiting inside a strategy. These helpers
+// keep per-key FIFO order: every nifty/sensex tick, and every fill/cancel of one strategy, runs strictly
+// after the previous one. Option ticks use latest-wins per token instead (a full quote supersedes the
+// previous one), so a slow strategy can never build an unbounded backlog of stale prices in front of an exit.
+const fifoChains = new Map<string, Promise<void>>();
+function enqueueFifo(key: string, job: () => Promise<void>): Promise<void> {
+    const prev = fifoChains.get(key) ?? Promise.resolve();
+    const next = prev.then(job, job).catch((e) => Log.log(`[strategies] ${key} handler failed:`, e));
+    fifoChains.set(key, next);
+    next.then(() => { if (fifoChains.get(key) === next) fifoChains.delete(key); });
+    return next;
+}
+
+const optionSlots = new Map<string, { running: boolean; pending: OptionQuote | null }>();
+// Depth-feed ticks are sparse partial updates (e.g. tbq/tsq without lp): when a queued quote is superseded, its defined
+// fields are carried into the newer one (newer wins) so data later ticks do not repeat is not lost.
+function mergeQuotes(dropped: OptionQuote, newer: OptionQuote): OptionQuote {
+    const merged = Object.assign(new OptionQuote(), newer);
+    for (const [k, v] of Object.entries(dropped)) {
+        if (v !== undefined && v !== null && (merged as any)[k] === undefined) (merged as any)[k] = v;
+    }
+    return merged;
+}
+function enqueueLatest(key: string, quote: OptionQuote, job: (q: OptionQuote) => Promise<void>): void {
+    let slot = optionSlots.get(key);
+    if (!slot) { slot = { running: false, pending: null }; optionSlots.set(key, slot); }
+    if (slot.running) { slot.pending = slot.pending ? mergeQuotes(slot.pending, quote) : quote; return; }
+    slot.running = true;
+    const s = slot;
+    (async () => {
+        let next: OptionQuote | null = quote;
+        while (next) {
+            try { await job(next); } catch (e) { Log.log(`[strategies] option tick ${key} failed:`, e); }
+            next = s.pending;
+            s.pending = null;
+        }
+        s.running = false;
+        optionSlots.delete(key);
+    })();
+}
+
 async function onTick(tick: any) {
     if (tick.type === 'nifty') {
         const quote = Object.assign(new NiftyQuote(), tick.quote) as NiftyQuote;
+        // A zero/NaN price must not reach the history, candle builder, stats or any strategy.
+        if (!(Number.isFinite(quote.ltp) && quote.ltp > 0)) return;
         niftyQuoteHistory.record(quote);
         niftyCandleBuilder.record(quote);
         const statsUpdate = niftyStatsBuilder.record(quote.ltp, parseInt(quote.ltt as any));
-        if (statsUpdate) {
-            for (const strategy of strategies.getList()) {
-                await isolate(strategy, 'receive', () => strategy.receive(statsUpdate.oldStats, statsUpdate.newStats));
-            }
-        }
-        for (const strategy of strategies.getList()) {
-            if (strategy.enabled) await isolate(strategy, 'processNiftyQuote', () => strategy.processNiftyQuote(quote));
-        }
+        // One FIFO per strategy: a strategy stuck awaiting a broker call only delays its own ticks, not everyone's.
+        await Promise.all(strategies.getList().map((strategy) =>
+            enqueueFifo(`tick:nifty:${strategy.getClassName()}:${strategy.userId}`, async () => {
+                if (statsUpdate) {
+                    await isolate(strategy, 'receive', () => strategy.receive(statsUpdate.oldStats, statsUpdate.newStats));
+                }
+                if (strategy.enabled) await isolate(strategy, 'processNiftyQuote', () => strategy.processNiftyQuote(quote));
+            })
+        ));
     } else if (tick.type === 'sensex') {
         const quote = Object.assign(new SensexQuote(), tick.quote) as SensexQuote;
-        for (const strategy of strategies.getList()) {
-            if (strategy.enabled) await isolate(strategy, 'processSensexQuote', () => strategy.processSensexQuote(quote));
-        }
+        await Promise.all(strategies.getList().map((strategy) =>
+            enqueueFifo(`tick:sensex:${strategy.getClassName()}:${strategy.userId}`, async () => {
+                if (strategy.enabled) await isolate(strategy, 'processSensexQuote', () => strategy.processSensexQuote(quote));
+            })
+        ));
     } else if (tick.type === 'option') {
         const quote = Object.assign(new OptionQuote(), tick.quote) as OptionQuote;
-        await routeOptionTick((tick.source ?? DEFAULT_FEED_SOURCE) as FeedSource, quote);
+        const source = (tick.source ?? DEFAULT_FEED_SOURCE) as FeedSource;
+        // One latest-wins slot per (feed, token, strategy): a strategy awaiting a broker call only coalesces its own ticks.
+        for (const strategy of optionTickTargets(source, quote.token)) {
+            enqueueLatest(`${source}:${quote.token}:${strategy.getClassName()}:${strategy.userId}`, quote, (q) => deliverOptionTick(strategy, q));
+        }
     }
 }
 
@@ -155,7 +250,7 @@ async function handleStrategiesRequest(req: StrategiesRequest): Promise<Strategi
 
             case 'reset': {
                 const matched = strategies.getList().filter((s) => s.getClassName() === req.payload.type);
-                matched.forEach((s) => s.reset());
+                matched.forEach((s) => { s.reset(); clearOpenQtyFor(s); });
                 return { kind: 'response', id: req.id, ok: true, result: { type: req.payload.type, reset: matched.length } };
             }
 
@@ -227,10 +322,10 @@ async function main() {
     await Mongo.init().catch((e) => Log.log('[strategies] Mongo.init failed (continuing without persistence):', e));
 
     OrderClient.getInstance().onFill((userId, trade) => {
-        onFill(userId, trade).catch((e) => Log.log('[strategies] onFill handler failed:', e));
+        enqueueFifo(`fill:${userId}`, () => onFill(userId, trade));
     });
     OrderClient.getInstance().onCancelled((userId, notification) => {
-        onOrderCancelled(userId, notification).catch((e) => Log.log('[strategies] onOrderCancelled handler failed:', e));
+        enqueueFifo(`fill:${userId}`, () => onOrderCancelled(userId, notification));
     });
     OrderClient.getInstance().connect();
     startStrategiesServer();
@@ -244,6 +339,15 @@ async function main() {
     );
 
     await strategies.initialize();
+
+    // Restore today's max-profit / max-loss latches right away (not only inside reconcile(), which runs on demand).
+    for (const strategy of strategies.getList()) {
+        try {
+            await (strategy as any).restoreLatches?.();
+        } catch (e) {
+            Log.log(`[strategies] restoreLatches() failed for ${strategy.userId}:`, e);
+        }
+    }
 
     // reconcile() does not run here or on any tick - it's the explicit
     // 'reconcile' request (POST /reconcile), used only to repair a mismatch
@@ -260,6 +364,15 @@ async function main() {
 
     Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. POST /reconcile is on-demand only.`);
 }
+
+// A throw in any strategy callback (or a stray rejected promise) must not kill the process mid-position:
+// a respawn drops every strategy's in-memory exit state. Log and keep running, same policy as `order`.
+process.on('unhandledRejection', (reason) => {
+    Log.log('[strategies] Unhandled promise rejection (process kept alive):', reason);
+});
+process.on('uncaughtException', (e) => {
+    Log.log('[strategies] Uncaught exception (process kept alive):', e);
+});
 
 main().catch((e) => {
     Log.log('[strategies] Fatal startup error:', e);

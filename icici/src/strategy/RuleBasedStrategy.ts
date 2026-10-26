@@ -20,6 +20,8 @@ class RuleBasedContract {
     ltp: number = 0;
     exitReason: 'win' | 'loss' | 'timeout' | null = null;
     exitPnl: number = 0;
+    soldQty: number = 0; // monitor-triggered (target/SL) exit fills accumulated so far
+    soldValue: number = 0;
 
     clear() {
         this.contract = '';
@@ -33,6 +35,8 @@ class RuleBasedContract {
         this.ltp = 0;
         this.exitReason = null;
         this.exitPnl = 0;
+        this.soldQty = 0;
+        this.soldValue = 0;
     }
 
     async processOptionQuote(quote: OptionQuote, strategy: RuleBasedStrategy): Promise<boolean> {
@@ -82,12 +86,35 @@ class RuleBasedContract {
             return false;
         }
 
+        // Later chunks of the same (freeze-limit split) buy: fold them into the position so exits are sized for
+        // everything held. Only shortly after entry and before any exit has started.
+        if (!this.buyOrderPlaced && trade.action === 'Buy' && this.price > 0 && !this.sellOrderPlaced && this.soldQty === 0 && Date.now() - this.entryTime < 120_000) {
+            this.price = (this.price * this.quantity + trade.price * trade.quantity) / (this.quantity + trade.quantity);
+            this.quantity += trade.quantity;
+            return false;
+        }
+
         if (this.sellOrderPlaced && trade.action === 'Sell') {
             this.sellOrderPlaced = false;
             if (config.logEnabled) {
                 Log.log(`[Rule:${strategy.userId}] Sell confirmed: ${this.contract}`);
             }
             strategy.recordOutcome(this.exitReason ?? 'loss', this.exitPnl);
+            return true;
+        }
+
+        // A Sell fill the strategy did not place itself: the broker-side target/stop-loss (getMonitorConfig) closed the
+        // position. Without this the contract is never cleared and the strategy can never trade again. Chunked exits
+        // arrive as several fills - only complete once the held quantity is sold.
+        if (!this.sellOrderPlaced && !this.buyOrderPlaced && trade.action === 'Sell' && this.price > 0 && this.quantity > 0) {
+            this.soldQty += trade.quantity;
+            this.soldValue += trade.quantity * trade.price;
+            if (this.soldQty < this.quantity) return false;
+            const profit = this.soldValue - this.price * this.soldQty;
+            if (config.logEnabled) {
+                Log.log(`[Rule:${strategy.userId}] Sell confirmed (monitor): ${this.contract} P&L=${round(profit)}`);
+            }
+            strategy.recordOutcome(profit >= 0 ? 'win' : 'loss', profit);
             return true;
         }
 
@@ -309,6 +336,32 @@ export default class RuleBasedStrategy extends Strategy {
         this.contract.token = token;
         this.contract.buyOrderPlaced = true;
 
-        await this.buyContract(contract, config.quantity);
+        const order = await this.buyContract(contract, config.quantity);
+        if (!order && this.contract && this.contract.price === 0) {
+            // buyContract swallows every error, including a timeout where the order may have filled. Only release the
+            // sentinel once the order process confirms the contract is NOT held; if it is held (or the check fails)
+            // keep the lock so a second buy cannot stack on top.
+            let held: any | undefined;
+            let known = true;
+            try {
+                const open = await orderClient.getOpenTrades(this.userId);
+                held = open.find((t: any) => t.tsym === contract && Number(t.quantity) > 0);
+            } catch (e) {
+                known = false;
+                Log.log(`[Rule:${this.userId}] could not verify whether the failed buy of ${contract} filled:`, e);
+            }
+            if (known && !held) {
+                Log.log(`[Rule:${this.userId}] Buy of ${contract} failed and nothing is held - releasing the entry lock`);
+                this.contract = null;
+            } else if (held && this.contract && this.contract.price === 0) {
+                Log.log(`[Rule:${this.userId}] ALERT: buy of ${contract} reported failure but ${held.quantity} is held - adopting it`);
+                this.contract.price = Number(held.price);
+                this.contract.quantity = Number(held.quantity);
+                this.contract.entryTime = Date.now();
+                this.contract.buyOrderPlaced = false;
+            } else {
+                Log.log(`[Rule:${this.userId}] ALERT: outcome of the buy of ${contract} unknown - keeping the entry lock, check the broker`);
+            }
+        }
     }
 }

@@ -28,7 +28,7 @@ export default class TargetReachStrategy extends Strategy {
 
     constructor(userId?: string) {
         super(userId);
-        const config = configService.getStrategyConfig('TargetReachStrategy');
+        const config = this.instanceConfig();
         this.enabled = config.enabled;
         this.symbol = config.symbol || 'NIFTY';
         this.strike = config.strike;
@@ -73,7 +73,7 @@ export default class TargetReachStrategy extends Strategy {
     async processOptionQuote(quote: OptionQuote) {
         if (!this.enabled || this.fired || !quote?.ltp) return;
 
-        const config = configService.getStrategyConfig('TargetReachStrategy');
+        const config = this.instanceConfig();
         if (quote.ltp >= config.targetPrice) {
             this.fired = true;
             unwatchToken(this.token, this);

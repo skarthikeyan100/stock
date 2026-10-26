@@ -5,6 +5,7 @@ import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
+import SerialWriter from './SerialWriter';
 import { roundToTick } from '../kite/Kite';
 import { sleep } from '../util/sleep';
 import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
@@ -118,11 +119,13 @@ interface PersistedState {
 
 export default class HourlyStrategy extends Strategy {
     private positions: Map<BrokerName, BrokerPosition> = new Map();
+    private writer = new SerialWriter('Hourly');
 
     // Hourly level tracking.
     private currentHourBucket: number | null = null;
     private hourHigh = 0;
     private hourLow = 0;
+    private hourComplete = false;
     private resistance: number | null = null;
     private support: number | null = null;
 
@@ -134,11 +137,11 @@ export default class HourlyStrategy extends Strategy {
 
     constructor(userId?: string) {
         super(userId);
-        this.enabled = configService.getStrategyConfig('HourlyStrategy').enabled;
+        this.enabled = this.instanceConfig().enabled;
     }
 
     private cfg() {
-        return configService.getStrategyConfig('HourlyStrategy') as any;
+        return this.instanceConfig() as any;
     }
 
     receive(oldStats: any, newStats: any) {}
@@ -175,12 +178,17 @@ export default class HourlyStrategy extends Strategy {
     }
 
     async processNiftyQuote(quote: NiftyQuote): Promise<void> {
-        if (!this.enabled || !quote?.ltp || !this.isTimeInRange()) return;
+        if (!this.enabled || !quote?.ltp) return;
         const ms = this.toMillis(quote.ltt) ?? Date.now();
         const ltp = quote.ltp;
 
+        // Hourly levels and position protection run on EVERY tick, not only inside the 10:15-15:00 entry window:
+        // the previous hour's high/low must include the ticks before 10:15, and an open position's invalidation
+        // stop and end-of-day flatten must still be evaluated after 15:00.
         this.rollHourIfNeeded(ms, ltp);
         this.checkInvalidation(ltp);
+        this.checkEod();
+        if (!this.isTimeInRange()) return;
         await this.updateTenMinCandle(ms, ltp, quote);
     }
 
@@ -208,12 +216,28 @@ export default class HourlyStrategy extends Strategy {
         return ((d.getFullYear() * 100 + (d.getMonth() + 1)) * 100 + d.getDate()) * 100 + d.getHours();
     }
 
+    // True when the hour's first observed tick is within ~2 minutes of the hour's start (or of the 09:15 open for the
+    // first session hour). An hour first seen later (restart, strategy enabled mid-hour) has a high/low built from a
+    // partial hour and must not be used as support/resistance.
+    private static isCompleteHourStart(firstMs: number): boolean {
+        const start = new Date(firstMs);
+        start.setMinutes(0, 0, 0);
+        const open = new Date(firstMs);
+        open.setHours(9, 15, 0, 0);
+        const reference = Math.max(start.getTime(), open.getTime());
+        return firstMs >= reference && firstMs - reference <= 120_000;
+    }
+
     private rollHourIfNeeded(ms: number, ltp: number): void {
+        // Pre-open / auction ticks (before 09:15) are indicative prices, not traded ones: keep them out of the hour range.
+        const d = new Date(ms);
+        if (d.getHours() * 60 + d.getMinutes() < 9 * 60 + 15) return;
         const bucket = HourlyStrategy.hourBucketOf(ms);
         if (this.currentHourBucket === null) {
             this.currentHourBucket = bucket;
             this.hourHigh = ltp;
             this.hourLow = ltp;
+            this.hourComplete = HourlyStrategy.isCompleteHourStart(ms);
             return;
         }
         if (bucket === this.currentHourBucket) {
@@ -223,11 +247,12 @@ export default class HourlyStrategy extends Strategy {
         }
         // Hour rolled over - the just-finished hour's high/low become the
         // new hour's resistance/support.
-        this.resistance = this.hourHigh;
-        this.support = this.hourLow;
+        this.resistance = this.hourComplete ? this.hourHigh : null;
+        this.support = this.hourComplete ? this.hourLow : null;
         this.currentHourBucket = bucket;
         this.hourHigh = ltp;
         this.hourLow = ltp;
+        this.hourComplete = HourlyStrategy.isCompleteHourStart(ms);
         this.triggeredThisHour = false;
         this.pendingConfirmation = null;
         if (this.cfg().logEnabled) {
@@ -249,6 +274,19 @@ export default class HourlyStrategy extends Strategy {
         for (const pos of this.positions.values()) {
             if (pos.phase !== 'selling' || pos.squaringOff) continue;
             this.invalidateClose(pos).catch((e) => Log.log(`[Hourly] [${pos.broker}] invalidation close failed:`, e));
+        }
+    }
+
+    // End of day: flatten any live position at cfg.eodCloseTime (default 15:10) instead of carrying it past the close.
+    private checkEod(): void {
+        if (!this.hasOpenPosition()) return;
+        const [h, m] = String(this.cfg().eodCloseTime ?? '15:10').split(':').map(Number);
+        const now = new Date();
+        if (now.getHours() * 60 + now.getMinutes() < h * 60 + m) return;
+        for (const pos of this.positions.values()) {
+            if (pos.phase !== 'selling' || pos.squaringOff) continue;
+            Log.log(`[Hourly] [${pos.broker}] EOD flatten of ${pos.heldTsym}`);
+            this.invalidateClose(pos).catch((e) => Log.log(`[Hourly] [${pos.broker}] EOD close failed:`, e));
         }
     }
 
@@ -412,17 +450,25 @@ export default class HourlyStrategy extends Strategy {
     // BulkPcrStrategy's eodSquareOff uses, generalized to any broker via
     // chunkedSquareOff instead of ANT-only antSquareOffBare.
     private async invalidateClose(pos: BrokerPosition): Promise<void> {
+        // squaringOff stays set for the WHOLE close (cancel + market square-off), not just the cancel: the cancel's
+        // own cancellation notification can arrive after the cancel call returns, and must not re-place the sell.
+        pos.squaringOff = true;
+        try {
+            await this.invalidateCloseInner(pos);
+        } finally {
+            pos.squaringOff = false;
+        }
+    }
+
+    private async invalidateCloseInner(pos: BrokerPosition): Promise<void> {
         const tsym = pos.heldTsym!;
         const broker = pos.broker;
         let cancelResult: { filledQty: number; cancelFailed: boolean };
-        pos.squaringOff = true;
         try {
             cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym, broker });
         } catch (e) {
             cancelResult = { filledQty: 0, cancelFailed: true };
             Log.log(`[Hourly] [${broker}] Invalidation cancel request failed for ${tsym}:`, e);
-        } finally {
-            pos.squaringOff = false;
         }
         // Chunks that filled during the cancel race filled at the resting
         // target price - book them first, same accounting BulkPcrStrategy's
@@ -550,9 +596,9 @@ export default class HourlyStrategy extends Strategy {
             const { squaringOff: _inFlight, ...durable } = pos;
             positions[broker] = durable as BrokerPosition;
         }
-        Mongo.getInstance()?.db.collection(STATE_COLLECTION)
-            .replaceOne({ userId: this.userId }, { userId: this.userId, positions }, { upsert: true })
-            .catch((e) => Log.log('[Hourly] persistState failed:', e));
+        const doc = { userId: this.userId, positions };
+        this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION)
+            .replaceOne({ userId: this.userId }, doc, { upsert: true }));
     }
 
     private async loadState(): Promise<PersistedState | null> {
@@ -599,7 +645,20 @@ export default class HourlyStrategy extends Strategy {
         }
 
         for (const pos of this.positions.values()) {
-            const stillOpen = openTrades!.some((t) => t.tsym === pos.heldTsym);
+            // Only this slot's own broker counts: the same contract held on another broker is a different position.
+            const brokerTrades = openTrades!.filter((t) => !t.broker || normalizeBrokerName(t.broker) === pos.broker);
+            if (pos.phase === 'buying' || !pos.heldTsym) {
+                // The entry was still in flight when the process went down: chunks may have filled under a
+                // contract this slot never recorded. Never assume flat - closed only if the broker holds nothing.
+                if (brokerTrades.length > 0) {
+                    Log.log(`[Hourly] [${pos.broker}] reconcile: entry was in flight at restart and the broker holds ${brokerTrades.length} open trade(s) - flagging for manual review`);
+                    pos.phase = 'error';
+                } else {
+                    pos.phase = 'done';
+                }
+                continue;
+            }
+            const stillOpen = brokerTrades.some((t) => t.tsym === pos.heldTsym);
             if (!stillOpen) {
                 Log.log(`[Hourly] [${pos.broker}] reconcile: ${pos.heldTsym} no longer open at the broker - assuming fully closed`);
                 pos.phase = 'done';
@@ -618,6 +677,7 @@ export default class HourlyStrategy extends Strategy {
         super.reset();
         this.positions.clear();
         this.currentHourBucket = null;
+        this.hourComplete = false;
         this.resistance = null;
         this.support = null;
         this.currentTenMinBucket = null;

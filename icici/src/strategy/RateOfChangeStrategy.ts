@@ -36,7 +36,7 @@ class RateOfChangeContract {
             return false;
         }
 
-        const config = configService.getStrategyConfig('RateOfChangeStrategy');
+        const config = strategy.getConfig();
         this.ltp = quote.ltp;
 
         const pointsGain = quote.ltp - this.price;
@@ -65,7 +65,7 @@ class RateOfChangeContract {
             return false;
         }
 
-        const config = configService.getStrategyConfig('RateOfChangeStrategy');
+        const config = strategy.getConfig();
 
         if (this.buyOrderPlaced && trade.action === 'Buy') {
             this.buyOrderPlaced = false;
@@ -102,16 +102,18 @@ class RateOfChangeContract {
 
 export default class RateOfChangeStrategy extends Strategy {
     private contract: RateOfChangeContract | null = null;
+    // Public so RateOfChangeContract reads this instance's own config block.
+    getConfig() { return this.instanceConfig(); }
 
     constructor(userId?: string) {
         super(userId);
-        this.enabled = configService.getStrategyConfig('RateOfChangeStrategy').enabled;
+        this.enabled = this.instanceConfig().enabled;
     }
 
     receive(oldStats: any, newStats: any) {}
 
     getMonitorConfig() {
-        const config = configService.getStrategyConfig('RateOfChangeStrategy');
+        const config = this.instanceConfig();
         return { targetPoints: config.targetPrice, stopLossPoints: config.stopLossPrice, trailingDistance: configService.getConfig().settings.trailingDistance };
     }
 
@@ -125,7 +127,7 @@ export default class RateOfChangeStrategy extends Strategy {
     }
 
     async processNiftyQuote(quote: NiftyQuote) {
-        const config = configService.getStrategyConfig('RateOfChangeStrategy');
+        const config = this.instanceConfig();
 
         if (!this.enabled || !this.isTimeInRange()) return;
 
@@ -187,7 +189,7 @@ export default class RateOfChangeStrategy extends Strategy {
     }
 
     private async executeTrade(quote: NiftyQuote, right: string, pointsChange: number) {
-        const config = configService.getStrategyConfig('RateOfChangeStrategy');
+        const config = this.instanceConfig();
         const orderClient = OrderClient.getInstance();
 
         const contract = await orderClient.getContractByPriceRange(this.userId, right);

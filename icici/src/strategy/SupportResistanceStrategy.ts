@@ -3,7 +3,7 @@ import { Strategy } from './strategy';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
-import { CALL, PUT } from '../constants';
+import { CALL, PUT, MOCK_BROKER } from '../constants';
 import { LegManager, LegManagerConfig } from './LegManager';
 import { initSRState, processTick, SRConfig, SRState } from '../lib/supportResistance';
 import { sleep } from '../util/sleep';
@@ -35,10 +35,15 @@ export default class SupportResistanceStrategy extends Strategy {
     private legManager: LegManager;
     private lastNiftyLtp = 0;
     private srState: SRState = initSRState();
+    // Sides with a root-leg attempt in flight: two breach events in quick succession must not both pass the
+    // hasOpenLegOfRight check before the first leg is registered (they would stack two same-side positions).
+    private opening = new Set<string>();
+    private lastEodAttempt = 0;
+    private restoreFailed = false; // reconcile could not read open trades: fail closed (a duplicate live entry is worse than a missed one)
 
     constructor(userId?: string) {
         super(userId);
-        this.enabled = configService.getStrategyConfig('SupportResistanceStrategy').enabled;
+        this.enabled = this.instanceConfig().enabled;
         this.legManager = new LegManager({
             userId: this.userId,
             ownerType: 'SupportResistanceStrategy',
@@ -50,7 +55,7 @@ export default class SupportResistanceStrategy extends Strategy {
     }
 
     private cfg() {
-        return configService.getStrategyConfig('SupportResistanceStrategy');
+        return this.instanceConfig();
     }
 
     // Detector tuning lives in the shared srHypothesis: block (config.yml),
@@ -93,7 +98,15 @@ export default class SupportResistanceStrategy extends Strategy {
     // (and therefore this same restart-safety gap) only once it became
     // self-monitored. Same retry policy against a not-yet-connected order
     // IPC socket at startup.
+    // Called by strategiesProcess at startup, independent of reconcile() (which only runs on an explicit POST
+    // /reconcile): a restart after a max-profit/max-loss trip must not re-open the strategy.
+    async restoreLatches(): Promise<void> {
+        await this.legManager.loadPersistedLatches();
+    }
+
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
+        // Restore today's max-profit / max-loss stop first, so a restart does not re-open a strategy that tripped.
+        await this.legManager.loadPersistedLatches();
         let openTrades: Trade[] | undefined;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
@@ -104,6 +117,7 @@ export default class SupportResistanceStrategy extends Strategy {
                 if (attempt === maxAttempts) {
                     Log.log('[SupportResistance] reconcile: order query exhausted retries, blocking new entries until next restart');
                     this.ordered = true;
+                    this.restoreFailed = true;
                     return;
                 }
                 await sleep(retryDelayMs);
@@ -114,10 +128,26 @@ export default class SupportResistanceStrategy extends Strategy {
         this.ordered = true;
     }
 
+    // Same end-of-day close as ContinuousStrategy: cfg.eodCloseTime ('HH:mm', default 15:10).
+    private isPastEodCloseTime(): boolean {
+        if (MOCK_BROKER) return false;
+        const [h, m] = String(this.cfg().eodCloseTime ?? '15:10').split(':').map(Number);
+        const now = new Date();
+        return now.getHours() * 60 + now.getMinutes() >= h * 60 + m;
+    }
+
     async processNiftyQuote(quote: NiftyQuote): Promise<void> {
-        if (!this.enabled || !quote?.ltp) return;
+        if (!quote?.ltp) return;
         this.lastNiftyLtp = quote.ltp;
-        if (this.legManager.isCapitalGateTripped() || this.legManager.isMaxProfitTripped()) return;
+        // Ahead of the enabled gate and every latch: legs must still close at EOD (retried every 5s on failure).
+        if (this.isPastEodCloseTime() && Date.now() - this.lastEodAttempt > 5000) {
+            this.lastEodAttempt = Date.now();
+            await this.legManager.closeAllForEod();
+        }
+        if (!this.enabled) return;
+        if (this.restoreFailed) return; // restore failed (fail closed) - no new entries until the next restart/reset
+        if (this.legManager.isCapitalGateTripped() || this.legManager.isMaxProfitTripped() || this.legManager.isMaxLossTripped()) return;
+        if (this.isPastEodCloseTime()) return;
 
         // See Strategy.toMillis() - quote.ltt is ANT epoch seconds, not ms;
         // confirmWindowMs/breachConfirmMs (below) are genuinely millisecond-
@@ -143,8 +173,9 @@ export default class SupportResistanceStrategy extends Strategy {
     private async tryOpen(right: string, niftyLtp: number): Promise<void> {
         const config = this.cfg();
         if (!this.isCooldownElapsed(config.cooldownSeconds ?? 60)) return;
-        if (this.legManager.hasOpenLegOfRight(right)) return; // one position per side at a time, in-memory (see class doc comment)
+        if (this.legManager.hasOpenLegOfRight(right) || this.opening.has(right)) return; // one position per side at a time, in-memory (see class doc comment)
 
+        this.opening.add(right);
         try {
             const leg = await this.legManager.openRootLeg({
                 right, underlyingLtp: niftyLtp, minPremium: config.minPremium ?? 50, quantity: config.quantity, entryLabel: 'Entry',
@@ -152,6 +183,8 @@ export default class SupportResistanceStrategy extends Strategy {
             if (leg) this.recordTriggerTime();
         } catch (e) {
             Log.log('[SupportResistance] Entry failed:', e);
+        } finally {
+            this.opening.delete(right);
         }
     }
 
@@ -159,6 +192,8 @@ export default class SupportResistanceStrategy extends Strategy {
         super.reset();
         this.legManager.reset();
         this.srState = initSRState();
+        this.opening.clear();
+        this.restoreFailed = false;
         this.ordered = false;
     }
 }

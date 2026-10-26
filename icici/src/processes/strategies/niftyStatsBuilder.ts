@@ -1,3 +1,4 @@
+import { localDayKey } from '../../strategy/dayKey';
 import regression from 'regression';
 import { PeriodicStats } from '../../model/model';
 import { buildCandle } from '../../lib/candle-builder';
@@ -31,7 +32,26 @@ function determineTrend(prices: number[]): string {
 // Call on every live NIFTY tick. `ltt` is epoch seconds (matches decision.ts's
 // parseInt(quote.ltt) usage). Returns a stats update only when this tick
 // closes a 300s bucket, otherwise null.
+function dayOf(epochSeconds: number): string {
+    return localDayKey(new Date(epochSeconds * 1000));
+}
+
+// Test/rollover hook: forget every bucket, close and previous-stats so the next tick starts fresh.
+export function reset(): void {
+    startTime = null;
+    bucket = [];
+    closes.length = 0;
+    previousStats = null;
+}
+
 export function record(ltp: number, ltt: number): { oldStats: PeriodicStats | null; newStats: PeriodicStats } | null {
+    // A bad tick (NaN ltt from parseInt of a missing/garbled field, zero/NaN ltp) must never reach the bucket:
+    // a NaN startTime would make every later `diff >= BUCKET_SECONDS` comparison false and freeze stats for the session.
+    if (!Number.isFinite(ltp) || ltp <= 0 || !Number.isFinite(ltt) || ltt <= 0) return null;
+    // Day rollover (process left running overnight): yesterday's closes/bucket must not feed today's indicators.
+    if (startTime !== null && dayOf(ltt) !== dayOf(startTime)) reset();
+    // A tick older than the bucket start (out-of-order/replayed) would corrupt the bucket's time base.
+    if (startTime !== null && ltt < startTime) return null;
     if (startTime === null) {
         startTime = ltt;
     }

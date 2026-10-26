@@ -1,6 +1,7 @@
 import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, Trade } from "../model/model";
 import { Strategy } from "./strategy";
+import { localDayKey } from './dayKey';
 import OrderClient from '../processes/strategies/OrderClient';
 import { CALL, PUT } from '../constants';
 import configService from '../prism/ConfigService';
@@ -39,7 +40,7 @@ class GapContract {
             return false;
         }
 
-        const config = configService.getStrategyConfig('GapStrategy');
+        const config = strategy.getConfig();
         this.ltp = quote.ltp;
 
         const pointsGain = quote.ltp - this.price;
@@ -68,7 +69,7 @@ class GapContract {
             return false;
         }
 
-        const config = configService.getStrategyConfig('GapStrategy');
+        const config = strategy.getConfig();
 
         if (trade.action === 'Sell') {
             if (this.sellOrderPlaced) {
@@ -94,6 +95,8 @@ class GapContract {
 
 export default class GapStrategy extends Strategy {
     private contract: GapContract | null = null;
+    // Public so GapContract reads this instance's own config block (not the first block of the type).
+    getConfig() { return this.instanceConfig(); }
     // Tracks "already made today's one decision" separately from this.enabled -
     // strategiesProcess.ts's dispatch loop gates calling processNiftyQuote at
     // all on `if (strategy.enabled)`, so a fix that self-disabled via
@@ -105,11 +108,11 @@ export default class GapStrategy extends Strategy {
 
     constructor(userId?: string) {
         super(userId);
-        this.enabled = configService.getStrategyConfig('GapStrategy').enabled;
+        this.enabled = this.instanceConfig().enabled;
     }
 
     private resetIfNewDay(): void {
-        const today = moment().format('YYYY-MM-DD');
+        const today = localDayKey();
         if (this.tradingDay !== today) {
             this.tradingDay = today;
             this.decidedToday = false;
@@ -124,7 +127,7 @@ export default class GapStrategy extends Strategy {
     // contract !== null gate below already limits this to one trade per day.
     isTimeInRange(): boolean {
         const now = moment();
-        return now.isAfter(moment().hour(9).minute(10)) && now.isBefore(moment().hour(9).minute(25));
+        return now.isAfter(moment().hour(9).minute(10).second(0).millisecond(0)) && now.isBefore(moment().hour(9).minute(25).second(0).millisecond(0));
     }
 
     canHandleOptionQuote(quote: OptionQuote): boolean {
@@ -138,7 +141,7 @@ export default class GapStrategy extends Strategy {
 
     async processNiftyQuote(quote: NiftyQuote) {
         this.resetIfNewDay();
-        const config = configService.getStrategyConfig('GapStrategy');
+        const config = this.instanceConfig();
 
         if (!this.enabled || !this.isTimeInRange()) return;
 
@@ -152,6 +155,9 @@ export default class GapStrategy extends Strategy {
         // rolling window. This is the strategy's one decision for the day:
         // decidedToday is set once made, whatever the outcome, and re-armed
         // by resetIfNewDay() on the next trading day.
+        // A tick with no usable prevClose/ltp (NaN gap) must not be treated as "no gap": that would consume the day's
+        // single decision on bad data. Wait for a good tick (the window is open until 9:25).
+        if (!(quote.ltp > 0) || !(quote.prevClose > 0)) return;
         const gapPoints = quote.ltp - quote.prevClose;
 
         if (config.logEnabled) {
@@ -235,7 +241,7 @@ export default class GapStrategy extends Strategy {
     }
 
     private async executeTrade(quote: NiftyQuote, right: string, gapPoints: number) {
-        const config = configService.getStrategyConfig('GapStrategy');
+        const config = this.instanceConfig();
 
         Log.log(`[Gap] TRIGGERED: ${right} at NIFTY=${quote.ltp} Gap=${round(gapPoints)}`);
         this.recordTriggerTime();

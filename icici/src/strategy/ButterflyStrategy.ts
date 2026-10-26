@@ -1,9 +1,11 @@
 import Log from '../util/Log';
+import { localDayKey } from './dayKey';
 import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
+import SerialWriter from './SerialWriter';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { sleep } from '../util/sleep';
 import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
@@ -67,6 +69,7 @@ export default class ButterflyStrategy extends Strategy {
     private phase: 'idle' | 'running' = 'idle';
     private positions = new Map<BrokerName, BrokerButterflyPosition>();
     private eodDone = false;
+    private writer = new SerialWriter('ButterflyStrategy');
     // Day eodDone was set; a process left running overnight must clear it so the next day's legs are still force-closed.
     private eodDay = '';
     private latestLtp = new Map<string, number>(); // token -> last seen ltp, across all brokers/legs
@@ -199,6 +202,12 @@ export default class ButterflyStrategy extends Strategy {
             watchTokenOnSource('ant', leg.token!, this, leg.exchange!);
         }
         Log.log(`[ButterflyStrategy:${this.userId}] [${broker}] all 4 legs open, net ${mode === 'standard' ? 'credit' : 'debit'} entry complete`);
+        // The EOD pass only closes positions that are 'open' when it runs; one that finished opening after it did
+        // would otherwise be carried past the close.
+        if (this.eodDone && !pos.squaringOff) {
+            pos.squaringOff = true;
+            await this.squareOffAll(pos, 'entry completed after the EOD cutoff');
+        }
     }
 
     // Resolves tsym/token/exchange for all 4 legs via the read-only resolveOptionContract IPC
@@ -239,9 +248,15 @@ export default class ButterflyStrategy extends Strategy {
     private async placeOneBuyLeg(pos: BrokerButterflyPosition, role: LegRole): Promise<void> {
         const leg = pos.legs[role];
         leg.status = 'entering';
-        const trade = await OrderClient.getInstance().butterflyBuyLeg(this.userId, {
-            broker: pos.broker, tradingSymbol: leg.tsym!, instrumentToken: leg.token!, quantity: leg.quantity, exchange: leg.exchange!,
-        });
+        let trade;
+        try {
+            trade = await OrderClient.getInstance().butterflyBuyLeg(this.userId, {
+                broker: pos.broker, tradingSymbol: leg.tsym!, instrumentToken: leg.token!, quantity: leg.quantity, exchange: leg.exchange!,
+            });
+        } catch (e) {
+            leg.status = 'error'; // outcome unknown: never left looking like a live 'entering' order
+            throw e;
+        }
         leg.filledQty = trade.quantity;
         leg.entryAvg = trade.price;
         leg.status = 'open';
@@ -273,9 +288,15 @@ export default class ButterflyStrategy extends Strategy {
         leg.status = 'entering';
         // The ONLY call site in the whole codebase allowed to open a short position - see
         // Kite.ts's NEVER-SHORT GUARD comment and bookkeeping.recordShortFill.
-        const trade = await OrderClient.getInstance().butterflySellToOpen(this.userId, {
-            broker: pos.broker, tradingSymbol: leg.tsym!, instrumentToken: leg.token!, quantity: leg.quantity, exchange: leg.exchange!,
-        });
+        let trade;
+        try {
+            trade = await OrderClient.getInstance().butterflySellToOpen(this.userId, {
+                broker: pos.broker, tradingSymbol: leg.tsym!, instrumentToken: leg.token!, quantity: leg.quantity, exchange: leg.exchange!,
+            });
+        } catch (e) {
+            leg.status = 'error';
+            throw e;
+        }
         leg.filledQty = trade.quantity;
         leg.entryAvg = trade.price;
         leg.status = 'open';
@@ -292,18 +313,27 @@ export default class ButterflyStrategy extends Strategy {
     private async resumeOrPlaceSellLegs(pos: BrokerButterflyPosition): Promise<boolean> {
         const roles = this.sellRoles(pos);
         const toPlace: LegRole[] = [];
+        let adoptedWithoutPrice = false;
         for (const role of roles) {
             const leg = pos.legs[role];
             const liveQty = await this.getLiveQuantity(pos, leg);
+            if (liveQty === null) throw new Error(`live quantity of ${leg.tsym} unknown - cannot decide between adopting and re-selling`); // retried by reconcile(); never re-sell blind
             if (liveQty > 0) {
                 const ltp = this.latestLtp.get(leg.token!);
                 Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] reconcile: ${leg.tsym} (${role}) is already short ${liveQty} at the broker - adopting instead of re-selling. ALERT: true entry price was never persisted, estimating from current ltp=${ltp ?? 'unknown'} - netComboPoints for this leg may be inaccurate until it closes.`);
                 leg.filledQty = liveQty;
                 leg.entryAvg = ltp ?? 0;
                 leg.status = 'open';
+                // entryAvg 0 on a short leg reads as an enormous loss (entry - ltp) and would stop the whole combo
+                // out on its first tick. Without a price to estimate from, do not self-monitor: flag for review.
+                if (ltp == null) adoptedWithoutPrice = true;
             } else {
                 toPlace.push(role);
             }
+        }
+        if (adoptedWithoutPrice) {
+            Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] ALERT: adopted a short leg with no price to estimate its entry from - not self-monitoring this combo, manual review required`);
+            return false;
         }
         if (toPlace.length === 0) return true;
 
@@ -322,9 +352,40 @@ export default class ButterflyStrategy extends Strategy {
         return false;
     }
 
+    // A leg whose entry order threw (timeout / transport error) is parked as 'error' with filledQty 0, but the order
+    // may well have filled. Ask the broker: if the leg is live, adopt it as 'open' (entry price estimated from the last
+    // tick) so every close path below treats it as a real position instead of leaving it live and unmanaged.
+    private async adoptUnknownOutcomeLegs(pos: BrokerButterflyPosition): Promise<void> {
+        for (const role of ALL_LEG_ROLES) {
+            const leg = pos.legs[role];
+            if (leg.status !== 'error' || leg.filledQty > 0 || !leg.tsym) continue;
+            const liveQty = await this.getLiveQuantity(pos, leg);
+            if (liveQty === null) {
+                Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] ALERT: live quantity of ${leg.tsym} (${role}) unknown after a failed entry - may be live, manual review required`);
+                continue;
+            }
+            if (liveQty > 0) {
+                Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] ALERT: ${leg.tsym} (${role}) entry errored but the broker shows ${liveQty} live - adopting it so it gets closed`);
+                leg.filledQty = liveQty;
+                leg.entryAvg = this.latestLtp.get(leg.token!) ?? 0;
+                leg.status = 'open';
+            } else {
+                leg.status = 'closed'; // confirmed flat: the order never filled
+            }
+        }
+    }
+
     private async unwindPartialEntry(pos: BrokerButterflyPosition, reason: string): Promise<void> {
+        await this.adoptUnknownOutcomeLegs(pos);
+        // Shorts first (buying them back only reduces risk), then the long legs.
+        const openShorts = ALL_LEG_ROLES.filter((r) => pos.legs[r].side === 'SELL' && pos.legs[r].status === 'open' && pos.legs[r].filledQty > 0);
+        await Promise.allSettled(openShorts.map((role) => this.closeOneLeg(pos, role, 'buyToCloseShort')));
         const filledBuyRoles = this.buyRoles(pos).filter((r) => pos.legs[r].status === 'open' && pos.legs[r].filledQty > 0);
-        await Promise.allSettled(filledBuyRoles.map((role) => this.closeOneLeg(pos, role, 'sellToCloseLong')));
+        if (ALL_LEG_ROLES.some((r) => pos.legs[r].side === 'SELL' && pos.legs[r].status !== 'closed' && pos.legs[r].filledQty > 0)) {
+            Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] ALERT: a short leg did not close - keeping the long legs as cover`);
+        } else {
+            await Promise.allSettled(filledBuyRoles.map((role) => this.closeOneLeg(pos, role, 'sellToCloseLong')));
+        }
         pos.phase = 'error';
         this.persistState();
         Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] marked error (manual review): ${reason}`);
@@ -363,7 +424,7 @@ export default class ButterflyStrategy extends Strategy {
     }
 
     async processOptionQuote(quote: OptionQuote): Promise<void> {
-        if (quote.ltp != null) this.latestLtp.set(quote.token, quote.ltp);
+        if (Number.isFinite(quote.ltp) && quote.ltp > 0) this.latestLtp.set(quote.token, quote.ltp);
         for (const pos of this.positions.values()) {
             if (pos.phase !== 'open' || pos.squaringOff) continue;
             const usesThisToken = ALL_LEG_ROLES.some((r) => pos.legs[r].token === quote.token);
@@ -404,16 +465,26 @@ export default class ButterflyStrategy extends Strategy {
         Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] squaring off all legs - ${reason}`);
         pos.phase = 'closing';
         this.persistState();
+        await this.adoptUnknownOutcomeLegs(pos);
         const roles = ALL_LEG_ROLES.filter((r) => pos.legs[r].status === 'open');
-        // allSettled - order doesn't matter here, every close only ever REDUCES exposure, never
-        // creates a new short/long, unlike entry which must be sequenced.
-        await Promise.allSettled(roles.map((role) => {
+        // Shorts first, then longs. Parallel closing would let a protective long leg (a wing in a standard
+        // butterfly) be sold while the short it covers is still open, and the broker rejects that as a naked
+        // short for margin. Buying the shorts back first only ever reduces risk; each group is parallel inside.
+        const closeGroup = (group: LegRole[]) => Promise.allSettled(group.map((role) => {
             const closeKind = pos.legs[role].side === 'BUY' ? 'sellToCloseLong' : 'buyToCloseShort';
             return this.closeOneLeg(pos, role, closeKind).catch((e) => {
                 Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] close failed for ${role}:`, e);
                 pos.legs[role].status = 'error';
             });
         }));
+        await closeGroup(roles.filter((r) => pos.legs[r].side === 'SELL'));
+        // A short that failed to close keeps its long cover: only close the longs if every short is closed.
+        const shortsStillOpen = ALL_LEG_ROLES.some((r) => pos.legs[r].side === 'SELL' && pos.legs[r].status !== 'closed' && pos.legs[r].filledQty > 0);
+        if (shortsStillOpen) {
+            Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] ALERT: a short leg did not close - keeping the long legs as cover, manual review required`);
+        } else {
+            await closeGroup(roles.filter((r) => pos.legs[r].side === 'BUY'));
+        }
         const allClosed = ALL_LEG_ROLES.every((r) => pos.legs[r].status === 'closed');
         pos.phase = allClosed ? 'done' : 'error';
         pos.squaringOff = false;
@@ -423,8 +494,7 @@ export default class ButterflyStrategy extends Strategy {
 
     // ---- EOD force-close + recurring reset ----
     private async eodCheck(): Promise<void> {
-        const nowForDay = new Date();
-        const dayKey = `${nowForDay.getFullYear()}-${nowForDay.getMonth() + 1}-${nowForDay.getDate()}`;
+        const dayKey = localDayKey();
         if (this.eodDone && this.eodDay !== dayKey) this.eodDone = false;
         if (this.eodDone) return;
         const now = new Date();
@@ -433,7 +503,12 @@ export default class ButterflyStrategy extends Strategy {
         this.eodDone = true;
         this.eodDay = dayKey;
         for (const pos of this.positions.values()) {
-            if (pos.phase === 'open') await this.squareOffAll(pos, 'EOD cutoff 15:15 reached');
+            if (pos.phase === 'open' && !pos.squaringOff) {
+                pos.squaringOff = true; // blocks a concurrent target/stop tick from also closing this combo
+                await this.squareOffAll(pos, 'EOD cutoff 15:15 reached');
+            } else if (pos.phase === 'wingsOpen' || pos.phase === 'sellingCenter' || pos.phase === 'buyingWings') {
+                Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] EOD: entry still in flight (${pos.phase}) - it will be closed as soon as it finishes opening`);
+            }
         }
     }
 
@@ -456,9 +531,9 @@ export default class ButterflyStrategy extends Strategy {
             const { squaringOff: _inFlight, ...durable } = pos;
             positions[broker] = durable as BrokerButterflyPosition;
         }
-        Mongo.getInstance()?.db.collection(STATE_COLLECTION)
-            .replaceOne({ userId: this.userId }, { userId: this.userId, positions }, { upsert: true })
-            .catch((e) => Log.log(`[ButterflyStrategy:${this.userId}] persistState failed:`, e));
+        const doc = { userId: this.userId, positions };
+        this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION)
+            .replaceOne({ userId: this.userId }, doc, { upsert: true }));
     }
 
     private async loadState(): Promise<PersistedState | null> {
@@ -503,7 +578,7 @@ export default class ButterflyStrategy extends Strategy {
     // absolute magnitude: callers only ever need "is something live open here", never sign
     // (a leg's own `side` already tells us whether an open position there should be long or
     // short).
-    private async getLiveQuantity(pos: BrokerButterflyPosition, leg: Leg): Promise<number> {
+    private async getLiveQuantity(pos: BrokerButterflyPosition, leg: Leg): Promise<number | null> {
         if (!leg.tsym) return 0;
         try {
             if (pos.broker === 'kite') {
@@ -525,16 +600,25 @@ export default class ButterflyStrategy extends Strategy {
                 return Math.abs(p?.quantity ?? 0);
             }
         } catch (e) {
-            Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] getLiveQuantity failed for ${leg.tsym} - treating as unknown (0):`, e);
+            // null = unknown, NOT zero: callers must never read a failed query as "flat" (that would mark a live
+            // leg closed, or re-sell a leg that is already short).
+            Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] getLiveQuantity failed for ${leg.tsym} - unknown:`, e);
+            return null;
         }
-        return 0;
+        return null; // broker not handled above
     }
 
     private async reconcileCloseWhateverIsOpen(pos: BrokerButterflyPosition): Promise<void> {
+        await this.adoptUnknownOutcomeLegs(pos);
         for (const role of ALL_LEG_ROLES) {
             const leg = pos.legs[role];
             if (leg.status !== 'open' && leg.status !== 'entering') continue;
             const liveQty = await this.getLiveQuantity(pos, leg);
+            if (liveQty === null) {
+                Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] reconcile: live quantity of ${leg.tsym} (${role}) unknown - NOT assuming flat, flagging for manual review`);
+                leg.status = 'error';
+                continue;
+            }
             if (liveQty <= 0) { leg.status = 'closed'; continue; }
             // Treat the live quantity as the confirmed filled amount (we never actually learned
             // this from a trade event before the restart) so closeOneLeg's remaining-qty math
@@ -553,6 +637,11 @@ export default class ButterflyStrategy extends Strategy {
             const leg = pos.legs[role];
             if (leg.status !== 'open') continue;
             const liveQty = await this.getLiveQuantity(pos, leg);
+            if (liveQty === null) {
+                // Unknown: keep it open and ticking rather than dropping a possibly live leg out of monitoring.
+                watchTokenOnSource('ant', leg.token!, this, leg.exchange!);
+                continue;
+            }
             if (liveQty <= 0) {
                 Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] reconcile: ${leg.tsym} (${role}) no longer open at the broker - assuming already closed`);
                 leg.status = 'closed';
@@ -588,10 +677,17 @@ export default class ButterflyStrategy extends Strategy {
                     const sellOk = await this.resumeOrPlaceSellLegs(pos);
                     pos.phase = sellOk ? 'open' : 'error';
                     if (sellOk) {
-                        for (const role of this.sellRoles(pos)) watchTokenOnSource('ant', pos.legs[role].token!, this, pos.legs[role].exchange!);
+                        // All four legs: the net-combo exit needs a live price for the wings too (a restart in this
+                        // phase never ran the wings' own watch).
+                        for (const role of ALL_LEG_ROLES) watchTokenOnSource('ant', pos.legs[role].token!, this, pos.legs[role].exchange!);
                     }
                 } else {
-                    await this.unwindPartialEntry(pos, 'restart recovered mid-entry past the confirmed-pair window - unwinding buy legs');
+                    // Live-checked close of every leg (including ones persisted as 'entering', whose fill was never
+                    // recorded) rather than unwinding only legs recorded as filled.
+                    await this.reconcileCloseWhateverIsOpen(pos);
+                    pos.phase = 'error';
+                    this.persistState();
+                    Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] marked error (manual review): restart recovered mid-entry past the confirmed-pair window - closed whatever was live`);
                 }
                 break;
             }

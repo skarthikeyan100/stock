@@ -87,9 +87,9 @@ class Contract {
 
 
     processOptionQuote = async (quote: OptionQuote) => {
-        const averageThreshold = configService.getStrategyConfig('SentimentStrategy').averageThreshold;
-        const orderQuantity = configService.getStrategyConfig('SentimentStrategy').orderQuantity;
-        const targetPrice = configService.getStrategyConfig('SentimentStrategy').targetPrice;
+        const averageThreshold = (this.strategy as SentimentStrategy).getConfig().averageThreshold;
+        const orderQuantity = (this.strategy as SentimentStrategy).getConfig().orderQuantity;
+        const targetPrice = (this.strategy as SentimentStrategy).getConfig().targetPrice;
 
         // Log.log('this.token: ', this.token, ' quote.token: ', quote.token, ' contract: ', )
         if (this.token == quote.token) {
@@ -122,8 +122,8 @@ class Contract {
     }
 
     updateTrade = async (trade: Trade) : Promise<boolean> => {
-        const averageThreshold = configService.getStrategyConfig('SentimentStrategy').averageThreshold;
-        const targetPrice = configService.getStrategyConfig('SentimentStrategy').targetPrice;
+        const averageThreshold = (this.strategy as SentimentStrategy).getConfig().averageThreshold;
+        const targetPrice = (this.strategy as SentimentStrategy).getConfig().targetPrice;
 
         let tradeClosed = false
         if (trade.tsym == this.contract) {
@@ -160,6 +160,9 @@ export default class SentimentStrategy extends Strategy {
     ordered = false
     iterationCount = 0;
 
+
+    // Public so Contract reads this instance's own config block.
+    getConfig() { return this.instanceConfig(); }
 
     constructor(userId?: string) {
         super(userId);
@@ -208,10 +211,10 @@ export default class SentimentStrategy extends Strategy {
     }
 
     async processNiftyQuote(quote: NiftyQuote) {
-        const orderQuantity = configService.getStrategyConfig('SentimentStrategy').orderQuantity;
-        const sentiment = configService.getStrategyConfig('SentimentStrategy').sentiment;
-        const enabled = configService.getStrategyConfig('SentimentStrategy').enabled;
-        const loopCount = configService.getStrategyConfig('SentimentStrategy').loopCount;
+        const orderQuantity = this.instanceConfig().orderQuantity;
+        const sentiment = this.instanceConfig().sentiment;
+        const enabled = this.instanceConfig().enabled;
+        const loopCount = this.instanceConfig().loopCount;
         if (enabled) {
             if (this.iterationCount <= loopCount && this.isTimeInRange() && !this.ordered && this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) {
                 this.ordered = true;

@@ -10,6 +10,7 @@ import BreezeContractMaster from '../breeze/BreezeContractMaster';
 import { roundToTick } from '../kite/Kite';
 import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
+import { localDayKey } from './dayKey';
 import fs from 'fs';
 import path from 'path';
 import moment from 'moment';
@@ -61,6 +62,8 @@ type OptionContract = { token: string; exch: string; tradingSymbol: string; lotS
 
 type BrokerName = 'kite' | 'breeze' | 'ant';
 
+const ATTEMPT_THROTTLE_MS = 15_000;
+
 // One resolved, broker-specific tradable contract for a ranked stock -
 // `instrumentToken` is always the ANT-native common token (see
 // AntContractMaster.ts's resolveCommonToken comment on why - live
@@ -80,6 +83,7 @@ interface BrokerLeg {
 export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     private phase: 'idle' | 'running' | 'done' = 'idle';
     private tradingDay: string | null = null;
+    private lastAttemptAt = 0;
 
     // phase alone has no day boundary - once it reaches 'done' on day N it
     // stays 'done' forever in a long-lived process (npm run processes has no
@@ -87,7 +91,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     // short-circuits before hasFiredToday() (which IS day-scoped) is ever
     // consulted again. Mirrors BulkPcrAutoStartStrategy's resetIfNewDay().
     private resetIfNewDay(now: moment.Moment) {
-        const today = now.format('YYYY-MM-DD');
+        const today = localDayKey();
         if (this.tradingDay !== today) {
             this.tradingDay = today;
             this.phase = 'idle';
@@ -134,7 +138,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     private hasFiredToday(): boolean {
         try {
             const recorded = JSON.parse(fs.readFileSync(this.firedTodayFile, 'utf8')) as string;
-            return recorded === moment().format('YYYY-MM-DD');
+            return recorded === localDayKey();
         } catch {
             return false;
         }
@@ -144,7 +148,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     // executing without the record would let a restart re-execute this same day.
     private recordFiredToday(): boolean {
         try {
-            fs.writeFileSync(this.firedTodayFile, JSON.stringify(moment().format('YYYY-MM-DD')));
+            fs.writeFileSync(this.firedTodayFile, JSON.stringify(localDayKey()));
             return true;
         } catch (e: any) {
             Log.log(`[${this.userId}] ALERT: could not persist firedToday record - NOT executing: ${e?.message ?? e}`);
@@ -159,8 +163,8 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     isTimeInRange(): boolean {
         if (MOCK_BROKER) return true;
         const now = moment();
-        const start = moment().hour(TRADING_WINDOW_START.hour).minute(TRADING_WINDOW_START.minute).second(0);
-        const end = moment().hour(TRADING_WINDOW_END.hour).minute(TRADING_WINDOW_END.minute).second(0);
+        const start = moment().hour(TRADING_WINDOW_START.hour).minute(TRADING_WINDOW_START.minute).second(0).millisecond(0);
+        const end = moment().hour(TRADING_WINDOW_END.hour).minute(TRADING_WINDOW_END.minute).second(0).millisecond(0);
         return now.isAfter(start) && now.isBefore(end);
     }
 
@@ -175,6 +179,11 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
             this.phase = 'done';
             return;
         }
+        // A retryable skip (stale CSV, no OHLC yet, ...) returns without recording the day as fired, so the next tick would
+        // re-run the whole 100-stock OHLC fetch. Space attempts out.
+        const nowMs = Date.now();
+        if (nowMs - this.lastAttemptAt < ATTEMPT_THROTTLE_MS) return;
+        this.lastAttemptAt = nowMs;
         this.phase = 'running'; // set synchronously before any async work, so concurrent ticks can't double-fire
         try {
             await this.executeTrade();
@@ -223,6 +232,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
 
     reset(): void {
         this.phase = 'idle';
+        this.lastAttemptAt = 0;
         Log.log(`[${this.userId}] Reset via admin request`);
     }
 
@@ -284,8 +294,10 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
         const ranked: RankedStock[] = equityTokens
             .map(({ symbol, token }) => {
                 const ohlc = ohlcMap.get(token);
-                if (!ohlc) return null;
+                // A zero/missing open or prevClose (pre-open, illiquid) would give Infinity/NaN and sort to rank 1.
+                if (!ohlc || !(ohlc.open > 0) || !(ohlc.prevClose > 0)) return null;
                 const gapPct = ((ohlc.open - ohlc.prevClose) / ohlc.prevClose) * 100;
+                if (!Number.isFinite(gapPct)) return null;
                 return { symbol, gapPct, latestOpen: ohlc.open };
             })
             .filter((r): r is RankedStock => r !== null)

@@ -50,14 +50,14 @@ export default class DiffStrategy extends Strategy {
     isTimeInRange(): boolean {
         const now = moment();
         const startTime = moment().hour(10).minute(0);
-        const endTime = moment().hour(15).minute(0);
+        const endTime = moment().hour(15).minute(0).second(0).millisecond(0);
     
         return now.isAfter(startTime) && now.isBefore(endTime);
     }
     
     buyIndex = async (right) => {
         Log.log('DiffStrategy: buyIndex called with right: ', right);
-        const quantity = configService.getStrategyConfig('DiffStrategy')?.quantity ?? 75;
+        const quantity = this.instanceConfig()?.quantity ?? 75;
         const niftyLtp = this.stats?.close ?? 0;
         const response = await OrderClient.getInstance().buyIndex(this.userId, { niftyLtp, right, quantity });
         if (response) {

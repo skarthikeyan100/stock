@@ -7,6 +7,7 @@ import { watchToken, unwatchToken, registerTrade } from '../processes/strategies
 import Mongo from '../tools/mongo';
 import { toPercentNumber } from '../prism/percentConfig';
 import { Strategy } from './strategy';
+import { localDayKey } from './dayKey';
 import { LegBrokerOps, defaultLegOps, dryRunOps } from './LegBrokerOps';
 
 // Extracted from ContinuousStrategy.ts (2026-09-11) so the same loss-driven
@@ -178,6 +179,23 @@ export class LegManager {
     // Order ids whose fill was already dealt with (adopted as a refill leg, or sold back), so an echo of the same fill
     // is never acted on twice.
     private handledBuyOrderIds = new Set<string>();
+    // Quantity of our OWN sell-backs (duplicate entry, orphaned average-add, superseded refill) still expected to
+    // echo back as Sell fills, per token. Without it the echo lands while a different leg on that token is tracked and
+    // is mistaken for an external sell of THAT leg. Entries expire so an echo that never arrives cannot swallow a
+    // genuine later external sell.
+    private ignoredSellEchoes = new Map<string, { qty: number; expires: number }>();
+    private async sellBack(tsym: string, token: string, qty: number, exchange: 'NFO' | 'BFO'): Promise<void> {
+        const prev = this.ignoredSellEchoes.get(token);
+        const live = prev && prev.expires > Date.now() ? prev.qty : 0;
+        this.ignoredSellEchoes.set(token, { qty: live + qty, expires: Date.now() + 60_000 });
+        try {
+            await this.currentOps().sell(this.deps.userId, tsym, token, qty, exchange);
+        } catch (e) {
+            const cur = this.ignoredSellEchoes.get(token);
+            if (cur) { cur.qty -= qty; if (cur.qty <= 0) this.ignoredSellEchoes.delete(token); }
+            throw e;
+        }
+    }
     // totalPnL snapshot taken at the last reset() call. computeCumulativeProfit uses
     // (recordedPnL - maxProfitBaseline) instead of raw totalPnL so that a reset() actually
     // re-arms max-profit tracking for a fresh session.
@@ -199,8 +217,48 @@ export class LegManager {
     // read live from deps.getConfig() so toggling it in config.yml takes effect on
     // the very next op, not only after a process restart. See
     // LegManagerConfig.dryRun's comment.
-    private currentOps(): LegBrokerOps {
-        return this.deps.getConfig().dryRun ? dryRunOps(this.rawOps) : this.rawOps;
+    //
+    // The toggle is only honoured while this manager is idle (no open leg, no resting refill). Once anything is
+    // live the mode in force when it was opened stays in force for it: flipping to dry-run mid-position would turn
+    // its sells/cancels into no-ops (an unmanageable live position), flipping the other way would "sell" a leg
+    // that was only ever simulated.
+    private dryRunLatched = false;
+    // Only an ENTRY call (pickContract/buy/buyLimit, forEntry=true) may re-read the toggle, and only while idle.
+    // Close paths delete the leg from legsByToken BEFORE their sell/cancel runs, so the manager looks idle at that
+    // moment - re-reading there would flip a live leg's sell into a dry-run no-op.
+    private currentOps(forEntry = false): LegBrokerOps {
+        if (forEntry && this.isIdle()) this.dryRunLatched = !!this.deps.getConfig().dryRun;
+        return this.dryRunLatched ? dryRunOps(this.rawOps) : this.rawOps;
+    }
+
+    // True once any latch says no NEW order may be placed (the open legs are being, or about to be, closed).
+    // Re-checked INSIDE withOpLock: a spawn/average/entry queued behind the lock must not buy after a max-profit,
+    // max-loss or EOD trip that happened while it waited.
+    private newOrdersBlocked(): boolean {
+        this.rollDayIfNeeded();
+        return this.maxProfitTripped || this.maxLossTripped || this.eodClosing;
+    }
+
+    // Cancels a resting refill and, if it had already (partly) filled, sells that quantity straight back so no
+    // untracked position remains. Used by every path that has already deleted the intent.
+    private async cancelIntentOrSellBack(intent: PendingReEntry, label: string): Promise<void> {
+        try {
+            await this.currentOps().cancel(this.deps.userId, intent.orderId);
+            Log.log(`[${this.deps.ownerType}] ${label}: pending re-entry cancelled: ${intent.tsym}`);
+        } catch (e: any) {
+            const filledQty = e?.name === 'OrderAlreadyFilledError' ? Number(e.filledQuantity ?? 0) : 0;
+            if (filledQty > 0) {
+                if (intent.orderId) { this.supersededRefills.delete(intent.orderId); this.handledBuyOrderIds.add(intent.orderId); }
+                Log.log(`[${this.deps.ownerType}] ALERT: ${label}: refill ${intent.orderId} (${intent.tsym}) had already filled ${filledQty} - selling it back so it is not left untracked`);
+                try {
+                    await this.currentOps().sell(this.deps.userId, intent.tsym, intent.token, filledQty, intent.exchange);
+                } catch (sellErr) {
+                    Log.log(`[${this.deps.ownerType}] ALERT: could not sell back the filled refill (${intent.tsym} qty=${filledQty}) - UNTRACKED POSITION, manual action required:`, sellErr);
+                }
+            } else {
+                Log.log(`[${this.deps.ownerType}] ${label}: pending re-entry cancel failed:`, e);
+            }
+        }
     }
 
     private withOpLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -361,8 +419,7 @@ export class LegManager {
     }
 
     private static latchDay(): string {
-        const d = new Date();
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        return localDayKey();
     }
 
     private persistLatch(field: 'maxProfitTripped' | 'maxLossTripped' | null): void {
@@ -375,7 +432,7 @@ export class LegManager {
         op.catch((e) => Log.log(`[${this.deps.ownerType}] strategyLatches ${field ? 'write' : 'clear'} failed (continuing):`, e));
     }
 
-    // Called once at startup (ContinuousStrategy.reconcile): restores today's max-profit latch if it was tripped
+    // Called at strategies-process startup (restoreLatches) and again from reconcile(): restores today's max-profit/max-loss latches if it was tripped
     // before the restart.
     async loadPersistedLatches(): Promise<void> {
         try {
@@ -466,12 +523,7 @@ export class LegManager {
         for (const [token, intent] of Array.from(this.pendingReEntries.entries())) {
             this.pendingReEntries.delete(token); // synchronous, before any await
             unwatchToken(token, this.deps.strategyRef);
-            try {
-                await this.currentOps().cancel(this.deps.userId, intent.orderId);
-                Log.log(`[${this.deps.ownerType}] Max-profit: pending re-entry cancelled: ${intent.tsym}`);
-            } catch (e) {
-                Log.log(`[${this.deps.ownerType}] Max-profit: pending re-entry cancel failed:`, e);
-            }
+            await this.cancelIntentOrSellBack(intent, 'Mass close');
         }
 
         this.deferredRootRefill = null; // never placed at the broker - just drop the intent
@@ -543,16 +595,17 @@ export class LegManager {
         entryLabel: string; // e.g. 'T1 entry' - used both as the capitalCheck logCtx and the success log line, so callers can preserve their own exact log wording
     }): Promise<Leg | null> {
         return this.withOpLock(async () => {
+            if (this.newOrdersBlocked() || this.capitalGateTripped) return null;
             const optionType = params.right === CALL ? 'CE' : 'PE';
             const excludeStrikes = Array.from(this.openStrikesFor(params.right));
-            const contract = await this.currentOps().pickContract(this.deps.userId, params.underlyingLtp, optionType, params.minPremium, excludeStrikes);
+            const contract = await this.currentOps(true).pickContract(this.deps.userId, params.underlyingLtp, optionType, params.minPremium, excludeStrikes);
             if (!(await this.capitalCheck(params.quantity, contract.premium, params.entryLabel))) {
                 return null;
             }
             // ANT token, not Kite's instrumentToken - live option ticks are keyed by
             // ANT's own token (OptionQuote.fromAnt), so this leg's tick subscription and
             // canHandle matching (both keyed off this token) must use it too.
-            const trade: Trade = await this.currentOps().buy(
+            const trade: Trade = await this.currentOps(true).buy(
                 this.deps.userId, contract.tradingSymbol, contract.token, params.quantity, contract.exchange, contract.premium
             );
             // Defense-in-depth: the buy already executed on the broker by this
@@ -560,7 +613,12 @@ export class LegManager {
             // silently erasing tracking of a pre-existing leg on the same token.
             const existing = this.legsByToken.get(trade.token);
             if (existing) {
-                Log.log(`[${this.deps.ownerType}] REFUSING entry - token ${trade.token} already has an open leg in memory: ${JSON.stringify(existing)}. New untracked fill: ${trade.tsym} qty=${trade.quantity} entry=${trade.price}`);
+                Log.log(`[${this.deps.ownerType}] REFUSING entry - token ${trade.token} already has an open leg in memory: ${JSON.stringify(existing)}. New untracked fill: ${trade.tsym} qty=${trade.quantity} entry=${trade.price} - selling the new quantity back`);
+                try {
+                    await this.sellBack(trade.tsym, trade.token, trade.quantity, contract.exchange);
+                } catch (sellErr) {
+                    Log.log(`[${this.deps.ownerType}] ALERT: could not sell back the refused duplicate entry (${trade.tsym} qty=${trade.quantity}) - UNTRACKED POSITION, manual action required:`, sellErr);
+                }
                 return null;
             }
             const leg: Leg = {
@@ -635,12 +693,14 @@ export class LegManager {
         // long as it stays open, since NaN propagates through the sum regardless of every
         // other leg's valid values, and `if (cumulative < threshold) return;` fails open on
         // NaN (any comparison with NaN is false in JS) - a spurious trip, not a real one.
-        if (leg && !Number.isNaN(ltp)) leg.lastLtp = ltp;
+        const validLtp = Number.isFinite(ltp) && ltp > 0; // a depth-only tick can carry ltp undefined/0
+        if (leg && validLtp) leg.lastLtp = ltp;
 
         if (!this.maxProfitTripped) this.checkAndMaybeTripMaxProfit(this.deps.getConfig());
         if (!this.maxLossTripped) this.checkAndMaybeTripMaxLoss(this.deps.getConfig());
         if (this.maxProfitTripped || this.maxLossTripped || this.eodClosing) { await this.closeAllLegsAndCancelReEntries(); return; }
 
+        if (!validLtp) return;
         if (!leg) {
             await this.checkRefillDrift(token, ltp);
             return;
@@ -781,18 +841,22 @@ export class LegManager {
             // committed, and the second commit silently overwrites the first
             // leg's tracking.
             await this.withOpLock(async () => {
+                if (this.newOrdersBlocked() || this.capitalGateTripped || this.legsByToken.get(leg.token) !== leg || leg.status !== 'OPEN') {
+                    leg.childByLevel.delete(level); // parent closed/closing or a stop latched while queued - nothing to hedge any more
+                    return;
+                }
                 // A deeper (or retraced/re-triggered) level under this same leg
                 // supersedes any of its shallower slots' still-resting refills -
                 // cancel them first so capitalCheck below sees the freed capital.
                 await this.cancelChildRefills(leg, level);
                 const excludeStrikes = Array.from(this.openStrikesFor(oppositeRight));
-                const contract = await this.currentOps().pickContract(this.deps.userId, underlyingLtp, optionType, cfg.minPremium ?? 100, excludeStrikes);
+                const contract = await this.currentOps(true).pickContract(this.deps.userId, underlyingLtp, optionType, cfg.minPremium ?? 100, excludeStrikes);
                 if (!(await this.capitalCheck(spawnQty, contract.premium, `Level ${level} spawn (${leg.tsym})`))) {
                     leg.childByLevel.delete(level); // free the slot regardless - harmless even though the capital gate (now tripped) means it won't actually be retried
                     return;
                 }
                 // ANT token, not Kite's instrumentToken - see openRootLeg's comment.
-                const trade: Trade = await this.currentOps().buy(
+                const trade: Trade = await this.currentOps(true).buy(
                     this.deps.userId, contract.tradingSymbol, contract.token, spawnQty, contract.exchange, contract.premium
                 );
                 const childLegId = this.nextLegId();
@@ -838,15 +902,26 @@ export class LegManager {
             await this.withOpLock(async () => {
                 // The leg may have hit its own target/square-off (and been deleted from
                 // legsByToken) on a later tick while this was queued on opLock.
-                if (!this.legsByToken.has(leg.token)) {
-                    leg.averagedLevels.delete(level); // leg closed before this could run
+                if (this.legsByToken.get(leg.token) !== leg || leg.status !== 'OPEN' || this.newOrdersBlocked()) {
+                    leg.averagedLevels.delete(level); // leg closed/closing (or a stop latched) before this could run
                     return;
                 }
                 if (!(await this.capitalCheck(addQty, ltp, `Level ${level} average (${leg.tsym})`))) {
                     leg.averagedLevels.delete(level); // free the slot regardless - harmless even though the capital gate (now tripped) means it won't actually be retried
                     return;
                 }
-                const trade: Trade = await this.currentOps().buy(this.deps.userId, leg.tsym, leg.token, addQty, leg.exchange, ltp);
+                const trade: Trade = await this.currentOps(true).buy(this.deps.userId, leg.tsym, leg.token, addQty, leg.exchange, ltp);
+                if (this.legsByToken.get(leg.token) !== leg) {
+                    // The leg was sold (target/square-off/mass close) while this add was filling: the sell used the
+                    // old size, so the added quantity is an untracked long - sell it back.
+                    Log.log(`[${this.deps.ownerType}] ALERT: average-add filled after ${leg.tsym} was closed (+${trade.quantity}) - selling it back`);
+                    try {
+                        await this.sellBack(leg.tsym, leg.token, trade.quantity, leg.exchange);
+                    } catch (sellErr) {
+                        Log.log(`[${this.deps.ownerType}] ALERT: could not sell back the orphaned average-add (${leg.tsym} qty=${trade.quantity}) - UNTRACKED POSITION, manual action required:`, sellErr);
+                    }
+                    return;
+                }
                 leg.avgPrice = (leg.avgPrice * leg.totalQuantity + trade.price * trade.quantity) / (leg.totalQuantity + trade.quantity);
                 leg.totalQuantity += trade.quantity;
                 Log.log(`[${this.deps.ownerType}] Level ${level} average: ${leg.tsym} +qty=${trade.quantity} @ ${trade.price} -> totalQty=${leg.totalQuantity} avg=${leg.avgPrice.toFixed(2)} (${leg.tsym})`);
@@ -944,11 +1019,12 @@ export class LegManager {
             // Locked so this capitalCheck reads a consistent snapshot against
             // any concurrent root entry/spawn decision.
             return await this.withOpLock(async () => {
+                if (this.newOrdersBlocked()) return false; // a stop latched while queued - never rest a new buy
                 const context = intent.isRoot ? 'Root refill' : `Nested refill (${intent.tsym})`;
                 if (!(await this.capitalCheck(intent.quantity, intent.limitPrice, context))) {
                     return false; // capital gate tripped - gone for good, root and nested alike, no retry
                 }
-                const { orderId } = await this.currentOps().buyLimit(
+                const { orderId } = await this.currentOps(true).buyLimit(
                     this.deps.userId, intent.tsym, intent.token, intent.quantity, intent.exchange, intent.limitPrice
                 );
                 intent.orderId = orderId;
@@ -989,12 +1065,7 @@ export class LegManager {
         if (ltp - intent.limitPrice <= cancelDistance) return;
         this.pendingReEntries.delete(token); // synchronous, before any await - same pattern as leg-close paths
         unwatchToken(token, this.deps.strategyRef);
-        try {
-            await this.currentOps().cancel(this.deps.userId, intent.orderId);
-            Log.log(`[${this.deps.ownerType}] Root refill cancelled - LTP drifted ${(ltp - intent.limitPrice).toFixed(2)} above limit ${intent.limitPrice}: ${intent.tsym}`);
-        } catch (e) {
-            Log.log(`[${this.deps.ownerType}] Root refill cancel failed:`, e);
-        }
+        await this.cancelIntentOrSellBack(intent, `Refill drift (LTP ${(ltp - intent.limitPrice).toFixed(2)} above limit ${intent.limitPrice})`);
     }
 
     // Buy fills: only meaningful for root-refill limit fills - every other Buy
@@ -1012,6 +1083,26 @@ export class LegManager {
         if (trade.action === 'Sell') {
             const leg = this.legsByToken.get(trade.token);
             if (!leg) return; // echo of a sell this instance already handled synchronously
+            let soldQty = Number(trade.quantity);
+            const echo = this.ignoredSellEchoes.get(trade.token);
+            if (echo && echo.expires > Date.now() && Number.isFinite(soldQty) && soldQty > 0) {
+                const consumed = Math.min(echo.qty, soldQty);
+                echo.qty -= consumed;
+                if (echo.qty <= 0) this.ignoredSellEchoes.delete(trade.token);
+                soldQty -= consumed;
+                Log.log(`[${this.deps.ownerType}] Ignoring ${consumed} of a Sell fill on ${trade.tsym} - echo of this instance's own sell-back`);
+                if (soldQty <= 0) return;
+            } else if (echo && echo.expires <= Date.now()) {
+                this.ignoredSellEchoes.delete(trade.token);
+            }
+            if (Number.isFinite(soldQty) && soldQty > 0 && soldQty < leg.totalQuantity) {
+                // Partial external sell: the rest of the leg is still live at the broker - keep tracking it.
+                const partialPnl = (trade.price - leg.avgPrice) * soldQty;
+                leg.totalQuantity -= soldQty;
+                this.recordOutcome(partialPnl >= 0 ? 'win' : 'loss', partialPnl);
+                Log.log(`[${this.deps.ownerType}] External/manual PARTIAL sell detected: ${leg.tsym} sold ${soldQty}, ${leg.totalQuantity} still open, pnl=${Math.round(partialPnl)}`);
+                return;
+            }
             this.legsByToken.delete(trade.token);
             const pnl = (trade.price - leg.avgPrice) * leg.totalQuantity;
             this.recordOutcome(pnl >= 0 ? 'win' : 'loss', pnl);
@@ -1034,7 +1125,7 @@ export class LegManager {
             this.handledBuyOrderIds.add(oid);
             Log.log(`[${this.deps.ownerType}] ALERT: superseded refill ${oid} (${superseded.tsym}) filled ${trade.quantity} @ ${trade.price} after it was replaced - selling it back so it is not left untracked`);
             try {
-                await this.currentOps().sell(this.deps.userId, superseded.tsym, superseded.token, trade.quantity, superseded.exchange);
+                await this.sellBack(superseded.tsym, superseded.token, trade.quantity, superseded.exchange);
             } catch (sellErr) {
                 Log.log(`[${this.deps.ownerType}] ALERT: could not sell back the filled superseded refill (${superseded.tsym} qty=${trade.quantity}) - UNTRACKED POSITION, manual action required:`, sellErr);
             }
@@ -1167,6 +1258,7 @@ export class LegManager {
         this.eodClosing = false;
         this.supersededRefills.clear();
         this.handledBuyOrderIds.clear();
+        this.ignoredSellEchoes.clear();
         this.maxProfitBaseline = this.realizedPnL;
     }
 }

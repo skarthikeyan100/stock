@@ -1,3 +1,4 @@
+import Log from '../../util/Log';
 import { Strategy } from '../../strategy/strategy';
 import { OptionQuote } from '../../model/model';
 import { subscribeToken, unsubscribeToken } from './DataClient';
@@ -110,16 +111,29 @@ export function unregisterTrade(token: string, strategy: Strategy, source: FeedS
     if (refCount(k) === 0) unsubscribeToken(token, source, exchange);
 }
 
-export async function routeOptionTick(source: FeedSource, quote: OptionQuote): Promise<void> {
-    const k = key(source, quote.token);
-    const dispatched = new Set<Strategy>();
+// Strategies currently holding or watching this token on this feed.
+export function optionTickTargets(source: FeedSource, token: string): Strategy[] {
+    const k = key(source, token);
+    const targets = new Set<Strategy>();
     for (const set of [tradeHolders.get(k), watchers.get(k)]) {
         if (!set) continue;
-        for (const strategy of set) {
-            if (!dispatched.has(strategy) && strategy.canHandleOptionQuote(quote)) {
-                dispatched.add(strategy);
-                await strategy.processOptionQuote(quote);
-            }
-        }
+        for (const strategy of set) targets.add(strategy);
     }
+    return [...targets];
+}
+
+// Delivers one tick to one strategy, isolated from the others.
+export async function deliverOptionTick(strategy: Strategy, quote: OptionQuote): Promise<void> {
+    try {
+        if (strategy.canHandleOptionQuote(quote)) await strategy.processOptionQuote(quote);
+    } catch (e) {
+        Log.log(`[tokenRouter] ${strategy.getClassName()}:${strategy.userId} processOptionQuote threw (other strategies unaffected):`, e);
+    }
+}
+
+// All targets concurrently (one throwing or awaiting a slow broker call must not starve the rest). The strategies
+// process uses optionTickTargets + deliverOptionTick with a latest-wins slot per strategy instead, so a slow
+// strategy cannot delay delivery to the others at all.
+export async function routeOptionTick(source: FeedSource, quote: OptionQuote): Promise<void> {
+    await Promise.all(optionTickTargets(source, quote.token).map((strategy) => deliverOptionTick(strategy, quote)));
 }
