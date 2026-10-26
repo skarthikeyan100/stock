@@ -74,6 +74,7 @@ export default class MomentumSignal {
                 if (ce?.tbq !== undefined && ce?.tsq !== undefined && pe?.tbq !== undefined && pe?.tsq !== undefined) {
                     const callFavored = ce.tbq > ce.tsq && pe.tbq < pe.tsq;
                     const putFavored = ce.tbq < ce.tsq && pe.tbq > pe.tsq;
+                    Log.log(`[MomentumSignal] CE tbq=${ce.tbq} tsq=${ce.tsq} | PE tbq=${pe.tbq} tsq=${pe.tsq} -> ${callFavored ? CALL : putFavored ? PUT : 'inconclusive'}`);
                     if (callFavored) return CALL;
                     if (putFavored) return PUT;
                     return null; // inconclusive - CE/PE order books disagree with each other

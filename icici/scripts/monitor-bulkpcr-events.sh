@@ -34,6 +34,11 @@ s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] (\S+) is ([0-9]+) points below its
 s/^\[([0-9:]{8})\] .*\[(ant|zerodha|breeze)\] (\w+) buy did not fill - will retry.*(Margin Shortfall[^"]{0,60}|REJECTED|timeout)?.*/\1 \U\2\E !!! \3 buy NOT filled - retrying/p;t
 # --- direction + slots ---
 s/^\[([0-9:]{8})\] .*PCR=([0-9.]+) .*resolved direction (\w+).*/\1 PCR=\2 -> \3/p;t
+s/^\[([0-9:]{8})\] .*MomentumSignal\] CE tbq=([0-9.]+) tsq=([0-9.]+) \| PE tbq=([0-9.]+) tsq=([0-9.]+) -> (\w+).*/\1 MOMENTUM CE b\/s=\2\/\3 PE b\/s=\4\/\5 -> \6/p;t
+s/^\[([0-9:]{8})\] .*Momentum \((\w+)\) disagrees with PCR \((\w+)\).*/\1 MOMENTUM \2 vs PCR \3 -> entry BLOCKED/p;t
+s/^\[([0-9:]{8})\] .*BulkPcrStrategy\] Momentum \((\w+)\) agrees with PCR.*/\1 MOMENTUM=\2 agrees/p;t
+s/^\[([0-9:]{8})\] .*BulkPcrStrategy\] Momentum unavailable.*/\1 MOMENTUM none (PCR alone)/p;t
+s/^\[([0-9:]{8})\] .*MomentumSignal\] Timed out.*/\1 MOMENTUM timed out (PCR alone)/p;t
 s/^\[([0-9:]{8})\] .*AutoStart:[^]]*\] ([0-9:]{5}) slot: armed .*brokers=(\[[^]]*\]).*/\1 SLOT \2 armed \3/p;t
 s/^\[([0-9:]{8})\] .*AutoStart:[^]]*\] Missed ([0-9:]{5}) slot.*/\1 SLOT \2 MISSED (late)/p;t
 s/^\[([0-9:]{8})\] .*AutoStart:[^]]*\] ([0-9:]{5}) slot: .*(already running|loss-stopped|STUCK).*/\1 SLOT \2 skipped: \3/p;t

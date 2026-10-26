@@ -598,6 +598,7 @@ export default class BulkPcrStrategy extends Strategy {
                 Log.log(`[BulkPcrStrategy] Momentum (${momentumFavors}) disagrees with PCR (${pcrFavors}) - blocking entry this window`);
                 return null;
             }
+            Log.log(`[BulkPcrStrategy] Momentum ${momentumFavors == null ? 'unavailable/inconclusive - PCR alone decides' : `(${momentumFavors}) agrees with PCR`}`);
             return pcrFavors;
         } catch (e) {
             Log.log('[BulkPcrStrategy] PCR check failed, blocking entry (fail-closed):', e);
