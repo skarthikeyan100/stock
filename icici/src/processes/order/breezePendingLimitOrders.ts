@@ -86,24 +86,41 @@ export async function loadPendingBreezeLimitOrdersFromMongo(): Promise<void> {
 // Called on an interval from orderProcess.ts. Field names/terminal-status
 // regex per Breeze.getFillPrice's confirmed-live shape: status "Ordered"
 // while pending, average_price populated (and > 0) on fill.
+let pollInFlight = false;
 export async function pollPendingBreezeLimitOrders(): Promise<void> {
+    if (pollInFlight) return; // overlapping polls would double-process (and double-notify) the same order
+    pollInFlight = true;
+    try {
+        await pollPendingBreezeLimitOrdersOnce();
+    } finally {
+        pollInFlight = false;
+    }
+}
+
+async function pollPendingBreezeLimitOrdersOnce(): Promise<void> {
     if (pending.size === 0) return;
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) return;
 
-    for (const [orderId, order] of pending) {
+    for (const [orderId, order] of Array.from(pending)) {
+        if (!pending.has(orderId)) continue;
         try {
             const result = await breeze.getOrderDetail(order.exchange, orderId);
             const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
             if (!record) continue;
 
             const price = Number(record.average_price);
-            if (price > 0) {
-                untrackPendingBreezeLimitOrder(orderId);
+            const pendingQty = Number(record.pending_quantity ?? 0);
+            const cancelledQty = Number(record.cancelled_quantity ?? 0);
+            const brokerQty = Number(record.quantity ?? 0) > 0 ? Number(record.quantity) : order.quantity;
+            const isTerminalDead = !!record.status && /rejected|cancelled|expired/i.test(String(record.status));
+            // Books `qty` filled at the broker's average price. The order is untracked only AFTER the fill is booked,
+            // so a recordFill failure is retried on the next poll (recordFill dedupes on brokerOrderId).
+            const bookFill = async (qty: number) => {
                 const trade = new Trade();
                 trade.tsym = order.tradingSymbol;
                 trade.token = order.antToken;
-                trade.quantity = order.quantity;
+                trade.quantity = qty;
                 trade.price = price;
                 trade.lastTradePrice = price;
                 trade.action = order.action;
@@ -112,15 +129,35 @@ export async function pollPendingBreezeLimitOrders(): Promise<void> {
                 trade.broker = 'breeze';
                 trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
-                Log.log(`[order] Pending Breeze limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
-            } else if (record.status && /rejected|cancelled|expired/i.test(String(record.status))) {
+                Log.log(`[order] Pending Breeze limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} qty=${qty} at ${trade.price}`);
+            };
+
+            if (price > 0 && pendingQty === 0 && !(cancelledQty > 0) && !isTerminalDead) {
+                await bookFill(order.quantity);
+                untrackPendingBreezeLimitOrder(orderId);
+            } else if (price > 0 && pendingQty === 0 && cancelledQty > 0 && !isTerminalDead) {
+                // Partly filled, the rest cancelled.
+                const filled = Math.min(order.quantity, Math.max(0, brokerQty - cancelledQty));
+                if (filled > 0) await bookFill(filled);
+                untrackPendingBreezeLimitOrder(orderId);
+                if (order.quantity - filled > 0) {
+                    for (const listener of cancelledListeners) {
+                        listener(order.userId, order.tradingSymbol, order.antToken, order.quantity - filled, order.exchange, order.action, 'breeze', orderId, 'CANCELLED');
+                    }
+                }
+            } else if (isTerminalDead) {
                 // "Expired" (live incident 2026-09-24): every resting sell
                 // chunk is a DAY order, which ICICI reports back with this
                 // exact status once the exchange cancels it unfilled at EOD -
                 // previously unmatched by this regex, so an EOD-expired
                 // chunk sat in `pending` forever and never fired the
                 // cancelled-listener that re-places the exit.
+                // A cancelled/expired order can still carry a partial fill: book it and report only the remainder.
+                const filledPartial = price > 0 ? Math.min(order.quantity, Math.max(0, brokerQty - (cancelledQty > 0 ? cancelledQty : pendingQty))) : 0;
+                if (filledPartial > 0) await bookFill(filledPartial);
                 untrackPendingBreezeLimitOrder(orderId);
+                const remainingQty = order.quantity - filledPartial;
+                if (remainingQty <= 0) continue;
                 const isExpired = /expired/i.test(String(record.status));
                 // But firing the cancelled-listener for an EOD expiry means an
                 // immediate same-day re-placement attempt (onOrderCancelled ->
@@ -136,7 +173,7 @@ export async function pollPendingBreezeLimitOrders(): Promise<void> {
                 } else {
                     const reason = /rejected/i.test(String(record.status)) ? 'REJECTED' : 'CANCELLED';
                     for (const listener of cancelledListeners) {
-                        listener(order.userId, order.tradingSymbol, order.antToken, order.quantity, order.exchange, order.action, 'breeze', orderId, reason);
+                        listener(order.userId, order.tradingSymbol, order.antToken, remainingQty, order.exchange, order.action, 'breeze', orderId, reason);
                     }
                     Log.log(`[order] Pending Breeze limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${record.status}`);
                 }

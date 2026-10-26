@@ -10,8 +10,8 @@ import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
-import { trackPendingLimitOrder, untrackPendingLimitOrder } from './pendingLimitOrders';
-import { BuyRequest, cancelOrderWithFillRecheck } from './BrokerExecutor';
+import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol } from './pendingLimitOrders';
+import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError } from './BrokerExecutor';
 
 // Kite is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -314,30 +314,78 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
 
 export async function squareOffOnKite(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const kite = Kite.getInstance();
-    Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId}`);
-    // ANT commonToken for pricing (see getMarketableKitePrice) - every open
-    // Kite trade in bookkeeping.trades carries one, set at entry by every
-    // buy path above.
-    const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
-    if (!existing?.token) {
-        throw new Error(`squareOffOnKite: no tracked open trade (with a token) found for ${tsym} (${userId}) - cannot price a marketable limit sell without it`);
+    // One exit operation per position at a time (shared with the ANT path): a duplicate call (manual
+    // request racing exitMonitor, or a chunked caller's retry) must not place a second sell.
+    const pendingKey = `kite:${userId}:${tsym}`;
+    if (bookkeeping.pendingSquareOffs.has(pendingKey)) {
+        throw new Error(`Square-off for ${tsym} is already in progress for ${userId}`);
     }
-    const sellPrice = await getMarketableKitePrice(existing.token, exchange, 'SELL');
-    const { orderId } = await kite.placeLimitSellOption(tsym, quantity, sellPrice, exchange);
+    bookkeeping.pendingSquareOffs.add(pendingKey);
+    try {
+        Log.log(`[order] Manual square-off ${tsym} qty=${quantity} for ${userId}`);
+        // ANT commonToken for pricing (see getMarketableKitePrice) - every open
+        // Kite trade in bookkeeping.trades carries one, set at entry by every
+        // buy path above.
+        const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId && (t.broker ?? 'kite') === 'kite');
+        if (!existing?.token) {
+            throw new Error(`squareOffOnKite: no tracked open trade (with a token) found for ${tsym} (${userId}) - cannot price a marketable limit sell without it`);
+        }
+        const token = existing.token;
 
-    const trade = new Trade();
-    trade.tsym = tsym;
-    trade.quantity = quantity;
-    trade.action = 'Sell';
-    trade.status = 'COMPLETE';
-    trade.user = userId;
-    trade.broker = 'kite';
-    trade.brokerOrderId = orderId;
-    const fillPrice = await kite.getFillPrice(orderId);
-    trade.price = fillPrice;
+        // A resting limit sell for this position (e.g. BulkPcr's target exit) must come off before this
+        // market-style sell, or both could fill and oversell. Each is cancelled with a fill recheck; a fill that
+        // landed in the race window is still unbooked (the poller books it), so it's subtracted here.
+        const openBefore = existing.quantity;
+        let filledNotBooked = 0;
+        for (const resting of findPendingOrdersForSymbol(userId, tsym).filter((o) => o.action === 'Sell')) {
+            try {
+                await cancelOrderOnKite(resting.orderId);
+            } catch (e) {
+                if (e instanceof OrderAlreadyFilledError) filledNotBooked += e.filledQuantity;
+                else throw e; // state of the resting sell unknown: selling now could double-sell
+            }
+        }
+        if (filledNotBooked > 0 || openBefore !== existing.quantity) {
+            quantity = Math.min(quantity, existing.quantity, openBefore - filledNotBooked);
+        } else {
+            quantity = Math.min(quantity, existing.quantity);
+        }
+        if (!(quantity > 0)) {
+            Log.log(`[order] squareOffOnKite: nothing left to sell for ${tsym} (${userId}) after resting sells settled`);
+            const done = new Trade();
+            done.tsym = tsym;
+            done.quantity = 0;
+            done.price = 0;
+            done.action = 'Sell';
+            done.status = 'COMPLETE';
+            done.user = userId;
+            done.broker = 'kite';
+            return done;
+        }
 
-    await bookkeeping.recordFill(trade);
-    return trade;
+        const sellPrice = await getMarketableKitePrice(token, exchange, 'SELL');
+        const { orderId } = await kite.placeLimitSellOption(tsym, quantity, sellPrice, exchange);
+        // Tracked until its fill is booked: if the fill wait below times out the order may still fill, and the
+        // pending poller then books it instead of leaving the sale unrecorded.
+        trackPendingLimitOrder({ orderId, userId, tradingSymbol: tsym, instrumentToken: token, quantity, exchange, action: 'Sell' });
+
+        const trade = new Trade();
+        trade.tsym = tsym;
+        trade.token = token;
+        trade.quantity = quantity;
+        trade.action = 'Sell';
+        trade.status = 'COMPLETE';
+        trade.user = userId;
+        trade.broker = 'kite';
+        trade.brokerOrderId = orderId;
+        trade.price = await kite.getFillPrice(orderId);
+        untrackPendingLimitOrder(orderId);
+
+        await bookkeeping.recordFill(trade);
+        return trade;
+    } finally {
+        bookkeeping.pendingSquareOffs.delete(pendingKey);
+    }
 }
 
 // BrokerExecutor.buy() implementation (see BrokerExecutor.ts) - places a
@@ -698,34 +746,73 @@ exitMonitor.onExit('kite', async (trade: Trade, exchange: 'NFO' | 'BFO') => {
 // but not yet verified against a live response from this account - log the
 // raw payloads on the first real trigger and correct field names here if the
 // broker's actual shape disagrees.
+let gttPollInFlight = false;
+const GTT_DEAD_STATUSES = new Set(['disabled', 'expired', 'cancelled', 'rejected', 'deleted']);
+
 export async function pollGttFills(): Promise<void> {
+    if (gttPollInFlight) return;
+    gttPollInFlight = true;
+    try {
+        await pollGttFillsOnce();
+    } finally {
+        gttPollInFlight = false;
+    }
+}
+
+async function pollGttFillsOnce(): Promise<void> {
     const kite = Kite.getInstance();
     if (!(await kite.hasValidSession())) return;
 
     const openGttTrades = bookkeeping.trades.filter((t) => t.gttTriggerId != null);
     if (openGttTrades.length === 0) return;
 
-    const liveGtts = await kite.getGTTs();
-    const activeIds = new Set(liveGtts.filter((g: any) => g.status === 'active').map((g: any) => g.id));
+    const liveGtts: any[] = await kite.getGTTs();
+    const byId = new Map<any, any>(liveGtts.map((g: any) => [g.id, g]));
 
     for (const trade of openGttTrades) {
-        if (activeIds.has(trade.gttTriggerId)) continue; // still live, not closed
+        const gtt = byId.get(trade.gttTriggerId);
+        if (!gtt) {
+            Log.log(`[order] GTT poll: GTT ${trade.gttTriggerId} for ${trade.tsym} (${trade.user}) not in the broker's list - leaving the position as is`);
+            continue;
+        }
+        if (gtt.status === 'active') continue; // still live, not closed
+
+        if (GTT_DEAD_STATUSES.has(gtt.status)) {
+            // Cancelled/expired/disabled: nothing was sold. Recording a sell here would be a phantom exit. The GTT no
+            // longer protects the position, so drop the reference and fall back to in-app target/SL monitoring.
+            Log.log(`[order] ALERT: GTT ${trade.gttTriggerId} for ${trade.tsym} (${trade.user}) is '${gtt.status}', not triggered - position still open; falling back to in-app target/SL monitoring`);
+            trade.gttTriggerId = undefined;
+            if (trade.token && (trade.targetPrice != null || trade.stopLossPrice != null)) {
+                const exchange: 'NFO' | 'BFO' = trade.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO';
+                exitMonitor.registerTrade(trade, exchange, 'kite');
+            }
+            continue;
+        }
+        if (gtt.status !== 'triggered') continue; // unknown status: act only on a confirmed trigger
 
         try {
             const orders = await kite.getKiteConnect().getOrders();
+            const entryMs = trade.entryTime ? new Date(trade.entryTime).getTime() : 0;
             const sellFill = (orders as any[])
-                .filter((o: any) => o.tradingsymbol === trade.tsym && o.transaction_type === 'SELL' && o.status === 'COMPLETE')
+                .filter((o: any) => o.tradingsymbol === trade.tsym && o.transaction_type === 'SELL' && o.status === 'COMPLETE' && new Date(o.order_timestamp).getTime() >= entryMs)
                 .sort((a: any, b: any) => new Date(b.order_timestamp).getTime() - new Date(a.order_timestamp).getTime())[0];
+            if (!sellFill) {
+                // Triggered but the exit order isn't COMPLETE yet (or not visible): retry next poll rather than
+                // booking a guessed exit.
+                Log.log(`[order] GTT poll: ${trade.tsym} (${trade.user}) GTT triggered but no completed sell order yet - will retry`);
+                continue;
+            }
 
             const sellTrade = new Trade();
             sellTrade.tsym = trade.tsym;
             sellTrade.token = trade.token;
-            sellTrade.quantity = trade.quantity;
-            sellTrade.price = sellFill?.average_price ?? trade.targetPrice;
+            sellTrade.quantity = Math.min(trade.quantity, Number(sellFill.filled_quantity) > 0 ? Number(sellFill.filled_quantity) : trade.quantity);
+            sellTrade.price = sellFill.average_price;
             sellTrade.action = 'Sell';
             sellTrade.status = 'COMPLETE';
             sellTrade.user = trade.user;
             sellTrade.broker = 'kite';
+            sellTrade.brokerOrderId = sellFill.order_id; // dedupes against reconcileManualSells seeing the same order
 
             await bookkeeping.recordFill(sellTrade);
             Log.log(`[order] GTT poll: ${trade.tsym} (${trade.user}) closed, recorded exit at ${sellTrade.price}`);
@@ -747,7 +834,18 @@ export async function pollGttFills(): Promise<void> {
 // finds every COMPLETE SELL order for each open trade's tsym since that
 // trade's entryTime and lets recordFill sort out which (if any) are actually
 // new. Called on an interval from orderProcess.ts, same cadence as pollGttFills.
+let manualSellsInFlight = false;
 export async function reconcileManualSells(): Promise<void> {
+    if (manualSellsInFlight) return;
+    manualSellsInFlight = true;
+    try {
+        await reconcileManualSellsOnce();
+    } finally {
+        manualSellsInFlight = false;
+    }
+}
+
+async function reconcileManualSellsOnce(): Promise<void> {
     const kite = Kite.getInstance();
     if (!(await kite.hasValidSession())) return;
     if (bookkeeping.trades.length === 0) return;
@@ -760,14 +858,21 @@ export async function reconcileManualSells(): Promise<void> {
         return;
     }
 
-    for (const trade of bookkeeping.trades) {
-        const entryTimeMs = trade.entryTime?.getTime() ?? 0;
+    // Each broker order is attributed to at most one tracked trade per pass: two rows for the same tsym (different
+    // users on this one Kite account) must not both claim the same sell.
+    const claimed = new Set<string>();
+    for (const trade of bookkeeping.trades.slice()) {
+        // These are Kite orders - another broker's row for the same tsym must never absorb them.
+        if ((trade.broker ?? 'kite') !== 'kite') continue;
+        const entryTimeMs = trade.entryTime ? new Date(trade.entryTime).getTime() : 0;
         const sellFills = orders.filter((o: any) =>
             o.tradingsymbol === trade.tsym && o.transaction_type === 'SELL' && o.status === 'COMPLETE' &&
             new Date(o.order_timestamp).getTime() >= entryTimeMs
         );
 
         for (const fill of sellFills) {
+            if (claimed.has(fill.order_id)) continue;
+            claimed.add(fill.order_id);
             try {
                 const sellTrade = new Trade();
                 sellTrade.tsym = trade.tsym;

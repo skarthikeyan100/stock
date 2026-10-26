@@ -934,9 +934,56 @@ async function recheckUnfilledExit(order: PendingAntLimitOrder, counters: ExitRe
             Log.log(`[order] re-price: ${order.tradingSymbol} (${order.userId}) fully sold by the resting sell - nothing to re-place`);
             return;
         }
-        await placeReplacementExit(order, remaining, lastLimit, attempt);
+        try {
+            await placeReplacementExit(order, remaining, lastLimit, attempt);
+        } catch (placeErr: any) {
+            // The resting sell is already cancelled, so a failed replacement leaves the position with NO exit. Retry
+            // when the failure proves no order exists at the broker; an ambiguous one (e.g. timeout) is not retried.
+            if (placeErr?.orderNotPlaced) {
+                Log.log(`[order] re-price: replacement exit for ${order.tradingSymbol} (${order.userId}) not placed (${placeErr?.message ?? placeErr}) - retrying`);
+                scheduleReplacementRetry(order, lastLimit, attempt, 1);
+                return;
+            }
+            throw placeErr;
+        }
     } catch (e: any) {
         Log.log(`[order] ALERT: re-price of exit for ${order.tradingSymbol} (${order.userId}) failed - position may be unprotected: ${e?.message ?? e}`);
+    } finally {
+        bookkeeping.pendingSquareOffs.delete(key);
+    }
+}
+
+const EXIT_MAX_REPLACEMENT_FAILURES = 5;
+
+// Retries a replacement exit whose placement definitely did not reach the broker. Same one-exit-per-position
+// gate as the re-price check; re-reads the open quantity and defers to any sell that has appeared meanwhile.
+function scheduleReplacementRetry(order: PendingAntLimitOrder, lastLimit: number, attempt: number, failures: number): void {
+    setTimeout(() => {
+        void retryReplacementExit(order, lastLimit, attempt, failures);
+    }, 15000);
+}
+
+async function retryReplacementExit(order: PendingAntLimitOrder, lastLimit: number, attempt: number, failures: number): Promise<void> {
+    const key = `${order.userId}:${order.tradingSymbol}`;
+    if (bookkeeping.pendingSquareOffs.has(key)) {
+        scheduleReplacementRetry(order, lastLimit, attempt, failures);
+        return;
+    }
+    bookkeeping.pendingSquareOffs.add(key);
+    try {
+        const remaining = openQuantity(order.userId, order.tradingSymbol);
+        if (remaining <= 0) return;
+        if (pendingAntSellsFor(order.userId, order.tradingSymbol).length > 0) {
+            Log.log(`[order] re-price retry: ${order.tradingSymbol} (${order.userId}) already has a resting sell - not placing another`);
+            return;
+        }
+        await placeReplacementExit(order, remaining, lastLimit, attempt);
+    } catch (e: any) {
+        if (e?.orderNotPlaced && failures + 1 < EXIT_MAX_REPLACEMENT_FAILURES) {
+            scheduleReplacementRetry(order, lastLimit, attempt, failures + 1);
+            return;
+        }
+        Log.log(`[order] ALERT: replacement exit for ${order.tradingSymbol} (${order.userId}) failed ${failures + 1} time(s) - position has NO exit order, manual action required: ${e?.message ?? e}`);
     } finally {
         bookkeeping.pendingSquareOffs.delete(key);
     }
@@ -946,19 +993,30 @@ async function placeReplacementExit(order: PendingAntLimitOrder, remaining: numb
     const ant = ANT.getInstance();
     // No live quote: hold the last limit rather than stepping down again on every check (a quote outage
     // would otherwise compound the discount with no floor).
-    const ltp = await safeAntQuote(order.exchange, order.instrumentId, EXIT_QUOTE_RETRY_MS, true);
+    let ltp = 0;
+    try {
+        ltp = await safeAntQuote(order.exchange, order.instrumentId, EXIT_QUOTE_RETRY_MS, true);
+    } catch (e: any) {
+        throw Object.assign(e instanceof Error ? e : new Error(String(e)), { orderNotPlaced: true }); // nothing sent yet
+    }
     const limit = roundToTick(ltp > 0 ? ltp * 0.99 : lastLimit);
-    // Not retried: a placement that timed out may already have been accepted by the broker, and placing again
-    // would sell the same quantity twice. The error propagates to the caller's alert.
-    const { orderNo } = await ant.placeOrder({
-        exchange: order.exchange,
-        instrumentId: order.instrumentId,
-        tradingSymbol: order.tradingSymbol,
-        quantity: remaining,
-        transactionType: 'SELL',
-        price: limit,
-        product: order.product,
-    });
+    // A placement that TIMED OUT may already have been accepted by the broker, so only an outright rejection (the
+    // broker answered, with an error or without an order id) is marked orderNotPlaced and safe to retry.
+    let orderNo: string;
+    try {
+        ({ orderNo } = await ant.placeOrder({
+            exchange: order.exchange,
+            instrumentId: order.instrumentId,
+            tradingSymbol: order.tradingSymbol,
+            quantity: remaining,
+            transactionType: 'SELL',
+            price: limit,
+            product: order.product,
+        }));
+    } catch (e: any) {
+        const answered = !!e?.response || /^ANT placeOrder failed/.test(String(e?.message ?? ''));
+        throw answered ? Object.assign(e instanceof Error ? e : new Error(String(e)), { orderNotPlaced: true }) : e;
+    }
     const next: PendingAntLimitOrder = { orderId: orderNo, userId: order.userId, tradingSymbol: order.tradingSymbol, instrumentId: order.instrumentId, quantity: remaining, exchange: order.exchange, action: 'Sell', product: order.product };
     trackPendingAntLimitOrder(next);
     Log.log(`[order] re-price ${attempt + 1}: ${order.tradingSymbol} (${order.userId}) ${remaining} re-placed as ${orderNo} at ${limit} (ltp=${ltp})`);

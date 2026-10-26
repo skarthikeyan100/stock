@@ -85,13 +85,15 @@ export async function buyChunked(
                     return { quantity: filledQty, avgPrice: filledValue / filledQty };
                 }
             }
-            throw new Error(
+            // filledQuantity/averagePrice carried on the error: earlier chunks are real, already-booked positions, so a
+            // caller must be able to tell a partial entry from a clean failure.
+            throw Object.assign(new Error(
                 `buyChunked: chunk ${i + 1}/${chunks.length} failed after filling ${filledQty}/${request.quantity} - ` +
                     `${request.quantity - filledQty} qty NOT placed. Manual review required. Underlying error: ${e?.message ?? e}`
-            );
+            ), { filledQuantity: filledQty, averagePrice: filledQty > 0 ? filledValue / filledQty : 0, partial: filledQty > 0 });
         }
     }
-    return { quantity: filledQty, avgPrice: filledValue / filledQty };
+    return { quantity: filledQty, avgPrice: filledQty > 0 ? filledValue / filledQty : 0 };
 }
 
 export async function squareOffChunked(
@@ -125,13 +127,13 @@ export async function squareOffChunked(
                 filledQty += e.filledQuantity;
                 filledValue += e.filledQuantity * e.averagePrice;
             }
-            throw new Error(
+            throw Object.assign(new Error(
                 `squareOffChunked: chunk ${i + 1}/${chunks.length} failed after selling ${filledQty}/${quantity} - ` +
                     `${quantity - filledQty} qty NOT sold. Manual review required. Underlying error: ${e?.message ?? e}`
-            );
+            ), { filledQuantity: filledQty, averagePrice: filledQty > 0 ? filledValue / filledQty : 0, partial: filledQty > 0 });
         }
     }
-    return { quantity: filledQty, avgPrice: filledValue / filledQty };
+    return { quantity: filledQty, avgPrice: filledQty > 0 ? filledValue / filledQty : 0 };
 }
 
 // LIMIT-priced counterpart of squareOffChunked above - places resting sell
@@ -166,10 +168,10 @@ export async function squareOffLimitChunked(
             placedQty += chunks[i];
             Log.log(`[order] squareOffLimitChunked: chunk ${i + 1}/${chunks.length} placed qty=${chunks[i]} @ ${limitPrice} for ${userId}`);
         } catch (e: any) {
-            throw new Error(
+            throw Object.assign(new Error(
                 `squareOffLimitChunked: chunk ${i + 1}/${chunks.length} failed to place after placing ${placedQty}/${quantity} - ` +
                     `${quantity - placedQty} qty NOT resting. Manual review required. Underlying error: ${e?.message ?? e}`
-            );
+            ), { placedQuantity: placedQty, orderIds: orderIds.slice(), partial: placedQty > 0 });
         }
     }
     return { orderIds };

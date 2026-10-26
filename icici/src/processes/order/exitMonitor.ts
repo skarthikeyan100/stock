@@ -2,6 +2,7 @@ import Log from '../../util/Log';
 import { writeJsonLine } from '../../ipc/jsonLines';
 import { OptionQuote, Trade } from '../../model/model';
 import configService from '../../prism/ConfigService';
+import { BROKER_TO_FEED_SOURCE, DEFAULT_FEED_SOURCE } from '../../ipc/feedSource';
 
 // In-app target/SL exit monitoring, for trades placed with useGTT=false (see
 // bookkeeping.getUserUseGTT / kiteExecutor.finalizeEntry, antExecutor.finalizeEntry).
@@ -39,8 +40,20 @@ type PriceUpdateListener = () => void;
 // restart re-clobbered the same token).
 const monitored = new Map<string, MonitoredTrade>(); // keyed by monitorKey(user, token)
 
-function monitorKey(user: string, token: string): string {
-    return `${user || 'Default'}:${token}`;
+// Broker is part of the key too: one user (a strategy pseudo-user) can hold the same
+// contract token on two brokers at once, and each needs its own entry.
+function monitorKey(user: string, token: string, broker?: Broker): string {
+    return `${user || 'Default'}:${broker ?? ''}:${token}`;
+}
+
+// Resolves the bookkeeping aggregate row (one per tsym+user+broker) behind a monitored trade.
+// Wired by orderProcess.ts (bookkeeping imports this module, so it can't be imported here).
+// A chunked entry registers one detached Trade per chunk, each carrying only that chunk's
+// quantity - the exit must size off the aggregate, and live-price updates must reach it too.
+type AggregateResolver = (trade: Trade, broker: Broker) => Trade | undefined;
+let aggregateResolver: AggregateResolver | undefined;
+export function setAggregateResolver(resolver: AggregateResolver): void {
+    aggregateResolver = resolver;
 }
 
 // True if any entry in `monitored` (for any user) is currently watching this
@@ -52,9 +65,9 @@ function monitorKey(user: string, token: string): string {
 // watcher for that token is gone. Otherwise unregistering one user's trade
 // would silently kill live ticks (and therefore target/SL monitoring) for
 // another user's still-open trade on the same token.
-function isTokenWatched(token: string): boolean {
+function isTokenWatched(token: string, exchange?: 'NFO' | 'BFO'): boolean {
     for (const entry of monitored.values()) {
-        if (entry.trade.token === token) return true;
+        if (entry.trade.token === token && (exchange === undefined || entry.exchange === exchange)) return true;
     }
     return false;
 }
@@ -143,28 +156,37 @@ export function registerTrade(trade: Trade, exchange: 'NFO' | 'BFO', broker: Bro
         Log.log(`[order] exitMonitor: skipping ${trade.tsym} for ${trade.user} - self-managed strategy, never watched here`);
         return;
     }
-    const key = monitorKey(trade.user, trade.token);
+    const key = monitorKey(trade.user, trade.token, broker);
     // Check BEFORE inserting this entry - if some other entry (e.g. another
     // user's trade) already watches this token, the underlying token
     // subscription is already live and must not be requested again.
-    const alreadySubscribed = isTokenWatched(trade.token);
+    const alreadySubscribed = isTokenWatched(trade.token, exchange);
     monitored.set(key, { trade, exchange, broker, watchOnly });
     if (!alreadySubscribed) {
-        writeJsonLine(process.stdout, { cmd: 'subscribe', token: trade.token });
+        // exchange + source must be explicit: a SENSEX (BFO) token subscribed without
+        // the exchange is requested as NFO and never ticks.
+        writeJsonLine(process.stdout, { cmd: 'subscribe', token: trade.token, source: BROKER_TO_FEED_SOURCE[broker] ?? DEFAULT_FEED_SOURCE, exchange });
     }
     Log.log(`[order] exitMonitor watching ${trade.tsym} (token ${trade.token}, ${broker}) for ${trade.user}: target=${trade.targetPrice} stopLoss=${trade.stopLossPrice}${watchOnly ? ' (watch-only, broker owns exit)' : ''}`);
 }
 
-export function unregisterTrade(user: string, token: string): void {
-    const key = monitorKey(user, token);
-    if (!monitored.has(key)) return;
-    monitored.delete(key);
+// `broker` omitted removes every broker's entry for this user+token.
+export function unregisterTrade(user: string, token: string, broker?: Broker): void {
+    const removed: MonitoredTrade[] = [];
+    for (const [key, entry] of Array.from(monitored.entries())) {
+        if (entry.trade.token !== token || (entry.trade.user || 'Default') !== (user || 'Default')) continue;
+        if (broker !== undefined && entry.broker !== broker) continue;
+        monitored.delete(key);
+        removed.push(entry);
+    }
     // Only unsubscribe at the token level once nobody else is still
     // watching it (see isTokenWatched above) - otherwise this would
     // silently cut off live ticks for another user still holding a
     // position in the same contract.
-    if (!isTokenWatched(token)) {
-        writeJsonLine(process.stdout, { cmd: 'unsubscribe', token });
+    for (const entry of removed) {
+        if (!isTokenWatched(token, entry.exchange)) {
+            writeJsonLine(process.stdout, { cmd: 'unsubscribe', token, source: BROKER_TO_FEED_SOURCE[entry.broker] ?? DEFAULT_FEED_SOURCE, exchange: entry.exchange });
+        }
     }
 }
 
@@ -177,7 +199,13 @@ export function reconcileFromTrades(trades: Trade[]): void {
     let reconciled = 0;
     for (const trade of trades) {
         if (!trade.token) continue;
-        if (monitored.has(monitorKey(trade.user, trade.token))) continue;
+        // Breeze trades have no exit handler here (Breeze entries never register) - restoring one as 'kite'
+        // would square it off on the wrong broker.
+        if (trade.broker === 'breeze') continue;
+        const reBroker: Broker = trade.broker === 'ant' || trade.broker === 'prism' || trade.broker === 'kite'
+            ? trade.broker
+            : trade.antOrderNo ? 'ant' : trade.prismCoverOrderNo ? 'prism' : 'kite';
+        if (monitored.has(monitorKey(trade.user, trade.token, reBroker))) continue;
         if (trade.targetPrice == null && trade.stopLossPrice == null) continue;
         // Exchange/broker aren't stored on Trade - infer exchange the same
         // way setTargetStopLoss does (tsym prefix), and broker from
@@ -185,7 +213,7 @@ export function reconcileFromTrades(trades: Trade[]): void {
         // prismCoverOrderNo present -> prism, otherwise kite - matches
         // this file's existing Broker union).
         const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
-        const broker: Broker = trade.antOrderNo ? 'ant' : trade.prismCoverOrderNo ? 'prism' : 'kite';
+        const broker: Broker = reBroker;
         // A GTT/bracket/cover trade already has its exit owned by the broker -
         // reconcile it watch-only (mark-to-market only) so a restart doesn't
         // also arm an in-app square-off that would race the broker's own
@@ -223,7 +251,12 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
 
     for (const entry of matches) {
         const { trade, exchange, broker, watchOnly } = entry;
+        // A zero/negative/non-finite LTP is a missing quote, not a price: it would satisfy
+        // `ltp <= stopLossPrice` and square the position off at a bogus level.
+        if (!(quote.ltp > 0) || !Number.isFinite(quote.ltp)) continue;
         trade.lastTradePrice = quote.ltp;
+        const aggregate = aggregateResolver?.(trade, broker);
+        if (aggregate && aggregate !== trade) aggregate.lastTradePrice = quote.ltp;
 
         if (!notifiedListeners && now - lastPriceNotifyAt >= PRICE_NOTIFY_THROTTLE_MS) {
             lastPriceNotifyAt = now;
@@ -243,7 +276,7 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
         // squareoff is in flight can't trigger it twice. If the exit attempt
         // fails below, this entry is re-registered in the catch block so a
         // future tick can retry it - see the comment there (bug-04).
-        unregisterTrade(trade.user, trade.token);
+        unregisterTrade(trade.user, trade.token, broker);
         Log.log(`[order] exitMonitor triggering squareoff for ${trade.tsym} (${trade.user}, ${broker}): ltp=${quote.ltp} hit=${hitTarget ? 'target' : 'stopLoss'}`);
 
         const exitHandler = exitHandlers.get(broker);
@@ -252,7 +285,8 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
             continue;
         }
         try {
-            await exitHandler(trade, exchange);
+            // Size the exit off the aggregate row (all chunks), falling back to the monitored trade.
+            await exitHandler(aggregate ?? trade, exchange);
         } catch (e) {
             // A transient failure here (network hiccup, broker rate limit, etc.)
             // must not silently end target/SL protection on this position for

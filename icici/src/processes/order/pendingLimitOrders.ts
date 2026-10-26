@@ -97,34 +97,58 @@ export async function loadPendingLimitOrdersFromMongo(): Promise<void> {
 
 // Called on an interval from orderProcess.ts (shorter than pollGttFills' 60s -
 // a re-entry filling promptly matters more to a live chain).
+let pollInFlight = false;
 export async function pollPendingLimitOrders(): Promise<void> {
+    if (pollInFlight) return; // overlapping polls would double-process (and double-notify) the same order
+    pollInFlight = true;
+    try {
+        await pollPendingLimitOrdersOnce();
+    } finally {
+        pollInFlight = false;
+    }
+}
+
+async function pollPendingLimitOrdersOnce(): Promise<void> {
     if (pending.size === 0) return;
     const kite = Kite.getInstance();
     if (!(await kite.hasValidSession())) return;
 
-    for (const [orderId, order] of pending) {
+    for (const [orderId, order] of Array.from(pending)) {
+        if (!pending.has(orderId)) continue; // untracked (cancelled/booked) while an earlier iteration awaited
         try {
             const history = await kite.getKiteConnect().getOrderHistory(orderId);
             const latest = history[history.length - 1];
             if (!latest) continue;
 
-            if (latest.status === 'COMPLETE') {
-                untrackPendingLimitOrder(orderId);
+            // Books `qty` filled at `price`. Untracking happens only AFTER the fill is booked: if recordFill throws
+            // the order stays tracked and the next poll retries (recordFill dedupes on brokerOrderId).
+            const bookFill = async (qty: number, price: number) => {
                 const trade = new Trade();
                 trade.tsym = order.tradingSymbol;
                 trade.token = order.instrumentToken;
-                trade.quantity = order.quantity;
-                trade.price = latest.average_price;
-                trade.lastTradePrice = latest.average_price;
+                trade.quantity = qty;
+                trade.price = price;
+                trade.lastTradePrice = price;
                 trade.action = order.action;
                 trade.status = 'COMPLETE';
                 trade.user = order.userId;
                 trade.broker = 'kite';
                 trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
-                Log.log(`[order] Pending limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
-            } else if (latest.status === 'REJECTED' || latest.status === 'CANCELLED') {
+                Log.log(`[order] Pending limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} qty=${qty} at ${trade.price}`);
+            };
+
+            if (latest.status === 'COMPLETE') {
+                await bookFill(order.quantity, latest.average_price);
                 untrackPendingLimitOrder(orderId);
+            } else if (latest.status === 'REJECTED' || latest.status === 'CANCELLED') {
+                // A cancelled order can carry a genuine partial fill: book it, and tell the listeners only about
+                // the unfilled remainder.
+                const filledQty = Math.min(order.quantity, Number(latest.filled_quantity ?? 0));
+                if (filledQty > 0) await bookFill(filledQty, latest.average_price);
+                untrackPendingLimitOrder(orderId);
+                const remainingQty = order.quantity - filledQty;
+                if (remainingQty <= 0) continue;
                 // Kite Connect has no separate "EXPIRED" status - an unfilled
                 // DAY order the exchange auto-cancels at EOD is reported back
                 // as plain 'CANCELLED'. Unlike breezePendingLimitOrders.ts
@@ -157,7 +181,7 @@ export async function pollPendingLimitOrders(): Promise<void> {
                 } else {
                     const reason = latest.status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
                     for (const listener of cancelledListeners) {
-                        listener(order.userId, order.tradingSymbol, order.instrumentToken, order.quantity, order.exchange, order.action, 'kite', orderId, reason);
+                        listener(order.userId, order.tradingSymbol, order.instrumentToken, remainingQty, order.exchange, order.action, 'kite', orderId, reason);
                     }
                     Log.log(`[order] Pending limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${latest.status}`);
                 }

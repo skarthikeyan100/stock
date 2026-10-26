@@ -1,5 +1,6 @@
 import Log from '../../util/Log';
 import { randomUUID } from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 import Mongo from '../../tools/mongo';
 import Kite from '../../kite/Kite';
 import ANT from '../../ant/ANT';
@@ -358,10 +359,31 @@ class OrderBookkeeping {
     // either from the fill path (_processTradeEvent, already wired) or from
     // orderProcess.ts's failure path (placeOrderWithPendingGuard) - or the
     // reservation leaks and this user is blocked until the next fill.
-    markPending(user: string, estimatedOrderValue?: number, broker?: string): void {
+    markPending(user: string, estimatedOrderValue?: number, broker?: string): PendingOrder {
         const list = this.pendingOrders.get(user) ?? [];
-        list.push({ estimatedLots: 1, estimatedValue: estimatedOrderValue ?? 0, broker });
+        const entry: PendingOrder = { estimatedLots: 1, estimatedValue: estimatedOrderValue ?? 0, broker };
+        list.push(entry);
         this.pendingOrders.set(user, list);
+        return entry;
+    }
+
+    // The reservation owned by the request currently being placed (set by runWithReservation). A chunked order
+    // records one fill per chunk, each calling releasePending: inside the owning request's async context those
+    // releases target ITS reservation (a no-op once gone) instead of draining other in-flight requests' entries.
+    private reservationContext = new AsyncLocalStorage<{ user: string; entry: PendingOrder }>();
+
+    runWithReservation<T>(user: string, entry: PendingOrder, fn: () => Promise<T>): Promise<T> {
+        return this.reservationContext.run({ user, entry }, fn);
+    }
+
+    // Releases exactly this reservation (by identity); no-op if it was already released.
+    releaseReservation(user: string, entry: PendingOrder): void {
+        const list = this.pendingOrders.get(user);
+        if (!list) return;
+        const idx = list.indexOf(entry);
+        if (idx === -1) return;
+        list.splice(idx, 1);
+        if (list.length === 0) this.pendingOrders.delete(user);
     }
 
     // Releases exactly one pending reservation for `user` - never all of them -
@@ -381,6 +403,11 @@ class OrderBookkeeping {
     // it undefined) - matches the old plain-FIFO behavior for single-broker
     // users.
     releasePending(user: string, broker?: string): void {
+        const ctx = this.reservationContext.getStore();
+        if (ctx && ctx.user === user) {
+            this.releaseReservation(user, ctx.entry);
+            return;
+        }
         const list = this.pendingOrders.get(user);
         if (!list || list.length === 0) return;
         const idx = broker !== undefined ? list.findIndex((p) => p.broker === broker) : 0;
@@ -1044,7 +1071,7 @@ class OrderBookkeeping {
                 buyTrade.quantity -= sellQty;
                 if (buyTrade.quantity <= 0) {
                     this.trades.splice(index, 1);
-                    if (buyTrade.token) exitMonitor.unregisterTrade(user, buyTrade.token);
+                    if (buyTrade.token) exitMonitor.unregisterTrade(user, buyTrade.token, buyTrade.broker === 'ant' || buyTrade.broker === 'prism' || buyTrade.broker === 'kite' ? buyTrade.broker : undefined);
                 }
 
                 // Not awaited: the row is counted from memory (unpersistedClosed) while its
@@ -1323,14 +1350,31 @@ class OrderBookkeeping {
             // legs untracked despite having been opened by this app the day
             // before. tsym already encodes the specific contract (strike+expiry),
             // so an unbounded search can't cross-match a different contract.
-            const lastSell = await db.collection('Trade')
-                .find({ tsym, action: 'Sell', user, ...brokerOrLegacy })
-                .sort({ entryTime: -1 })
-                .limit(1)
+            // Net the fills FIFO: every Sell (including a PARTIAL one - a partly-sold leg is still open for the
+            // rest) consumes the oldest remaining Buy lots, so what's left is the position actually still held.
+            // The old "buys after the last Sell" boundary ignored partial sells and restored the full quantity.
+            const fills = await db.collection('Trade')
+                .find({ tsym, user, action: { $in: ['Buy', 'Sell'] }, ...brokerOrLegacy })
+                .sort({ entryTime: 1 })
                 .toArray();
-            const rows = lastSell[0]
-                ? await db.collection('Trade').find({ tsym, action: 'Buy', user, ...brokerOrLegacy, entryTime: { $gt: lastSell[0].entryTime } }).sort({ entryTime: -1 }).toArray()
-                : await db.collection('Trade').find({ tsym, action: 'Buy', user, ...brokerOrLegacy }).sort({ entryTime: -1 }).toArray();
+            const lots: { doc: any; remaining: number }[] = [];
+            for (const f of fills) {
+                const q = Number(f.quantity);
+                if (!(q > 0)) continue;
+                if (f.action === 'Buy') {
+                    lots.push({ doc: f, remaining: q });
+                    continue;
+                }
+                let toSell = q;
+                while (toSell > 0 && lots.length > 0) {
+                    const use = Math.min(toSell, lots[0].remaining);
+                    lots[0].remaining -= use;
+                    toSell -= use;
+                    if (lots[0].remaining <= 0) lots.shift();
+                }
+            }
+            // newest-first, same orientation the rest of this block expects; quantity = what is still held per lot
+            const rows = lots.map((l) => ({ ...l.doc, quantity: l.remaining, originalQuantity: Number(l.doc.quantity) })).reverse();
             const row = rows[0];
             if (!row) continue; // this user's position on this tsym is fully closed
 
@@ -1359,7 +1403,7 @@ class OrderBookkeeping {
             trade.price = blendedPrice;
             trade.lastTradePrice = blendedPrice;
             trade.originalEntryPrice = firstFill.price;
-            trade.originalEntryQuantity = firstFill.quantity;
+            trade.originalEntryQuantity = firstFill.originalQuantity ?? firstFill.quantity;
             trade.action = 'Buy';
             trade.status = 'COMPLETE';
             trade.user = user;

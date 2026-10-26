@@ -76,7 +76,18 @@ export async function loadPendingPrismLimitOrdersFromMongo(): Promise<void> {
 // otherwise each trigger their own full get_orderbook call every 15s, the
 // same redundant-call pattern that's already caused a live broker-API rate
 // limit elsewhere in this codebase.
+let pollInFlight = false;
 export async function pollPendingPrismLimitOrders(): Promise<void> {
+    if (pollInFlight) return; // overlapping polls would double-process (and double-notify) the same order
+    pollInFlight = true;
+    try {
+        await pollPendingPrismLimitOrdersOnce();
+    } finally {
+        pollInFlight = false;
+    }
+}
+
+async function pollPendingPrismLimitOrdersOnce(): Promise<void> {
     if (pending.size === 0) return;
     const prism = Prism.getInstance();
     let orderBook: any[];
@@ -87,46 +98,57 @@ export async function pollPendingPrismLimitOrders(): Promise<void> {
         return;
     }
 
-    for (const [orderId, order] of pending) {
+    for (const [orderId, order] of Array.from(pending)) {
+        if (!pending.has(orderId)) continue;
         try {
-            const { status, fillPrice } = await prism.getOrderStatus(orderId, orderBook);
-            if (status === 'COMPLETE') {
-                untrackPendingPrismLimitOrder(orderId);
-                if (!fillPrice) {
-                    Log.log(`[order] Pending Prism limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) COMPLETE but no fill price reported - manual review required`);
-                    continue;
-                }
+            const { status, fillPrice, filledQuantity } = (await prism.getOrderStatus(orderId, orderBook)) as { status: string; fillPrice?: number; filledQuantity?: number };
+            // Books `qty` filled at `price`. The order is untracked only AFTER the fill is booked, so a recordFill
+            // failure is retried on the next poll (recordFill dedupes on brokerOrderId).
+            const bookFill = async (qty: number, price: number) => {
                 const trade = new Trade();
                 trade.tsym = order.tradingSymbol;
                 trade.token = order.instrumentId;
-                trade.quantity = order.quantity;
-                trade.price = fillPrice;
-                trade.lastTradePrice = fillPrice;
+                trade.quantity = qty;
+                trade.price = price;
+                trade.lastTradePrice = price;
                 trade.action = order.action;
                 trade.status = 'COMPLETE';
                 trade.user = order.userId;
                 trade.broker = 'prism';
                 trade.brokerOrderId = orderId;
                 await bookkeeping.recordFill(trade);
-                Log.log(`[order] Pending Prism limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} at ${trade.price}`);
-            } else if (status === 'REJECTED' || status === 'CANCELLED' || status === 'CANCELED') {
+                Log.log(`[order] Pending Prism limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} qty=${qty} at ${trade.price}`);
+            };
+            if (status === 'COMPLETE') {
+                if (!fillPrice) {
+                    untrackPendingPrismLimitOrder(orderId);
+                    Log.log(`[order] Pending Prism limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) COMPLETE but no fill price reported - manual review required`);
+                    continue;
+                }
+                await bookFill(order.quantity, fillPrice);
                 untrackPendingPrismLimitOrder(orderId);
-                // Prism/Shoonya has no separate EOD-expiry status either
-                // (same gap as Kite/ANT - see pendingLimitOrders.ts's
-                // matching comment): an unfilled DAY order auto-cancelled at
-                // exchange close reports back as plain 'CANCELLED'/'CANCELED',
-                // indistinguishable from a genuine same-day cancel. Defer
-                // firing the listener past market close to avoid driving
-                // BulkPcrStrategy.onOrderCancelled's immediate re-placement
-                // attempt against a closed exchange (live incident
-                // 2026-09-24) - let tomorrow's reconcile() handle it instead.
+            } else if (status === 'REJECTED' || status === 'CANCELLED' || status === 'CANCELED') {
+                // A cancelled order can carry a partial fill (fillshares > 0): book it, report only the remainder.
+                const filledQty = Math.min(order.quantity, Number(filledQuantity ?? 0));
+                if (filledQty > 0) {
+                    const row = orderBook.find((o: any) => o.norenordno === orderId);
+                    const partialPrice = Number(row?.avgprc ?? row?.flprc ?? row?.avgPrice);
+                    if (partialPrice > 0) {
+                        await bookFill(filledQty, partialPrice);
+                    } else {
+                        Log.log(`[order] ALERT: Prism order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled with ${filledQty} filled but no fill price - not booked, manual review required`);
+                    }
+                }
+                untrackPendingPrismLimitOrder(orderId);
+                const remainingQty = order.quantity - filledQty;
+                if (remainingQty <= 0) continue;
                 const isCancelled = status === 'CANCELLED' || status === 'CANCELED';
                 if (isCancelled && isPastMarketClose()) {
                     Log.log(`[order] Pending Prism limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close - leaving re-placement to tomorrow's reconcile()`);
                 } else {
                     const reason = status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
                     for (const listener of cancelledListeners) {
-                        listener(order.userId, order.tradingSymbol, order.instrumentId, order.quantity, order.exchange, order.action, 'prism', orderId, reason);
+                        listener(order.userId, order.tradingSymbol, order.instrumentId, remainingQty, order.exchange, order.action, 'prism', orderId, reason);
                     }
                     Log.log(`[order] Pending Prism limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status}`);
                 }

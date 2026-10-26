@@ -112,6 +112,9 @@ onPendingPrismCancelled((userId, tradingSymbol, instrumentToken, quantity, excha
 // displayed price only changed on the next unrelated trade event (fill/close/
 // target-SL edit), not on the price tick itself.
 exitMonitor.onPriceUpdate(() => bookkeeping.triggerPositionsChanged());
+// Chunked entries register one detached Trade per chunk - exits and live prices must act on the bookkeeping aggregate.
+exitMonitor.setAggregateResolver((t, broker) =>
+    bookkeeping.trades.find((x) => x.tsym === t.tsym && x.user === t.user && (x.broker ?? broker) === broker));
 
 // AntOrderNotifyStream.connect() throws (rather than retrying) when the ANT
 // session isn't there yet or was issued on an earlier day (ANT.loadSession
@@ -236,17 +239,41 @@ async function placeOrderWithPendingGuard(
     // the reconcileInFlight mechanism exists to close.
     if (reconcileInFlight) await reconcileInFlight;
     const broker = resolveRequestBroker(req);
-    const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedOrderValue, broker);
-    if (!validation.allowed) {
-        return { kind: 'response', id: req.id, ok: false, error: validation.reason };
+    // check + reserve is one atomic step per user: canPlaceOrder awaits (drawdown ledger reads), so two concurrent
+    // requests could otherwise both pass against the same not-yet-reserved headroom.
+    const gate = await withUserGate(req.userId, async () => {
+        const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedOrderValue, broker);
+        if (!validation.allowed) return { reason: validation.reason } as const;
+        return { entry: bookkeeping.markPending(req.userId, estimatedOrderValue, broker) } as const;
+    });
+    if (!('entry' in gate)) {
+        return { kind: 'response', id: req.id, ok: false, error: gate.reason };
     }
-    bookkeeping.markPending(req.userId, estimatedOrderValue, broker);
+    const entry = gate.entry;
     try {
-        const result = await place();
+        const result = await bookkeeping.runWithReservation(req.userId, entry, place);
         return { kind: 'response', id: req.id, ok: true, result };
     } catch (e) {
-        bookkeeping.releasePending(req.userId, broker);
+        // Identity release: if a chunk's fill already released this request's reservation, this is a no-op.
+        bookkeeping.releaseReservation(req.userId, entry);
         throw e;
+    }
+}
+
+// Serialises async sections per user (FIFO).
+const userGates = new Map<string, Promise<void>>();
+async function withUserGate<T>(user: string, fn: () => Promise<T>): Promise<T> {
+    const prev = userGates.get(user) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((r) => { release = r; });
+    const tail = prev.then(() => mine);
+    userGates.set(user, tail);
+    await prev;
+    try {
+        return await fn();
+    } finally {
+        release();
+        if (userGates.get(user) === tail) userGates.delete(user);
     }
 }
 
@@ -336,6 +363,12 @@ const FORCE_CLOSE_COOLDOWN_MS = 2 * 60_000;
 // Keyed by the trade row itself (not user+token): a position split into chunks has several rows
 // with the same token, and each must be force-closed.
 const forceCloseStartedAt = new Map<Trade, number>();
+// Rows that left bookkeeping.trades (fully sold) are never queried again, so drop their entries here.
+function pruneForceCloseMap(): void {
+    for (const t of Array.from(forceCloseStartedAt.keys())) {
+        if (!bookkeeping.trades.includes(t)) forceCloseStartedAt.delete(t);
+    }
+}
 function forceCloseActive(trade: Trade): boolean {
     const startedAt = forceCloseStartedAt.get(trade);
     if (startedAt === undefined) return false;
@@ -353,6 +386,7 @@ function shortCloseKey(t: { user: string; token: any }): string {
 // Cancels any resting limit sell for the trade, then sells what is left. Returns false when it
 // skipped because a force-close for this trade is already underway.
 async function forceCloseTrade(trade: Trade): Promise<boolean> {
+    pruneForceCloseMap();
     if (forceCloseActive(trade)) {
         Log.log(`[order] forceCloseTrade: skipped ${trade.tsym} (${trade.user}) - a force-close is already in progress; will be retried by the next sweep once it expires`);
         return false;
@@ -448,6 +482,40 @@ async function buyToCloseShortLegForUser(user: string, shortTrade: Trade): Promi
     else throw new Error(`buyToCloseShortLegForUser: unsupported/missing broker '${broker}' for ${shortTrade.tsym}`);
 }
 
+// Every sell/close path sizes itself off bookkeeping.trades, so it must not read it mid-reconcile.
+async function waitForReconcile(): Promise<void> {
+    if (reconcileInFlight) await reconcileInFlight;
+}
+
+// Picks the executor for a position by the broker that actually holds it (trade.broker), not the user's
+// default: a strategy pseudo-user can hold the same tsym on several brokers. Falls back to the per-user
+// default when the rows are absent or span more than one broker (ambiguous).
+function executorForPosition(userId: string, tsym: string): BrokerExecutor {
+    const brokers = new Set(bookkeeping.trades.filter((t) => t.user === userId && t.tsym === tsym).map((t) => t.broker).filter(Boolean));
+    return brokers.size === 1 ? getBrokerExecutor(userId, Array.from(brokers)[0]) : getBrokerExecutor(userId);
+}
+
+// Squares off EVERY open row behind a token (a token can map to several rows: one per broker), each through its
+// own broker, instead of closing only the first match. `quantity`, when given, is spread across the rows in order.
+async function squareOffByToken(userId: string, token: any, quantity: number | undefined, exchange: any, only?: 'ant'): Promise<Trade | { error: string }> {
+    const rows = bookkeeping.trades.filter((t) => t.token === String(token) && t.user === userId && (!only || t.broker === only));
+    if (rows.length === 0) return { error: `No open trade found for token ${token}` };
+    let remaining = quantity ?? Number.POSITIVE_INFINITY;
+    const results: Trade[] = [];
+    for (const row of rows) {
+        if (!(remaining > 0)) break;
+        const q = Math.min(row.quantity, remaining);
+        const ex = exchange ?? (row.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO');
+        const done = only === 'ant'
+            ? await antExecutor.squareOffOnAnt(userId, row.tsym, q, ex)
+            : await getBrokerExecutor(userId, row.broker).squareOff(userId, row.tsym, q, ex);
+        results.push(done);
+        remaining -= q;
+    }
+    if (results.length === 1) return results[0];
+    return Object.assign(new Trade(), results[0], { quantity: results.reduce((sum, r) => sum + (r.quantity || 0), 0) });
+}
+
 async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     try {
         // Accept legacy broker names (e.g. 'zerodha') from any caller before anything dispatches on them.
@@ -464,9 +532,9 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'buyIndex': {
                 return await placeOrderWithPendingGuard(req, undefined, () => {
                     const broker = bookkeeping.getUserBroker(req.userId);
-                    return broker === 'ant'
-                        ? antExecutor.buyIndexOnAnt({ userId: req.userId, ...req.payload })
-                        : buyIndexOnKite({ userId: req.userId, ...req.payload });
+                    if (broker === 'ant') return antExecutor.buyIndexOnAnt({ userId: req.userId, ...req.payload });
+                    if (broker === 'breeze') return buyIndexOnBreeze({ userId: req.userId, ...req.payload });
+                    return buyIndexOnKite({ userId: req.userId, ...req.payload });
                 });
             }
 
@@ -481,15 +549,14 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // squareOff resolving/sizing itself from bookkeeping.trades
                 // mid-reconcile could miss or mis-size the trade it's trying
                 // to close.
-                if (reconcileInFlight) await reconcileInFlight;
-                let { tsym, quantity, exchange, token } = req.payload;
+                await waitForReconcile();
+                const { tsym, quantity, exchange, token } = req.payload;
                 if (!tsym && token) {
-                    const trade = bookkeeping.trades.find((t) => t.token === String(token) && t.user === req.userId);
-                    if (!trade) return { kind: 'response', id: req.id, ok: false, error: `No open trade found for token ${token}` };
-                    tsym = trade.tsym;
-                    quantity = quantity ?? trade.quantity;
+                    const byToken = await squareOffByToken(req.userId, token, quantity, exchange);
+                    if ('error' in byToken) return { kind: 'response', id: req.id, ok: false, error: byToken.error };
+                    return { kind: 'response', id: req.id, ok: true, result: byToken };
                 }
-                const trade = await getBrokerExecutor(req.userId).squareOff(req.userId, tsym, quantity, exchange);
+                const trade = await executorForPosition(req.userId, tsym).squareOff(req.userId, tsym, quantity, exchange);
                 return { kind: 'response', id: req.id, ok: true, result: trade };
             }
 
@@ -779,13 +846,12 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // risk as the plain 'squareOff' case above: resolving/sizing
                 // from bookkeeping.trades mid-reconcile could miss or
                 // mis-size the trade it's trying to close.
-                if (reconcileInFlight) await reconcileInFlight;
-                let { tsym, quantity, exchange, token } = req.payload;
+                await waitForReconcile();
+                const { tsym, quantity, exchange, token } = req.payload;
                 if (!tsym && token) {
-                    const trade = bookkeeping.trades.find((t) => t.token === String(token) && t.user === req.userId);
-                    if (!trade) return { kind: 'response', id: req.id, ok: false, error: `No open trade found for token ${token}` };
-                    tsym = trade.tsym;
-                    quantity = quantity ?? trade.quantity;
+                    const byToken = await squareOffByToken(req.userId, token, quantity, exchange, 'ant');
+                    if ('error' in byToken) return { kind: 'response', id: req.id, ok: false, error: byToken.error };
+                    return { kind: 'response', id: req.id, ok: true, result: byToken };
                 }
                 const trade = await antExecutor.squareOffOnAnt(req.userId, tsym, quantity, exchange);
                 return { kind: 'response', id: req.id, ok: true, result: trade };
@@ -811,6 +877,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'antPlaceLimitSellBare': {
+                await waitForReconcile();
                 const { tradingSymbol, instrumentId, quantity, price, exchange, product } = req.payload;
                 const result = await antExecutor.placeLimitSellBareOnAnt(req.userId, tradingSymbol, instrumentId, quantity, price, exchange, product);
                 return { kind: 'response', id: req.id, ok: true, result };
@@ -824,6 +891,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // primitive (already used by brokerExecutors.ts's squareOffLimit) - just
             // dispatched by an explicit `broker` field instead of a per-user default.
             case 'brokerPlaceLimitSellBare': {
+                await waitForReconcile();
                 const { broker, tradingSymbol, instrumentToken, quantity, price, exchange } = req.payload;
                 let result: { orderId: string };
                 if (broker === 'kite') result = await placeLimitSellBareOnKite(req.userId, tradingSymbol, instrumentToken, quantity, price, exchange);
@@ -845,6 +913,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'antSquareOffBare': {
+                await waitForReconcile();
                 const { tradingSymbol, quantity, exchange } = req.payload;
                 const result = await antExecutor.squareOffOnAnt(req.userId, tradingSymbol, quantity, exchange);
                 return { kind: 'response', id: req.id, ok: true, result };
@@ -908,6 +977,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // opened by 'butterflyBuyLeg'. Mechanically identical to each broker's existing
             // "bare" square-off primitive; records via the normal recordFill.
             case 'butterflyCloseLeg': {
+                await waitForReconcile();
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
                 let result: Trade;
                 if (broker === 'kite') result = await marketSellBareOnKite(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
@@ -919,6 +989,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'butterflyBuyToClose': {
+                await waitForReconcile();
                 const { broker, tradingSymbol, instrumentToken, exchange } = req.payload;
                 let result: Trade;
                 if (broker === 'kite') result = await buyToCloseOnKite(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
@@ -946,6 +1017,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'sellContract': {
+                await waitForReconcile();
                 const result = await prismExecutor.sellContract(req.userId, req.payload.contract, req.payload.quantity, req.payload.price);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
@@ -1001,6 +1073,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return placeOrderWithPendingGuard(req, estimatedValue, () => {
                     const manualBuyBroker = bookkeeping.getUserBroker(req.userId);
+                    if (manualBuyBroker === 'breeze') throw new Error('manualBuy: no Breeze manual-buy primitive - refusing to route a Breeze user to Kite');
                     return manualBuyBroker === 'ant'
                         ? antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload })
                         : manualBuyOnKite({ userId: req.userId, ...req.payload });
@@ -1115,6 +1188,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return await placeOrderWithPendingGuard(req, estimatedValue, () => {
                     const broker = bookkeeping.getUserBroker(req.userId);
+                    if (broker === 'ant') return antExecutor.enterPosition(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange, 0, 0, 'target-only');
                     return broker === 'breeze'
                         ? marketBuyBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange)
                         : marketBuyBareOnKite(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
@@ -1122,8 +1196,11 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             case 'sellContractBare': {
+                await waitForReconcile();
                 const broker = bookkeeping.getUserBroker(req.userId);
-                const result = broker === 'breeze'
+                const result = broker === 'ant'
+                    ? await antExecutor.squareOffOnAnt(req.userId, req.payload.tradingSymbol, req.payload.quantity, req.payload.exchange)
+                    : broker === 'breeze'
                     ? await marketSellBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange)
                     : await marketSellBareOnKite(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
                 return { kind: 'response', id: req.id, ok: true, result };
@@ -1133,6 +1210,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return await placeOrderWithPendingGuard(req, estimatedValue, () => {
                     const broker = bookkeeping.getUserBroker(req.userId);
+                    if (broker === 'ant') throw new Error('placeLimitBuyBare: no ANT limit-buy primitive - refusing to route an ANT user to Kite');
                     return broker === 'breeze'
                         ? placeLimitBuyBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange)
                         : placeLimitBuyBareOnKite(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange);
@@ -1142,6 +1220,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'cancelOrderBare': {
                 const broker = bookkeeping.getUserBroker(req.userId);
                 if (broker === 'breeze') await cancelOrderOnBreeze(req.payload.orderId);
+                else if (broker === 'ant') await antExecutor.cancelOrderOnAnt(req.payload.orderId);
                 else await cancelOrderOnKite(req.payload.orderId);
                 return { kind: 'response', id: req.id, ok: true, result: undefined };
             }
@@ -1149,6 +1228,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'getContractByPriceRangeBare': {
                 const broker = bookkeeping.getUserBroker(req.userId);
                 const excludeStrikes = new Set<number>(req.payload.excludeStrikes || []);
+                if (broker === 'ant') throw new Error('getContractByPriceRangeBare: not implemented for ANT - refusing to resolve a Kite contract for an ANT user');
                 const result = broker === 'breeze'
                     ? await getContractByPriceRangeOnBreeze(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes)
                     : await getContractByPriceRangeOnKite(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes);
@@ -1182,7 +1262,29 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 // Config-derived per-strategy settings only (no Mongo user preload). Hooked to
 // configService.onChange so a hand edit of config.yml reaches the cache with
 // no manual sync; must not call reloadNow() (the hook fires from a reload).
-async function applyConfigStrategyLimits() {
+// Serialised: each pass awaits Mongo per strategy, so two overlapping passes (rapid config edits) could finish out
+// of order and leave the OLDER config's settings in the cache. Overlapping calls coalesce into one trailing rerun.
+let applyLimitsRunning: Promise<void> | null = null;
+let applyLimitsRerun = false;
+async function applyConfigStrategyLimits(): Promise<void> {
+    if (applyLimitsRunning) {
+        applyLimitsRerun = true;
+        return applyLimitsRunning;
+    }
+    applyLimitsRunning = (async () => {
+        try {
+            do {
+                applyLimitsRerun = false;
+                await applyConfigStrategyLimitsOnce();
+            } while (applyLimitsRerun);
+        } finally {
+            applyLimitsRunning = null;
+        }
+    })();
+    return applyLimitsRunning;
+}
+
+async function applyConfigStrategyLimitsOnce() {
     const config = configService.getConfig();
     for (const cfg of config.strategies || []) {
         const userId = cfg.userId || cfg.type;
@@ -1320,7 +1422,7 @@ async function main() {
     void BreezeContractMaster.getInstance().preload();
 
     await Mongo.init().catch((e) => Log.log('[order] Mongo.init failed (continuing without persistence):', e));
-    await loadUserLimits();
+    await loadUserLimits().catch((e) => Log.log('[order] startup: loadUserLimits failed (continuing with defaults; reloadUserLimits can retry):', e));
     configService.onChange(() => {
         applyConfigStrategyLimits().catch((e) => Log.log(`[order] config-change limit refresh failed: ${e?.message ?? e}`));
     });
@@ -1328,7 +1430,7 @@ async function main() {
     // trades from Mongo so /closedtrades and /positionstream don't go blank
     // on every restart even though nothing was actually lost (see
     // loadClosedTradesFromMongo's comment).
-    await bookkeeping.loadClosedTradesFromMongo();
+    await bookkeeping.loadClosedTradesFromMongo().catch((e) => Log.log('[order] startup: loadClosedTradesFromMongo failed (continuing):', e));
     // Broker-position reconciliation is not run at startup - it's the explicit
     // 'reconcileBrokerPositions' step (POST /reconcile), used only to repair a
     // mismatch between broker positions and Mongo. Nothing waits for it.
@@ -1339,10 +1441,15 @@ async function main() {
     // so the pollPendingLimitOrders interval below can pick up a fill (or
     // cancellation) that happened while this process was down instead of
     // silently orphaning it - see pendingLimitOrders.ts's header comment.
-    await loadPendingLimitOrdersFromMongo();
-    await loadPendingBreezeLimitOrdersFromMongo();
-    await loadPendingAntLimitOrdersFromMongo();
-    await loadPendingPrismLimitOrdersFromMongo();
+    // Each guarded: one Mongo hiccup here must not keep the IPC server from ever starting (process would exit).
+    for (const [name, load] of [
+        ['kite', loadPendingLimitOrdersFromMongo],
+        ['breeze', loadPendingBreezeLimitOrdersFromMongo],
+        ['ant', loadPendingAntLimitOrdersFromMongo],
+        ['prism', loadPendingPrismLimitOrdersFromMongo],
+    ] as const) {
+        await load().catch((e) => Log.log(`[order] startup: restoring pending ${name} limit orders failed (continuing):`, e));
+    }
 
     // cancelAnyRestingLimitSell is now module-scoped (see its definition above
     // handleRequest) so both this drawdown-breach handler and
@@ -1412,14 +1519,23 @@ async function main() {
     // realized check still applies). Then the daily drawdown is re-evaluated every 10s for users with open positions,
     // since open P&L moves between fills (maxloss.md B4.3).
     bookkeeping.loadDrawdownLatches().catch((e) => Log.log('[order] loadDrawdownLatches failed:', e));
-    setInterval(() => bookkeeping.evaluateOpenDrawdowns().catch((e) => Log.log('[order] evaluateOpenDrawdowns failed:', e)), 10_000);
 
-    setInterval(() => pollGttFills().catch((e) => Log.log('[order] pollGttFills failed:', e)), 60_000);
-    setInterval(() => reconcileManualSells().catch((e) => Log.log('[order] reconcileManualSells failed:', e)), 60_000);
-    setInterval(() => pollPendingLimitOrders().catch((e) => Log.log('[order] pollPendingLimitOrders failed:', e)), 15_000);
-    setInterval(() => pollPendingBreezeLimitOrders().catch((e) => Log.log('[order] pollPendingBreezeLimitOrders failed:', e)), 15_000);
-    setInterval(() => pollPendingAntLimitOrders().catch((e) => Log.log('[order] pollPendingAntLimitOrders failed:', e)), 15_000);
-    setInterval(() => pollPendingPrismLimitOrders().catch((e) => Log.log('[order] pollPendingPrismLimitOrders failed:', e)), 15_000);
+    // Re-entrancy-guarded: a poll slower than its interval must not overlap itself (double-booking, double notifies).
+    const guardedInterval = (name: string, fn: () => Promise<unknown>, ms: number) => {
+        let running = false;
+        setInterval(() => {
+            if (running) return;
+            running = true;
+            fn().catch((e) => Log.log(`[order] ${name} failed:`, e)).finally(() => { running = false; });
+        }, ms);
+    };
+    guardedInterval('evaluateOpenDrawdowns', () => bookkeeping.evaluateOpenDrawdowns(), 10_000);
+    guardedInterval('pollGttFills', pollGttFills, 60_000);
+    guardedInterval('reconcileManualSells', reconcileManualSells, 60_000);
+    guardedInterval('pollPendingLimitOrders', pollPendingLimitOrders, 15_000);
+    guardedInterval('pollPendingBreezeLimitOrders', pollPendingBreezeLimitOrders, 15_000);
+    guardedInterval('pollPendingAntLimitOrders', pollPendingAntLimitOrders, 15_000);
+    guardedInterval('pollPendingPrismLimitOrders', pollPendingPrismLimitOrders, 15_000);
     // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
     // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than
     // event-driven since there's no fill/tick event marking "expiry day
@@ -1429,7 +1545,7 @@ async function main() {
     // simply retried on the next tick since the trade is still open.
     setInterval(() => {
         if (!isPastExpirySquareOffTime()) return;
-        for (const trade of bookkeeping.trades) {
+        for (const trade of bookkeeping.trades.slice()) {
             // Shares forceCloseTrade's in-flight guard with the drawdown-breach handler.
             forceCloseTrade(trade)
                 .catch((e) => Log.log('[order] Expiry-day auto-squareoff failed for', trade.tsym, e));
