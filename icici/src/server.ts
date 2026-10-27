@@ -1321,7 +1321,7 @@ myEmitter.on('breeze-quote', (tick: any) => {
 // state this `frontend` process has no business touching (see this file's
 // own header comment on the IPC process split).
 function brokerEntry(broker: string): BrokerEntry {
-    if (!isBrokerName(broker)) throw new Error(`Unknown broker '${broker}' - expected kite, ant, prism, or breeze`);
+    if (!isBrokerName(broker)) throw new Error(`Unknown broker '${broker}' - expected ${ALL_BROKERS.join(', ')}`);
     return BROKERS[normalizeBrokerName(broker) as BrokerName];
 }
 const getBrokerTrades = (broker: string): Promise<any[]> => brokerEntry(broker).getTrades();

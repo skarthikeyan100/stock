@@ -2059,7 +2059,16 @@ export default class BulkPcrStrategy extends Strategy {
             // Shortfall" rejection, not a broker netting bug. Broker-uniform (same check,
             // same shape, for every broker - degrades to "nothing pending" and the normal
             // placeExitSell path for a broker with no survivor).
-            const pendingSells = await OrderClient.getInstance().getPendingSells(this.userId, broker, brokerTrade.tsym).catch(() => [] as { quantity: number }[]);
+            const pendingSellsRead = await OrderClient.getInstance().getPendingSells(this.userId, broker, brokerTrade.tsym).catch((e) => { Log.log(`[BulkPcrStrategy] [${broker}] reconcile: could not read resting sells for ${brokerTrade.tsym}:`, e); return null; });
+            if (!pendingSellsRead) {
+                // An unreadable answer is not "nothing resting": placing a second exit on top of a live one oversells (margin shortfall).
+                const failedPos = this.positions.get(key)!;
+                failedPos.phase = 'error';
+                this.persistState();
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: reconcile could not confirm whether an exit sell is already resting for ${brokerTrade.tsym} - no exit placed, manual review required`);
+                continue;
+            }
+            const pendingSells = pendingSellsRead;
             const alreadyResting = pendingSells.reduce((sum, o) => sum + o.quantity, 0);
             if (alreadyResting > 0) {
                 const pos = this.positions.get(key)!;
