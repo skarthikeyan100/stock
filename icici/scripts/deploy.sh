@@ -46,6 +46,11 @@ rsync -avz --progress \
   --exclude '*.pem' \
   --exclude '.bulkpcr_armed_slots.*' \
   --exclude '.topStockOptionsOpeningGap_firedToday.*' \
+  --exclude '.gapscreener_cover_placed.json' \
+  --exclude 'ngrok.json' \
+  --exclude 'analysis' \
+  --exclude 'breeze_venv' \
+  --exclude 'src/tools/gapscreener/*.csv' \
   "${LOCAL_SERVER_PATH}/" \
   "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}/"
 
