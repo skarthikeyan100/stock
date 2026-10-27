@@ -6,7 +6,7 @@ import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
-import { BrokerExecutor, BuyRequest, Exchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
+import { BuyRequest, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol } from './breezePendingLimitOrders';
 import { roundToTick } from '../../kite/Kite';
@@ -666,7 +666,7 @@ export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
 // codebase currently reaches this path (buyIndexOnBreeze is what the IPC
 // layer calls directly) - implemented for interface completeness, matching
 // every other executor's buy().
-async function buyResolvedOnBreeze(request: BuyRequest): Promise<Trade> {
+export async function buyResolvedOnBreeze(request: BuyRequest): Promise<Trade> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) {
         throw new Error('Breeze session not active - complete /breeze/login first.');
@@ -916,13 +916,3 @@ export async function getContractByPriceRangeOnBreeze(
 
     throw new Error(`No ${index} ${optionType} contract found with premium >= ${minPremium} (underlyingLtp=${underlyingLtp})`);
 }
-
-export const BreezeExecutor: BrokerExecutor = {
-    brokerName: 'breeze',
-    buy: buyResolvedOnBreeze,
-    squareOff: (userId: string, tradingSymbol: string, quantity: number, _exchange: Exchange) =>
-        squareOffOnBreeze(userId, tradingSymbol, quantity),
-    squareOffLimit: (userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: Exchange, limitPrice: number) =>
-        placeLimitSellBareOnBreeze(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as 'NFO' | 'BFO'),
-    cancelOrder: cancelOrderOnBreeze,
-};

@@ -29,9 +29,9 @@ import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
-import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnKite, marketSellBareOnKite, placeLimitBuyBareOnKite, placeLimitSellBareOnKite, cancelOrderOnKite, getContractByPriceRangeOnKite, enterShortOnKite, buyToCloseOnKite } from './order/kiteExecutor';
+import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells } from './order/kiteExecutor';
 import * as antExecutor from './order/antExecutor';
-import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, placeLimitSellBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getMarketableBreezeBuyPrice, tsymFor, enterShortOnBreeze, buyToCloseOnBreeze, getLiveNetQuantity as getLiveNetQuantityOnBreeze } from './order/breezeExecutor';
+import { buyIndexOnBreeze, squareOffOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
 import { buyChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
 import Breeze from '../breeze/Breeze';
@@ -42,7 +42,7 @@ import BreezeOrderNotifyStream from '../breeze/BreezeOrderNotifyStream';
 import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
 import * as prismExecutor from './order/prismExecutor';
-import { getBrokerExecutor } from './order/brokerExecutors';
+import { getBrokerExecutor, getExecutorByBroker } from './order/brokerExecutors';
 import { BrokerExecutor, OrderAlreadyFilledError } from './order/BrokerExecutor';
 import Kite from '../kite/Kite';
 import ANT from '../ant/ANT';
@@ -316,7 +316,7 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
     // symbol at once - a foreign order id sent to the wrong broker's cancel
     // API, silently relying on that broker's API to reject it rather than on
     // correct routing.
-    const pending = (trackerOf(executor.brokerName)?.find(userId, tsym) ?? []).filter((o) => o.action === 'Sell');
+    const pending = (executor.findPendingOrders(userId, tsym)).filter((o) => o.action === 'Sell');
     let filledQty = 0;
     let cancelFailed = false;
     for (const order of pending) {
@@ -416,43 +416,7 @@ async function resolveOptionContractForBroker(
     strike: number,
     right: 'CE' | 'PE'
 ): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
-    if (broker === 'ant') {
-        const exch = exchangeForIndex(index);
-        const r = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
-        return { tsym: r.tradingSymbol, token: r.token, exchange: r.exch as 'NFO' | 'BFO' };
-    }
-    if (broker === 'kite') {
-        // trade.token/tick subscriptions must always carry the ANT common token, never
-        // Kite's own instrument_token - ANT is the sole live-tick source and the only
-        // thing exitMonitor/tokenRouter's subscriptions understand (see ToDo.md 2026-08-27
-        // and AntContractMaster's own comment on this exact invariant). Kite's
-        // instrumentToken is discarded here; getMarketableKitePrice also needs the ANT
-        // token specifically, since ANT is the price source Kite orders are priced from.
-        const r = await KiteContractMaster.getInstance().findNearestExpiryOption(strike, right, index, 0);
-        const exch = exchangeForIndex(index);
-        const antMatch = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
-        return { tsym: r.tradingSymbol, token: antMatch.token, exchange: r.exchange };
-    }
-    if (broker === 'breeze') {
-        const exch = exchangeForIndex(index);
-        const r = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, right, index);
-        const antMatch = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
-        return { tsym: tsymFor(r), token: antMatch.token, exchange: exch };
-    }
-    if (broker === 'prism') {
-        // Prism's own contract master (NFO_symbols.txt) carries no exchange field and is a
-        // DIFFERENT token scheme from ANT's (confirmed: it's the Shoonya/Prism token, not
-        // cross-referenced) - resolve ANT's token separately, same as the kite/breeze
-        // branches above, so trade.token/tick subscriptions are always ANT-keyed (every
-        // live tick in this codebase, across every broker, flows through ANT - see
-        // BulkPcrStrategy's watchTokenOnSource('ant', ...) calls, the only live multi-
-        // broker precedent in this codebase).
-        const exch = exchangeForIndex(index);
-        const r = PrismContractMaster.getInstance().findNearestExpiryOption(index, strike, right, 0);
-        const antMatch = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
-        return { tsym: r.tradingSymbol, token: antMatch.token, exchange: exch };
-    }
-    throw new Error(`resolveOptionContractForBroker: unsupported broker ${broker}`);
+    return getExecutorByBroker(broker).resolveContract(index, strike, right);
 }
 
 // Force-closes one ButterflyStrategy short leg (bookkeeping.shortTrades entry) via
@@ -464,11 +428,8 @@ async function resolveOptionContractForBroker(
 async function buyToCloseShortLegForUser(user: string, shortTrade: Trade): Promise<void> {
     const broker = shortTrade.broker;
     const exchange: 'NFO' | 'BFO' = exchangeForTsym(shortTrade.tsym);
-    if (broker === 'kite') await buyToCloseOnKite(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
-    else if (broker === 'ant') await antExecutor.buyToClosePosition(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
-    else if (broker === 'breeze') await buyToCloseOnBreeze(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
-    else if (broker === 'prism') await prismExecutor.buyToClosePrism(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
-    else throw new Error(`buyToCloseShortLegForUser: unsupported/missing broker '${broker}' for ${shortTrade.tsym}`);
+    if (!broker) throw new Error(`buyToCloseShortLegForUser: missing broker for ${shortTrade.tsym}`);
+    await getExecutorByBroker(broker).buyToClose(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
 }
 
 // Every sell/close path sizes itself off bookkeeping.trades, so it must not read it mid-reconcile.
@@ -794,12 +755,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'getLiveQuantity': {
                 const { broker, tradingSymbol } = req.payload as { broker: string; tradingSymbol: string };
-                let result: number;
-                if (broker === 'kite') result = await Kite.getInstance().getLiveNetQuantity(tradingSymbol);
-                else if (broker === 'ant') result = await antExecutor.getLiveNetQuantity(tradingSymbol);
-                else if (broker === 'breeze') result = await getLiveNetQuantityOnBreeze(tradingSymbol);
-                else if (broker === 'prism') result = Number((await prismExecutor.getPositionsOnPrism()).find((p) => p.tradingSymbol === tradingSymbol)?.quantity ?? 0);
-                else throw new Error(`getLiveQuantity: unknown broker '${broker}'`);
+                const result = await getExecutorByBroker(broker).getLiveQuantity(tradingSymbol);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -864,11 +820,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'brokerPlaceLimitSellBare': {
                 await waitForReconcile();
                 const { broker, tradingSymbol, instrumentToken, quantity, price, exchange } = req.payload;
-                let result: { orderId: string };
-                if (broker === 'kite') result = await placeLimitSellBareOnKite(req.userId, tradingSymbol, instrumentToken, quantity, price, exchange);
-                else if (broker === 'breeze') result = await placeLimitSellBareOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, price, exchange);
-                else if (broker === 'ant') result = await antExecutor.placeLimitSellBareOnAnt(req.userId, tradingSymbol, instrumentToken, quantity, price, exchange);
-                else throw new Error(`brokerPlaceLimitSellBare: unsupported broker ${broker}`);
+                const result = await getExecutorByBroker(broker).squareOffLimit(req.userId, tradingSymbol, instrumentToken, quantity, exchange, price);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -918,13 +870,9 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // below were the only two entry paths in this file that bypassed it entirely.
             case 'butterflySellToOpen': {
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
-                return await placeOrderWithPendingGuard(req, undefined, () => {
-                    if (broker === 'kite') return enterShortOnKite(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
-                    if (broker === 'ant') return antExecutor.enterShortPosition(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
-                    if (broker === 'breeze') return enterShortOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
-                    if (broker === 'prism') return prismExecutor.enterShortOnPrism(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
-                    throw new Error(`butterflySellToOpen: unsupported broker ${broker}`);
-                });
+                return await placeOrderWithPendingGuard(req, undefined, () =>
+                    getExecutorByBroker(broker).enterShort(req.userId, tradingSymbol, instrumentToken, quantity, exchange),
+                );
             }
 
             // Long-side (buy-to-open) leg, explicit-broker dispatch - see orderProtocol.ts's
@@ -935,13 +883,9 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // placeOrderWithPendingGuard - see 'butterflySellToOpen' comment above.
             case 'butterflyBuyLeg': {
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
-                return await placeOrderWithPendingGuard(req, undefined, () => {
-                    if (broker === 'kite') return marketBuyBareOnKite(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
-                    if (broker === 'ant') return antExecutor.enterPosition(req.userId, tradingSymbol, instrumentToken, quantity, exchange, 0, 0, 'target-only');
-                    if (broker === 'breeze') return marketBuyBareOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
-                    if (broker === 'prism') return prismExecutor.buyContract(req.userId, tradingSymbol, quantity);
-                    throw new Error(`butterflyBuyLeg: unsupported broker ${broker}`);
-                });
+                return await placeOrderWithPendingGuard(req, undefined, () =>
+                    getExecutorByBroker(broker).marketBuy(req.userId, tradingSymbol, instrumentToken, quantity, exchange),
+                );
             }
 
             // Long-side (sell-to-close) leg, explicit-broker dispatch - closes a position
@@ -950,24 +894,14 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'butterflyCloseLeg': {
                 await waitForReconcile();
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
-                let result: Trade;
-                if (broker === 'kite') result = await marketSellBareOnKite(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
-                else if (broker === 'ant') result = await antExecutor.squareOffOnAnt(req.userId, tradingSymbol, quantity, exchange);
-                else if (broker === 'breeze') result = await marketSellBareOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
-                else if (broker === 'prism') result = await prismExecutor.sellContract(req.userId, tradingSymbol, quantity);
-                else throw new Error(`butterflyCloseLeg: unsupported broker ${broker}`);
+                const result = await getExecutorByBroker(broker).marketSell(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
             case 'butterflyBuyToClose': {
                 await waitForReconcile();
                 const { broker, tradingSymbol, instrumentToken, exchange } = req.payload;
-                let result: Trade;
-                if (broker === 'kite') result = await buyToCloseOnKite(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
-                else if (broker === 'ant') result = await antExecutor.buyToClosePosition(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
-                else if (broker === 'breeze') result = await buyToCloseOnBreeze(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
-                else if (broker === 'prism') result = await prismExecutor.buyToClosePrism(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
-                else throw new Error(`butterflyBuyToClose: unsupported broker ${broker}`);
+                const result = await getExecutorByBroker(broker).buyToClose(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -1131,52 +1065,36 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // `broker` field via loadUserLimits below).
             case 'buyContractBare': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                return await placeOrderWithPendingGuard(req, estimatedValue, () => {
-                    const broker = bookkeeping.getUserBroker(req.userId);
-                    if (broker === 'ant') return antExecutor.enterPosition(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange, 0, 0, 'target-only');
-                    return broker === 'breeze'
-                        ? marketBuyBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange)
-                        : marketBuyBareOnKite(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
-                });
+                return await placeOrderWithPendingGuard(req, estimatedValue, () =>
+                    getBrokerExecutor(req.userId).marketBuy(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange),
+                );
             }
 
             case 'sellContractBare': {
                 await waitForReconcile();
-                const broker = bookkeeping.getUserBroker(req.userId);
-                const result = broker === 'ant'
-                    ? await antExecutor.squareOffOnAnt(req.userId, req.payload.tradingSymbol, req.payload.quantity, req.payload.exchange)
-                    : broker === 'breeze'
-                    ? await marketSellBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange)
-                    : await marketSellBareOnKite(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
+                const result = await getBrokerExecutor(req.userId).marketSell(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
             case 'placeLimitBuyBare': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return await placeOrderWithPendingGuard(req, estimatedValue, () => {
-                    const broker = bookkeeping.getUserBroker(req.userId);
-                    if (broker === 'ant') throw new Error('placeLimitBuyBare: no ANT limit-buy primitive - refusing to route an ANT user to Kite');
-                    return broker === 'breeze'
-                        ? placeLimitBuyBareOnBreeze(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange)
-                        : placeLimitBuyBareOnKite(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange);
+                    const executor = getBrokerExecutor(req.userId);
+                    if (!executor.capabilities.placeLimitBuy) throw new Error(`placeLimitBuyBare: no ${executor.brokerName} limit-buy primitive - refusing to route a ${executor.brokerName} user to another broker`);
+                    return executor.placeLimitBuy(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange);
                 });
             }
 
             case 'cancelOrderBare': {
-                const broker = bookkeeping.getUserBroker(req.userId);
-                if (broker === 'breeze') await cancelOrderOnBreeze(req.payload.orderId);
-                else if (broker === 'ant') await antExecutor.cancelOrderOnAnt(req.payload.orderId);
-                else await cancelOrderOnKite(req.payload.orderId);
+                await getBrokerExecutor(req.userId).cancelOrder(req.payload.orderId);
                 return { kind: 'response', id: req.id, ok: true, result: undefined };
             }
 
             case 'getContractByPriceRangeBare': {
-                const broker = bookkeeping.getUserBroker(req.userId);
+                const executor = getBrokerExecutor(req.userId);
                 const excludeStrikes = new Set<number>(req.payload.excludeStrikes || []);
-                if (broker === 'ant') throw new Error('getContractByPriceRangeBare: not implemented for ANT - refusing to resolve a Kite contract for an ANT user');
-                const result = broker === 'breeze'
-                    ? await getContractByPriceRangeOnBreeze(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes)
-                    : await getContractByPriceRangeOnKite(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes);
+                if (!executor.capabilities.getContractByPriceRange) throw new Error(`getContractByPriceRangeBare: not implemented for ${executor.brokerName} - refusing to resolve another broker's contract for a ${executor.brokerName} user`);
+                const result = await executor.getContractByPriceRange(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 

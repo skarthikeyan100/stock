@@ -252,8 +252,48 @@ export interface BrokerPosition {
     exchange: string;
 }
 
+// A broker that cannot do an operation says so here instead of throwing from one if/else branch in a caller.
+export interface BrokerCapabilities {
+    enterShort: boolean;
+    buyToClose: boolean;
+    marketBuy: boolean;
+    marketSell: boolean;
+    placeLimitBuy: boolean;
+    getContractByPriceRange: boolean;
+}
+
+export type OptionRight = 'CE' | 'PE';
+export type OptionIndex = 'NIFTY' | 'SENSEX';
+
+export interface ResolvedContract {
+    tsym: string;
+    token: string; // always the ANT common token, never a broker's own instrument id (tick routing keys off it)
+    exchange: 'NFO' | 'BFO';
+}
+
 export interface BrokerExecutor {
     readonly brokerName: 'kite' | 'ant' | 'prism' | 'breeze';
+    readonly capabilities: BrokerCapabilities;
+
+    // "Bare" ops: a single order with no GTT/bracket/cover protection, for strategies that self-monitor their legs.
+    // `instrumentToken` is the ANT common token carried on Trade.token (brokers that need their own id resolve it).
+    // An operation the broker's capabilities rule out throws.
+    enterShort(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade>;
+    buyToClose(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade>;
+    marketBuy(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade>;
+    marketSell(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade>;
+    placeLimitBuy(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO'): Promise<{ orderId: string }>;
+
+    // Net open quantity of a contract, read live from the broker.
+    getLiveQuantity(tradingSymbol: string): Promise<number>;
+
+    // Read-only contract lookups. resolveContract: strike + right -> contract (nearest expiry). getContractByPriceRange: the
+    // contract whose premium is closest to (and not below) minPremium.
+    resolveContract(index: OptionIndex, strike: number, right: OptionRight): Promise<ResolvedContract>;
+    getContractByPriceRange(underlyingLtp: number, optionType: 'CE' | 'PE', index: OptionIndex, minPremium: number, excludeStrikes: Set<number>): Promise<any>;
+
+    // This broker's resting limit orders on one contract (the pending-order tracker's view).
+    findPendingOrders(userId: string, tradingSymbol: string): { orderId: string; action: 'Buy' | 'Sell'; quantity: number }[];
 
     buy(request: BuyRequest): Promise<Trade>;
 
