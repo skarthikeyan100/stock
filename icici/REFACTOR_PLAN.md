@@ -4,6 +4,8 @@ These are the three tasks from `REVIEW_FINDINGS.md` that are still open after th
 
 ## 1. One pending-order tracker (A1 21) and one chunked-buy resolver (A1 22)
 
+**Status (2026-10-28):** steps 1-4 done - `pendingOrderTracker.ts` (generic loop + `BrokerOrderAdapter`), all four brokers ported (Prism, Breeze, Kite, ANT; ANT via the `resolveFill` / `onPollError` / `ignoreStaleStatus` hooks), `pendingTrackers.ts` registry used by `orderProcess.ts`. Still open: step 5 (`resolveChunkedContract` + shared `buyChunked` tail) and the per-adapter tests; open items 19-23 in `open-review-items.md` list the known tracker follow-ups.
+
 **Why:** `pendingLimitOrders.ts` (Kite), `pendingAntLimitOrders.ts`, `breezePendingLimitOrders.ts`, `pendingPrismLimitOrders.ts` are four copies of one loop (track, poll, book fill, book partial on cancel, fire cancelled listeners, untrack). Fixes landed in one copy only (ANT Buy partials, Prism missing fill price). `orderProcess.ts` repeats the per-broker wiring at the load/poll/cancel-listener/find sites, and the four `chunkedBuyIndex` branches repeat contract resolution.
 
 **Steps**
