@@ -14,6 +14,8 @@ console.log = console.error;
 // hostnames that need it (see kiteDns.ts) - `order` is the only process that
 // calls api.kite.trade (Kite) AND the one that places/cancels/exits ANT
 // orders via a3.aliceblueonline.com, so it's installed here.
+import { TRACKERS, TRACKER_BROKERS } from './order/pendingTrackers';
+import { TrackerBroker } from './order/pendingOrderTracker';
 import '../util/tz'; // pin TZ=Asia/Kolkata before any other module reads the clock
 import { installIpv4OnlyHostOverride } from './order/kiteDns';
 installIpv4OnlyHostOverride();
@@ -28,12 +30,8 @@ import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
 import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnKite, marketSellBareOnKite, placeLimitBuyBareOnKite, placeLimitSellBareOnKite, cancelOrderOnKite, getContractByPriceRangeOnKite, enterShortOnKite, buyToCloseOnKite } from './order/kiteExecutor';
-import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingKiteOrdersForSymbol, onCancelled as onPendingKiteCancelled } from './order/pendingLimitOrders';
-import { pollPendingAntLimitOrders, loadPendingAntLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingAntOrdersForSymbol, onCancelled as onPendingAntCancelled } from './order/pendingAntLimitOrders';
-import { pollPendingPrismLimitOrders, loadPendingPrismLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingPrismOrdersForSymbol, onCancelled as onPendingPrismCancelled } from './order/pendingPrismLimitOrders';
 import * as antExecutor from './order/antExecutor';
 import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, placeLimitSellBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getMarketableBreezeBuyPrice, tsymFor, enterShortOnBreeze, buyToCloseOnBreeze, getLiveNetQuantity as getLiveNetQuantityOnBreeze } from './order/breezeExecutor';
-import { pollPendingBreezeLimitOrders, loadPendingBreezeLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, onCancelled as onPendingBreezeCancelled } from './order/breezePendingLimitOrders';
 import { buyChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
 import Breeze from '../breeze/Breeze';
@@ -90,21 +88,11 @@ bookkeeping.onPositionsChanged(() => {
     broadcast({ kind: 'positionsChanged' });
 });
 
-onPendingKiteCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason) => {
-    broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason });
-});
-
-onPendingBreezeCancelled((userId, tradingSymbol, antToken, quantity, exchange, action, broker, orderId, reason) => {
-    broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken: antToken, quantity, exchange, action, broker, orderId, reason });
-});
-
-onPendingAntCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason) => {
-    broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason });
-});
-
-onPendingPrismCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason) => {
-    broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason });
-});
+for (const trackerBroker of TRACKER_BROKERS) {
+    TRACKERS[trackerBroker].onCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason) => {
+        broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason });
+    });
+}
 
 // exitMonitor watches live ticks for every monitored trade (both in-app
 // target/SL monitoring and the watch-only mode used for GTT/bracket trades'
@@ -325,13 +313,7 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
     // symbol at once - a foreign order id sent to the wrong broker's cancel
     // API, silently relying on that broker's API to reject it rather than on
     // correct routing.
-    const pendingByBroker: Record<string, { orderId: string; action: string; quantity: number }[]> = {
-        kite: findPendingKiteOrdersForSymbol(userId, tsym),
-        breeze: findPendingBreezeOrdersForSymbol(userId, tsym),
-        ant: findPendingAntOrdersForSymbol(userId, tsym),
-        prism: findPendingPrismOrdersForSymbol(userId, tsym),
-    };
-    const pending = (pendingByBroker[executor.brokerName] ?? []).filter((o) => o.action === 'Sell');
+    const pending = (TRACKERS[executor.brokerName as TrackerBroker]?.find(userId, tsym) ?? []).filter((o) => o.action === 'Sell');
     let filledQty = 0;
     let cancelFailed = false;
     for (const order of pending) {
@@ -822,14 +804,8 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // Broker-uniform: dispatch to whichever tracker owns this broker's pending
                 // orders, filter to SELL generically here (not per-tracker) since all four
                 // trackers already share the same {quantity, action, ...} shape.
-                const findFns: Record<string, (userId: string, tsym: string) => { quantity: number; action: 'Buy' | 'Sell' }[]> = {
-                    ant: findPendingAntOrdersForSymbol,
-                    kite: findPendingKiteOrdersForSymbol,
-                    breeze: findPendingBreezeOrdersForSymbol,
-                    prism: findPendingPrismOrdersForSymbol,
-                };
-                const find = findFns[req.payload.broker];
-                const result = find ? find(req.userId, req.payload.tradingSymbol).filter((o) => o.action === 'Sell') : [];
+                const tracker = TRACKERS[req.payload.broker as TrackerBroker];
+                const result = tracker ? tracker.find(req.userId, req.payload.tradingSymbol).filter((o) => o.action === 'Sell') : [];
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -1419,13 +1395,8 @@ async function main() {
     // cancellation) that happened while this process was down instead of
     // silently orphaning it - see pendingLimitOrders.ts's header comment.
     // Each guarded: one Mongo hiccup here must not keep the IPC server from ever starting (process would exit).
-    for (const [name, load] of [
-        ['kite', loadPendingLimitOrdersFromMongo],
-        ['breeze', loadPendingBreezeLimitOrdersFromMongo],
-        ['ant', loadPendingAntLimitOrdersFromMongo],
-        ['prism', loadPendingPrismLimitOrdersFromMongo],
-    ] as const) {
-        await load().catch((e) => Log.log(`[order] startup: restoring pending ${name} limit orders failed (continuing):`, e));
+    for (const name of TRACKER_BROKERS) {
+        await TRACKERS[name].load().catch((e) => Log.log(`[order] startup: restoring pending ${name} limit orders failed (continuing):`, e));
     }
 
     // cancelAnyRestingLimitSell is now module-scoped (see its definition above
@@ -1509,10 +1480,7 @@ async function main() {
     guardedInterval('evaluateOpenDrawdowns', () => bookkeeping.evaluateOpenDrawdowns(), 10_000);
     guardedInterval('pollGttFills', pollGttFills, 60_000);
     guardedInterval('reconcileManualSells', reconcileManualSells, 60_000);
-    guardedInterval('pollPendingLimitOrders', pollPendingLimitOrders, 15_000);
-    guardedInterval('pollPendingBreezeLimitOrders', pollPendingBreezeLimitOrders, 15_000);
-    guardedInterval('pollPendingAntLimitOrders', pollPendingAntLimitOrders, 15_000);
-    guardedInterval('pollPendingPrismLimitOrders', pollPendingPrismLimitOrders, 15_000);
+    for (const name of TRACKER_BROKERS) guardedInterval(`pollPending${name}LimitOrders`, TRACKERS[name].poll, 15_000);
     // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
     // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than
     // event-driven since there's no fill/tick event marking "expiry day
