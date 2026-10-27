@@ -106,7 +106,7 @@ function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
 }
 
 // Backoff for crash respawns: 1s, 2s, 4s ... capped at 30s; reset once a process has stayed up for a minute.
-function makeRespawner(name: string, restart: () => Promise<void>): () => void {
+function makeRespawner(name: string, restart: () => Promise<void>, current: () => ChildProcessWithoutNullStreams | undefined): () => void {
     let failures = 0;
     let lastStart = Date.now();
     let pending = false;
@@ -120,6 +120,12 @@ function makeRespawner(name: string, restart: () => Promise<void>): () => void {
         setTimeout(async () => {
             pending = false;
             if (shuttingDown) return;
+            // A hot restart may have replaced the crashed child while this timer waited: restarting again would stop the healthy one.
+            const live = current();
+            if (live && live.exitCode === null && live.signalCode === null) {
+                log(name, 'respawn skipped - a live replacement is already running');
+                return;
+            }
             lastStart = Date.now();
             try { await restart(); } catch (e) { log(name, 'respawn failed:', e); }
         }, delay);
@@ -185,7 +191,7 @@ async function main() {
             }, delayMs);
         }
     });
-    const respawnData = makeRespawner('data', restartData);
+    const respawnData = makeRespawner('data', restartData, () => data);
 
     // --- order: the Unix-socket IPC server (strategies/frontend place orders through it) is the main reason it
     // exists, but its stdin/stdout are also wired into the tick-feed pipe like strategies/frontend, solely so
@@ -202,7 +208,7 @@ async function main() {
         await stopChild(old);
         startOrder();
     });
-    const respawnOrder = makeRespawner('order', restartOrder);
+    const respawnOrder = makeRespawner('order', restartOrder, () => order);
 
     const startFrontend = () => {
         frontend = spawnChild('frontend', 'server.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV, respawnFrontend);
@@ -216,7 +222,7 @@ async function main() {
         await stopChild(old);
         startFrontend();
     });
-    const respawnFrontend = makeRespawner('frontend', restartFrontend);
+    const respawnFrontend = makeRespawner('frontend', restartFrontend, () => frontend);
 
     const startStrategies = () => {
         strategies = spawnChild('strategies', 'processes/strategiesProcess.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV, respawnStrategies);
@@ -230,7 +236,7 @@ async function main() {
         await stopChild(old);
         startStrategies();
     });
-    const respawnStrategies = makeRespawner('strategies', restartStrategies);
+    const respawnStrategies = makeRespawner('strategies', restartStrategies, () => strategies);
 
     log('boot', 'Starting data...');
     startData();

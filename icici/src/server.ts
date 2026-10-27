@@ -541,6 +541,7 @@ app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (
             res.status(404).json({ error: 'User not found' });
             return;
         }
+        invalidateUserCache(email); // a user an admin just disabled must stop working now, not after the 15s cache TTL
         await pushUserToOrderProcess(user, 'push');
         res.json(toClientUser(user));
     } catch (e) {

@@ -197,9 +197,3 @@ export async function deliverOptionTick(strategy: Strategy, quote: OptionQuote):
     }
 }
 
-// All targets concurrently (one throwing or awaiting a slow broker call must not starve the rest). The strategies
-// process uses optionTickTargets + deliverOptionTick with a latest-wins slot per strategy instead, so a slow
-// strategy cannot delay delivery to the others at all.
-export async function routeOptionTick(source: FeedSource, quote: OptionQuote): Promise<void> {
-    await Promise.all(optionTickTargets(source, quote.token).map((strategy) => deliverOptionTick(strategy, quote)));
-}
