@@ -25,6 +25,8 @@ export interface OrderStatus {
     filledQuantity?: number;
     /** True = do not tell the cancelled listeners about this terminal state (e.g. an after-close cancel/expiry, left to the next morning's reconcile). */
     skipListener?: boolean;
+    /** Broker's reason for a REJECTED order, passed on to the cancelled listeners. */
+    rejectReason?: string;
 }
 
 export interface BrokerOrderAdapter<T extends PendingOrder, Snapshot, B extends TrackerBroker = TrackerBroker> {
@@ -44,11 +46,23 @@ export interface BrokerOrderAdapter<T extends PendingOrder, Snapshot, B extends 
     rowPrice?(order: T, snapshot: Snapshot): number;
     /** Books a fill even when the broker reports no usable price (at 0) instead of keeping the order tracked and retrying. Kite's historic behaviour. */
     bookAtAnyPrice?: boolean;
+    /**
+     * Replaces the generic fill quantity/price when the broker's own status is not enough (ANT reads its trade book).
+     * 'complete': the whole fill; 'partial': what filled before a cancel. Returns undefined when no fill can be
+     * determined yet (the order stays tracked); throwing retries the order on the next poll.
+     */
+    resolveFill?(order: T, status: OrderStatus, kind: 'complete' | 'partial'): Promise<{ quantity: number; price: number } | undefined>;
+    /** Called after a status call succeeded for an order (ANT clears its verification streaks). */
+    onStatusOk?(order: T): void;
+    /** Called when polling an order threw. Returns true when it handled the failure (and logged it). */
+    onPollError?(order: T, e: unknown): Promise<boolean>;
+    /** True = a status whose order was untracked while the status call was out is ignored entirely (ANT: acting on it could re-place a sell). */
+    ignoreStaleStatus?: boolean;
     /** Rebuilds an order from its persisted document. */
     fromDoc(row: any): T;
 }
 
-export type CancelledListener<B extends TrackerBroker = TrackerBroker> = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: B, orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
+export type CancelledListener<B extends TrackerBroker = TrackerBroker> = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: B, orderId: string, reason: 'CANCELLED' | 'REJECTED', rejectReason?: string) => void;
 
 // Every broker call in a poll is bounded, so one stalled socket cannot hold pollInFlight (and every later tick) forever.
 const BROKER_CALL_TIMEOUT_MS = 45_000;
@@ -144,6 +158,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             try {
                 await this.pollOrder(orderId, order, snapshot);
             } catch (e) {
+                if (this.adapter.onPollError && (await this.adapter.onPollError(order, e).catch(() => false))) continue;
                 Log.log(`[order] poll pending ${label} limit orders: failed to poll order`, orderId, e);
             }
         }
@@ -151,7 +166,10 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
 
     private async pollOrder(orderId: string, order: T, snapshot: Snapshot): Promise<void> {
         const { label, broker } = this.adapter;
-        const { status, fillPrice, filledQuantity, skipListener } = await bounded('statusOf', this.adapter.statusOf(order, snapshot));
+        const orderStatus = await bounded('statusOf', this.adapter.statusOf(order, snapshot));
+        const { status, fillPrice, filledQuantity, skipListener, rejectReason } = orderStatus;
+        this.adapter.onStatusOk?.(order);
+        if (this.adapter.ignoreStaleStatus && !this.pending.has(orderId)) return;
         // Books `qty` filled at `price`. The order is untracked only AFTER the fill is booked, so a recordFill
         // failure is retried on the next poll (recordFill dedupes on brokerOrderId).
         const bookFill = async (qty: number, price: number) => {
@@ -169,7 +187,12 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             await bookkeeping.recordFill(trade);
             Log.log(`[order] Pending ${label} limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} qty=${qty} at ${trade.price}`);
         };
-        if (status === 'COMPLETE') {
+        if (status === 'COMPLETE' && this.adapter.resolveFill) {
+            const fill = await this.adapter.resolveFill(order, orderStatus, 'complete');
+            if (!fill) return;
+            await bookFill(fill.quantity, fill.price);
+            this.untrack(orderId); // only once booked - a failed read above leaves it to retry
+        } else if (status === 'COMPLETE') {
             const price = fillPrice && fillPrice > 0 ? fillPrice : (this.adapter.rowPrice?.(order, snapshot) ?? NaN);
             if (!(price > 0) && !this.adapter.bookAtAnyPrice) {
                 // Kept tracked, never dropped: the fill is real and unbooked, so the next poll retries once the book carries a price.
@@ -185,8 +208,12 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             this.untrack(orderId);
         } else if (status === 'REJECTED' || status === 'CANCELLED' || status === 'CANCELED') {
             // A cancelled order can carry a partial fill: book it, report only the remainder.
-            const filledQty = Math.min(order.quantity, Number(filledQuantity ?? 0));
-            if (filledQty > 0) {
+            let filledQty = Math.min(order.quantity, Number(filledQuantity ?? 0));
+            if (filledQty > 0 && this.adapter.resolveFill) {
+                const fill = await this.adapter.resolveFill(order, orderStatus, 'partial');
+                filledQty = fill?.quantity ?? 0;
+                if (fill && fill.quantity > 0) await bookFill(fill.quantity, fill.price);
+            } else if (filledQty > 0) {
                 const partialPrice = fillPrice && fillPrice > 0 ? fillPrice : (this.adapter.rowPrice?.(order, snapshot) ?? NaN);
                 if (partialPrice > 0 || this.adapter.bookAtAnyPrice) {
                     if (!(partialPrice > 0)) Log.log(`[order] ALERT: ${label} order ${orderId} (${order.tradingSymbol}, ${order.userId}) partial fill of ${filledQty} with no usable price - booked at 0, manual review required`);
@@ -211,12 +238,12 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
                 // Isolated: the order is already untracked, so one throwing listener must not stop the others being told.
                 for (const listener of this.cancelledListeners) {
                     try {
-                        listener(order.userId, order.tradingSymbol, this.adapter.tokenOf(order), remainingQty, order.exchange, order.action, broker, orderId, reason);
+                        listener(order.userId, order.tradingSymbol, this.adapter.tokenOf(order), remainingQty, order.exchange, order.action, broker, orderId, reason, rejectReason);
                     } catch (e) {
                         Log.log(`[order] ${label} cancelled listener failed for ${orderId}:`, e);
                     }
                 }
-                Log.log(`[order] Pending ${label} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status}`);
+                Log.log(`[order] Pending ${label} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status}${rejectReason ? ` (${rejectReason})` : ''}`);
             }
         }
         // else: still pending, leave in map for the next poll
