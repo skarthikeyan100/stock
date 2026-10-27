@@ -42,6 +42,8 @@ export interface BrokerOrderAdapter<T extends PendingOrder, Snapshot, B extends 
     statusOf(order: T, snapshot: Snapshot): Promise<OrderStatus>;
     /** The snapshot row's own average price, for when statusOf reports no fill price (NaN when unknown). */
     rowPrice?(order: T, snapshot: Snapshot): number;
+    /** Books a fill even when the broker reports no usable price (at 0) instead of keeping the order tracked and retrying. Kite's historic behaviour. */
+    bookAtAnyPrice?: boolean;
     /** Rebuilds an order from its persisted document. */
     fromDoc(row: any): T;
 }
@@ -169,7 +171,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
         };
         if (status === 'COMPLETE') {
             const price = fillPrice && fillPrice > 0 ? fillPrice : (this.adapter.rowPrice?.(order, snapshot) ?? NaN);
-            if (!(price > 0)) {
+            if (!(price > 0) && !this.adapter.bookAtAnyPrice) {
                 // Kept tracked, never dropped: the fill is real and unbooked, so the next poll retries once the book carries a price.
                 if (!this.noPriceAlerted.has(orderId)) {
                     this.noPriceAlerted.add(orderId);
@@ -177,7 +179,8 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
                 }
                 return;
             }
-            await bookFill(order.quantity, price);
+            if (!(price > 0)) Log.log(`[order] ALERT: ${label} order ${orderId} (${order.tradingSymbol}, ${order.userId}) COMPLETE with no usable fill price - booked at 0, manual review required`);
+            await bookFill(order.quantity, price > 0 ? price : 0);
             this.noPriceAlerted.delete(orderId);
             this.untrack(orderId);
         } else if (status === 'REJECTED' || status === 'CANCELLED' || status === 'CANCELED') {
@@ -185,8 +188,9 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             const filledQty = Math.min(order.quantity, Number(filledQuantity ?? 0));
             if (filledQty > 0) {
                 const partialPrice = fillPrice && fillPrice > 0 ? fillPrice : (this.adapter.rowPrice?.(order, snapshot) ?? NaN);
-                if (partialPrice > 0) {
-                    await bookFill(filledQty, partialPrice);
+                if (partialPrice > 0 || this.adapter.bookAtAnyPrice) {
+                    if (!(partialPrice > 0)) Log.log(`[order] ALERT: ${label} order ${orderId} (${order.tradingSymbol}, ${order.userId}) partial fill of ${filledQty} with no usable price - booked at 0, manual review required`);
+                    await bookFill(filledQty, partialPrice > 0 ? partialPrice : 0);
                     this.noPriceAlerted.delete(orderId);
                 } else {
                     // Kept tracked so a later poll can book the partial once a price shows; untracking here lost the fill.

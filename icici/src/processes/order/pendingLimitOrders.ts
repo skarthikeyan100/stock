@@ -19,6 +19,7 @@ const tracker = new PendingOrderTracker<PendingLimitOrder, null, 'kite'>({
     broker: 'kite',
     collection: 'pendingLimitOrders',
     label: 'Kite',
+    bookAtAnyPrice: true,
     tokenOf: (order) => order.instrumentToken,
     ready: () => Kite.getInstance().hasValidSession(),
     statusOf: async (order) => {
