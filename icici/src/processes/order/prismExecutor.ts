@@ -1,5 +1,5 @@
 import Log from '../../util/Log';
-import { cancelThenRecheck } from '../../util/fillWait';
+import { cancelThenRecheck, fillStateUnknownError } from '../../util/fillWait';
 import Prism from '../../prism';
 import indexMap from '../../nse_index';
 import { Trade } from '../../model/model';
@@ -208,7 +208,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
             return { outcome: 'none' };
         },
     });
-    if (settled.recheckError) throw settled.recheckError;
+    if (settled.recheckError) throw fillStateUnknownError(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) fill-wait timeout: the status re-check failed: ${(settled.recheckError as any)?.message ?? settled.recheckError}`, settled.cancelFailed);
     if (settled.result?.outcome === 'full') {
         Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window - treating as filled at ${settled.result.avgPrice}`);
         return settled.result.avgPrice;
@@ -223,7 +223,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
         });
     }
     if (settled.cancelFailed) Log.log(`[order] ALERT: Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill and the cancel failed - it may still be resting live at the broker`);
-    throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - treating as not filled`);
+    throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - treating as not filled`), { orderMayBeLive: settled.cancelFailed });
 }
 
 export async function buyOnPrism(request: BuyRequest): Promise<Trade> {

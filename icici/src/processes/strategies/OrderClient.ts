@@ -276,9 +276,6 @@ class OrderClient {
         return this.call('antBuyContractBare', userId, payload);
     }
 
-    async antSquareOffBare(userId: string, payload: { tradingSymbol: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
-        return this.call('antSquareOffBare', userId, payload);
-    }
 
     async antCancelOrderBare(userId: string, orderId: string): Promise<void> {
         const res = await this.request('antCancelOrderBare', userId, { orderId });

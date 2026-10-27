@@ -1,5 +1,5 @@
 import { markNotPlaced } from '../util/notPlaced';
-import { cancelThenRecheck } from '../util/fillWait';
+import { cancelThenRecheck, fillStateUnknownError } from '../util/fillWait';
 import { KiteConnect } from 'kiteconnect';
 import Log from '../util/Log';
 import fs from 'fs';
@@ -415,10 +415,7 @@ class Kite {
                         recheck = await this.kc.getOrderHistory(orderId);
                     } catch (re) {
                         // Fill state is unknown - say so loudly rather than a bare transport error.
-                        throw Object.assign(
-                            new Error(`Kite order ${orderId} drift-cancel issued but the status re-check failed (fill state UNKNOWN): ${(re as any)?.message ?? re}`),
-                            { driftCancelled: true, fillStateUnknown: true, filledQuantity: 0, averagePrice: 0 }
-                        );
+                        throw fillStateUnknownError(`Kite order ${orderId} drift-cancel issued but the status re-check failed: ${(re as any)?.message ?? re}`, cancelFailed);
                     }
                     const recheckLatest = recheck[recheck.length - 1];
                     if (recheckLatest?.status === 'COMPLETE' && recheckLatest.average_price) {
@@ -483,13 +480,10 @@ class Kite {
         }
         if (settled.recheckError) {
             // Fill state is unknown - say so rather than "did not fill", which makes the caller retry the same order (double fill).
-            throw Object.assign(
-                new Error(`Kite order ${orderId} fill-price timeout: the status re-check failed (fill state UNKNOWN${settled.cancelFailed ? ', cancel also failed - order may still be resting' : ''}): ${(settled.recheckError as any)?.message ?? settled.recheckError}`),
-                { driftCancelled: true, fillStateUnknown: true, filledQuantity: 0, averagePrice: 0 }
-            );
+            throw fillStateUnknownError(`Kite order ${orderId} fill-price timeout: the status re-check failed: ${(settled.recheckError as any)?.message ?? settled.recheckError}`, settled.cancelFailed);
         }
         if (settled.cancelFailed) Log.log(`[Kite] ALERT: order ${orderId} did not fill within the timeout and the cancel failed - it may still be resting live at the broker`);
-        throw new Error(`Kite order ${orderId} did not fill within timeout`);
+        throw Object.assign(new Error(`Kite order ${orderId} did not fill within timeout`), { orderMayBeLive: settled.cancelFailed });
     }
 
     // Two-leg GTT (OCO): whichever trigger fires first (stop-loss or target) places

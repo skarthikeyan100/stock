@@ -71,7 +71,7 @@ export async function buyChunked(
             filledValue += trade.quantity * trade.price;
             Log.log(`[order] buyChunked: ${request.tradingSymbol} chunk ${i + 1}/${chunks.length} filled qty=${trade.quantity} @ ${trade.price} for ${request.userId} (bought ${filledQty}/${request.quantity})`);
         } catch (e: any) {
-            if (e?.driftCancelled) {
+            if (e?.driftCancelled && !e.fillStateUnknown) {
                 // Fold in any partial fill THIS chunk contributed before being
                 // cancelled (kiteExecutor.ts already recorded it via
                 // finalizeEntry/bookkeeping - this is just keeping buyChunked's

@@ -90,7 +90,6 @@ export type OrderRequestType =
     // family above (BulkPcr trades the hedge tree on ANT only, and ANT has
     // no contract-by-price-range lookup of its own).
     | 'antBuyContractBare'
-    | 'antSquareOffBare'
     | 'antCancelOrderBare'
     // Broker-dispatched (see orderProcess.ts's case comment) - not ANT-specific like
     // the antXBare family above despite living in the same block.

@@ -831,13 +831,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 );
             }
 
-            case 'antSquareOffBare': {
-                await waitForReconcile();
-                const { tradingSymbol, quantity, exchange } = req.payload;
-                const result = await antExecutor.squareOffOnAnt(req.userId, tradingSymbol, quantity, exchange);
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
-
             case 'antCancelOrderBare': {
                 await antExecutor.cancelOrderOnAnt(req.payload.orderId);
                 return { kind: 'response', id: req.id, ok: true };

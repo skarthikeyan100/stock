@@ -1,5 +1,5 @@
 import Log from '../util/Log';
-import { cancelThenRecheck } from '../util/fillWait';
+import { cancelThenRecheck, fillStateUnknownError } from '../util/fillWait';
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
@@ -624,6 +624,7 @@ class Breeze {
             if (settled.recheckError) {
                 if (settled.recheckError instanceof BreezeTerminalOrderError) throw settled.recheckError;
                 Log.log(`[Breeze] Post-timeout re-check of ${orderId} failed:`, settled.recheckError);
+                throw fillStateUnknownError(`Breeze order ${orderId} fill-price timeout: the status re-check failed: ${(settled.recheckError as any)?.message ?? settled.recheckError}`, settled.cancelFailed);
             }
             if (settled.cancelFailed) {
                 lastError = lastError ?? settled.cancelError ?? new Error('cancel failed');

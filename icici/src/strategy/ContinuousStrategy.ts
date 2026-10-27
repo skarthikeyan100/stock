@@ -7,9 +7,8 @@ import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
 import { LegManager, LegManagerConfig } from './LegManager';
-import { antLegOps } from './antLegOps';
-import { LegBrokerOps, defaultLegOps } from './LegBrokerOps';
-import { normalizeBrokerName } from '../util/brokerName';
+import { legOpsFor } from './legOps';
+import { LegBrokerOps } from './LegBrokerOps';
 import MomentumSignal from './MomentumSignal';
 import { sleep } from '../util/sleep';
 
@@ -75,7 +74,7 @@ export default class ContinuousStrategy extends Strategy {
     // 'Bare' IPCs refuse ANT), everything else uses the default per-user routing. One config block per broker, each with its
     // own userId, gives one independent tree per broker.
     private brokerOps(): LegBrokerOps {
-        const pick = (): LegBrokerOps => (normalizeBrokerName(this.cfg()?.broker) === 'ant' ? antLegOps : defaultLegOps);
+        const pick = (): LegBrokerOps => legOpsFor(this.cfg()?.broker);
         return {
             pickContract: (...a) => pick().pickContract(...a),
             buy: (...a) => pick().buy(...a),

@@ -471,7 +471,7 @@ export default class HourlyStrategy extends Strategy {
     // NIFTY-level invalidation: cancel the resting target sell and
     // market-square-off whatever remains, same two-step shape
     // BulkPcrStrategy's eodSquareOff uses, generalized to any broker via
-    // chunkedSquareOff instead of ANT-only antSquareOffBare.
+    // chunkedSquareOff.
     private async invalidateClose(pos: BrokerPosition): Promise<void> {
         // squaringOff stays set for the WHOLE close (cancel + market square-off), not just the cancel: the cancel's
         // own cancellation notification can arrive after the cancel call returns, and must not re-place the sell.
