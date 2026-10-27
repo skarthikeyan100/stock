@@ -1,23 +1,11 @@
 import { NOT_PLACED_TAG } from '../ipc/orderProtocol';
 import Log from '../util/Log';
-import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
+import { NiftyQuote, OptionQuote, OrderStatus, Trade } from "../model/model";
 import { Strategy } from "./strategy";
-import * as f from '../orderList'
 import OrderClient from '../processes/strategies/OrderClient'
-import { NIFTY, CALL, PUT, BOUGHT } from '../constants'
-import myEmitter from '../tools/emitter';
-import { TouchSequence } from "selenium-webdriver";
 import moment from "moment";
 import configService from '../prism/ConfigService'
 
-
-export enum Outcome {
-    WAIT = "WAIT",
-    CALL = "CALL",
-    PUT = "PUT",
-    PENDING_CLOSURE = "PENDING_CLOSURE"
-
-}
 
 
 // Consider volatility or standard deviation too
@@ -25,15 +13,6 @@ export enum Outcome {
 // let targetPrice = 2
 // const orderQuantity = 300;
 // const sentiment = 'any'
-
-const updatePrice = (price) => {
-    const round = (num) => Math.round(num * 10) / 10;
-    const percent = (price, num) => (price * num/100) 
-    const updated = round(percent(price, 10))
-    Log.log('Updated Threshold or Target to ', updated);
-    return updated
-}
-
 
 const round = (num) => Math.round(num * 100) / 100;
 

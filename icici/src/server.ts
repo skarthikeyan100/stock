@@ -41,16 +41,14 @@ import fs from 'fs';
 import { Trade } from './model/model';
 import configService from './prism/ConfigService';
 import { validateFlatConfig, validateConfigFile } from './prism/configValidation';
-import { revokeSessions, getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields, normalizeEmail } from './user';
+import { revokeSessions, getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields } from './user';
 import { computePayout, createPayoutRecord, markPayoutDecision, markPayoutPaidWithProof, setPayoutEmailStatus, claimPayoutEmailSend, getPayout, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary, periodFromInputs } from './payout';
 import multer from 'multer';
 import { GridFSBucket, ObjectId } from 'mongodb';
 import { sendPayoutPaidEmail } from './mailer';
 import Tesseract from 'tesseract.js';
 import sharp from 'sharp';
-import Decision from './decision';
 import Mongo from './tools/mongo';
-import { dateRangeQuery } from './tools/quoteDateRange';
 import myEmitter from './tools/emitter';
 import Prism from './prism';
 import ANT from './ant/ANT';
@@ -63,7 +61,7 @@ import StrategiesClient from './ipc/StrategiesClient';
 import { readJsonLines, writeJsonLine } from './ipc/jsonLines';
 import { cloudflareOnly, isLoopback } from './middleware/cloudflareOnly';
 import { OAuth2Client } from 'google-auth-library';
-import { normalizeBrokerName, normalizeBrokerList } from './util/brokerName';
+import { normalizeBrokerName } from './util/brokerName';
 
 // `frontend` process (server.ts, unchanged name/entry point - see the plan:
 // "frontend should be server.ts itself, edited in place"). Every route below
@@ -1527,12 +1525,6 @@ getOrPost('/connect', requireAdmin, async function (req: express.Request, res) {
     }
 });
 
-app.get('/subscribe', requireAdmin, async function (req: express.Request, res) {
-    // Touchline quote subscription moved entirely to ANT/`data`; kept as a
-    // no-op so stale frontend calls don't 404.
-    res.sendStatus(200);
-});
-
 // ============================== Trade & Position Queries ==============================
 
 app.get('/openTrades', requireAdmin, async function (req: express.Request, res) {
@@ -2188,34 +2180,6 @@ app.post('/config', requireAdmin, async (req, res) => {
     }
 
     res.json(flat);
-});
-
-// ============================== Backtesting / Replay ==============================
-
-app.get('/replay', requireAdmin, async (req, res) => {
-    const date = req.query.date as string;
-    if (!date) return res.status(400).json({ error: 'date query param required' });
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(`${date}T00:00:00Z`).getTime())) {
-        return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
-    }
-
-    const db = Mongo.getInstance().db;
-    // Live ticks are persisted to the 'NiftyQuote' collection (NiftyQuote.fromAnt(),
-    // see src/model/model.ts + src/ant/AntStream.ts / src/processes/data/AntDataStream.ts)
-    // - 'Quote' is not written by any active path. NiftyQuote documents have no `date`
-    // field, only `ltt` (epoch seconds), so filter by a day-bounds range instead of an
-    // equality match - see src/tools/quoteDateRange.ts.
-    const quotes = await db.collection('NiftyQuote').find(dateRangeQuery(date)).sort({ ltt: 1 }).toArray();
-    if (quotes.length === 0) return res.status(404).json({ error: `no quotes for date ${date}` });
-
-    const replayDecision = new Decision();
-    replayDecision.replayMode = true;
-    for (const q of quotes) {
-        replayDecision._addPrice(Number(q.ltt), Number(q.ltp));
-    }
-    replayDecision.flushCandles();
-
-    res.json({ date, processed: quotes.length });
 });
 
 // ============================== Static UI ==============================

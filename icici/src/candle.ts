@@ -2,29 +2,12 @@ import Log from './util/Log';
 // Strategy:
 // If direction is sure, go for option else go for option plus
 
-import axios, { AxiosRequestConfig } from 'axios'
-import { RestAPI, WebSocket } from '@quantiply/finvasia-nodejs-sdk';
-import NorenRestApi from './prism/RestAPI'
 import _ from 'lodash'
-import crypto from 'crypto'
-import delay from 'delay';
-import { NiftyQuote, OptionQuote, Trade } from './model/model';
-import util from 'util';
-const spawn = require('child_process').spawn;
-import myEmitter from './tools/emitter';
-import Mongo from './tools/mongo'
-import Prism from './prism';
-import Util from './util';
-import indexMap from './nse_index';
-import { NIFTY } from './constants'
+import { NiftyQuote } from './model/model';
 
 
 
 
-const CALL = 'call';
-const PUT = 'put';
-const BUY = 'Buy';
-const SELL = 'Sell';
 
 export enum CandleType {
     FIVE, FIFTEEN, THIRTY
@@ -84,16 +67,6 @@ export class Candle {
         }
 
         this.close = quote.ltp
-    }
-}
-
-class CandleKey {
-    index
-    minutes
-
-    constructor(index, minutes) {
-        this.index = index;
-        this.minutes = minutes;
     }
 }
 

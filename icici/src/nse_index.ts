@@ -1,5 +1,4 @@
 import Log from './util/Log';
-import StackUtils = require("stack-utils");
 import { NIFTY, FINNIFTY, BANKNIFTY, NIFTY_FREEZE_QUANTITY } from "./constants";
 import Prism from "./prism";
 import { UserContext } from "./user";

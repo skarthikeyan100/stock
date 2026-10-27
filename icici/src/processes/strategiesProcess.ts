@@ -14,12 +14,11 @@ import { STRATEGIES_SOCKET_PATH, StrategiesRequest, StrategiesResponse } from '.
 import strategies from '../strategy/strategies';
 import OrderClient from './strategies/OrderClient';
 import { registerTrade, unregisterTrade, optionTickTargets, deliverOptionTick, resubscribeAll, holdExternal, releaseExternal } from './strategies/tokenRouter';
-import { BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
 import * as niftyQuoteHistory from './strategies/niftyQuoteHistory';
 import * as niftyCandleBuilder from './strategies/niftyCandleBuilder';
 import * as niftyStatsBuilder from './strategies/niftyStatsBuilder';
 import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
-import { FeedSource, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
+import { FeedSource, DEFAULT_FEED_SOURCE, BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import { exchangeForTsym } from '../util/underlyings';
 

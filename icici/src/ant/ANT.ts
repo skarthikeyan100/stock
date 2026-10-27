@@ -36,7 +36,6 @@ class ANT {
     // ANT Configuration - Update these with your actual credentials
     private appKey = 'voMvjS7seC'; // Alice Blue App Key (from developer console)
     private apiSecret = 'U6LMFnm9ZWguxyiurcr37Jd9qCyHVTsu8ZSfZ3JR6mwShz8jk7g6kDRXFu595ZRt3oxFHAtc5CbTk51j4oNmbm0yXgkJQ7TLF72z'; // Alice Blue API Secret
-    private redirectUri = 'http://localhost:3000/ant/callback';
     private tokenUrl = 'https://a3.aliceblueonline.com/open-api/od/v1/vendor/getUserDetails';
     private userSession: string | null = null;
     private userId: string | null = null;
@@ -268,29 +267,11 @@ class ANT {
         return this.userId;
     }
 
-    getApiSecret(): string {
-        return this.apiSecret;
-    }
 
-    getAppKey(): string {
-        return this.appKey;
-    }
 
-    setAppKey(key: string): void {
-        this.appKey = key;
-    }
 
-    setApiSecret(secret: string): void {
-        this.apiSecret = secret;
-    }
 
-    setRedirectUri(uri: string): void {
-        this.redirectUri = uri;
-    }
 
-    getRedirectUri(): string {
-        return this.redirectUri;
-    }
 
     async getTrades(): Promise<any[]> {
         try {

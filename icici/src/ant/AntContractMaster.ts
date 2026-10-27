@@ -15,11 +15,6 @@ interface ContractRecord {
   'Lot Size': string;
 }
 
-interface IndexToken {
-  exch: string;
-  token: string;
-}
-
 interface EquityRecord {
   Symbol: string;
   Token: string;
@@ -54,10 +49,6 @@ class AntContractMaster {
       // Non-fatal - staleness detection is a courtesy warning, not a load-blocking check.
     }
   }
-
-  static readonly INDEX_TOKENS: Record<string, IndexToken> = {
-    NIFTY: { exch: 'NSE', token: '26000' },
-  };
 
   // Matches KiteContractMaster's strike-rounding table.
   static readonly STRIKE_STEP: Record<string, number> = {

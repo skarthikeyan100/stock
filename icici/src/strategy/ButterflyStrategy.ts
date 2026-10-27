@@ -8,7 +8,7 @@ import { Strategy } from './strategy';
 import SerialWriter from './SerialWriter';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { sleep } from '../util/sleep';
-import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
+import { normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
 
 // Iron Butterfly (standard, net credit) / Reverse Iron Butterfly (net debit) 4-leg combo on
 // NIFTY/SENSEX. Manual arm only (config.yml `enabled: true`, fires once on the next tick),

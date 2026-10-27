@@ -1,7 +1,6 @@
 import Log from '../util/Log';
 import { CALL, PUT } from '../constants';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
-import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';

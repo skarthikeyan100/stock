@@ -55,7 +55,9 @@ export function useEventSource(url: string, { enabled = true, onMessage, onOpen,
         if (!authProbeUrl) { retry(); return; }
         fetch(authProbeUrl, { credentials: 'include' })
           .then((res) => {
-            if (res.status === 401) { notifyUnauthorized(); return; } // session gone: stop, the login screen takes over
+            // Session gone: hand over to the login screen, but keep probing at the slow pace - a consumer that is not tied to the
+            // login state (it has no `enabled` flag) must pick the stream up again after the user logs back in.
+            if (res.status === 401) { notifyUnauthorized(); failCount = Math.max(failCount, 6); }
             retry();
           })
           .catch(retry); // network down: keep trying

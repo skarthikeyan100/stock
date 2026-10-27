@@ -2,7 +2,6 @@ import moment from 'moment';
 import Log from '../util/Log';
 import { CALL, PUT, MOCK_BROKER } from '../constants';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
-import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
 import { LegManager, LegManagerConfig } from './LegManager';

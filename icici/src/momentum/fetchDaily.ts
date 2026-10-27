@@ -1,4 +1,4 @@
-import NseClient, { StockData } from './nseClient';
+import NseClient from './nseClient';
 import Mongo from '../tools/mongo';
 
 const INDICES = ['NIFTY 50', 'NIFTY NEXT 50'];

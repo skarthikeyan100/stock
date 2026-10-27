@@ -14,7 +14,7 @@ import { localDayKey } from './dayKey';
 import fs from 'fs';
 import path from 'path';
 import moment from 'moment';
-import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
+import { normalizeBrokerList } from '../util/brokerName';
 
 // NIFTY 50 + NIFTY Next 50 constituents (100 symbols), snapshotted from
 // NSE's own unauthenticated index-constituent CSVs (the same source

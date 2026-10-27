@@ -11,6 +11,10 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 const srcTests = path.join(root, 'src', 'test');
 const distTests = path.join(root, 'dist', 'test');
+if (!fs.existsSync(srcTests)) {
+    console.error(`[test:all] ${srcTests} does not exist`);
+    process.exit(2);
+}
 
 if (!process.argv.includes('--no-build')) execSync('npx tsc', { cwd: root, stdio: 'inherit' });
 

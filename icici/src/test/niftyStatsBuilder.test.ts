@@ -30,7 +30,7 @@ assert(lastResult === null, 'no stats emitted before a 300s boundary is crossed'
 const crossing = niftyStatsBuilder.record(24100, baseTime + 305);
 assert(crossing !== null, 'emits a stats update once the 300s boundary is crossed');
 assert(crossing!.newStats?.results?.rsi !== undefined, 'emitted stats include rsi results usable by RuleBasedStrategy.receive()');
-assert(crossing!.newStats?.results?.pivot?.S1 !== undefined, 'emitted stats include pivot results usable by BiDirectionStrategy/PivotStrategy');
+assert(crossing!.newStats?.results?.pivot?.S1 !== undefined, 'emitted stats include pivot results usable by strategies');
 
 if (process.exitCode === 1) {
     console.log('SOME TESTS FAILED');

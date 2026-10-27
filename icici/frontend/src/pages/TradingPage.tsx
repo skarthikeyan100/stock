@@ -11,6 +11,9 @@ import NotificationBell from '../components/NotificationBell';
 export default function TradingPage() {
   const { trades, closedTrades, openPnL, totalPnL, usedAmount, tradingBlocked, blockReason } = useTrading();
   const { user, logout, isAdmin } = useAuth();
+  const handleLogout = async () => {
+    if (!(await logout())) window.alert('Logout could not be completed - please try again.');
+  };
   const navigate = useNavigate();
   const maxLoss = user?.lossLimit ?? 15000;
   const investmentAmount = user?.investmentAmount ?? 100000;
@@ -43,7 +46,7 @@ export default function TradingPage() {
               {isAdmin && (
                 <Button variant="outline-primary" size="sm" onClick={() => navigate('/admin')}>Admin</Button>
               )}
-              <Button variant="outline-secondary" size="sm" onClick={logout}>Logout</Button>
+              <Button variant="outline-secondary" size="sm" onClick={handleLogout}>Logout</Button>
             </div>
             <div className={`pnl-center text-center text-${openColor}`}>
               <div className="small">Current P&amp;L</div>

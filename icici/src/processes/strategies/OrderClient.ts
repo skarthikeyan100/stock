@@ -165,12 +165,6 @@ class OrderClient {
         return res.result;
     }
 
-    async calculateRight(userId: string, ltp?: number): Promise<string> {
-        const res = await this.request('calculateRight', userId, { ltp });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
-    }
-
     async getToken(userId: string, contract: string): Promise<string> {
         const res = await this.request('getToken', userId, { contract });
         if (!res.ok) throw new Error(res.error);
@@ -179,18 +173,6 @@ class OrderClient {
 
     async getNiftyQuote(userId: string): Promise<any> {
         const res = await this.request('getNiftyQuote', userId, {});
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
-    }
-
-    async getOptionQuote(userId: string, token: string): Promise<any> {
-        const res = await this.request('getOptionQuote', userId, { token });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
-    }
-
-    async getStockOptionQuote(userId: string, contract: string): Promise<any> {
-        const res = await this.request('getStockOptionQuote', userId, { contract });
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
@@ -225,18 +207,6 @@ class OrderClient {
     }
 
     // ANT (AliceBlue) order path - see src/processes/order/antExecutor.ts.
-    async antBuyIndex(userId: string, payload: { niftyLtp: number; right: string; quantity: number; index?: 'NIFTY' | 'SENSEX'; targetPoints?: number; stopLossPoints?: number; strike?: number; expiry?: string }): Promise<any> {
-        const res = await this.request('antBuyIndex', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
-    }
-
-    async antManualBuy(userId: string, payload: { index?: 'NIFTY' | 'SENSEX'; right?: string; contract?: string; strikePrice?: number; quantity?: number; targetPoints?: number; stopLossPoints?: number }): Promise<any> {
-        const res = await this.request('antManualBuy', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
-    }
-
     // ICICI Breeze order path - see src/processes/order/breezeExecutor.ts.
     async breezeBuyIndex(userId: string, payload: { right: string; index?: 'NIFTY' | 'SENSEX'; quantity?: number; targetPoints?: number; stopLossPoints?: number }): Promise<any> {
         const res = await this.request('breezeBuyIndex', userId, payload);
@@ -299,12 +269,6 @@ class OrderClient {
 
     async antPlaceCoverOrder(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; transactionType: 'BUY' | 'SELL'; stopLossPoints: number }): Promise<any> {
         const res = await this.request('antPlaceCoverOrder', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
-    }
-
-    async antSquareOff(userId: string, payload: { tsym?: string; token?: string; quantity?: number; exchange?: 'NFO' | 'BFO' }): Promise<any> {
-        const res = await this.request('antSquareOff', userId, payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
@@ -437,18 +401,6 @@ class OrderClient {
 
     // undefined result means "no per-user override" - caller falls back to
     // its own config default (see ContinuousStrategy.capitalCheck).
-    async getUserAllottedCapital(userId: string): Promise<number | undefined> {
-        const res = await this.request('getUserAllottedCapital', userId, {});
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
-    }
-
-    async hasActiveTrade(userId: string): Promise<boolean> {
-        const res = await this.request('hasActiveTrade', userId, {});
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
-    }
-
     async getOpenTrades(userId: string): Promise<any[]> {
         const res = await this.request('openTrades', userId, {});
         if (!res.ok) throw new Error(res.error);
@@ -465,12 +417,6 @@ class OrderClient {
 
     async findToken(userId: string, index: string, depth: number, right: string): Promise<string> {
         const res = await this.request('findToken', userId, { index, depth, right });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
-    }
-
-    async injectTrade(payload: { tsym: string; flqty: string; flprc: string; trantype: string }): Promise<any> {
-        const res = await this.request('injectTrade', 'Default', payload);
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }

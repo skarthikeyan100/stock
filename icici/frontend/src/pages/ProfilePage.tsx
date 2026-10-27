@@ -57,6 +57,9 @@ function PayoutStatusBadge({ status }: { status: Payout['status'] }) {
 
 export default function ProfilePage() {
   const { user, logout, refreshUser } = useAuth();
+  const handleLogout = async () => {
+    if (!(await logout())) window.alert('Logout could not be completed - please try again.');
+  };
   const navigate = useNavigate();
 
   const [phone, setPhone] = useState(user?.phone ?? '');
@@ -400,7 +403,7 @@ export default function ProfilePage() {
             <NotificationBell />
             <Button variant="outline-secondary" size="sm" onClick={() => navigate('/rules')}>Rules</Button>
             <Button variant="outline-secondary" size="sm" onClick={() => navigate('/trade')}>← Trading</Button>
-            <Button variant="outline-secondary" size="sm" onClick={logout}>Logout</Button>
+            <Button variant="outline-secondary" size="sm" onClick={handleLogout}>Logout</Button>
           </div>
         </Container>
       </div>

@@ -1,5 +1,5 @@
 import Log from '../util/Log';
-import MongoClient, { Db, Collection } from 'mongodb'
+import MongoClient, { Db } from 'mongodb'
 
 
 export default class Mongo {
@@ -8,12 +8,6 @@ export default class Mongo {
     db: Db
     client: MongoClient.MongoClient
     static instance: Mongo;
-
-    async asyncForEach(array, callback) {
-        for (let index = 0; index < array.length; index++) {
-            await callback(array[index], index, array);
-        }
-    }
 
     static async init() {
         Log.log("Mongo is initialized")
@@ -37,16 +31,6 @@ export default class Mongo {
         this.db = this.client.db(this.dbName);
         Log.log('Mongo is initialized')
         return this;
-    }
-
-    listCollections = async () => {
-
-        const docs = await this.db.listCollections().toArray()
-        docs.forEach((doc) => Log.log(doc.name))
-    }
-
-    createCollection = async (name) => {
-        await this.db.createCollection(name)
     }
 
     //TODO quoteCollection is hard-coded

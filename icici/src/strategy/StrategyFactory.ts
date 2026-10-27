@@ -1,12 +1,6 @@
 import Log from '../util/Log';
 import { Strategy } from './strategy';
 import SentimentStrategy from './SentimentStrategy';
-import BiDirectionStrategy from './BiDirectionStrategy';
-import DiffStrategy from './DiffStrategy';
-import PivotStrategy from './PivotStrategy';
-import HighLotStrategy from './HighLotStrategy';
-import Minutes5Decision from './Minutes5Decision';
-import TestStrategy from './TestStrategy';
 import RateOfChangeStrategy from './RateOfChangeStrategy';
 import GapStrategy from './GapStrategy';
 import RuleBasedStrategy from './RuleBasedStrategy';
@@ -24,12 +18,6 @@ import { StrategyInstanceConfig } from '../prism/AppConfig';
 
 const STRATEGY_REGISTRY = new Map<string, new (userId?: string) => Strategy>();
 STRATEGY_REGISTRY.set('SentimentStrategy', SentimentStrategy);
-STRATEGY_REGISTRY.set('BiDirectionStrategy', BiDirectionStrategy);
-STRATEGY_REGISTRY.set('DiffStrategy', DiffStrategy);
-STRATEGY_REGISTRY.set('PivotStrategy', PivotStrategy);
-STRATEGY_REGISTRY.set('HighLotStrategy', HighLotStrategy);
-STRATEGY_REGISTRY.set('Minutes5Decision', Minutes5Decision);
-STRATEGY_REGISTRY.set('TestStrategy', TestStrategy);
 STRATEGY_REGISTRY.set('RateOfChangeStrategy', RateOfChangeStrategy);
 STRATEGY_REGISTRY.set('GapStrategy', GapStrategy);
 STRATEGY_REGISTRY.set('RuleBasedStrategy', RuleBasedStrategy);

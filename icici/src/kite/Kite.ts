@@ -35,7 +35,6 @@ class Kite {
     // Kite Configuration - Update these with your actual credentials
     private apiKey = '8ugdwlq4fz81o218';
     private apiSecret = '914b3mcaxlx94jfmleikmexysueqohmn';
-    private redirectUri = 'http://localhost:3000/kite/callback';
     private kc: KiteConnect;
     private accessToken: string | null = null;
     // Every Kite order this process has placed. The order id is the only reliable owner key: reconcileManualSells must
@@ -59,13 +58,7 @@ class Kite {
     // not buyOption()/placeLimitBuyOption().
     private buyHaltReason: string | null = null;
 
-    isBuyHalted(): boolean {
-        return this.buyHaltReason !== null;
-    }
 
-    getBuyHaltReason(): string | null {
-        return this.buyHaltReason;
-    }
 
     private assertBuysNotHalted(): void {
         if (this.buyHaltReason) {
@@ -180,29 +173,14 @@ class Kite {
         }
     }
 
-    getAccessToken(): string | null {
-        return this.accessToken;
-    }
 
     getKiteConnect(): KiteConnect {
         return this.kc;
     }
 
-    setApiKey(key: string): void {
-        this.apiKey = key;
-    }
 
-    setApiSecret(secret: string): void {
-        this.apiSecret = secret;
-    }
 
-    setRedirectUri(uri: string): void {
-        this.redirectUri = uri;
-    }
 
-    getRedirectUri(): string {
-        return this.redirectUri;
-    }
 
     async getTrades(): Promise<any[]> {
         try {

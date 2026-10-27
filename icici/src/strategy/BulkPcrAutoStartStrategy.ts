@@ -8,7 +8,7 @@ import { NiftyQuote, OptionQuote } from '../model/model';
 import configService from '../prism/ConfigService';
 import strategies from './strategies';
 import BulkPcrStrategy from './BulkPcrStrategy';
-import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
+import { normalizeBrokerList } from '../util/brokerName';
 
 // Scheduled auto-arm wrapper: at each configured HH:mm time, arms a
 // BulkPcrStrategy instance (its own config.yml block - quantity/brokers
@@ -65,7 +65,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         this.firedToday.clear();
     }
 
-    private resetIfNewDay(now: moment.Moment) {
+    private resetIfNewDay() {
         const today = localDayKey();
         if (this.tradingDay !== today) {
             this.tradingDay = today;
@@ -99,7 +99,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         if (!this.enabled) return;
 
         const now = moment();
-        this.resetIfNewDay(now);
+        this.resetIfNewDay();
 
         const times: string[] = Array.isArray(this.cfg().times) ? this.cfg().times : [];
         for (const timeStr of times) {

@@ -1,8 +1,8 @@
 import { NOT_PLACED_TAG } from '../ipc/orderProtocol';
 import Log from '../util/Log';
-import { NIFTY, MOCK_BROKER, CALL, PUT } from "../constants";
+import { MOCK_BROKER } from "../constants";
 import configService from '../prism/ConfigService';
-import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, SensexQuote, Trade } from "../model/model";
+import { NiftyQuote, OptionQuote, OrderInfo, SensexQuote, Trade } from "../model/model";
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import moment from "moment";
 import { StrategyInstanceConfig } from '../prism/AppConfig';
@@ -25,7 +25,6 @@ export abstract class Strategy {
     ordered = false
     enabled = false
     token: string
-    multipleTradesAllowed: true
 
     // Win/loss tracking
     wins = 0
@@ -154,27 +153,6 @@ export abstract class Strategy {
         return this.constructor.name;
     }
 
-    async addOrder(price, right, quantity?: number) {
-        try {
-            const monitorConfig = this.getMonitorConfig();
-            const trade = await OrderClient.getInstance().buyIndex(this.userId, {
-                niftyLtp: price,
-                right,
-                quantity,
-                targetPoints: monitorConfig?.targetPoints,
-                stopLossPoints: monitorConfig?.stopLossPoints,
-            });
-            Log.log(this.userId, ' In add order ', trade)
-            const order = { contract: trade.tsym, price: trade.price, qty: trade.quantity, token: trade.token };
-            this.orderMap.set(order.contract, order as any);
-            this.ordered = true;
-            return order;
-        } catch (e) {
-            Log.log(this.userId, ' addOrder failed: ', e);
-            return null;
-        }
-    }
-
     // buyContract/sellContract take an already-resolved broker contract symbol -
     // the Prism/Shoonya path (src/processes/order/prismExecutor.ts), used by
     // strategies that pick their own contract (e.g. via getContractByPriceRange)
@@ -185,6 +163,7 @@ export abstract class Strategy {
 
     async buyContract(contract: string, quantity: number, price?: number ): Promise<OrderInfo | null> {
         Log.log('Buy Contract by ', this.userId, ' for contract: ', contract)
+        this.lastBuyDefinitelyNotPlaced = false; // never carry a previous call's value
         try {
             const response = await OrderClient.getInstance().buyContract(this.userId, contract, quantity, price);
             return { contract: response.contract, price: response.price, qty: response.qty, token: response.token } as any;

@@ -162,15 +162,6 @@ class NorenRestApi {
     return axios.post(url, payload, { headers });
   }
 
-  request_otp = () => {
-    if (MOCK_BROKER) {
-      Log.log('[RestAPI] Mock request_otp (no-op)');
-      return Promise.resolve({ stat: 'Ok' });
-    }
-    const url = 'https://trade.shoonya.com/NorenWClientWeb/FgtPwdOTP';
-    const payload = 'jData=' + JSON.stringify(this.otpRequest);
-    return axios.post(url, payload);
-  }
 
   logout = async () => {
     if (MOCK_BROKER) {
@@ -260,17 +251,6 @@ class NorenRestApi {
        * @param {string} searchtext
        */
 
-  searchscrip = async (searchtext) => {
-
-    Log.log('searchtext: ', searchtext);
-    let values = {};
-    values["uid"] = this.userId;
-    values["exch"] = 'NFO';
-    values["stext"] = searchtext;
-
-    let reply = await this.post_request("searchscrip", values);
-    return reply.data.token;
-  };
 
   /**
        * Description
@@ -303,21 +283,6 @@ class NorenRestApi {
        * @param {string} interval
        */
 
-  get_time_price_series = function (params) {
-
-    let values = {}
-    values["uid"] = this.userId;
-    values["exch"] = params.exchange;
-    values["token"] = params.token;
-    values["st"] = params.starttime;
-    if (params.endtime !== undefined)
-      values["et"] = params.endtime;
-    if (params.interval !== undefined)
-      values["intrv"] = params.interval;
-
-    let reply = this.post_request("TPSeries", values, this.usertoken);
-    return reply;
-  };
 
   /**
        * Description
@@ -513,34 +478,12 @@ class NorenRestApi {
        * @param no params
        */
 
-  get_tradebook = async () => {
-    if (MOCK_BROKER) {
-      return [];
-    }
-
-    let values = {};
-    values["uid"] = this.userId;
-    values["actid"] = this.userId;
-
-    let reply = this.post_request("tradebook", values);
-    return reply;
-  };
   /**
        * Description
        * @method get_holdings
        * @param product_type
        */
 
-  get_holdings = function (product_type = 'C') {
-
-    let values = {};
-    values["uid"] = this.userId;
-    values["actid"] = this.userId;
-    values["prd"] = product_type;
-
-    let reply = this.post_request("holdings", values);
-    return reply;
-  };
   /**
        * Description
        * @method get_positions
@@ -565,27 +508,6 @@ class NorenRestApi {
        * @param optional params
        */
 
-  get_limits = function (product_type = '', segment = '', exchange = '') {
-
-    let values = {};
-    values["uid"] = this.userId;
-    values["actid"] = this.userId;
-
-    if (product_type != '') {
-      values["prd"] = product_type
-    }
-
-    if (segment != '') {
-      values["seg"] = segment
-    }
-
-    if (exchange != '') {
-      values["exch"] = exchange
-    }
-
-    let reply = this.post_request("limits", values);
-    return reply;
-  };
   /**
        * Description
        * @method start_websocket

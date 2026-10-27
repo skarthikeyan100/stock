@@ -10,6 +10,22 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void {
   unauthorizedHandler = fn;
 }
 
+// A single 401 (a stray endpoint, a request racing a login) must not bounce the whole app to the login screen: the session is
+// confirmed against /auth/me first, and only one confirmation runs at a time.
+let confirming = false;
+async function confirmSessionGone(): Promise<void> {
+  if (confirming) return;
+  confirming = true;
+  try {
+    const probe = await fetch('/auth/me', { credentials: 'include' });
+    if (probe.status === 401) unauthorizedHandler?.();
+  } catch {
+    /* network trouble is not a logged-out session */
+  } finally {
+    confirming = false;
+  }
+}
+
 export function notifyUnauthorized(): void {
   unauthorizedHandler?.();
 }
@@ -20,7 +36,7 @@ export async function apiFetch(url: string, init: RequestInit = {}): Promise<Res
     ...init,
     headers: { ...BASE_HEADERS, ...(init.headers as Record<string, string> | undefined) },
   });
-  if (res.status === 401 && !url.startsWith('/auth/') && !url.startsWith('/demo/')) unauthorizedHandler?.();
+  if (res.status === 401 && !url.startsWith('/auth/') && !url.startsWith('/demo/')) void confirmSessionGone();
   return res;
 }
 

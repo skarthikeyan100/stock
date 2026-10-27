@@ -19,9 +19,8 @@
  *   npx ts-node src/tools/analyze.ts --indicators RSI_5_80_20,EMA_30_70 --threshold 10 --stopLoss 5
  */
 import * as fs from 'fs';
-import * as path from 'path';
 import Mongo from './mongo';
-import { buildCandles, CandleData } from '../lib/candle-builder';
+import { buildCandles } from '../lib/candle-builder';
 import { calcRSI, calcEMACrossover, calcMACD, calcBollinger, calcADX, calcStochastic } from '../lib/indicators';
 
 // ── CLI argument parsing ──────────────────────────────────────────────────────

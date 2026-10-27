@@ -38,8 +38,6 @@ export default function NotificationBell() {
       .catch(() => {});
   }, [email]);
 
-  useEffect(() => { loadUnread(); }, [loadUnread]);
-
   useEventSource('/notificationstream', {
     enabled: !!email,
     // Anything emitted while the stream was down is only reachable by refetching on (re)connect.

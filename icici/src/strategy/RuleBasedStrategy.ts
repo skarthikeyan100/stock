@@ -2,7 +2,6 @@ import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, Trade, PeriodicStats, RSI, MACD, Bollinger, EMACrossOver } from "../model/model";
 import { Strategy } from "./strategy";
 import OrderClient from '../processes/strategies/OrderClient';
-import * as niftyQuoteHistory from '../processes/strategies/niftyQuoteHistory';
 import { CALL, PUT } from '../constants';
 import configService from '../prism/ConfigService';
 

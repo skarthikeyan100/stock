@@ -662,47 +662,6 @@ export class LegManager {
         });
     }
 
-    // Adopts an ALREADY-OPEN broker position (e.g. BulkPcrStrategy's root call/put,
-    // bought outside LegManager, whose own resting exit sell was just cancelled) as
-    // this instance's root leg, instead of buying a fresh one. No order is placed
-    // here - the position is already live at the broker; this only starts tracking
-    // it. Throws if the token is already tracked (never silently merges - same
-    // guard as openRootLeg/restoreFromOpenTrades's duplicate-token checks).
-    async adoptRootLeg(p: {
-        tsym: string;
-        token: string;
-        strike: number;
-        exchange: 'NFO' | 'BFO';
-        right: string; // CALL | PUT
-        entryPrice: number;
-        quantity: number;
-    }): Promise<Leg> {
-        return this.withOpLock(async () => {
-            if (this.legsByToken.has(p.token)) {
-                throw new Error('adoptRootLeg: token already tracked');
-            }
-            const leg: Leg = {
-                legId: this.nextLegId(), token: p.token, tsym: p.tsym, strike: p.strike, exchange: p.exchange,
-                right: p.right, entryPrice: p.entryPrice, quantity: p.quantity, isRoot: true,
-                parentLegId: null, parentLevel: null, childByLevel: new Map(), status: 'OPEN',
-                avgPrice: p.entryPrice, totalQuantity: p.quantity, averagedLevels: new Set(),
-                legRef: crypto.randomUUID(), parentLegRef: null,
-            };
-            this.legsByToken.set(p.token, leg);
-            if (!this.deps.getConfig().dryRun) {
-                this.persistLegLineage(leg);
-                registerTrade(p.token, this.deps.strategyRef, undefined, leg.exchange);
-            }
-            this.logLegStatus(leg);
-            return leg;
-        });
-    }
-
-    // Public wrapper for EOD force-close - see BulkPcrStrategy.ts's EOD hook.
-    async closeAll(): Promise<void> {
-        await this.closeAllLegsAndCancelReEntries();
-    }
-
     // Handles every option tick for a token this instance is tracking (an
     // open leg, or a pending refill). Mirrors ContinuousStrategy's original
     // processOptionQuote body exactly, generalized off `this.cfg()`/

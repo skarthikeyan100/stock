@@ -1,5 +1,4 @@
 import Log from '../util/Log';
-import { EventEmitter } from 'events';
 
 export class NiftyQuote {
     token
@@ -147,19 +146,6 @@ export class Trade {
     originalEntryQuantity?: number // set by restoreOneOpenTrade: the current leg's true first-fill quantity, distinct from `quantity` (the broker's current aggregate) - see ContinuousStrategy.reconcile()
 
 
-    static getTradeFromResponse(response) {
-        const trade = new Trade();
-        trade.stockCode = response.stock_code
-        trade.action = response.action,
-            trade.quantity = response.quantity
-        trade.price = response.average_cost
-        trade.expiryDate = response.expiry_date,
-            trade.right = response.right,
-            trade.strikePrice = response.strike_price,
-            trade.ltp = response.ltp
-            Log.log("Trade:(fromResponse) ", trade)
-        return trade;
-    }
 
     static fromPrism(response) {
         const dname: string = response.dname;
@@ -370,23 +356,6 @@ export class PeriodicStats {
 }
 
 
-export class Filtered {
-    open
-    high
-    low
-    close
-    average
-    median
-    stdDeviation
-    rateOfChange
-    diff
-    range
-    diffFromHigh
-    trend
-    time
-    results: Result
-}
-
 export class Result {
     eventName: string
     macd: MACD[] = []
@@ -426,11 +395,6 @@ export class Bollinger {
     lowerBand: number = 0;
     trend: string = '';
 
-    getFeature(): string {
-        const r = `${this.period}_${this.numDeviations}_${this.trend}`
-        Log.log(this.period, ',', this.numDeviations, ',', r)
-        return r;
-    };
 }
 
 export class EMACrossOver {

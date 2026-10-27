@@ -2,53 +2,19 @@ import Log from './util/Log';
 // Strategy:
 // If direction is sure, go for option else go for option plus
 
-import * as fs from 'fs';
-import axios, { AxiosRequestConfig } from 'axios'
-import { RestAPI, WebSocket } from '@quantiply/finvasia-nodejs-sdk';
-import NorenRestApi from './prism/RestAPI'
-import _, { over } from 'lodash'
-import crypto from 'crypto'
-import delay from 'delay';
-import { NiftyQuote, OptionQuote, PeriodicStats, RealTimeTrend, Trade } from './model/model';
-import util from 'util';
-const spawn = require('child_process').spawn;
-import myEmitter from './tools/emitter';
+import _ from 'lodash'
+import { NiftyQuote, PeriodicStats } from './model/model';
 import Mongo from './tools/mongo'
-import Prism from './prism';
-import Config from './prism/config';
-import Util from './util';
-import indexMap from './nse_index';
-import { NIFTY, SIMULATION } from './constants'
-import candleManager, { CandleType } from './candle';
-import { Strategy, Outcome } from './strategy/strategy';
-import { ORBPrevious } from './strategy/ORBPrevious';
+import { SIMULATION } from './constants'
+import candleManager from './candle';
 import stats from 'stats-lite';
 import regression from 'regression';
 import { buildCandle } from './lib/candle-builder';
 import { calcRSI, calcEMACrossover, calcMACD, calcBollinger, calcADX, calcStochastic } from './lib/indicators';
-import { INTERVALS, RSI_PARAMS, MACD_PARAMS, EMA_PARAMS, BOLLINGER_PARAMS, ADX_PARAMS, STOCHASTIC_PARAMS } from './lib/indicator-config';
+import { RSI_PARAMS, MACD_PARAMS, EMA_PARAMS, BOLLINGER_PARAMS, ADX_PARAMS, STOCHASTIC_PARAMS } from './lib/indicator-config';
 import EventEmitter from 'events';
-import { OnTrigger } from './onTrigger';
-import moment from 'moment';
-import Monitor from './monitor';
-import * as f from './orderList'
 import strategies from './strategy/strategies';
-import { Parser } from 'json2csv'
-import e from 'express';
 
-const CALL = 'call';
-const PUT = 'put';
-const BUY = 'Buy';
-const SELL = 'Sell';
-
-class BuyerInterestModel{
-    contract
-    buyQty
-    sellQty
-    diff
-    intrinsic
-    extrinsic
-}
 
 export class Candle {
     eventName
@@ -85,7 +51,6 @@ export default class Decision {
     quotes = [];
     static instance: Decision;
     depth = 2;
-    onTrigger: OnTrigger;
     replayMode = false;
  
 
@@ -101,32 +66,6 @@ export default class Decision {
     }
 
     startTime = Date.now();
-    getMinutePrice = (price) =>{
-        const currentTime = Date.now();
-        if ((currentTime - this.startTime) >= 10000) { 
-            this.startTime = Date.now();
-          return price;
-        } else {
-          return null;
-        }
-      }
-
-    setOnTrigger = (contract, triggerPrice) => {
-        Log.log("setOnTrigger is called")
-        this.onTrigger = new OnTrigger();
-        this.onTrigger.setTrigger(contract, triggerPrice)
-    }
-
-    decidePurchaseStockOption = async (quote: OptionQuote) => {
-        if (this.onTrigger) {
-            this.onTrigger.process(quote);
-        }
-        for (const strategy of strategies.getList()) {
-            // Log.log('Process strategy ', strategy.getClassName())
-            await strategy.processOptionQuote(quote);
-        }
-    }
-
     decidePurchase = async (quote: NiftyQuote) => {
         if (!SIMULATION) {
             this._addPrice(parseInt(quote.ltt), quote.ltp)
@@ -177,115 +116,11 @@ export default class Decision {
         // this.decideBasedOnCurrentState(niftyQuote);
     };
 
-    //Within 30 mins, the price breaks previous high or previous low
-    _checkORBUsingPreviousPrice(niftyQuote) {
-        const time = 30 * 60 // 30 mins or 1800 seconds
-
-    }
-
-    //Find high and low for first 30 mins. Trade if the current price crosses them
-    _checkORBUsingOpeningRange() {
-    }
-
-
     _decideInFirst5Minutes() {
 
     }
 
-    _scalping() {
-
-    }
-
     _utilizeVariationsBetween2And2Thirty() {
-
-    }
-
-    _formCandle(niftyQuote: NiftyQuote) {
-        candleManager.addQuote(niftyQuote);
-    }
-
-    decideSell = async (optionQuote: OptionQuote) => {
-        const prism = Prism.getInstance();
-        for (const strategy of strategies.getList()) {
-            const trade = strategy.tradeMap.get(optionQuote.token) as Trade;
-            if (trade) {
-                Log.log('Trade: ', trade.right, ' qty: ', trade.quantity, ' profit: ', trade.getProfit());
-                if (trade.getProfit() > this.profit && !trade.isSellPending) {
-                    Log.log('[Auto] Sell ', trade);
-                    trade.isSellPending = true; // set before the await: every following tick re-enters while the sell is in flight
-                    try {
-                        await prism.squareOffOrder(trade.token, trade.quantity, undefined, trade.lastTradePrice);
-                    } catch (e) {
-                        Log.log('[Auto] square off failed - keeping the trade tracked:', e);
-                        if ((e as any)?.notPlaced) trade.isSellPending = false; // definitely not sent: retry; otherwise left for review
-                        continue; // never record a failed exit as closed
-                    }
-                    trade.action = SELL;
-                    Mongo.getInstance().insert(trade);
-                    strategy.tradeMap.delete(optionQuote.token);
-                }
-            }
-        }
-    };
-
-    _processOrder = async (quote: NiftyQuote, right: string, strategy: string) => {
-
-        const prism = Prism.getInstance();
-        const niftyPrice = quote.ltp;
-        // var expiryDate = Util.findExpiryDate();
-        var expiryDate = Util.findExpiryDate();
-        // Log.log('niftyPrice: ', niftyPrice, 'this.depth: ', this.depth, 'right: ', right);
-        //TODO only nifty is considered for now
-        const index = indexMap.get(NIFTY);
-        const token = await index.findToken(NIFTY, this.depth, right, quote.ltp);
-
-        // let quote: NiftyQuote;
-        // quote = await prism.getOptionQuote(token);
-
-        //FixMe: Quantity is hard-coded for 65, this will not work for other stocks
-        const trade = await prism.sendLimitOrder(token, quote.ltp, right as string, BUY, 65, Monitor.getInstance().getUserContext(strategy));
-        Mongo.getInstance().insert(trade);
-        return trade;
-    }
-
-    _decideBasedOnCurrentState = (niftyQuote: NiftyQuote): String | void => {
-        //TODO  time should be greater than 10
-        // Log.log(niftyQuote);
-        const isOpenGreaterThanPrevious = true; //niftyQuote.open > niftyQuote.prevClose;
-        const isCurrentPriceGreaterThanOpenPrice = niftyQuote.ltp > niftyQuote.open;
-        const isTrendHigh = niftyQuote.ltp > this.quotes[0].ltp;
-        let decision;
-
-        // Log.log('Quotes: ', this.quotes);
-
-        Log.log('niftyQuote.prevClose: ', niftyQuote.prevClose);
-        Log.log('Quotes Length: ', this.quotes.length);
-        Log.log('isOpenGreaterThanPrevious: ', isOpenGreaterThanPrevious);
-        Log.log('isCurrentPriceGreaterThanOpenPrice: ', isCurrentPriceGreaterThanOpenPrice);
-        Log.log('isTrendHigh: ', isTrendHigh);
-
-        // Find trend on following too
-        // changeFromLow
-        // changeFromHigh
-        // OpenDifference
-        // ChangeFromOpen
-
-        if (isOpenGreaterThanPrevious && isCurrentPriceGreaterThanOpenPrice && isTrendHigh) {
-            decision = CALL;
-        }
-
-        // const isOpenLesserThanPrevious = niftyQuote.open < niftyQuote.prevClose;
-        // const isCurrentPriceLesserThanOpenPrice = niftyQuote.ltp < niftyQuote.open;
-        // const isTrendLow = niftyQuote.ltp < this.quotes[0];
-
-        // if (isOpenLesserThanPrevious && isCurrentPriceLesserThanOpenPrice && isTrendLow) {
-        //     decision = PUT;
-        // }
-
-        if (decision === CALL || decision === PUT) {
-            Log.log('[Auto] Buy ', decision);
-            this._processOrder(niftyQuote, decision, "decideBasedOnCurrentState");
-        }
 
     }
 
@@ -579,14 +414,6 @@ export default class Decision {
             if (remaining && remaining.length > 0) {
                 this.eventEmitter.emit(eventName, lastPoint);
             }
-        });
-    }
-
-    _appendJsonToFile = (filePath: string, jsonData: object): void => {
-        const values = Object.values(jsonData);
-        const csvLine = values.join(',') + '\n';
-        fs.appendFile(filePath, csvLine, (err) => {
-            if (err) console.error('Error appending to file:', err);
         });
     }
 

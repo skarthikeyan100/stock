@@ -3,66 +3,26 @@ import { isPastMarketClose } from './util/marketHours';
 // Strategy:
 // If direction is sure, go for option else go for option plus
 
-import axios, { AxiosRequestConfig } from 'axios'
 import NorenRestApi from './prism/RestAPI'
 
-import _, { forIn } from 'lodash'
-import crypto from 'crypto'
+import _ from 'lodash'
 import delay from 'delay';
 import { NiftyQuote, Trade, Order, OrderInfo, OrderStatus } from './model/model';
-import util from 'util';
-const spawn = require('child_process').spawn;
-import Decision from './decision';
 import bookkeeping from './processes/order/bookkeeping';
-import AntStream from './ant/AntStream';
 import strategies from './strategy/strategies';
 
-import { VIRTUAL, NIFTY, FINNIFTY, BANKNIFTY, SIMULATION, CALL, PUT, MOCK_BROKER, NIFTY_FREEZE_QUANTITY } from './constants'
+import { NIFTY, MOCK_BROKER, NIFTY_FREEZE_QUANTITY } from './constants'
 import { sleep } from './util/sleep';
-import Mongo from './tools/mongo'
-import indexMap, {Index} from './nse_index';
-import { parse } from 'csv-parse';
+import indexMap from './nse_index';
 import readLine from 'readline';
 import Config from './prism/config'
 import { UserContext } from './user';;
-import configService from './prism/ConfigService'
 // let config = require("./prism/config").default;
 import fs from 'fs';
-import moment from 'moment'
-import ObjectsToCsv from 'objects-to-csv';
 import * as f from './orderList'
-import { del } from 'request';
 import { exchangeForTsym } from './util/underlyings';
 const round = (num) => Math.round(num * 100) / 100;
 
-class StockPrice {
-    Stock: string
-    Price: number
-
-    constructor(Stock, Price) {
-        this.Stock = Stock;
-        this.Price = Price;
-    }
-}
-
-
-class StrikePrice {
-    right: string
-    depth: number
-    indexPrice: number
-    strikePrice: number
-    optionPrice: number
-    extrinsicPrice: number
-
-    constructor(right, depth, indexPrice, strikePrice, optionPrice, extrinsicPrice) {
-        this.right = right;
-        this.strikePrice = strikePrice;
-        this.depth = depth;
-        this.extrinsicPrice = extrinsicPrice;
-        this.optionPrice = optionPrice;
-        this.indexPrice = indexPrice;
-    }       
-}
 
 function splitQty(qty) {
     // NIFTY exchange freeze quantity (1755 = 27 lots of 65). The old hardcoded 1800 exceeded the
@@ -77,9 +37,6 @@ function splitQty(qty) {
 }
 
 export default class Prism {
-    setOnTrigger = (contract: string, triggerPrice) => {
-        Decision.getInstance().setOnTrigger(contract, triggerPrice);
-    }
     headless = false
     username = 'SESHA100'
     password = 'nava1000'
@@ -230,12 +187,6 @@ export default class Prism {
         await bookkeeping.updateTradeFromPrismMessage(data);
     };
 
-    getChecksum(timestamp, data): String {
-        var rawChecksum = timestamp + data + this.secretKey;
-        rawChecksum = Buffer.from(rawChecksum, 'utf8').toString()
-        return crypto.createHash('sha256').update(rawChecksum).digest('hex');
-    }
-
     static instance: Prism = null
 
     static getInstance() {
@@ -250,7 +201,6 @@ export default class Prism {
     }
 
     connect = async () => {
-        var ltp = 72
         delay(500)
 
         await this._startWebsocket();
@@ -261,11 +211,6 @@ export default class Prism {
 
     getOAuthURL = () => {
         return NorenRestApi.getOAuthURL();
-    }
-
-    requestOtp = async () => {
-        const response = await NorenRestApi.request_otp();
-        Log.log(response);
     }
 
     logout = async () => {
@@ -316,18 +261,6 @@ export default class Prism {
             return NiftyQuote.fromPrism(response)
         }
         return new NiftyQuote();
-    }
-
-    getOptionChain = async () => {
-        try {
-            const response = await NorenRestApi.option_chain('25355')
-            if (response != null) {
-                Log.log(response)
-            }
-    
-        } catch (e) {
-            Log.log('Error in getting option chain: ', e.message)
-        }
     }
 
     _startWebsocket = async () => {
@@ -386,54 +319,6 @@ export default class Prism {
             if (contract === values[4]) {
                 return values[2];
             }
-        }
-
-    }
-
-    findStockToken = async (symbol) => {
-        var lineReader = readLine.createInterface({
-            input: fs.createReadStream(Config.NFOSymbolsPath)
-        });
-
-        Log.log('Input Token is ', symbol)
-        Log.log('NSESymbolsPath ', Config.NFOSymbolsPath)
-
-        try {
-            for await (const line of lineReader) {
-                const values = line.split(',');
-                if (symbol === values[3]) {
-                    return values[1];
-                }
-            }
-        } catch (e) {
-            Log.log(e);
-        } finally {
-            lineReader.close();
-        }
-
-    }
-    
-    updateStockPrices = async () => {
-
-        const stockPrices: [StockPrice] = [] as any;
-
-        //If matches exact requested token, then return it
-        var lineReader = readLine.createInterface({
-            input: fs.createReadStream(Config.stocksPath)
-        });
-
-        try {
-            for await (const line of lineReader) {
-                const values = line.split(',');
-                const symbol = values[1];
-                this.findStockToken(symbol)
-                const stockQuote = await this.getQuote(symbol);
-                stockPrices.push(new StockPrice(values[0], stockQuote.ltp))
-            }
-        } catch (e) {
-            Log.log(e);
-        } finally {
-            lineReader.close();
         }
 
     }
@@ -862,63 +747,12 @@ export default class Prism {
 
     }
 
-    getContractByDiff = async(ltp: number, right: string): Promise<string> => {
-        let result = null;
-        const index = 'NIFTY'
-        const nseIndex = indexMap.get(index);
-        const factor = 50
-        const floorPrice = Math.floor(ltp/factor) * factor;
-        const ceilPrice = Math.ceil(ltp/factor) * factor;
-        const floorDiff = Math.abs(floorPrice - ltp)
-        const ceilDiff = Math.abs(ceilPrice - ltp)
-        
-
-        for(var depth = 0; depth < 5; depth++) {
-            let strikePrice = floorDiff > ceilDiff ? ceilPrice: floorPrice
-            if (right == 'call') {
-                strikePrice += (depth * factor)
-            } else {
-                strikePrice -= (depth * factor)
-            }
-            
-            const contract = await nseIndex.findTokenFor(index, right, strikePrice);
-            const quote = await this.getOptionQuote(contract);
-            Log.log('strikePrice: ', strikePrice, ' ltp: ', quote.ltp)
-            
-            result = contract;
-            break;
-        }
-
-        if (result == null) {
-            for(var depth = 1; depth < 5; depth++) {
-                let strikePrice = floorDiff > ceilDiff ? ceilPrice: floorPrice
-                if (right == 'call') {
-                    strikePrice -= (depth * factor)
-                } else {
-                    strikePrice += (depth * factor)
-                }
-                
-                const contract = await nseIndex.findTokenFor(index, right, strikePrice);
-                const quote = await this.getOptionQuote(contract);
-                Log.log('strikePrice: ', strikePrice, ' ltp: ', quote.ltp)
-                
-                result = contract;
-                break;
-            }
-        }
-
-        return result
-
-    }
-
-
     buyContract = async(contract, qty, price?, userContext?: UserContext) => {
         if (!price) {
             const quote = await this.getStockOptionQuote(contract);
             console.log('OptionQuote: ', quote)
             price = quote.ltp
         }
-        const token = await this.getToken(contract);
         const lotSize = await this.findLotSizeByContract(contract);
         const lotSizeAsInt = parseInt(lotSize);
         if (!qty) {
@@ -994,7 +828,6 @@ export default class Prism {
         const limitPrice = Math.round(ltp * 1.01 * 20) / 20;
         const bookLossPrice = Math.round((limitPrice - stopLossPoints) * 20) / 20;
 
-        const token = await this.getToken(contract);
         if (!qty) {
             const lotSize = await this.findLotSizeByContract(contract);
             const lotSizeAsInt = parseInt(lotSize);
@@ -1118,7 +951,6 @@ export default class Prism {
     buyIndex = async({ userContext, index, ltp, right, qty }: { userContext?: UserContext, index: string, ltp?: number, right?: string, qty?: number }) => {
         Log.log('Buy Index ', index, ' ltp: ', ltp, ' right: ', right, ' qty: ', qty)
         const nseIndex = indexMap.get(index as string);
-        let calculatedStrikePrice
         let calculatedRight
         let calculatedOptionPrice
         let calculatedToken
@@ -1193,7 +1025,6 @@ export default class Prism {
                     }
                 }
 
-                calculatedStrikePrice = (calculatedRight == 'put') ? putStrikePrice : callStrikePrice
                 calculatedOptionPrice = (calculatedRight == 'put') ? putQuote.ltp : callQuote.ltp
                 calculatedToken = (calculatedRight == 'put') ? putToken : callToken
                 // Log.log('calculatedRight: ', calculatedRight, ' calculatedStrikePrice: ', calculatedStrikePrice)
@@ -1263,118 +1094,6 @@ export default class Prism {
         
     }
 
-    findDirectionAndStrikePrice = async ( index: string) => {
-        const nseIndex = indexMap.get(index as string);
-        // const map = new Map<StrikePrice, number>();
-        const list : StrikePrice[] = [];
-        const direction = (Config.optionDirection) == "OTM" ? 1 : -1
-        const factor = nseIndex.factor;
-        let indexQuote : NiftyQuote;
-        let ltp;
-        if (nseIndex.token == nseIndex.niftyToken) {
-            indexQuote = await this.getNiftyQuote()
-            ltp = indexQuote.ltp
-            Log.log('Quote for Nifty: ', ltp)
-    
-        } else if (nseIndex.token == nseIndex.bankNiftyToken) {
-            indexQuote = await this.getBankNiftyQuote()
-            ltp = indexQuote.ltp
-            Log.log('Quote for BankNifty: ', ltp)
-        } else {
-            indexQuote = await this.getFinNiftyQuote()
-            Log.log('Quote for FinNifty: ', ltp)
-            ltp = indexQuote.ltp
-        } 
-
-        for(let depth = 0; depth < 3; depth++) {
-            let callStrikePrice = Math.floor(ltp/factor) * factor
-            Log.log(' Config.optionDirection: ', Config.optionDirection)
-            
-            callStrikePrice += direction * (depth * factor);
-            const callToken = await nseIndex.findTokenFor(nseIndex.index, 'call', callStrikePrice);
-            const callQuote = await this.getOptionQuote(callToken);
-            const callDiff = indexQuote.ltp - callStrikePrice
-            const callExtrinsicPrice = callQuote.ltp - callDiff
-
-            let putStrikePrice = Math.ceil(ltp/factor) * factor
-            putStrikePrice += (-direction) * (depth * factor)
-            const putToken = await nseIndex.findTokenFor(nseIndex.index, 'put', putStrikePrice);
-            const putQuote = await this.getOptionQuote(putToken);
-            const putDiff = putStrikePrice - indexQuote.ltp
-            const putExtrinsicPrice = putQuote.ltp - putDiff
-            Log.log('Option ltp: ', callQuote.ltp)
-
-            list.push(new StrikePrice('call', depth, ltp, callStrikePrice, callQuote.ltp, callExtrinsicPrice));
-            list.push(new StrikePrice('put', depth, ltp, putStrikePrice, putQuote.ltp, putExtrinsicPrice));
-    
-        }
-        Log.log(list)
-    
-    }
-
-
-    buy = async (tsym: string, price: number): Promise<void> => {
-        
-        price = Math.round(price * 10) / 10
-        const indexObj = tsym.startsWith('BANK') ? indexMap.get('BANKNIFTY') : tsym.startsWith('NIFTY') ? indexMap.get('NIFTY') : indexMap.get('FINNIFTY');
-        const qty = indexObj.getQuantity(price);
-        const transactionType = 'B'
-        const limit = "LMT"
-        const nse = "NFO"
-        const normal = "M" //for fno
-        const order = {
-            "trantype": transactionType,
-            "prd": normal,
-            "exch": nse,
-            "tsym": tsym,
-            "qty": qty,
-            "prctyp": limit,
-            "prc": price
-        }
-
-        await this._placeOrder(order)
-
-    }
-
-    sell = async (tsym: string, quantity: number, price: number) => {
-        price = Math.round(price * 10) / 10
-        const transactionType = 'S'
-        const limit = "LMT"
-        const qty = quantity
-        const nse = "NFO"
-        const normal = "M" //for fno
-        const order = {
-            "trantype": transactionType,
-            "prd": normal,
-            "exch": nse,
-            "tsym": tsym,
-            "qty": qty,
-            "prctyp": limit,
-            "prc": price
-        }
-
-        Log.log('Place Order in sell ', order);
-        const reply = await NorenRestApi.place_order(order) as any;
-        this._assertOrderAccepted(reply, order);
-        // AntStream keys its dynamic subscriptions by token, not tsym.
-        const token = await this.getToken(tsym);
-        if (token) await AntStream.getInstance().unsubscribeOption(token);
-    }
-
-    cancel = async (orderno) => {
-        await NorenRestApi.cancel_order(orderno);
-    }    
-    
-    modifyOrder = async (order: Order, newPrice: number) => {
-        let updatedOrder = {
-            tsym: order.tsym,
-            orderno: order.orderno,
-            quantity: order.quantity,
-            price: newPrice
-        }
-        await NorenRestApi.modify_order(updatedOrder)
-    }    
-
     sendLimitOrder = async (tsym: string, price: number, right: string, action: string, quantity: number, userContext?: UserContext) : Promise<OrderInfo> => {
         const user = userContext?.email;
         const limit = "LMT"
@@ -1389,7 +1108,6 @@ export default class Prism {
             throw new Error(`Order is not placed, qty: ${qty} price: ${price}`);
         }
         const nse = "NFO"
-        const callput = "call" === right ? 'C' : 'P'
         const normal = "M" //for fno
         const order = {
             "trantype": 'B',
@@ -1465,8 +1183,6 @@ export default class Prism {
             throw Object.assign(new Error(`Prism order for ${order?.tsym} was not accepted: ${reply?.emsg ?? JSON.stringify(reply) ?? 'no reply'}`), answered ? { notPlaced: true } : {});
         }
     }
-
-    _getIndexFromToken = (token: string) => token.startsWith('BANK') ? 'BANKNIFTY' : token.startsWith('NIFTY') ? 'NIFTY' : 'FINNIFTY'
 
     squareOffOrder = async (token, qty, user?: string, price?: number) => {
         let tsymForCleanup: string | undefined;

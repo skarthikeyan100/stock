@@ -70,8 +70,11 @@ class WebSocketClient {
 
                 if (result.t == 'ck' || result.t == 'ak') {
                     // Settle the connect() promise (it used to stay pending forever) - but only an OK ack means authenticated.
-                    if (String(result.s ?? 'OK').toUpperCase() === 'OK') resolve(result);
-                    else reject(new Error(`Prism WS rejected the login: ${JSON.stringify(result).slice(0, 200)}`));
+                    if (String(result.s ?? 'OK').toUpperCase() !== 'OK') {
+                        reject(new Error(`Prism WS rejected the login: ${JSON.stringify(result).slice(0, 200)}`));
+                        return; // listeners must not treat a refused login as an open, authenticated stream
+                    }
+                    resolve(result);
                     this.trigger("open", [result]);
                 }
                 if (result.t == 'tk' || result.t == 'tf') {

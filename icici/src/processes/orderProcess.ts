@@ -188,8 +188,6 @@ async function connectBreezeOrderNotifyIfSessionValid(context: string): Promise<
 // resolves which broker to actually call.
 function resolveRequestBroker(req: OrderRequest): string {
     switch (req.type) {
-        case 'antBuyIndex':
-        case 'antManualBuy':
         case 'antPlaceCoverOrder':
         case 'antBuyTargetOnly':
         case 'antBuyContractBare':
@@ -569,12 +567,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result: trade };
             }
 
-            case 'antBuyIndex': {
-                return await placeOrderWithPendingGuard(req, undefined, () =>
-                    antExecutor.buyIndexOnAnt({ userId: req.userId, ...req.payload }),
-                );
-            }
-
             case 'breezeBuyIndex': {
                 return await placeOrderWithPendingGuard(req, undefined, () =>
                     buyIndexOnBreeze({ userId: req.userId, ...req.payload }),
@@ -830,13 +822,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
-            case 'antManualBuy': {
-                const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                return await placeOrderWithPendingGuard(req, estimatedValue, () =>
-                    antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload }),
-                );
-            }
-
             case 'antPlaceCoverOrder': {
                 return await placeOrderWithPendingGuard(req, undefined, () =>
                     antExecutor.placeCoverOrderForGapScreener(
@@ -848,22 +833,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                         req.payload.stopLossPoints,
                     ),
                 );
-            }
-
-            case 'antSquareOff': {
-                // See reconcileInFlight's comment on 'openTrades' below - same
-                // risk as the plain 'squareOff' case above: resolving/sizing
-                // from bookkeeping.trades mid-reconcile could miss or
-                // mis-size the trade it's trying to close.
-                await waitForReconcile();
-                const { tsym, quantity, exchange, token } = req.payload;
-                if (!tsym && token) {
-                    const byToken = await squareOffByToken(req.userId, token, quantity, exchange, 'ant');
-                    if ('error' in byToken) return { kind: 'response', id: req.id, ok: false, error: byToken.error };
-                    return { kind: 'response', id: req.id, ok: true, result: byToken };
-                }
-                const trade = await antExecutor.squareOffOnAnt(req.userId, tsym, quantity, exchange);
-                return { kind: 'response', id: req.id, ok: true, result: trade };
             }
 
             // See orderProtocol.ts's comment on these two request types - ANT-
@@ -1039,11 +1008,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
-            case 'calculateRight': {
-                const result = await prismExecutor.calculateRight(req.payload.ltp);
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
-
             case 'getToken': {
                 const result = await prismExecutor.getToken(req.payload.contract);
                 return { kind: 'response', id: req.id, ok: true, result };
@@ -1051,16 +1015,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'getNiftyQuote': {
                 const result = await prismExecutor.getNiftyQuote();
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
-
-            case 'getOptionQuote': {
-                const result = await prismExecutor.getOptionQuote(req.payload.token);
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
-
-            case 'getStockOptionQuote': {
-                const result = await prismExecutor.getStockOptionQuote(req.payload.contract);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -1139,10 +1093,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 bookkeeping.updateUserSettings(req.userId, req.payload);
                 return { kind: 'response', id: req.id, ok: true };
             }
-
-            case 'hasActiveTrade':
-                return { kind: 'response', id: req.id, ok: true, result: bookkeeping.hasActiveTrade(req.userId) };
-
             // Explicit broker-position reconcile - POST /reconcile in server.ts
             // invokes this first, then `strategies`' reconcile (which depends on
             // the restored bookkeeping.trades). Refused before 09:10.
@@ -1152,10 +1102,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     return { kind: 'response', id: req.id, ok: true, result };
                 } catch (e: any) {
                     Log.log('[order] reconcileBrokerPositions failed:', e);
-                    // [NOT_PLACED] marks a definite refusal (nothing reached the broker), so a strategy can safely re-arm; any other failure
-        // (timeout, transport error) is ambiguous - the order may be live - and must not be retried blind.
-        const definite = !!(e?.orderNotPlaced || e?.notPlaced);
-        return { kind: 'response', id: req.id, ok: false, error: `${definite ? NOT_PLACED_TAG + ' ' : ''}${e?.message ?? String(e)}` };
+                    return { kind: 'response', id: req.id, ok: false, error: e?.message ?? String(e) };
                 }
             }
 
@@ -1169,13 +1116,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'findToken': {
                 const result = await prismExecutor.findToken(req.payload.index, req.payload.depth, req.payload.right);
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
-
-            case 'injectTrade': {
-                // GET /addTrade: manually injects a synthetic fill via the same
-                // Prism-websocket-message code path a real broker callback uses.
-                const result = await bookkeeping.updateTradeFromPrismMessage(req.payload);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -1260,17 +1200,16 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
-            case 'getUserAllottedCapital': {
-                const result = bookkeeping.getUserAllottedCapital(req.userId);
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
-
             default:
                 return { kind: 'response', id: req.id, ok: false, error: `Unknown request type: ${(req as any).type}` };
         }
     } catch (e: any) {
         Log.log('[order] Request failed:', req.type, e);
-        return { kind: 'response', id: req.id, ok: false, error: e?.message ?? String(e) };
+        // [NOT_PLACED] marks a definite refusal (nothing reached the broker or the broker answered REJECTED), so a strategy can safely
+        // re-arm; any other failure (timeout, transport error) is ambiguous - the order may be live - and must not be retried blind.
+        const message = e?.message ?? String(e);
+        const definite = !!(e?.orderNotPlaced || e?.notPlaced) || /\bREJECTED\b/.test(message);
+        return { kind: 'response', id: req.id, ok: false, error: `${definite ? NOT_PLACED_TAG + ' ' : ''}${message}` };
     }
 }
 

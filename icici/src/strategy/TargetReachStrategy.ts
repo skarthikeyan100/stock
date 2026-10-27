@@ -1,14 +1,11 @@
 import Log from '../util/Log';
 import { Strategy } from './strategy';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
-import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
 import { watchToken, unwatchToken } from '../processes/strategies/tokenRouter';
 import { CALL, PUT } from '../constants';
 import { exchangeForIndex } from '../util/underlyings';
-
-const round = (num: number) => Math.round(num * 100) / 100;
 
 // Watches a single option contract specified in config (symbol+strike+expiry+
 // optionType) and buys it once its own LTP reaches a configured target price -

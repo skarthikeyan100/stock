@@ -14,7 +14,7 @@ import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategie
 import { PnlStop } from './PnlStop';
 import { TrailStop } from './TrailStop';
 import { sleep } from '../util/sleep';
-import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
+import { normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
 import { exchangeForTsym } from '../util/underlyings';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
@@ -638,10 +638,6 @@ export default class BulkPcrStrategy extends Strategy {
     private unrealizedPnl(broker: BrokerName): number {
         return this.slotsOf(broker).reduce((total, pos) => total + this.slotUnrealized(pos), 0);
     }
-
-    // Loss-cap figure for ONE order: only what that order has open right now, its open quantity marked at its last tick.
-    // Earlier cycles of the same side (a re-buy is a new order) and partial fills do not offset it, and neither does the
-    // other side: a CE -15 is a 15 loss whatever the PE is doing. No tick yet adds 0; an 'error' slot is excluded.
 
 
     // The figure the profit cap is measured against: the day's realized P&L (every completed slot cycle plus what open

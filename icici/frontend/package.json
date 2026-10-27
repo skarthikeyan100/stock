@@ -21,8 +21,6 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
-    "cookie-parser": "^1.4.7",
-    "mongodb": "^7.1.1",
     "typescript": "^5.6.3",
     "vite": "^6.0.0"
   }
