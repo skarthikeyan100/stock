@@ -127,7 +127,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             }
             this.notReadyAlertedAt = 0;
         } catch (e) {
-            Log.log(`[order] poll pending ${label} limit orders: readiness check failed:`, e);
+            Log.log(`[order] ALERT: poll pending ${label} limit orders: readiness check failed - ${this.pending.size} order(s) NOT monitored this tick:`, e);
             return;
         }
         let snapshot: Snapshot;
@@ -150,7 +150,6 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     private async pollOrder(orderId: string, order: T, snapshot: Snapshot): Promise<void> {
         const { label, broker } = this.adapter;
         const { status, fillPrice, filledQuantity, skipListener } = await bounded('statusOf', this.adapter.statusOf(order, snapshot));
-        if (this.pending.has(orderId) === false) return; // untracked (e.g. cancelled by the caller) while the broker call was out
         // Books `qty` filled at `price`. The order is untracked only AFTER the fill is booked, so a recordFill
         // failure is retried on the next poll (recordFill dedupes on brokerOrderId).
         const bookFill = async (qty: number, price: number) => {
