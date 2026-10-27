@@ -714,9 +714,15 @@ export default class BulkPcrStrategy extends Strategy {
     // is itself skipped during a reconcile. Any slot still selling after the pass is closed here, on a later tick.
     private async eodRetrySkippedSlots(): Promise<void> {
         if (this.reconciling) return;
+        let closed = false;
         for (const pos of this.pairSlots()) {
             if (pos.phase !== 'selling' || pos.squaringOff || pos.trailBusy || this.placingKeys.has(this.keyOf(pos))) continue;
             await this.eodSquareOff(pos);
+            closed = true;
+        }
+        if (closed) {
+            this.persistState();
+            this.finishIfFlat();
         }
     }
 

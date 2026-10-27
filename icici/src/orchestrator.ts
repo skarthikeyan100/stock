@@ -122,7 +122,7 @@ function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) 
         if (Date.now() - lastStart > 60_000) failures = 0;
         const delay = Math.min(30_000, 1000 * 2 ** failures);
         failures++;
-        log(name, `crashed - respawning in ${delay}ms`);
+        log(name, `respawning in ${delay}ms`);
         setTimeout(async () => {
             pending = false;
             if (shuttingDown) return;

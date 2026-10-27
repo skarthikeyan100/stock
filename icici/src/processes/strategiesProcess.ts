@@ -45,27 +45,31 @@ function isDuplicateFill(trade: Trade): boolean {
     if (seenFillKeys.size > 5000) seenFillKeys.delete(seenFillKeys.values().next().value as string);
     return false;
 }
-// Seeds the net quantities from the order process's open trades. Runs on the user's fill queue so it is ordered with
-// their fills; a key a fill has already touched keeps its fill-built value. A failed read leaves the map empty, which
-// falls back to unregistering on the first Sell - never a dangling subscription.
+// Seeds the net quantities from the order process's open trades. Fills wait on seedDone (see onFill), so the seed is
+// applied before any fill is counted. A fill the order process already booked into the snapshot can be counted twice;
+// that errs towards a lingering subscription, never a blind one. A read that keeps failing leaves the map empty, which
+// falls back to unregistering on the first Sell.
+let markSeeded!: () => void;
+const seedDone = new Promise<void>((resolve) => { markSeeded = resolve; });
 async function seedOpenQty(userId: string): Promise<void> {
-    let open: any[];
-    try {
-        open = await OrderClient.getInstance().getOpenTrades(userId);
-    } catch (e) {
-        Log.log(`[strategies] Could not seed open quantities for ${userId}:`, e);
-        return;
+    let open: any[] | undefined;
+    for (let attempt = 1; attempt <= 3 && !open; attempt++) {
+        try {
+            open = await OrderClient.getInstance().getOpenTrades(userId);
+        } catch (e) {
+            Log.log(`[strategies] Could not seed open quantities for ${userId} (attempt ${attempt}/3):`, e);
+            if (attempt < 3) await new Promise((r) => setTimeout(r, 2000));
+        }
     }
-    const seeded = new Map<string, number>();
+    if (!open) return;
     for (const t of open) {
         const qty = Number(t?.quantity);
         if (!t?.token || !(qty > 0)) continue;
         const feed = t.broker ? BROKER_TO_FEED_SOURCE[t.broker as keyof typeof BROKER_TO_FEED_SOURCE] : undefined;
         const key = `${userId}|${feed ?? 'default'}|${t.token}`;
-        seeded.set(key, (seeded.get(key) ?? 0) + qty);
+        openQty.set(key, (openQty.get(key) ?? 0) + qty);
         openQtyExchange.set(key, exchangeForTsym(t.tsym));
     }
-    for (const [key, qty] of seeded) if (!openQty.has(key)) openQty.set(key, qty);
 }
 // A reset strategy abandons its positions' bookkeeping: drop the net quantities and trade-holder registrations.
 function clearOpenQtyFor(strategy: { userId?: string }): void {
@@ -80,6 +84,7 @@ function clearOpenQtyFor(strategy: { userId?: string }): void {
 }
 
 async function onFill(userId: string, raw: any) {
+    await seedDone;
     const trade = Object.assign(new Trade(), raw) as Trade;
     const strategy = strategies.getByUserId(userId);
     if (!strategy) {
@@ -417,8 +422,10 @@ async function main() {
         }
     }
 
-    for (const strategy of strategies.getList()) {
-        if (strategy.userId) void enqueueFifo(`fill:${strategy.userId}`, () => seedOpenQty(strategy.userId!));
+    try {
+        await Promise.all(strategies.getList().filter((st) => st.userId).map((st) => seedOpenQty(st.userId!)));
+    } finally {
+        markSeeded();
     }
 
     // reconcile() does not run here or on any tick - it's the explicit
