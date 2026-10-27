@@ -603,6 +603,7 @@ class Breeze {
         // Give up waiting - but an order left resting at the broker after we
         // stop watching it is an orphan, same risk Kite.getFillPrice's own
         // timeout branch guards against.
+        let cancelWasFailed = false;
         if (cancelOnTimeout) {
             // Re-check in BOTH cases (see cancelThenRecheck): a failed cancel may mean it just fully filled; a successful
             // cancel may have left a partial fill behind (cancelled_quantity > 0) that must not be reported as either a full
@@ -627,11 +628,12 @@ class Breeze {
                 throw fillStateUnknownError(`Breeze order ${orderId} fill-price timeout: the status re-check failed: ${(settled.recheckError as any)?.message ?? settled.recheckError}`, settled.cancelFailed);
             }
             if (settled.cancelFailed) {
+                cancelWasFailed = true;
                 lastError = lastError ?? settled.cancelError ?? new Error('cancel failed');
                 Log.log(`[Breeze] ALERT: order ${orderId} did not fill within the timeout and the cancel failed - it may still be resting live at the broker`);
             }
         }
-        throw new Error(`Breeze order ${orderId} did not fill within timeout${lastError ? ` (last error: ${(lastError as any)?.message ?? lastError})` : ''}`);
+        throw Object.assign(new Error(`Breeze order ${orderId} did not fill within timeout${lastError ? ` (last error: ${(lastError as any)?.message ?? lastError})` : ''}`), { orderMayBeLive: cancelWasFailed });
     }
 }
 

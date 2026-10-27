@@ -192,7 +192,7 @@ nothing becomes `'pending'` and is retried off the active side's ticks
 (`retryPendingRebuys`, throttled). An ambiguous or partial buy becomes `'error'`
 (manual review). The cycle ends when no side is active (`allBrokersFinished`).
 **EOD (15:15)**: `eodCloseAnt` pulls each open ANT slot's resting sells
-(`cancelRestingLimitSells`) and squares off the remainder (`antSquareOffBare`).
+(`cancelRestingLimitSells`) and squares off the remainder (`chunkedSquareOff`).
 Nothing re-buys after EOD (`eodDone`).
 **Restart safety**: `reconcile()` restores each slot from its own persisted
 `'selling'`/`'pending'`/`'done'` state. A persisted `'selling'` exit is never

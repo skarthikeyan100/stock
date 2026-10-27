@@ -276,7 +276,6 @@ class OrderClient {
         return this.call('antBuyContractBare', userId, payload);
     }
 
-
     async antCancelOrderBare(userId: string, orderId: string): Promise<void> {
         const res = await this.request('antCancelOrderBare', userId, { orderId });
         if (!res.ok) throw new Error(res.error);

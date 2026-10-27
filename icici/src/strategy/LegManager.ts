@@ -1,4 +1,5 @@
 import GateLogger from '../util/GateLogger';
+import { ORDER_MAY_BE_LIVE_TAG } from '../ipc/orderProtocol';
 import crypto from 'crypto';
 import Log from '../util/Log';
 import { CALL, PUT, DEFAULT_MAX_INVESTMENT } from '../constants';
@@ -122,9 +123,11 @@ export interface LegManagerConfig {
     dryRun?: boolean;
 }
 
-// antLegOps.buy tags a buy whose fill is unresolved (the order may still be live) as '[HEDGE_UNCONFIRMED]'.
+// antLegOps.buy tags a buy whose fill is unresolved (the order may still be live) as '[HEDGE_UNCONFIRMED]'; the order process tags
+// any broker's unsettled fill wait as '[ORDER_MAY_BE_LIVE]'.
 function isUnconfirmedBuyError(e: any): boolean {
-    return String(e?.message ?? e).includes('[HEDGE_UNCONFIRMED]');
+    const message = String(e?.message ?? e);
+    return message.includes('[HEDGE_UNCONFIRMED]') || message.includes(ORDER_MAY_BE_LIVE_TAG);
 }
 
 export interface LegManagerDeps {

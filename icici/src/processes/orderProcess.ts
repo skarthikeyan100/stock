@@ -26,7 +26,7 @@ import Mongo from '../tools/mongo';
 import { ensureOrderIndexes } from './order/orderOwners';
 import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
-import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
+import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, ORDER_MAY_BE_LIVE_TAG, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
 import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells } from './order/kiteExecutor';
 import * as antExecutor from './order/antExecutor';
@@ -1107,7 +1107,8 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
         const message = e?.message ?? String(e);
         // Structured flags only, and never when part of the request already filled (a chunked run that lost a later chunk).
         const definite = !!(e?.orderNotPlaced || e?.notPlaced) && !e?.partial && !(Number(e?.filledQuantity) > 0);
-        return { kind: 'response', id: req.id, ok: false, error: `${definite ? NOT_PLACED_TAG + ' ' : ''}${message}` };
+        const mayBeLive = !definite && !!(e?.orderMayBeLive || e?.fillStateUnknown);
+        return { kind: 'response', id: req.id, ok: false, error: `${definite ? NOT_PLACED_TAG + ' ' : ''}${mayBeLive ? ORDER_MAY_BE_LIVE_TAG + ' ' : ''}${message}` };
     }
 }
 

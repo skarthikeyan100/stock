@@ -93,6 +93,8 @@ export async function buyChunked(
                     `${request.quantity - filledQty} qty NOT placed. Manual review required. Underlying error: ${e?.message ?? e}`
             ), { filledQuantity: filledQty, averagePrice: filledQty > 0 ? filledValue / filledQty : 0, partial: filledQty > 0 });
             // A clean refusal of the first chunk is still a clean refusal of the whole request.
+            // A chunk whose fill could not be settled may be live or filled: carry that on, so no caller retries it.
+            if (e?.fillStateUnknown || e?.orderMayBeLive) Object.assign(buyErr, { fillStateUnknown: !!e.fillStateUnknown, orderMayBeLive: true });
             throw i === 0 && isNotPlaced(e) ? markNotPlaced(buyErr) : buyErr;
         }
     }
@@ -141,6 +143,8 @@ export async function squareOffChunked(
                 `squareOffChunked: chunk ${i + 1}/${chunks.length} failed after selling ${filledQty}/${quantity} - ` +
                     `${quantity - filledQty} qty NOT sold. Manual review required. Underlying error: ${e?.message ?? e}`
             ), { filledQuantity: filledQty, averagePrice: filledQty > 0 ? filledValue / filledQty : 0, partial: filledQty > 0 });
+            // A chunk whose fill could not be settled may be live or filled: carry that on, so no caller retries it.
+            if (e?.fillStateUnknown || e?.orderMayBeLive) Object.assign(sellErr, { fillStateUnknown: !!e.fillStateUnknown, orderMayBeLive: true });
             throw i === 0 && isNotPlaced(e) ? markNotPlaced(sellErr) : sellErr;
         }
     }

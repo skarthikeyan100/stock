@@ -1,4 +1,5 @@
 import { isPastTime } from '../util/marketHours';
+import { ORDER_MAY_BE_LIVE_TAG } from '../ipc/orderProtocol';
 import GateLogger from '../util/GateLogger';
 import moment from 'moment';
 import Log from '../util/Log';
@@ -84,9 +85,11 @@ export default class ContinuousStrategy extends Strategy {
         };
     }
 
-    // antLegOps.buy tags a buy whose fill is unresolved as '[HEDGE_UNCONFIRMED]': never retry it (double-buy risk).
+    // antLegOps.buy tags a buy whose fill is unresolved as '[HEDGE_UNCONFIRMED]' (and the order process tags any broker's unsettled
+    // fill wait '[ORDER_MAY_BE_LIVE]'): never retry it (double-buy risk).
     private noteUnconfirmedBuy(e: any): void {
-        if (!String(e?.message ?? e).includes('[HEDGE_UNCONFIRMED]')) return;
+        const message = String(e?.message ?? e);
+        if (!message.includes('[HEDGE_UNCONFIRMED]') && !message.includes(ORDER_MAY_BE_LIVE_TAG)) return;
         this.manualReview = true;
         Log.log(`[ContinuousStrategy] ALERT: an ANT buy could not be confirmed and may be live - no new buys until it is reviewed and the strategy is reset: ${e?.message ?? e}`);
     }
