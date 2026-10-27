@@ -19,6 +19,7 @@ export interface PendingOrder {
 }
 
 export interface OrderStatus {
+    /** fillPrice is the order's AVERAGE fill price, not the last fill's: it books the whole fill and any partial fill. */
     status: string; // COMPLETE | REJECTED | CANCELLED | CANCELED | anything else = still pending
     fillPrice?: number;
     filledQuantity?: number;
@@ -37,13 +38,13 @@ export interface BrokerOrderAdapter<T extends PendingOrder, Snapshot, B extends 
     /** Log prefix, e.g. 'Prism'. */
     label: string;
     /** One broker read per poll tick, shared by every pending order. Throwing skips the tick. */
-    fetchSnapshot(): Promise<Snapshot>;
+    fetchSnapshot?(): Promise<Snapshot>;
     statusOf(order: T, snapshot: Snapshot): Promise<OrderStatus>;
     /** The snapshot row's own average price, for when statusOf reports no fill price (NaN when unknown). */
-    rowPrice(order: T, snapshot: Snapshot): number;
+    rowPrice?(order: T, snapshot: Snapshot): number;
     /** Rebuilds an order from its persisted document. */
     fromDoc(row: any): T;
-    /** A cancelled order after the close is left to the next morning's reconcile instead of re-placed. Default: false. */
+    /** Default rule: a CANCELLED order after the close is left to the next morning's reconcile instead of re-placed. A status's own skipListener, when set, replaces this rule. */
     isPastClose?(): boolean;
 }
 
@@ -104,10 +105,15 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     private async pollOnce(): Promise<void> {
         if (this.pending.size === 0) return;
         const { label } = this.adapter;
-        if (this.adapter.ready && !(await this.adapter.ready())) return;
+        try {
+            if (this.adapter.ready && !(await this.adapter.ready())) return;
+        } catch (e) {
+            Log.log(`[order] poll pending ${label} limit orders: readiness check failed:`, e);
+            return;
+        }
         let snapshot: Snapshot;
         try {
-            snapshot = await this.adapter.fetchSnapshot();
+            snapshot = (await this.adapter.fetchSnapshot?.()) as Snapshot;
         } catch (e) {
             Log.log(`[order] poll pending ${label} limit orders: fetch failed:`, e);
             return;
@@ -143,7 +149,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             Log.log(`[order] Pending ${label} limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} qty=${qty} at ${trade.price}`);
         };
         if (status === 'COMPLETE') {
-            const price = fillPrice && fillPrice > 0 ? fillPrice : this.adapter.rowPrice(order, snapshot);
+            const price = fillPrice && fillPrice > 0 ? fillPrice : (this.adapter.rowPrice?.(order, snapshot) ?? NaN);
             if (!(price > 0)) {
                 // Kept tracked, never dropped: the fill is real and unbooked, so the next poll retries once the book carries a price.
                 if (!this.noPriceAlerted.has(orderId)) {
@@ -159,7 +165,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             // A cancelled order can carry a partial fill: book it, report only the remainder.
             const filledQty = Math.min(order.quantity, Number(filledQuantity ?? 0));
             if (filledQty > 0) {
-                const partialPrice = fillPrice && fillPrice > 0 ? fillPrice : this.adapter.rowPrice(order, snapshot);
+                const partialPrice = fillPrice && fillPrice > 0 ? fillPrice : (this.adapter.rowPrice?.(order, snapshot) ?? NaN);
                 if (partialPrice > 0) {
                     await bookFill(filledQty, partialPrice);
                     this.noPriceAlerted.delete(orderId);

@@ -48,14 +48,11 @@ const tracker = new PendingOrderTracker<PendingBreezeLimitOrder, null, 'breeze'>
     label: 'Breeze',
     tokenOf: (order) => order.antToken,
     ready: () => Breeze.getInstance().hasValidSession(),
-    fetchSnapshot: async () => null,
     statusOf: async (order) => {
         const result = await Breeze.getInstance().getOrderDetail(order.exchange, order.orderId);
         const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
         return breezeStatus(order, record);
     },
-    // Breeze has no order book: the fill price always comes on the status itself.
-    rowPrice: () => NaN,
     fromDoc: (row) => ({
         orderId: row.orderId,
         userId: row.userId,
