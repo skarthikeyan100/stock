@@ -608,15 +608,8 @@ class Breeze {
             // cancel may have left a partial fill behind (cancelled_quantity > 0) that must not be reported as either a full
             // fill or as nothing.
             const settled = await cancelThenRecheck({
-                cancel: async () => {
-                    try {
-                        await this.cancelOrder(exchangeCode, orderId);
-                        Log.log(`[Breeze] Cancelled unfilled/partially-filled order ${orderId} after fill-price timeout`);
-                    } catch (e) {
-                        Log.log(`[Breeze] Failed to cancel order ${orderId} after fill-price timeout - re-checking status:`, e);
-                        throw e;
-                    }
-                },
+                label: `Breeze order ${orderId}`,
+                cancel: () => this.cancelOrder(exchangeCode, orderId),
                 recheck: async (cancelFailed) => {
                     const c = classify(await readRecord(), !cancelFailed);
                     if (c.kind === 'full') return { outcome: 'full', avgPrice: c.price };
@@ -632,7 +625,10 @@ class Breeze {
                 if (settled.recheckError instanceof BreezeTerminalOrderError) throw settled.recheckError;
                 Log.log(`[Breeze] Post-timeout re-check of ${orderId} failed:`, settled.recheckError);
             }
-            if (settled.cancelError) lastError = lastError ?? settled.cancelError;
+            if (settled.cancelFailed) {
+                lastError = lastError ?? settled.cancelError ?? new Error('cancel failed');
+                Log.log(`[Breeze] ALERT: order ${orderId} did not fill within the timeout and the cancel failed - it may still be resting live at the broker`);
+            }
         }
         throw new Error(`Breeze order ${orderId} did not fill within timeout${lastError ? ` (last error: ${(lastError as any)?.message ?? lastError})` : ''}`);
     }

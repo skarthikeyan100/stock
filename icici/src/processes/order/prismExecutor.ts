@@ -195,15 +195,8 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
     // state - the exact "stuck position, no exit" failure class this whole fill-verification path exists to prevent. Unlike the
     // other brokers a failed re-check here is fatal: it throws rather than reading as "did not fill".
     const settled = await cancelThenRecheck({
-        cancel: async () => {
-            try {
-                await Prism.getInstance().cancelOrder(orderId);
-                Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - cancelled`);
-            } catch (e) {
-                Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill and cancel ALSO failed - re-checking status before giving up (may have just filled):`, e);
-                throw e;
-            }
-        },
+        label: `Prism buy ${orderId} (${tradingSymbol}, ${userId})`,
+        cancel: () => Prism.getInstance().cancelOrder(orderId),
         recheck: async () => {
             const finalCheck = await Prism.getInstance().getOrderStatus(orderId);
             if (finalCheck.status === 'COMPLETE') {
@@ -229,6 +222,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
             filledQuantity: partialQty, averagePrice: avgPrice, partial: true,
         });
     }
+    if (settled.cancelFailed) Log.log(`[order] ALERT: Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill and the cancel failed - it may still be resting live at the broker`);
     throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - treating as not filled`);
 }
 

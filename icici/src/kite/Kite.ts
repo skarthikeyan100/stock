@@ -459,15 +459,8 @@ class Kite {
         // LIMIT that never matched must not silently turn into an untracked position - NIFTY2690124100PE, 2026-08-31), then re-check
         // regardless of the cancel's outcome (see cancelThenRecheck). A partial fill is surfaced the same way the drift-cancel path does.
         const settled = await cancelThenRecheck({
-            cancel: async () => {
-                try {
-                    await this.cancelOrder(orderId);
-                    Log.log(`[Kite] Cancelled unfilled order ${orderId} after fill-price timeout`);
-                } catch (e) {
-                    Log.log(`[Kite] Failed to cancel unfilled order ${orderId} after fill-price timeout:`, e);
-                    throw e;
-                }
-            },
+            label: `Kite order ${orderId}`,
+            cancel: () => this.cancelOrder(orderId),
             recheck: async () => {
                 const recheck = await this.kc.getOrderHistory(orderId);
                 const recheckLatest = recheck[recheck.length - 1];
@@ -488,7 +481,14 @@ class Kite {
                 { timeoutPartial: true, driftCancelled: true, filledQuantity, averagePrice }
             );
         }
-        if (settled.recheckError) Log.log(`[Kite] Post-timeout status re-check failed for order ${orderId}:`, settled.recheckError);
+        if (settled.recheckError) {
+            // Fill state is unknown - say so rather than "did not fill", which makes the caller retry the same order (double fill).
+            throw Object.assign(
+                new Error(`Kite order ${orderId} fill-price timeout: the status re-check failed (fill state UNKNOWN${settled.cancelFailed ? ', cancel also failed - order may still be resting' : ''}): ${(settled.recheckError as any)?.message ?? settled.recheckError}`),
+                { driftCancelled: true, fillStateUnknown: true, filledQuantity: 0, averagePrice: 0 }
+            );
+        }
+        if (settled.cancelFailed) Log.log(`[Kite] ALERT: order ${orderId} did not fill within the timeout and the cancel failed - it may still be resting live at the broker`);
         throw new Error(`Kite order ${orderId} did not fill within timeout`);
     }
 

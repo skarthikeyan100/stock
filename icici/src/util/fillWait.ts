@@ -1,3 +1,5 @@
+import Log from './Log';
+
 // What a fill wait learned about an order it has stopped waiting for, after a cancel attempt and a status re-check.
 export type FillResult =
     | { outcome: 'full'; avgPrice: number }
@@ -11,18 +13,23 @@ export type FillResult =
 // still leave a partial fill behind. Each broker supplies its own cancel and re-check; what it does with the outcome (return
 // a price, throw its own error class, treat a failed re-check as fatal or as "did not fill") stays with the caller.
 export async function cancelThenRecheck(params: {
+    label: string; // log prefix, e.g. 'Kite order 123'
     cancel: () => Promise<void>;
     recheck: (cancelFailed: boolean) => Promise<FillResult>;
-}): Promise<{ result?: FillResult; cancelError?: unknown; recheckError?: unknown }> {
+}): Promise<{ result?: FillResult; cancelFailed: boolean; cancelError?: unknown; recheckError?: unknown }> {
+    let cancelFailed = false;
     let cancelError: unknown;
     try {
         await params.cancel();
+        Log.log(`[fillWait] ${params.label}: cancelled after the fill wait gave up`);
     } catch (e) {
+        cancelFailed = true;
         cancelError = e;
+        Log.log(`[fillWait] ${params.label}: cancel FAILED after the fill wait gave up - re-checking status:`, e);
     }
     try {
-        return { result: await params.recheck(cancelError !== undefined), cancelError };
+        return { result: await params.recheck(cancelFailed), cancelFailed, cancelError };
     } catch (e) {
-        return { cancelError, recheckError: e };
+        return { cancelFailed, cancelError, recheckError: e };
     }
 }
