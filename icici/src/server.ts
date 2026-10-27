@@ -61,7 +61,7 @@ import StrategiesClient from './ipc/StrategiesClient';
 import { readJsonLines, writeJsonLine } from './ipc/jsonLines';
 import { cloudflareOnly, isLoopback } from './middleware/cloudflareOnly';
 import { OAuth2Client } from 'google-auth-library';
-import { BrokerName, isBrokerName, isUserBroker, normalizeBrokerName } from './util/brokerName';
+import { ALL_BROKERS, BrokerName, USER_BROKERS_TEXT, isBrokerName, isUserBroker, normalizeBrokerName } from './util/brokerName';
 
 // `frontend` process (server.ts, unchanged name/entry point - see the plan:
 // "frontend should be server.ts itself, edited in place"). Every route below
@@ -540,7 +540,7 @@ app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (
         if (profitSplitPercent !== undefined && profitSplitPercent > 100) return bad('profitSplitPercent must be <= 100');
         if (Object.values({ lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled }).every((v) => v === undefined)) return bad('No settings supplied');
         if (broker !== undefined && !isUserBroker(broker)) {
-            res.status(400).json({ error: `Invalid broker '${broker}' (expected ant, kite or breeze)` });
+            res.status(400).json({ error: `Invalid broker '${broker}' (expected ${USER_BROKERS_TEXT})` });
             return;
         }
         const user = await updateUserSettings(email, { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled });
@@ -1231,7 +1231,7 @@ const brokerCallback = (name: BrokerName) => async function (req: express.Reques
     }
 };
 
-for (const name of Object.keys(BROKERS) as BrokerName[]) {
+for (const name of ALL_BROKERS) {
     app.get(`/${name}/login`, brokerLogin(name));
     app.get(`/${name}/callback`, brokerCallback(name));
 }

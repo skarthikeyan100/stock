@@ -41,7 +41,7 @@ import BreezeOrderNotifyStream from '../breeze/BreezeOrderNotifyStream';
 import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
 import * as prismExecutor from './order/prismExecutor';
-import { getBrokerExecutor, getExecutorByBroker, hasExecutorFor } from './order/brokerExecutors';
+import { getBrokerExecutor, getExecutorByBroker } from './order/brokerExecutors';
 import { BrokerExecutor, OrderAlreadyFilledError } from './order/BrokerExecutor';
 import Kite from '../kite/Kite';
 import ANT from '../ant/ANT';
@@ -759,10 +759,8 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // Broker-uniform: dispatch to whichever tracker owns this broker's pending
                 // orders, filter to SELL generically here (not per-tracker) since all four
                 // trackers already share the same {quantity, action, ...} shape.
-                // An unknown broker has no resting orders (callers treat that as "nothing resting"), so it is not an error here.
-                const result = hasExecutorFor(req.payload.broker)
-                    ? getExecutorByBroker(req.payload.broker).findPendingOrders(req.userId, req.payload.tradingSymbol).filter((o) => o.action === 'Sell')
-                    : [];
+                // An unknown broker throws rather than answering "nothing resting": callers read an empty list as safe to place another exit.
+                const result = getExecutorByBroker(req.payload.broker, 'getPendingSells').findPendingOrders(req.userId, req.payload.tradingSymbol).filter((o) => o.action === 'Sell');
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 

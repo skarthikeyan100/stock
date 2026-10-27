@@ -10,7 +10,7 @@ import * as prismExecutor from './prismExecutor';
 import * as breezeExecutor from './breezeExecutor';
 import bookkeeping from './bookkeeping';
 import { TRACKERS } from './pendingTrackers';
-import { normalizeBrokerName } from '../../util/brokerName';
+import { BrokerName, normalizeBrokerName } from '../../util/brokerName';
 import { exchangeForIndex } from '../../util/underlyings';
 import Kite from '../../kite/Kite';
 import KiteContractMaster from '../../kite/KiteContractMaster';
@@ -159,11 +159,6 @@ export const BreezeExecutor: BrokerExecutor = {
 const EXECUTORS = { kite: KiteExecutor, ant: AntExecutor, breeze: BreezeExecutor, prism: PrismExecutor } as const;
 
 // The executor for an explicit broker name (aliases accepted); throws on an unknown one.
-// True when `name` (aliases accepted) is a broker with an executor.
-export function hasExecutorFor(name: unknown): boolean {
-    return Object.prototype.hasOwnProperty.call(EXECUTORS, normalizeBrokerName(name));
-}
-
 export function getExecutorByBroker(name: unknown, op?: string): BrokerExecutor {
     const broker = normalizeBrokerName(name);
     if (!Object.prototype.hasOwnProperty.call(EXECUTORS, broker)) throw new Error(`${op ?? 'getExecutorByBroker'}: unsupported broker '${broker}'`);
@@ -182,10 +177,10 @@ export function getExecutorByBroker(name: unknown, op?: string): BrokerExecutor 
 // full-quantity orders on several brokers at once, so no single per-userId
 // broker can describe "which broker this specific call is for." Every other
 // caller omits it and gets today's per-userId behavior unchanged.
-export function getBrokerExecutor(userId: string, brokerOverride?: 'kite' | 'ant' | 'breeze' | 'prism'): BrokerExecutor {
+export function getBrokerExecutor(userId: string, brokerOverride?: BrokerName): BrokerExecutor {
     // An unknown name throws: a silent fallback to Kite would send another broker's order to the wrong account.
     // An absent or empty override (a trade row with no broker) means "use the user's broker"; exit paths rely on it. Anything
     // else that is not a known broker name (a number, an object, a typo) throws instead of falling back to another account.
-    const useUserBroker = brokerOverride === undefined || brokerOverride === null || (brokerOverride as unknown) === '';
+    const useUserBroker = brokerOverride === undefined || brokerOverride === null || (typeof brokerOverride === 'string' && brokerOverride.trim() === '');
     return getExecutorByBroker(useUserBroker ? bookkeeping.getUserBroker(userId) : brokerOverride, 'getBrokerExecutor');
 }

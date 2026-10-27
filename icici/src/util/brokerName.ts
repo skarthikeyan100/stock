@@ -1,7 +1,8 @@
 // Canonical broker names used everywhere (code, config, Mongo, API, UI).
 // Legacy/vendor names are accepted on read only, so persisted data, state files and
 // config written before the rename keep working. Writers always emit the canonical name.
-export type BrokerName = 'ant' | 'kite' | 'breeze' | 'prism';
+export const ALL_BROKERS = ['ant', 'kite', 'breeze', 'prism'] as const;
+export type BrokerName = typeof ALL_BROKERS[number];
 
 const ALIASES: Record<string, BrokerName> = {
     ant: 'ant', aliceblue: 'ant', 'alice blue': 'ant', 'alice-blue': 'ant',
@@ -15,14 +16,15 @@ const ALIASES: Record<string, BrokerName> = {
 export function normalizeBrokerName(name: unknown): string {
     if (typeof name !== 'string') return '';
     const lower = name.trim().toLowerCase();
-    return ALIASES[lower] ?? lower;
+    return Object.prototype.hasOwnProperty.call(ALIASES, lower) ? ALIASES[lower] : lower;
 }
 
-export const ALL_BROKERS: readonly BrokerName[] = ['ant', 'kite', 'breeze', 'prism'];
 // Brokers a user account can be configured to trade through (prism is only ever addressed explicitly, by strategies).
 export const USER_BROKERS: readonly BrokerName[] = ['ant', 'kite', 'breeze'];
-export const isBrokerName = (name: unknown): name is BrokerName => ALL_BROKERS.includes(normalizeBrokerName(name) as BrokerName);
-export const isUserBroker = (name: unknown): name is BrokerName => USER_BROKERS.includes(normalizeBrokerName(name) as BrokerName);
+export const USER_BROKERS_TEXT = USER_BROKERS.slice(0, -1).join(', ') + ' or ' + USER_BROKERS[USER_BROKERS.length - 1];
+// Plain booleans, not type predicates: an alias like 'zerodha' passes but is not yet canonical (use normalizeBrokerName).
+export const isBrokerName = (name: unknown): boolean => ALL_BROKERS.includes(normalizeBrokerName(name) as BrokerName);
+export const isUserBroker = (name: unknown): boolean => USER_BROKERS.includes(normalizeBrokerName(name) as BrokerName);
 
 export function normalizeBrokerList(list: unknown): string[] {
     return Array.isArray(list) ? list.map(normalizeBrokerName).filter(Boolean) : [];
