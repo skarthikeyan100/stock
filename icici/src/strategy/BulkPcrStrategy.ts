@@ -718,7 +718,7 @@ export default class BulkPcrStrategy extends Strategy {
         for (const pos of this.pairSlots()) {
             if (pos.phase !== 'selling' || pos.squaringOff || pos.trailBusy || this.placingKeys.has(this.keyOf(pos))) continue;
             await this.eodSquareOff(pos);
-            closed = true;
+            if (pos.phase !== 'selling') closed = true;
         }
         if (closed) {
             this.persistState();

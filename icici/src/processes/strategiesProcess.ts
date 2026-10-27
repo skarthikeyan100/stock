@@ -51,14 +51,17 @@ function isDuplicateFill(trade: Trade): boolean {
 // falls back to unregistering on the first Sell.
 let markSeeded!: () => void;
 const seedDone = new Promise<void>((resolve) => { markSeeded = resolve; });
+// Fills never wait longer than this for the seed (or for a slow startup before it).
+const SEED_MAX_WAIT_MS = 20_000;
+setTimeout(() => markSeeded(), SEED_MAX_WAIT_MS).unref();
 async function seedOpenQty(userId: string): Promise<void> {
     let open: any[] | undefined;
-    for (let attempt = 1; attempt <= 3 && !open; attempt++) {
+    for (let attempt = 1; attempt <= 2 && !open; attempt++) {
         try {
             open = await OrderClient.getInstance().getOpenTrades(userId);
         } catch (e) {
-            Log.log(`[strategies] Could not seed open quantities for ${userId} (attempt ${attempt}/3):`, e);
-            if (attempt < 3) await new Promise((r) => setTimeout(r, 2000));
+            Log.log(`[strategies] Could not seed open quantities for ${userId} (attempt ${attempt}/2):`, e);
+            if (attempt < 2) await new Promise((r) => setTimeout(r, 2000));
         }
     }
     if (!open) return;
@@ -422,11 +425,9 @@ async function main() {
         }
     }
 
-    try {
-        await Promise.all(strategies.getList().filter((st) => st.userId).map((st) => seedOpenQty(st.userId!)));
-    } finally {
-        markSeeded();
-    }
+    // Not awaited: a slow order process must not hold up the rest of startup. Fills wait on seedDone, bounded by the timer.
+    const seedUsers = Array.from(new Set(strategies.getList().map((st) => st.userId).filter((u): u is string => !!u)));
+    void Promise.all(seedUsers.map(seedOpenQty)).finally(markSeeded);
 
     // reconcile() does not run here or on any tick - it's the explicit
     // 'reconcile' request (POST /reconcile), used only to repair a mismatch

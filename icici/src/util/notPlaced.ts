@@ -5,11 +5,14 @@ export function markNotPlaced(e: unknown): Error & { notPlaced: true; orderNotPl
     // A copy keeping the original's class and own fields (an AxiosError stays one), never the caller's instance: a shared
     // error rethrown later must not carry this flag to an unrelated failure.
     const err = (e instanceof Error
-        ? Object.assign(Object.create(Object.getPrototypeOf(e)), e, { message: e.message, stack: e.stack })
+        ? Object.defineProperties(Object.assign(Object.create(Object.getPrototypeOf(e)), e), {
+            message: { value: e.message, writable: true, configurable: true },
+            stack: { value: e.stack, writable: true, configurable: true },
+        })
         : new Error(String(e))) as Error & { notPlaced: true; orderNotPlaced: true };
     err.notPlaced = true;
     err.orderNotPlaced = true;
-    (err as any).cause = e;
+    Object.defineProperty(err, 'cause', { value: e, writable: true, configurable: true });
     return err;
 }
 
