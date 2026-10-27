@@ -10,7 +10,7 @@ import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
-import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol } from './pendingLimitOrders';
+import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol, isTrackedPendingOrder } from './pendingLimitOrders';
 import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError } from './BrokerExecutor';
 
 // Kite is the primary execution broker (per current product decision - Prism
@@ -982,6 +982,9 @@ async function reconcileManualSellsOnce(): Promise<void> {
 
         for (const fill of sellFills) {
             if (claimed.has(fill.order_id)) continue;
+            // Matched by order id, not by contract: an order this system placed is booked by its owner's own path (fill
+            // booking or the pending-order poller) under the owner's user. Only a sell nobody here placed is "manual".
+            if (kite.isOwnOrder(fill.order_id) || isTrackedPendingOrder(fill.order_id)) continue;
             claimed.add(fill.order_id);
             try {
                 const sellTrade = new Trade();

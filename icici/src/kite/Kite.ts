@@ -38,6 +38,11 @@ class Kite {
     private redirectUri = 'http://localhost:3000/kite/callback';
     private kc: KiteConnect;
     private accessToken: string | null = null;
+    // Every Kite order this process has placed. The order id is the only reliable owner key: reconcileManualSells must
+    // not book a system-placed sell to whichever tracked trade happens to hold the same contract (real 2026-10-27
+    // 11:02: BulkPcr's 1690 sell was booked against ContinuousStrategy's 130-qty leg on the same tsym).
+    private placedOrderIds = new Set<string>();
+    isOwnOrder(orderId: string): boolean { return this.placedOrderIds.has(orderId); }
     private sessionFile = path.join(__dirname, '../../.kite_session.json');
     // Pre-rename session file name; read as a fallback only so an existing login survives the rename.
     private legacySessionFile = path.join(__dirname, '../../.zerodha_session.json');
@@ -266,6 +271,7 @@ class Kite {
                 price,
             });
             Log.log(`[Kite] Limit buy order placed: ${response.order_id}`);
+            this.placedOrderIds.add(response.order_id);
             return { orderId: response.order_id };
         } catch (e) {
             this.haltBuysOnDebitBalance(e);
@@ -337,6 +343,7 @@ class Kite {
                 price,
             });
             Log.log(`[Kite] Limit sell order placed: ${response.order_id}`);
+            this.placedOrderIds.add(response.order_id);
             // quantity/clamped let callers see that less than requested was actually placed.
             return { orderId: response.order_id, quantity, clamped: quantity < requestedQuantity };
         } finally {
@@ -623,6 +630,7 @@ class Kite {
             throw e;
         }
         Log.log(`[Kite] [BUTTERFLY SHORT-ENTRY] Limit sell-to-open order placed: ${response.order_id}`);
+        this.placedOrderIds.add(response.order_id);
         return { orderId: response.order_id };
     }
 

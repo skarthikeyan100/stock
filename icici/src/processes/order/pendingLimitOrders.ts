@@ -54,6 +54,11 @@ export function findPendingOrdersForSymbol(userId: string, tradingSymbol: string
     return Array.from(pending.values()).filter((o) => o.userId === userId && o.tradingSymbol === tradingSymbol);
 }
 
+// True while this order is tracked for its owner's fill booking (restored from Mongo after a restart).
+export function isTrackedPendingOrder(orderId: string): boolean {
+    return pending.has(orderId);
+}
+
 export function trackPendingLimitOrder(order: PendingLimitOrder): void {
     pending.set(order.orderId, order);
     // Fire-and-forget, same convention as bookkeeping's Mongo writes - never
