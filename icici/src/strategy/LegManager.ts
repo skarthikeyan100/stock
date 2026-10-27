@@ -125,6 +125,11 @@ export interface LegManagerConfig {
     dryRun?: boolean;
 }
 
+// antLegOps.buy tags a buy whose fill is unresolved (the order may still be live) as '[HEDGE_UNCONFIRMED]'.
+function isUnconfirmedBuyError(e: any): boolean {
+    return String(e?.message ?? e).includes('[HEDGE_UNCONFIRMED]');
+}
+
 export interface LegManagerDeps {
     userId: string;
     ownerType: string; // log-prefix + legLineage discriminator
@@ -133,8 +138,8 @@ export interface LegManagerDeps {
     getLastUnderlyingLtp: () => number;
     recordOutcome: (outcome: 'win' | 'loss' | 'timeout', pnl: number) => void;
     ops?: LegBrokerOps; // default: defaultLegOps (today's Kite/Breeze 'Bare' IPCs)
-    // Called from trySpawnLevel's catch with the raw error whenever a hedge-spawn buy
-    // fails - lets an owning strategy notice a '[HEDGE_UNCONFIRMED]'-prefixed error
+    // Called with the raw error whenever any LegManager buy (hedge spawn, average-add,
+    // refill) fails - lets an owning strategy notice a '[HEDGE_UNCONFIRMED]'-prefixed error
     // (antLegOps.ts's buy: the fill wait timed out, so the order may still be live -
     // never safe to retry) and flip its own manual-review flag. Every other spawn
     // failure (pickContract/capitalCheck/ordinary buy rejection) already self-heals by
@@ -951,8 +956,11 @@ export class LegManager {
                 this.logLegStatus(leg);
             });
         } catch (e) {
-            leg.averagedLevels.delete(level); // average-add failed - free the slot so it can retry
             Log.log(`[${this.deps.ownerType}] Level ${level} average failed:`, e);
+            // An unresolved fill may still be live: keep the level consumed (a retry would double-buy) and tell the owner so it
+            // latches manual review and vetoes every further buy. Any other failure frees the slot to retry.
+            if (isUnconfirmedBuyError(e)) this.deps.onSpawnBuyError?.(e);
+            else leg.averagedLevels.delete(level);
         }
     }
 
@@ -1058,6 +1066,7 @@ export class LegManager {
             });
         } catch (e) {
             Log.log(`[${this.deps.ownerType}] Refill placement failed:`, e);
+            if (isUnconfirmedBuyError(e)) this.deps.onSpawnBuyError?.(e);
             return false;
         }
     }

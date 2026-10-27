@@ -2,20 +2,11 @@
 
 **Scope: NOT a whole-project review.** The `code-review high src` run reviewed only the latest commit's `src` changes (`bdf6e89`), because the tree was clean. The rest of `src/` (about 46k lines across 183 files) has not been reviewed. Findings come from reading the code only; nothing was compiled or run. None of these have been fixed.
 
-## 4. `[HEDGE_UNCONFIRMED]` from an average-add buy frees the level slot, so the add is retried
-`src/strategy/LegManager.ts:955`
-**Scenario:** ContinuousStrategy on ANT averages into a leg. `antLegOps.buy` throws `[HEDGE_UNCONFIRMED] ... fill status unresolved` because the order may be live. The catch deletes `averagedLevels` for that level and only logs. The next qualifying tick buys the same level again, so the leg is double-bought while the first order may be live. Only spawn failures and the T1 entry call `noteUnconfirmedBuy`, so `manualReview` never trips for averaging. Root refill and any other `ops.buy` call site have the same gap.
-
 ---
 # Area 1: order process (`orderProcess.ts`, `src/processes/order/`, `src/ipc/`)
 Reviewed whole files via code-review (high). Not fixed. Criteria: correctness, unused code, duplicates, same interface for all 4 brokers, consistent vocabulary.
 
 ## A1 Correctness
-1. [high] orderProcess.ts:118 - setAggregateResolver has an `&&`/`||` precedence bug; for kite lookups the second clause matches ANY row with undefined broker regardless of tsym/user, so the exit monitor can price or size an exit from an unrelated row.
-2. [high] orderProcess.ts:831 (also 837, 878, 923, 963, 980, 1027, 1087) - `return placeOrderWithPendingGuard(...)` is not awaited inside the try, so a broker failure skips the catch at 1269. No ok:false response is written and the IPC client hangs until the 90s timeout. Use `return await`, as buyContractBare/placeLimitBuyBare already do.
-3. [high] kiteExecutor.ts:311 - buyContractOnKite uses `price ?? await getFillBookingPartial(...)`. With a caller-supplied price the fill is never awaited and is booked at that price, so an unfilled order leaves a phantom position with a GTT and exit sell.
-4. [high] pendingAntLimitOrders.ts:166 - a partial fill on a cancelled/rejected order is booked only for Sell. ANT Buy partials (ContinuousStrategy refill via antPlaceLimitBuyBare) are dropped, leaving an untracked, unprotected position. Kite/Breeze/Prism book both sides.
-5. [high] breezeExecutor.ts:347 and prismExecutor.ts:305 - squareOff does not cancel the resting limit sell first (Kite at kiteExecutor.ts:401 and ANT at antExecutor.ts:1074 do). Manual squareOff/chunkedSquareOff/exitMonitor stop can double-sell BulkPcr's resting chunks.
 6. [med] pendingAntLimitOrders.ts:234 (also antExecutor.ts:485, brokerExecutors.ts:80) - reads `netQty`/`netqty`, but the live field is `netQuantity`. stillOpen is always false, so after 5 unverifiable polls a resting sell on an open position is dropped. pendingAntLimitOrders.ts:223 compares ANT's account id with the app userId, so that fallback is effectively dead.
 7. [med] antExecutor.ts:1102 (+860, 1063) - squareOffOnAnt's existing row and openQuantity ignore broker; the in-flight key `${userId}:${tsym}` is shared with Breeze while Kite uses `kite:` prefix. An ant+prism (or ant+breeze) pseudo-user sizes the ANT sell from the other broker's row, and per-broker square-offs reject each other.
 8. [med] antExecutor.ts:1188 - an unconfirmed exit returns a PENDING Trade with the full quantity, and squareOffChunked counts it as sold. The next chunk cancels and untracks that resting sell (816-856) and never re-places it, so the quantity stays open while success is reported. If bookSellFills throws after the cancel (847), the partial fill is lost.
@@ -224,3 +215,17 @@ The `/pay` route only checks `startsWith('image/')`. The email attachment extens
 `src/server.ts:675`
 The destination is built from `paidTo` (chosen by the admin) but reads masked details from `bankSnapshot`, which may not match.
 **Scenario:** the admin selects `paidTo='upi'` for a payout whose snapshot has no `upiId` (or `'bank'` with no `accountNumberMasked`). The customer's email reads "UPI " or "Bank account " with nothing after it, and the payout is already recorded as paid with no validation.
+
+## 4. `[HEDGE_UNCONFIRMED]` from an average-add buy frees the level slot, so the add is retried  **[FIXED: average-add and refill now report [HEDGE_UNCONFIRMED] (level stays consumed, owner latches manual review)]**
+`src/strategy/LegManager.ts:955`
+**Scenario:** ContinuousStrategy on ANT averages into a leg. `antLegOps.buy` throws `[HEDGE_UNCONFIRMED] ... fill status unresolved` because the order may be live. The catch deletes `averagedLevels` for that level and only logs. The next qualifying tick buys the same level again, so the leg is double-bought while the first order may be live. Only spawn failures and the T1 entry call `noteUnconfirmedBuy`, so `manualReview` never trips for averaging. Root refill and any other `ops.buy` call site have the same gap.
+
+1. [high] orderProcess.ts:118 - setAggregateResolver has an `&&`/`||` precedence bug; for kite lookups the second clause matches ANY row with undefined broker regardless of tsym/user, so the exit monitor can price or size an exit from an unrelated row.  **[FIXED: parenthesised broker clause]**
+
+2. [high] orderProcess.ts:831 (also 837, 878, 923, 963, 980, 1027, 1087) - `return placeOrderWithPendingGuard(...)` is not awaited inside the try, so a broker failure skips the catch at 1269. No ok:false response is written and the IPC client hangs until the 90s timeout. Use `return await`, as buyContractBare/placeLimitBuyBare already do.  **[FIXED: return await at all 8 guard sites]**
+
+3. [high] kiteExecutor.ts:311 - buyContractOnKite uses `price ?? await getFillBookingPartial(...)`. With a caller-supplied price the fill is never awaited and is booked at that price, so an unfilled order leaves a phantom position with a GTT and exit sell.  **[FIXED: buyContractOnKite always waits for the real fill (req.price no longer skips it)]**
+
+4. [high] pendingAntLimitOrders.ts:166 - a partial fill on a cancelled/rejected order is booked only for Sell. ANT Buy partials (ContinuousStrategy refill via antPlaceLimitBuyBare) are dropped, leaving an untracked, unprotected position. Kite/Breeze/Prism book both sides.  **[FIXED: cancelled/rejected partial booked for Buy and Sell]**
+
+5. [high] breezeExecutor.ts:347 and prismExecutor.ts:305 - squareOff does not cancel the resting limit sell first (Kite at kiteExecutor.ts:401 and ANT at antExecutor.ts:1074 do). Manual squareOff/chunkedSquareOff/exitMonitor stop can double-sell BulkPcr's resting chunks.  **[FIXED: cancelRestingSellsAheadOfExit shared helper used by Breeze and Prism squareOff]**

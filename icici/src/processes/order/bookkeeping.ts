@@ -143,6 +143,8 @@ class OrderBookkeeping {
     private processedFillIds: Set<string> = new Set();
     // Fill ids whose booking threw after the raw doc may have been written (see recordFill).
     private failedBookingFillIds: Set<string> = new Set();
+    // Raw-doc inserts still in flight, by broker order id: a retry waits for them so its stored-doc lookup is not racing the write.
+    private pendingFillInserts: Map<string, Promise<unknown>> = new Map();
     // Per-session, per-user set of drawdown-warning thresholds (80, 100) already
     // notified, so a losing streak doesn't spam a fresh notification per trade.
     private notifiedThresholds: Map<string, Set<number>> = new Map();
@@ -898,6 +900,8 @@ class OrderBookkeeping {
             // order (exit path + poller) would otherwise both pass has() and both book it.
             this.processedFillIds.add(id);
             try {
+                const inflight = this.pendingFillInserts.get(id);
+                if (inflight) await inflight;
                 // processedFillIds dies with the process; the raw fill doc does not. A restart used to forget it, so the same broker
                 // order was booked a second time (real 2026-10-27: one Kite sell sat in Mongo under two users).
                 if (await this.fillAlreadyStored(tradeEvent)) {
@@ -925,6 +929,8 @@ class OrderBookkeeping {
             if (id) {
                 this.processedFillIds.delete(id);
                 this.failedBookingFillIds.add(id);
+                // Bounded: a retry that never comes must not grow this for the whole session (oldest entries go first).
+                if (this.failedBookingFillIds.size > 2000) this.failedBookingFillIds.delete(this.failedBookingFillIds.values().next().value as string);
             }
             throw e;
         }
@@ -1050,9 +1056,14 @@ class OrderBookkeeping {
         // is what actually prevents an unhandled promise rejection from
         // crashing the `order` process on a transient Mongo error.
         if (!skipInsert) {
-            Mongo.getInstance()?.insert(tradeEvent).catch((e) => {
+            const p = Mongo.getInstance()?.insert(tradeEvent).catch((e) => {
                 Log.log('[order] Mongo insert failed for trade event (continuing without persistence):', tradeEvent.tsym, e);
             });
+            const oid = tradeEvent.brokerOrderId;
+            if (p && oid) {
+                const tracked = p.finally(() => { if (this.pendingFillInserts.get(oid) === tracked) this.pendingFillInserts.delete(oid); });
+                this.pendingFillInserts.set(oid, tracked);
+            }
         }
 
         if (tradeEvent.action == 'Buy') {
@@ -1466,12 +1477,18 @@ class OrderBookkeeping {
         }
 
         if (totalRestoredQty > brokerQuantity) {
+            if (!(brokerQuantity > 0)) {
+                Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) broker quantity is ${brokerQuantity} (not a long position) but Mongo restores ${totalRestoredQty} - restoring NOTHING, manual review required`);
+                return [];
+            }
             // More restored than the broker holds (typically a Sell fill doc that never reached Mongo, or an exit made outside this
             // system). The broker is ground truth: cap the aggregate at what it holds, so exits are never sized past the real
-            // position, but keep the position monitored - dropping it would leave real exposure with no stop, target or exit. With
-            // several owners the oldest entries are kept whole and the newest trimmed (greedy, never exceeding the broker total).
+            // position, but keep the position monitored. The missing exit is assumed to have consumed the OLDEST lots first (same
+            // FIFO netFifoLots applies), so the newest entries are kept whole and the oldest trimmed. Rows without a usable
+            // entryTime sort as oldest (trimmed first).
             Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) restores to ${totalRestoredQty} across ${restored.length} user(s) but the broker holds only ${brokerQuantity} - capping at the broker quantity, manual review required`);
-            restored.sort((x, y) => new Date(x.entryTime as any).getTime() - new Date(y.entryTime as any).getTime());
+            const at = (t: Trade) => { const ms = new Date(t.entryTime as any).getTime(); return Number.isFinite(ms) ? ms : 0; };
+            restored.sort((x, y) => at(y) - at(x)); // newest first
             let remaining = brokerQuantity;
             for (const t of restored) {
                 t.quantity = Math.min(t.quantity, remaining);

@@ -6,9 +6,9 @@ import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
-import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange, cancelOrderWithFillRecheck, OrderAlreadyFilledError } from './BrokerExecutor';
+import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, OrderAlreadyFilledError } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
-import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange } from './breezePendingLimitOrders';
+import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol } from './breezePendingLimitOrders';
 import { roundToTick } from '../../kite/Kite';
 
 // ICICI Breeze execution, mirroring kiteExecutor.ts/antExecutor.ts's shape.
@@ -407,7 +407,24 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
         // multi-attempt partial sequence (e.g. 2 partial fills then a full
         // fill of the remainder) is folded into one correct total instead of
         // over/under-selling across attempts.
-        let remainingQty = quantity;
+        // A resting limit sell for this position (e.g. BulkPcr's target chunks) must come off first, or both could fill and oversell.
+        const openOnBreeze = () => bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId)?.quantity;
+        const settled = await cancelRestingSellsAheadOfExit({
+            pending: findPendingBreezeOrdersForSymbol(userId, tsym), cancel: cancelOrderOnBreeze, openQuantity: openOnBreeze, requested: quantity, label: `squareOffOnBreeze ${tsym} (${userId})`,
+        });
+        if (!(settled.quantity > 0)) {
+            Log.log(`[order] squareOffOnBreeze: nothing left to sell for ${tsym} (${userId}) after resting sells settled`);
+            const done = new Trade();
+            done.tsym = tsym;
+            done.quantity = 0;
+            done.price = 0;
+            done.action = 'Sell';
+            done.status = 'COMPLETE';
+            done.user = userId;
+            done.broker = 'breeze';
+            return done;
+        }
+        let remainingQty = settled.quantity;
         let stuck = false; // a resting order we could neither cancel nor confirm closed - stop, don't risk a double-order
         let totalFilledQty = 0;
         let totalFilledValue = 0;

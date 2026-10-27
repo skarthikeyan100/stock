@@ -163,17 +163,18 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                 // Book any partial fill BEFORE taking the order off the book. If the book read or the booking
                 // throws, the order stays tracked and the next poll retries it - nothing is lost.
                 let remaining = order.quantity;
-                if (order.action === 'Sell' && (filledQuantity ?? 0) > 0) {
+                // Both sides: an ANT Buy partial (ContinuousStrategy refill) otherwise left an untracked, unprotected position.
+                if ((order.action === 'Sell' || order.action === 'Buy') && (filledQuantity ?? 0) > 0) {
                     const book = await ant.getFilledFromTradeBook(orderId);
                     // The status shows fills the trade book doesn't have yet: wait for the book, don't guess.
                     if (book.quantity < (filledQuantity ?? 0)) {
-                        throw new Error(`cancelled sell ${orderId}: status shows ${filledQuantity} filled, trade book ${book.quantity} - retrying on next poll`);
+                        throw new Error(`cancelled ${order.action.toLowerCase()} ${orderId}: status shows ${filledQuantity} filled, trade book ${book.quantity} - retrying on next poll`);
                     }
                     if (book.quantity > 0) {
-                        await bookkeeping.recordFill(buildAntFillTrade(order, orderId, book.quantity, book.avgPrice, 'Sell'));
+                        await bookkeeping.recordFill(buildAntFillTrade(order, orderId, book.quantity, book.avgPrice, order.action));
                     }
                     remaining = order.quantity - book.quantity;
-                    Log.log(`[order] Pending ANT sell ${orderId} (${order.tradingSymbol}) cancelled after ${book.quantity} filled - ${remaining} unfilled`);
+                    Log.log(`[order] Pending ANT ${order.action.toLowerCase()} ${orderId} (${order.tradingSymbol}) cancelled after ${book.quantity} filled - ${remaining} unfilled`);
                 }
                 untrackPendingAntLimitOrder(orderId);
                 // ANT has no separate EOD-expiry status either (same gap as Kite - see pendingLimitOrders.ts):

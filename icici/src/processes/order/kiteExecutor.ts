@@ -262,7 +262,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade> {
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
         const price = await estimateOptionPrice(canonical.symbol, canonical.strike, canonical.optionType);
         const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity);
-        return buyContractOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.price, req.targetPoints, req.stopLossPoints);
+        return buyContractOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.targetPoints, req.stopLossPoints);
     }
 
     if (!req.right) throw new Error('manualBuy requires either contract or right');
@@ -278,14 +278,14 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade> {
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.strikePrice });
         const price = await estimateOptionPrice(index, req.strikePrice, optionType);
         const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity);
-        return buyContractOnKite(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.price, req.targetPoints, req.stopLossPoints);
+        return buyContractOnKite(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.targetPoints, req.stopLossPoints);
     }
 
     const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
     return buyIndexOnKite({ userId: req.userId, index: req.index, niftyLtp: 0, right: req.right, quantity, targetPoints: req.targetPoints, stopLossPoints: req.stopLossPoints });
 }
 
-async function buyContractOnKite(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number, targetPoints?: number, stopLossPoints?: number): Promise<Trade> {
+async function buyContractOnKite(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', targetPoints?: number, stopLossPoints?: number): Promise<Trade> {
     const kite = Kite.getInstance();
     if (!(await kite.hasValidSession())) {
         throw new Error('Kite session not active - complete /kite/login first.');
@@ -307,17 +307,17 @@ async function buyContractOnKite(userId: string, tradingSymbol: string, commonTo
         t.brokerOrderId = orderId;
         return t;
     };
-    const entryPrice =
-        price ??
-        (await getFillBookingPartial(kite, orderId, mkPartial, (t) =>
-            finalizeEntry(
-                t,
-                userId,
-                exchange,
-                targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? configService.getConfig().settings.targetPriceDiff,
-                stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? configService.getConfig().settings.stopLossPriceDiff
-            )
-        ));
+    // Always wait for the real fill: a caller-supplied price used to skip this and book the order as filled at that price, so an
+    // unfilled order left a phantom position with a GTT and an exit sell.
+    const entryPrice = await getFillBookingPartial(kite, orderId, mkPartial, (t) =>
+        finalizeEntry(
+            t,
+            userId,
+            exchange,
+            targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? configService.getConfig().settings.targetPriceDiff,
+            stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? configService.getConfig().settings.stopLossPriceDiff
+        )
+    );
 
     const trade = new Trade();
     trade.tsym = tradingSymbol;

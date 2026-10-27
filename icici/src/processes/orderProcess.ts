@@ -116,7 +116,7 @@ onPendingPrismCancelled((userId, tradingSymbol, instrumentToken, quantity, excha
 exitMonitor.onPriceUpdate(() => bookkeeping.triggerPositionsChanged());
 // Chunked entries register one detached Trade per chunk - exits and live prices must act on the bookkeeping aggregate.
 exitMonitor.setAggregateResolver((t, broker) =>
-    bookkeeping.trades.find((x) => x.tsym === t.tsym && x.user === t.user && x.broker === broker || (x.broker === undefined && broker === 'kite')));
+    bookkeeping.trades.find((x) => x.tsym === t.tsym && x.user === t.user && (x.broker === broker || (x.broker === undefined && broker === 'kite'))));
 
 // AntOrderNotifyStream.connect() throws (rather than retrying) when the ANT
 // session isn't there yet or was issued on an earlier day (ANT.loadSession
@@ -829,13 +829,13 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'antManualBuy': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                return placeOrderWithPendingGuard(req, estimatedValue, () =>
+                return await placeOrderWithPendingGuard(req, estimatedValue, () =>
                     antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload }),
                 );
             }
 
             case 'antPlaceCoverOrder': {
-                return placeOrderWithPendingGuard(req, undefined, () =>
+                return await placeOrderWithPendingGuard(req, undefined, () =>
                     antExecutor.placeCoverOrderForGapScreener(
                         req.userId,
                         req.payload.tradingSymbol,
@@ -876,7 +876,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'antBuyTargetOnly': {
                 const { tradingSymbol, instrumentId, quantity, exchange, underlyingOpen, marketProtectionPercent, product } = req.payload;
                 // No pre-trade option LTP any more, so no value estimate (same as 'buyIndex').
-                return placeOrderWithPendingGuard(req, undefined, () =>
+                return await placeOrderWithPendingGuard(req, undefined, () =>
                     antExecutor.enterPosition(req.userId, tradingSymbol, instrumentId, quantity, exchange, 0, 0, 'target-only', undefined,
                         { underlyingOpen, marketProtectionPercent: String(marketProtectionPercent), product }),
                 );
@@ -921,7 +921,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // be reused for it (see antLegOps.ts's header comment).
             case 'antBuyContractBare': {
                 const { tradingSymbol, instrumentId, quantity, exchange } = req.payload;
-                return placeOrderWithPendingGuard(req, undefined, () =>
+                return await placeOrderWithPendingGuard(req, undefined, () =>
                     antExecutor.enterPosition(req.userId, tradingSymbol, instrumentId, quantity, exchange, 0, 0, 'target-only'),
                 );
             }
@@ -961,7 +961,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // below were the only two entry paths in this file that bypassed it entirely.
             case 'butterflySellToOpen': {
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
-                return placeOrderWithPendingGuard(req, undefined, () => {
+                return await placeOrderWithPendingGuard(req, undefined, () => {
                     if (broker === 'kite') return enterShortOnKite(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                     if (broker === 'ant') return antExecutor.enterShortPosition(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                     if (broker === 'breeze') return enterShortOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
@@ -978,7 +978,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // placeOrderWithPendingGuard - see 'butterflySellToOpen' comment above.
             case 'butterflyBuyLeg': {
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
-                return placeOrderWithPendingGuard(req, undefined, () => {
+                return await placeOrderWithPendingGuard(req, undefined, () => {
                     if (broker === 'kite') return marketBuyBareOnKite(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                     if (broker === 'ant') return antExecutor.enterPosition(req.userId, tradingSymbol, instrumentToken, quantity, exchange, 0, 0, 'target-only');
                     if (broker === 'breeze') return marketBuyBareOnBreeze(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
@@ -1025,7 +1025,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'buyContract': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                return placeOrderWithPendingGuard(req, estimatedValue, () =>
+                return await placeOrderWithPendingGuard(req, estimatedValue, () =>
                     prismExecutor.buyContract(req.userId, req.payload.contract, req.payload.quantity, req.payload.price),
                 );
             }
@@ -1085,7 +1085,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'manualBuy': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                return placeOrderWithPendingGuard(req, estimatedValue, () => {
+                return await placeOrderWithPendingGuard(req, estimatedValue, () => {
                     const manualBuyBroker = bookkeeping.getUserBroker(req.userId);
                     if (manualBuyBroker === 'breeze') throw new Error('manualBuy: no Breeze manual-buy primitive - refusing to route a Breeze user to Kite');
                     return manualBuyBroker === 'ant'
@@ -1445,7 +1445,8 @@ async function main() {
     void BreezeContractMaster.getInstance().preload();
 
     await Mongo.init().catch((e) => Log.log('[order] Mongo.init failed (continuing without persistence):', e));
-    await ensureOrderIndexes();
+    // Background: an index build on a large collection must not delay the order process becoming ready.
+    void ensureOrderIndexes();
     await loadUserLimits().catch((e) => Log.log('[order] startup: loadUserLimits failed (continuing with defaults; reloadUserLimits can retry):', e));
     configService.onChange(() => {
         applyConfigStrategyLimits().catch((e) => Log.log(`[order] config-change limit refresh failed: ${e?.message ?? e}`));

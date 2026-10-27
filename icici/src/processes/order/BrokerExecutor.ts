@@ -33,6 +33,44 @@ export class OrderAlreadyFilledError extends Error {
     }
 }
 
+// Cancels a broker's resting limit sells on one contract ahead of a market-style exit (squareOff), so both cannot fill and
+// oversell (e.g. BulkPcr's resting target chunks). Each cancel rechecks for a fill (OrderAlreadyFilledError); a fill that landed in
+// the race window is not booked yet (the poller books it), so it is subtracted from the quantity to sell. A cancel that fails for
+// any other reason leaves the resting order's state unknown, so this throws rather than risk a double-sell.
+// `openQuantity` reads the live bookkeeping size, since the poller may book a fill (shrinking it) while a cancel is in flight.
+export async function cancelRestingSellsAheadOfExit(args: {
+    pending: { orderId: string; action: string }[];
+    cancel: (orderId: string) => Promise<void>;
+    openQuantity: () => number | undefined;
+    requested: number;
+    label: string;
+}): Promise<{ quantity: number; cancelledAny: boolean }> {
+    const resting = args.pending.filter((o) => o.action === 'Sell');
+    if (resting.length === 0) return { quantity: args.requested, cancelledAny: false };
+    const openBefore = args.openQuantity();
+    let filledNotBooked = 0;
+    let cancelledAny = false;
+    for (const order of resting) {
+        try {
+            await args.cancel(order.orderId);
+            cancelledAny = true;
+        } catch (e) {
+            if (e instanceof OrderAlreadyFilledError) filledNotBooked += e.filledQuantity;
+            else throw e;
+        }
+    }
+    const openNow = args.openQuantity();
+    let quantity = args.requested;
+    if (openBefore !== undefined && openNow !== undefined) {
+        // The smaller of the two views is right in both orderings (fill booked during the cancel, or not yet booked).
+        quantity = Math.min(quantity, openNow, openBefore - filledNotBooked);
+    } else {
+        quantity = Math.min(quantity, args.requested - filledNotBooked);
+    }
+    if (filledNotBooked > 0 || cancelledAny) Log.log(`[order] ${args.label}: resting sell(s) settled (cancelled=${cancelledAny}, filledNotBooked=${filledNotBooked}) - selling ${quantity}`);
+    return { quantity, cancelledAny };
+}
+
 // Shared cancel-then-recheck implementation for every broker's cancelOrderOnX
 // (kiteExecutor/antExecutor/prismExecutor/breezeExecutor) - factored out
 // after the same fix (always recheck status regardless of cancel

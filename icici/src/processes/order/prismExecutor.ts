@@ -4,8 +4,8 @@ import indexMap from '../../nse_index';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
-import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck } from './BrokerExecutor';
-import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder } from './pendingPrismLimitOrders';
+import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit } from './BrokerExecutor';
+import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol } from './pendingPrismLimitOrders';
 import { sleep } from '../../util/sleep';
 
 // Prism/Shoonya's contract-by-price-range order path - the secondary/legacy
@@ -324,7 +324,25 @@ export async function squareOffOnPrism(userId: string, tsym: string, quantity: n
         await bookkeeping.recordFill(trade);
         return trade;
     }
-    return sellContract(userId, tsym, quantity);
+    // A resting limit sell for this position (e.g. BulkPcr's target chunks) must come off first, or both could fill and oversell.
+    const settled = await cancelRestingSellsAheadOfExit({
+        pending: findPendingOrdersForSymbol(userId, tsym), cancel: cancelOrderOnPrism,
+        openQuantity: () => bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId)?.quantity,
+        requested: quantity, label: `squareOffOnPrism ${tsym} (${userId})`,
+    });
+    if (!(settled.quantity > 0)) {
+        Log.log(`[order] squareOffOnPrism: nothing left to sell for ${tsym} (${userId}) after resting sells settled`);
+        const done = new Trade();
+        done.tsym = tsym;
+        done.quantity = 0;
+        done.price = 0;
+        done.action = 'Sell';
+        done.status = 'COMPLETE';
+        done.user = userId;
+        done.broker = 'prism';
+        return done;
+    }
+    return sellContract(userId, tsym, settled.quantity);
 }
 
 // Returns immediately with {orderId} - fill arrives later via

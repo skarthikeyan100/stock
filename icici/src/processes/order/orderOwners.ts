@@ -12,15 +12,22 @@ const cache = new Map<string, string>();
 // Owners recorded in this process whose Mongo write has not been confirmed yet (or failed). Only a fallback when Mongo has no row:
 // after a restart Mongo may already hold a different first writer, which must win.
 const unconfirmed = new Map<string, string>();
+// Ids with an upsert in flight: only the first recorder per id writes, so a later (possibly inferred) owner never races it to Mongo.
+const writing = new Set<string>();
+const MAX_UNCONFIRMED = 5000;
 
 export function recordOrderOwner(orderId: string | undefined, user: string | undefined, broker: string): void {
     if (!orderId || !user) return;
     const id = String(orderId);
-    if (cache.has(id)) return;
-    if (!unconfirmed.has(id)) unconfirmed.set(id, user);
+    if (cache.has(id) || writing.has(id)) return;
+    if (!unconfirmed.has(id)) {
+        unconfirmed.set(id, user);
+        if (unconfirmed.size > MAX_UNCONFIRMED) unconfirmed.delete(unconfirmed.keys().next().value as string);
+    }
     // Fire-and-forget, same convention as the other bookkeeping writes - a Mongo hiccup must not block order placement.
     const col = Mongo.getInstance()?.db.collection(COLLECTION);
     if (!col) return;
+    writing.add(id);
     col.updateOne({ orderId: id }, { $setOnInsert: { orderId: id, user, broker, at: new Date() } }, { upsert: true })
         .then(async (res) => {
             // $setOnInsert is a no-op when a row already exists: read back the real first writer instead of assuming it was us.
@@ -32,7 +39,8 @@ export function recordOrderOwner(orderId: string | undefined, user: string | und
             cache.set(id, owner);
             unconfirmed.delete(id);
         })
-        .catch((e) => Log.log('[order] orderOwners: Mongo persist failed for', id, e));
+        .catch((e) => Log.log('[order] orderOwners: Mongo persist failed for', id, e))
+        .finally(() => writing.delete(id));
 }
 
 // Owners for the given order ids (confirmed cache, then Mongo, then this process's unconfirmed guesses). Missing ids are simply absent.
