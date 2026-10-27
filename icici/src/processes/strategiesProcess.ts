@@ -51,11 +51,14 @@ function isDuplicateFill(trade: Trade): boolean {
 // must not apply it again. Returns false when the read failed or timed out; the map is then left alone and the
 // first Sell falls back to unregistering (the old behaviour), and a later fill retries the seed after SEED_RETRY_AFTER_MS.
 const SEED_TIMEOUT_MS = 15_000;
-const SEED_RETRY_AFTER_MS = 60_000;
+const SEED_RETRY_AFTER_MS = 5_000;
+// Bumped by a strategy reset: a seed that was in flight across it holds pre-reset positions and is discarded.
+const seedEpoch = new Map<string, number>();
 const seededUsers = new Set<string>();
 const seedFailedAt = new Map<string, number>();
 async function seedOpenQty(userId: string): Promise<boolean> {
     if (Date.now() - (seedFailedAt.get(userId) ?? 0) < SEED_RETRY_AFTER_MS) return false;
+    const epoch = seedEpoch.get(userId) ?? 0;
     let open: any[];
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -70,8 +73,14 @@ async function seedOpenQty(userId: string): Promise<boolean> {
     } finally {
         clearTimeout(timer);
     }
-    // The snapshot replaces whatever fills built so far for this user (it already includes them).
-    for (const key of Array.from(openQty.keys())) if (key.startsWith(`${userId}|`)) openQty.delete(key);
+    if ((seedEpoch.get(userId) ?? 0) !== epoch) return false;
+    // The snapshot replaces whatever fills built so far for this user (it already includes them). Their trade-holder
+    // registrations stay: a later Sell with no entry unregisters, so nothing lingers past the position's exit.
+    for (const key of Array.from(openQty.keys())) {
+        if (!key.startsWith(`${userId}|`)) continue;
+        openQty.delete(key);
+        openQtyExchange.delete(key);
+    }
     for (const t of open) {
         const qty = Number(t?.quantity);
         if (!t?.token || !(qty > 0)) continue;
@@ -86,10 +95,15 @@ async function seedOpenQty(userId: string): Promise<boolean> {
 }
 // A reset strategy abandons its positions' bookkeeping: drop the net quantities and trade-holder registrations.
 function clearOpenQtyFor(strategy: { userId?: string }): void {
+    if (strategy.userId) {
+        // The next fill re-reads the order process's open trades.
+        seededUsers.delete(strategy.userId);
+        seedFailedAt.delete(strategy.userId);
+        seedEpoch.set(strategy.userId, (seedEpoch.get(strategy.userId) ?? 0) + 1);
+    }
     for (const key of Array.from(openQty.keys())) {
         const [uid, feed, token] = key.split('|');
         if (uid !== strategy.userId) continue;
-        seededUsers.delete(uid);
         const owner = strategies.getByUserId(uid);
         if (owner) unregisterTrade(token, owner, feed === 'default' ? undefined : (feed as FeedSource), openQtyExchange.get(key));
         openQty.delete(key);
