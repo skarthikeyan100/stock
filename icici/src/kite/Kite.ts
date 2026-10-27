@@ -1,4 +1,5 @@
 import { markNotPlaced } from '../util/notPlaced';
+import { cancelThenRecheck } from '../util/fillWait';
 import { KiteConnect } from 'kiteconnect';
 import Log from '../util/Log';
 import fs from 'fs';
@@ -453,43 +454,41 @@ class Kite {
 
             await sleep(intervalMs);
         }
-        // Give up waiting - but an order left resting at the broker after we
-        // stop watching it is an orphan: no bookkeeping, no target/SL, no
-        // exit monitoring, yet still live and able to fill later on its own.
-        // Cancel it here so a market-protection LIMIT that never matched
-        // (see NIFTY2690124100PE, 2026-08-31) can't silently turn into an
-        // untracked position. Best-effort - if the cancel itself fails
-        // (already filled/cancelled in the interim), log and still throw the
-        // original timeout so the caller aborts the trade either way.
-        try {
-            await this.cancelOrder(orderId);
-            Log.log(`[Kite] Cancelled unfilled order ${orderId} after fill-price timeout`);
-        } catch (e) {
-            Log.log(`[Kite] Failed to cancel unfilled order ${orderId} after fill-price timeout:`, e);
+        // Give up waiting - but an order left resting at the broker after we stop watching it is an orphan: no bookkeeping, no
+        // target/SL, no exit monitoring, yet still live and able to fill later on its own. Cancel it (best effort; a market-protection
+        // LIMIT that never matched must not silently turn into an untracked position - NIFTY2690124100PE, 2026-08-31), then re-check
+        // regardless of the cancel's outcome (see cancelThenRecheck). A partial fill is surfaced the same way the drift-cancel path does.
+        const settled = await cancelThenRecheck({
+            cancel: async () => {
+                try {
+                    await this.cancelOrder(orderId);
+                    Log.log(`[Kite] Cancelled unfilled order ${orderId} after fill-price timeout`);
+                } catch (e) {
+                    Log.log(`[Kite] Failed to cancel unfilled order ${orderId} after fill-price timeout:`, e);
+                    throw e;
+                }
+            },
+            recheck: async () => {
+                const recheck = await this.kc.getOrderHistory(orderId);
+                const recheckLatest = recheck[recheck.length - 1];
+                if (recheckLatest?.status === 'COMPLETE' && recheckLatest.average_price) return { outcome: 'full', avgPrice: recheckLatest.average_price };
+                const filledQuantity = Number(recheckLatest?.filled_quantity ?? 0);
+                if (filledQuantity > 0) return { outcome: 'partial', filledQuantity, avgPrice: Number(recheckLatest?.average_price ?? 0) };
+                return { outcome: 'none' };
+            },
+        });
+        if (settled.result?.outcome === 'full') {
+            Log.log(`[Kite] Order ${orderId} actually filled fully during the timeout-cancel race - using real fill price ${settled.result.avgPrice}`);
+            return settled.result.avgPrice;
         }
-        // Re-check regardless of the cancel's outcome: the order may have filled in the race window
-        // (cancel then fails "already filled"), and reporting "did not fill" makes the caller retry the
-        // same buy/sell - a double fill (2026-10-19: ContinuousStrategy sold a PE leg twice, leaving a
-        // naked short). A partial fill is surfaced the same way the drift-cancel path does.
-        try {
-            const recheck = await this.kc.getOrderHistory(orderId);
-            const recheckLatest = recheck[recheck.length - 1];
-            if (recheckLatest?.status === 'COMPLETE' && recheckLatest.average_price) {
-                Log.log(`[Kite] Order ${orderId} actually filled fully during the timeout-cancel race - using real fill price ${recheckLatest.average_price}`);
-                return recheckLatest.average_price;
-            }
-            const filledQuantity = Number(recheckLatest?.filled_quantity ?? 0);
-            if (filledQuantity > 0) {
-                const averagePrice = Number(recheckLatest?.average_price ?? 0);
-                throw Object.assign(
-                    new Error(`Kite order ${orderId} only partially filled within timeout (${filledQuantity} @ ${averagePrice}), remainder cancelled`),
-                    { timeoutPartial: true, driftCancelled: true, filledQuantity, averagePrice }
-                );
-            }
-        } catch (e: any) {
-            if (e?.timeoutPartial) throw e;
-            Log.log(`[Kite] Post-timeout status re-check failed for order ${orderId}:`, e);
+        if (settled.result?.outcome === 'partial') {
+            const { filledQuantity, avgPrice: averagePrice } = settled.result;
+            throw Object.assign(
+                new Error(`Kite order ${orderId} only partially filled within timeout (${filledQuantity} @ ${averagePrice}), remainder cancelled`),
+                { timeoutPartial: true, driftCancelled: true, filledQuantity, averagePrice }
+            );
         }
+        if (settled.recheckError) Log.log(`[Kite] Post-timeout status re-check failed for order ${orderId}:`, settled.recheckError);
         throw new Error(`Kite order ${orderId} did not fill within timeout`);
     }
 

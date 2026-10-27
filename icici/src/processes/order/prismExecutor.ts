@@ -1,4 +1,5 @@
 import Log from '../../util/Log';
+import { cancelThenRecheck } from '../../util/fillWait';
 import Prism from '../../prism';
 import indexMap from '../../nse_index';
 import { Trade } from '../../model/model';
@@ -187,35 +188,45 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
         }
         if (attempt < BUY_FILL_POLL_ATTEMPTS) await sleep(BUY_FILL_POLL_DELAY_MS);
     }
-    try {
-        await Prism.getInstance().cancelOrder(orderId);
-        Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - cancelled`);
-    } catch (e) {
-        Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill and cancel ALSO failed - re-checking status before giving up (may have just filled):`, e);
-    }
-    // Re-check status AFTER the cancel attempt, rather than assuming "not
-    // filled" the moment polling ran out - the order can genuinely fill in
-    // the race window between the last poll above and this cancel call (or
-    // the cancel call can itself fail precisely BECAUSE the order just
-    // completed). Throwing unconditionally here would silently orphan a real
-    // fill: recordFill would never run, so the position would be live and
-    // unprotected at the broker with no exit ever placed, invisible to
-    // reconcile() too since it only inspects local bookkeeping state, never
-    // live broker state - the exact "stuck position, no exit" failure class
-    // this whole fill-verification path exists to prevent.
-    const finalCheck = await Prism.getInstance().getOrderStatus(orderId);
-    if (finalCheck.status === 'COMPLETE') {
-        if (!finalCheck.fillPrice) throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window but reported no fill price - manual review required`);
-        Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window - treating as filled at ${finalCheck.fillPrice}`);
-        return finalCheck.fillPrice;
+    // Re-check status AFTER the cancel attempt (see cancelThenRecheck), rather than assuming "not filled" the moment polling ran
+    // out: the order can genuinely fill in the race window (or the cancel can fail precisely BECAUSE the order just completed).
+    // Throwing unconditionally would silently orphan a real fill: recordFill would never run, so the position would be live and
+    // unprotected at the broker with no exit ever placed, invisible to reconcile() too since it only inspects local bookkeeping
+    // state - the exact "stuck position, no exit" failure class this whole fill-verification path exists to prevent. Unlike the
+    // other brokers a failed re-check here is fatal: it throws rather than reading as "did not fill".
+    const settled = await cancelThenRecheck({
+        cancel: async () => {
+            try {
+                await Prism.getInstance().cancelOrder(orderId);
+                Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - cancelled`);
+            } catch (e) {
+                Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill and cancel ALSO failed - re-checking status before giving up (may have just filled):`, e);
+                throw e;
+            }
+        },
+        recheck: async () => {
+            const finalCheck = await Prism.getInstance().getOrderStatus(orderId);
+            if (finalCheck.status === 'COMPLETE') {
+                if (!finalCheck.fillPrice) throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window but reported no fill price - manual review required`);
+                return { outcome: 'full', avgPrice: finalCheck.fillPrice };
+            }
+            const partialQty = Number(finalCheck.filledQuantity ?? 0);
+            if (partialQty > 0) return { outcome: 'partial', filledQuantity: partialQty, avgPrice: Number(finalCheck.fillPrice ?? 0) };
+            return { outcome: 'none' };
+        },
+    });
+    if (settled.recheckError) throw settled.recheckError;
+    if (settled.result?.outcome === 'full') {
+        Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window - treating as filled at ${settled.result.avgPrice}`);
+        return settled.result.avgPrice;
     }
     // Cancelled with a partial fill: surface the filled part on the error (same convention the other brokers' fill waits use:
     // filledQuantity/averagePrice) instead of discarding it as "not filled".
-    const partialQty = Number(finalCheck.filledQuantity ?? 0);
-    if (partialQty > 0) {
+    if (settled.result?.outcome === 'partial') {
+        const { filledQuantity: partialQty, avgPrice } = settled.result;
         Log.log(`[order] ALERT: Prism order ${orderId} (${tradingSymbol}, ${userId}) cancelled after a PARTIAL fill of ${partialQty} - reported on the error, caller must book it`);
         throw Object.assign(new Error(`Prism order ${orderId} (${tradingSymbol}, ${userId}) partially filled ${partialQty} before cancel`), {
-            filledQuantity: partialQty, averagePrice: Number(finalCheck.fillPrice ?? 0), partial: true,
+            filledQuantity: partialQty, averagePrice: avgPrice, partial: true,
         });
     }
     throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - treating as not filled`);

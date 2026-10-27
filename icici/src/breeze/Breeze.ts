@@ -1,4 +1,5 @@
 import Log from '../util/Log';
+import { cancelThenRecheck } from '../util/fillWait';
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
@@ -603,29 +604,35 @@ class Breeze {
         // stop watching it is an orphan, same risk Kite.getFillPrice's own
         // timeout branch guards against.
         if (cancelOnTimeout) {
-            let cancelFailed: unknown = null;
-            try {
-                await this.cancelOrder(exchangeCode, orderId);
-                Log.log(`[Breeze] Cancelled unfilled/partially-filled order ${orderId} after fill-price timeout`);
-            } catch (e) {
-                cancelFailed = e;
-                Log.log(`[Breeze] Failed to cancel order ${orderId} after fill-price timeout - re-checking status:`, e);
+            // Re-check in BOTH cases (see cancelThenRecheck): a failed cancel may mean it just fully filled; a successful
+            // cancel may have left a partial fill behind (cancelled_quantity > 0) that must not be reported as either a full
+            // fill or as nothing.
+            const settled = await cancelThenRecheck({
+                cancel: async () => {
+                    try {
+                        await this.cancelOrder(exchangeCode, orderId);
+                        Log.log(`[Breeze] Cancelled unfilled/partially-filled order ${orderId} after fill-price timeout`);
+                    } catch (e) {
+                        Log.log(`[Breeze] Failed to cancel order ${orderId} after fill-price timeout - re-checking status:`, e);
+                        throw e;
+                    }
+                },
+                recheck: async (cancelFailed) => {
+                    const c = classify(await readRecord(), !cancelFailed);
+                    if (c.kind === 'full') return { outcome: 'full', avgPrice: c.price };
+                    if (c.kind === 'partial') throw partialError(c);
+                    return { outcome: 'none' };
+                },
+            });
+            if (settled.result?.outcome === 'full') {
+                Log.log(`[Breeze] Order ${orderId} actually filled fully at ${settled.result.avgPrice} during the timeout-cancel race - using it instead of discarding it`);
+                return settled.result.avgPrice;
             }
-            // Re-check in BOTH cases: a failed cancel may mean it just fully filled; a successful
-            // cancel may have left a partial fill behind (cancelled_quantity > 0) that must not be
-            // reported as either a full fill or as nothing.
-            try {
-                const c = classify(await readRecord(), cancelFailed === null);
-                if (c.kind === 'full') {
-                    Log.log(`[Breeze] Order ${orderId} actually filled fully at ${c.price} during the timeout-cancel race - using it instead of discarding it`);
-                    return c.price;
-                }
-                if (c.kind === 'partial') throw partialError(c);
-            } catch (e: any) {
-                if (e instanceof BreezeTerminalOrderError) throw e;
-                Log.log(`[Breeze] Post-timeout re-check of ${orderId} failed:`, e);
+            if (settled.recheckError) {
+                if (settled.recheckError instanceof BreezeTerminalOrderError) throw settled.recheckError;
+                Log.log(`[Breeze] Post-timeout re-check of ${orderId} failed:`, settled.recheckError);
             }
-            if (cancelFailed) lastError = lastError ?? cancelFailed;
+            if (settled.cancelError) lastError = lastError ?? settled.cancelError;
         }
         throw new Error(`Breeze order ${orderId} did not fill within timeout${lastError ? ` (last error: ${(lastError as any)?.message ?? lastError})` : ''}`);
     }
