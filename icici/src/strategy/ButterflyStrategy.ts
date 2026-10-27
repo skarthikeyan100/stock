@@ -605,31 +605,13 @@ export default class ButterflyStrategy extends Strategy {
     private async getLiveQuantity(pos: BrokerButterflyPosition, leg: Leg): Promise<number | null> {
         if (!leg.tsym) return 0;
         try {
-            if (pos.broker === 'kite') {
-                const Kite = (await import('../kite/Kite')).default;
-                return Math.abs(await Kite.getInstance().getLiveNetQuantity(leg.tsym));
-            }
-            if (pos.broker === 'ant') {
-                const antExecutor = await import('../processes/order/antExecutor');
-                return Math.abs(await antExecutor.getLiveNetQuantity(leg.tsym));
-            }
-            if (pos.broker === 'breeze') {
-                const breezeExecutor = await import('../processes/order/breezeExecutor');
-                return Math.abs(await breezeExecutor.getLiveNetQuantity(leg.tsym));
-            }
-            if (pos.broker === 'prism') {
-                const prismExecutor = await import('../processes/order/prismExecutor');
-                const positions = await prismExecutor.getPositionsOnPrism();
-                const p = positions.find((x) => x.tradingSymbol === leg.tsym);
-                return Math.abs(p?.quantity ?? 0);
-            }
+            return Math.abs(await OrderClient.getInstance().getLiveQuantity(this.userId, pos.broker, leg.tsym));
         } catch (e) {
             // null = unknown, NOT zero: callers must never read a failed query as "flat" (that would mark a live
             // leg closed, or re-sell a leg that is already short).
             Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] getLiveQuantity failed for ${leg.tsym} - unknown:`, e);
             return null;
         }
-        return null; // broker not handled above
     }
 
     private async reconcileCloseWhateverIsOpen(pos: BrokerButterflyPosition): Promise<void> {

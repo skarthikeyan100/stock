@@ -17,7 +17,8 @@ async function confirmSessionGone(): Promise<void> {
   if (confirming) return;
   confirming = true;
   try {
-    const probe = await fetch('/auth/me', { credentials: 'include' });
+    // Bounded: a hung probe must not leave `confirming` set forever and swallow every later genuine 401.
+    const probe = await fetch('/auth/me', { credentials: 'include', signal: AbortSignal.timeout(8000) });
     if (probe.status === 401) unauthorizedHandler?.();
   } catch {
     /* network trouble is not a logged-out session */

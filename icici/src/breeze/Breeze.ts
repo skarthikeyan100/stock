@@ -151,13 +151,14 @@ class Breeze {
         }
     }
 
-    // Every public method that needs an active session calls this first.
-    // Waits for the on-disk session to finish loading, then throws if there still is none. Every API wrapper starts with this.
+    // Every public method that needs an active session calls this first: waits for the on-disk session to finish loading, then throws
+    // if there still is none.
     private async requireSession(): Promise<void> {
         await this.ensureSessionRestored();
         if (!this.apiSession) throw new Error('No active Breeze session. Please login first.');
     }
 
+    // Waits for the on-disk session load to settle (used directly by hasValidSession, which must not throw).
     private async ensureSessionRestored(): Promise<void> {
         if (this.sessionLoadPromise) {
             await this.sessionLoadPromise;

@@ -240,7 +240,7 @@ async function main() {
         path.join(DIST, 'processes', 'order'), path.join(DIST, 'processes', 'orderProcess.js'),
         path.join(DIST, 'ant'), path.join(DIST, 'kite'), path.join(DIST, 'breeze'), path.join(DIST, 'model'),
         path.join(DIST, 'util'), path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'), path.join(DIST, 'lib'),
-        ...topLevel('constants.js', 'symbols.js', 'orderList.js', 'nse_index.js'),
+        ...topLevel('constants.js', 'orderList.js', 'nse_index.js'),
     ], () => {
         log('dev', 'Restarting order (data/strategies/frontend untouched)...');
         void restartOrder();
@@ -260,7 +260,7 @@ async function main() {
         path.join(DIST, 'ant'), path.join(DIST, 'kite'), path.join(DIST, 'breeze'), path.join(DIST, 'model'),
         path.join(DIST, 'util'), path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'),
         path.join(DIST, 'middleware'), path.join(DIST, 'lib'),
-        ...topLevel('user.js', 'payout.js', 'tax.js', 'constants.js', 'monitor.js', 'decision.js', 'candle.js', 'nse_index.js', 'orderList.js', 'symbols.js'),
+        ...topLevel('user.js', 'payout.js', 'tax.js', 'constants.js', 'monitor.js', 'decision.js', 'candle.js', 'nse_index.js', 'orderList.js'),
     ], () => {
         log('dev', 'Restarting frontend (data/order/strategies untouched)...');
         void restartFrontend();
@@ -276,7 +276,7 @@ async function main() {
             path.join(DIST, 'ant'), path.join(DIST, 'model'), path.join(DIST, 'util'),
             path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'), path.join(DIST, 'lib'),
             path.join(DIST, 'kite'), path.join(DIST, 'breeze'),
-            ...topLevel('constants.js', 'nse_index.js', 'symbols.js', 'orderList.js'),
+            ...topLevel('constants.js', 'nse_index.js', 'orderList.js'),
         ],
         () => {
             log('dev', 'Restarting strategies (data/order untouched)...');

@@ -271,10 +271,9 @@ export interface BrokerExecutor {
     // bookkeeping.recordFill -> onFill -> strategy.updateTrade path. instrumentId
     // is the broker-agnostic token (ANT commonToken) already carried on Trade.token
     // for this position, needed by the pending-order tracker for the eventual fill.
-    // Optional on the interface for callers that can't assume it (a future
-    // broker executor need not implement it) - every current executor
-    // (Kite, ANT, Breeze, Prism) does implement it as of this writing.
-    squareOffLimit?(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: Exchange, limitPrice: number): Promise<{ orderId: string }>;
+    // Required: all four executors implement it.
+    // `quantity` (when present) is what was actually placed: Kite's never-short guard can clamp a sell below the request.
+    squareOffLimit(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: Exchange, limitPrice: number): Promise<{ orderId: string; quantity?: number }>;
 
     // Each broker's cancelOrderOnX implementation throws OrderAlreadyFilledError
     // (not a plain Error) specifically when its post-cancel status recheck

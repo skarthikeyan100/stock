@@ -1396,7 +1396,7 @@ class OrderBookkeeping {
         // here - multi-broker overlap for one tsym+user is only possible from
         // this change onward, so a legacy fieldless doc can never actually be
         // one half of a genuine two-broker collision.
-        // 'zerodha' = rows persisted before the Kite rename; match both spellings.
+        // 'zerodha' = rows persisted before the Kite rename (scripts/migrate-broker-names.js); match both spellings.
         const brokerOrLegacy = { $or: [{ broker: broker === 'kite' ? { $in: ['kite', /^\s*zerodha\s*$/i] } : broker }, { broker: { $exists: false } }] };
 
         // Every user who has ever bought this tsym on this broker - each

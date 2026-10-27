@@ -43,9 +43,6 @@ interface LegLineageDoc {
 // on success, or removed again on failure/capital-block so the slot can retry.
 const PENDING = '__pending__';
 
-// Gate-log throttle for LegManager's own gated log lines (e.g. "no
-// underlying price yet") - matches ContinuousStrategy's original
-// GATE_LOG_THROTTLE_MS value (5 min) so behavior is unchanged post-extraction.
 
 export interface Leg {
     legId: string;
@@ -290,7 +287,7 @@ export class LegManager {
     }
 
     private logGateOnce(reason: string): void {
-        (this.gateLog ??= new GateLogger(`[${this.deps.ownerType}]`)).log(reason);
+        (this.gateLog ??= new GateLogger(`[${this.deps.ownerType}]`, 5 * 60 * 1000)).log(reason);
     }
 
     // Fire-and-forget, same convention as bookkeeping.ts's notifications/

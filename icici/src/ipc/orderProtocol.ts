@@ -62,6 +62,9 @@ export type OrderRequestType =
     // resting from before the incident, oversubscribing the sell quantity and triggering a
     // broker margin-shortfall rejection, not a broker netting bug) before placing a duplicate.
     | 'getPendingSells'
+    // Live net position of one contract on one broker, read inside `order` (where the broker sessions live). Strategies used to import
+    // the executors directly and query through a second, unmanaged session in their own process.
+    | 'getLiveQuantity'
     // ANT-specific (not broker-generic like the 'Bare' family above, which
     // has no ant branch) - used by TopStockOptionsOpeningGapStrategy, which
     // runs in the separate `strategies` process and so cannot call

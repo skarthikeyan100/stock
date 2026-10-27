@@ -161,19 +161,18 @@ export async function squareOffLimitChunked(
     // Same exchange-aware default as buyChunked above.
     freezeQty: number = exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY
 ): Promise<{ orderIds: string[] }> {
-    if (!executor.squareOffLimit) {
-        throw new Error(`squareOffLimitChunked: broker '${executor.brokerName}' does not support a limit-priced square-off`);
-    }
     const chunks = splitIntoFreezeQtyChunks(quantity, freezeQty);
     const orderIds: string[] = [];
     let placedQty = 0;
     for (let i = 0; i < chunks.length; i++) {
         await throttleOrderPlacement();
         try {
-            const { orderId } = await executor.squareOffLimit(userId, tradingSymbol, instrumentId, chunks[i], exchange, limitPrice);
-            orderIds.push(orderId);
-            placedQty += chunks[i];
-            Log.log(`[order] squareOffLimitChunked: chunk ${i + 1}/${chunks.length} placed qty=${chunks[i]} @ ${limitPrice} for ${userId}`);
+            const placed = await executor.squareOffLimit(userId, tradingSymbol, instrumentId, chunks[i], exchange, limitPrice);
+            // The quantity actually placed (Kite's never-short guard may clamp it), not the requested chunk size.
+            const placedChunkQty = placed.quantity ?? chunks[i];
+            orderIds.push(placed.orderId);
+            placedQty += placedChunkQty;
+            Log.log(`[order] squareOffLimitChunked: chunk ${i + 1}/${chunks.length} placed qty=${placedChunkQty}${placedChunkQty < chunks[i] ? ` (clamped from ${chunks[i]})` : ''} @ ${limitPrice} for ${userId}`);
         } catch (e: any) {
             throw Object.assign(new Error(
                 `squareOffLimitChunked: chunk ${i + 1}/${chunks.length} failed to place after placing ${placedQty}/${quantity} - ` +

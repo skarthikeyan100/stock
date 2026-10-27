@@ -48,19 +48,22 @@ export function useEventSource(url: string, { enabled = true, onMessage, onOpen,
         es = null;
         if (disposed) return;
         failCount++;
-        const base = Math.min(BASE_DELAY_MS * 2 ** (failCount - 1), MAX_DELAY_MS);
-        const retry = () => {
+        const retryAfter = (count: number) => {
+          const base = Math.min(BASE_DELAY_MS * 2 ** (count - 1), MAX_DELAY_MS);
           if (!disposed) timer = setTimeout(connect, base * (0.75 + Math.random() * 0.5));
         };
-        if (!authProbeUrl) { retry(); return; }
+        if (!authProbeUrl) { retryAfter(failCount); return; }
         fetch(authProbeUrl, { credentials: 'include' })
           .then((res) => {
             // Session gone: hand over to the login screen, but keep probing at the slow pace - a consumer that is not tied to the
             // login state (it has no `enabled` flag) must pick the stream up again after the user logs back in.
-            if (res.status === 401) { notifyUnauthorized(); failCount = Math.max(failCount, 6); }
-            retry();
+            if (res.status === 401) {
+              notifyUnauthorized();
+              failCount = Math.max(failCount, 6);
+            }
+            retryAfter(failCount);
           })
-          .catch(retry); // network down: keep trying
+          .catch(() => retryAfter(failCount)); // network down: keep trying
       };
     };
     connect();

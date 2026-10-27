@@ -32,7 +32,7 @@ import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo, findPendingOrd
 import { pollPendingAntLimitOrders, loadPendingAntLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingAntOrdersForSymbol, onCancelled as onPendingAntCancelled } from './order/pendingAntLimitOrders';
 import { pollPendingPrismLimitOrders, loadPendingPrismLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingPrismOrdersForSymbol, onCancelled as onPendingPrismCancelled } from './order/pendingPrismLimitOrders';
 import * as antExecutor from './order/antExecutor';
-import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, placeLimitSellBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getMarketableBreezeBuyPrice, tsymFor, enterShortOnBreeze, buyToCloseOnBreeze } from './order/breezeExecutor';
+import { buyIndexOnBreeze, squareOffOnBreeze, marketBuyBareOnBreeze, marketSellBareOnBreeze, placeLimitBuyBareOnBreeze, placeLimitSellBareOnBreeze, cancelOrderOnBreeze, getContractByPriceRangeOnBreeze, getMarketableBreezeBuyPrice, tsymFor, enterShortOnBreeze, buyToCloseOnBreeze, getLiveNetQuantity as getLiveNetQuantityOnBreeze } from './order/breezeExecutor';
 import { pollPendingBreezeLimitOrders, loadPendingBreezeLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, onCancelled as onPendingBreezeCancelled } from './order/breezePendingLimitOrders';
 import { buyChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
@@ -807,6 +807,17 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
+            case 'getLiveQuantity': {
+                const { broker, tradingSymbol } = req.payload as { broker: string; tradingSymbol: string };
+                let result: number;
+                if (broker === 'kite') result = await Kite.getInstance().getLiveNetQuantity(tradingSymbol);
+                else if (broker === 'ant') result = await antExecutor.getLiveNetQuantity(tradingSymbol);
+                else if (broker === 'breeze') result = await getLiveNetQuantityOnBreeze(tradingSymbol);
+                else if (broker === 'prism') result = Number((await prismExecutor.getPositionsOnPrism()).find((p) => p.tradingSymbol === tradingSymbol)?.quantity ?? 0);
+                else throw new Error(`getLiveQuantity: unknown broker '${broker}'`);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
             case 'getPendingSells': {
                 // Broker-uniform: dispatch to whichever tracker owns this broker's pending
                 // orders, filter to SELL generically here (not per-tracker) since all four
@@ -1205,10 +1216,11 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
         }
     } catch (e: any) {
         Log.log('[order] Request failed:', req.type, e);
-        // [NOT_PLACED] marks a definite refusal (nothing reached the broker or the broker answered REJECTED), so a strategy can safely
+        // [NOT_PLACED] marks a definite refusal (nothing reached the broker), so a strategy can safely
         // re-arm; any other failure (timeout, transport error) is ambiguous - the order may be live - and must not be retried blind.
         const message = e?.message ?? String(e);
-        const definite = !!(e?.orderNotPlaced || e?.notPlaced) || /\bREJECTED\b/.test(message);
+        // Structured flags only, and never when part of the request already filled (a chunked run that lost a later chunk).
+        const definite = !!(e?.orderNotPlaced || e?.notPlaced) && !e?.partial && !(Number(e?.filledQuantity) > 0);
         return { kind: 'response', id: req.id, ok: false, error: `${definite ? NOT_PLACED_TAG + ' ' : ''}${message}` };
     }
 }
