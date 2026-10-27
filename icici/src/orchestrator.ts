@@ -308,5 +308,12 @@ async function shutdown(signal: string) {
 }
 process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 process.on('SIGINT', () => { void shutdown('SIGINT'); });
-process.on('uncaughtException', (e) => log('error', 'uncaughtException (kept running):', e));
+// If our stdout/stderr pipe is gone (Ctrl+C also kills `| tee`), logging the resulting EPIPE would raise another EPIPE
+// via the handlers below, looping forever and starving shutdown(). Swallow errors on the std streams themselves.
+process.stdout.on('error', () => { /* pipe closed - nothing to log to */ });
+process.stderr.on('error', () => { /* pipe closed - nothing to log to */ });
+process.on('uncaughtException', (e) => {
+    if ((e as NodeJS.ErrnoException)?.code === 'EPIPE') return;
+    log('error', 'uncaughtException (kept running):', e);
+});
 process.on('unhandledRejection', (e) => log('error', 'unhandledRejection (kept running):', e));
