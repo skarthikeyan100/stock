@@ -33,7 +33,7 @@ export interface BrokerOrderAdapter<T extends PendingOrder, Snapshot, B extends 
     collection: string;
     /** The token the position is keyed by on the strategy side (Prism/Kite: instrumentId, Breeze: antToken). */
     tokenOf(order: T): string;
-    /** False skips the whole poll tick quietly (e.g. no valid broker session). */
+    /** False skips the whole poll tick with an ALERT (re-logged every 30 min): the broker cannot be read, e.g. no valid session. */
     ready?(): Promise<boolean>;
     /** Log prefix, e.g. 'Prism'. */
     label: string;
@@ -48,7 +48,15 @@ export interface BrokerOrderAdapter<T extends PendingOrder, Snapshot, B extends 
 
 export type CancelledListener<B extends TrackerBroker = TrackerBroker> = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: B, orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
 
-const POLL_STUCK_MS = 120_000;
+// Every broker call in a poll is bounded, so one stalled socket cannot hold pollInFlight (and every later tick) forever.
+const BROKER_CALL_TIMEOUT_MS = 45_000;
+// A not-ready broker is re-alerted at most this often.
+const NOT_READY_REALERT_MS = 30 * 60_000;
+function bounded<V>(what: string, call: Promise<V>): Promise<V> {
+    let timer: NodeJS.Timeout;
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} timed out after ${BROKER_CALL_TIMEOUT_MS}ms`)), BROKER_CALL_TIMEOUT_MS); });
+    return Promise.race([call, timeout]).finally(() => clearTimeout(timer));
+}
 
 export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends TrackerBroker = TrackerBroker> {
     private readonly pending = new Map<string, T>();
@@ -56,8 +64,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     private readonly noPriceAlerted = new Set<string>();
     private readonly cancelledListeners: CancelledListener<B>[] = [];
     private pollInFlight = false;
-    private pollStartedAt = 0;
-    private notReadyAlerted = false;
+    private notReadyAlertedAt = 0;
 
     constructor(private readonly adapter: BrokerOrderAdapter<T, Snapshot, B>) {}
 
@@ -95,14 +102,8 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     };
 
     poll = async (): Promise<void> => {
-        // Overlapping polls would double-process (and double-notify) the same order - but a poll hung on a stalled broker
-        // call must not block every later tick forever, so one running past POLL_STUCK_MS is abandoned.
-        if (this.pollInFlight) {
-            if (Date.now() - this.pollStartedAt < POLL_STUCK_MS) return;
-            Log.log(`[order] ALERT: ${this.adapter.label} pending-order poll stuck for over ${POLL_STUCK_MS / 1000}s - starting a new one`);
-        }
+        if (this.pollInFlight) return; // overlapping polls would double-process (and double-notify) the same order
         this.pollInFlight = true;
-        this.pollStartedAt = Date.now();
         try {
             await this.pollOnce();
         } finally {
@@ -111,24 +112,27 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     };
 
     private async pollOnce(): Promise<void> {
-        if (this.pending.size === 0) return;
+        if (this.pending.size === 0) {
+            this.notReadyAlertedAt = 0;
+            return;
+        }
         const { label } = this.adapter;
         try {
-            if (this.adapter.ready && !(await this.adapter.ready())) {
-                if (!this.notReadyAlerted) {
-                    this.notReadyAlerted = true;
+            if (this.adapter.ready && !(await bounded('ready', this.adapter.ready()))) {
+                if (Date.now() - this.notReadyAlertedAt >= NOT_READY_REALERT_MS) {
+                    this.notReadyAlertedAt = Date.now();
                     Log.log(`[order] ALERT: ${label} not ready (no valid session?) - ${this.pending.size} pending limit order(s) are NOT being monitored`);
                 }
                 return;
             }
-            this.notReadyAlerted = false;
+            this.notReadyAlertedAt = 0;
         } catch (e) {
             Log.log(`[order] poll pending ${label} limit orders: readiness check failed:`, e);
             return;
         }
         let snapshot: Snapshot;
         try {
-            snapshot = (await this.adapter.fetchSnapshot?.()) as Snapshot;
+            snapshot = (this.adapter.fetchSnapshot ? await bounded('fetchSnapshot', this.adapter.fetchSnapshot()) : undefined) as Snapshot;
         } catch (e) {
             Log.log(`[order] poll pending ${label} limit orders: fetch failed:`, e);
             return;
@@ -145,7 +149,8 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
 
     private async pollOrder(orderId: string, order: T, snapshot: Snapshot): Promise<void> {
         const { label, broker } = this.adapter;
-        const { status, fillPrice, filledQuantity, skipListener } = await this.adapter.statusOf(order, snapshot);
+        const { status, fillPrice, filledQuantity, skipListener } = await bounded('statusOf', this.adapter.statusOf(order, snapshot));
+        if (this.pending.has(orderId) === false) return; // untracked (e.g. cancelled by the caller) while the broker call was out
         // Books `qty` filled at `price`. The order is untracked only AFTER the fill is booked, so a recordFill
         // failure is retried on the next poll (recordFill dedupes on brokerOrderId).
         const bookFill = async (qty: number, price: number) => {
