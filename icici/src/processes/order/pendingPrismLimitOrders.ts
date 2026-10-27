@@ -16,7 +16,12 @@ const tracker = new PendingOrderTracker<PendingPrismLimitOrder, any[], 'prism'>(
     label: 'Prism',
     tokenOf: (order) => order.instrumentId,
     fetchSnapshot: () => Prism.getInstance().getOrderBook(),
-    statusOf: (order, orderBook) => Prism.getInstance().getOrderStatus(order.orderId, orderBook),
+    statusOf: async (order, orderBook) => {
+        const res = await Prism.getInstance().getOrderStatus(order.orderId, orderBook);
+        // A cancelled order after the close is left to tomorrow's reconcile() instead of re-placed.
+        const cancelled = res.status === 'CANCELLED' || res.status === 'CANCELED';
+        return cancelled && isPastMarketClose() ? { ...res, skipListener: true } : res;
+    },
     rowPrice: (order, orderBook) => {
         const row = orderBook.find((o: any) => o.norenordno === order.orderId);
         return Number(row?.avgprc ?? row?.flprc ?? row?.avgPrice);
@@ -30,7 +35,6 @@ const tracker = new PendingOrderTracker<PendingPrismLimitOrder, any[], 'prism'>(
         exchange: row.exchange,
         action: row.action ?? 'Sell',
     }),
-    isPastClose: isPastMarketClose,
 });
 
 export const onCancelled = tracker.onCancelled;

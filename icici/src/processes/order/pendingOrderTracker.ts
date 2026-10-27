@@ -23,7 +23,7 @@ export interface OrderStatus {
     status: string; // COMPLETE | REJECTED | CANCELLED | CANCELED | anything else = still pending
     fillPrice?: number;
     filledQuantity?: number;
-    /** Overrides the adapter's after-close rule: true = do not tell the cancelled listeners for this terminal state. */
+    /** True = do not tell the cancelled listeners about this terminal state (e.g. an after-close cancel/expiry, left to the next morning's reconcile). */
     skipListener?: boolean;
 }
 
@@ -44,11 +44,11 @@ export interface BrokerOrderAdapter<T extends PendingOrder, Snapshot, B extends 
     rowPrice?(order: T, snapshot: Snapshot): number;
     /** Rebuilds an order from its persisted document. */
     fromDoc(row: any): T;
-    /** Default rule: a CANCELLED order after the close is left to the next morning's reconcile instead of re-placed. A status's own skipListener, when set, replaces this rule. */
-    isPastClose?(): boolean;
 }
 
 export type CancelledListener<B extends TrackerBroker = TrackerBroker> = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: B, orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
+
+const POLL_STUCK_MS = 120_000;
 
 export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends TrackerBroker = TrackerBroker> {
     private readonly pending = new Map<string, T>();
@@ -56,6 +56,8 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     private readonly noPriceAlerted = new Set<string>();
     private readonly cancelledListeners: CancelledListener<B>[] = [];
     private pollInFlight = false;
+    private pollStartedAt = 0;
+    private notReadyAlerted = false;
 
     constructor(private readonly adapter: BrokerOrderAdapter<T, Snapshot, B>) {}
 
@@ -93,8 +95,14 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     };
 
     poll = async (): Promise<void> => {
-        if (this.pollInFlight) return; // overlapping polls would double-process (and double-notify) the same order
+        // Overlapping polls would double-process (and double-notify) the same order - but a poll hung on a stalled broker
+        // call must not block every later tick forever, so one running past POLL_STUCK_MS is abandoned.
+        if (this.pollInFlight) {
+            if (Date.now() - this.pollStartedAt < POLL_STUCK_MS) return;
+            Log.log(`[order] ALERT: ${this.adapter.label} pending-order poll stuck for over ${POLL_STUCK_MS / 1000}s - starting a new one`);
+        }
         this.pollInFlight = true;
+        this.pollStartedAt = Date.now();
         try {
             await this.pollOnce();
         } finally {
@@ -106,7 +114,14 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
         if (this.pending.size === 0) return;
         const { label } = this.adapter;
         try {
-            if (this.adapter.ready && !(await this.adapter.ready())) return;
+            if (this.adapter.ready && !(await this.adapter.ready())) {
+                if (!this.notReadyAlerted) {
+                    this.notReadyAlerted = true;
+                    Log.log(`[order] ALERT: ${label} not ready (no valid session?) - ${this.pending.size} pending limit order(s) are NOT being monitored`);
+                }
+                return;
+            }
+            this.notReadyAlerted = false;
         } catch (e) {
             Log.log(`[order] poll pending ${label} limit orders: readiness check failed:`, e);
             return;
@@ -181,8 +196,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             this.untrack(orderId);
             const remainingQty = order.quantity - filledQty;
             if (remainingQty <= 0) return;
-            const isCancelled = status === 'CANCELLED' || status === 'CANCELED';
-            if (skipListener ?? (isCancelled && !!this.adapter.isPastClose?.())) {
+            if (skipListener) {
                 Log.log(`[order] Pending ${label} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close (or expired) - leaving re-placement to tomorrow's reconcile()`);
             } else {
                 const reason = status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
