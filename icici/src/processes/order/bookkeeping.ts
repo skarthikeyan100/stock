@@ -78,6 +78,7 @@ interface UserSettings {
 // add() is a no-op, and a single delete() would wipe out both) - that's
 // exactly the gap this whole fix closes, so this must be a per-user list.
 interface PendingOrder {
+    filledInContext?: boolean; // a fill booked inside the owning request already consumed part of estimatedValue
     estimatedLots: number;  // always 1: a conservative reservation - real
                              // quantity isn't always known yet (see buyIndex/
                              // antBuyIndex, which resolve it inside the
@@ -408,9 +409,17 @@ class OrderBookkeeping {
     // found (e.g. broker omitted, or every pending caller for this user left
     // it undefined) - matches the old plain-FIFO behavior for single-broker
     // users.
-    releasePending(user: string, broker?: string): void {
+    releasePending(user: string, broker?: string, filledValue?: number): void {
         const ctx = this.reservationContext.getStore();
         if (ctx && ctx.user === user) {
+            // A chunked request books one fill per chunk: consume only that chunk's value so the unfilled remainder stays reserved
+            // (releasing it all on the first chunk let a concurrent request pass the investment gate against that headroom). The
+            // caller releases the residual once the request returns (placeOrderWithPendingGuard).
+            if (filledValue !== undefined && Number.isFinite(filledValue) && filledValue > 0 && ctx.entry.estimatedValue > filledValue) {
+                ctx.entry.estimatedValue -= filledValue;
+                ctx.entry.filledInContext = true;
+                return;
+            }
             this.releaseReservation(user, ctx.entry);
             return;
         }
@@ -801,8 +810,9 @@ class OrderBookkeeping {
         const notified = this.notifiedThresholds.get(user) ?? new Set<number>();
         for (const [threshold, type] of [[100, 'drawdown_breach'], [80, 'drawdown_warning']] as const) {
             if (pctOfLimit >= threshold && !notified.has(threshold)) {
-                notified.add(100);
-                notified.add(80);
+                // Only what was actually crossed: an 80% warning must not mark the 100% breach as already sent.
+                notified.add(threshold);
+                if (threshold === 100) notified.add(80); // a breach implies the warning was passed
                 Mongo.getInstance()?.db.collection('notifications').insertOne({
                     user,
                     type,
@@ -900,8 +910,10 @@ class OrderBookkeeping {
             // order (exit path + poller) would otherwise both pass has() and both book it.
             this.processedFillIds.add(id);
             try {
+                // Let an in-flight raw-doc insert for this order settle so the lookup below does not race the write (bounded: a hung
+                // driver call must not wedge the claimed id).
                 const inflight = this.pendingFillInserts.get(id);
-                if (inflight) await inflight;
+                if (inflight) await Promise.race([inflight, new Promise((r) => setTimeout(r, 5000))]);
                 // processedFillIds dies with the process; the raw fill doc does not. A restart used to forget it, so the same broker
                 // order was booked a second time (real 2026-10-27: one Kite sell sat in Mongo under two users).
                 if (await this.fillAlreadyStored(tradeEvent)) {
@@ -929,8 +941,6 @@ class OrderBookkeeping {
             if (id) {
                 this.processedFillIds.delete(id);
                 this.failedBookingFillIds.add(id);
-                // Bounded: a retry that never comes must not grow this for the whole session (oldest entries go first).
-                if (this.failedBookingFillIds.size > 2000) this.failedBookingFillIds.delete(this.failedBookingFillIds.values().next().value as string);
             }
             throw e;
         }
@@ -1061,13 +1071,15 @@ class OrderBookkeeping {
             });
             const oid = tradeEvent.brokerOrderId;
             if (p && oid) {
-                const tracked = p.finally(() => { if (this.pendingFillInserts.get(oid) === tracked) this.pendingFillInserts.delete(oid); });
+                // Chained with any earlier insert for the same order so a retry waits for all of them, not just the latest.
+                const prior = this.pendingFillInserts.get(oid);
+                const tracked: Promise<unknown> = (prior ? Promise.all([prior, p]) : p).finally(() => { if (this.pendingFillInserts.get(oid) === tracked) this.pendingFillInserts.delete(oid); });
                 this.pendingFillInserts.set(oid, tracked);
             }
         }
 
         if (tradeEvent.action == 'Buy') {
-            this.releasePending(tradeEvent.user || 'Default', tradeEvent.broker);
+            this.releasePending(tradeEvent.user || 'Default', tradeEvent.broker, tradeEvent.quantity * tradeEvent.price);
             const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user && t.broker == tradeEvent.broker);
             if (index == -1) {
                 this.trades.push(tradeEvent);
@@ -1481,21 +1493,18 @@ class OrderBookkeeping {
                 Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) broker quantity is ${brokerQuantity} (not a long position) but Mongo restores ${totalRestoredQty} - restoring NOTHING, manual review required`);
                 return [];
             }
-            // More restored than the broker holds (typically a Sell fill doc that never reached Mongo, or an exit made outside this
-            // system). The broker is ground truth: cap the aggregate at what it holds, so exits are never sized past the real
-            // position, but keep the position monitored. The missing exit is assumed to have consumed the OLDEST lots first (same
-            // FIFO netFifoLots applies), so the newest entries are kept whole and the oldest trimmed. Rows without a usable
-            // entryTime sort as oldest (trimmed first).
-            Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) restores to ${totalRestoredQty} across ${restored.length} user(s) but the broker holds only ${brokerQuantity} - capping at the broker quantity, manual review required`);
-            const at = (t: Trade) => { const ms = new Date(t.entryTime as any).getTime(); return Number.isFinite(ms) ? ms : 0; };
-            restored.sort((x, y) => at(y) - at(x)); // newest first
-            let remaining = brokerQuantity;
-            for (const t of restored) {
-                t.quantity = Math.min(t.quantity, remaining);
-                remaining -= t.quantity;
+            if (restored.length > 1) {
+                // Several owners and the missing exit cannot be attributed to any one of them: guessing would size one user's exits
+                // from another's lots. Restore nothing and leave it for review.
+                Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) restores to ${totalRestoredQty} across ${restored.length} users but the broker holds only ${brokerQuantity} - restoring NOTHING for this contract, manual review required`);
+                return [];
             }
+            // One owner, more restored than the broker holds (typically a Sell fill doc that never reached Mongo, or an exit made
+            // outside this system). The broker is ground truth: cap at what it holds, so exits are never sized past the real
+            // position, but keep the position monitored rather than leaving real exposure with no stop or target.
+            Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) restores to ${totalRestoredQty} but the broker holds only ${brokerQuantity} - capping at the broker quantity, manual review required`);
+            restored[0].quantity = brokerQuantity;
             totalRestoredQty = brokerQuantity;
-            for (let i = restored.length - 1; i >= 0; i--) if (restored[i].quantity <= 0) restored.splice(i, 1);
         }
         if (restored.length === 0) {
             Log.log(`[order] loadOpenTradesFromBroker: WARNING - broker reports an open position on ${tsym} (qty=${brokerQuantity}) with no matching Mongo Buy doc for any user - leaving untracked`);

@@ -1,4 +1,5 @@
 import Log from '../../util/Log';
+import { getSpotLtp } from './spotQuote';
 import Kite, { roundToTick } from '../../kite/Kite';
 import KiteContractMaster from '../../kite/KiteContractMaster';
 import AntContractMaster from '../../ant/AntContractMaster';
@@ -282,7 +283,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade> {
     }
 
     const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
-    return buyIndexOnKite({ userId: req.userId, index: req.index, niftyLtp: 0, right: req.right, quantity, targetPoints: req.targetPoints, stopLossPoints: req.stopLossPoints });
+    return buyIndexOnKite({ userId: req.userId, index: req.index, niftyLtp: await getSpotLtp(index), right: req.right, quantity, targetPoints: req.targetPoints, stopLossPoints: req.stopLossPoints });
 }
 
 async function buyContractOnKite(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', targetPoints?: number, stopLossPoints?: number): Promise<Trade> {

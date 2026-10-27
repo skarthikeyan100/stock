@@ -345,7 +345,7 @@ async function resolveOpenBreezeContract(tsym: string, existingToken: string | u
 }
 
 export async function squareOffOnBreeze(userId: string, tsym: string, quantity: number): Promise<Trade> {
-    const pendingKey = `${userId}:${tsym}`;
+    const pendingKey = `breeze:${userId}:${tsym}`;
     if (bookkeeping.pendingSquareOffs.has(pendingKey)) {
         Log.log(`[order] squareOffOnBreeze: square-off for ${tsym} (${userId}) already in flight - ignoring duplicate call`);
         throw new Error(`Square-off for ${tsym} is already in progress for ${userId}`);
@@ -548,10 +548,19 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                         }
                         if (fillInfo.filledQuantity <= 0) throw new Error('not filled');
                         Log.log(`[order] Square-off order ${orderId} actually filled qty=${fillInfo.filledQuantity} at ${fillInfo.avgPrice} just as cancel was attempted - recording it${fillInfo.filledQuantity < remainingQty ? ' and retrying the genuine remainder' : ''}`);
-                        await recordSellFill(orderId, fillInfo.avgPrice, fillInfo.filledQuantity);
+                        // The fill is confirmed real: count it first, then book it. A bookkeeping failure here is NOT a cancel failure -
+                        // falling through to a fresh sell for the same quantity would double-sell, so stop and surface it.
                         totalFilledQty += fillInfo.filledQuantity;
                         totalFilledValue += fillInfo.filledQuantity * fillInfo.avgPrice;
                         remainingQty -= fillInfo.filledQuantity;
+                        try {
+                            await recordSellFill(orderId, fillInfo.avgPrice, fillInfo.filledQuantity);
+                        } catch (bookErr) {
+                            Log.log(`[order] ALERT: Breeze square-off order ${orderId} for ${tsym} (${userId}) filled qty=${fillInfo.filledQuantity} but booking it failed - stopping (no fresh sell), reconcile must pick it up:`, bookErr);
+                            lastErr = bookErr;
+                            stuck = true;
+                        }
+                        if (stuck) break;
                     } catch {
                         Log.log(`[order] Failed to cancel stale square-off order ${orderId} (and it did not actually fill):`, cancelErr);
                     }

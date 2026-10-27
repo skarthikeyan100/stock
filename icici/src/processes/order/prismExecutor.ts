@@ -7,6 +7,7 @@ import * as exitMonitor from './exitMonitor';
 import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit } from './BrokerExecutor';
 import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol } from './pendingPrismLimitOrders';
 import { sleep } from '../../util/sleep';
+import { roundToTick } from '../../kite/Kite';
 
 // Prism/Shoonya's contract-by-price-range order path - the secondary/legacy
 // broker path (Kite is primary, see kiteExecutor.ts). `Prism.getInstance()`
@@ -96,24 +97,37 @@ export async function refreshTradeList(): Promise<any> {
 
 export async function sellContract(userId: string, contract: string, quantity: number, price?: number): Promise<any> {
     Log.log(`[order] Selling (Prism) ${contract} qty=${quantity} for ${userId}`);
-    // Resolve price up front (rather than relying on sellContract's own
-    // fallback, which doesn't return it) so bookkeeping's P&L calc has a real
-    // sell price to work with.
-    const resolvedPrice = price ?? (await Prism.getInstance().getStockOptionQuote(contract)).ltp;
-    const { filledQty } = await Prism.getInstance().sellContract(contract, quantity, resolvedPrice, userId);
+    const prism = Prism.getInstance();
+    // Marketable limit (1% under the quote) and a verified fill. This used to place at the exact LTP and record the sale as filled
+    // after a flat delay with no status check, so an exit that never filled was booked as closed (a phantom close).
+    const limitPrice = price ?? roundToTick((await prism.getStockOptionQuote(contract)).ltp * 0.99);
+    const token = await prism.getToken(contract);
+    const exchange: 'NFO' | 'BFO' = contract.startsWith('SENSEX') ? 'BFO' : 'NFO';
+    const { orderId } = await prism.placeLimitSellBare(contract, token, quantity, limitPrice, userId, exchange);
 
-    const trade = new Trade();
-    trade.tsym = contract;
-    trade.token = await Prism.getInstance().getToken(contract);
-    trade.quantity = filledQty;
-    trade.price = resolvedPrice;
-    trade.action = 'Sell';
-    trade.status = 'COMPLETE';
-    trade.user = userId;
-    trade.broker = 'prism';
-
-    await bookkeeping.recordFill(trade);
-    return trade;
+    const book = async (qty: number, px: number): Promise<Trade> => {
+        const trade = new Trade();
+        trade.tsym = contract;
+        trade.token = token;
+        trade.quantity = qty;
+        trade.price = px;
+        trade.action = 'Sell';
+        trade.status = 'COMPLETE';
+        trade.user = userId;
+        trade.broker = 'prism';
+        trade.brokerOrderId = orderId;
+        await bookkeeping.recordFill(trade);
+        return trade;
+    };
+    let fillPrice: number;
+    try {
+        fillPrice = await waitForPrismBuyFill(orderId, contract, userId);
+    } catch (e: any) {
+        // A partial fill before the cancel is real money: book it, then fail the rest so the caller retries what is still open.
+        if (e?.partial && e.filledQuantity > 0 && e.averagePrice > 0) await book(e.filledQuantity, e.averagePrice);
+        throw e;
+    }
+    return book(quantity, fillPrice);
 }
 
 // --- BrokerExecutor surface - see BrokerExecutor.ts ---
@@ -179,6 +193,15 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
         if (!finalCheck.fillPrice) throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window but reported no fill price - manual review required`);
         Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window - treating as filled at ${finalCheck.fillPrice}`);
         return finalCheck.fillPrice;
+    }
+    // Cancelled with a partial fill: surface the filled part on the error (same convention the other brokers' fill waits use:
+    // filledQuantity/averagePrice) instead of discarding it as "not filled".
+    const partialQty = Number(finalCheck.filledQuantity ?? 0);
+    if (partialQty > 0) {
+        Log.log(`[order] ALERT: Prism order ${orderId} (${tradingSymbol}, ${userId}) cancelled after a PARTIAL fill of ${partialQty} - reported on the error, caller must book it`);
+        throw Object.assign(new Error(`Prism order ${orderId} (${tradingSymbol}, ${userId}) partially filled ${partialQty} before cancel`), {
+            filledQuantity: partialQty, averagePrice: Number(finalCheck.fillPrice ?? 0), partial: true,
+        });
     }
     throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) did not fill within ${BUY_FILL_POLL_ATTEMPTS * BUY_FILL_POLL_DELAY_MS}ms - treating as not filled`);
 }
@@ -303,6 +326,21 @@ export async function buyToClosePrism(userId: string, tradingSymbol: string, ins
 }
 
 export async function squareOffOnPrism(userId: string, tsym: string, quantity: number): Promise<Trade> {
+    // Same in-flight guard as the other brokers (broker-prefixed key), so a manual square-off and an exitMonitor stop cannot both sell.
+    const pendingKey = `prism:${userId}:${tsym}`;
+    if (bookkeeping.pendingSquareOffs.has(pendingKey)) {
+        Log.log(`[order] squareOffOnPrism: square-off for ${tsym} (${userId}) already in flight - ignoring duplicate call`);
+        throw new Error(`Square-off for ${tsym} is already in progress for ${userId}`);
+    }
+    bookkeeping.pendingSquareOffs.add(pendingKey);
+    try {
+        return await squareOffOnPrismUnguarded(userId, tsym, quantity);
+    } finally {
+        bookkeeping.pendingSquareOffs.delete(pendingKey);
+    }
+}
+
+async function squareOffOnPrismUnguarded(userId: string, tsym: string, quantity: number): Promise<Trade> {
     const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
     if (existing?.prismCoverOrderNo) {
         Log.log(`[order] Square-off ${tsym} qty=${quantity} for ${userId} via Prism exitCoverOrder (${existing.prismCoverOrderNo})`);

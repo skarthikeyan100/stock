@@ -23,6 +23,8 @@ interface PendingPrismLimitOrder {
 }
 
 const pending = new Map<string, PendingPrismLimitOrder>();
+// Orders already ALERTed for a missing fill price (logged once, not every poll).
+const noPriceAlerted = new Set<string>();
 
 // See pendingLimitOrders.ts's cancelledListeners for why this exists.
 type CancelledListener = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: 'prism', orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
@@ -121,24 +123,39 @@ async function pollPendingPrismLimitOrdersOnce(): Promise<void> {
                 await bookkeeping.recordFill(trade);
                 Log.log(`[order] Pending Prism limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} qty=${qty} at ${trade.price}`);
             };
+            // The order book row's own average price, for when getOrderStatus reports no fill price.
+            const rowPrice = (): number => {
+                const row = orderBook.find((o: any) => o.norenordno === orderId);
+                return Number(row?.avgprc ?? row?.flprc ?? row?.avgPrice);
+            };
             if (status === 'COMPLETE') {
-                if (!fillPrice) {
-                    untrackPendingPrismLimitOrder(orderId);
-                    Log.log(`[order] Pending Prism limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) COMPLETE but no fill price reported - manual review required`);
+                const price = fillPrice && fillPrice > 0 ? fillPrice : rowPrice();
+                if (!(price > 0)) {
+                    // Kept tracked, never dropped: the fill is real and unbooked, so the next poll retries once the book carries a price.
+                    if (!noPriceAlerted.has(orderId)) {
+                        noPriceAlerted.add(orderId);
+                        Log.log(`[order] ALERT: Pending Prism limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) COMPLETE but no fill price reported - KEPT in tracking, retrying each poll, manual review required`);
+                    }
                     continue;
                 }
-                await bookFill(order.quantity, fillPrice);
+                await bookFill(order.quantity, price);
+                noPriceAlerted.delete(orderId);
                 untrackPendingPrismLimitOrder(orderId);
             } else if (status === 'REJECTED' || status === 'CANCELLED' || status === 'CANCELED') {
                 // A cancelled order can carry a partial fill (fillshares > 0): book it, report only the remainder.
                 const filledQty = Math.min(order.quantity, Number(filledQuantity ?? 0));
                 if (filledQty > 0) {
-                    const row = orderBook.find((o: any) => o.norenordno === orderId);
-                    const partialPrice = Number(row?.avgprc ?? row?.flprc ?? row?.avgPrice);
+                    const partialPrice = rowPrice();
                     if (partialPrice > 0) {
                         await bookFill(filledQty, partialPrice);
+                        noPriceAlerted.delete(orderId);
                     } else {
-                        Log.log(`[order] ALERT: Prism order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled with ${filledQty} filled but no fill price - not booked, manual review required`);
+                        // Kept tracked so a later poll can book the partial once a price shows; untracking here lost the fill.
+                        if (!noPriceAlerted.has(orderId)) {
+                            noPriceAlerted.add(orderId);
+                            Log.log(`[order] ALERT: Prism order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled with ${filledQty} filled but no fill price - KEPT in tracking, retrying each poll, manual review required`);
+                        }
+                        continue;
                     }
                 }
                 untrackPendingPrismLimitOrder(orderId);

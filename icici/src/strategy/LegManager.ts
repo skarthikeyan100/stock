@@ -902,9 +902,11 @@ export class LegManager {
                 this.logLegStatus(childLeg);
             });
         } catch (e: any) {
-            leg.childByLevel.delete(level); // spawn failed - free the slot so it can retry
             Log.log(`[${this.deps.ownerType}] Level ${level} spawn failed:`, e);
-            this.deps.onSpawnBuyError?.(e);
+            // An unresolved fill may still be live: keep the slot consumed so no consumer (even one without the owner veto) retries it.
+            if (isUnconfirmedBuyError(e)) this.deps.onSpawnBuyError?.(e);
+            else leg.childByLevel.delete(level); // ordinary failure - free the slot so it can retry
+            if (!isUnconfirmedBuyError(e)) this.deps.onSpawnBuyError?.(e);
         }
     }
 
@@ -1066,7 +1068,6 @@ export class LegManager {
             });
         } catch (e) {
             Log.log(`[${this.deps.ownerType}] Refill placement failed:`, e);
-            if (isUnconfirmedBuyError(e)) this.deps.onSpawnBuyError?.(e);
             return false;
         }
     }

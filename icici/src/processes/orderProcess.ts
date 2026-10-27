@@ -255,6 +255,8 @@ async function placeOrderWithPendingGuard(
     const entry = gate.entry;
     try {
         const result = await bookkeeping.runWithReservation(req.userId, entry, place);
+        // Chunk fills only consumed part of the reservation (see releasePending): the residual is estimate error, release it now.
+        if (entry.filledInContext) bookkeeping.releaseReservation(req.userId, entry);
         return { kind: 'response', id: req.id, ok: true, result };
     } catch (e) {
         // Identity release: if a chunk's fill already released this request's reservation, this is a no-op.
@@ -1445,8 +1447,8 @@ async function main() {
     void BreezeContractMaster.getInstance().preload();
 
     await Mongo.init().catch((e) => Log.log('[order] Mongo.init failed (continuing without persistence):', e));
-    // Background: an index build on a large collection must not delay the order process becoming ready.
-    void ensureOrderIndexes();
+    // Bounded wait: normally done in well under a second, but a slow build on a large collection must not hold the order process back.
+    await Promise.race([ensureOrderIndexes(), new Promise<void>((r) => setTimeout(r, 15_000))]);
     await loadUserLimits().catch((e) => Log.log('[order] startup: loadUserLimits failed (continuing with defaults; reloadUserLimits can retry):', e));
     configService.onChange(() => {
         applyConfigStrategyLimits().catch((e) => Log.log(`[order] config-change limit refresh failed: ${e?.message ?? e}`));

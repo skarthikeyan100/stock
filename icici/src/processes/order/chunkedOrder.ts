@@ -112,6 +112,12 @@ export async function squareOffChunked(
         await throttleOrderPlacement();
         try {
             const trade = await executor.squareOff(userId, tradingSymbol, chunks[i], exchange);
+            if (trade.status === 'PENDING') {
+                // The exit was placed but its fill is not confirmed (ANT's re-price chain owns it). It is NOT sold: counting it as
+                // sold made the next chunk cancel that resting sell and size itself from what is left, never re-covering this chunk.
+                // Stop here and report only the confirmed fills.
+                throw new Error(`chunk ${i + 1}/${chunks.length} exit placed but fill not confirmed (still being re-priced)`);
+            }
             filledQty += trade.quantity;
             filledValue += trade.quantity * trade.price;
             Log.log(`[order] squareOffChunked: chunk ${i + 1}/${chunks.length} filled qty=${trade.quantity} @ ${trade.price} for ${userId}`);

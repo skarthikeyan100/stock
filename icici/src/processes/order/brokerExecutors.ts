@@ -77,7 +77,7 @@ export const AntExecutor: BrokerExecutor = {
         return (Array.isArray(positions) ? positions : []).map((p: any) => ({
             tradingSymbol: p.tradingSymbol ?? p.tsym,
             instrumentId: String(p.token ?? p.instrumentId ?? ''),
-            quantity: Number(p.netQty ?? p.quantity ?? 0),
+            quantity: Number(p.netQuantity ?? p.netQty ?? p.quantity ?? 0),
             avgPrice: Number(p.netAvgPrice ?? p.avgPrice ?? 0),
             exchange: p.exchange ?? p.exch ?? 'NFO',
         }));

@@ -218,21 +218,14 @@ export async function pollPendingAntLimitOrders(): Promise<void> {
                     // a BUY with no position yet may still fill and then needs its exit, and a failed or
                     // non-Ok positions call tells us nothing. The strict flag makes a non-Ok envelope throw
                     // instead of reading as "no positions". ALERT once per order to avoid per-poll noise.
-                    // The singleton ANT session belongs to ONE user. Only when it is this order's own account can
-                    // the positions/trade-book checks say anything about the order; for any other account the order
-                    // stays tracked with a single ALERT (no per-poll position calls) until a human resolves it.
-                    if (ant.getUserId() !== order.userId) {
-                        if (!order.giveUpAlerted) {
-                            order.giveUpAlerted = true;
-                            Log.log(`[order] ALERT: pending ANT ${order.action} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) unverifiable via order history and the ANT session belongs to another account - KEPT in tracking, manual review required.`);
-                        }
-                        continue;
-                    }
+                    // Every ANT order goes through the one ANT session, whatever app-level user (or strategy pseudo-user) placed it, so the
+                    // broker's own positions/trade book answer for this order. (The old check compared ANT's account id with the app
+                    // userId, which never matches - it kept every unverifiable order tracked forever.)
                     let dropOrder = false;
                     try {
                         const positions = await ant.getPositions({ strict: true });
                         const stillOpen = (positions || []).some((p: any) =>
-                            (p.tradingSymbol ?? p.tsym ?? p.symbol) === order.tradingSymbol && Number(p.netQty ?? p.netqty ?? 0) !== 0
+                            (p.tradingSymbol ?? p.tsym ?? p.symbol) === order.tradingSymbol && Number(p.netQuantity ?? p.netQty ?? p.netqty ?? 0) !== 0
                         );
                         if (order.action === 'Sell' && !stillOpen) {
                             // The sell may have FILLED while history was unavailable, and the fill-booking path

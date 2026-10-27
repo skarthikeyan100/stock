@@ -1,4 +1,5 @@
 import Log from '../../util/Log';
+import { getSpotLtp } from './spotQuote';
 import ANT from '../../ant/ANT';
 import { cancelOrderWithFillRecheck } from './BrokerExecutor';
 import { roundToTick } from '../../kite/Kite';
@@ -411,8 +412,18 @@ export async function enterShortPosition(userId: string, tradingSymbol: string, 
         Log.log(`[order] [BUTTERFLY] Short-entry filled ${tradingSymbol} at ${entryPrice} for ${userId}`);
     } catch (waitErr) {
         Log.log(`[order] [BUTTERFLY] waitForFill failed for short-entry ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
-        entryPrice = await ant.getFillPrice(orderNo);
-        Log.log(`[order] [BUTTERFLY] REST fallback confirmed short-entry fill for ${tradingSymbol} at ${entryPrice} for ${userId} (order-notify push was missed)`);
+        try {
+            entryPrice = await ant.getFillPrice(orderNo);
+            Log.log(`[order] [BUTTERFLY] REST fallback confirmed short-entry fill for ${tradingSymbol} at ${entryPrice} for ${userId} (order-notify push was missed)`);
+        } catch (fillErr) {
+            // Still unresolved: the resting sell-to-open could fill later, naked and unrecorded. Settle it the way enterPosition
+            // settles an unconfirmed buy (trade book, else cancel and re-read), and book only what was actually sold. Throws for
+            // manual review when the outcome cannot be established.
+            const resolved = await resolveUnconfirmedAntBuy(ant, orderNo, quantity, true, fillErr);
+            if (!(resolved.quantity > 0 && resolved.avgPrice > 0)) throw fillErr;
+            entryPrice = resolved.avgPrice;
+            quantity = resolved.quantity;
+        }
     }
 
     const trade = new Trade();
@@ -476,13 +487,13 @@ export async function buyToClosePosition(userId: string, tradingSymbol: string, 
 
 // Read-only live net quantity for a (tradingSymbol, exchange) pair, for ButterflyStrategy's
 // reconcile() to cross-check a persisted leg against the real broker position. Field names
-// (netQty/tradingSymbol) are the same best-guess shape bookkeeping.reconcileAntPositions
-// already uses (its own comment flags them as unverified against a live response).
+// (netQuantity/tradingSymbol) are the live shape bookkeeping.reconcileAntPositions
+// reads.
 export async function getLiveNetQuantity(tradingSymbol: string): Promise<number> {
     const positions = await ANT.getInstance().getPositions();
     const list = Array.isArray(positions) ? positions : [];
     const pos = list.find((p: any) => (p.tradingSymbol ?? p.tsym ?? p.symbol) === tradingSymbol);
-    return Number(pos?.netQty ?? pos?.netqty ?? 0);
+    return Number(pos?.netQuantity ?? pos?.netQty ?? pos?.netqty ?? 0);
 }
 
 export interface BuyIndexRequest {
@@ -694,7 +705,7 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
 
     const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
 
-    return buyIndexOnAnt({ userId: req.userId, index: req.index, niftyLtp: 0, right: req.right, quantity, targetPoints, stopLossPoints });
+    return buyIndexOnAnt({ userId: req.userId, index: req.index, niftyLtp: await getSpotLtp(index), right: req.right, quantity, targetPoints, stopLossPoints });
 }
 
 // AliceBlue's BO modify endpoint field shape for re-pricing a live bracket's
@@ -845,10 +856,14 @@ async function cancelRestingSellForExit(orderId: string, userId: string, tsym: s
         sold = await bookSellFills(orderId, userId, tsym);
     } catch (e: any) {
         Log.log(`[order] ALERT: resting sell ${orderId} for ${tsym} (${userId}) is cancelled but its fills could not be read: ${e?.message ?? e} - check the broker`);
+        // Back on the poller's book: it sees the terminal order and books the partial fill from the trade book on a later poll,
+        // instead of the fill being lost because the order was untracked above.
+        if (prev) trackPendingAntLimitOrder(prev);
         throw e;
     }
     if ((st.filledQuantity ?? 0) > sold) {
         Log.log(`[order] ALERT: resting sell ${orderId} for ${tsym} (${userId}) shows ${st.filledQuantity} filled but the trade book has ${sold} - manual review required`);
+        if (prev) trackPendingAntLimitOrder(prev); // the poller waits for the book to catch up, then books the rest
         throw new Error(`Resting sell ${orderId} for ${tsym}: broker status ${st.filledQuantity} filled, trade book ${sold} - not exiting until reconciled`);
     }
     Log.log(`[order] resting sell ${orderId} for ${tsym} (${userId}) ${st.status}: ${sold} already sold`);
@@ -857,8 +872,10 @@ async function cancelRestingSellForExit(orderId: string, userId: string, tsym: s
 
 // Open quantity still held for this position, per bookkeeping. Booked fills (including a cancelled
 // sell's partial) have already reduced it, so it is the source of truth for what's left to exit.
+// This broker's rows only: an ant+prism (or ant+breeze) pseudo-user can hold the same tsym on two brokers at once.
+const isAntRow = (t: Trade) => t.broker === undefined || t.broker === 'ant';
 function openQuantity(userId: string, tsym: string): number {
-    return bookkeeping.getOpenTrades(userId).filter((t) => t.tsym === tsym).reduce((sum, t) => sum + t.quantity, 0);
+    return bookkeeping.getOpenTrades(userId).filter((t) => t.tsym === tsym && isAntRow(t)).reduce((sum, t) => sum + t.quantity, 0);
 }
 
 // An exit sell that wasn't confirmed filled is re-checked after a minute (immediately when the caller
@@ -899,7 +916,7 @@ function scheduleExitRecheck(order: PendingAntLimitOrder, counters: ExitRecheckC
 
 async function recheckUnfilledExit(order: PendingAntLimitOrder, counters: ExitRecheckCounters, lastLimit: number): Promise<void> {
     const { attempt, unreadableStatusCount, cancelFailureCount } = counters;
-    const key = `${order.userId}:${order.tradingSymbol}`;
+    const key = `ant:${order.userId}:${order.tradingSymbol}`;
     // One exit operation per position at a time: a square-off or another re-price in flight would race this one.
     if (bookkeeping.pendingSquareOffs.has(key)) {
         scheduleExitRecheck(order, counters, lastLimit, 5000);
@@ -989,7 +1006,7 @@ function scheduleReplacementRetry(order: PendingAntLimitOrder, lastLimit: number
 }
 
 async function retryReplacementExit(order: PendingAntLimitOrder, lastLimit: number, attempt: number, failures: number, busy = 0): Promise<void> {
-    const key = `${order.userId}:${order.tradingSymbol}`;
+    const key = `ant:${order.userId}:${order.tradingSymbol}`;
     if (bookkeeping.pendingSquareOffs.has(key)) {
         // Bounded: another exit operation owns the position; stop waiting after ~10 minutes.
         if (busy < 40) scheduleReplacementRetry(order, lastLimit, attempt, failures, busy + 1);
@@ -1060,7 +1077,8 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
     // reaches this line first sets the key and only then yields to the event
     // loop (at the first await below); the other call runs this same
     // synchronous check afterward and sees the key already present.
-    const pendingKey = `${userId}:${tsym}`;
+    // Broker-prefixed (Kite already is): ant and breeze pseudo-users on one contract must not reject each other's exits.
+    const pendingKey = `ant:${userId}:${tsym}`;
     if (bookkeeping.pendingSquareOffs.has(pendingKey)) {
         Log.log(`[order] squareOffOnAnt: square-off for ${tsym} (${userId}) already in flight - ignoring duplicate call`);
         throw new Error(`Square-off for ${tsym} is already in progress for ${userId}`);
@@ -1073,7 +1091,7 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
         if (!(quantity > 0)) throw new Error(`Square-off for ${tsym}: invalid quantity ${quantity}`);
         const restingSells = pendingAntSellsFor(userId, tsym);
         // Fail before touching a resting sell if the exit can't be placed at all (no instrument token).
-        const openForCheck = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
+        const openForCheck = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId && isAntRow(t));
         if (restingSells.length > 0 && !openForCheck?.antOrderNo && !(openForCheck?.token)) {
             throw new Error(`Square-off for ${tsym}: no instrument token - resting exit left untouched, manual action required`);
         }
@@ -1099,7 +1117,7 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
             return done;
         }
         const ant = ANT.getInstance();
-        const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
+        const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId && isAntRow(t));
 
         let squareOffOrderNo: string | undefined;
         let placedExit: PendingAntLimitOrder | undefined;

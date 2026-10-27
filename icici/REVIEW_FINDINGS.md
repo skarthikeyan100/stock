@@ -7,17 +7,6 @@
 Reviewed whole files via code-review (high). Not fixed. Criteria: correctness, unused code, duplicates, same interface for all 4 brokers, consistent vocabulary.
 
 ## A1 Correctness
-6. [med] pendingAntLimitOrders.ts:234 (also antExecutor.ts:485, brokerExecutors.ts:80) - reads `netQty`/`netqty`, but the live field is `netQuantity`. stillOpen is always false, so after 5 unverifiable polls a resting sell on an open position is dropped. pendingAntLimitOrders.ts:223 compares ANT's account id with the app userId, so that fallback is effectively dead.
-7. [med] antExecutor.ts:1102 (+860, 1063) - squareOffOnAnt's existing row and openQuantity ignore broker; the in-flight key `${userId}:${tsym}` is shared with Breeze while Kite uses `kite:` prefix. An ant+prism (or ant+breeze) pseudo-user sizes the ANT sell from the other broker's row, and per-broker square-offs reject each other.
-8. [med] antExecutor.ts:1188 - an unconfirmed exit returns a PENDING Trade with the full quantity, and squareOffChunked counts it as sold. The next chunk cancels and untracks that resting sell (816-856) and never re-places it, so the quantity stays open while success is reported. If bookSellFills throws after the cancel (847), the partial fill is lost.
-9. [med] pendingPrismLimitOrders.ts:125 - a COMPLETE order with no fillPrice is untracked immediately and the fill is never booked (ANT falls back to the trade book).
-10. [med] bookkeeping.ts:800 - checkDrawdownNotification adds both 100 and 80 to `notified` when either fires. A crossing at 80-99% means the 100% breach notification is never sent that session.
-11. [med] breezeExecutor.ts:538 - a bare `catch {` wraps the recordSellFill/totalFilled bookkeeping and logs it as a cancel failure. A bookkeeping throw after a confirmed fill leads to a fresh sell for the same quantity (double-sell).
-12. [med] bookkeeping.ts:407 - releasePending inside a reservation context releases the whole request reservation on the FIRST chunk fill. A concurrent request can then pass the maxInvestment gate against the unreserved remainder.
-13. [med] antExecutor.ts:697 and kiteExecutor.ts:285 - manualBuy calls buyIndexOnX with niftyLtp: 0, so findATMOption(0, ...) resolves a nonsense contract or throws. Needs a live spot quote.
-14. [low] prismExecutor.ts:98 - waitForPrismBuyFill cancels on timeout and re-checks only COMPLETE, so a partial fill during the cancel is discarded. sellContract (88-110) records a sell at the quote with no fill check.
-15. [low] antExecutor.ts:392 - enterShortPosition has no unresolved-fill handling (enterPosition has resolveUnconfirmedAntBuy). A resting sell-to-open can fill later, naked and unrecorded.
-
 ## A1 Unused code
 16. [med] bookkeeping.ts:351 - isInvestmentLimitReached has no callers.
 17. [med] brokerExecutors.ts:22 - BrokerExecutor.hasValidSession/getFillPrice/getPositions/getTrades have no callers through the interface. The implementations (brokerExecutors.ts 22-50, 56-84, 92-108; breezeExecutor.ts 884-949; prismExecutor.ts 349-371) have drifted (ANT reads the wrong fields, Breeze returns the index name as tradingSymbol, Prism always reports a valid session). Remove them from the interface; keep getPositionsOnPrism (ButterflyStrategy imports it).
@@ -229,3 +218,23 @@ The destination is built from `paidTo` (chosen by the admin) but reads masked de
 4. [high] pendingAntLimitOrders.ts:166 - a partial fill on a cancelled/rejected order is booked only for Sell. ANT Buy partials (ContinuousStrategy refill via antPlaceLimitBuyBare) are dropped, leaving an untracked, unprotected position. Kite/Breeze/Prism book both sides.  **[FIXED: cancelled/rejected partial booked for Buy and Sell]**
 
 5. [high] breezeExecutor.ts:347 and prismExecutor.ts:305 - squareOff does not cancel the resting limit sell first (Kite at kiteExecutor.ts:401 and ANT at antExecutor.ts:1074 do). Manual squareOff/chunkedSquareOff/exitMonitor stop can double-sell BulkPcr's resting chunks.  **[FIXED: cancelRestingSellsAheadOfExit shared helper used by Breeze and Prism squareOff]**
+
+6. [med] pendingAntLimitOrders.ts:234 (also antExecutor.ts:485, brokerExecutors.ts:80) - reads `netQty`/`netqty`, but the live field is `netQuantity`. stillOpen is always false, so after 5 unverifiable polls a resting sell on an open position is dropped. pendingAntLimitOrders.ts:223 compares ANT's account id with the app userId, so that fallback is effectively dead.  **[FIXED: netQuantity read first; dead ANT account-id comparison removed]**
+
+7. [med] antExecutor.ts:1102 (+860, 1063) - squareOffOnAnt's existing row and openQuantity ignore broker; the in-flight key `${userId}:${tsym}` is shared with Breeze while Kite uses `kite:` prefix. An ant+prism (or ant+breeze) pseudo-user sizes the ANT sell from the other broker's row, and per-broker square-offs reject each other.  **[FIXED: broker-scoped rows and broker-prefixed in-flight keys (ant:/breeze:/prism:)]**
+
+8. [med] antExecutor.ts:1188 - an unconfirmed exit returns a PENDING Trade with the full quantity, and squareOffChunked counts it as sold. The next chunk cancels and untracks that resting sell (816-856) and never re-places it, so the quantity stays open while success is reported. If bookSellFills throws after the cancel (847), the partial fill is lost.  **[FIXED: chunked square-off stops on PENDING exit; cancelled sell re-tracked if its fills cannot be booked]**
+
+9. [med] pendingPrismLimitOrders.ts:125 - a COMPLETE order with no fillPrice is untracked immediately and the fill is never booked (ANT falls back to the trade book).  **[FIXED: falls back to order-book price; kept tracked, not dropped]**
+
+10. [med] bookkeeping.ts:800 - checkDrawdownNotification adds both 100 and 80 to `notified` when either fires. A crossing at 80-99% means the 100% breach notification is never sent that session.  **[FIXED: only crossed thresholds recorded]**
+
+11. [med] breezeExecutor.ts:538 - a bare `catch {` wraps the recordSellFill/totalFilled bookkeeping and logs it as a cancel failure. A bookkeeping throw after a confirmed fill leads to a fresh sell for the same quantity (double-sell).  **[FIXED: booking failure stops the loop instead of falling through to a fresh sell]**
+
+12. [med] bookkeeping.ts:407 - releasePending inside a reservation context releases the whole request reservation on the FIRST chunk fill. A concurrent request can then pass the maxInvestment gate against the unreserved remainder.  **[FIXED: chunk fills consume only their value; residual released at request end]**
+
+13. [med] antExecutor.ts:697 and kiteExecutor.ts:285 - manualBuy calls buyIndexOnX with niftyLtp: 0, so findATMOption(0, ...) resolves a nonsense contract or throws. Needs a live spot quote.  **[FIXED: live spot quote via spotQuote.getSpotLtp (throws if unavailable)]**
+
+14. [low] prismExecutor.ts:98 - waitForPrismBuyFill cancels on timeout and re-checks only COMPLETE, so a partial fill during the cancel is discarded. sellContract (88-110) records a sell at the quote with no fill check.  **[FIXED: partial fill reported on error; sellContract uses marketable limit + verified fill]**
+
+15. [low] antExecutor.ts:392 - enterShortPosition has no unresolved-fill handling (enterPosition has resolveUnconfirmedAntBuy). A resting sell-to-open can fill later, naked and unrecorded.  **[FIXED: unresolved short entry settled via resolveUnconfirmedAntBuy]**
