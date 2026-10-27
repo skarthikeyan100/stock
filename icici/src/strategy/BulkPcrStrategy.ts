@@ -829,6 +829,7 @@ export default class BulkPcrStrategy extends Strategy {
             pos.heldToken = feedTokenOf(result);
             pos.entryAvg = result.avgPrice;
             Log.log(`[BulkPcrStrategy] [${broker}] Entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
+            if (result.orderMayBeLive) Log.log(`[BulkPcrStrategy] [${broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} entry FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked lots, manual review required`);
             pos.entryQuantity = result.quantity;
             await this.placeExitSell(key, result.quantity);
         } catch (e: any) {
@@ -1308,6 +1309,7 @@ export default class BulkPcrStrategy extends Strategy {
             pos.entryAvg = result.avgPrice;
             pos.buyAttempts = 0;
             Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
+            if (result.orderMayBeLive) Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} re-buy FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked lots, manual review required`);
             if (this.eodDone || this.mustClose(pos)) {
                 // EOD or the loss stop started while this buy was in flight - square it off now, don't rest a sell.
                 pos.targetQuantity = result.quantity;
