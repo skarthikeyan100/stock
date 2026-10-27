@@ -25,13 +25,14 @@ const unsupported = (broker: string, op: string) => (): never => {
 };
 
 // ANT's common token for a strike (every broker's tick routing and Trade.token key off it, never the broker's own instrument id).
-function antTokenFor(index: OptionIndex, strike: number, right: OptionRight): string {
-    return AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch: exchangeForIndex(index), strike, optionType: right, expiryOffset: 0 }).token;
+function antContractFor(index: OptionIndex, strike: number, right: OptionRight) {
+    return AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch: exchangeForIndex(index), strike, optionType: right, expiryOffset: 0 });
 }
+const antTokenFor = (index: OptionIndex, strike: number, right: OptionRight): string => antContractFor(index, strike, right).token;
 
 export const KiteExecutor: BrokerExecutor = {
     brokerName: 'kite',
-    capabilities: { enterShort: true, buyToClose: true, marketBuy: true, marketSell: true, placeLimitBuy: true, getContractByPriceRange: true },
+    capabilities: { placeLimitBuy: true, getContractByPriceRange: true },
 
     buy: (request: BuyRequest): Promise<Trade> => kiteExecutor.buyResolvedOnKite(request),
 
@@ -59,13 +60,13 @@ export const KiteExecutor: BrokerExecutor = {
         return { tsym: r.tradingSymbol, token: antTokenFor(index, strike, right), exchange: r.exchange };
     },
     getContractByPriceRange: kiteExecutor.getContractByPriceRangeOnKite,
-    findPendingOrders: TRACKERS.kite.find,
+    findPendingOrders: (userId, tradingSymbol) => TRACKERS.kite.find(userId, tradingSymbol),
 };
 
 export const AntExecutor: BrokerExecutor = {
     brokerName: 'ant',
     // placeLimitBuy is off on purpose: the generic limit-buy ops refuse ANT (its limit buy has its own antPlaceLimitBuyBare request).
-    capabilities: { enterShort: true, buyToClose: true, marketBuy: true, marketSell: true, placeLimitBuy: false, getContractByPriceRange: false },
+    capabilities: { placeLimitBuy: false, getContractByPriceRange: false },
 
     buy: (request: BuyRequest): Promise<Trade> =>
         antExecutor.enterPosition(
@@ -90,16 +91,16 @@ export const AntExecutor: BrokerExecutor = {
     placeLimitBuy: unsupported('ant', 'placeLimitBuy'),
     getLiveQuantity: antExecutor.getLiveNetQuantity,
     resolveContract: async (index, strike, right): Promise<ResolvedContract> => {
-        const r = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch: exchangeForIndex(index), strike, optionType: right, expiryOffset: 0 });
+        const r = antContractFor(index, strike, right);
         return { tsym: r.tradingSymbol, token: r.token, exchange: r.exch as Exch };
     },
     getContractByPriceRange: unsupported('ant', 'getContractByPriceRange'),
-    findPendingOrders: TRACKERS.ant.find,
+    findPendingOrders: (userId, tradingSymbol) => TRACKERS.ant.find(userId, tradingSymbol),
 };
 
 export const PrismExecutor: BrokerExecutor = {
     brokerName: 'prism',
-    capabilities: { enterShort: true, buyToClose: true, marketBuy: true, marketSell: true, placeLimitBuy: false, getContractByPriceRange: false },
+    capabilities: { placeLimitBuy: false, getContractByPriceRange: false },
 
     buy: (request: BuyRequest): Promise<Trade> => prismExecutor.buyOnPrism(request),
 
@@ -124,12 +125,12 @@ export const PrismExecutor: BrokerExecutor = {
         return { tsym: r.tradingSymbol, token: antTokenFor(index, strike, right), exchange: exchangeForIndex(index) };
     },
     getContractByPriceRange: unsupported('prism', 'getContractByPriceRange'),
-    findPendingOrders: TRACKERS.prism.find,
+    findPendingOrders: (userId, tradingSymbol) => TRACKERS.prism.find(userId, tradingSymbol),
 };
 
 export const BreezeExecutor: BrokerExecutor = {
     brokerName: 'breeze',
-    capabilities: { enterShort: true, buyToClose: true, marketBuy: true, marketSell: true, placeLimitBuy: true, getContractByPriceRange: true },
+    capabilities: { placeLimitBuy: true, getContractByPriceRange: true },
 
     buy: breezeExecutor.buyResolvedOnBreeze,
 
@@ -152,10 +153,17 @@ export const BreezeExecutor: BrokerExecutor = {
         return { tsym: breezeExecutor.tsymFor(r), token: antTokenFor(index, strike, right), exchange: exchangeForIndex(index) };
     },
     getContractByPriceRange: breezeExecutor.getContractByPriceRangeOnBreeze,
-    findPendingOrders: TRACKERS.breeze.find,
+    findPendingOrders: (userId, tradingSymbol) => TRACKERS.breeze.find(userId, tradingSymbol),
 };
 
 const EXECUTORS = { kite: KiteExecutor, ant: AntExecutor, breeze: BreezeExecutor, prism: PrismExecutor } as const;
+
+// The executor for an explicit broker name (aliases accepted); throws on an unknown one.
+export function getExecutorByBroker(name: unknown, op?: string): BrokerExecutor {
+    const broker = normalizeBrokerName(name);
+    if (!Object.prototype.hasOwnProperty.call(EXECUTORS, broker)) throw new Error(`${op ?? 'getExecutorByBroker'}: unsupported broker '${broker}'`);
+    return EXECUTORS[broker as keyof typeof EXECUTORS];
+}
 
 // Resolves a user's configured broker to its BrokerExecutor - replaces the
 // repeated `bookkeeping.getUserBroker(userId) === 'ant' ? antExecutor.X(...)
@@ -169,14 +177,8 @@ const EXECUTORS = { kite: KiteExecutor, ant: AntExecutor, breeze: BreezeExecutor
 // full-quantity orders on several brokers at once, so no single per-userId
 // broker can describe "which broker this specific call is for." Every other
 // caller omits it and gets today's per-userId behavior unchanged.
-// The executor for an explicit broker name (aliases accepted); throws on an unknown one.
-export function getExecutorByBroker(name: unknown): BrokerExecutor {
-    const broker = normalizeBrokerName(name);
-    if (!Object.prototype.hasOwnProperty.call(EXECUTORS, broker)) throw new Error(`getExecutorByBroker: unknown broker '${broker}'`);
-    return EXECUTORS[broker as keyof typeof EXECUTORS];
-}
-
 export function getBrokerExecutor(userId: string, brokerOverride?: 'kite' | 'ant' | 'breeze' | 'prism'): BrokerExecutor {
     // An unknown name throws: a silent fallback to Kite would send another broker's order to the wrong account.
-    return getExecutorByBroker(brokerOverride ?? bookkeeping.getUserBroker(userId));
+    // An empty override (a trade row with no broker) means "use the user's broker", like an absent one; exit paths rely on it.
+    return getExecutorByBroker(normalizeBrokerName(brokerOverride) || bookkeeping.getUserBroker(userId));
 }

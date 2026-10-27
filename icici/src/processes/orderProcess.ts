@@ -19,7 +19,6 @@ import { installIpv4OnlyHostOverride } from './order/kiteDns';
 installIpv4OnlyHostOverride();
 
 import { TRACKERS, TRACKER_BROKERS } from './order/pendingTrackers';
-import { TrackerBroker } from './order/pendingOrderTracker';
 import net from 'net';
 import fs from 'fs';
 import Log from '../util/Log';
@@ -87,9 +86,6 @@ bookkeeping.onFill((userId, trade) => {
 bookkeeping.onPositionsChanged(() => {
     broadcast({ kind: 'positionsChanged' });
 });
-
-// Own-key lookup: a broker name from an IPC payload must never resolve to an inherited property (`constructor`).
-const trackerOf = (broker: string | undefined) => (broker && Object.prototype.hasOwnProperty.call(TRACKERS, broker) ? TRACKERS[broker as TrackerBroker] : undefined);
 
 for (const trackerBroker of TRACKER_BROKERS) {
     TRACKERS[trackerBroker].onCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason) => {
@@ -306,7 +302,7 @@ async function withUserGate<T>(user: string, fn: () => Promise<T>): Promise<T> {
 // NOT adopt the root leg on a failed cancel - see BulkPcrStrategy.ts's
 // handOff.
 async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: string, tsym: string): Promise<{ filledQty: number; cancelFailed: boolean }> {
-    // Selects ONLY the tracker for executor.brokerName, not all four merged
+    // Looks at ONLY this executor's broker's pending orders, not all four merged
     // together - BulkPcrAutoStartStrategy can now hold simultaneous
     // ant+prism positions on the identical tsym (both Noren/Omnesys-family
     // contract-symbol formats) under the same userId. Merging every
@@ -316,7 +312,7 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
     // symbol at once - a foreign order id sent to the wrong broker's cancel
     // API, silently relying on that broker's API to reject it rather than on
     // correct routing.
-    const pending = (executor.findPendingOrders(userId, tsym)).filter((o) => o.action === 'Sell');
+    const pending = executor.findPendingOrders(userId, tsym).filter((o) => o.action === 'Sell');
     let filledQty = 0;
     let cancelFailed = false;
     for (const order of pending) {
@@ -755,7 +751,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             case 'getLiveQuantity': {
                 const { broker, tradingSymbol } = req.payload as { broker: string; tradingSymbol: string };
-                const result = await getExecutorByBroker(broker).getLiveQuantity(tradingSymbol);
+                const result = await getExecutorByBroker(broker, 'getLiveQuantity').getLiveQuantity(tradingSymbol);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -763,8 +759,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // Broker-uniform: dispatch to whichever tracker owns this broker's pending
                 // orders, filter to SELL generically here (not per-tracker) since all four
                 // trackers already share the same {quantity, action, ...} shape.
-                const tracker = trackerOf(req.payload.broker);
-                const result = tracker ? tracker.find(req.userId, req.payload.tradingSymbol).filter((o) => o.action === 'Sell') : [];
+                const result = getExecutorByBroker(req.payload.broker, 'getPendingSells').findPendingOrders(req.userId, req.payload.tradingSymbol).filter((o) => o.action === 'Sell');
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -820,7 +815,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'brokerPlaceLimitSellBare': {
                 await waitForReconcile();
                 const { broker, tradingSymbol, instrumentToken, quantity, price, exchange } = req.payload;
-                const result = await getExecutorByBroker(broker).squareOffLimit(req.userId, tradingSymbol, instrumentToken, quantity, exchange, price);
+                const result = await getExecutorByBroker(broker, 'brokerPlaceLimitSellBare').squareOffLimit(req.userId, tradingSymbol, instrumentToken, quantity, exchange, price);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -871,7 +866,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'butterflySellToOpen': {
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
                 return await placeOrderWithPendingGuard(req, undefined, () =>
-                    getExecutorByBroker(broker).enterShort(req.userId, tradingSymbol, instrumentToken, quantity, exchange),
+                    getExecutorByBroker(broker, 'butterflySellToOpen').enterShort(req.userId, tradingSymbol, instrumentToken, quantity, exchange),
                 );
             }
 
@@ -884,7 +879,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'butterflyBuyLeg': {
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
                 return await placeOrderWithPendingGuard(req, undefined, () =>
-                    getExecutorByBroker(broker).marketBuy(req.userId, tradingSymbol, instrumentToken, quantity, exchange),
+                    getExecutorByBroker(broker, 'butterflyBuyLeg').marketBuy(req.userId, tradingSymbol, instrumentToken, quantity, exchange),
                 );
             }
 
@@ -894,14 +889,14 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'butterflyCloseLeg': {
                 await waitForReconcile();
                 const { broker, tradingSymbol, instrumentToken, quantity, exchange } = req.payload;
-                const result = await getExecutorByBroker(broker).marketSell(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
+                const result = await getExecutorByBroker(broker, 'butterflyCloseLeg').marketSell(req.userId, tradingSymbol, instrumentToken, quantity, exchange);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
             case 'butterflyBuyToClose': {
                 await waitForReconcile();
                 const { broker, tradingSymbol, instrumentToken, exchange } = req.payload;
-                const result = await getExecutorByBroker(broker).buyToClose(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
+                const result = await getExecutorByBroker(broker, 'butterflyBuyToClose').buyToClose(req.userId, tradingSymbol, instrumentToken, req.payload.quantity, exchange);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
