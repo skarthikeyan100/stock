@@ -705,7 +705,26 @@ export default class BulkPcrStrategy extends Strategy {
                 Log.log('[BulkPcrStrategy] EOD cutoff reached - force-closing open pair slot(s)');
                 await this.eodCloseSlots();
             }
+        } else if (this.eodDone) {
+            await this.eodRetrySkippedSlots();
         }
+    }
+
+    // eodCloseSlots skips a slot whose exit is being placed and relies on the placement's tail to close it; that tail
+    // is itself skipped during a reconcile. Any slot still selling after the pass is closed here, on a later tick.
+    private async eodRetrySkippedSlots(): Promise<void> {
+        if (this.reconciling) return;
+        for (const pos of this.pairSlots()) {
+            if (pos.phase !== 'selling' || pos.squaringOff || pos.trailBusy || this.placingKeys.has(this.keyOf(pos))) continue;
+            await this.eodSquareOff(pos);
+        }
+    }
+
+    // A failed exit placement is left 'selling' once the EOD close is due: eodSquareOff cancels whatever chunks did
+    // rest and squares off the unsold remainder, instead of carrying the position past the close in 'error'.
+    private markPlacementFailed(pos: BrokerPosition): void {
+        if (this.eodDone) return;
+        pos.phase = 'error';
     }
 
     private async processUnderlyingQuote(quote: NiftyQuote): Promise<void> {
@@ -972,7 +991,7 @@ export default class BulkPcrStrategy extends Strategy {
             this.watchSlot(pos);
         } catch (e) {
             Log.log(`[BulkPcrStrategy] [${broker}] Chunked limit-sell placement failed - manual review required:`, e);
-            pos.phase = 'error';
+            this.markPlacementFailed(pos);
             this.persistState();
         } finally {
             this.placingKeys.delete(key);
@@ -1034,7 +1053,7 @@ export default class BulkPcrStrategy extends Strategy {
             });
         } catch (e) {
             Log.log(`[BulkPcrStrategy] [${pos.broker}] Trail limit-sell placement failed - manual review required:`, e);
-            pos.phase = 'error';
+            this.markPlacementFailed(pos);
             this.persistState();
         } finally {
             pos.trailBusy = false;
@@ -1108,7 +1127,7 @@ export default class BulkPcrStrategy extends Strategy {
                     });
                 } catch (e) {
                     Log.log(`[BulkPcrStrategy] [${broker}] Trail re-price placement failed - manual review required:`, e);
-                    pos.phase = 'error';
+                    this.markPlacementFailed(pos);
                     this.persistState();
                 }
             }

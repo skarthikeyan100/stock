@@ -236,19 +236,19 @@ function requestIsLoopback(req: express.Request): boolean {
 const USER_CACHE_TTL_MS = 15_000;
 const userCache = new Map<string, { at: number; user: Awaited<ReturnType<typeof getUser>> }>();
 // Bumped on every invalidation: a read that was in flight across an invalidation holds a document from before it and must not be cached.
-const userCacheEpoch = new Map<string, number>();
-let userCacheGlobalEpoch = 0;
-const epochOf = (email: string) => `${userCacheGlobalEpoch}:${userCacheEpoch.get(email) ?? 0}`;
+// One counter for all users (an unrelated invalidation only costs a skipped cache fill), so nothing grows per email.
+let userCacheEpoch = 0;
 async function getActiveUser(email: string) {
     const hit = userCache.get(email);
     if (hit && Date.now() - hit.at < USER_CACHE_TTL_MS) return hit.user;
-    const epoch = epochOf(email);
+    const epoch = userCacheEpoch;
     const user = await getUser(email);
-    if (epoch === epochOf(email)) userCache.set(email, { at: Date.now(), user });
+    if (epoch === userCacheEpoch) userCache.set(email, { at: Date.now(), user });
     return user;
 }
 function invalidateUserCache(email?: string): void {
-    if (email) { userCacheEpoch.set(email, (userCacheEpoch.get(email) ?? 0) + 1); userCache.delete(email); } else { userCacheGlobalEpoch++; userCache.clear(); }
+    userCacheEpoch++;
+    if (email) userCache.delete(email); else userCache.clear();
 }
 
 // The one session check behind requireAuth / requireAdmin / requireSelfOrAdmin: a valid session cookie (not expired or revoked) for a

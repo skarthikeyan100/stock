@@ -3,6 +3,7 @@ import { NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY } from '../../constants';
 import { splitIntoFreezeQtyChunks } from '../../util/quantityChunks';
 import Log from '../../util/Log';
 import { sleep } from '../../util/sleep';
+import { markNotPlaced, isNotPlaced } from '../../util/notPlaced';
 
 
 // Confirmed live 2026-09-23: a burst of back-to-back chunk placements (an
@@ -87,10 +88,12 @@ export async function buyChunked(
             }
             // filledQuantity/averagePrice carried on the error: earlier chunks are real, already-booked positions, so a
             // caller must be able to tell a partial entry from a clean failure.
-            throw Object.assign(new Error(
+            const buyErr = Object.assign(new Error(
                 `buyChunked: chunk ${i + 1}/${chunks.length} failed after filling ${filledQty}/${request.quantity} - ` +
                     `${request.quantity - filledQty} qty NOT placed. Manual review required. Underlying error: ${e?.message ?? e}`
             ), { filledQuantity: filledQty, averagePrice: filledQty > 0 ? filledValue / filledQty : 0, partial: filledQty > 0 });
+            // A clean refusal of the first chunk is still a clean refusal of the whole request.
+            throw i === 0 && isNotPlaced(e) ? markNotPlaced(buyErr) : buyErr;
         }
     }
     return { quantity: filledQty, avgPrice: filledQty > 0 ? filledValue / filledQty : 0 };
@@ -134,10 +137,11 @@ export async function squareOffChunked(
                 filledQty += e.filledQuantity;
                 filledValue += e.filledQuantity * e.averagePrice;
             }
-            throw Object.assign(new Error(
+            const sellErr = Object.assign(new Error(
                 `squareOffChunked: chunk ${i + 1}/${chunks.length} failed after selling ${filledQty}/${quantity} - ` +
                     `${quantity - filledQty} qty NOT sold. Manual review required. Underlying error: ${e?.message ?? e}`
             ), { filledQuantity: filledQty, averagePrice: filledQty > 0 ? filledValue / filledQty : 0, partial: filledQty > 0 });
+            throw i === 0 && isNotPlaced(e) ? markNotPlaced(sellErr) : sellErr;
         }
     }
     return { quantity: filledQty, avgPrice: filledQty > 0 ? filledValue / filledQty : 0 };
@@ -174,16 +178,17 @@ export async function squareOffLimitChunked(
             placedQty += placedChunkQty;
             Log.log(`[order] squareOffLimitChunked: chunk ${i + 1}/${chunks.length} placed qty=${placedChunkQty}${placedChunkQty < chunks[i] ? ` (clamped from ${chunks[i]})` : ''} @ ${limitPrice} for ${userId}`);
         } catch (e: any) {
-            throw Object.assign(new Error(
+            const limitErr = Object.assign(new Error(
                 `squareOffLimitChunked: chunk ${i + 1}/${chunks.length} failed to place after placing ${placedQty}/${quantity} - ` +
                     `${quantity - placedQty} qty NOT resting. Manual review required. Underlying error: ${e?.message ?? e}`
             ), { placedQuantity: placedQty, orderIds: orderIds.slice(), partial: placedQty > 0 });
+            throw i === 0 && isNotPlaced(e) ? markNotPlaced(limitErr) : limitErr;
         }
     }
     // A short placement is often benign (a resting chunk filled meanwhile and the guard clamped the new sell), and throwing would
     // lock the slot into manual review while its resting orders are fine - so it is reported in the result and logged.
     if (placedQty < quantity) {
-        Log.log(`[order] squareOffLimitChunked: ALERT - only ${placedQty}/${quantity} placed for ${tradingSymbol} (${userId}); a never-short guard clamped a sell. Orders resting: ${orderIds.join(',')}`);
+        Log.log(`[order] squareOffLimitChunked: ALERT - only ${placedQty}/${quantity} placed for ${tradingSymbol} (${userId}); a never-short guard clamped a sell. Orders placed: ${orderIds.join(',')}`);
     }
     return { orderIds, placedQuantity: placedQty };
 }

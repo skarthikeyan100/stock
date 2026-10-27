@@ -31,8 +31,8 @@ import { exchangeForTsym } from '../util/underlyings';
 // Net open quantity per (userId, feed, token), built from this process's own fill stream. A position can be
 // opened in several chunks (and sold the same way); a Sell fill for ONE chunk must not drop the token's
 // subscription while the other chunks are still held, or their exit/stop logic goes blind. The strategy
-// stays registered until the running net hits zero. After a restart the map starts empty, so a first Sell
-// falls through to the old behaviour (unregister) - never leaves a subscription dangling forever.
+// stays registered until the running net hits zero. After a restart the map is seeded from the order process's
+// open trades (seedOpenQty), so a partial Sell of a position held from before the restart does not drop the token either.
 const openQty = new Map<string, number>();
 const openQtyExchange = new Map<string, 'NFO' | 'BFO'>();
 // Fills already applied, so a duplicate delivery (same broker order + side) cannot double-count the net quantity.
@@ -44,6 +44,28 @@ function isDuplicateFill(trade: Trade): boolean {
     seenFillKeys.add(key);
     if (seenFillKeys.size > 5000) seenFillKeys.delete(seenFillKeys.values().next().value as string);
     return false;
+}
+// Seeds the net quantities from the order process's open trades. Runs on the user's fill queue so it is ordered with
+// their fills; a key a fill has already touched keeps its fill-built value. A failed read leaves the map empty, which
+// falls back to unregistering on the first Sell - never a dangling subscription.
+async function seedOpenQty(userId: string): Promise<void> {
+    let open: any[];
+    try {
+        open = await OrderClient.getInstance().getOpenTrades(userId);
+    } catch (e) {
+        Log.log(`[strategies] Could not seed open quantities for ${userId}:`, e);
+        return;
+    }
+    const seeded = new Map<string, number>();
+    for (const t of open) {
+        const qty = Number(t?.quantity);
+        if (!t?.token || !(qty > 0)) continue;
+        const feed = t.broker ? BROKER_TO_FEED_SOURCE[t.broker as keyof typeof BROKER_TO_FEED_SOURCE] : undefined;
+        const key = `${userId}|${feed ?? 'default'}|${t.token}`;
+        seeded.set(key, (seeded.get(key) ?? 0) + qty);
+        openQtyExchange.set(key, exchangeForTsym(t.tsym));
+    }
+    for (const [key, qty] of seeded) if (!openQty.has(key)) openQty.set(key, qty);
 }
 // A reset strategy abandons its positions' bookkeeping: drop the net quantities and trade-holder registrations.
 function clearOpenQtyFor(strategy: { userId?: string }): void {
@@ -393,6 +415,10 @@ async function main() {
         } catch (e) {
             Log.log(`[strategies] restoreLatches() failed for ${strategy.userId}:`, e);
         }
+    }
+
+    for (const strategy of strategies.getList()) {
+        if (strategy.userId) void enqueueFifo(`fill:${strategy.userId}`, () => seedOpenQty(strategy.userId!));
     }
 
     // reconcile() does not run here or on any tick - it's the explicit

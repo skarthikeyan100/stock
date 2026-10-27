@@ -110,11 +110,13 @@ function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
 }
 
 // Backoff for crash respawns: 1s, 2s, 4s ... capped at 30s; reset once a process has stayed up for a minute.
-function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) => Promise<void>): () => void {
+type RestartOutcome = 'started' | 'skipped' | 'failed';
+
+function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) => Promise<RestartOutcome>): () => void {
     let failures = 0;
     let lastStart = Date.now();
     let pending = false;
-    return () => {
+    const respawn = (): void => {
         if (pending || shuttingDown) return;
         pending = true;
         if (Date.now() - lastStart > 60_000) failures = 0;
@@ -124,13 +126,15 @@ function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) 
         setTimeout(async () => {
             pending = false;
             if (shuttingDown) return;
-            lastStart = Date.now();
             // onlyIfDead: the check runs INSIDE the serialised restart, right before stopping the old child. A hot restart may have
             // replaced the crashed child while this timer waited or while this restart was queued behind it; stopping then would kill the
             // healthy replacement.
-            try { await restart({ onlyIfDead: true }); } catch (e) { log(name, 'respawn failed:', e); }
+            const outcome = await restart({ onlyIfDead: true });
+            if (outcome === 'started') lastStart = Date.now(); // a skipped respawn must not delay the next one's backoff reset
+            else if (outcome === 'failed') respawn(); // no child is running and no exit event will come: try again with a longer backoff
         }, delay);
     };
+    return respawn;
 }
 
 // Watches `watchPaths` (compiled dist/ output) and calls onChange (debounced)
@@ -161,9 +165,13 @@ async function main() {
 
     // Restarts of one role are serialised so a crash respawn and a hot restart can never overlap.
     const chains = new Map<string, Promise<void>>();
-    const serial = (role: string, fn: () => Promise<void>): Promise<void> => {
-        const next = (chains.get(role) ?? Promise.resolve()).then(fn, fn).catch((e) => log(role, 'restart failed:', e));
-        chains.set(role, next);
+    // Resolves 'started' (a new child is running), 'skipped' (a live replacement already was) or 'failed' (logged).
+    const serial = (role: string, fn: () => Promise<'started' | 'skipped'>): Promise<RestartOutcome> => {
+        const next: Promise<RestartOutcome> = (chains.get(role) ?? Promise.resolve()).then(fn).catch((e): RestartOutcome => {
+            log(role, 'restart failed:', e);
+            return 'failed';
+        });
+        chains.set(role, next.then(() => undefined));
         return next;
     };
 
@@ -176,7 +184,7 @@ async function main() {
     };
     const restartData = (opts?: { onlyIfDead?: boolean }) => serial('data', async () => {
         const old = data;
-        if (opts?.onlyIfDead && isAlive(old)) { log('data', 'respawn skipped - a live replacement is already running'); return; }
+        if (opts?.onlyIfDead && isAlive(old)) { log('data', 'respawn skipped - a live replacement is already running'); return 'skipped'; }
         for (const other of [order, frontend, strategies]) {
             if (!other) continue;
             old.stdout.unpipe(other.stdin);
@@ -192,6 +200,7 @@ async function main() {
                 strategies.stdin.write(JSON.stringify({ cmd: 'resync' }) + '\n');
             }, delayMs);
         }
+        return 'started';
     });
     const respawnData = makeRespawner('data', restartData);
 
@@ -205,11 +214,12 @@ async function main() {
     };
     const restartOrder = (opts?: { onlyIfDead?: boolean }) => serial('order', async () => {
         const old = order;
-        if (opts?.onlyIfDead && isAlive(old)) { log('order', 'respawn skipped - a live replacement is already running'); return; }
+        if (opts?.onlyIfDead && isAlive(old)) { log('order', 'respawn skipped - a live replacement is already running'); return 'skipped'; }
         data.stdout.unpipe(old.stdin);
         old.stdout.unpipe(data.stdin);
         await stopChild(old);
         startOrder();
+        return 'started';
     });
     const respawnOrder = makeRespawner('order', restartOrder);
 
@@ -220,11 +230,12 @@ async function main() {
     };
     const restartFrontend = (opts?: { onlyIfDead?: boolean }) => serial('frontend', async () => {
         const old = frontend;
-        if (opts?.onlyIfDead && isAlive(old)) { log('frontend', 'respawn skipped - a live replacement is already running'); return; }
+        if (opts?.onlyIfDead && isAlive(old)) { log('frontend', 'respawn skipped - a live replacement is already running'); return 'skipped'; }
         data.stdout.unpipe(old.stdin);
         old.stdout.unpipe(data.stdin);
         await stopChild(old);
         startFrontend();
+        return 'started';
     });
     const respawnFrontend = makeRespawner('frontend', restartFrontend);
 
@@ -235,11 +246,12 @@ async function main() {
     };
     const restartStrategies = (opts?: { onlyIfDead?: boolean }) => serial('strategies', async () => {
         const old = strategies;
-        if (opts?.onlyIfDead && isAlive(old)) { log('strategies', 'respawn skipped - a live replacement is already running'); return; }
+        if (opts?.onlyIfDead && isAlive(old)) { log('strategies', 'respawn skipped - a live replacement is already running'); return 'skipped'; }
         data.stdout.unpipe(old.stdin);
         old.stdout.unpipe(data.stdin);
         await stopChild(old);
         startStrategies();
+        return 'started';
     });
     const respawnStrategies = makeRespawner('strategies', restartStrategies);
 

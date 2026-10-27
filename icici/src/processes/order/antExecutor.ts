@@ -1,4 +1,3 @@
-import { markNotPlaced } from '../../util/notPlaced';
 import Log from '../../util/Log';
 import { getSpotLtp } from './spotQuote';
 import ANT from '../../ant/ANT';
@@ -16,6 +15,7 @@ import { neverShortSellable } from './BrokerExecutor';
 import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder } from './pendingAntLimitOrders';
 import { sleep } from '../../util/sleep';
 import { exchangeForIndex } from '../../util/underlyings';
+import { markNotPlaced } from '../../util/notPlaced';
 
 // AliceBlue/ANT execution, mirroring kiteExecutor.ts's shape and the same
 // per-user useGTT gating (bookkeeping.getUserUseGTT) - but the actual
@@ -1023,7 +1023,7 @@ async function placeReplacementExit(order: PendingAntLimitOrder, remaining: numb
     try {
         ltp = await safeAntQuote(order.exchange, order.instrumentId, EXIT_QUOTE_RETRY_MS, true);
     } catch (e: any) {
-        throw Object.assign(e instanceof Error ? e : new Error(String(e)), { orderNotPlaced: true }); // nothing sent yet
+        throw markNotPlaced(e); // nothing sent yet
     }
     const limit = roundToTick(ltp > 0 ? ltp * 0.99 : lastLimit);
     // A placement that TIMED OUT may already have been accepted by the broker, so only an outright rejection (the
@@ -1043,7 +1043,7 @@ async function placeReplacementExit(order: PendingAntLimitOrder, remaining: numb
         // A 5xx/gateway reply can still mean the order was accepted - only a 4xx or the explicit no-order-id body is definitive.
         const status = Number(e?.response?.status);
         const answered = (Number.isFinite(status) && status >= 400 && status < 500) || /^ANT placeOrder failed/.test(String(e?.message ?? ''));
-        throw answered ? Object.assign(e instanceof Error ? e : new Error(String(e)), { orderNotPlaced: true }) : e;
+        throw answered ? markNotPlaced(e) : e;
     }
     const next: PendingAntLimitOrder = { orderId: orderNo, userId: order.userId, tradingSymbol: order.tradingSymbol, instrumentId: order.instrumentId, quantity: remaining, exchange: order.exchange, action: 'Sell', product: order.product };
     trackPendingAntLimitOrder(next);

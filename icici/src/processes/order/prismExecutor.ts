@@ -1,4 +1,3 @@
-import { markNotPlaced } from '../../util/notPlaced';
 import Log from '../../util/Log';
 import Prism from '../../prism';
 import indexMap from '../../nse_index';
@@ -10,6 +9,7 @@ import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPending
 import { sleep } from '../../util/sleep';
 import { roundToTick } from '../../kite/Kite';
 import { exchangeForTsym } from '../../util/underlyings';
+import { markNotPlaced } from '../../util/notPlaced';
 
 // Prism/Shoonya's contract-by-price-range order path - the secondary/legacy
 // broker path (Kite is primary, see kiteExecutor.ts). `Prism.getInstance()`

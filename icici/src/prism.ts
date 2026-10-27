@@ -1,4 +1,5 @@
 import Log from './util/Log';
+import { markNotPlaced } from './util/notPlaced';
 import { isPastMarketClose } from './util/marketHours';
 // Strategy:
 // If direction is sure, go for option else go for option plus
@@ -668,7 +669,8 @@ export default class Prism {
         const list = orders ?? (await this.getOrderBook());
         const match = list.find((o) => o.norenordno === orderNo);
         if (!match) return { status: 'PENDING', filledQuantity: 0 };
-        const filledQuantity = Number(match.fillshares ?? 0);
+        // Left undefined when the record omits the field, so a caller can tell "zero filled" from "unknown".
+        const filledQuantity = match.fillshares === undefined || match.fillshares === null ? undefined : Number(match.fillshares);
         if (match.status === 'COMPLETE') {
             const fillPrice = match.avgprc ?? match.flprc ?? match.avgPrice;
             return { status: 'COMPLETE', fillPrice: fillPrice ? Number(fillPrice) : undefined, filledQuantity };
@@ -1180,7 +1182,8 @@ export default class Prism {
         if (!reply || (reply.stat !== undefined && reply.stat !== 'Ok') || !reply.norenordno) {
             // The broker ANSWERED with a rejection: definitively not placed (safe to retry). A missing reply is ambiguous and is not tagged.
             const answered = !!reply && reply.stat !== undefined && reply.stat !== 'Ok';
-            throw Object.assign(new Error(`Prism order for ${order?.tsym} was not accepted: ${reply?.emsg ?? JSON.stringify(reply) ?? 'no reply'}`), answered ? { notPlaced: true, orderNotPlaced: true } : {});
+            const refusal = new Error(`Prism order for ${order?.tsym} was not accepted: ${reply?.emsg ?? JSON.stringify(reply) ?? 'no reply'}`);
+            throw answered ? markNotPlaced(refusal) : refusal;
         }
     }
 
@@ -1189,11 +1192,11 @@ export default class Prism {
         try {
             const tsym = await this.getContract(token);
             if (!tsym) {
-                throw Object.assign(new Error(`could not resolve tsym for token ${token}`), { notPlaced: true, orderNotPlaced: true });
+                throw markNotPlaced(new Error(`could not resolve tsym for token ${token}`));
             }
             // No true MARKET orders anywhere (a blind market order has no price floor): the caller must give a limit price.
             if (!(price && price > 0)) {
-                throw Object.assign(new Error(`no limit price given for ${tsym} - refusing a MARKET square-off`), { notPlaced: true, orderNotPlaced: true });
+                throw markNotPlaced(new Error(`no limit price given for ${tsym} - refusing a MARKET square-off`));
             }
 
             const order = {
