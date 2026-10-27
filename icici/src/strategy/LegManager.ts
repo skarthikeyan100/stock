@@ -123,11 +123,12 @@ export interface LegManagerConfig {
     dryRun?: boolean;
 }
 
+export const HEDGE_UNCONFIRMED_TAG = '[HEDGE_UNCONFIRMED]';
 // antLegOps.buy tags a buy whose fill is unresolved (the order may still be live) as '[HEDGE_UNCONFIRMED]'; the order process tags
 // any broker's unsettled fill wait as '[ORDER_MAY_BE_LIVE]'.
-function isUnconfirmedBuyError(e: any): boolean {
+export function isUnconfirmedBuyError(e: any): boolean {
     const message = String(e?.message ?? e);
-    return message.includes('[HEDGE_UNCONFIRMED]') || message.includes(ORDER_MAY_BE_LIVE_TAG);
+    return message.includes(HEDGE_UNCONFIRMED_TAG) || message.includes(ORDER_MAY_BE_LIVE_TAG);
 }
 
 export interface LegManagerDeps {

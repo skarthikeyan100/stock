@@ -578,7 +578,8 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                 new Error(
                     `Square-off for ${tsym} failed to fill after ${maxAttempts} re-priced attempts - sold ${totalFilledQty}/${quantity}, ${remainingQty} still open: ${lastErr instanceof Error ? lastErr.message : lastErr}`
                 ),
-                { filledQuantity: totalFilledQty, averagePrice: totalFilledQty > 0 ? totalFilledValue / totalFilledQty : 0 }
+                // `stuck`: a resting sell we could neither cancel nor confirm closed - a retry would sell next to it.
+                { filledQuantity: totalFilledQty, averagePrice: totalFilledQty > 0 ? totalFilledValue / totalFilledQty : 0, ...(stuck ? { orderMayBeLive: true } : {}) }
             );
         }
         // Summary only - NOT re-recorded via bookkeeping.recordFill (every

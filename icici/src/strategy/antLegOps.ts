@@ -3,6 +3,7 @@ import ANT from '../ant/ANT';
 import AntContractMaster from '../ant/AntContractMaster';
 import OrderClient from '../processes/strategies/OrderClient';
 import { LegBrokerOps } from './LegBrokerOps';
+import { HEDGE_UNCONFIRMED_TAG } from './LegManager';
 
 // LegBrokerOps implementation LegManager uses for an instance that trades on ANT (ContinuousStrategy with `broker: ant`;
 // BulkPcrStrategy's old hedge tree used it before the pair rewrite). Used instead of the Kite/Breeze 'Bare' IPC family
@@ -82,7 +83,7 @@ async function buy(userId: string, tradingSymbol: string, token: string, quantit
             // can flag this tree for manual review instead of treating it as an
             // ordinary, retryable spawn failure.
             Log.log(`[antLegOps] ALERT: buy for ${tradingSymbol} qty=${quantity} unconfirmed - manual review needed (order may be live at the broker): ${message}`);
-            throw new Error(`[HEDGE_UNCONFIRMED] ${message}`);
+            throw new Error(`${HEDGE_UNCONFIRMED_TAG} ${message}`);
         }
         throw e;
     }

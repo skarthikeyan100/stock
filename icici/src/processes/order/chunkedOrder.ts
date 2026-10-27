@@ -51,6 +51,12 @@ export interface ChunkedFillResult {
     avgPrice: number;
 }
 
+// A chunk whose fill could not be settled may be live or filled: carry those flags (unchanged) onto the error the chunked run
+// throws, so no caller retries it.
+function carryFillStateFlags(target: Error, cause: any): void {
+    if (cause?.fillStateUnknown || cause?.orderMayBeLive) Object.assign(target, { fillStateUnknown: !!cause.fillStateUnknown, orderMayBeLive: !!cause.orderMayBeLive });
+}
+
 export async function buyChunked(
     executor: BrokerExecutor,
     request: BuyRequest,
@@ -93,8 +99,7 @@ export async function buyChunked(
                     `${request.quantity - filledQty} qty NOT placed. Manual review required. Underlying error: ${e?.message ?? e}`
             ), { filledQuantity: filledQty, averagePrice: filledQty > 0 ? filledValue / filledQty : 0, partial: filledQty > 0 });
             // A clean refusal of the first chunk is still a clean refusal of the whole request.
-            // A chunk whose fill could not be settled may be live or filled: carry that on, so no caller retries it.
-            if (e?.fillStateUnknown || e?.orderMayBeLive) Object.assign(buyErr, { fillStateUnknown: !!e.fillStateUnknown, orderMayBeLive: true });
+            carryFillStateFlags(buyErr, e);
             throw i === 0 && isNotPlaced(e) ? markNotPlaced(buyErr) : buyErr;
         }
     }
@@ -144,7 +149,7 @@ export async function squareOffChunked(
                     `${quantity - filledQty} qty NOT sold. Manual review required. Underlying error: ${e?.message ?? e}`
             ), { filledQuantity: filledQty, averagePrice: filledQty > 0 ? filledValue / filledQty : 0, partial: filledQty > 0 });
             // A chunk whose fill could not be settled may be live or filled: carry that on, so no caller retries it.
-            if (e?.fillStateUnknown || e?.orderMayBeLive) Object.assign(sellErr, { fillStateUnknown: !!e.fillStateUnknown, orderMayBeLive: true });
+            carryFillStateFlags(sellErr, e);
             throw i === 0 && isNotPlaced(e) ? markNotPlaced(sellErr) : sellErr;
         }
     }

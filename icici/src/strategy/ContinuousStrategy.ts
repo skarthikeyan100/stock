@@ -1,5 +1,4 @@
 import { isPastTime } from '../util/marketHours';
-import { ORDER_MAY_BE_LIVE_TAG } from '../ipc/orderProtocol';
 import GateLogger from '../util/GateLogger';
 import moment from 'moment';
 import Log from '../util/Log';
@@ -7,7 +6,7 @@ import { CALL, PUT, MOCK_BROKER } from '../constants';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
-import { LegManager, LegManagerConfig } from './LegManager';
+import { LegManager, LegManagerConfig, isUnconfirmedBuyError } from './LegManager';
 import { legOpsFor } from './legOps';
 import { LegBrokerOps } from './LegBrokerOps';
 import MomentumSignal from './MomentumSignal';
@@ -88,8 +87,7 @@ export default class ContinuousStrategy extends Strategy {
     // antLegOps.buy tags a buy whose fill is unresolved as '[HEDGE_UNCONFIRMED]' (and the order process tags any broker's unsettled
     // fill wait '[ORDER_MAY_BE_LIVE]'): never retry it (double-buy risk).
     private noteUnconfirmedBuy(e: any): void {
-        const message = String(e?.message ?? e);
-        if (!message.includes('[HEDGE_UNCONFIRMED]') && !message.includes(ORDER_MAY_BE_LIVE_TAG)) return;
+        if (!isUnconfirmedBuyError(e)) return;
         this.manualReview = true;
         Log.log(`[ContinuousStrategy] ALERT: an ANT buy could not be confirmed and may be live - no new buys until it is reviewed and the strategy is reset: ${e?.message ?? e}`);
     }
