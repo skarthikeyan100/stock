@@ -547,6 +547,30 @@ export async function setPayoutEmailStatus(payoutId: any, status: 'sent' | 'fail
     );
 }
 
+// A send that crashed mid-flight leaves 'sending' behind; after this long it may be claimed again.
+const EMAIL_SENDING_STALE_MS = 5 * 60 * 1000;
+
+// Compare-and-set claim before sending the paid email: pending/failed (or a stale 'sending') -> 'sending', exactly one caller wins.
+// Returns the claimed payout, or null when the email is already sent or another attempt is in flight (so a double-click or a retry
+// racing a slow first send cannot deliver the payout email twice).
+export async function claimPayoutEmailSend(payoutId: any): Promise<any | null> {
+    const now = new Date();
+    const res: any = await payoutsCollection().findOneAndUpdate(
+        {
+            _id: toObjectId(payoutId),
+            status: 'paid',
+            $or: [
+                { emailStatus: { $in: ['pending', 'failed'] } },
+                { emailStatus: { $exists: false } },
+                { emailStatus: 'sending', emailAttemptAt: { $lt: new Date(now.getTime() - EMAIL_SENDING_STALE_MS) } },
+            ],
+        },
+        { $set: { emailStatus: 'sending', emailAttemptAt: now } },
+        { returnDocument: 'after' }
+    );
+    return res?.value ?? (res && res._id ? res : null);
+}
+
 export async function getPayout(payoutId: any): Promise<any | null> {
     return payoutsCollection().findOne({ _id: toObjectId(payoutId) });
 }

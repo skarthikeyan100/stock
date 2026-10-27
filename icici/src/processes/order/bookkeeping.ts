@@ -141,6 +141,8 @@ class OrderBookkeeping {
     // In-memory/per-process-lifetime only - matches this file's existing
     // in-memory-state conventions (see CLAUDE.md).
     private processedFillIds: Set<string> = new Set();
+    // Fill ids whose booking threw after the raw doc may have been written (see recordFill).
+    private failedBookingFillIds: Set<string> = new Set();
     // Per-session, per-user set of drawdown-warning thresholds (80, 100) already
     // notified, so a losing streak doesn't spam a fresh notification per trade.
     private notifiedThresholds: Map<string, Set<number>> = new Map();
@@ -885,30 +887,48 @@ class OrderBookkeeping {
     // Records a fill directly (used by the Kite buy/GTT-trigger path, which
     // doesn't go through Prism's websocket 'om' message shape at all).
     async recordFill(tradeEvent: Trade): Promise<void> {
-        if (tradeEvent.brokerOrderId) {
-            if (this.processedFillIds.has(tradeEvent.brokerOrderId)) {
-                Log.log(`[order] Ignoring redelivered fill for broker order ${tradeEvent.brokerOrderId} (${tradeEvent.tsym}) - already processed`);
+        let skipInsert = false;
+        const id = tradeEvent.brokerOrderId;
+        if (id) {
+            if (this.processedFillIds.has(id)) {
+                Log.log(`[order] Ignoring redelivered fill for broker order ${id} (${tradeEvent.tsym}) - already processed`);
                 return;
             }
-            // processedFillIds dies with the process; the raw fill doc does not. A restart used to forget it, so the same broker
-            // order was booked a second time (real 2026-10-27: one Kite sell sat in Mongo under two users).
-            if (await this.fillAlreadyStored(tradeEvent)) {
-                this.processedFillIds.add(tradeEvent.brokerOrderId);
-                Log.log(`[order] Ignoring fill for broker order ${tradeEvent.brokerOrderId} (${tradeEvent.tsym}) - already stored in Mongo`);
-                return;
+            // Claim the id BEFORE the first await: the Mongo lookup below yields, and two concurrent deliveries of the same
+            // order (exit path + poller) would otherwise both pass has() and both book it.
+            this.processedFillIds.add(id);
+            try {
+                // processedFillIds dies with the process; the raw fill doc does not. A restart used to forget it, so the same broker
+                // order was booked a second time (real 2026-10-27: one Kite sell sat in Mongo under two users).
+                if (await this.fillAlreadyStored(tradeEvent)) {
+                    if (!this.failedBookingFillIds.has(id)) {
+                        Log.log(`[order] Ignoring fill for broker order ${id} (${tradeEvent.tsym}) - already stored in Mongo`);
+                        return; // id stays claimed
+                    }
+                    // A previous attempt wrote the raw doc then threw before the in-memory update: this retry must update memory
+                    // but not insert the doc a second time (restore nets Buy docs, a duplicate would double the position).
+                    skipInsert = true;
+                }
+                // First writer wins: resting orders were recorded at placement, so this only fills in the owner of orders that fill
+                // in the same call that placed them.
+                recordOrderOwner(id, tradeEvent.user, tradeEvent.broker ?? 'kite');
+            } catch (e) {
+                this.processedFillIds.delete(id);
+                throw e;
             }
-            this.processedFillIds.add(tradeEvent.brokerOrderId);
-            // First writer wins: resting orders were recorded at placement, so this only fills in the owner of orders that fill
-            // in the same call that placed them.
-            recordOrderOwner(tradeEvent.brokerOrderId, tradeEvent.user, tradeEvent.broker ?? 'kite');
         }
         try {
-            await this._processTradeEvent(tradeEvent);
+            await this._processTradeEvent(tradeEvent, skipInsert);
         } catch (e) {
-            // Not booked: release the id so a retry is processed instead of silently dropped as a duplicate.
-            if (tradeEvent.brokerOrderId) this.processedFillIds.delete(tradeEvent.brokerOrderId);
+            // Not booked in memory: release the id so a retry is processed instead of silently dropped as a duplicate, and
+            // remember that the raw doc may already exist so the retry does not mistake it for a completed booking.
+            if (id) {
+                this.processedFillIds.delete(id);
+                this.failedBookingFillIds.add(id);
+            }
             throw e;
         }
+        if (id) this.failedBookingFillIds.delete(id);
         for (const l of this.fillListeners) l(tradeEvent.user || 'Default', tradeEvent);
     }
 
@@ -1016,7 +1036,7 @@ class OrderBookkeeping {
         return tradeEvent;
     }
 
-    private async _processTradeEvent(tradeEvent: Trade) {
+    private async _processTradeEvent(tradeEvent: Trade, skipInsert = false) {
         Log.log(`[order] ${tradeEvent.action} ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} status=${tradeEvent.status}`);
         // Every raw fill doc needs a real entryTime, not just a token's first
         // fill - restoreOneOpenTrade's `entryTime: { $gte: startOfDay() }`
@@ -1029,9 +1049,11 @@ class OrderBookkeeping {
         // which cannot catch a rejection from a promise that isn't awaited)
         // is what actually prevents an unhandled promise rejection from
         // crashing the `order` process on a transient Mongo error.
-        Mongo.getInstance()?.insert(tradeEvent).catch((e) => {
-            Log.log('[order] Mongo insert failed for trade event (continuing without persistence):', tradeEvent.tsym, e);
-        });
+        if (!skipInsert) {
+            Mongo.getInstance()?.insert(tradeEvent).catch((e) => {
+                Log.log('[order] Mongo insert failed for trade event (continuing without persistence):', tradeEvent.tsym, e);
+            });
+        }
 
         if (tradeEvent.action == 'Buy') {
             this.releasePending(tradeEvent.user || 'Default', tradeEvent.broker);
@@ -1444,10 +1466,19 @@ class OrderBookkeeping {
         }
 
         if (totalRestoredQty > brokerQuantity) {
-            // More restored than the broker holds: every exit sized from this would sell quantity that is not there (or belongs to
-            // another owner). Restore nothing and leave it for review.
-            Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) restores to ${totalRestoredQty} across ${restored.length} user(s) but the broker holds only ${brokerQuantity} - restoring NOTHING for this contract, manual review required`);
-            return [];
+            // More restored than the broker holds (typically a Sell fill doc that never reached Mongo, or an exit made outside this
+            // system). The broker is ground truth: cap the aggregate at what it holds, so exits are never sized past the real
+            // position, but keep the position monitored - dropping it would leave real exposure with no stop, target or exit. With
+            // several owners the oldest entries are kept whole and the newest trimmed (greedy, never exceeding the broker total).
+            Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) restores to ${totalRestoredQty} across ${restored.length} user(s) but the broker holds only ${brokerQuantity} - capping at the broker quantity, manual review required`);
+            restored.sort((x, y) => new Date(x.entryTime as any).getTime() - new Date(y.entryTime as any).getTime());
+            let remaining = brokerQuantity;
+            for (const t of restored) {
+                t.quantity = Math.min(t.quantity, remaining);
+                remaining -= t.quantity;
+            }
+            totalRestoredQty = brokerQuantity;
+            for (let i = restored.length - 1; i >= 0; i--) if (restored[i].quantity <= 0) restored.splice(i, 1);
         }
         if (restored.length === 0) {
             Log.log(`[order] loadOpenTradesFromBroker: WARNING - broker reports an open position on ${tsym} (qty=${brokerQuantity}) with no matching Mongo Buy doc for any user - leaving untracked`);

@@ -2,54 +2,9 @@
 
 **Scope: NOT a whole-project review.** The `code-review high src` run reviewed only the latest commit's `src` changes (`bdf6e89`), because the tree was clean. The rest of `src/` (about 46k lines across 183 files) has not been reviewed. Findings come from reading the code only; nothing was compiled or run. None of these have been fixed.
 
-## 1. `recordFill` duplicate check is no longer atomic
-`src/processes/order/bookkeeping.ts:890`
-The new `await this.fillAlreadyStored()` sits between `processedFillIds.has()` and `processedFillIds.add()`.
-**Scenario:** the same broker order id reaches `recordFill` twice at nearly the same time. For example, antExecutor untracks a pending order and calls `recordFill` on the exit path while `pollPendingAntLimitOrders` books the same fill. Both pass `has()`, both await the Mongo `findOne` (the raw Trade doc isn't inserted yet), then both `add()` and run `_processTradeEvent`. The fill is booked twice, which double-counts quantity and P&L.
-**Fix direction:** add the id to the set before the await, and remove it if the lookup finds a stored doc.
-
-## 2. Retry after a failed `_processTradeEvent` permanently drops the fill
-`src/processes/order/bookkeeping.ts:906`
-`_processTradeEvent` calls `Mongo.insert(tradeEvent)` first. If later code throws, `recordFill` deletes the id from `processedFillIds` so the pollers retry. The retry's `fillAlreadyStored()` now finds the raw doc from the failed attempt and returns without updating the in-memory `trades`.
-**Impact:** the position is persisted in Mongo but not tracked in memory, so it has no exit monitoring or stop until the next restart reconcile.
-
-## 3. `recordOrderOwner` "first writer wins" only holds within one process lifetime
-`src/processes/order/orderOwners.ts:414`
-It writes the in-memory cache without checking Mongo.
-**Scenario:** after an order-process restart the cache is empty. A fill whose ledger owner in Mongo is user A is re-booked or inferred under user B (e.g. by `reconcileManualSells`). `recordOrderOwner(id, B)` sets `cache[id] = B`, and the Mongo `$setOnInsert` is a no-op. `loadOrderOwners` checks the cache first and returns B, so the position is attributed to the wrong user. This is the bug the ledger was added to prevent.
-Orders with no ledger entry (placed before this deploy, or manual sells) also get whichever user's booking arrives first recorded as the owner, which makes an inferred guess permanent.
-
 ## 4. `[HEDGE_UNCONFIRMED]` from an average-add buy frees the level slot, so the add is retried
 `src/strategy/LegManager.ts:955`
 **Scenario:** ContinuousStrategy on ANT averages into a leg. `antLegOps.buy` throws `[HEDGE_UNCONFIRMED] ... fill status unresolved` because the order may be live. The catch deletes `averagedLevels` for that level and only logs. The next qualifying tick buys the same level again, so the leg is double-bought while the first order may be live. Only spawn failures and the T1 entry call `noteUnconfirmedBuy`, so `manualReview` never trips for averaging. Root refill and any other `ops.buy` call site have the same gap.
-
-## 5. Restore discards the whole contract when restored quantity exceeds broker quantity
-`src/processes/order/bookkeeping.ts:1446`
-It now returns `[]` instead of clamping to the broker quantity.
-**Scenario:** a Sell fill doc is missing from Mongo (fire-and-forget insert failed, or a manual or broker-side exit was never reconciled) and the broker holds less than the Buy docs net to. Restart reconcile restores nothing, so a real open position has no stop, target or exit monitoring. It only logs "manual review required". Previously it restored with a warning and used the broker quantity as ground truth.
-**Fix direction:** cap the restored quantity at `brokerQuantity` and alert.
-
-## 6. Missing indexes on the new hot-path queries
-`src/processes/order/bookkeeping.ts:877`
-The per-fill lookup queries `Trade` by `{brokerOrderId, action}`, and `orderOwners` queries by `orderId`. Grep found no `createIndex` for either.
-**Impact:** every `recordFill` runs a full collection scan of the ever-growing `Trade` collection before booking, which adds latency to the live fill path. `loadOrderOwners` (`$in` on `orderId`) and the `recordOrderOwner` upsert scan `orderOwners`, which is never pruned.
-**Fix direction:** create indexes on `Trade.brokerOrderId` and a unique index on `orderOwners.orderId` at startup.
-
-## 7. `resend-email` has no compare-and-set
-`src/server.ts:959`
-`emailStatus` is only read, and the status is written after the send.
-**Scenario:** the admin double-clicks Resend, or a retry races a slow first attempt. Both read `emailStatus !== 'sent'` and both send the payout email with the payment-proof attachment, so the customer gets duplicates.
-**Fix direction:** atomically claim the payout (`updateOne` from failed/pending to sending) before sending.
-
-## 8. Proof upload accepts any `image/*`, including SVG
-`src/server.ts:905`
-The `/pay` route only checks `startsWith('image/')`. The email attachment extension is derived from the stored content type, so an SVG goes out as `payment-proof-X.svg+xml`, with an extension a mail client may not recognise. SVG can also carry script. The download route special-cases SVG to `octet-stream`, but the email path does not.
-**Fix direction:** restrict to png/jpeg/webp and map the extension explicitly.
-
-## 9. Payout email destination can be blank
-`src/server.ts:675`
-The destination is built from `paidTo` (chosen by the admin) but reads masked details from `bankSnapshot`, which may not match.
-**Scenario:** the admin selects `paidTo='upi'` for a payout whose snapshot has no `upiId` (or `'bank'` with no `accountNumberMasked`). The customer's email reads "UPI " or "Bank account " with nothing after it, and the payout is already recorded as paid with no validation.
 
 ---
 # Area 1: order process (`orderProcess.ts`, `src/processes/order/`, `src/ipc/`)
@@ -220,3 +175,52 @@ All 25 files read in full via code-review (high). Not fixed. No code or tests we
 
 ## A3b Vocabulary
 11. [low-med] `targetPrice` is a points offset in Sentiment (config.yml:22), RateOfChange (RoC:117), Gap (Gap:254) and Hourly (Hourly:421 reads cfg.targetPrice into a local named targetPoints; :426 then uses targetPrice as an absolute price), but an absolute option LTP trigger in TargetReach (77) next to `targetPoints` offsets (91). GoodMorning:236, Butterfly:94, TargetReach:91 use targetPoints/stopLossPoints; RuleBased:144 uses target/stopLoss; strategy.ts:100 uses settings.targetPriceDiff/stopLossPriceDiff. Canonical: targetPoints/stopLossPoints for offsets, targetPrice/stopLossPrice only for absolute prices. Symbol: tsym (Hourly:438, Gap:61, Trade.tsym), tradingSymbol (Butterfly:254, TopStock:549, Hourly's notification.tradingSymbol), contract (strategy.ts:174, Sentiment:42, RuleBased:12), heldTsym (Hourly:105): canonical tradingSymbol on payloads. Token: token (Leg, Sentiment:45), instrumentId (Hourly:438, TopStock:550), instrumentToken (Butterfly:254, TopStock:78/597 - the same function as instrumentId at :550), heldToken (Hourly:106): canonical token. Exchange: exch (TopStock:61) vs exchange. Quantity: qty (strategy.ts:174, Sentiment:44) vs quantity; targetQuantity/filledQty (Hourly:108, Butterfly:37). Pnl: totalPnL (strategy.ts:33), pnl (PnlStop.evaluate), exitPnl (RuleBased:22), profit (Sentiment:46, Gap:47), realizedPnL (Minutes5:56): canonical pnl for money, points for price differences. Capital: maxInvestment is used consistently in PnlStop:21 and Hourly:368 (the strategy-level cap); investmentAmount and allottedCapital are the user-level terms.
+
+
+---
+# Fixed / resolved (moved from above)
+
+## 1. `recordFill` duplicate check is no longer atomic  **[FIXED: id claimed before the await; failedBookingFillIds]**
+`src/processes/order/bookkeeping.ts:890`
+The new `await this.fillAlreadyStored()` sits between `processedFillIds.has()` and `processedFillIds.add()`.
+**Scenario:** the same broker order id reaches `recordFill` twice at nearly the same time. For example, antExecutor untracks a pending order and calls `recordFill` on the exit path while `pollPendingAntLimitOrders` books the same fill. Both pass `has()`, both await the Mongo `findOne` (the raw Trade doc isn't inserted yet), then both `add()` and run `_processTradeEvent`. The fill is booked twice, which double-counts quantity and P&L.
+**Fix direction:** add the id to the set before the await, and remove it if the lookup finds a stored doc.
+
+## 2. Retry after a failed `_processTradeEvent` permanently drops the fill  **[FIXED: retry skips duplicate insert but updates memory]**
+`src/processes/order/bookkeeping.ts:906`
+`_processTradeEvent` calls `Mongo.insert(tradeEvent)` first. If later code throws, `recordFill` deletes the id from `processedFillIds` so the pollers retry. The retry's `fillAlreadyStored()` now finds the raw doc from the failed attempt and returns without updating the in-memory `trades`.
+**Impact:** the position is persisted in Mongo but not tracked in memory, so it has no exit monitoring or stop until the next restart reconcile.
+
+## 3. `recordOrderOwner` "first writer wins" only holds within one process lifetime  **[FIXED: owner read back from Mongo; unconfirmed fallback only]**
+`src/processes/order/orderOwners.ts:414`
+It writes the in-memory cache without checking Mongo.
+**Scenario:** after an order-process restart the cache is empty. A fill whose ledger owner in Mongo is user A is re-booked or inferred under user B (e.g. by `reconcileManualSells`). `recordOrderOwner(id, B)` sets `cache[id] = B`, and the Mongo `$setOnInsert` is a no-op. `loadOrderOwners` checks the cache first and returns B, so the position is attributed to the wrong user. This is the bug the ledger was added to prevent.
+Orders with no ledger entry (placed before this deploy, or manual sells) also get whichever user's booking arrives first recorded as the owner, which makes an inferred guess permanent.
+
+## 6. Missing indexes on the new hot-path queries  **[FIXED: ensureOrderIndexes at order startup]**
+`src/processes/order/bookkeeping.ts:877`
+The per-fill lookup queries `Trade` by `{brokerOrderId, action}`, and `orderOwners` queries by `orderId`. Grep found no `createIndex` for either.
+**Impact:** every `recordFill` runs a full collection scan of the ever-growing `Trade` collection before booking, which adds latency to the live fill path. `loadOrderOwners` (`$in` on `orderId`) and the `recordOrderOwner` upsert scan `orderOwners`, which is never pruned.
+**Fix direction:** create indexes on `Trade.brokerOrderId` and a unique index on `orderOwners.orderId` at startup.
+
+## 5. Restore discards the whole contract when restored quantity exceeds broker quantity  **[FIXED: restore caps at broker quantity (oldest entries kept) and alerts]**
+`src/processes/order/bookkeeping.ts:1446`
+It now returns `[]` instead of clamping to the broker quantity.
+**Scenario:** a Sell fill doc is missing from Mongo (fire-and-forget insert failed, or a manual or broker-side exit was never reconciled) and the broker holds less than the Buy docs net to. Restart reconcile restores nothing, so a real open position has no stop, target or exit monitoring. It only logs "manual review required". Previously it restored with a warning and used the broker quantity as ground truth.
+**Fix direction:** cap the restored quantity at `brokerQuantity` and alert.
+
+## 7. `resend-email` has no compare-and-set  **[FIXED: claimPayoutEmailSend compare-and-set (stale 'sending' reclaimable after 5 min)]**
+`src/server.ts:959`
+`emailStatus` is only read, and the status is written after the send.
+**Scenario:** the admin double-clicks Resend, or a retry races a slow first attempt. Both read `emailStatus !== 'sent'` and both send the payout email with the payment-proof attachment, so the customer gets duplicates.
+**Fix direction:** atomically claim the payout (`updateOne` from failed/pending to sending) before sending.
+
+## 8. Proof upload accepts any `image/*`, including SVG  **[FIXED: magic-byte png/jpeg/webp allowlist, explicit extension map]**
+`src/server.ts:905`
+The `/pay` route only checks `startsWith('image/')`. The email attachment extension is derived from the stored content type, so an SVG goes out as `payment-proof-X.svg+xml`, with an extension a mail client may not recognise. SVG can also carry script. The download route special-cases SVG to `octet-stream`, but the email path does not.
+**Fix direction:** restrict to png/jpeg/webp and map the extension explicitly.
+
+## 9. Payout email destination can be blank  **[FIXED: pay route refuses a paidTo with no saved details; email falls back to generic wording]**
+`src/server.ts:675`
+The destination is built from `paidTo` (chosen by the admin) but reads masked details from `bankSnapshot`, which may not match.
+**Scenario:** the admin selects `paidTo='upi'` for a payout whose snapshot has no `upiId` (or `'bank'` with no `accountNumberMasked`). The customer's email reads "UPI " or "Bank account " with nothing after it, and the payout is already recorded as paid with no validation.

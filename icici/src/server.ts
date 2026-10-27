@@ -42,7 +42,7 @@ import { Trade } from './model/model';
 import configService from './prism/ConfigService';
 import { validateFlatConfig, validateConfigFile } from './prism/configValidation';
 import { getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields, normalizeEmail } from './user';
-import { computePayout, createPayoutRecord, markPayoutDecision, markPayoutPaidWithProof, setPayoutEmailStatus, getPayout, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary, periodFromInputs } from './payout';
+import { computePayout, createPayoutRecord, markPayoutDecision, markPayoutPaidWithProof, setPayoutEmailStatus, claimPayoutEmailSend, getPayout, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary, periodFromInputs } from './payout';
 import multer from 'multer';
 import { GridFSBucket, ObjectId } from 'mongodb';
 import { sendPayoutPaidEmail } from './mailer';
@@ -879,9 +879,23 @@ app.get('/admin/payouts/:id', requireAdmin, async function (req, res) {
     }
 });
 
+// Payment-proof images: png/jpeg/webp only (no SVG, which can carry script). Maps the content type to the attachment extension.
+const PROOF_IMAGE_TYPES: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
+function detectProofImageType(buf: Buffer): string | null {
+    const t = detectDocumentType(buf);
+    if (t === 'image/jpeg' || t === 'image/png') return t;
+    if (buf.length >= 12 && buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
+    return null;
+}
+
 function payoutEmailVars(payout: any, user: any) {
     const method = payout.paidTo;
-    const destination = method === 'upi' ? `UPI ${payout.bankSnapshot?.upiId ?? ''}` : `Bank account ${payout.bankSnapshot?.accountNumberMasked ?? ''}`;
+    const upiId = payout.bankSnapshot?.upiId;
+    const accountMasked = payout.bankSnapshot?.accountNumberMasked;
+    // The pay route refuses a paidTo with no matching saved details; the fallbacks only cover payouts paid before that check.
+    const destination = method === 'upi'
+        ? (upiId ? `UPI ${upiId}` : 'your registered UPI ID')
+        : (accountMasked ? `Bank account ${accountMasked}` : 'your registered bank account');
     return {
         name: String(user?.legalName || user?.name || payout.user),
         invoiceNumber: String(payout.invoiceNumber),
@@ -901,8 +915,9 @@ async function sendPaidEmailAndRecord(payout: any): Promise<{ emailStatus: 'sent
         const files = await bucket.find({ _id: new ObjectId(payout.proofFileId) }).toArray();
         const chunks: Buffer[] = [];
         for await (const chunk of bucket.openDownloadStream(new ObjectId(payout.proofFileId))) chunks.push(chunk as Buffer);
-        const contentType = files[0]?.contentType || 'image/png';
-        const ext = contentType.split('/')[1] || 'png';
+        // Only the types the pay route accepts; anything else (e.g. an older SVG upload) is sent as a generic PNG-less binary name.
+        const contentType = PROOF_IMAGE_TYPES[files[0]?.contentType as string] ? files[0].contentType as string : 'application/octet-stream';
+        const ext = PROOF_IMAGE_TYPES[contentType] ?? 'bin';
         await sendPayoutPaidEmail(payout.user, payoutEmailVars(payout, user), {
             filename: `payment-proof-${payout.invoiceNumber}.${ext}`, content: Buffer.concat(chunks), contentType,
         });
@@ -922,7 +937,9 @@ app.post('/admin/payouts/:id/pay', requireAdmin, upload.single('proof'), async f
     try {
         if (!ObjectId.isValid(req.params.id)) { res.status(400).json({ error: 'Invalid payout id' }); return; }
         if (!req.file) { res.status(400).json({ error: 'Payment screenshot is required' }); return; }
-        if (!req.file.mimetype.startsWith('image/')) { res.status(400).json({ error: 'The proof must be an image' }); return; }
+        // Trust the bytes, not the client-declared mimetype.
+        const proofType = detectProofImageType(req.file.buffer);
+        if (!proofType) { res.status(400).json({ error: 'The proof must be a PNG, JPEG or WebP image' }); return; }
         const { paymentRef, note, paidTo } = req.body as { paymentRef?: string; note?: string; paidTo?: string };
         if (paidTo !== 'bank' && paidTo !== 'upi') { res.status(400).json({ error: 'paidTo must be bank or upi' }); return; }
         const adminEmail = resolveUser(req) ?? (requestIsLoopback(req) ? 'loopback' : null);
@@ -930,10 +947,14 @@ app.post('/admin/payouts/:id/pay', requireAdmin, upload.single('proof'), async f
         const existing = await getPayout(req.params.id);
         if (!existing) { res.status(404).json({ error: 'Payout not found' }); return; }
         if (existing.status !== 'pending') { res.status(409).json({ error: `Payout is already ${existing.status}` }); return; }
+        if (paidTo === 'upi' ? !existing.bankSnapshot?.upiId : !existing.bankSnapshot?.accountNumberMasked) {
+            res.status(400).json({ error: `This payout has no saved ${paidTo === 'upi' ? 'UPI ID' : 'bank account'} - choose the other method or ask the user to add one` });
+            return;
+        }
 
         const bucket = new GridFSBucket(Mongo.getInstance().db, { bucketName: 'payout_proofs' });
         const safeName = String(req.file.originalname ?? 'proof').replace(/[^A-Za-z0-9._-]/g, '_').slice(-80);
-        const uploadStream = bucket.openUploadStream(`${req.params.id}_${Date.now()}_${safeName}`, { contentType: req.file.mimetype });
+        const uploadStream = bucket.openUploadStream(`${req.params.id}_${Date.now()}_${safeName}`, { contentType: proofType });
         uploadStream.end(req.file.buffer);
         await new Promise<void>((resolve, reject) => { uploadStream.on('finish', resolve); uploadStream.on('error', reject); });
         proofId = uploadStream.id as ObjectId;
@@ -947,7 +968,8 @@ app.post('/admin/payouts/:id/pay', requireAdmin, upload.single('proof'), async f
             proofId = null;
             throw e;
         }
-        const email = await sendPaidEmailAndRecord(payout);
+        const claimed = await claimPayoutEmailSend(payout._id);
+        const email = claimed ? await sendPaidEmailAndRecord(claimed) : { emailStatus: 'sending' as const };
         res.json({ ...payout, ...email });
     } catch (e: any) {
         console.error('Pay payout error:', e);
@@ -963,7 +985,10 @@ app.post('/admin/payouts/:id/resend-email', requireAdmin, async function (req, r
         if (!payout) { res.status(404).json({ error: 'Payout not found' }); return; }
         if (payout.status !== 'paid' || !payout.proofFileId) { res.status(409).json({ error: 'Only a paid payout with a payment screenshot can be emailed' }); return; }
         if (payout.emailStatus === 'sent') { res.status(409).json({ error: 'The email was already sent' }); return; }
-        res.json(await sendPaidEmailAndRecord(payout));
+        // Atomic claim: a double-click or a retry racing a slow first send gets null here instead of a second email.
+        const claimed = await claimPayoutEmailSend(payout._id);
+        if (!claimed) { res.status(409).json({ error: 'An email send is already in progress or has completed' }); return; }
+        res.json(await sendPaidEmailAndRecord(claimed));
     } catch (e) {
         console.error('Resend payout email error:', e);
         res.sendStatus(500);

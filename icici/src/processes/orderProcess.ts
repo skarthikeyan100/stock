@@ -22,6 +22,7 @@ import net from 'net';
 import fs from 'fs';
 import Log from '../util/Log';
 import Mongo from '../tools/mongo';
+import { ensureOrderIndexes } from './order/orderOwners';
 import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
@@ -1444,6 +1445,7 @@ async function main() {
     void BreezeContractMaster.getInstance().preload();
 
     await Mongo.init().catch((e) => Log.log('[order] Mongo.init failed (continuing without persistence):', e));
+    await ensureOrderIndexes();
     await loadUserLimits().catch((e) => Log.log('[order] startup: loadUserLimits failed (continuing with defaults; reloadUserLimits can retry):', e));
     configService.onChange(() => {
         applyConfigStrategyLimits().catch((e) => Log.log(`[order] config-change limit refresh failed: ${e?.message ?? e}`));
