@@ -432,7 +432,7 @@ export async function cancelOrderOnPrism(orderId: string): Promise<void> {
 }
 
 async function liveNetQuantityOnPrism(tsym: string): Promise<number> {
-    const positions = await Prism.getInstance().getPositions();
+    const positions = await Prism.getInstance().getPositions({ strict: true });
     const hit = (positions || []).find((p: any) => p.tsym === tsym);
     return Number(hit?.netqty ?? 0);
 }

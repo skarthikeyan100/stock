@@ -90,7 +90,13 @@ async function buy(userId: string, tradingSymbol: string, token: string, quantit
 
 // Chunked: one unchunked order above the exchange freeze quantity (1755 for NIFTY) is rejected outright, leaving the leg open.
 async function sell(userId: string, tradingSymbol: string, _token: string, quantity: number, _exchange: 'NFO' | 'BFO') {
-    return OrderClient.getInstance().chunkedSquareOff(userId, { tsym: tradingSymbol, quantity, broker: 'ant' });
+    const res = await OrderClient.getInstance().chunkedSquareOff(userId, { tsym: tradingSymbol, quantity, broker: 'ant' });
+    // A stopped chunk run (exit placed, fill unconfirmed) returns normally with less than asked. LegManager treats a normal return as
+    // fully sold and forgets the leg, so a short result must surface as a failure instead.
+    if (Number(res?.quantity ?? quantity) < quantity) {
+        throw new Error(`ANT sell of ${tradingSymbol}: only ${res.quantity}/${quantity} confirmed sold (rest unconfirmed, still being re-priced)`);
+    }
+    return res;
 }
 
 async function cancel(userId: string, orderId: string): Promise<void> {

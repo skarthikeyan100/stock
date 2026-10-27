@@ -1323,12 +1323,14 @@ export class LegManager {
         this.handledBuyOrderIds.clear();
         this.ignoredSellEchoes.clear();
         this.maxProfitBaseline = this.realizedPnL;
-        this.dryRunLatched = false;
         this.activeDay = LegManager.latchDay();
         // After the clears above, so an abandoned refill that fills anyway is recognised and sold back instead of dropped as an echo.
+        // Dispatched BEFORE the dry-run latch is cleared: the cancel resolves its ops synchronously, and an intent created in dry-run
+        // mode must go to the dry-run ops, never the real broker.
         for (const intent of abandoned) {
             if (intent.orderId) this.supersededRefills.set(intent.orderId, { tsym: intent.tsym, token: intent.token, exchange: intent.exchange });
             this.cancelIntentOrSellBack(intent, 'Reset').catch((e) => Log.log(`[${this.deps.ownerType}] Reset: cancel of pending re-entry ${intent.tsym} failed:`, e));
         }
+        this.dryRunLatched = false;
     }
 }

@@ -400,7 +400,9 @@ export default class Monitor {
                         try {
                             await Prism.getInstance().squareOffOrder(matchingTrade.token, matchingTrade.quantity, matchingTrade.user, matchingTrade.lastTradePrice);
                         } catch (e) {
-                            matchingTrade.isSellPending = false; // the exit failed: let the next tick retry it
+                            // Retry on the next tick only when the order definitely never went out; after an ambiguous failure (a timeout
+                            // the broker may have accepted) a second sell could oversell, so the flag stays set for review.
+                            if ((e as any)?.notPlaced) matchingTrade.isSellPending = false;
                             Log.log(`[Monitor] auto square off failed for ${matchingTrade.tsym}:`, e);
                         }
                     } else if (matchingTrade.stopLossPrice && matchingTrade.lastTradePrice <= matchingTrade.stopLossPrice) {
@@ -409,7 +411,9 @@ export default class Monitor {
                         try {
                             await Prism.getInstance().squareOffOrder(matchingTrade.token, matchingTrade.quantity, matchingTrade.user, matchingTrade.lastTradePrice);
                         } catch (e) {
-                            matchingTrade.isSellPending = false; // the exit failed: let the next tick retry it
+                            // Retry on the next tick only when the order definitely never went out; after an ambiguous failure (a timeout
+                            // the broker may have accepted) a second sell could oversell, so the flag stays set for review.
+                            if ((e as any)?.notPlaced) matchingTrade.isSellPending = false;
                             Log.log(`[Monitor] auto square off failed for ${matchingTrade.tsym}:`, e);
                         }
                     }

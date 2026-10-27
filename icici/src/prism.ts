@@ -1107,8 +1107,11 @@ export default class Prism {
     // rest of this session's new Prism work - unconfirmed against a live
     // response; falls back defensively (0 qty/price) rather than throwing on
     // an unexpected shape.
-    getPositions = async (): Promise<any[]> => {
+    getPositions = async (opts?: { strict?: boolean }): Promise<any[]> => {
         const positions: any = (await NorenRestApi.get_positions()) ?? [];
+        // strict: a non-array reply (a Not_Ok envelope, an expired session) must throw, not read as "no positions" - the
+        // never-short guard would otherwise refuse a real exit on a flat-looking account.
+        if (opts?.strict && !Array.isArray(positions)) throw new Error(`Prism get_positions returned a non-array reply: ${JSON.stringify(positions).slice(0, 200)}`);
         return Array.isArray(positions) ? positions : [];
     }
 
@@ -1472,11 +1475,11 @@ export default class Prism {
         try {
             const tsym = await this.getContract(token);
             if (!tsym) {
-                throw new Error(`could not resolve tsym for token ${token}`);
+                throw Object.assign(new Error(`could not resolve tsym for token ${token}`), { notPlaced: true });
             }
             // No true MARKET orders anywhere (a blind market order has no price floor): the caller must give a limit price.
             if (!(price && price > 0)) {
-                throw new Error(`no limit price given for ${tsym} - refusing a MARKET square-off`);
+                throw Object.assign(new Error(`no limit price given for ${tsym} - refusing a MARKET square-off`), { notPlaced: true });
             }
 
             const order = {

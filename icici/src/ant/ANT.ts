@@ -25,7 +25,8 @@ export type AntProduct = 'INTRADAY' | 'LONGTERM';
 // fall through to MARKET silently, so a bad computed limit (e.g. a target-hit sell) became an unpriced market order.
 function orderTypeFor(price: number | undefined): 'LIMIT' | 'MARKET' {
     if (price === undefined) return 'MARKET';
-    if (!Number.isFinite(price) || price <= 0) throw new Error(`ANT order refused: invalid limit price ${price}`);
+    // Nothing was sent: flagged so the exit re-price chain retries instead of treating the outcome as unknown.
+    if (!Number.isFinite(price) || price <= 0) throw Object.assign(new Error(`ANT order refused: invalid limit price ${price}`), { orderNotPlaced: true });
     return 'LIMIT';
 }
 

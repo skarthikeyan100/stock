@@ -47,6 +47,12 @@ export async function neverShortSellable(args: {
     let live: number;
     try {
         live = await args.livePosition();
+        // A positions endpoint can lag a fill by a few seconds (a target sell placed right after the entry fill, a sell-back right
+        // after its buy): before refusing on a flat reading, look once more.
+        if (Number.isFinite(live) && live - args.restingSellQuantity <= 0) {
+            await new Promise((r) => setTimeout(r, 2500));
+            live = await args.livePosition();
+        }
     } catch (e) {
         Log.log(`[order] NEVER-SHORT GUARD: could not read the live position for ${args.label} - selling the requested ${args.quantity} unverified:`, e);
         return args.quantity;

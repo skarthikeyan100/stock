@@ -3,7 +3,7 @@ import { OptionQuote } from '../model/model';
 import { Strategy } from './strategy';
 import OrderClient from '../processes/strategies/OrderClient';
 import { subscribeTokenDepth, unsubscribeTokenDepth } from '../processes/strategies/DataClient';
-import { watchTokenOnSource, unwatchTokenOnSource, isWatching } from '../processes/strategies/tokenRouter';
+import { leaseTokenOnSource } from '../processes/strategies/tokenRouter';
 import { CALL, PUT } from '../constants';
 import { sleep } from '../util/sleep';
 import { exchangeForIndex } from '../util/underlyings';
@@ -12,7 +12,7 @@ interface PendingLeg {
     tbq?: number;
     tsq?: number;
     refs: number; // concurrent getDirection calls sharing this token's reading
-    ownsWatch: boolean; // this entry (not a slot/position) added the strategy's tick watch, so only it may remove it
+    release: () => void; // drops this entry's tick lease (independent of any slot/position watch on the token)
 }
 
 // Momentum signal for ContinuousStrategy's PCR veto (see
@@ -68,11 +68,9 @@ export default class MomentumSignal {
             if (existing) {
                 existing.refs++;
             } else {
-                // watchTokenOnSource is a no-op when the strategy already watches the token (e.g. a live slot's tick routing):
-                // removing it afterwards would silence that slot, so only remove a watch this entry added.
-                const ownsWatch = !isWatching('ant', token, strategy);
-                this.pending.set(token, { refs: 1, ownsWatch });
-                watchTokenOnSource('ant', token, strategy, exchange);
+                // A lease, not a watch: watchTokenOnSource is a no-op when the strategy already watches the token (a live slot's tick
+                // routing), and removing it afterwards would silence that slot - including a watch a slot adds mid-wait.
+                this.pending.set(token, { refs: 1, release: leaseTokenOnSource('ant', token, strategy, exchange) });
                 subscribeTokenDepth(token, 'ant', exchange);
             }
             joined.push(token);
@@ -102,7 +100,7 @@ export default class MomentumSignal {
                 if (!entry) continue;
                 if (--entry.refs > 0) continue;
                 this.pending.delete(token);
-                if (entry.ownsWatch) unwatchTokenOnSource('ant', token, strategy, exchange);
+                entry.release();
                 unsubscribeTokenDepth(token, 'ant', exchange);
             }
         }

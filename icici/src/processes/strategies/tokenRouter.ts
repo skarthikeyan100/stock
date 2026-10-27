@@ -68,9 +68,31 @@ export function resubscribeAll(): number {
 // Keys an external (non-strategy) client holds, e.g. the anonymous demo page's subscriptions. They take part in the ref-count, so
 // releasing one can never unsubscribe a token a live strategy or position still depends on.
 const externalHolds = new Set<string>();
+// Short-lived holds by a strategy for one-off reads (the momentum depth check), counted separately from the strategy's own
+// watch/position so releasing one can never remove the other.
+const leases = new Map<string, Map<Strategy, number>>();
 
 function refCount(k: string): number {
-    return (watchers.get(k)?.size ?? 0) + (tradeHolders.get(k)?.size ?? 0) + (externalHolds.has(k) ? 1 : 0);
+    return (watchers.get(k)?.size ?? 0) + (tradeHolders.get(k)?.size ?? 0) + (externalHolds.has(k) ? 1 : 0) + (leases.get(k)?.size ?? 0);
+}
+
+// Takes a lease for `strategy` on a token and returns its release. Independent of watchTokenOnSource/registerTrade: the strategy
+// receives the token's ticks while any lease, watch or position holds it.
+export function leaseTokenOnSource(source: FeedSource, token: string, strategy: Strategy, exchange?: 'NFO' | 'BFO'): () => void {
+    const k = key(source, token);
+    if (!leases.has(k)) leases.set(k, new Map());
+    const m = leases.get(k)!;
+    m.set(strategy, (m.get(strategy) ?? 0) + 1);
+    if (refCount(k) === 1) subscribeFeed(token, source, exchange);
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        const n = (m.get(strategy) ?? 1) - 1;
+        if (n <= 0) m.delete(strategy); else m.set(strategy, n);
+        if (m.size === 0) leases.delete(k);
+        if (refCount(k) === 0) unsubscribeFeed(token, source, exchange);
+    };
 }
 
 export function holdExternal(token: string, source: FeedSource = DEFAULT_FEED_SOURCE, exchange?: 'NFO' | 'BFO'): void {
@@ -154,11 +176,6 @@ export function unregisterTrade(token: string, strategy: Strategy, source: FeedS
     if (refCount(k) === 0) unsubscribeFeed(token, source, exchange);
 }
 
-// True when this strategy is already in the watcher set for the token (a later watchTokenOnSource would be a no-op).
-export function isWatching(source: FeedSource, token: string, strategy: Strategy): boolean {
-    return watchers.get(key(source, token))?.has(strategy) ?? false;
-}
-
 // Strategies currently holding or watching this token on this feed.
 export function optionTickTargets(source: FeedSource, token: string): Strategy[] {
     const k = key(source, token);
@@ -167,6 +184,7 @@ export function optionTickTargets(source: FeedSource, token: string): Strategy[]
         if (!set) continue;
         for (const strategy of set) targets.add(strategy);
     }
+    for (const strategy of leases.get(k)?.keys() ?? []) targets.add(strategy);
     return [...targets];
 }
 

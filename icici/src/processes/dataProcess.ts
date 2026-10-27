@@ -107,6 +107,5 @@ process.on('SIGTERM', () => process.exit(0));
 process.on('unhandledRejection', (reason) => {
     Log.log('[data] Unhandled promise rejection (process kept alive):', reason);
 });
-process.on('uncaughtException', (e) => {
-    Log.log('[data] Uncaught exception (process kept alive):', e);
-});
+// No uncaughtException handler on purpose: an uncaught error here means the feed may be half-dead, and exiting lets the orchestrator
+// respawn the process and have strategies replay their subscriptions ('resync'). Staying up would leave every position tick-starved.
