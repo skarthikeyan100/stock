@@ -123,7 +123,7 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     for (const field of PERCENT_POSITIVE_FIELDS) {
         const n = toPercentNumber(obj[field]);
         // BulkPcr alone treats 0 as "no limit" for its two stop caps (PnlStop); a negative cap is still invalid.
-        const zeroMeansOff = label === 'BulkPcrStrategy' && (field === 'maxLossPerTrade' || field === 'maxLossPerOrder' || field === 'maxProfit');
+        const zeroMeansOff = label === 'BulkPcrStrategy' && (field === 'maxLossPerOrder' || field === 'maxProfit');
         if (n !== null && (zeroMeansOff ? n < 0 : n <= 0)) {
             errors.push(zeroMeansOff
                 ? `${label}.${field} must be >= 0 (0 = no limit; got ${obj[field]})`
@@ -146,6 +146,18 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     }
     // A BulkPcr loss stop is a percent of maxInvestment: with no usable base it could never trip, so refuse the file.
     // Scoped to BulkPcr only - other strategies fall back to a default base and must keep loading as they do today.
+    // maxLossPerTrade was replaced by maxLossPerOrder and is ignored at runtime: a file that still carries only the old
+    // key would run with no loss stop at all, so refuse it. Likewise a hedge trail needs the per-order cap as its backstop
+    // (the trail limit never sells below the entry).
+    if (label === 'BulkPcrStrategy') {
+        const orderCapOn = obj.maxLossPerOrder != null && toPercentNumber(obj.maxLossPerOrder) !== 0;
+        if (obj.maxLossPerTrade != null && toPercentNumber(obj.maxLossPerTrade) !== 0 && !orderCapOn) {
+            errors.push(`${label}.maxLossPerTrade was replaced by maxLossPerOrder - rename it (the old key is ignored)`);
+        }
+        if (isNum(obj.hedgeTrailDistance) && obj.hedgeTrailDistance > 0 && !orderCapOn) {
+            errors.push(`${label}.hedgeTrailDistance needs maxLossPerOrder (> 0) as its loss backstop`);
+        }
+    }
     if (label === 'BulkPcrStrategy' && obj.maxLossPerOrder != null && !(isNum(maxInv) && maxInv > 0)) {
         errors.push(`${label}.maxLossPerOrder needs a usable maxInvestment (> 0) - the percent is taken of it`);
     }

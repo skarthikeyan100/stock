@@ -201,6 +201,13 @@ interface BrokerPosition {
     // Hedge trail exit (config hedgeTrailDistance). trail = persisted peak/armed state of the current cycle;
     // exitLimitPrice is set once the trail has fired and a limit exit is resting (undefined = nothing resting yet).
     trail?: { peak: number; armed: boolean };
+    // Trail parameters fixed when this cycle's exit was set up (hedgeTrailDistance / ceil(slDistance/2) then). Their
+    // presence is what makes the slot a trailing one, so a later config change cannot flip a live hedge between a
+    // resting sell and the trail (double sell, or no sell at all).
+    trailDistance?: number;
+    trailTarget?: number;
+    // Epoch ms of our own last re-price cancel - the only window in which a cancellation notice is that cancel's echo.
+    repriceCancelAt?: number;
     exitLimitPrice?: number;
     exitPlacedAt?: number;
     // In-memory only: a trail exit is being placed / re-priced right now (ticks must not start a second one).
@@ -362,12 +369,12 @@ export default class BulkPcrStrategy extends Strategy {
 
     // The slot's trail applies: a pair-broker hedge leg while hedgeTrailDistance is set.
     private isTrailSlot(pos: BrokerPosition): boolean {
-        return pos.hedge === true && isPairBroker(pos.broker) && this.hedgeTrailDistance() > 0;
+        return pos.hedge === true && isPairBroker(pos.broker) && (pos.trailDistance ?? 0) > 0;
     }
 
     // Points above entry the slot's exit is anchored to: the trailing hedge's target, else the fixed targetPoints.
     private targetPointsFor(pos: BrokerPosition): number {
-        return this.isTrailSlot(pos) ? this.hedgeTarget() : this.cfg().targetPoints ?? 2;
+        return this.isTrailSlot(pos) ? pos.trailTarget ?? this.hedgeTarget() : this.cfg().targetPoints ?? 2;
     }
 
     // One TrailStop per slot (never shared), restored from the persisted peak the first time it is needed.
@@ -377,7 +384,7 @@ export default class BulkPcrStrategy extends Strategy {
         const key = this.keyOf(pos);
         let trail = this.trails.get(key);
         if (!trail) {
-            trail = new TrailStop({ getTrailDistance: () => this.hedgeTrailDistance(), getActivation: () => this.hedgeTarget() });
+            trail = new TrailStop({ getTrailDistance: () => pos.trailDistance ?? 0, getActivation: () => pos.trailTarget ?? this.hedgeTarget() });
             trail.restore(pos.trail);
             this.trails.set(key, trail);
         }
@@ -474,6 +481,8 @@ export default class BulkPcrStrategy extends Strategy {
         this.dayRealizedByBroker.clear();
         this.stops.clear();
         this.profitStops.clear();
+        this.trails.clear();
+        this.lastTrailPersistAt.clear();
     }
 
     // The slot keys of every configured pair broker's two sides.
@@ -632,9 +641,7 @@ export default class BulkPcrStrategy extends Strategy {
     // Loss-cap figure for ONE order: only what that order has open right now, its open quantity marked at its last tick.
     // Earlier cycles of the same side (a re-buy is a new order) and partial fills do not offset it, and neither does the
     // other side: a CE -15 is a 15 loss whatever the PE is doing. No tick yet adds 0; an 'error' slot is excluded.
-    private orderPnl(pos: BrokerPosition): number {
-        return this.slotUnrealized(pos);
-    }
+
 
     // The figure the profit cap is measured against: the day's realized P&L (every completed slot cycle plus what open
     // slots have already sold), but only while the open slots, marked at their last tick, would not pull it back under.
@@ -654,7 +661,7 @@ export default class BulkPcrStrategy extends Strategy {
         let lossTripped = false;
         for (const pos of this.slotsOf(broker)) {
             if (pos.right === undefined) continue;
-            if (this.stopFor(this.keyOf(pos)).evaluate(this.orderPnl(pos))) lossTripped = true;
+            if (this.stopFor(this.keyOf(pos)).evaluate(this.slotUnrealized(pos))) lossTripped = true;
         }
         const profitTripped = this.profitStopFor(broker).evaluate(this.dayPnl(broker));
         return lossTripped || profitTripped;
@@ -915,15 +922,19 @@ export default class BulkPcrStrategy extends Strategy {
             pos.trail = undefined;
             pos.exitLimitPrice = undefined;
             pos.exitPlacedAt = undefined;
+            pos.repriceCancelAt = undefined;
             this.trails.delete(key);
             this.lastTrailPersistAt.delete(key);
+            const trailDistance = this.hedgeTrailDistance();
+            pos.trailDistance = pos.hedge === true && trailDistance > 0 ? trailDistance : undefined;
+            pos.trailTarget = pos.trailDistance ? this.hedgeTarget() : undefined;
         }
         // A trail exit that already fired keeps its own limit on a re-placement; otherwise entry + target.
         const targetPrice = pos.exitLimitPrice ?? roundToTick(pos.entryAvg + this.targetPointsFor(pos));
         // Cancellation re-placement: keep soldQty/soldValue/targetQuantity untouched,
         // just re-place the chunk that was orphaned by cancellation
 
-        if (!this.reconciling && ((isPairBroker(broker) && this.isBrokerStopped(broker)) || this.eodDone)) {
+        if (!this.reconciling && ((isPairBroker(broker) && this.mustClose(pos)) || this.eodDone)) {
             // Stopped (or the EOD close already ran) while this buy was in flight: square the fill off instead of
             // resting a new sell - nothing else would ever close a position that completed after the 15:15 close.
             pos.phase = 'selling';
@@ -936,7 +947,7 @@ export default class BulkPcrStrategy extends Strategy {
         if (this.isTrailSlot(pos) && pos.exitLimitPrice === undefined) {
             // Trailing hedge: nothing rests. Reaching the target only arms the trail; the exit is a limit order placed
             // from the ticks (handleTrailTick), so just make sure the ticks arrive.
-            Log.log(`[BulkPcrStrategy] [${broker}] ${pos.heldTsym} qty=${quantity} is a trailing hedge - no resting sell; trail arms at ${roundToTick(pos.entryAvg + this.hedgeTarget())} and trails ${this.hedgeTrailDistance()} points below the peak`);
+            Log.log(`[BulkPcrStrategy] [${broker}] ${pos.heldTsym} qty=${quantity} is a trailing hedge - no resting sell; trail arms at ${roundToTick(pos.entryAvg + this.targetPointsFor(pos))} and trails ${pos.trailDistance} points below the peak`);
             this.persistState();
             this.watchSlot(pos);
             return;
@@ -1080,6 +1091,10 @@ export default class BulkPcrStrategy extends Strategy {
             }
             pos.soldQty += cancelResult.filledQty;
             pos.soldValue += cancelResult.filledQty * oldPrice;
+            pos.repriceCancelAt = Date.now();
+            // The cancel's fills are booked above; from here fills belong to the NEW order (a marketable limit can fill
+            // while it is still being placed), so updateTrade must count them again.
+            pos.squaringOff = false;
             this.persistState();
             if (pos.soldQty >= pos.targetQuantity) {
                 soldOut = true; // everything filled before/while the cancel went through: the cycle is complete
@@ -1274,7 +1289,7 @@ export default class BulkPcrStrategy extends Strategy {
             pos.entryAvg = result.avgPrice;
             pos.buyAttempts = 0;
             Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
-            if (this.eodDone || this.isBrokerStopped(pos.broker)) {
+            if (this.eodDone || this.mustClose(pos)) {
                 // EOD or the loss stop started while this buy was in flight - square it off now, don't rest a sell.
                 pos.targetQuantity = result.quantity;
                 pos.soldQty = 0;
@@ -1621,8 +1636,8 @@ export default class BulkPcrStrategy extends Strategy {
         // broker a cancellation we did not make leaves the position unprotected, so flag it for manual review.
         if (pos.squaringOff) return;
         // Echo of our own trail re-price cancel arriving after the flag cleared: re-placing would double the exit.
-        if (pos.exitLimitPrice !== undefined && notification.reason !== 'REJECTED' && Date.now() - (pos.exitPlacedAt ?? 0) < TRAIL_CANCEL_ECHO_MS) return;
-        if (this.isBrokerStopped(pos.broker)) {
+        if (pos.repriceCancelAt !== undefined && notification.reason !== 'REJECTED' && Date.now() - pos.repriceCancelAt < TRAIL_CANCEL_ECHO_MS) return;
+        if (this.mustClose(pos)) {
             Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: resting sell for ${notification.tradingSymbol} cancelled while the loss stop is active - NOT re-placing, manual review required`);
             return;
         }
@@ -1857,6 +1872,18 @@ export default class BulkPcrStrategy extends Strategy {
                     // (tokenRouter dedupes by refcount), so calling it here even when the
                     // subscription did survive is harmless.
                     this.watchSlot(pos);
+                    if (this.isTrailSlot(pos) && pos.exitLimitPrice !== undefined) {
+                        // The fired trail exit is persisted before its order is placed: confirm it is really resting,
+                        // else forget it so the (restored, armed) trail fires again instead of waiting on nothing.
+                        const resting = (await OrderClient.getInstance().getPendingSells(this.userId, broker, persistedPos.heldTsym).catch(() => null))
+                            ?.reduce((sum, o) => sum + o.quantity, 0);
+                        if (resting === 0) {
+                            Log.log(`[BulkPcrStrategy] [${broker}] reconcile: trail exit for ${persistedPos.heldTsym} was recorded but nothing is resting at the broker - the trail will fire again`);
+                            pos.exitLimitPrice = undefined;
+                            pos.exitPlacedAt = undefined;
+                            this.persistState();
+                        }
+                    }
                     Log.log(`[BulkPcrStrategy] [${broker}] reconcile: restored in-flight limit-sell exit for ${persistedPos.heldTsym} (${persistedPos.soldQty}/${persistedPos.targetQuantity} filled so far) - resuming fill watch`);
                     continue;
                 }
@@ -2107,6 +2134,8 @@ export default class BulkPcrStrategy extends Strategy {
         this.positions.clear(); // first: unwatchSlot keeps a token while any other tracked slot still holds it
         for (const slot of heldSlots) this.unwatchSlot(slot);
         this.lastLtpByKey.clear();
+        this.trails.clear();
+        this.lastTrailPersistAt.clear();
         if (opts?.keepStops) {
             // Re-saves the state with no positions. Lockouts stay: a broker locked out today is not re-armed today.
             this.persistState();

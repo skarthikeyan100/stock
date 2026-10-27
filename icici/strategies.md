@@ -243,7 +243,7 @@ or below it fires the exit: a **limit** sell for the open quantity, priced at th
 below the entry, placed through the same chunked limit path as every exit. If the price then falls through the limit and
 it is still unfilled after 3 s, it is cancelled and re-placed at the current tick (still a limit, never below the entry;
 below the entry it just rests, as today's target sell would). The peak is persisted on the position (`trail`) and
-survives a restart; a fired exit is persisted as `exitLimitPrice`, so reconcile/cancel re-placements reuse it. A
+survives a restart; a fired exit is persisted as `exitLimitPrice`, so reconcile/cancel re-placements reuse it. The mode (`trailDistance`/`trailTarget`) is fixed on the slot when its exit is set up, so a config change never flips a live hedge. `hedgeTrailDistance` requires `maxLossPerOrder` (validation), since the trail never sells below the entry. A
 sold-out hedge re-buys exactly as before (a new cycle, trail reset). The EOD close and a loss/profit lockout close a
 trailing hedge the same way as any slot.
 

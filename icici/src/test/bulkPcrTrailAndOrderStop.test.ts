@@ -50,7 +50,7 @@ async function testTrail() {
     const s = new BulkPcrStrategy('trail-1') as any;
     // CE root far above (so it neither hedges nor trips), PE hedge entry 40, target = ceil(10/2) = 5.
     s.positions.set('kite_call', slot('call', 'NIFTYC', 'C1', 100));
-    s.positions.set('kite_put', slot('put', 'NIFTYP', 'P1', 40, { hedge: true }));
+    s.positions.set('kite_put', slot('put', 'NIFTYP', 'P1', 40, { hedge: true, trailDistance: 3, trailTarget: 5 }));
 
     await s.processOptionQuote(tick('P1', 44));
     assert(calls.sells.length === 0 && !s.positions.get('kite_put').trail, 'below the target: nothing armed, nothing sold');
@@ -68,6 +68,8 @@ async function testTrail() {
     await s.processOptionQuote(tick('P1', 47));
     assert(calls.cancels.length === 1 && calls.sells.length === 2 && calls.sells[1].price === 47, 'unfilled limit left behind by a fast fall is cancelled and re-placed at the tick');
     // Never below the entry.
+    // The config turned off mid-cycle: the slot keeps the mode it was placed with.
+    setConfig('trail-1', {});
     s.positions.get('kite_put').exitPlacedAt = Date.now() - 10_000;
     await s.processOptionQuote(tick('P1', 39));
     assert(calls.sells.length === 2, 'no re-price below the entry (40)');
