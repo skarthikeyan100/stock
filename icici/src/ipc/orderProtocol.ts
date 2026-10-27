@@ -129,6 +129,9 @@ export interface OrderRequest {
     payload: any;
 }
 
+// Prefix on an error that is a DEFINITE refusal (the order never reached the broker). Absent = outcome unknown.
+export const NOT_PLACED_TAG = '[NOT_PLACED]';
+
 export interface OrderResponse {
     kind: 'response';
     id: string;

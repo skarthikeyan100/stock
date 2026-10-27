@@ -15,6 +15,10 @@ const distTests = path.join(root, 'dist', 'test');
 if (!process.argv.includes('--no-build')) execSync('npx tsc', { cwd: root, stdio: 'inherit' });
 
 // Compiled tests whose source is gone are stale leftovers (tsc never deletes output): drop them so they cannot run or mask results.
+if (!fs.existsSync(distTests)) {
+    console.error('[test:all] dist/test does not exist - run without --no-build (or run tsc) first');
+    process.exit(2);
+}
 const sources = new Set(fs.readdirSync(srcTests).filter((f) => f.endsWith('.test.ts')).map((f) => f.replace(/\.ts$/, '.js')));
 for (const f of fs.readdirSync(distTests).filter((f) => f.endsWith('.test.js'))) {
     if (!sources.has(f)) {

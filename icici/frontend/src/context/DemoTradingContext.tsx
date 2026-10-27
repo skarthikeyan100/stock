@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { Trade, TradingContext } from './TradingContext';
 import { apiFetch } from '../utils/api';
+import { useEventSource } from '../hooks/useEventSource';
 
 // In-memory demo trading state - no auth, no real orders, no /positionstream.
 // Feeds the SAME TradingContext object TradingContext.tsx creates (not a
@@ -23,8 +24,6 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   const [closedTrades, setClosedTrades] = useState<Trade[]>([]);
   const [placingOrder, setPlacingOrder] = useState(false);
   const [orderError, setOrderError] = useState<string | null>(null);
-  const esRef = useRef<EventSource | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Mirrors `trades` synchronously so the long-lived SSE handler below never
   // reads a stale closure of state (it's created once, deps: []).
   const tradesRef = useRef<Trade[]>([]);
@@ -122,52 +121,21 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   // Shared /optionstream connection - same reconnect-with-backoff pattern used
   // elsewhere (NiftyTicker, TradingContext's positionstream), matches ticks
   // against whichever tokens the demo currently has pending/open.
-  useEffect(() => {
-    let failCount = 0;
-
-    const connectSSE = () => {
-      if (esRef.current) {
-        esRef.current.close();
-        esRef.current = null;
+  useEventSource('/demo/optionstream', {
+    authProbeUrl: null, // anonymous stream: there is no session to probe
+    onMessage: (event) => {
+      try {
+        const quote = JSON.parse(event.data);
+        const token: string = quote.token;
+        if (!token || !watchedTokensRef.current.has(token)) return;
+        const ltp = Number(quote.ltp);
+        if (!ltp) return;
+        handleTick(token, ltp);
+      } catch (e) {
+        console.error('[Demo] optionstream parse error:', e);
       }
-
-      const es = new EventSource('/demo/optionstream');
-      esRef.current = es;
-
-      es.onopen = () => {
-        failCount = 0;
-      };
-
-      es.onmessage = (event) => {
-        try {
-          const quote = JSON.parse(event.data);
-          const token: string = quote.token;
-          if (!token || !watchedTokensRef.current.has(token)) return;
-          const ltp = Number(quote.ltp);
-          if (!ltp) return;
-          handleTick(token, ltp);
-        } catch (e) {
-          console.error('[Demo] optionstream parse error:', e);
-        }
-      };
-
-      es.onerror = () => {
-        es.close();
-        esRef.current = null;
-        failCount++;
-        const delay = Math.min(3000 * 2 ** (failCount - 1), 30000);
-        reconnectTimerRef.current = setTimeout(connectSSE, delay);
-      };
-    };
-
-    connectSSE();
-
-    return () => {
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (esRef.current) esRef.current.close();
-      esRef.current = null;
-    };
-  }, [handleTick]);
+    },
+  });
 
   // Starts a pending demo trade with no price yet - PositionCard already
   // renders "Waiting for price..." until lastTradePrice is set, which happens

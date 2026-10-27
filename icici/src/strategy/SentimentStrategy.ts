@@ -1,3 +1,4 @@
+import { NOT_PLACED_TAG } from '../ipc/orderProtocol';
 import Log from '../util/Log';
 import { NiftyQuote, OptionQuote, OrderInfo, OrderStatus, Trade } from "../model/model";
 import { Strategy } from "./strategy";
@@ -237,7 +238,7 @@ export default class SentimentStrategy extends Strategy {
                     Log.log('[SentimentStrategy] buyIndex failed:', e);
                     // Re-arm only on a definite rejection. After a timeout/IPC failure the order may still be live: re-arming would buy
                     // again, so the strategy stays paused (ordered=true) until an admin reset.
-                    if (/reject|margin|not allowed|no contract|invalid|insufficient|not active/i.test(String((e as any)?.message ?? e))) {
+                    if (String((e as any)?.message ?? e).includes(NOT_PLACED_TAG)) {
                         this.ordered = false;
                     } else {
                         Log.log('[SentimentStrategy] ALERT: entry outcome unknown - strategy paused (the order may be live); reset it once the account is checked');

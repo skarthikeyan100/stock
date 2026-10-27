@@ -777,6 +777,7 @@ export default class ButterflyStrategy extends Strategy {
         this.positions.clear();
         this.eodDone = false;
         this.cyclesToday = 0; // an admin reset re-arms the strategy for the day
+        this.persistState(); // persisted too, or a restart would restore the old count and undo the reset
     }
     isRunning(): boolean { return this.phase === 'running' || [...this.positions.values()].some((p) => p.phase !== 'done'); }
 }

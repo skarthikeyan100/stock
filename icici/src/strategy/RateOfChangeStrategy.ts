@@ -224,10 +224,17 @@ export default class RateOfChangeStrategy extends Strategy {
 
         const bought = await this.buyContract(contract, config.quantity);
         if (!bought && this.contract) {
-            // buyContract returns null for every failure, including a timeout after which the order may still fill. Re-arming here could
-            // buy twice, so the entry sentinel stays: a late fill is still tracked, and the strategy resumes after an admin reset.
-            this.contract.buyFailedAt = Date.now();
-            Log.log('[RoC] ALERT: entry buy returned no confirmation - strategy paused (the order may still be live); reset the strategy once the account is checked');
+            if (this.lastBuyDefinitelyNotPlaced) {
+                // A definite refusal (margin, limits, validation): nothing is live, so release the sentinel and let the next signal try.
+                Log.log('[RoC] Entry buy was refused - nothing placed, re-armed');
+                this.contract.clear();
+                this.contract = null;
+            } else {
+                // Outcome unknown (timeout/transport): the order may still fill. Re-arming could buy twice, so the sentinel stays: a late
+                // fill is still tracked, and the strategy resumes after an admin reset.
+                this.contract.buyFailedAt = Date.now();
+                Log.log('[RoC] ALERT: entry buy returned no confirmation - strategy paused (the order may still be live); reset the strategy once the account is checked');
+            }
         }
     }
 

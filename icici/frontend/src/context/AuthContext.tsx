@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
-import { apiFetch } from '../utils/api';
+import { apiFetch, setUnauthorizedHandler } from '../utils/api';
 
 export interface AuthUser {
   email: string;
@@ -51,7 +51,7 @@ interface AuthState {
   isAdmin: boolean;
   termsAccepted: boolean;
   login: (credential: string) => Promise<void>;
-  logout: () => Promise<void>;
+  logout: () => Promise<boolean>;
   refreshUser: () => Promise<void>;
   setTermsAccepted: (accepted: boolean) => void;
 }
@@ -118,10 +118,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setTermsAcceptedState(readTermsAccepted(userData.email)); // see the mount effect's comment above
   }, []);
 
+  // Any 401 from the API (other than /auth/*) means the session is gone: show the login screen.
+  useEffect(() => {
+    setUnauthorizedHandler(() => { setUser(null); setTermsAcceptedState(false); });
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
   const logout = useCallback(async () => {
-    await apiFetch('/auth/logout', { method: 'POST' });
+    // Only treat the user as logged out once the server confirms: clearing the UI while the cookie stays valid (a failed or
+    // non-OK logout) would show a login screen over a session that is still live.
+    try {
+      const res = await apiFetch('/auth/logout', { method: 'POST' });
+      if (!res.ok) throw new Error(`Logout failed (${res.status})`);
+    } catch (e) {
+      console.error('[auth] logout failed - staying logged in:', e);
+      return false;
+    }
     setUser(null);
     setTermsAcceptedState(false); // in-memory reset only - the persisted per-email acceptance is left intact for next login
+    return true;
   }, []);
 
   // Exposed as `setTermsAccepted` below - persists the acceptance so it

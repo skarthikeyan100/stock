@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
+import { useEventSource } from '../hooks/useEventSource';
 import { useMarketHours } from '../utils/marketHours';
 import { apiPost, readError, apiFetch } from '../utils/api';
 
@@ -59,8 +60,6 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   const [orderError, setOrderError] = useState<string | null>(null);
   const [tradingBlocked, setTradingBlocked] = useState(false);
   const [blockReason, setBlockReason] = useState<string | null>(null);
-  const esRef = useRef<EventSource | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const openPnL = trades.reduce((sum, trade) => {
     if (trade.lastTradePrice && trade.price) {
@@ -89,63 +88,21 @@ export function TradingProvider({ children }: { children: ReactNode }) {
   // P&L/positions frozen with no indication anything is wrong until a manual
   // page refresh - confirmed live on 2026-08-26 after a burst of backend
   // restarts tripped the old "give up after 3 failures" limit).
-  useEffect(() => {
-    if (!user) return;
-    let failCount = 0;
+  useEventSource('/positionstream', {
+    enabled: !!user,
+    onOpen: () => console.log('[SSE] Position stream connected'),
+    onMessage: (event) => {
+      try {
+        const allTrades: Trade[] = JSON.parse(event.data);
+        if (!Array.isArray(allTrades)) return;
 
-    const connectSSE = () => {
-      // Close any existing connection before opening a new one
-      if (esRef.current) {
-        esRef.current.close();
-        esRef.current = null;
+        setTrades(allTrades.filter(t => t.open !== false));
+        setClosedTrades(allTrades.filter(t => t.open === false));
+      } catch (e) {
+        console.error('[SSE] Position stream parse error:', e);
       }
-
-      console.log('[SSE] Establishing position stream connection...');
-      const es = new EventSource('/positionstream');
-      esRef.current = es;
-
-      es.onopen = () => {
-        console.log('[SSE] Position stream connected');
-        failCount = 0;
-      };
-
-      es.onmessage = (event) => {
-        try {
-          const allTrades: Trade[] = JSON.parse(event.data);
-          if (!Array.isArray(allTrades)) return;
-
-          setTrades(allTrades.filter(t => t.open !== false));
-          setClosedTrades(allTrades.filter(t => t.open === false));
-        } catch (e) {
-          console.error('[SSE] Position stream parse error:', e);
-        }
-      };
-
-      es.onerror = () => {
-        console.error('[SSE] Position stream error, readyState:', es.readyState);
-        es.close();
-        esRef.current = null;
-        failCount++;
-        const delay = Math.min(3000 * 2 ** (failCount - 1), 30000);
-        console.warn(`[SSE] Position stream reconnecting in ${delay}ms (attempt ${failCount})`);
-        reconnectTimerRef.current = setTimeout(connectSSE, delay);
-      };
-    };
-
-    connectSSE();
-
-    return () => {
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-      if (esRef.current) {
-        console.log('[SSE] Closing position stream connection');
-        esRef.current.close();
-        esRef.current = null;
-      }
-    };
-  }, [user]);
+    },
+  });
 
   // Polls the real daily/weekly-drawdown check (src/processes/order/bookkeeping.ts's
   // canPlaceOrder) rather than relying on the client-side lossLimit heuristic

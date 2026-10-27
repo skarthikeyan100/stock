@@ -106,6 +106,9 @@ app.use(cookieParser(SESSION_COOKIE_SECRET));
 // /config, /reconcile, /strategies, /users*, /admin/payouts* relied on SameSite=Lax alone. Loopback (ops scripts) is exempt.
 app.use((req, res, next) => {
     if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') { next(); return; }
+    // Breeze's login redirect can arrive as a form POST from the broker's own page, which cannot carry a custom header. It changes
+    // nothing without a valid one-time API_Session issued by the broker.
+    if (req.path === '/breeze/callback') { next(); return; }
     requireCsrfHeader(req, res, next);
 });
 // Identity/filter fields must be plain strings. Express parses `?user[$ne]=` and `{"user": {"$ne": null}}` into objects, which would
@@ -356,7 +359,10 @@ app.post('/auth/logout', async function (req, res) {
             await revokeSessions(email);
             invalidateUserCache(email);
         } catch (e) {
-            Log.log('[frontend] session revoke on logout failed (cookie still cleared):', e);
+            // Surfaced, and the cookie is NOT cleared: reporting success would leave a copied cookie valid for up to 30 days.
+            Log.log('[frontend] session revoke on logout failed:', e);
+            res.status(500).json({ error: 'Logout could not be completed - try again' });
+            return;
         }
     }
     res.clearCookie('session');

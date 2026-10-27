@@ -19,8 +19,7 @@ export default function RulesPage() {
       navigate('/profile');
       return;
     }
-    await logout();
-    navigate('/');
+    if (await logout()) navigate('/');
   };
 
   const investmentAmount = user?.investmentAmount ?? 100000;

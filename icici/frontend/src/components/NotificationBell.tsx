@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useEventSource } from '../hooks/useEventSource';
 import { useAuth } from '../context/AuthContext';
 import { apiFetch } from '../utils/api';
 
@@ -19,53 +20,37 @@ export default function NotificationBell() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!user) return;
-    // Merge (dedupe by _id): a notification pushed over SSE while this fetch was in flight must not appear twice.
-    const loadUnread = () =>
-      apiFetch(`/users/${encodeURIComponent(user.email)}/notifications?unreadOnly=true`)
-        .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
-        .then((data: Notification[]) => {
-          if (!Array.isArray(data)) return;
-          setNotifications(prev => {
-            const seen = new Set(prev.map(n => n._id));
-            return [...prev, ...data.filter(n => !seen.has(n._id))].sort(
-              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-            );
-          });
-        })
-        .catch(() => {});
-    loadUnread();
+  // Merge (dedupe by _id): a notification pushed over SSE while this fetch was in flight must not appear twice.
+  const email = user?.email;
+  const loadUnread = useCallback(() => {
+    if (!email) return;
+    apiFetch(`/users/${encodeURIComponent(email)}/notifications?unreadOnly=true`)
+      .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
+      .then((data: Notification[]) => {
+        if (!Array.isArray(data)) return;
+        setNotifications(prev => {
+          const seen = new Set(prev.map(n => n._id));
+          return [...prev, ...data.filter(n => !seen.has(n._id))].sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+        });
+      })
+      .catch(() => {});
+  }, [email]);
 
-    let failCount = 0;
-    let source: EventSource | null = null;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  useEffect(() => { loadUnread(); }, [loadUnread]);
 
-    const connect = () => {
-      source = new EventSource('/notificationstream');
-      // Anything emitted while the stream was down is only reachable by refetching on (re)connect.
-      source.onopen = () => { failCount = 0; loadUnread(); };
-      source.onmessage = (e) => {
-        try {
-          const notification = JSON.parse(e.data) as Notification;
-          setNotifications(prev => (prev.some(n => n._id === notification._id) ? prev : [notification, ...prev]));
-        } catch { /* ignore malformed event */ }
-      };
-      source.onerror = () => {
-        source?.close();
-        failCount++;
-        // Retry indefinitely with a capped backoff - never give up (see
-        // TradingContext.tsx's positionstream fix for why).
-        retryTimer = setTimeout(connect, Math.min(3000 * 2 ** (failCount - 1), 30000));
-      };
-    };
-    connect();
-
-    return () => {
-      if (retryTimer) clearTimeout(retryTimer);
-      source?.close();
-    };
-  }, [user?.email]);
+  useEventSource('/notificationstream', {
+    enabled: !!email,
+    // Anything emitted while the stream was down is only reachable by refetching on (re)connect.
+    onOpen: loadUnread,
+    onMessage: (e) => {
+      try {
+        const notification = JSON.parse(e.data) as Notification;
+        setNotifications(prev => (prev.some(n => n._id === notification._id) ? prev : [notification, ...prev]));
+      } catch { /* ignore malformed event */ }
+    },
+  });
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {

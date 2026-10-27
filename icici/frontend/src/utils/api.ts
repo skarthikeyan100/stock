@@ -3,12 +3,25 @@
 // cannot place an order or flip a strategy on the user's behalf.
 const BASE_HEADERS = { 'X-Requested-With': 'fetch' };
 
-export function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(url, {
+// Registered by AuthProvider: called when the server answers 401 (expired session, revoked cookie, deleted user) on a request other
+// than the /auth/* ones, so the UI drops to the login screen instead of showing a stale 'logged in' page whose polls fail silently.
+let unauthorizedHandler: (() => void) | null = null;
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  unauthorizedHandler = fn;
+}
+
+export function notifyUnauthorized(): void {
+  unauthorizedHandler?.();
+}
+
+export async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const res = await fetch(url, {
     credentials: 'include',
     ...init,
     headers: { ...BASE_HEADERS, ...(init.headers as Record<string, string> | undefined) },
   });
+  if (res.status === 401 && !url.startsWith('/auth/') && !url.startsWith('/demo/')) unauthorizedHandler?.();
+  return res;
 }
 
 // POST with an optional JSON body (query-string-only endpoints just omit it).

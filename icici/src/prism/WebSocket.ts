@@ -69,7 +69,9 @@ class WebSocketClient {
                 // Log.log('Result from socket: ', result);
 
                 if (result.t == 'ck' || result.t == 'ak') {
-                    resolve(result); // authenticated: settle the connect() promise (it used to stay pending forever)
+                    // Settle the connect() promise (it used to stay pending forever) - but only an OK ack means authenticated.
+                    if (String(result.s ?? 'OK').toUpperCase() === 'OK') resolve(result);
+                    else reject(new Error(`Prism WS rejected the login: ${JSON.stringify(result).slice(0, 200)}`));
                     this.trigger("open", [result]);
                 }
                 if (result.t == 'tk' || result.t == 'tf') {

@@ -25,7 +25,7 @@ import Mongo from '../tools/mongo';
 import { ensureOrderIndexes } from './order/orderOwners';
 import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
-import { ORDER_SOCKET_PATH, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
+import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
 import bookkeeping from './order/bookkeeping';
 import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells, marketBuyBareOnKite, marketSellBareOnKite, placeLimitBuyBareOnKite, placeLimitSellBareOnKite, cancelOrderOnKite, getContractByPriceRangeOnKite, enterShortOnKite, buyToCloseOnKite } from './order/kiteExecutor';
 import { pollPendingLimitOrders, loadPendingLimitOrdersFromMongo, findPendingOrdersForSymbol as findPendingKiteOrdersForSymbol, onCancelled as onPendingKiteCancelled } from './order/pendingLimitOrders';
@@ -251,7 +251,7 @@ async function placeOrderWithPendingGuard(
         return { entry: bookkeeping.markPending(req.userId, estimatedOrderValue, broker) } as const;
     });
     if (!('entry' in gate)) {
-        return { kind: 'response', id: req.id, ok: false, error: gate.reason };
+        return { kind: 'response', id: req.id, ok: false, error: `${NOT_PLACED_TAG} ${gate.reason}` };
     }
     const entry = gate.entry;
     try {
@@ -1152,7 +1152,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     return { kind: 'response', id: req.id, ok: true, result };
                 } catch (e: any) {
                     Log.log('[order] reconcileBrokerPositions failed:', e);
-                    return { kind: 'response', id: req.id, ok: false, error: e?.message ?? String(e) };
+                    // [NOT_PLACED] marks a definite refusal (nothing reached the broker), so a strategy can safely re-arm; any other failure
+        // (timeout, transport error) is ambiguous - the order may be live - and must not be retried blind.
+        const definite = !!(e?.orderNotPlaced || e?.notPlaced);
+        return { kind: 'response', id: req.id, ok: false, error: `${definite ? NOT_PLACED_TAG + ' ' : ''}${e?.message ?? String(e)}` };
                 }
             }
 

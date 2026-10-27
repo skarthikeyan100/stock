@@ -1,3 +1,4 @@
+import { NOT_PLACED_TAG } from '../ipc/orderProtocol';
 import Log from '../util/Log';
 import { NIFTY, MOCK_BROKER, CALL, PUT } from "../constants";
 import configService from '../prism/ConfigService';
@@ -178,6 +179,10 @@ export abstract class Strategy {
     // the Prism/Shoonya path (src/processes/order/prismExecutor.ts), used by
     // strategies that pick their own contract (e.g. via getContractByPriceRange)
     // rather than an ATM-by-LTP lookup.
+    // After buyContract returned null: true when the refusal was definite (the order never reached the broker), false when the outcome
+    // is unknown (timeout/transport) and the order may still be live.
+    protected lastBuyDefinitelyNotPlaced = false;
+
     async buyContract(contract: string, quantity: number, price?: number ): Promise<OrderInfo | null> {
         Log.log('Buy Contract by ', this.userId, ' for contract: ', contract)
         try {
@@ -185,6 +190,7 @@ export abstract class Strategy {
             return { contract: response.contract, price: response.price, qty: response.qty, token: response.token } as any;
         } catch (e) {
             Log.log(this.userId, ' buyContract failed: ', e);
+            this.lastBuyDefinitelyNotPlaced = String((e as any)?.message ?? e).includes(NOT_PLACED_TAG);
             return null;
         }
     }
