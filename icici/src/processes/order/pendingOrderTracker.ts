@@ -218,7 +218,10 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
                 filledQty = fill?.quantity ?? 0;
                 if (fill && fill.quantity > 0) await bookFill(fill.quantity, fill.price);
                 // Untracked while the book was being read: the partial is booked above, but a notification would re-place a sell.
-                if (this.adapter.ignoreStaleStatus && !this.pending.has(orderId)) return;
+                if (this.adapter.ignoreStaleStatus && !this.pending.has(orderId)) {
+                    Log.log(`[order] ALERT: ${label} order ${orderId} (${order.tradingSymbol}, ${order.userId}) was untracked while its cancelled partial fill was being booked (${filledQty} booked of ${Math.min(order.quantity, Number(filledQuantity ?? 0))} reported) - listeners NOT notified, verify the remaining quantity`);
+                    return;
+                }
             } else if (filledQty > 0) {
                 const partialPrice = fillPrice && fillPrice > 0 ? fillPrice : (this.adapter.rowPrice?.(order, snapshot) ?? NaN);
                 if (partialPrice > 0 || this.adapter.bookAtAnyPrice) {

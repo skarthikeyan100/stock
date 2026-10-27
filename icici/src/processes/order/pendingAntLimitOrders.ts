@@ -19,6 +19,8 @@ export interface PendingAntLimitOrder extends PendingOrder {
     // Set once the give-up fallback has ALERTed for this order, so a buy/unknown order that stays tracked doesn't re-log
     // the same ALERT on every poll.
     giveUpAlerted?: boolean;
+    // Same, for the cancelled-partial-with-no-trade-book-price ALERT (a separate condition from giveUpAlerted).
+    noBookPriceAlerted?: boolean;
     // Consecutive polls where the sell's contract is flat at the broker but the trade book shows no fill.
     flatNoFillCount?: number;
 }
@@ -140,7 +142,13 @@ const tracker = new PendingOrderTracker<PendingAntLimitOrder, null, 'ant'>({
         return true;
     },
     statusOf: async (order) => {
-        const res = await ANT.getInstance().getOrderStatus(order.orderId);
+        let res;
+        try {
+            res = await ANT.getInstance().getOrderStatus(order.orderId);
+        } catch (e) {
+            sessionValidUntil = 0; // may be a dead session - re-verify it before the next poll acts on anything (also when the order was untracked meanwhile)
+            throw e;
+        }
         // ANT has no separate EOD-expiry status either (same gap as Kite): an unfilled DAY order auto-cancelled at exchange
         // close reports back as plain 'CANCELLED'. Defer the listener past market close to avoid re-placing against a closed
         // exchange (live incident 2026-09-24) - tomorrow's reconcile() handles it.
@@ -173,7 +181,13 @@ const tracker = new PendingOrderTracker<PendingAntLimitOrder, null, 'ant'>({
             throw new Error(`cancelled ${order.action.toLowerCase()} ${order.orderId}: status shows ${status.filledQuantity} filled, trade book ${book.quantity} - retrying on next poll`);
         }
         // Quantity without a price is an incomplete book read: retry next poll, never book a zero price.
-        if (book.quantity > 0 && !(book.avgPrice > 0)) throw new Error(`cancelled ${order.action.toLowerCase()} ${order.orderId}: trade book shows ${book.quantity} with no average price - retrying on next poll`);
+        if (book.quantity > 0 && !(book.avgPrice > 0)) {
+            if (!order.noBookPriceAlerted) {
+                order.noBookPriceAlerted = true;
+                Log.log(`[order] ALERT: ANT cancelled ${order.action} ${order.orderId} (${order.tradingSymbol}, ${order.userId}) has ${book.quantity} filled but the trade book carries no price - KEPT in tracking, retrying each poll, manual review required`);
+            }
+            throw new Error(`cancelled ${order.action.toLowerCase()} ${order.orderId}: trade book shows ${book.quantity} with no average price - retrying on next poll`);
+        }
         Log.log(`[order] Pending ANT ${order.action.toLowerCase()} ${order.orderId} (${order.tradingSymbol}) cancelled after ${book.quantity} filled - ${order.quantity - book.quantity} unfilled`);
         return { quantity: book.quantity, price: book.avgPrice };
     },
