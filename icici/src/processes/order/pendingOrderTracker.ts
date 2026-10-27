@@ -13,7 +13,6 @@ export interface PendingOrder {
     orderId: string;
     userId: string;
     tradingSymbol: string;
-    instrumentId: string;
     quantity: number;
     exchange: 'NFO' | 'BFO';
     action: 'Buy' | 'Sell';
@@ -23,12 +22,18 @@ export interface OrderStatus {
     status: string; // COMPLETE | REJECTED | CANCELLED | CANCELED | anything else = still pending
     fillPrice?: number;
     filledQuantity?: number;
+    /** Overrides the adapter's after-close rule: true = do not tell the cancelled listeners for this terminal state. */
+    skipListener?: boolean;
 }
 
 export interface BrokerOrderAdapter<T extends PendingOrder, Snapshot, B extends TrackerBroker = TrackerBroker> {
     broker: B;
     /** Mongo collection the pending orders persist in (the persisted shape is the order object itself). */
     collection: string;
+    /** The token the position is keyed by on the strategy side (Prism/Kite: instrumentId, Breeze: antToken). */
+    tokenOf(order: T): string;
+    /** False skips the whole poll tick quietly (e.g. no valid broker session). */
+    ready?(): Promise<boolean>;
     /** Log prefix, e.g. 'Prism'. */
     label: string;
     /** One broker read per poll tick, shared by every pending order. Throwing skips the tick. */
@@ -38,7 +43,8 @@ export interface BrokerOrderAdapter<T extends PendingOrder, Snapshot, B extends 
     rowPrice(order: T, snapshot: Snapshot): number;
     /** Rebuilds an order from its persisted document. */
     fromDoc(row: any): T;
-    isPastClose(): boolean;
+    /** A cancelled order after the close is left to the next morning's reconcile instead of re-placed. Default: false. */
+    isPastClose?(): boolean;
 }
 
 export type CancelledListener<B extends TrackerBroker = TrackerBroker> = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: B, orderId: string, reason: 'CANCELLED' | 'REJECTED') => void;
@@ -53,6 +59,8 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     constructor(private readonly adapter: BrokerOrderAdapter<T, Snapshot, B>) {}
 
     onCancelled = (listener: CancelledListener<B>): void => { this.cancelledListeners.push(listener); };
+
+    get = (orderId: string): T | undefined => this.pending.get(orderId);
 
     find = (userId: string, tradingSymbol: string): T[] =>
         Array.from(this.pending.values()).filter((o) => o.userId === userId && o.tradingSymbol === tradingSymbol);
@@ -96,6 +104,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     private async pollOnce(): Promise<void> {
         if (this.pending.size === 0) return;
         const { label } = this.adapter;
+        if (this.adapter.ready && !(await this.adapter.ready())) return;
         let snapshot: Snapshot;
         try {
             snapshot = await this.adapter.fetchSnapshot();
@@ -115,13 +124,13 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
 
     private async pollOrder(orderId: string, order: T, snapshot: Snapshot): Promise<void> {
         const { label, broker } = this.adapter;
-        const { status, fillPrice, filledQuantity } = await this.adapter.statusOf(order, snapshot);
+        const { status, fillPrice, filledQuantity, skipListener } = await this.adapter.statusOf(order, snapshot);
         // Books `qty` filled at `price`. The order is untracked only AFTER the fill is booked, so a recordFill
         // failure is retried on the next poll (recordFill dedupes on brokerOrderId).
         const bookFill = async (qty: number, price: number) => {
             const trade = new Trade();
             trade.tsym = order.tradingSymbol;
-            trade.token = order.instrumentId;
+            trade.token = this.adapter.tokenOf(order);
             trade.quantity = qty;
             trade.price = price;
             trade.lastTradePrice = price;
@@ -150,7 +159,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             // A cancelled order can carry a partial fill: book it, report only the remainder.
             const filledQty = Math.min(order.quantity, Number(filledQuantity ?? 0));
             if (filledQty > 0) {
-                const partialPrice = this.adapter.rowPrice(order, snapshot);
+                const partialPrice = fillPrice && fillPrice > 0 ? fillPrice : this.adapter.rowPrice(order, snapshot);
                 if (partialPrice > 0) {
                     await bookFill(filledQty, partialPrice);
                     this.noPriceAlerted.delete(orderId);
@@ -167,14 +176,14 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             const remainingQty = order.quantity - filledQty;
             if (remainingQty <= 0) return;
             const isCancelled = status === 'CANCELLED' || status === 'CANCELED';
-            if (isCancelled && this.adapter.isPastClose()) {
-                Log.log(`[order] Pending ${label} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close - leaving re-placement to tomorrow's reconcile()`);
+            if (skipListener ?? (isCancelled && !!this.adapter.isPastClose?.())) {
+                Log.log(`[order] Pending ${label} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close (or expired) - leaving re-placement to tomorrow's reconcile()`);
             } else {
                 const reason = status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';
                 // Isolated: the order is already untracked, so one throwing listener must not stop the others being told.
                 for (const listener of this.cancelledListeners) {
                     try {
-                        listener(order.userId, order.tradingSymbol, order.instrumentId, remainingQty, order.exchange, order.action, broker, orderId, reason);
+                        listener(order.userId, order.tradingSymbol, this.adapter.tokenOf(order), remainingQty, order.exchange, order.action, broker, orderId, reason);
                     } catch (e) {
                         Log.log(`[order] ${label} cancelled listener failed for ${orderId}:`, e);
                     }

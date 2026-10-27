@@ -4,7 +4,9 @@ import { PendingOrder, PendingOrderTracker } from './pendingOrderTracker';
 
 // Prism limit orders placed via placeLimitSellBareOnPrism (prismExecutor.ts) - BulkPcrStrategy's target-hit exit. Own
 // Mongo collection, not shared with Kite's/Breeze's/ANT's pending trackers. The loop itself lives in pendingOrderTracker.ts.
-type PendingPrismLimitOrder = PendingOrder;
+interface PendingPrismLimitOrder extends PendingOrder {
+    instrumentId: string;
+}
 
 // The orderbook is fetched ONCE per tick and every pending order is matched against that one snapshot (several resting
 // chunks would otherwise each trigger their own get_orderbook call every 15s, a pattern that already hit a broker rate limit).
@@ -12,6 +14,7 @@ const tracker = new PendingOrderTracker<PendingPrismLimitOrder, any[], 'prism'>(
     broker: 'prism',
     collection: 'pendingPrismLimitOrders',
     label: 'Prism',
+    tokenOf: (order) => order.instrumentId,
     fetchSnapshot: () => Prism.getInstance().getOrderBook(),
     statusOf: (order, orderBook) => Prism.getInstance().getOrderStatus(order.orderId, orderBook),
     rowPrice: (order, orderBook) => {
