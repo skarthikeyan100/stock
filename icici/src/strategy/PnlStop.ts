@@ -7,7 +7,7 @@ import { toPercentNumber } from '../prism/percentConfig';
 // local day, including across restarts, until clear(). A latch that could not be read back after a restart fails
 // closed (isTripped() is true) until a later load() succeeds.
 // Two kinds share this class:
-//   'loss'   - maxLossPerTrade: open-position P&L <= -threshold (unrealized on what is open now, see BulkPcrStrategy).
+//   'loss'   - maxLossPerOrder: one order's open-position P&L <= -threshold (unrealized on what that order has open now, see BulkPcrStrategy).
 //   'profit' - maxProfit: day P&L of the broker (cumulative across every slot cycle today) >= +threshold.
 // Both lock the owner out for the rest of the day. They are separate latches (own scope + own persisted field).
 // Standalone copy of the LegManager stop logic (see maxloss.md B0 #6 - LegManager is intentionally not refactored onto this).
@@ -30,7 +30,7 @@ export class PnlStop {
 
     // Config key this latch is driven by, for log lines.
     private get capKey(): string {
-        return this.deps.kind === 'loss' ? 'maxLossPerTrade' : 'maxProfit';
+        return this.deps.kind === 'loss' ? 'maxLossPerOrder' : 'maxProfit';
     }
 
     // Persisted field in the strategyLatches doc for this kind.
@@ -38,16 +38,22 @@ export class PnlStop {
         return this.deps.kind === 'loss' ? 'maxLossTripped' : 'maxProfitTripped';
     }
 
+    // The cap is on when set to a number other than 0. Unset (null/undefined) and 0 both mean "no limit".
+    private capEnabled(): boolean {
+        const raw = this.deps.getCapPct();
+        return raw != null && toPercentNumber(raw) !== 0;
+    }
+
     isTripped(): boolean {
         return this.tripped || this.loadFailed;
     }
 
     // Returns true only on the call that newly trips the latch. NaN-safe: a NaN P&L never trips (every comparison
-    // with NaN is false). Disabled (returns false) when the cap is unset.
+    // with NaN is false). Disabled (returns false) when the cap is unset or 0 (0 = no limit).
     evaluate(pnl: number): boolean {
         if (this.tripped) return false;
+        if (!this.capEnabled()) return false;
         const raw = this.deps.getCapPct();
-        if (raw == null) return false;
         const pct = toPercentNumber(raw);
         if (pct === null || !(pct > 0)) {
             if (!this.unusableLogged) {
@@ -68,7 +74,7 @@ export class PnlStop {
         if (this.deps.kind === 'loss') {
             if (!(pnl <= -threshold)) return false;
             this.tripped = true;
-            Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] MAX LOSS TRIPPED - open-position P&L=${Math.round(pnl)} threshold=-${Math.round(threshold)} (maxLossPerTrade=${pct}% of maxInvestment=${maxInvestment}) - locked out for the rest of the day`);
+            Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] MAX LOSS TRIPPED - open-position P&L=${Math.round(pnl)} threshold=-${Math.round(threshold)} (maxLossPerOrder=${pct}% of maxInvestment=${maxInvestment}) - locked out for the rest of the day`);
         } else {
             if (!(pnl >= threshold)) return false;
             this.tripped = true;
@@ -101,8 +107,8 @@ export class PnlStop {
             }
             return true;
         } catch (e) {
-            // Fail closed only when the cap is configured: with no cap there is no lockout to protect.
-            this.loadFailed = this.deps.getCapPct() != null;
+            // Fail closed only when the cap is enabled (set and not 0): with no cap there is no lockout to protect.
+            this.loadFailed = this.capEnabled();
             Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR could not read strategyLatches${this.loadFailed ? ' - broker held CLOSED (fail-closed) until it can be read' : ''}:`, e);
             return false;
         }

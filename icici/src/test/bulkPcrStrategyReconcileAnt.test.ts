@@ -195,11 +195,12 @@ async function testNonAntSingleSidedNoPersistedState() {
     const strategy = new BulkPcrStrategy('bulkpcr-test-4') as any;
     await strategy.reconcile();
 
-    const slot = strategy.positions.get('breeze');
-    assert(slot !== undefined, 'breeze slot was restored');
-    assert(slot?.right === undefined, 'breeze slot has no right field (single-sided broker)');
-    assert(slot?.entryQuantity === undefined, 'breeze slot has no entryQuantity field (never read for non-ant)');
-    assert(slot?.phase === 'selling', `breeze slot advanced to 'selling' (got ${slot?.phase})`);
+    // Every broker runs the pair now: the open CE is restored into its own <broker>_call slot.
+    const slot = strategy.positions.get('breeze_call');
+    assert(slot !== undefined, 'breeze_call slot was restored');
+    assert(slot?.right === 'call', `breeze_call slot carries its side (got ${slot?.right})`);
+    assert(slot?.entryQuantity === 1300, `breeze_call slot carries the open quantity (got ${slot?.entryQuantity})`);
+    assert(slot?.phase === 'selling', `breeze_call slot advanced to 'selling' (got ${slot?.phase})`);
     assert(
         placedSells.some((s) => s.tsym === 'NIFTY27OCT26C23000' && s.quantity === 1300 && s.broker === 'breeze'),
         'a protective exit sell was placed for the restored breeze leg'
@@ -220,8 +221,8 @@ async function testNonAntPersistedDoneIsRestored() {
     strategy.loadState = async () => ({
         userId: 'bulkpcr-test-5',
         positions: {
-            breeze: {
-                broker: 'breeze', phase: 'done', heldTsym: 'NIFTY27OCT26C23000',
+            breeze_call: {
+                broker: 'breeze', right: 'call', phase: 'done', heldTsym: 'NIFTY27OCT26C23000',
                 heldToken: '12345', entryAvg: 150, targetQuantity: 1300, soldQty: 1300, soldValue: 195000,
             },
         },
@@ -229,9 +230,9 @@ async function testNonAntPersistedDoneIsRestored() {
 
     await strategy.reconcile();
 
-    const slot = strategy.positions.get('breeze');
-    assert(slot !== undefined, 'breeze slot is present after reconcile (restored as-is)');
-    assert(slot?.phase === 'done', `breeze slot stays 'done' (got ${slot?.phase})`);
+    const slot = strategy.positions.get('breeze_call');
+    assert(slot !== undefined, 'breeze_call slot is present after reconcile (restored as-is)');
+    assert(slot?.phase === 'done', `breeze_call slot stays 'done' (got ${slot?.phase})`);
     assert(placedSells.length === 0, 'no exit sell was placed for an already-done slot');
 }
 

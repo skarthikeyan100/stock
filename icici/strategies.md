@@ -211,28 +211,41 @@ none) was added alongside `BulkPcrAutoStartStrategy` below.
 **Config keys** (`config.yml`): `enabled`, `broker` (legacy single-broker
 fallback), `brokers` (preferred, multi-broker array), `quantity`,
 `targetPoints`, `chunkDriftCancelPoints`, `right` (`call`/`put`/`none`),
-`maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10), `maxLossPerTrade`, `maxProfit`.
-(`maxLossPerDay` was removed on 2026-10-22, and `maxLoss` before it. A config still carrying either key is
-ignored, with a one-time WARN in the log. Use `maxLossPerTrade`.)
+`maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10), `maxLossPerOrder`, `maxProfit`, `hedgeTrailDistance`.
+(`maxLossPerDay` was removed on 2026-10-22, `maxLoss` before it, and `maxLossPerTrade` was replaced by
+`maxLossPerOrder` on 2026-10-27. A config still carrying any of them is ignored, with a one-time WARN in the log.)
 
-**Loss stop (`maxLossPerTrade`, optional, ships unset)**: a percent of this block's `maxInvestment`
-(`10%` = 10000 on 100000), applied **per pair broker** (`ant`, `kite`). A trade is one auto-start slot on
-one broker, i.e. everything since the last `reset()` (the auto-start calls `reset({ keepStops: true })`
-before each slot). Loss figure = open P&L only: the unrealized P&L of that broker's selling slots (both
-sides) at the last live tick. Closed cycles (earlier re-buy exits) and partial fills do not offset it,
-e.g. PE -10 and CE -15 is a loss of 25 whatever was booked before. Once it reaches `-maxLossPerTrade`, the latch trips (`PnlStop`, a
-Mongo `strategyLatches` doc keyed by `ownerType`, `userId`, `scope`, `day`) and the broker is **locked out for
-the rest of the day**: its resting sells are cancelled and its open quantity is squared off at limit
-(`eodSquareOff`), its buys and re-buys stop, and `BulkPcrAutoStartStrategy` skips it at every later slot even
-while the strategy stays enabled. The other broker keeps running. One `ALERT` line is logged.
+**Loss stop (`maxLossPerOrder`, optional, ships unset)**: a percent of this block's `maxInvestment`
+(`10%` = 10000 on 100000), applied **to each order on its own**: the root leg and the hedge leg each have their own
+cap, so with both at the cap the total loss is 2 x the cap. Loss figure of an order = that slot's open quantity marked
+at its last live tick. Another side's gain, earlier cycles of the same side (a re-buy is a new order) and partial
+fills do not offset it. Once an order reaches `-maxLossPerOrder`, its latch trips (`PnlStop`, a Mongo
+`strategyLatches` doc keyed by `ownerType`, `userId`, `scope` = the slot key `<broker>_call` / `<broker>_put`, `day`)
+and **that order is closed**: its resting sell is cancelled and its open quantity squared off (`eodSquareOff`). The
+broker is **locked out for the rest of the day**: no new buys or re-buys, and `BulkPcrAutoStartStrategy` skips it at
+every later slot. The broker's other order is NOT closed: it keeps its resting exit (a `maxProfit` trip still closes
+everything). The other broker keeps running. One `ALERT` line is logged.
 
-The lockout survives restarts: it is written to both the `strategyLatches` doc and the strategy's state doc
-(`stoppedBrokers`), and reconcile re-applies it. A restored lockout also closes any open exit or pending slot of
-that broker. If the lockout state cannot be read at all, the broker stays closed (fail-closed) until it can.
+The lockout survives restarts: it is written to both the `strategyLatches` docs and the strategy's state doc
+(`stoppedSlots`, plus `stoppedBrokers`), and reconcile re-applies it (a state doc from before per-order stops has no
+`stoppedSlots`; its `stoppedBrokers` then locks both orders). A restored lockout also closes the tripped order and any
+pending slot of that broker. If the lockout state cannot be read at all, the broker stays closed (fail-closed) until it can.
 Only the admin `GET /strategies/BulkPcrStrategy/reset` clears it, or the local day rollover. The auto-start
-re-arm (`reset({ keepStops: true })`) starts a new trade but keeps the lockout.
-No `maxLossPerTrade` = off. A `maxLossPerTrade` without a usable
-`maxInvestment` fails config validation.
+re-arm (`reset({ keepStops: true })`) keeps the lockout.
+No `maxLossPerOrder` (or 0) = off. A `maxLossPerOrder` without a usable `maxInvestment` fails config validation.
+
+**Hedge trail exit (`hedgeTrailDistance`, points, optional, ships unset = off)**: applies to the hedge leg (the side
+opened by the `slDistance` trigger) only; the root leg keeps its fixed `targetPoints` resting sell. With it set, the hedge
+has **no resting sell**. Its target is `ceil(slDistance / 2)` points above its entry (10 -> 5, 5 -> 3). Reaching the target
+only **arms** the trail (`TrailStop.ts`, one instance per slot; nothing is sold). Once armed, the exit level is
+`max(entry + target, peak - hedgeTrailDistance)`: it follows the highest tick and never sits below the target. A tick at
+or below it fires the exit: a **limit** sell for the open quantity, priced at that tick (so it is marketable) and never
+below the entry, placed through the same chunked limit path as every exit. If the price then falls through the limit and
+it is still unfilled after 3 s, it is cancelled and re-placed at the current tick (still a limit, never below the entry;
+below the entry it just rests, as today's target sell would). The peak is persisted on the position (`trail`) and
+survives a restart; a fired exit is persisted as `exitLimitPrice`, so reconcile/cancel re-placements reuse it. A
+sold-out hedge re-buys exactly as before (a new cycle, trail reset). The EOD close and a loss/profit lockout close a
+trailing hedge the same way as any slot.
 
 **Profit stop (`maxProfit`, optional, ships unset)**: the same percent-of-`maxInvestment` form, but cumulative **per
 broker for the whole day**, not per trade. Day P&L = realized over every slot cycle today (`dayRealizedByBroker`) +

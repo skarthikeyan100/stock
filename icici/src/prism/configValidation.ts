@@ -17,7 +17,7 @@ const NON_NEGATIVE_FIELDS: string[] = [
     'targetPoints', 'stopLossPoints', 'targetPrice', 'stopLossPrice', 'target', 'stopLoss',
     'minPrice', 'maxPrice', 'targetPriceDiff', 'stopLossPriceDiff', 'trailingDistance',
     'cooldownSeconds', 'safetyBufferAmount', 'maxTradesPerDay',
-    'slDistance', 'postAverageTargetDistance', 'minPremium', 'refillCancelDistance',
+    'slDistance', 'hedgeTrailDistance', 'postAverageTargetDistance', 'minPremium', 'refillCancelDistance',
     'pointsThreshold', 'accelerationThreshold', 'numberOfDatapointsReceived',
     'maxHoldTimeMinutes', 'gapReversalThreshold',
     'averageThreshold', 'threshold', 'loopCount', 'activateIntermittentCount',
@@ -57,7 +57,7 @@ const PERCENT_FIELDS: string[] = [
 // trip on the first tick; 0 for a drawdown limit would block every zero-P&L
 // day. "Disabled" is expressed by removing the key instead.
 const PERCENT_POSITIVE_FIELDS: string[] = [
-    'maxProfit', 'maxLoss', 'maxLossPerDay', 'maxLossPerTrade', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
+    'maxProfit', 'maxLoss', 'maxLossPerDay', 'maxLossPerTrade', 'maxLossPerOrder', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
 ];
 
 // Must be non-negative (0 is allowed).
@@ -122,8 +122,12 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     }
     for (const field of PERCENT_POSITIVE_FIELDS) {
         const n = toPercentNumber(obj[field]);
-        if (n !== null && n <= 0) {
-            errors.push(`${label}.${field} must be > 0 (got ${obj[field]}); remove the key to disable it`);
+        // BulkPcr alone treats 0 as "no limit" for its two stop caps (PnlStop); a negative cap is still invalid.
+        const zeroMeansOff = label === 'BulkPcrStrategy' && (field === 'maxLossPerTrade' || field === 'maxLossPerOrder' || field === 'maxProfit');
+        if (n !== null && (zeroMeansOff ? n < 0 : n <= 0)) {
+            errors.push(zeroMeansOff
+                ? `${label}.${field} must be >= 0 (0 = no limit; got ${obj[field]})`
+                : `${label}.${field} must be > 0 (got ${obj[field]}); remove the key to disable it`);
         }
     }
     for (const field of PERCENT_NON_NEGATIVE_FIELDS) {
@@ -142,8 +146,8 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     }
     // A BulkPcr loss stop is a percent of maxInvestment: with no usable base it could never trip, so refuse the file.
     // Scoped to BulkPcr only - other strategies fall back to a default base and must keep loading as they do today.
-    if (label === 'BulkPcrStrategy' && obj.maxLossPerTrade != null && !(isNum(maxInv) && maxInv > 0)) {
-        errors.push(`${label}.maxLossPerTrade needs a usable maxInvestment (> 0) - the percent is taken of it`);
+    if (label === 'BulkPcrStrategy' && obj.maxLossPerOrder != null && !(isNum(maxInv) && maxInv > 0)) {
+        errors.push(`${label}.maxLossPerOrder needs a usable maxInvestment (> 0) - the percent is taken of it`);
     }
 
     if (isNum(obj.minPrice) && isNum(obj.maxPrice) && obj.minPrice > obj.maxPrice) {
