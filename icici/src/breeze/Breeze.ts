@@ -623,7 +623,7 @@ class Breeze {
                 return settled.result.avgPrice;
             }
             if (settled.recheckError) {
-                if (settled.recheckError instanceof BreezeTerminalOrderError) throw settled.recheckError;
+                if (settled.recheckError instanceof BreezeTerminalOrderError) throw Object.assign(settled.recheckError, { orderMayBeLive: settled.cancelFailed });
                 Log.log(`[Breeze] Post-timeout re-check of ${orderId} failed:`, settled.recheckError);
                 throw fillStateUnknownError(`Breeze order ${orderId} fill-price timeout: the status re-check failed: ${(settled.recheckError as any)?.message ?? settled.recheckError}`, settled.cancelFailed);
             }

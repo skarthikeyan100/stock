@@ -49,6 +49,9 @@ async function throttleOrderPlacement(): Promise<void> {
 export interface ChunkedFillResult {
     quantity: number;
     avgPrice: number;
+    // Set when the run stopped early and the cancel of the unfilled remainder FAILED: `quantity` is booked, but the remainder
+    // may still be resting at the broker and fill later. A caller must not re-arm or retry the entry.
+    orderMayBeLive?: true;
 }
 
 // A chunk whose fill could not be settled may be live or filled: carry those flags (unchanged) onto the error the chunked run
@@ -89,12 +92,10 @@ export async function buyChunked(
                 }
                 if (filledQty > 0) {
                     // The booked lots are what the caller must size its exit for, so they are returned, not thrown away. A cancel
-                    // that FAILED leaves the remainder resting live and able to fill later: say so loudly.
-                    if (e.orderMayBeLive) {
-                        Log.log(`[order] ALERT: buyChunked: ${request.tradingSymbol} chunk ${i + 1}/${chunks.length} for ${request.userId}: ${filledQty} lots booked, but the cancel of the unfilled remainder FAILED - it may still be resting live at the broker, manual review required. ${e.message}`);
-                    }
-                    Log.log(`[order] buyChunked: ${request.tradingSymbol} chunk ${i + 1}/${chunks.length} drift-cancelled - keeping reduced fill ${filledQty}/${request.quantity} for ${request.userId}. ${e.message}`);
-                    return { quantity: filledQty, avgPrice: filledValue / filledQty };
+                    // that FAILED leaves the remainder resting live and able to fill later: the result says so.
+                    const live = !!e.orderMayBeLive;
+                    Log.log(`[order] ${live ? 'ALERT: ' : ''}buyChunked: ${request.tradingSymbol} chunk ${i + 1}/${chunks.length} drift-cancelled - keeping reduced fill ${filledQty}/${request.quantity} for ${request.userId}${live ? ' - the cancel of the unfilled remainder FAILED, it may still be resting live at the broker, manual review required' : ''}. ${e.message}`);
+                    return { quantity: filledQty, avgPrice: filledValue / filledQty, ...(live ? { orderMayBeLive: true as const } : {}) };
                 }
             } else if (e?.partial && e.filledQuantity > 0) {
                 // Prism's partial-then-cancel error (buyOnPrism has already booked it): keep the thrown filledQuantity in step with bookkeeping.
