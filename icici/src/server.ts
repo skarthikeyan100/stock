@@ -248,9 +248,9 @@ function invalidateUserCache(email?: string): void {
 
 // The one session check behind requireAuth / requireAdmin / requireSelfOrAdmin: a valid session cookie (not expired or revoked) for a
 // user that still exists and is enabled. Returns the user, or the status and message to answer with.
-async function authenticate(req: express.Request): Promise<{ ok: true; email: string; user: NonNullable<Awaited<ReturnType<typeof getUser>>> } | { ok: false; status: number; error: string }> {
+async function authenticate(req: express.Request): Promise<{ ok: true; email: string; user: NonNullable<Awaited<ReturnType<typeof getUser>>> } | { ok: false; status: number; error: string; noSession?: boolean }> {
     const email = resolveUser(req);
-    if (!email) return { ok: false, status: 401, error: 'Not logged in' };
+    if (!email) return { ok: false, status: 401, error: 'Not logged in', noSession: true };
     const user = await getActiveUser(email);
     if (!user || sessionRevoked(req, user)) return { ok: false, status: 401, error: 'Unknown user' };
     if (user.enabled === false) return { ok: false, status: 403, error: 'Account disabled' };
@@ -268,7 +268,7 @@ async function requireAdmin(req: express.Request, res: express.Response, next: e
     if (requestIsLoopback(req)) { next(); return; }
     const auth = await authenticate(req);
     if ('error' in auth) {
-        if (auth.error === 'Not logged in') res.status(401).json({ error: auth.error }); else res.status(403).json({ error: 'Forbidden' });
+        if (auth.noSession) res.status(401).json({ error: auth.error }); else res.status(403).json({ error: 'Forbidden' });
         return;
     }
     if (auth.user.role !== 'admin') { res.status(403).json({ error: 'Forbidden' }); return; }

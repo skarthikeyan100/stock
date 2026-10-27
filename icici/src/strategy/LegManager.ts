@@ -287,7 +287,7 @@ export class LegManager {
     }
 
     private logGateOnce(reason: string): void {
-        (this.gateLog ??= new GateLogger(`[${this.deps.ownerType}]`, 5 * 60 * 1000)).log(reason);
+        (this.gateLog ??= new GateLogger(`[${this.deps.ownerType}]`)).log(reason);
     }
 
     // Fire-and-forget, same convention as bookkeeping.ts's notifications/

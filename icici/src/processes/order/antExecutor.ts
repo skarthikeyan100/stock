@@ -66,7 +66,7 @@ async function resolveUnconfirmedAntBuy(
     // cancel (the cancel only produced "order is not open to cancel" noise on every retry, live 2026-10-22).
     if (/\bREJECTED\b/.test(String(pollErr?.message ?? '')) && !(before && before.quantity > 0)) {
         Log.log(`[order] ANT order ${orderNo} was REJECTED at the broker - nothing filled, not cancelling`);
-        throw pollErr;
+        throw Object.assign(pollErr instanceof Error ? pollErr : new Error(String(pollErr)), { orderNotPlaced: true });
     }
 
     if (!mayCancel) {

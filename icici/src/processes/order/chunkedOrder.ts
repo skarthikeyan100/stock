@@ -160,7 +160,7 @@ export async function squareOffLimitChunked(
     limitPrice: number,
     // Same exchange-aware default as buyChunked above.
     freezeQty: number = exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY
-): Promise<{ orderIds: string[] }> {
+): Promise<{ orderIds: string[]; placedQuantity: number }> {
     const chunks = splitIntoFreezeQtyChunks(quantity, freezeQty);
     const orderIds: string[] = [];
     let placedQty = 0;
@@ -180,5 +180,6 @@ export async function squareOffLimitChunked(
             ), { placedQuantity: placedQty, orderIds: orderIds.slice(), partial: placedQty > 0 });
         }
     }
-    return { orderIds };
+    // placedQuantity can be below the request: Kite's never-short guard clamps a sell to what is really sellable.
+    return { orderIds, placedQuantity: placedQty };
 }

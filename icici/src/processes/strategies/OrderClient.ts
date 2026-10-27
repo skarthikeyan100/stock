@@ -353,13 +353,13 @@ class OrderClient {
 
     // Broker-uniform query of this app's own pending-order trackers for a given tsym,
     // filtered to SELL orders only (see orderProtocol.ts's 'getPendingSells' comment).
+    async getPendingSells(userId: string, broker: string, tradingSymbol: string): Promise<{ quantity: number }[]> {
+        return this.call('getPendingSells', userId, { broker, tradingSymbol });
+    }
+
     // Live net quantity of a contract on a broker, read in the order process (throws when the broker cannot be read).
     async getLiveQuantity(userId: string, broker: string, tradingSymbol: string): Promise<number> {
         return this.call('getLiveQuantity', userId, { broker, tradingSymbol });
-    }
-
-    async getPendingSells(userId: string, broker: string, tradingSymbol: string): Promise<{ quantity: number }[]> {
-        return this.call('getPendingSells', userId, { broker, tradingSymbol });
     }
 
     async findToken(userId: string, index: string, depth: number, right: string): Promise<string> {

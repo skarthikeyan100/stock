@@ -178,7 +178,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
                     filledQuantity: Number(filledQuantity), averagePrice: fillPrice, partial: true,
                 });
             }
-            throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) ${status} - not filled`);
+            throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) ${status} - not filled`), { notPlaced: true });
         }
         if (attempt < BUY_FILL_POLL_ATTEMPTS) await sleep(BUY_FILL_POLL_DELAY_MS);
     }

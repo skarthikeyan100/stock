@@ -364,7 +364,8 @@ class Kite {
                         { driftCancelled: true, filledQuantity, averagePrice }
                     );
                 }
-                throw new Error(`Kite order ${orderId} ${latest.status}`);
+                // Nothing filled: a definite refusal, so a strategy may safely re-arm ([NOT_PLACED] in the order process).
+                throw Object.assign(new Error(`Kite order ${orderId} ${latest.status}`), { notPlaced: true });
             }
 
             // Skip the drift check on the very first attempt: the resting
