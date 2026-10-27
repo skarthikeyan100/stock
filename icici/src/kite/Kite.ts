@@ -444,7 +444,7 @@ class Kite {
                             `Kite order ${orderId} cancelled - price drifted ${drift.toFixed(2)} points above limit ${driftCheck.limitPrice} (threshold ${driftCheck.driftPoints})` +
                                 (filledQuantity > 0 ? ` (partial fill ${filledQuantity} @ ${averagePrice} before cancel)` : '')
                         ),
-                        { driftCancelled: true, filledQuantity, averagePrice }
+                        { driftCancelled: true, filledQuantity, averagePrice, orderMayBeLive: cancelFailed }
                     );
                 }
             }

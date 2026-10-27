@@ -87,12 +87,19 @@ export async function buyChunked(
                     filledQty += e.filledQuantity;
                     filledValue += e.filledQuantity * e.averagePrice;
                 }
-                // A cancel that FAILED leaves the remainder resting live: the reduced fill is not the whole story, so fall through to the
-                // failure below (which carries orderMayBeLive) instead of returning it as a clean success.
-                if (filledQty > 0 && !e.orderMayBeLive) {
+                if (filledQty > 0) {
+                    // The booked lots are what the caller must size its exit for, so they are returned, not thrown away. A cancel
+                    // that FAILED leaves the remainder resting live and able to fill later: say so loudly.
+                    if (e.orderMayBeLive) {
+                        Log.log(`[order] ALERT: buyChunked: ${request.tradingSymbol} chunk ${i + 1}/${chunks.length} for ${request.userId}: ${filledQty} lots booked, but the cancel of the unfilled remainder FAILED - it may still be resting live at the broker, manual review required. ${e.message}`);
+                    }
                     Log.log(`[order] buyChunked: ${request.tradingSymbol} chunk ${i + 1}/${chunks.length} drift-cancelled - keeping reduced fill ${filledQty}/${request.quantity} for ${request.userId}. ${e.message}`);
                     return { quantity: filledQty, avgPrice: filledValue / filledQty };
                 }
+            } else if (e?.partial && e.filledQuantity > 0) {
+                // Prism's partial-then-cancel error (buyOnPrism has already booked it): keep the thrown filledQuantity in step with bookkeeping.
+                filledQty += e.filledQuantity;
+                filledValue += e.filledQuantity * e.averagePrice;
             }
             // filledQuantity/averagePrice carried on the error: earlier chunks are real, already-booked positions, so a
             // caller must be able to tell a partial entry from a clean failure.
