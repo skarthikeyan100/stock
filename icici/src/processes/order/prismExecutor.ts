@@ -169,7 +169,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
     for (let attempt = 1; attempt <= BUY_FILL_POLL_ATTEMPTS; attempt++) {
         const { status, fillPrice, filledQuantity } = await prism.getOrderStatus(orderId);
         if (status === 'COMPLETE') {
-            if (!fillPrice) throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) reported COMPLETE but no fill price - manual review required`), { fillStateUnknown: true });
+            if (!fillPrice) throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) reported COMPLETE but no fill price - manual review required`), { fillStateUnknown: true, orderMayBeLive: false, filledQuantity: 0, averagePrice: 0 });
             return fillPrice;
         }
         if (status === 'REJECTED' || status === 'CANCELED' || status === 'CANCELLED') {
@@ -200,7 +200,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
         recheck: async () => {
             const finalCheck = await Prism.getInstance().getOrderStatus(orderId);
             if (finalCheck.status === 'COMPLETE') {
-                if (!finalCheck.fillPrice) throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window but reported no fill price - manual review required`), { filledNoPrice: true, fillStateUnknown: true });
+                if (!finalCheck.fillPrice) throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window but reported no fill price - manual review required`), { filledNoPrice: true, fillStateUnknown: true, orderMayBeLive: false, filledQuantity: 0, averagePrice: 0 });
                 return { outcome: 'full', avgPrice: finalCheck.fillPrice };
             }
             const partialQty = Number(finalCheck.filledQuantity ?? 0);

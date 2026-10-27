@@ -419,7 +419,8 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
         // Resting sells were cancelled above, so none count against the live position.
         let remainingQty = await neverShortSellable({ label: `${tsym} (${userId}, Breeze)`, quantity: settled.quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0 });
         let bookingFailure: unknown; // a confirmed fill that could not be booked - reported, never retried with a fresh sell
-        let stuck = false; // a resting order we could neither cancel nor confirm closed - stop, don't risk a double-order
+        let stuck = false; // stop looping: a resting order we could neither cancel nor confirm closed, or a fill we could not book
+        let restingLive = false; // the former: an order may still be resting at the broker
         let totalFilledQty = 0;
         let totalFilledValue = 0;
         let lastOrderId = '';
@@ -542,6 +543,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                             );
                             Log.log(`[order] Square-off for ${tsym}: ${(lastErr as Error).message}`);
                             stuck = true;
+                            restingLive = true;
                             break;
                         }
                         if (fillInfo.filledQuantity <= 0) throw new Error('not filled');
@@ -570,7 +572,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
             // return a success trade for a position bookkeeping still shows open.
             throw Object.assign(
                 new Error(`Square-off for ${tsym}: sold ${totalFilledQty}/${quantity} but booking a fill failed - not retrying (would double-sell): ${bookingFailure instanceof Error ? bookingFailure.message : bookingFailure}`),
-                { filledQuantity: totalFilledQty, averagePrice: totalFilledQty > 0 ? totalFilledValue / totalFilledQty : 0, ...(stuck ? { orderMayBeLive: true } : {}) }
+                { filledQuantity: totalFilledQty, averagePrice: totalFilledQty > 0 ? totalFilledValue / totalFilledQty : 0, ...(restingLive ? { orderMayBeLive: true } : {}) }
             );
         }
         if (remainingQty > 0) {
@@ -578,8 +580,8 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                 new Error(
                     `Square-off for ${tsym} failed to fill after ${maxAttempts} re-priced attempts - sold ${totalFilledQty}/${quantity}, ${remainingQty} still open: ${lastErr instanceof Error ? lastErr.message : lastErr}`
                 ),
-                // `stuck`: a resting sell we could neither cancel nor confirm closed - a retry would sell next to it.
-                { filledQuantity: totalFilledQty, averagePrice: totalFilledQty > 0 ? totalFilledValue / totalFilledQty : 0, ...(stuck ? { orderMayBeLive: true } : {}) }
+                // restingLive: a resting sell we could neither cancel nor confirm closed - a retry would sell next to it.
+                { filledQuantity: totalFilledQty, averagePrice: totalFilledQty > 0 ? totalFilledValue / totalFilledQty : 0, ...(restingLive ? { orderMayBeLive: true } : {}) }
             );
         }
         // Summary only - NOT re-recorded via bookkeeping.recordFill (every

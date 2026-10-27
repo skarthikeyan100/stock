@@ -87,7 +87,9 @@ export async function buyChunked(
                     filledQty += e.filledQuantity;
                     filledValue += e.filledQuantity * e.averagePrice;
                 }
-                if (filledQty > 0) {
+                // A cancel that FAILED leaves the remainder resting live: the reduced fill is not the whole story, so fall through to the
+                // failure below (which carries orderMayBeLive) instead of returning it as a clean success.
+                if (filledQty > 0 && !e.orderMayBeLive) {
                     Log.log(`[order] buyChunked: ${request.tradingSymbol} chunk ${i + 1}/${chunks.length} drift-cancelled - keeping reduced fill ${filledQty}/${request.quantity} for ${request.userId}. ${e.message}`);
                     return { quantity: filledQty, avgPrice: filledValue / filledQty };
                 }
