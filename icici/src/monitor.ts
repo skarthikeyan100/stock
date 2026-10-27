@@ -397,11 +397,21 @@ export default class Monitor {
                     if (matchingTrade.targetPrice && matchingTrade.lastTradePrice >= matchingTrade.targetPrice) {
                         Log.log(`[Monitor] Target hit for ${matchingTrade.tsym} at ${matchingTrade.lastTradePrice}, auto square off`);
                         matchingTrade.isSellPending = true;
-                        await Prism.getInstance().squareOffOrder(matchingTrade.token, matchingTrade.quantity, matchingTrade.user, matchingTrade.lastTradePrice);
+                        try {
+                            await Prism.getInstance().squareOffOrder(matchingTrade.token, matchingTrade.quantity, matchingTrade.user, matchingTrade.lastTradePrice);
+                        } catch (e) {
+                            matchingTrade.isSellPending = false; // the exit failed: let the next tick retry it
+                            Log.log(`[Monitor] auto square off failed for ${matchingTrade.tsym}:`, e);
+                        }
                     } else if (matchingTrade.stopLossPrice && matchingTrade.lastTradePrice <= matchingTrade.stopLossPrice) {
                         Log.log(`[Monitor] Stop loss hit for ${matchingTrade.tsym} at ${matchingTrade.lastTradePrice}, auto square off`);
                         matchingTrade.isSellPending = true;
-                        await Prism.getInstance().squareOffOrder(matchingTrade.token, matchingTrade.quantity, matchingTrade.user, matchingTrade.lastTradePrice);
+                        try {
+                            await Prism.getInstance().squareOffOrder(matchingTrade.token, matchingTrade.quantity, matchingTrade.user, matchingTrade.lastTradePrice);
+                        } catch (e) {
+                            matchingTrade.isSellPending = false; // the exit failed: let the next tick retry it
+                            Log.log(`[Monitor] auto square off failed for ${matchingTrade.tsym}:`, e);
+                        }
                     }
                 }
             }

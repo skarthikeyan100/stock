@@ -158,10 +158,6 @@ export default class RateOfChangeStrategy extends Strategy {
 
         // Set sentinel before any await to prevent concurrent executeTrade calls
         if (direction) {
-            if (!this.isSentimentAligned(quote, direction)) {
-                Log.log('[RoC] Sentiment not aligned for', direction, '— skipping');
-                return;
-            }
             this.contract = new RateOfChangeContract();
             Log.log('Execute Trade for ', this.contract)
             await this.executeTrade(quote, direction, velocity);

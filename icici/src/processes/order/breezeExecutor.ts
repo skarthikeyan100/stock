@@ -6,7 +6,7 @@ import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
-import { BrokerExecutor, BuyRequest, Exchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, OrderAlreadyFilledError } from './BrokerExecutor';
+import { BrokerExecutor, BuyRequest, Exchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol } from './breezePendingLimitOrders';
 import { roundToTick } from '../../kite/Kite';
@@ -424,7 +424,8 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
             done.broker = 'breeze';
             return done;
         }
-        let remainingQty = settled.quantity;
+        // Resting sells were cancelled above, so none count against the live position.
+        let remainingQty = await neverShortSellable({ label: `${tsym} (${userId}, Breeze)`, quantity: settled.quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0 });
         let bookingFailure: unknown; // a confirmed fill that could not be booked - reported, never retried with a fresh sell
         let stuck = false; // a resting order we could neither cancel nor confirm closed - stop, don't risk a double-order
         let totalFilledQty = 0;
@@ -873,6 +874,10 @@ export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: 
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const { shortName, strike, optionType } = parseTsym(tradingSymbol);
     const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
+    quantity = await neverShortSellable({
+        label: `${tradingSymbol} (${userId}, Breeze)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),
+        restingSellQuantity: findPendingBreezeOrdersForSymbol(userId, tradingSymbol).filter((o) => o.action === 'Sell').reduce((sum, o) => sum + o.quantity, 0),
+    });
     Log.log(`[order] Bare Breeze limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, price);
     trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange: contract.exchange, action: 'Sell' });

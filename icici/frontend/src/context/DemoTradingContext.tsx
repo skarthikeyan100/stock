@@ -131,7 +131,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
         esRef.current = null;
       }
 
-      const es = new EventSource('/optionstream');
+      const es = new EventSource('/demo/optionstream');
       esRef.current = es;
 
       es.onopen = () => {

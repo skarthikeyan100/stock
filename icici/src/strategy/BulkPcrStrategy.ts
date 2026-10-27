@@ -1483,15 +1483,15 @@ export default class BulkPcrStrategy extends Strategy {
             try {
                 let squareOffAvg: number | undefined;
                 if (remaining > 0) {
-                    if (broker === 'ant') {
-                        const trade = await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: exchangeForTsym(tsym) });
-                        squareOffAvg = trade?.price;
-                    } else if (broker === 'kite' || broker === 'breeze') {
-                        const res = await OrderClient.getInstance().chunkedSquareOff(this.userId, { tsym, quantity: remaining, broker });
-                        squareOffAvg = res?.avgPrice;
-                    } else {
+                    if (broker !== 'ant' && broker !== 'kite' && broker !== 'breeze') {
                         throw new Error(`EOD square-off: broker '${broker}' does not run a pair`);
                     }
+                    // Chunked for every broker: one order above the exchange freeze quantity is rejected outright.
+                    const res = await OrderClient.getInstance().chunkedSquareOff(this.userId, { tsym, quantity: remaining, broker });
+                    if (Number(res?.quantity ?? remaining) < remaining) {
+                        throw new Error(`only ${res.quantity}/${remaining} confirmed sold (rest unconfirmed, still being re-priced)`);
+                    }
+                    squareOffAvg = res?.avgPrice;
                 }
                 // Realized for the cycle: the cancel-window part (above) plus the square-off part at its own average.
                 // If the average is missing, estimate from the last tick and say so in the log.

@@ -3,7 +3,7 @@ import { OptionQuote } from '../model/model';
 import { Strategy } from './strategy';
 import OrderClient from '../processes/strategies/OrderClient';
 import { subscribeTokenDepth, unsubscribeTokenDepth } from '../processes/strategies/DataClient';
-import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
+import { watchTokenOnSource, unwatchTokenOnSource, isWatching } from '../processes/strategies/tokenRouter';
 import { CALL, PUT } from '../constants';
 import { sleep } from '../util/sleep';
 import { exchangeForIndex } from '../util/underlyings';
@@ -11,6 +11,8 @@ import { exchangeForIndex } from '../util/underlyings';
 interface PendingLeg {
     tbq?: number;
     tsq?: number;
+    refs: number; // concurrent getDirection calls sharing this token's reading
+    ownsWatch: boolean; // this entry (not a slot/position) added the strategy's tick watch, so only it may remove it
 }
 
 // Momentum signal for ContinuousStrategy's PCR veto (see
@@ -58,13 +60,22 @@ export default class MomentumSignal {
         // default to NFO regardless of `index`, which would silently never
         // get a depth tick back for a SENSEX momentum check.
         const exchange: 'NFO' | 'BFO' = exchangeForIndex(index);
-        const subscribedNow: string[] = [];
+        // Shared per token: a concurrent call joins the existing entry (and its reading) instead of finding it 'taken', and only the
+        // last one out tears the subscription down - the first call's cleanup used to delete the entry from under the second.
+        const joined: string[] = [];
         for (const token of [ceToken, peToken]) {
-            if (this.pending.has(token)) continue;
-            this.pending.set(token, {});
-            subscribedNow.push(token);
-            watchTokenOnSource('ant', token, strategy, exchange);
-            subscribeTokenDepth(token, 'ant', exchange);
+            const existing = this.pending.get(token);
+            if (existing) {
+                existing.refs++;
+            } else {
+                // watchTokenOnSource is a no-op when the strategy already watches the token (e.g. a live slot's tick routing):
+                // removing it afterwards would silence that slot, so only remove a watch this entry added.
+                const ownsWatch = !isWatching('ant', token, strategy);
+                this.pending.set(token, { refs: 1, ownsWatch });
+                watchTokenOnSource('ant', token, strategy, exchange);
+                subscribeTokenDepth(token, 'ant', exchange);
+            }
+            joined.push(token);
         }
 
         try {
@@ -86,9 +97,12 @@ export default class MomentumSignal {
             Log.log(`[MomentumSignal] Timed out after ${timeoutMs}ms waiting for ATM CE/PE depth ticks - momentum unavailable this window`);
             return null;
         } finally {
-            for (const token of subscribedNow) {
+            for (const token of joined) {
+                const entry = this.pending.get(token);
+                if (!entry) continue;
+                if (--entry.refs > 0) continue;
                 this.pending.delete(token);
-                unwatchTokenOnSource('ant', token, strategy, exchange);
+                if (entry.ownsWatch) unwatchTokenOnSource('ant', token, strategy, exchange);
                 unsubscribeTokenDepth(token, 'ant', exchange);
             }
         }

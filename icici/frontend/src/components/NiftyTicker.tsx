@@ -10,7 +10,8 @@ interface NiftyQuote {
   changePercent: number;
 }
 
-export default function NiftyTicker() {
+// `url` defaults to the authenticated stream; the logged-out demo page passes its anonymous copy.
+export default function NiftyTicker({ url = '/niftystream' }: { url?: string }) {
   const [quote, setQuote] = useState<NiftyQuote | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
@@ -21,7 +22,7 @@ export default function NiftyTicker() {
     const connect = () => {
       if (disposed) return;
       if (esRef.current) esRef.current.close();
-      const es = new EventSource('/niftystream');
+      const es = new EventSource(url);
       esRef.current = es;
       es.onopen = () => { failCount = 0; };
       es.onmessage = (e) => {
@@ -47,7 +48,7 @@ export default function NiftyTicker() {
       if (retryTimer) clearTimeout(retryTimer);
       esRef.current?.close();
     };
-  }, []);
+  }, [url]);
 
   if (!quote) {
     return (

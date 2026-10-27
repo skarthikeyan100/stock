@@ -176,6 +176,14 @@ async function main() {
         }
         await stopChild(old);
         startData();
+        // The new data process has an empty subscription map: tell strategies to replay theirs (the second pass covers a data
+        // process that was not yet serving its stdin the first time).
+        for (const delayMs of [5_000, 20_000]) {
+            setTimeout(() => {
+                if (shuttingDown || !strategies || strategies.killed || !strategies.stdin.writable) return;
+                strategies.stdin.write(JSON.stringify({ cmd: 'resync' }) + '\n');
+            }, delayMs);
+        }
     });
     const respawnData = makeRespawner('data', restartData);
 
@@ -267,7 +275,8 @@ async function main() {
             path.join(DIST, 'strategy'), path.join(DIST, 'processes', 'strategiesProcess.js'), path.join(DIST, 'processes', 'strategies'),
             path.join(DIST, 'ant'), path.join(DIST, 'model'), path.join(DIST, 'util'),
             path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'), path.join(DIST, 'lib'),
-            ...topLevel('constants.js', 'nse_index.js', 'symbols.js'),
+            path.join(DIST, 'kite'), path.join(DIST, 'breeze'),
+            ...topLevel('constants.js', 'nse_index.js', 'symbols.js', 'orderList.js'),
         ],
         () => {
             log('dev', 'Restarting strategies (data/order untouched)...');
@@ -285,7 +294,7 @@ async function main() {
     watchAndRestart('data', [
         path.join(DIST, 'processes', 'data'), path.join(DIST, 'processes', 'dataProcess.js'),
         path.join(DIST, 'ant'), path.join(DIST, 'model'), path.join(DIST, 'util'),
-        path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'),
+        path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'), path.join(DIST, 'breeze'),
     ], () => {
         log('dev', 'Restarting data (order/strategies/frontend untouched)...');
         void restartData();

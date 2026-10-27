@@ -189,12 +189,6 @@ export default class RuleBasedStrategy extends Strategy {
         const direction = this.consensus(signals);
         if (!direction) return;
 
-        const latestQuote = niftyQuoteHistory.getRecent(1)[0];
-        if (latestQuote && !this.isSentimentAligned(latestQuote, direction)) {
-            Log.log(`[Rule:${this.userId}] Sentiment not aligned for ${direction} — skipping`);
-            return;
-        }
-
         Log.log(`[Rule:${this.userId}] Consensus: ${direction}`);
         this.recordTriggerTime();
         this.executeTrade(direction).catch(e =>

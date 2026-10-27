@@ -13,9 +13,8 @@ import { readJsonLines, writeJsonLine } from '../ipc/jsonLines';
 import { STRATEGIES_SOCKET_PATH, StrategiesRequest, StrategiesResponse } from '../ipc/strategiesProtocol';
 import strategies from '../strategy/strategies';
 import OrderClient from './strategies/OrderClient';
-import { registerTrade, unregisterTrade, optionTickTargets, deliverOptionTick } from './strategies/tokenRouter';
+import { registerTrade, unregisterTrade, optionTickTargets, deliverOptionTick, resubscribeAll, holdExternal, releaseExternal } from './strategies/tokenRouter';
 import { BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
-import { subscribeToken, unsubscribeToken } from './strategies/DataClient';
 import * as niftyQuoteHistory from './strategies/niftyQuoteHistory';
 import * as niftyCandleBuilder from './strategies/niftyCandleBuilder';
 import * as niftyStatsBuilder from './strategies/niftyStatsBuilder';
@@ -163,6 +162,31 @@ function enqueueFifo(key: string, job: () => Promise<void>): Promise<void> {
     return next;
 }
 
+// Index (nifty/sensex) ticks, latest-wins per strategy like option ticks: a strategy blocked on a 90s broker call used to replay ~90
+// stale ticks afterwards (stale entries, late EOD/stop). The queued quote is replaced by the newest; stats updates are discrete
+// events (old -> new) so those are all kept, in order.
+const indexSlots = new Map<string, { running: boolean; quote: any; stats: any[] }>();
+function enqueueLatestIndex(key: string, quote: any, statsUpdate: any, job: (quote: any, stats: any[]) => Promise<void>): void {
+    let slot = indexSlots.get(key);
+    if (slot?.running) {
+        slot.quote = quote;
+        if (statsUpdate) slot.stats.push(statsUpdate);
+        return;
+    }
+    const s = { running: true, quote, stats: statsUpdate ? [statsUpdate] : [] };
+    indexSlots.set(key, s);
+    (async () => {
+        while (s.quote) {
+            const q = s.quote;
+            const stats = s.stats;
+            s.quote = null;
+            s.stats = [];
+            try { await job(q, stats); } catch (e) { Log.log(`[strategies] index tick ${key} failed:`, e); }
+        }
+        indexSlots.delete(key);
+    })();
+}
+
 const optionSlots = new Map<string, { running: boolean; pending: OptionQuote | null }>();
 // Depth-feed ticks are sparse partial updates (e.g. tbq/tsq without lp): when a queued quote is superseded, its defined
 // fields are carried into the newer one (newer wins) so data later ticks do not repeat is not lost.
@@ -192,6 +216,11 @@ function enqueueLatest(key: string, quote: OptionQuote, job: (q: OptionQuote) =>
 }
 
 async function onTick(tick: any) {
+    // Control line from the orchestrator after the data process was restarted: replay every live token subscription.
+    if (tick.cmd === 'resync') {
+        Log.log(`[strategies] data process restarted - resubscribed ${resubscribeAll()} token feed(s)`);
+        return;
+    }
     if (tick.type === 'nifty') {
         const quote = Object.assign(new NiftyQuote(), tick.quote) as NiftyQuote;
         // A zero/NaN price must not reach the history, candle builder, stats or any strategy.
@@ -199,22 +228,22 @@ async function onTick(tick: any) {
         niftyQuoteHistory.record(quote);
         niftyCandleBuilder.record(quote);
         const statsUpdate = niftyStatsBuilder.record(quote.ltp, parseInt(quote.ltt as any));
-        // One FIFO per strategy: a strategy stuck awaiting a broker call only delays its own ticks, not everyone's.
-        await Promise.all(strategies.getList().map((strategy) =>
-            enqueueFifo(`tick:nifty:${strategy.getClassName()}:${strategy.userId}`, async () => {
-                if (statsUpdate) {
-                    await isolate(strategy, 'receive', () => strategy.receive(statsUpdate.oldStats, statsUpdate.newStats));
+        // One latest-wins slot per strategy: a strategy stuck awaiting a broker call only coalesces its own ticks, not everyone's.
+        for (const strategy of strategies.getList()) {
+            enqueueLatestIndex(`tick:nifty:${strategy.getClassName()}:${strategy.userId}`, quote, statsUpdate, async (q, statsList) => {
+                for (const u of statsList) {
+                    await isolate(strategy, 'receive', () => strategy.receive(u.oldStats, u.newStats));
                 }
-                if (strategy.enabled) await isolate(strategy, 'processNiftyQuote', () => strategy.processNiftyQuote(quote));
-            })
-        ));
+                if (strategy.enabled) await isolate(strategy, 'processNiftyQuote', () => strategy.processNiftyQuote(q));
+            });
+        }
     } else if (tick.type === 'sensex') {
         const quote = Object.assign(new SensexQuote(), tick.quote) as SensexQuote;
-        await Promise.all(strategies.getList().map((strategy) =>
-            enqueueFifo(`tick:sensex:${strategy.getClassName()}:${strategy.userId}`, async () => {
-                if (strategy.enabled) await isolate(strategy, 'processSensexQuote', () => strategy.processSensexQuote(quote));
-            })
-        ));
+        for (const strategy of strategies.getList()) {
+            enqueueLatestIndex(`tick:sensex:${strategy.getClassName()}:${strategy.userId}`, quote, undefined, async (q) => {
+                if (strategy.enabled) await isolate(strategy, 'processSensexQuote', () => strategy.processSensexQuote(q));
+            });
+        }
     } else if (tick.type === 'option') {
         const quote = Object.assign(new OptionQuote(), tick.quote) as OptionQuote;
         const source = (tick.source ?? DEFAULT_FEED_SOURCE) as FeedSource;
@@ -263,12 +292,14 @@ async function handleStrategiesRequest(req: StrategiesRequest): Promise<Strategi
             // an arbitrary token on request, with no ref-counting against
             // watchToken/registerTrade - a demo request isn't a Strategy, and
             // a stray duplicate/early (un)subscribe here is harmless.
+            // Ref-counted through the token router (an external hold), so an unsubscribe here can never cut off a token that a live
+            // strategy or open position is still using.
             case 'subscribeToken':
-                subscribeToken(req.payload.token);
+                holdExternal(req.payload.token);
                 return { kind: 'response', id: req.id, ok: true, result: null };
 
             case 'unsubscribeToken':
-                unsubscribeToken(req.payload.token);
+                releaseExternal(req.payload.token);
                 return { kind: 'response', id: req.id, ok: true, result: null };
 
             // Live config-reload, called from server.ts's POST /config after every
@@ -339,7 +370,9 @@ async function main() {
         enqueueFifo(`fill:${userId}`, () => onFill(userId, trade));
     });
     OrderClient.getInstance().onCancelled((userId, notification) => {
-        enqueueFifo(`fill:${userId}`, () => onOrderCancelled(userId, notification));
+        // Own queue: a cancel handler can wait seconds (BulkPcr sleeps, then re-places an exit over a long IPC call) and must not
+        // hold up every fill for that user (updateTrade/stop/trail bookkeeping).
+        enqueueFifo(`cancel:${userId}`, () => onOrderCancelled(userId, notification));
     });
     OrderClient.getInstance().connect();
     startStrategiesServer();

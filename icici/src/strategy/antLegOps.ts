@@ -88,8 +88,9 @@ async function buy(userId: string, tradingSymbol: string, token: string, quantit
     }
 }
 
-async function sell(userId: string, tradingSymbol: string, _token: string, quantity: number, exchange: 'NFO' | 'BFO') {
-    return OrderClient.getInstance().antSquareOffBare(userId, { tradingSymbol, quantity, exchange });
+// Chunked: one unchunked order above the exchange freeze quantity (1755 for NIFTY) is rejected outright, leaving the leg open.
+async function sell(userId: string, tradingSymbol: string, _token: string, quantity: number, _exchange: 'NFO' | 'BFO') {
+    return OrderClient.getInstance().chunkedSquareOff(userId, { tsym: tradingSymbol, quantity, broker: 'ant' });
 }
 
 async function cancel(userId: string, orderId: string): Promise<void> {

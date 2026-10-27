@@ -41,13 +41,6 @@ export abstract class Strategy {
         return Date.now() - this.lastTriggerTime >= cooldownSeconds * 1000;
     }
 
-    protected isSentimentAligned(quote: NiftyQuote, right: string): boolean {
-        if (!quote?.buyQty || !quote?.sellQty) return true; // skip in mock mode (data absent)
-        if (right === CALL) return quote.buyQty > quote.sellQty;
-        if (right === PUT)  return quote.sellQty > quote.buyQty;
-        return true;
-    }
-
     protected recordTriggerTime(): void {
         this.lastTriggerTime = Date.now();
     }

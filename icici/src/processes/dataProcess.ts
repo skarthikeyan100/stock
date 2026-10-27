@@ -104,3 +104,9 @@ main().catch((e) => {
 });
 
 process.on('SIGTERM', () => process.exit(0));
+process.on('unhandledRejection', (reason) => {
+    Log.log('[data] Unhandled promise rejection (process kept alive):', reason);
+});
+process.on('uncaughtException', (e) => {
+    Log.log('[data] Uncaught exception (process kept alive):', e);
+});

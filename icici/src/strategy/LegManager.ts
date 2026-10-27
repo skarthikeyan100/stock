@@ -346,6 +346,10 @@ export class LegManager {
         for (const leg of this.legsByToken.values()) {
             if (leg.right === right) strikes.add(leg.strike);
         }
+        // A resting refill buy will become a leg on its strike when it fills: a spawn must not pick the same strike.
+        for (const intent of this.pendingReEntries.values()) {
+            if (intent.right === right) strikes.add(intent.strike);
+        }
         return strikes;
     }
 
@@ -544,7 +548,7 @@ export class LegManager {
 
         for (const [token, intent] of Array.from(this.pendingReEntries.entries())) {
             this.pendingReEntries.delete(token); // synchronous, before any await
-            unwatchToken(token, this.deps.strategyRef);
+            unwatchToken(token, this.deps.strategyRef, intent.exchange);
             await this.cancelIntentOrSellBack(intent, 'Mass close');
         }
 
@@ -687,7 +691,7 @@ export class LegManager {
             this.legsByToken.set(p.token, leg);
             if (!this.deps.getConfig().dryRun) {
                 this.persistLegLineage(leg);
-                registerTrade(p.token, this.deps.strategyRef);
+                registerTrade(p.token, this.deps.strategyRef, undefined, leg.exchange);
             }
             this.logLegStatus(leg);
             return leg;
@@ -887,6 +891,18 @@ export class LegManager {
                 const trade: Trade = await this.currentOps(true).buy(
                     this.deps.userId, contract.tradingSymbol, contract.token, spawnQty, contract.exchange, contract.premium
                 );
+                // Same guard openRootLeg has: the buy already executed, so this cannot prevent the order, only stop it from
+                // silently overwriting tracking of a leg already on this token.
+                if (this.legsByToken.has(trade.token)) {
+                    Log.log(`[${this.deps.ownerType}] REFUSING level ${level} spawn - token ${trade.token} already has a tracked leg. New untracked fill: ${trade.tsym} qty=${trade.quantity} - selling it back`);
+                    leg.childByLevel.delete(level);
+                    try {
+                        await this.sellBack(trade.tsym, trade.token, trade.quantity, contract.exchange);
+                    } catch (sellErr) {
+                        Log.log(`[${this.deps.ownerType}] ALERT: could not sell back the refused duplicate spawn (${trade.tsym} qty=${trade.quantity}) - UNTRACKED POSITION, manual action required:`, sellErr);
+                    }
+                    return;
+                }
                 const childLegId = this.nextLegId();
                 const childLeg: Leg = {
                     legId: childLegId, token: trade.token, tsym: trade.tsym, strike: contract.strike, exchange: contract.exchange,
@@ -1014,7 +1030,7 @@ export class LegManager {
         );
         for (const [token, intent] of stale) {
             this.pendingReEntries.delete(token);
-            unwatchToken(token, this.deps.strategyRef);
+            unwatchToken(token, this.deps.strategyRef, intent.exchange);
             if (intent.orderId) this.supersededRefills.set(intent.orderId, { tsym: intent.tsym, token, exchange: intent.exchange });
             try {
                 await this.currentOps().cancel(this.deps.userId, intent.orderId);
@@ -1061,7 +1077,7 @@ export class LegManager {
                 );
                 intent.orderId = orderId;
                 this.pendingReEntries.set(intent.token, intent);
-                watchToken(intent.token, this.deps.strategyRef); // keep ticks flowing so checkRefillDrift can see this contract's LTP
+                watchToken(intent.token, this.deps.strategyRef, intent.exchange); // keep ticks flowing so checkRefillDrift can see this contract's LTP
                 Log.log(`[${this.deps.ownerType}] Refill placed (${intent.isRoot ? 'root' : 'nested'}): ${intent.tsym} qty=${intent.quantity} price=${intent.limitPrice}`);
                 return true;
             });
@@ -1096,7 +1112,7 @@ export class LegManager {
         const cancelDistance = this.deps.getConfig().refillCancelDistance ?? 50;
         if (ltp - intent.limitPrice <= cancelDistance) return;
         this.pendingReEntries.delete(token); // synchronous, before any await - same pattern as leg-close paths
-        unwatchToken(token, this.deps.strategyRef);
+        unwatchToken(token, this.deps.strategyRef, intent.exchange);
         await this.cancelIntentOrSellBack(intent, `Refill drift (LTP ${(ltp - intent.limitPrice).toFixed(2)} above limit ${intent.limitPrice})`);
     }
 
@@ -1167,7 +1183,18 @@ export class LegManager {
         if (!intent) return; // redundant echo of a market buy already handled synchronously
         if (oid) this.handledBuyOrderIds.add(oid);
         this.pendingReEntries.delete(trade.token);
-        unwatchToken(trade.token, this.deps.strategyRef);
+        unwatchToken(trade.token, this.deps.strategyRef, intent.exchange);
+        if (this.legsByToken.has(trade.token)) {
+            // A live leg already sits on this token (e.g. a spawn that picked this strike): adopting the refill would overwrite it
+            // and lose its size and lineage. The refill's quantity is the untracked part - sell exactly that back.
+            Log.log(`[${this.deps.ownerType}] ALERT: refill ${oid ?? ''} (${trade.tsym}) filled ${trade.quantity} while a tracked leg already holds this token - selling the refill back`);
+            try {
+                await this.sellBack(trade.tsym, trade.token, trade.quantity, intent.exchange);
+            } catch (sellErr) {
+                Log.log(`[${this.deps.ownerType}] ALERT: could not sell back the duplicate refill (${trade.tsym} qty=${trade.quantity}) - UNTRACKED POSITION, manual action required:`, sellErr);
+            }
+            return;
+        }
         const legId = this.nextLegId();
         const leg: Leg = {
             legId, token: trade.token, tsym: intent.tsym, strike: intent.strike, exchange: intent.exchange,
@@ -1254,7 +1281,7 @@ export class LegManager {
             // live Buy fill) - a restored leg never goes through that path, so
             // without this call its token is never resubscribed after a
             // restart, leaving the leg silently tick-starved.
-            registerTrade(trade.token, this.deps.strategyRef);
+            registerTrade(trade.token, this.deps.strategyRef, undefined, leg.exchange);
         }
         // Pass 2: every restored leg now exists (with a freshly-generated
         // legId), so parentLegRef can be resolved to the parent's actual
@@ -1280,6 +1307,10 @@ export class LegManager {
     }
 
     reset(): void {
+        // Resting refill buys are live at the broker: cancel each (or sell it back if it already filled) and stop its tick watch.
+        // Cleared bookkeeping alone left them to fill later into no intent, i.e. an untracked long.
+        const abandoned = Array.from(this.pendingReEntries.values());
+        for (const intent of abandoned) unwatchToken(intent.token, this.deps.strategyRef, intent.exchange);
         this.legsByToken.clear();
         this.pendingReEntries.clear();
         this.deferredRootRefill = null;
@@ -1292,5 +1323,12 @@ export class LegManager {
         this.handledBuyOrderIds.clear();
         this.ignoredSellEchoes.clear();
         this.maxProfitBaseline = this.realizedPnL;
+        this.dryRunLatched = false;
+        this.activeDay = LegManager.latchDay();
+        // After the clears above, so an abandoned refill that fills anyway is recognised and sold back instead of dropped as an echo.
+        for (const intent of abandoned) {
+            if (intent.orderId) this.supersededRefills.set(intent.orderId, { tsym: intent.tsym, token: intent.token, exchange: intent.exchange });
+            this.cancelIntentOrSellBack(intent, 'Reset').catch((e) => Log.log(`[${this.deps.ownerType}] Reset: cancel of pending re-entry ${intent.tsym} failed:`, e));
+        }
     }
 }

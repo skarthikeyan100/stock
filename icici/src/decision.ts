@@ -213,7 +213,7 @@ export default class Decision {
                 if (trade.getProfit() > this.profit) {
                     Log.log('[Auto] Sell ', trade);
                     trade.action = SELL;
-                    prism.squareOffOrder(trade.token, trade.quantity);
+                    prism.squareOffOrder(trade.token, trade.quantity, undefined, trade.lastTradePrice).catch((e) => Log.log('[Auto] square off failed:', e));
                     Mongo.getInstance().insert(trade);
                     strategy.tradeMap.delete(optionQuote.token);
                 }

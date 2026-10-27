@@ -149,7 +149,26 @@ function getOrPost(route: string, ...handlers: any[]): void {
 }
 
 const orderClient = OrderClient.getInstance();
-const strategiesClient = StrategiesClient.getInstance();
+
+
+// The one place a user's settings are pushed to the order process. It sends EVERY field: the order process replaces its cached entry, so
+// a partial payload (as login and user-create used to send) silently dropped broker, caps, target/stop and accountClosed, re-opening an
+// account closed by the weekly-drawdown breach on the next page open.
+function pushUserToOrderProcess(user: any, context: string): Promise<void> {
+    return orderClient.updateUserSettings(user.email, {
+        lossLimit: user.lossLimit,
+        lotLimit: user.lotCount,
+        investmentMode: user.investmentMode,
+        investmentAmount: user.investmentAmount,
+        useGTT: user.useGTT,
+        broker: user.broker,
+        perOrderCap: user.perOrderCap,
+        allottedCapital: user.allottedCapital,
+        targetPoints: user.targetPoints,
+        stopLossPoints: user.stopLossPoints,
+        accountClosed: user.accountClosed === true,
+    }).catch((e) => Log.log(`[frontend] updateUserSettings on ${context} failed:`, e));
+}const strategiesClient = StrategiesClient.getInstance();
 
 // Resolves the user ONLY from the server-signed session cookie - proves
 // nothing was forged, unlike the X-User-Id header this used to also trust
@@ -253,13 +272,7 @@ app.post('/auth/login', async function (req, res) {
             return;
         }
         invalidateUserCache(user.email);
-        await orderClient.updateUserSettings(user.email, {
-            lossLimit: user.lossLimit,
-            lotLimit: user.lotCount,
-            investmentMode: user.investmentMode,
-            investmentAmount: user.investmentAmount,
-            useGTT: user.useGTT,
-        }).catch((e) => Log.log('[frontend] updateUserSettings on login failed:', e));
+        await pushUserToOrderProcess(user, 'login');
         res.cookie('session', user.email, { signed: true, httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
         res.json(toClientUser(user));
     } catch (e) {
@@ -288,18 +301,7 @@ app.get('/auth/me', async function (req, res) {
     // in-memory cache after a restart - refresh it here too, on every session
     // check, so a stale/empty cache entry doesn't silently fall back to
     // hardcoded defaults (e.g. investmentAmount=0) for manual order sizing.
-    await orderClient.updateUserSettings(email, {
-        lossLimit: user.lossLimit,
-        lotLimit: user.lotCount,
-        investmentMode: user.investmentMode,
-        investmentAmount: user.investmentAmount,
-        useGTT: user.useGTT,
-        broker: user.broker,
-        perOrderCap: user.perOrderCap,
-        allottedCapital: user.allottedCapital,
-        targetPoints: user.targetPoints,
-        stopLossPoints: user.stopLossPoints,
-    }).catch((e) => Log.log('[frontend] updateUserSettings on session check failed:', e));
+    await pushUserToOrderProcess(user, 'session check');
     res.json(toClientUser(user));
 });
 
@@ -345,13 +347,7 @@ app.post('/users', requireAdmin, async function (req, res) {
             return;
         }
         const user = await createUser(email, name, Number(ll), Number(lc), role ?? 'user');
-        await orderClient.updateUserSettings(user.email, {
-            lossLimit: user.lossLimit,
-            lotLimit: user.lotCount,
-            investmentMode: user.investmentMode,
-            investmentAmount: user.investmentAmount,
-            useGTT: user.useGTT,
-        }).catch((e) => Log.log('[frontend] updateUserSettings on create failed:', e));
+        await pushUserToOrderProcess(user, 'create');
         res.json(toClientUser(user));
     } catch (e: any) {
         console.error('Create user error:', e);
@@ -444,12 +440,12 @@ app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (
     try {
         const { email } = req.params;
         const { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled } = req.body;
-        // Self-service is limited to investment preferences; limits, capital, broker, profit split and the enabled flag
-        // are admin-controlled (a trader must not be able to raise their own loss limit or re-enable a disabled account).
+        // Self-service is limited to the investment mode; limits, capital (investmentAmount is the base the daily/weekly loss limits are
+        // measured against), exit mode (useGTT), broker, profit split and the enabled flag are admin-controlled (a trader must not be able to raise their own loss limit or re-enable a disabled account).
         if (!requestIsLoopback(req)) {
             const caller = await getUser(resolveUser(req) ?? '');
             if (caller?.role !== 'admin') {
-                const restricted = { lossLimit, lotCount, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled };
+                const restricted = { lossLimit, lotCount, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled };
                 const attempted = Object.entries(restricted).filter(([, v]) => v !== undefined).map(([k]) => k);
                 if (attempted.length > 0) {
                     res.status(403).json({ error: `Only an admin can change: ${attempted.join(', ')}` });
@@ -481,18 +477,7 @@ app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (
             res.status(404).json({ error: 'User not found' });
             return;
         }
-        await orderClient.updateUserSettings(email, {
-            lossLimit: user.lossLimit,
-            lotLimit: user.lotCount,
-            investmentMode: user.investmentMode,
-            investmentAmount: user.investmentAmount,
-            useGTT: user.useGTT,
-            broker: user.broker,
-            perOrderCap: user.perOrderCap,
-            allottedCapital: user.allottedCapital,
-            targetPoints: user.targetPoints,
-            stopLossPoints: user.stopLossPoints,
-        }).catch((e) => Log.log('[frontend] updateUserSettings push failed:', e));
+        await pushUserToOrderProcess(user, 'push');
         res.json(toClientUser(user));
     } catch (e) {
         console.error('Update settings error:', e);
@@ -1632,22 +1617,54 @@ const positionStreamClients = new Map<express.Response, string>(); // res -> use
 // live update - which may not arrive until the next session.
 let lastNiftyQuote: any = null;
 
-app.get('/niftystream', requireAuth, async function (req, res) {
+function openMarketStream(req: express.Request, res: express.Response, clients: Set<express.Response>, replay?: () => string | null): void {
     res.set({ 'Cache-Control': 'no-cache', 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
     res.flushHeaders();
     res.write('retry: 10000\n\n');
-    if (lastNiftyQuote) res.write(`data: ${JSON.stringify({ nifty: lastNiftyQuote })}\n\n`);
-    niftyStreamClients.add(res);
-    req.on('close', () => niftyStreamClients.delete(res));
+    const first = replay?.();
+    if (first) res.write(first);
+    clients.add(res);
+    req.on('close', () => clients.delete(res));
+}
+const replayNifty = () => (lastNiftyQuote ? `data: ${JSON.stringify({ nifty: lastNiftyQuote })}\n\n` : null);
+
+app.get('/niftystream', requireAuth, async function (req, res) {
+    openMarketStream(req, res, niftyStreamClients, replayNifty);
 });
 
 app.get('/optionstream', requireAuth, async function (req, res) {
-    res.set({ 'Cache-Control': 'no-cache', 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
-    res.flushHeaders();
-    res.write('retry: 10000\n\n');
-    optionStreamClients.add(res);
-    req.on('close', () => optionStreamClients.delete(res));
+    openMarketStream(req, res, optionStreamClients);
 });
+
+// Anonymous copies of the two market streams, for the logged-out /demo page (the authenticated ones above answered it with 401 forever).
+// They carry the same public market ticks and nothing user-specific; connections are capped per client IP and globally.
+const DEMO_STREAM_PER_IP = 3;
+const DEMO_STREAM_TOTAL = 200;
+const demoStreamOpen = new Map<string, number>();
+let demoStreamTotal = 0;
+function demoStream(clients: Set<express.Response>, replay?: () => string | null) {
+    return (req: express.Request, res: express.Response) => {
+        const ip = clientIp(req);
+        if (demoStreamTotal >= DEMO_STREAM_TOTAL || (demoStreamOpen.get(ip) ?? 0) >= DEMO_STREAM_PER_IP) {
+            res.status(429).json({ error: 'Too many demo streams' });
+            return;
+        }
+        demoStreamTotal++;
+        demoStreamOpen.set(ip, (demoStreamOpen.get(ip) ?? 0) + 1);
+        let released = false;
+        const release = () => {
+            if (released) return;
+            released = true;
+            demoStreamTotal--;
+            const n = (demoStreamOpen.get(ip) ?? 1) - 1;
+            if (n <= 0) demoStreamOpen.delete(ip); else demoStreamOpen.set(ip, n);
+        };
+        req.on('close', release);
+        openMarketStream(req, res, clients, replay);
+    };
+}
+app.get('/demo/niftystream', demoStream(niftyStreamClients, replayNifty));
+app.get('/demo/optionstream', demoStream(optionStreamClients));
 
 // Demo mode: lets an anonymous client trigger a real subscribe/unsubscribe for
 // an arbitrary option token, so /optionstream carries live ticks for whatever
@@ -1658,10 +1675,29 @@ app.get('/optionstream', requireAuth, async function (req, res) {
 const demoSubscribed = new Map<string, number>(); // token -> demo subscriber count
 const DEMO_MAX_TOKENS = 20;
 const demoHits = new Map<string, { n: number; resetAt: number }>();
+// Only tokens this server itself handed out (via /demo/resolve or /demo/symbols) may be subscribed: an anonymous caller can no longer
+// pick an arbitrary numeric token. Bounded so a long-running server cannot grow it without limit.
+const demoAllowedTokens = new Set<string>();
+function allowDemoTokens(tokens: string[]): void {
+    for (const t of tokens) {
+        if (demoAllowedTokens.size >= 20000) break;
+        demoAllowedTokens.add(String(t));
+    }
+}
+// Behind Cloudflare every request's socket address is an edge IP (one shared bucket for everyone). The edge sets CF-Connecting-IP to
+// the real client, so trust it - but only on a non-loopback connection, which cloudflareOnly has already restricted to Cloudflare.
+function clientIp(req: express.Request): string {
+    const socketIp = req.socket.remoteAddress ?? 'unknown';
+    if (isLoopback(socketIp)) return socketIp;
+    const cf = req.get('cf-connecting-ip');
+    return cf && cf.length <= 64 ? cf : socketIp;
+}
 app.get('/demo/subscribe', async function (req, res) {
+    let counted: string | null = null;
     try {
-        const ip = req.socket.remoteAddress ?? 'unknown';
+        const ip = clientIp(req);
         const now = Date.now();
+        if (demoHits.size > 2000) for (const [k, v] of demoHits) if (v.resetAt < now) demoHits.delete(k);
         const hit = demoHits.get(ip);
         if (!hit || hit.resetAt < now) demoHits.set(ip, { n: 1, resetAt: now + 60_000 });
         else if (++hit.n > 30) { res.status(429).json({ error: 'Too many requests' }); return; }
@@ -1675,17 +1711,30 @@ app.get('/demo/subscribe', async function (req, res) {
             if (count === 0) { res.status(403).json({ error: 'Token was not subscribed by the demo' }); return; }
             if (count === 1) {
                 demoSubscribed.delete(token);
-                await strategiesClient.unsubscribeToken(token);
+                try {
+                    await strategiesClient.unsubscribeToken(token);
+                } catch (e) {
+                    demoSubscribed.set(token, 1); // the hold is still in place: keep counting it so a retry can release it
+                    throw e;
+                }
             } else {
                 demoSubscribed.set(token, count - 1);
             }
         } else {
+            if (!demoAllowedTokens.has(token)) { res.status(403).json({ error: 'Unknown demo token' }); return; }
             if (!demoSubscribed.has(token) && demoSubscribed.size >= DEMO_MAX_TOKENS) { res.status(429).json({ error: 'Demo subscription limit reached' }); return; }
             demoSubscribed.set(token, (demoSubscribed.get(token) ?? 0) + 1);
+            counted = token;
             await strategiesClient.subscribeToken(token);
+            counted = null;
         }
         res.sendStatus(200);
     } catch (e: any) {
+        // The subscribe did not happen: undo the count taken before the await, or a failure leaks the 20-token cap.
+        if (counted) {
+            const c = (demoSubscribed.get(counted) ?? 1) - 1;
+            if (c <= 0) demoSubscribed.delete(counted); else demoSubscribed.set(counted, c);
+        }
         Log.log(e);
         res.status(500).json({ error: 'Subscription failed' });
     }
@@ -1706,6 +1755,7 @@ app.get('/demo/resolve', async function (req, res) {
         }
         const optionType = right === 'put' ? 'PE' : 'CE';
         const resolved = AntContractMaster.getInstance().findATMOption(lastNiftyQuote.ltp, optionType, 'NIFTY');
+        allowDemoTokens([resolved.token]);
         res.json({ token: resolved.token, tradingSymbol: resolved.tradingSymbol });
     } catch (e: any) {
         Log.log(e);
@@ -1720,6 +1770,7 @@ app.get('/demo/symbols', async function (req, res) {
     try {
         const { symbol } = req.query;
         const options = AntContractMaster.getInstance().listNearestExpiryOptions((symbol as string) || 'NIFTY', 'NFO');
+        allowDemoTokens(options.map((o) => o.token));
         res.json(options);
     } catch (e: any) {
         Log.log(e);

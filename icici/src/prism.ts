@@ -32,6 +32,7 @@ import moment from 'moment'
 import ObjectsToCsv from 'objects-to-csv';
 import * as f from './orderList'
 import { del } from 'request';
+import { exchangeForTsym } from './util/underlyings';
 const round = (num) => Math.round(num * 100) / 100;
 
 class StockPrice {
@@ -659,7 +660,7 @@ export default class Prism {
 
         const transactionType = 'S'
         const limit = "LMT"
-        const nse = "NFO"
+        const nse = exchangeForTsym(contract)
         const normal = "M" //for fno
 
         let filledQty = 0;
@@ -1471,18 +1472,21 @@ export default class Prism {
         try {
             const tsym = await this.getContract(token);
             if (!tsym) {
-                Log.log(`[Prism] squareOffOrder: could not resolve tsym for token ${token}`);
-                return;
+                throw new Error(`could not resolve tsym for token ${token}`);
+            }
+            // No true MARKET orders anywhere (a blind market order has no price floor): the caller must give a limit price.
+            if (!(price && price > 0)) {
+                throw new Error(`no limit price given for ${tsym} - refusing a MARKET square-off`);
             }
 
             const order = {
                 "trantype": 'S',
                 "prd": "M",
-                "exch": "NFO",
+                "exch": exchangeForTsym(tsym),
                 "tsym": tsym,
                 "qty": qty,
-                "prctyp": price ? "LMT" : "MKT",
-                "prc": price ?? 0
+                "prctyp": "LMT",
+                "prc": price
             }
 
             Log.log('Square off Order ', order);
@@ -1497,7 +1501,9 @@ export default class Prism {
                 bookkeeping.trackOrder(orderReply.norenordno, user);
             }
         } catch (e) {
+            // Rethrown: swallowing this made callers (Monitor, Decision) treat a failed exit as a successful one.
             Log.log(`[Prism] squareOffOrder failed for token ${token}:`, e?.message ?? e);
+            throw e;
         } finally {
             if (user && tsymForCleanup) bookkeeping.clearPendingOrder(tsymForCleanup, user);
         }

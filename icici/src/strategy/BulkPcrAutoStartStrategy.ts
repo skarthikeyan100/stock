@@ -213,6 +213,14 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
             Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: every configured broker is loss-stopped for today - skipping`);
             return;
         }
+        // Refuse to arm on a missing/invalid size or target: copying undefined used to make BulkPcrStrategy silently default to its
+        // built-in 13975 (about 215 lots). -1 is the deliberate "size from maxInvestment" value.
+        const qty = Number(cfg.quantity);
+        const tgt = Number(cfg.targetPoints);
+        if (cfg.quantity == null || !Number.isFinite(qty) || !(qty > 0 || qty === -1) || cfg.targetPoints == null || !Number.isFinite(tgt) || !(tgt > 0)) {
+            Log.log(`[BulkPcrAutoStart:${this.userId}] ALERT: ${timeStr} slot has invalid quantity (${cfg.quantity}) or targetPoints (${cfg.targetPoints}) - not arming '${targetUserId}'`);
+            return;
+        }
         bulkPcrCfg.quantity = cfg.quantity;
         bulkPcrCfg.targetPoints = cfg.targetPoints;
         bulkPcrCfg.brokers = [...armable]; // always the resolved list: a block using the legacy single `broker:` key has no `brokers` array

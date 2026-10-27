@@ -4,7 +4,7 @@ import indexMap from '../../nse_index';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
-import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit } from './BrokerExecutor';
+import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable } from './BrokerExecutor';
 import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol } from './pendingPrismLimitOrders';
 import { sleep } from '../../util/sleep';
 import { roundToTick } from '../../kite/Kite';
@@ -104,6 +104,8 @@ export async function sellContract(userId: string, contract: string, quantity: n
     const limitPrice = price ?? roundToTick((await prism.getStockOptionQuote(contract)).ltp * 0.99);
     const token = await prism.getToken(contract);
     const exchange: 'NFO' | 'BFO' = exchangeForTsym(contract);
+    // Resting sells were cancelled by squareOffOnPrism, so none count against the live position.
+    quantity = await neverShortSellable({ label: `${contract} (${userId}, Prism)`, quantity, livePosition: () => liveNetQuantityOnPrism(contract), restingSellQuantity: 0 });
     const { orderId } = await prism.placeLimitSellBare(contract, token, quantity, limitPrice, userId, exchange);
 
     const book = async (qty: number, px: number): Promise<Trade> => {
@@ -397,6 +399,10 @@ async function squareOffOnPrismUnguarded(userId: string, tsym: string, quantity:
 // pollPendingPrismLimitOrders. Mirrors placeLimitSellBareOnAnt exactly -
 // BulkPcrStrategy's target-hit exit on Prism.
 export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+    quantity = await neverShortSellable({
+        label: `${tradingSymbol} (${userId}, Prism)`, quantity, livePosition: () => liveNetQuantityOnPrism(tradingSymbol),
+        restingSellQuantity: findPendingOrdersForSymbol(userId, tradingSymbol).filter((o) => o.action === 'Sell').reduce((sum, o) => sum + o.quantity, 0),
+    });
     Log.log(`[order] Bare Prism limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await Prism.getInstance().placeLimitSellBare(tradingSymbol, instrumentId, quantity, price, userId, exchange);
     trackPendingPrismLimitOrder({ orderId, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell' });
@@ -423,6 +429,12 @@ export async function cancelOrderOnPrism(orderId: string): Promise<void> {
         },
         untrack: () => untrackPendingPrismLimitOrder(orderId),
     });
+}
+
+async function liveNetQuantityOnPrism(tsym: string): Promise<number> {
+    const positions = await Prism.getInstance().getPositions();
+    const hit = (positions || []).find((p: any) => p.tsym === tsym);
+    return Number(hit?.netqty ?? 0);
 }
 
 export async function getPositionsOnPrism(): Promise<BrokerPosition[]> {

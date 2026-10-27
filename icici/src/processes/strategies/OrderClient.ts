@@ -280,7 +280,7 @@ class OrderClient {
         return res.result;
     }
 
-    async chunkedSquareOff(userId: string, payload: { tsym: string; quantity: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' }): Promise<any> {
+    async chunkedSquareOff(userId: string, payload: { tsym: string; quantity: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<any> {
         const res = await this.request('chunkedSquareOff', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
         if (!res.ok) throw new Error(res.error);
         return res.result;
@@ -430,7 +430,7 @@ class OrderClient {
         return res.result;
     }
 
-    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number }): Promise<void> {
+    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number; accountClosed?: boolean }): Promise<void> {
         const res = await this.request('updateUserSettings', userId, settings);
         if (!res.ok) throw new Error(res.error);
     }

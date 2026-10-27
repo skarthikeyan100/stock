@@ -21,6 +21,14 @@ export const antAxiosInstance = axios;
 
 export type AntProduct = 'INTRADAY' | 'LONGTERM';
 
+// An omitted price means MARKET on purpose; a price that IS given must be a usable LIMIT price. A 0/NaN/negative price used to
+// fall through to MARKET silently, so a bad computed limit (e.g. a target-hit sell) became an unpriced market order.
+function orderTypeFor(price: number | undefined): 'LIMIT' | 'MARKET' {
+    if (price === undefined) return 'MARKET';
+    if (!Number.isFinite(price) || price <= 0) throw new Error(`ANT order refused: invalid limit price ${price}`);
+    return 'LIMIT';
+}
+
 class ANT {
     private static instance: ANT;
 
@@ -635,7 +643,7 @@ class ANT {
         tradingSymbol: string;
         quantity: number;
         transactionType: 'BUY' | 'SELL';
-        price?: number; // omitted/0 => MARKET
+        price?: number; // omitted => MARKET; any given price must be a finite positive LIMIT price (0/NaN throws)
         marketProtectionPercent?: string; // only meaningful when price is omitted (MARKET)
         product?: AntProduct; // default INTRADAY (squared off by the broker at ~3:20pm); LONGTERM = overnight/carry-forward (NRML equivalent)
     }): Promise<{ orderNo: string }> {
@@ -646,11 +654,11 @@ class ANT {
             transactionType: params.transactionType,
             quantity: params.quantity,
             product: params.product ?? 'INTRADAY',
-            orderType: params.price ? 'LIMIT' : 'MARKET',
+            orderType: orderTypeFor(params.price),
             price: params.price ?? 0,
             orderComplexity: 'REGULAR',
             validity: 'DAY',
-            ...(params.marketProtectionPercent && !params.price ? { marketProtectionPercent: params.marketProtectionPercent } : {}),
+            ...(params.marketProtectionPercent && params.price === undefined ? { marketProtectionPercent: params.marketProtectionPercent } : {}),
         }];
         return this.submitOrder('placeOrder', body);
     }
@@ -672,7 +680,7 @@ class ANT {
         tradingSymbol: string;
         quantity: number;
         transactionType: 'BUY' | 'SELL';
-        price?: number; // omitted/0 => MARKET entry
+        price?: number; // omitted => MARKET entry; any given price must be a finite positive LIMIT price
         targetPoints: number;
         stopLossPoints: number;
     }): Promise<{ orderNo: string }> {
@@ -683,7 +691,7 @@ class ANT {
             transactionType: params.transactionType,
             quantity: params.quantity,
             product: 'INTRADAY',
-            orderType: params.price ? 'LIMIT' : 'MARKET',
+            orderType: orderTypeFor(params.price),
             price: params.price ?? 0,
             orderComplexity: 'BO',
             validity: 'DAY',
@@ -704,7 +712,7 @@ class ANT {
         tradingSymbol: string;
         quantity: number;
         transactionType: 'BUY' | 'SELL';
-        price?: number; // omitted/0 => MARKET entry
+        price?: number; // omitted => MARKET entry; any given price must be a finite positive LIMIT price
         stopLossPoints: number;
     }): Promise<{ orderNo: string }> {
         const body = [{
@@ -714,7 +722,7 @@ class ANT {
             transactionType: params.transactionType,
             quantity: params.quantity,
             product: 'INTRADAY',
-            orderType: params.price ? 'LIMIT' : 'MARKET',
+            orderType: orderTypeFor(params.price),
             price: params.price ?? 0,
             orderComplexity: 'CO',
             validity: 'DAY',

@@ -189,7 +189,10 @@ class OrderBookkeeping {
     }
 
     updateUserSettings(user: string, settings: UserSettings) {
-        this.userSettingsCache.set(user, settings);
+        // accountClosed is sticky: it can be set by a weekly-drawdown breach that is still being persisted, so a push built from a
+        // user document that has not caught up must never re-open the account. (No code path re-opens an account at runtime.)
+        const wasClosed = this.userSettingsCache.get(user)?.accountClosed === true;
+        this.userSettingsCache.set(user, { ...settings, accountClosed: settings.accountClosed === true || wasClosed });
     }
 
     getUserLossLimit(user: string): number {

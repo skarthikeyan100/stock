@@ -38,9 +38,52 @@ function key(source: FeedSource, token: string): string {
 
 const watchers = new Map<string, Set<Strategy>>();
 const tradeHolders = new Map<string, Set<Strategy>>();
+// What the data process was last told to subscribe, per feed key. An unsubscribe that omits the exchange reuses the one recorded here
+// (a BFO token must be unsubscribed as BFO), and resubscribeAll() replays these after the data process restarts.
+const subscribed = new Map<string, { token: string; source: FeedSource; exchange?: 'NFO' | 'BFO' }>();
+
+function subscribeFeed(token: string, source: FeedSource, exchange?: 'NFO' | 'BFO'): void {
+    const k = key(source, token);
+    subscribed.set(k, { token, source, exchange: exchange ?? subscribed.get(k)?.exchange });
+    subscribeToken(token, source, exchange);
+}
+
+function unsubscribeFeed(token: string, source: FeedSource, exchange?: 'NFO' | 'BFO'): void {
+    const k = key(source, token);
+    const ex = exchange ?? subscribed.get(k)?.exchange;
+    subscribed.delete(k);
+    unsubscribeToken(token, source, ex);
+}
+
+// The data process comes back from a crash or hot restart with an empty subscription map, while the refcounts here still say its
+// tokens are subscribed - so open legs/slots would silently get no ticks. Re-sends every live subscription (subscribe is idempotent).
+export function resubscribeAll(): number {
+    let n = 0;
+    for (const [k, sub] of subscribed) {
+        if (refCount(k) > 0) { subscribeToken(sub.token, sub.source, sub.exchange); n++; }
+    }
+    return n;
+}
+
+// Keys an external (non-strategy) client holds, e.g. the anonymous demo page's subscriptions. They take part in the ref-count, so
+// releasing one can never unsubscribe a token a live strategy or position still depends on.
+const externalHolds = new Set<string>();
 
 function refCount(k: string): number {
-    return (watchers.get(k)?.size ?? 0) + (tradeHolders.get(k)?.size ?? 0);
+    return (watchers.get(k)?.size ?? 0) + (tradeHolders.get(k)?.size ?? 0) + (externalHolds.has(k) ? 1 : 0);
+}
+
+export function holdExternal(token: string, source: FeedSource = DEFAULT_FEED_SOURCE, exchange?: 'NFO' | 'BFO'): void {
+    const k = key(source, token);
+    if (externalHolds.has(k)) return;
+    externalHolds.add(k);
+    if (refCount(k) === 1) subscribeFeed(token, source, exchange);
+}
+
+export function releaseExternal(token: string, source: FeedSource = DEFAULT_FEED_SOURCE, exchange?: 'NFO' | 'BFO'): void {
+    const k = key(source, token);
+    if (!externalHolds.delete(k)) return;
+    if (refCount(k) === 0) unsubscribeFeed(token, source, exchange);
 }
 
 export function watchToken(token: string, strategy: Strategy, exchange?: 'NFO' | 'BFO'): void {
@@ -50,7 +93,7 @@ export function watchToken(token: string, strategy: Strategy, exchange?: 'NFO' |
     const set = watchers.get(k)!;
     if (set.has(strategy)) return;
     set.add(strategy);
-    if (refCount(k) === 1) subscribeToken(token, source, exchange);
+    if (refCount(k) === 1) subscribeFeed(token, source, exchange);
 }
 
 export function unwatchToken(token: string, strategy: Strategy, exchange?: 'NFO' | 'BFO'): void {
@@ -60,7 +103,7 @@ export function unwatchToken(token: string, strategy: Strategy, exchange?: 'NFO'
     if (!set?.has(strategy)) return;
     set.delete(strategy);
     if (set.size === 0) watchers.delete(k);
-    if (refCount(k) === 0) unsubscribeToken(token, source, exchange);
+    if (refCount(k) === 0) unsubscribeFeed(token, source, exchange);
 }
 
 // Explicit-source variants of watchToken/unwatchToken above, for callers that
@@ -81,7 +124,7 @@ export function watchTokenOnSource(source: FeedSource, token: string, strategy: 
     const set = watchers.get(k)!;
     if (set.has(strategy)) return;
     set.add(strategy);
-    if (refCount(k) === 1) subscribeToken(token, source, exchange);
+    if (refCount(k) === 1) subscribeFeed(token, source, exchange);
 }
 
 export function unwatchTokenOnSource(source: FeedSource, token: string, strategy: Strategy, exchange?: 'NFO' | 'BFO'): void {
@@ -90,7 +133,7 @@ export function unwatchTokenOnSource(source: FeedSource, token: string, strategy
     if (!set?.has(strategy)) return;
     set.delete(strategy);
     if (set.size === 0) watchers.delete(k);
-    if (refCount(k) === 0) unsubscribeToken(token, source, exchange);
+    if (refCount(k) === 0) unsubscribeFeed(token, source, exchange);
 }
 
 export function registerTrade(token: string, strategy: Strategy, source: FeedSource = resolveSource(strategy), exchange?: 'NFO' | 'BFO'): void {
@@ -99,7 +142,7 @@ export function registerTrade(token: string, strategy: Strategy, source: FeedSou
     const set = tradeHolders.get(k)!;
     if (set.has(strategy)) return;
     set.add(strategy);
-    if (refCount(k) === 1) subscribeToken(token, source, exchange);
+    if (refCount(k) === 1) subscribeFeed(token, source, exchange);
 }
 
 export function unregisterTrade(token: string, strategy: Strategy, source: FeedSource = resolveSource(strategy), exchange?: 'NFO' | 'BFO'): void {
@@ -108,7 +151,12 @@ export function unregisterTrade(token: string, strategy: Strategy, source: FeedS
     if (!set?.has(strategy)) return;
     set.delete(strategy);
     if (set.size === 0) tradeHolders.delete(k);
-    if (refCount(k) === 0) unsubscribeToken(token, source, exchange);
+    if (refCount(k) === 0) unsubscribeFeed(token, source, exchange);
+}
+
+// True when this strategy is already in the watcher set for the token (a later watchTokenOnSource would be a no-op).
+export function isWatching(source: FeedSource, token: string, strategy: Strategy): boolean {
+    return watchers.get(key(source, token))?.has(strategy) ?? false;
 }
 
 // Strategies currently holding or watching this token on this feed.

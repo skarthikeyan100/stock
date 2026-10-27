@@ -31,9 +31,9 @@ import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } f
 //  - Risk management: the stop/invalidation level is the confirming
 //    candle's own low (CALL) / high (PUT) - if NIFTY falls back through it,
 //    the breakout is invalidated and every broker's position is closed
-//    immediately, cancelling the resting target-sell first. Also: avoid
-//    choppy/low-volatility hours by cross-referencing momentum before
-//    entering - reuses the base class's isSentimentAligned() check.
+//    immediately, cancelling the resting target-sell first. (There is no
+//    choppy-hour filter: the old isSentimentAligned() gate was a no-op, as ANT
+//    ticks carry no buyQty/sellQty, and has been removed.)
 //
 // Exit has two independent layers per broker, same split RateOfChangeStrategy
 // uses for its own simpler single-broker case:
@@ -345,10 +345,6 @@ export default class HourlyStrategy extends Strategy {
         if (this.triggeredThisHour || this.hasOpenPosition()) return;
         if (!this.isCooldownElapsed(cfg.cooldownSeconds ?? 60)) {
             Log.log('[Hourly] Entry skipped - cooldown not elapsed, dropping stale confirmation');
-            return;
-        }
-        if (!this.isSentimentAligned(quote, confirmation.direction)) {
-            Log.log(`[Hourly] Entry skipped - sentiment not aligned for ${confirmation.direction} (choppy-hour filter)`);
             return;
         }
 

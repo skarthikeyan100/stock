@@ -33,6 +33,37 @@ export class OrderAlreadyFilledError extends Error {
     }
 }
 
+// NEVER-SHORT GUARD for brokers whose client layer has none (Kite has its own in Kite.getSellableQuantity). How much of a
+// contract can still be sold without going net short: the broker's live net long position minus quantity already resting in
+// sells. 2026-10-19: strategies re-sold their tracked quantity on retries and mass closes while earlier sells had already filled,
+// leaving a naked short. Refuses when nothing is sellable and clamps when the request exceeds it. A live position that cannot be
+// read leaves the request unchanged (logged): refusing blind would block stop-loss exits on a transient API error.
+export async function neverShortSellable(args: {
+    label: string;
+    quantity: number;
+    livePosition: () => Promise<number>;
+    restingSellQuantity: number;
+}): Promise<number> {
+    let live: number;
+    try {
+        live = await args.livePosition();
+    } catch (e) {
+        Log.log(`[order] NEVER-SHORT GUARD: could not read the live position for ${args.label} - selling the requested ${args.quantity} unverified:`, e);
+        return args.quantity;
+    }
+    if (!Number.isFinite(live)) return args.quantity;
+    const sellable = live - args.restingSellQuantity;
+    if (sellable <= 0) {
+        Log.log(`[order] ALERT: NEVER-SHORT GUARD refused a sell of ${args.quantity} ${args.label} - nothing sellable (live=${live}, resting sells=${args.restingSellQuantity}); position tracking is out of sync with the broker`);
+        throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${args.label} (live=${live}, resting=${args.restingSellQuantity}) - refusing to sell ${args.quantity}`);
+    }
+    if (args.quantity > sellable) {
+        Log.log(`[order] ALERT: NEVER-SHORT GUARD clamped a sell of ${args.label} from ${args.quantity} to ${sellable} - position tracking is out of sync with the broker`);
+        return sellable;
+    }
+    return args.quantity;
+}
+
 // Cancels a broker's resting limit sells on one contract ahead of a market-style exit (squareOff), so both cannot fill and
 // oversell (e.g. BulkPcr's resting target chunks). Each cancel rechecks for a fill (OrderAlreadyFilledError); a fill that landed in
 // the race window is not booked yet (the poller books it), so it is subtracted from the quantity to sell. A cancel that fails for

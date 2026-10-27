@@ -11,6 +11,7 @@ import { CALL } from '../../constants';
 import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
+import { neverShortSellable } from './BrokerExecutor';
 import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder } from './pendingAntLimitOrders';
 import { sleep } from '../../util/sleep';
 import { exchangeForIndex } from '../../util/underlyings';
@@ -490,7 +491,8 @@ export async function buyToClosePosition(userId: string, tradingSymbol: string, 
 // (netQuantity/tradingSymbol) are the live shape bookkeeping.reconcileAntPositions
 // reads.
 export async function getLiveNetQuantity(tradingSymbol: string): Promise<number> {
-    const positions = await ANT.getInstance().getPositions();
+    // strict: a failed/non-Ok positions call must throw, not read as "flat" (the never-short guard would refuse a real exit).
+    const positions = await ANT.getInstance().getPositions({ strict: true });
     const list = Array.isArray(positions) ? positions : [];
     const pos = list.find((p: any) => (p.tradingSymbol ?? p.tsym ?? p.symbol) === tradingSymbol);
     return Number(pos?.netQuantity ?? pos?.netQty ?? pos?.netqty ?? 0);
@@ -717,6 +719,10 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
 // comment for why (2026-09-22 incident).
 export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO', product?: 'INTRADAY' | 'LONGTERM'): Promise<{ orderId: string }> {
     const ant = ANT.getInstance();
+    quantity = await neverShortSellable({
+        label: `${tradingSymbol} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),
+        restingSellQuantity: pendingAntSellsFor(userId, tradingSymbol).reduce((sum, o) => sum + o.quantity, 0),
+    });
     Log.log(`[order] Bare ANT limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderNo } = await ant.placeOrder({
         exchange,
@@ -1124,6 +1130,8 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
             } else {
                 throw new Error(`Square-off for ${tsym}: no live quote and no trigger price - exit NOT placed, manual action required`);
             }
+            // Resting sells were cancelled above, so none count against the live position.
+            quantity = await neverShortSellable({ label: `${tsym} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0 });
             let orderNo: string;
             try {
                 ({ orderNo } = await ant.placeOrder({

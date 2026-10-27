@@ -62,7 +62,7 @@ export default function DemoTradingPage() {
         </div>
 
         {/* NIFTY live price ticker */}
-        <NiftyTicker />
+        <NiftyTicker url="/demo/niftystream" />
       </div>
 
       {nearLimit && (
