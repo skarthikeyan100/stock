@@ -172,6 +172,8 @@ const tracker = new PendingOrderTracker<PendingAntLimitOrder, null, 'ant'>({
         if (book.quantity < (status.filledQuantity ?? 0)) {
             throw new Error(`cancelled ${order.action.toLowerCase()} ${order.orderId}: status shows ${status.filledQuantity} filled, trade book ${book.quantity} - retrying on next poll`);
         }
+        // Quantity without a price is an incomplete book read: retry next poll, never book a zero price.
+        if (book.quantity > 0 && !(book.avgPrice > 0)) throw new Error(`cancelled ${order.action.toLowerCase()} ${order.orderId}: trade book shows ${book.quantity} with no average price - retrying on next poll`);
         Log.log(`[order] Pending ANT ${order.action.toLowerCase()} ${order.orderId} (${order.tradingSymbol}) cancelled after ${book.quantity} filled - ${order.quantity - book.quantity} unfilled`);
         return { quantity: book.quantity, price: book.avgPrice };
     },

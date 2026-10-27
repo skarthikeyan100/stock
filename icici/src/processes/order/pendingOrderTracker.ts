@@ -143,7 +143,10 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             }
             this.notReadyAlertedAt = 0;
         } catch (e) {
-            Log.log(`[order] ALERT: poll pending ${label} limit orders: readiness check failed - ${this.pending.size} order(s) NOT monitored this tick:`, e);
+            if (Date.now() - this.notReadyAlertedAt >= NOT_READY_REALERT_MS) {
+                this.notReadyAlertedAt = Date.now();
+                Log.log(`[order] ALERT: poll pending ${label} limit orders: readiness check failed - ${this.pending.size} order(s) NOT monitored:`, e);
+            }
             return;
         }
         let snapshot: Snapshot;
@@ -158,7 +161,8 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             try {
                 await this.pollOrder(orderId, order, snapshot);
             } catch (e) {
-                if (this.adapter.onPollError && (await this.adapter.onPollError(order, e).catch(() => false))) continue;
+                if (this.adapter.ignoreStaleStatus && !this.pending.has(orderId)) continue; // untracked meanwhile: nothing left to verify
+                if (this.adapter.onPollError && (await bounded('onPollError', this.adapter.onPollError(order, e)).catch(() => false))) continue;
                 Log.log(`[order] poll pending ${label} limit orders: failed to poll order`, orderId, e);
             }
         }
@@ -188,7 +192,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             Log.log(`[order] Pending ${label} limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} qty=${qty} at ${trade.price}`);
         };
         if (status === 'COMPLETE' && this.adapter.resolveFill) {
-            const fill = await this.adapter.resolveFill(order, orderStatus, 'complete');
+            const fill = await bounded('resolveFill', this.adapter.resolveFill(order, orderStatus, 'complete'));
             if (!fill) return;
             await bookFill(fill.quantity, fill.price);
             this.untrack(orderId); // only once booked - a failed read above leaves it to retry
@@ -210,9 +214,11 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             // A cancelled order can carry a partial fill: book it, report only the remainder.
             let filledQty = Math.min(order.quantity, Number(filledQuantity ?? 0));
             if (filledQty > 0 && this.adapter.resolveFill) {
-                const fill = await this.adapter.resolveFill(order, orderStatus, 'partial');
+                const fill = await bounded('resolveFill', this.adapter.resolveFill(order, orderStatus, 'partial'));
                 filledQty = fill?.quantity ?? 0;
                 if (fill && fill.quantity > 0) await bookFill(fill.quantity, fill.price);
+                // Untracked while the book was being read: the partial is booked above, but a notification would re-place a sell.
+                if (this.adapter.ignoreStaleStatus && !this.pending.has(orderId)) return;
             } else if (filledQty > 0) {
                 const partialPrice = fillPrice && fillPrice > 0 ? fillPrice : (this.adapter.rowPrice?.(order, snapshot) ?? NaN);
                 if (partialPrice > 0 || this.adapter.bookAtAnyPrice) {
