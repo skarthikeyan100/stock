@@ -2,6 +2,7 @@ import Log from '../../util/Log';
 import { recordOrderOwner } from './orderOwners';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
+import { OptionExchange } from './BrokerExecutor';
 import Mongo from '../../tools/mongo';
 
 // One loop for every broker's resting limit orders: track, poll, book the fill, book a partial fill on cancel, tell the
@@ -14,7 +15,7 @@ export interface PendingOrder {
     userId: string;
     tradingSymbol: string;
     quantity: number;
-    exchange: 'NFO' | 'BFO';
+    exchange: OptionExchange;
     action: 'Buy' | 'Sell';
 }
 
@@ -62,7 +63,7 @@ export interface BrokerOrderAdapter<T extends PendingOrder, Snapshot, B extends 
     fromDoc(row: any): T;
 }
 
-export type CancelledListener<B extends TrackerBroker = TrackerBroker> = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', action: 'Buy' | 'Sell', broker: B, orderId: string, reason: 'CANCELLED' | 'REJECTED', rejectReason?: string) => void;
+export type CancelledListener<B extends TrackerBroker = TrackerBroker> = (userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: OptionExchange, action: 'Buy' | 'Sell', broker: B, orderId: string, reason: 'CANCELLED' | 'REJECTED', rejectReason?: string) => void;
 
 // Every broker call in a poll is bounded, so one stalled socket cannot hold pollInFlight (and every later tick) forever.
 const BROKER_CALL_TIMEOUT_MS = 45_000;
