@@ -180,12 +180,10 @@ export async function squareOffLimitChunked(
             ), { placedQuantity: placedQty, orderIds: orderIds.slice(), partial: placedQty > 0 });
         }
     }
-    // Below the request means a never-short guard clamped a sell to what is really sellable: the caller believes the full quantity is
-    // resting and would wait for fills that cannot happen, so this is surfaced as a failure (manual review), not returned as success.
+    // A short placement is often benign (a resting chunk filled meanwhile and the guard clamped the new sell), and throwing would
+    // lock the slot into manual review while its resting orders are fine - so it is reported in the result and logged.
     if (placedQty < quantity) {
-        throw Object.assign(new Error(
-            `squareOffLimitChunked: only ${placedQty}/${quantity} placed (a never-short guard clamped a sell) - ${quantity - placedQty} qty NOT resting. Manual review required.`
-        ), { placedQuantity: placedQty, orderIds: orderIds.slice(), partial: placedQty > 0 });
+        Log.log(`[order] squareOffLimitChunked: ALERT - only ${placedQty}/${quantity} placed for ${tradingSymbol} (${userId}); a never-short guard clamped a sell. Orders resting: ${orderIds.join(',')}`);
     }
     return { orderIds, placedQuantity: placedQty };
 }

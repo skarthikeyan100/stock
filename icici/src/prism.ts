@@ -1189,11 +1189,11 @@ export default class Prism {
         try {
             const tsym = await this.getContract(token);
             if (!tsym) {
-                throw Object.assign(new Error(`could not resolve tsym for token ${token}`), { notPlaced: true });
+                throw Object.assign(new Error(`could not resolve tsym for token ${token}`), { notPlaced: true, orderNotPlaced: true });
             }
             // No true MARKET orders anywhere (a blind market order has no price floor): the caller must give a limit price.
             if (!(price && price > 0)) {
-                throw Object.assign(new Error(`no limit price given for ${tsym} - refusing a MARKET square-off`), { notPlaced: true });
+                throw Object.assign(new Error(`no limit price given for ${tsym} - refusing a MARKET square-off`), { notPlaced: true, orderNotPlaced: true });
             }
 
             const order = {

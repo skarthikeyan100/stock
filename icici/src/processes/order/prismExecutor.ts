@@ -181,7 +181,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
             }
             const refusal = new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) ${status} - not filled`);
             // Definite only when nothing filled (a partial fill with an unreadable price must not read as "not placed").
-            throw Number(filledQuantity ?? 0) === 0 ? markNotPlaced(refusal) : refusal;
+            throw filledQuantity !== undefined && Number(filledQuantity) === 0 ? markNotPlaced(refusal) : refusal;
         }
         if (attempt < BUY_FILL_POLL_ATTEMPTS) await sleep(BUY_FILL_POLL_DELAY_MS);
     }
