@@ -13,6 +13,7 @@ import * as exitMonitor from './exitMonitor';
 import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol, isTrackedPendingOrder } from './pendingLimitOrders';
 import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError } from './BrokerExecutor';
+import { exchangeForTsym } from '../../util/underlyings';
 
 // Kite is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -359,7 +360,7 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
     // A GTT always carries both legs, so both prices exist whenever one is attached.
     if (trade.gttTriggerId && trade.targetPrice !== undefined && trade.stopLossPrice !== undefined) {
         const kite = Kite.getInstance();
-        const exchange = trade.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO';
+        const exchange = exchangeForTsym(trade.tsym);
         await kite.modifyTargetStopLossGTT(
             trade.gttTriggerId,
             trade.tsym,
@@ -881,7 +882,7 @@ async function pollGttFillsOnce(): Promise<void> {
             Log.log(`[order] ALERT: GTT ${trade.gttTriggerId} for ${trade.tsym} (${trade.user}) missing from the broker for ${misses} polls - falling back to in-app target/SL monitoring`);
             trade.gttTriggerId = undefined;
             if (trade.token && (trade.targetPrice != null || trade.stopLossPrice != null)) {
-                exitMonitor.registerTrade(trade, trade.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO', 'kite');
+                exitMonitor.registerTrade(trade, exchangeForTsym(trade.tsym), 'kite');
             }
             continue;
         }
@@ -894,7 +895,7 @@ async function pollGttFillsOnce(): Promise<void> {
             Log.log(`[order] ALERT: GTT ${trade.gttTriggerId} for ${trade.tsym} (${trade.user}) is '${gtt.status}', not triggered - position still open; falling back to in-app target/SL monitoring`);
             trade.gttTriggerId = undefined;
             if (trade.token && (trade.targetPrice != null || trade.stopLossPrice != null)) {
-                const exchange: 'NFO' | 'BFO' = trade.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO';
+                const exchange: 'NFO' | 'BFO' = exchangeForTsym(trade.tsym);
                 exitMonitor.registerTrade(trade, exchange, 'kite');
             }
             continue;

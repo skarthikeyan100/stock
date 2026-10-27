@@ -53,7 +53,8 @@ import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, CALL } from
 import { getUser, getAllUsers } from '../user';
 import { OptionQuote, Trade } from '../model/model';
 import { isPastExpirySquareOffTime, isPastReconcileTime } from '../util/marketHours';
-import { normalizeBrokerName, normalizeBrokerList } from '../util/brokerName';
+import { normalizeBrokerName } from '../util/brokerName';
+import { exchangeForIndex, exchangeForTsym } from '../util/underlyings';
 
 // Defense-in-depth: an unhandled promise rejection anywhere in this process
 // (e.g. a fire-and-forget Mongo write - see bookkeeping.ts's
@@ -412,7 +413,7 @@ async function forceCloseTrade(trade: Trade): Promise<boolean> {
             return true;
         } // see cancelAnyRestingLimitSell's comment - would double-sell
         // Trade has no `exchange` field - inferred from tsym (SENSEX = BFO).
-        const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
+        const exchange: 'NFO' | 'BFO' = exchangeForTsym(trade.tsym);
         await executor.squareOff(trade.user, trade.tsym, remainingQty, exchange);
         return true;
     } catch (e) {
@@ -433,7 +434,7 @@ async function resolveOptionContractForBroker(
     right: 'CE' | 'PE'
 ): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
     if (broker === 'ant') {
-        const exch = index === 'SENSEX' ? 'BFO' : 'NFO';
+        const exch = exchangeForIndex(index);
         const r = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
         return { tsym: r.tradingSymbol, token: r.token, exchange: r.exch as 'NFO' | 'BFO' };
     }
@@ -445,12 +446,12 @@ async function resolveOptionContractForBroker(
         // instrumentToken is discarded here; getMarketableKitePrice also needs the ANT
         // token specifically, since ANT is the price source Kite orders are priced from.
         const r = await KiteContractMaster.getInstance().findNearestExpiryOption(strike, right, index, 0);
-        const exch = index === 'SENSEX' ? 'BFO' : 'NFO';
+        const exch = exchangeForIndex(index);
         const antMatch = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
         return { tsym: r.tradingSymbol, token: antMatch.token, exchange: r.exchange };
     }
     if (broker === 'breeze') {
-        const exch = index === 'SENSEX' ? 'BFO' : 'NFO';
+        const exch = exchangeForIndex(index);
         const r = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, right, index);
         const antMatch = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
         return { tsym: tsymFor(r), token: antMatch.token, exchange: exch };
@@ -463,7 +464,7 @@ async function resolveOptionContractForBroker(
         // live tick in this codebase, across every broker, flows through ANT - see
         // BulkPcrStrategy's watchTokenOnSource('ant', ...) calls, the only live multi-
         // broker precedent in this codebase).
-        const exch = index === 'SENSEX' ? 'BFO' : 'NFO';
+        const exch = exchangeForIndex(index);
         const r = PrismContractMaster.getInstance().findNearestExpiryOption(index, strike, right, 0);
         const antMatch = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch, strike, optionType: right, expiryOffset: 0 });
         return { tsym: r.tradingSymbol, token: antMatch.token, exchange: exch };
@@ -479,7 +480,7 @@ async function resolveOptionContractForBroker(
 // (onFill, resolveOptionContractForBroker) since Trade carries no exchange field of its own.
 async function buyToCloseShortLegForUser(user: string, shortTrade: Trade): Promise<void> {
     const broker = shortTrade.broker;
-    const exchange: 'NFO' | 'BFO' = shortTrade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
+    const exchange: 'NFO' | 'BFO' = exchangeForTsym(shortTrade.tsym);
     if (broker === 'kite') await buyToCloseOnKite(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
     else if (broker === 'ant') await antExecutor.buyToClosePosition(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
     else if (broker === 'breeze') await buyToCloseOnBreeze(user, shortTrade.tsym, shortTrade.token, shortTrade.quantity, exchange);
@@ -512,7 +513,7 @@ async function squareOffByToken(userId: string, token: any, quantity: number | u
         // The sells below are awaited one by one: re-check the row is still open and use its CURRENT quantity.
         if (!bookkeeping.trades.includes(row) || !(row.quantity > 0)) continue;
         const q = Math.min(row.quantity, remaining);
-        const ex = exchange ?? (row.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO');
+        const ex = exchange ?? (exchangeForTsym(row.tsym));
         const done = only === 'ant'
             ? await antExecutor.squareOffOnAnt(userId, row.tsym, q, ex)
             : await getBrokerExecutor(userId, row.broker).squareOff(userId, row.tsym, q, ex);
@@ -752,7 +753,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     // exact gap). exchange derived the same way AntContractMaster/KiteContractMaster
                     // do elsewhere - PrismContractMaster.findATMOption doesn't return one.
                     const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
-                    const prismExchange = index === 'SENSEX' ? 'BFO' : 'NFO';
+                    const prismExchange = exchangeForIndex(index);
                     const contract = PrismContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
                     const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
                     const atmStrike = Math.round(niftyLtp / step) * step;
@@ -792,7 +793,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // review purely because reconcile hadn't finished yet.
                 if (reconcileInFlight) await reconcileInFlight;
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
-                const result = await squareOffChunked(executor, req.userId, req.payload.tsym, req.payload.quantity, req.payload.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO', req.payload.freezeQuantity);
+                const result = await squareOffChunked(executor, req.userId, req.payload.tsym, req.payload.quantity, exchangeForTsym(req.payload.tsym), req.payload.freezeQuantity);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -807,7 +808,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     req.payload.tsym,
                     req.payload.instrumentId,
                     req.payload.quantity,
-                    req.payload.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO',
+                    exchangeForTsym(req.payload.tsym),
                     req.payload.price,
                     req.payload.freezeQuantity
                 );
@@ -863,11 +864,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 }
                 const trade = await antExecutor.squareOffOnAnt(req.userId, tsym, quantity, exchange);
                 return { kind: 'response', id: req.id, ok: true, result: trade };
-            }
-
-            case 'antSetTargetStopLoss': {
-                await antExecutor.setTargetStopLoss(req.userId, req.payload.token, req.payload.targetPoints, req.payload.stopLossPoints);
-                return { kind: 'response', id: req.id, ok: true };
             }
 
             // See orderProtocol.ts's comment on these two request types - ANT-

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { execFile, execFileSync } from 'child_process';
 import Log from '../util/Log';
+import { exchangeForIndex } from '../util/underlyings';
 
 type Index = 'NIFTY' | 'SENSEX';
 type Exchange = 'NFO' | 'BFO';
@@ -235,7 +236,7 @@ class KiteContractMaster {
         expiry: string,
         optionType: 'CE' | 'PE'
     ): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: Exchange }> {
-        const exchange: Exchange = symbol === 'SENSEX' ? 'BFO' : 'NFO';
+        const exchange: Exchange = exchangeForIndex(symbol);
         const instruments = this.loadInstruments(exchange);
         const expiryDateString = new Date(expiry).toDateString();
 
@@ -274,7 +275,7 @@ class KiteContractMaster {
         symbol: string = 'NIFTY',
         expiryOffset = 0
     ): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: Exchange }> {
-        const exchange: Exchange = symbol === 'SENSEX' ? 'BFO' : 'NFO';
+        const exchange: Exchange = exchangeForIndex(symbol);
         const instruments = this.loadInstruments(exchange);
         const today = new Date();
         today.setHours(0, 0, 0, 0);

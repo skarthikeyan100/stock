@@ -309,11 +309,6 @@ class OrderClient {
         return res.result;
     }
 
-    async antSetTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number): Promise<void> {
-        const res = await this.request('antSetTargetStopLoss', userId, { token, targetPoints, stopLossPoints });
-        if (!res.ok) throw new Error(res.error);
-    }
-
     // ANT-specific (see orderProtocol.ts's comment) - plain MARKET buy (with
     // market protection), no broker-side bracket/cover, waits for the real
     // fill inside `order` and returns the resulting Trade (targetPrice set

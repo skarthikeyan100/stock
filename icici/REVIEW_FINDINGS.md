@@ -8,19 +8,11 @@ Reviewed whole files via code-review (high). Not fixed. Criteria: correctness, u
 
 ## A1 Correctness
 ## A1 Unused code
-16. [med] bookkeeping.ts:351 - isInvestmentLimitReached has no callers.
-17. [med] brokerExecutors.ts:22 - BrokerExecutor.hasValidSession/getFillPrice/getPositions/getTrades have no callers through the interface. The implementations (brokerExecutors.ts 22-50, 56-84, 92-108; breezeExecutor.ts 884-949; prismExecutor.ts 349-371) have drifted (ANT reads the wrong fields, Breeze returns the index name as tradingSymbol, Prism always reports a valid session). Remove them from the interface; keep getPositionsOnPrism (ButterflyStrategy imports it).
-18. [low] orderProcess.ts:55 - unused import normalizeBrokerList (also bookkeeping.ts:18, brokerExecutors.ts:16).
-19. [low] orderProtocol.ts:177 - the OrderMessage type is unused. The 'antSetTargetStopLoss' request (orderProtocol.ts:27, handler orderProcess.ts:865, OrderClient.ts:312) has no caller.
-20. [low] breezeExecutor.ts:105 and :142 - exchangeOfOrder and getOptionQuote are exported but used only in-file. antExecutor.ts:53 has a pointless `const terminal = isTerminalOrderStatus` alias.
-
 ## A1 Duplicates / refactor
 21. [med] four near-identical pending-order trackers (pendingLimitOrders.ts, pendingAntLimitOrders.ts, breezePendingLimitOrders.ts, pendingPrismLimitOrders.ts), with per-broker wiring repeated in orderProcess.ts at 91-105, 326-331, 818-823, 1467-1472, 1557-1560. Fixes land in one tracker only (items 4 and 9 arose that way). Extract a generic PendingOrderTracker with a per-broker status adapter.
 22. [med] orderProcess.ts:603-777 - the four chunkedBuyIndex branches repeat the niftyLtp check, index resolution, strike/price estimate, quantity resolution and the guarded buyChunked tail. Comments at 664 and 745 record a branch missing a fix. Extract resolveChunkedContract(broker, req) plus one shared tail.
 23. [low] kiteExecutor.ts:558-693, breezeExecutor.ts:689-794, antExecutor.ts:392-475, prismExecutor.ts:253-300 - resolve/place/wait/build-Trade/record is copied across marketBuyBare/marketSellBare/enterShort/buyToClose; Trade construction appears about 25 times. Extract buildFillTrade and placeAndBook; reuse pendingAntLimitOrders' buildAntFillTrade (re-implemented at antExecutor.ts:798-808).
 24. [low] kiteExecutor.ts:788-823 vs breezeExecutor.ts:848-882 - the candidate-strike walk and premium filter are copied. Extract candidateStrikes() and a shared selector.
-25. [low] the `startsWith('SENSEX') ? 'BFO' : 'NFO'` rule is repeated in about 10 places (orderProcess.ts 412, 479, 512, 792, 807; kiteExecutor.ts 361, 883, 896; bookkeeping.ts 529; exitMonitor.ts 168). setTargetStopLoss validation is duplicated (kiteExecutor.ts:343-356 vs antExecutor.ts:705-718), as is the zero-quantity done Trade (kiteExecutor.ts:417-425 vs antExecutor.ts:1091-1099). Extract exchangeForTsym(), applyTargetStopLoss(), emptyExitTrade().
-
 ## A1 Broker interface (same interface for all 4 brokers)
 26. [high] orderProcess.ts:426-468, 477-484, 537-543, 603-777, 906-915, 961-1014, 1087-1093, 1200-1249 and the per-broker maps at 326-331/818-823 - broker is dispatched by if/else chains, not through BrokerExecutor. The interface lacks enterShort, buyToClose, marketBuy/Sell, placeLimitBuy, resolveContract, getContractByPriceRange and findPendingOrders. Several branches throw for some brokers instead of being capability-flagged (ANT in placeLimitBuyBare 1226 and getContractByPriceRangeBare 1244; Breeze in manualBuy 1089; Prism in the Bare family). Each new broker needs about 15 edits here.
 27. [med] brokerExecutors.ts:18 - the same method behaves differently per broker: squareOff cancels resting sells on Kite/ANT but not Breeze/Prism; an unconfirmed ANT squareOff returns PENDING (antExecutor.ts:1189) where the others throw; Prism squareOff ignores exchange (brokerExecutors.ts:99); the in-flight guard key differs; buy() honours driftCancelPoints only on Kite (kiteExecutor.ts:514) though orderProcess.ts:726/771 pass it for ant and prism.
@@ -238,3 +230,15 @@ The destination is built from `paidTo` (chosen by the admin) but reads masked de
 14. [low] prismExecutor.ts:98 - waitForPrismBuyFill cancels on timeout and re-checks only COMPLETE, so a partial fill during the cancel is discarded. sellContract (88-110) records a sell at the quote with no fill check.  **[FIXED: partial fill reported on error; sellContract uses marketable limit + verified fill]**
 
 15. [low] antExecutor.ts:392 - enterShortPosition has no unresolved-fill handling (enterPosition has resolveUnconfirmedAntBuy). A resting sell-to-open can fill later, naked and unrecorded.  **[FIXED: unresolved short entry settled via resolveUnconfirmedAntBuy]**
+
+16. [med] bookkeeping.ts:351 - isInvestmentLimitReached has no callers.  **[FIXED: deleted]**
+
+17. [med] brokerExecutors.ts:22 - BrokerExecutor.hasValidSession/getFillPrice/getPositions/getTrades have no callers through the interface. The implementations (brokerExecutors.ts 22-50, 56-84, 92-108; breezeExecutor.ts 884-949; prismExecutor.ts 349-371) have drifted (ANT reads the wrong fields, Breeze returns the index name as tradingSymbol, Prism always reports a valid session). Remove them from the interface; keep getPositionsOnPrism (ButterflyStrategy imports it).  **[FIXED: removed hasValidSession/getFillPrice/getPositions/getTrades from the interface and all four executors; getPositionsOnPrism kept]**
+
+18. [low] orderProcess.ts:55 - unused import normalizeBrokerList (also bookkeeping.ts:18, brokerExecutors.ts:16).  **[FIXED: unused imports removed]**
+
+19. [low] orderProtocol.ts:177 - the OrderMessage type is unused. The 'antSetTargetStopLoss' request (orderProtocol.ts:27, handler orderProcess.ts:865, OrderClient.ts:312) has no caller.  **[FIXED: OrderMessage, antSetTargetStopLoss (protocol, handler, client, antExecutor.setTargetStopLoss) removed]**
+
+20. [low] breezeExecutor.ts:105 and :142 - exchangeOfOrder and getOptionQuote are exported but used only in-file. antExecutor.ts:53 has a pointless `const terminal = isTerminalOrderStatus` alias.  **[FIXED: un-exported; terminal alias removed]**
+
+25. [low] the `startsWith('SENSEX') ? 'BFO' : 'NFO'` rule is repeated in about 10 places (orderProcess.ts 412, 479, 512, 792, 807; kiteExecutor.ts 361, 883, 896; bookkeeping.ts 529; exitMonitor.ts 168). setTargetStopLoss validation is duplicated (kiteExecutor.ts:343-356 vs antExecutor.ts:705-718), as is the zero-quantity done Trade (kiteExecutor.ts:417-425 vs antExecutor.ts:1091-1099). Extract exchangeForTsym(), applyTargetStopLoss(), emptyExitTrade().  **[FIXED: exchangeForTsym/exchangeForIndex in util/underlyings.ts replace ~20 inline rules; setTargetStopLoss dup gone with the dead ANT copy (zero-quantity Trade and applyTargetStopLoss left for the executor refactor)]**

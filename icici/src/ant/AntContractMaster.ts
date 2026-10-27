@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import Log from '../util/Log';
+import { exchangeForIndex } from '../util/underlyings';
 
 interface ContractRecord {
   Symbol: string;
@@ -244,7 +245,7 @@ class AntContractMaster {
   findATMOption(underlyingLtp: number, optionType: string, symbol: string = 'NIFTY'): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
     const step = AntContractMaster.STRIKE_STEP[symbol] ?? 50;
     const atmStrike = Math.round(underlyingLtp / step) * step;
-    const exch = symbol === 'SENSEX' ? 'BFO' : 'NFO';
+    const exch = exchangeForIndex(symbol);
     return this.findNearestExpiryOption({ symbol, exch, strike: atmStrike, optionType, expiryOffset: 0 });
   }
 
@@ -292,7 +293,7 @@ class AntContractMaster {
   // date string (not epoch-ms) - mirrors KiteContractMaster.findExactOption's
   // caller contract. Converts internally to findOption's epoch-ms comparison.
   findExactOption(params: { symbol: string; strike: number; expiry: string; optionType: string }): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
-    const exch = params.symbol === 'SENSEX' ? 'BFO' : 'NFO';
+    const exch = exchangeForIndex(params.symbol);
     const expiryEpochMs = new Date(params.expiry).getTime();
     return this.findOption({
       symbol: params.symbol,
@@ -370,7 +371,7 @@ class AntContractMaster {
   ): string {
     if ('atmLtp' in selector) return this.findATMOption(selector.atmLtp, optionType, symbol).token;
     if ('expiry' in selector) return this.findExactOption({ symbol, strike: selector.strike, expiry: selector.expiry, optionType }).token;
-    const exch = symbol === 'SENSEX' ? 'BFO' : 'NFO';
+    const exch = exchangeForIndex(symbol);
     return this.findNearestExpiryOption({ symbol, exch, strike: selector.strike, optionType }).token;
   }
 

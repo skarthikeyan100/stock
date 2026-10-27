@@ -6,7 +6,7 @@ import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
-import { BrokerExecutor, BuyRequest, BrokerPosition, Exchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, OrderAlreadyFilledError } from './BrokerExecutor';
+import { BrokerExecutor, BuyRequest, Exchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, OrderAlreadyFilledError } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol } from './breezePendingLimitOrders';
 import { roundToTick } from '../../kite/Kite';
@@ -102,7 +102,7 @@ function rememberOrderExchange(orderId: string, exchange: BreezeExchange): void 
 // Resolution order: this process's own record, then the Mongo-restored pending limit-order
 // tracker (survives an `order` restart for resting limit sells). Only an order that is neither
 // (e.g. a market buy already filled before the restart) falls back to NFO.
-export function exchangeOfOrder(orderId: string): BreezeExchange {
+function exchangeOfOrder(orderId: string): BreezeExchange {
     const known = orderExchange.get(orderId) ?? pendingBreezeOrderExchange(orderId);
     if (known) return known;
     Log.log(`[order] exchangeOfOrder: no recorded exchange for Breeze order ${orderId} - defaulting to NFO`);
@@ -139,7 +139,7 @@ function expiryToIso(expiryDate: string): string {
     return new Date(Date.UTC(Number(year), month, Number(day), 6, 0, 0)).toISOString();
 }
 
-export async function getOptionQuote(record: FnoRecord): Promise<{ bestBid: number; bestAsk: number; ltp: number }> {
+async function getOptionQuote(record: FnoRecord): Promise<{ bestBid: number; bestAsk: number; ltp: number }> {
     try {
         const result = await Breeze.getInstance().getQuotes({
             stockCode: record.shortName,
@@ -425,6 +425,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
             return done;
         }
         let remainingQty = settled.quantity;
+        let bookingFailure: unknown; // a confirmed fill that could not be booked - reported, never retried with a fresh sell
         let stuck = false; // a resting order we could neither cancel nor confirm closed - stop, don't risk a double-order
         let totalFilledQty = 0;
         let totalFilledValue = 0;
@@ -534,10 +535,14 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                             // the stuck order for manual review instead of
                             // guessing further.
                             if (fillInfo.filledQuantity > 0) {
-                                await recordSellFill(orderId, fillInfo.avgPrice, fillInfo.filledQuantity);
                                 totalFilledQty += fillInfo.filledQuantity;
                                 totalFilledValue += fillInfo.filledQuantity * fillInfo.avgPrice;
                                 remainingQty -= fillInfo.filledQuantity;
+                                try {
+                                    await recordSellFill(orderId, fillInfo.avgPrice, fillInfo.filledQuantity);
+                                } catch (bookErr) {
+                                    bookingFailure = bookErr; // surfaced after the loop; never falls into the cancel-failure catch below
+                                }
                             }
                             lastErr = new Error(
                                 `order ${orderId} would not cancel and is still resting live at the broker (filled so far: ${fillInfo.filledQuantity}/${remainingQty + fillInfo.filledQuantity}) - stopping rather than risk a double-sell with a fresh order`
@@ -557,7 +562,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                             await recordSellFill(orderId, fillInfo.avgPrice, fillInfo.filledQuantity);
                         } catch (bookErr) {
                             Log.log(`[order] ALERT: Breeze square-off order ${orderId} for ${tsym} (${userId}) filled qty=${fillInfo.filledQuantity} but booking it failed - stopping (no fresh sell), reconcile must pick it up:`, bookErr);
-                            lastErr = bookErr;
+                            bookingFailure = bookErr;
                             stuck = true;
                         }
                         if (stuck) break;
@@ -566,6 +571,14 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
                     }
                 }
             }
+        }
+        if (bookingFailure !== undefined) {
+            // Fills are real even if bookkeeping missed them (reconcile must pick them up): report them, and fail rather than
+            // return a success trade for a position bookkeeping still shows open.
+            throw Object.assign(
+                new Error(`Square-off for ${tsym}: sold ${totalFilledQty}/${quantity} but booking a fill failed - not retrying (would double-sell): ${bookingFailure instanceof Error ? bookingFailure.message : bookingFailure}`),
+                { filledQuantity: totalFilledQty, averagePrice: totalFilledQty > 0 ? totalFilledValue / totalFilledQty : 0 }
+            );
         }
         if (remainingQty > 0) {
             throw Object.assign(
@@ -907,70 +920,12 @@ export async function getContractByPriceRangeOnBreeze(
     throw new Error(`No ${index} ${optionType} contract found with premium >= ${minPremium} (underlyingLtp=${underlyingLtp})`);
 }
 
-async function getPositionsOnBreeze(): Promise<BrokerPosition[]> {
-    const result = await Breeze.getInstance().getPortfolioPositions();
-    const rows = Array.isArray(result?.Success) ? result.Success : [];
-    // Field names confirmed live 2026-09-17 against a real open position:
-    // {stock_code, expiry_date, strike_price, right: "Call"|"Put", quantity,
-    //  average_price, exchange_code, ...} - notably NO token field, unlike
-    // Kite/ANT's position responses, so instrumentId is resolved via
-    // BreezeContractMaster rather than read directly off the row.
-    return Promise.all(
-        rows.map(async (r: any) => {
-            const optionType = r.right === 'Call' ? 'CE' : r.right === 'Put' ? 'PE' : undefined;
-            const contract = optionType
-                ? await BreezeContractMaster.getInstance().findOption(r.stock_code, r.expiry_date, Number(r.strike_price), optionType)
-                : undefined;
-            return {
-                tradingSymbol: r.stock_code ? indexNameFor(String(r.stock_code)) : '',
-                instrumentId: contract?.token ?? '',
-                quantity: Number(r.quantity ?? 0),
-                avgPrice: Number(r.average_price ?? 0),
-                exchange: r.exchange_code ?? 'NFO',
-            };
-        })
-    );
-}
-
-async function getTradesOnBreeze(): Promise<Trade[]> {
-    const today = new Date();
-    const fromDate = new Date(today);
-    fromDate.setDate(fromDate.getDate() - 1);
-    // NFO and BFO (SENSEX) are separate exchangeCode queries on Breeze - both are needed for the full list.
-    const rows: any[] = [];
-    const fetchTrades = async (exchangeCode: BreezeExchange) => {
-        const result = await Breeze.getInstance().getTradeList({
-            fromDate: fromDate.toISOString(),
-            toDate: today.toISOString(),
-            exchangeCode,
-        });
-        if (Array.isArray(result?.Success)) rows.push(...result.Success);
-    };
-    await fetchTrades('NFO'); // a failure here propagates, same as before SENSEX support
-    // BFO is additive - a failure there must not drop the NFO trades already fetched, so it is logged and skipped.
-    await fetchTrades('BFO').catch((e) => Log.log('[order] Breeze getTradeList(BFO) failed - continuing with NFO trades only:', e));
-    return rows.map((r: any) => {
-        const trade = new Trade();
-        trade.tsym = r.stock_code || r.stockCode ? indexNameFor(String(r.stock_code ?? r.stockCode)) : '';
-        trade.action = r.action;
-        trade.quantity = Number(r.quantity ?? 0);
-        trade.broker = 'breeze';
-        trade.price = Number(r.execution_price ?? r.average_cost ?? 0);
-        trade.brokerOrderId = r.order_id;
-        return trade;
-    });
-}
-
 export const BreezeExecutor: BrokerExecutor = {
     brokerName: 'breeze',
-    hasValidSession: () => Breeze.getInstance().hasValidSession(),
     buy: buyResolvedOnBreeze,
     squareOff: (userId: string, tradingSymbol: string, quantity: number, _exchange: Exchange) =>
         squareOffOnBreeze(userId, tradingSymbol, quantity),
     squareOffLimit: (userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: Exchange, limitPrice: number) =>
         placeLimitSellBareOnBreeze(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as 'NFO' | 'BFO'),
     cancelOrder: cancelOrderOnBreeze,
-    getFillPrice: (orderId: string) => Breeze.getInstance().getFillPrice(exchangeOfOrder(orderId), orderId),
-    getPositions: getPositionsOnBreeze,
-    getTrades: getTradesOnBreeze,
 };

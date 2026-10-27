@@ -6,6 +6,7 @@ import { subscribeTokenDepth, unsubscribeTokenDepth } from '../processes/strateg
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { CALL, PUT } from '../constants';
 import { sleep } from '../util/sleep';
+import { exchangeForIndex } from '../util/underlyings';
 
 interface PendingLeg {
     tbq?: number;
@@ -56,7 +57,7 @@ export default class MomentumSignal {
         // SENSEX ATM tokens are BFO, not NFO - found on review: this used to
         // default to NFO regardless of `index`, which would silently never
         // get a depth tick back for a SENSEX momentum check.
-        const exchange: 'NFO' | 'BFO' = index === 'SENSEX' ? 'BFO' : 'NFO';
+        const exchange: 'NFO' | 'BFO' = exchangeForIndex(index);
         const subscribedNow: string[] = [];
         for (const token of [ceToken, peToken]) {
             if (this.pending.has(token)) continue;

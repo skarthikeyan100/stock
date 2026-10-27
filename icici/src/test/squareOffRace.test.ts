@@ -74,7 +74,7 @@ async function main() {
         assert(rejected.length === 1, `exactly one concurrent call is rejected as a duplicate no-op (got ${rejected.length})`);
 
         const pendingAfterScenario1 = bookkeeping.pendingSquareOffs;
-        assert(pendingAfterScenario1.has(`${USER}:NIFTY26AUG24100CE`) === false, 'guard is cleared after the winning call finishes');
+        assert(pendingAfterScenario1.has(`ant:${USER}:NIFTY26AUG24100CE`) === false, 'guard is cleared after the winning call finishes');
 
         // --- Scenario 2: guard clearing doesn't block a DIFFERENT trade ---
         const tradeB = openBracketTrade(USER, 'NIFTY26AUG24200PE', 'tok-race-B', 'bo-order-B');

@@ -904,9 +904,8 @@ export class LegManager {
         } catch (e: any) {
             Log.log(`[${this.deps.ownerType}] Level ${level} spawn failed:`, e);
             // An unresolved fill may still be live: keep the slot consumed so no consumer (even one without the owner veto) retries it.
-            if (isUnconfirmedBuyError(e)) this.deps.onSpawnBuyError?.(e);
-            else leg.childByLevel.delete(level); // ordinary failure - free the slot so it can retry
-            if (!isUnconfirmedBuyError(e)) this.deps.onSpawnBuyError?.(e);
+            if (!isUnconfirmedBuyError(e)) leg.childByLevel.delete(level); // ordinary failure - free the slot so it can retry
+            this.deps.onSpawnBuyError?.(e);
         }
     }
 

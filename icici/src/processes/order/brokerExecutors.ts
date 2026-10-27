@@ -5,20 +5,17 @@
 // already-working functions these call into.
 
 import { Trade } from '../../model/model';
-import { BrokerExecutor, BuyRequest, BrokerPosition } from './BrokerExecutor';
-import Kite from '../../kite/Kite';
-import ANT from '../../ant/ANT';
+import { BrokerExecutor, BuyRequest } from './BrokerExecutor';
 import * as kiteExecutor from './kiteExecutor';
 import * as antExecutor from './antExecutor';
 import * as prismExecutor from './prismExecutor';
 import { BreezeExecutor } from './breezeExecutor';
 import bookkeeping from './bookkeeping';
-import { normalizeBrokerName, normalizeBrokerList } from '../../util/brokerName';
+import { normalizeBrokerName } from '../../util/brokerName';
 
 export const KiteExecutor: BrokerExecutor = {
     brokerName: 'kite',
 
-    hasValidSession: () => Kite.getInstance().hasValidSession(),
 
     buy: (request: BuyRequest): Promise<Trade> => kiteExecutor.buyResolvedOnKite(request),
 
@@ -33,27 +30,13 @@ export const KiteExecutor: BrokerExecutor = {
 
     cancelOrder: (orderId) => kiteExecutor.cancelOrderOnKite(orderId),
 
-    getFillPrice: (orderId) => Kite.getInstance().getFillPrice(orderId),
 
-    getPositions: async (): Promise<BrokerPosition[]> => {
-        const positions = await Kite.getInstance().getPositions();
-        const net: any[] = positions?.net ?? positions ?? [];
-        return (Array.isArray(net) ? net : []).map((p: any) => ({
-            tradingSymbol: p.tradingsymbol,
-            instrumentId: String(p.instrument_token),
-            quantity: Number(p.quantity ?? 0),
-            avgPrice: Number(p.average_price ?? 0),
-            exchange: p.exchange ?? 'NFO',
-        }));
-    },
 
-    getTrades: () => Kite.getInstance().getTrades(),
 };
 
 export const AntExecutor: BrokerExecutor = {
     brokerName: 'ant',
 
-    hasValidSession: () => ANT.getInstance().hasValidSession(),
 
     buy: (request: BuyRequest): Promise<Trade> =>
         antExecutor.enterPosition(
@@ -70,26 +53,13 @@ export const AntExecutor: BrokerExecutor = {
 
     cancelOrder: (orderId) => antExecutor.cancelOrderOnAnt(orderId),
 
-    getFillPrice: (orderId) => ANT.getInstance().getFillPrice(orderId),
 
-    getPositions: async (): Promise<BrokerPosition[]> => {
-        const positions = await ANT.getInstance().getPositions();
-        return (Array.isArray(positions) ? positions : []).map((p: any) => ({
-            tradingSymbol: p.tradingSymbol ?? p.tsym,
-            instrumentId: String(p.token ?? p.instrumentId ?? ''),
-            quantity: Number(p.netQuantity ?? p.netQty ?? p.quantity ?? 0),
-            avgPrice: Number(p.netAvgPrice ?? p.avgPrice ?? 0),
-            exchange: p.exchange ?? p.exch ?? 'NFO',
-        }));
-    },
 
-    getTrades: () => ANT.getInstance().getTrades(),
 };
 
 export const PrismExecutor: BrokerExecutor = {
     brokerName: 'prism',
 
-    hasValidSession: () => prismExecutor.hasValidSessionOnPrism(),
 
     buy: (request: BuyRequest): Promise<Trade> => prismExecutor.buyOnPrism(request),
 
@@ -101,11 +71,8 @@ export const PrismExecutor: BrokerExecutor = {
 
     cancelOrder: (orderId) => prismExecutor.cancelOrderOnPrism(orderId),
 
-    getFillPrice: (orderId) => prismExecutor.getFillPriceOnPrism(orderId),
 
-    getPositions: () => prismExecutor.getPositionsOnPrism(),
 
-    getTrades: () => prismExecutor.getTradesOnPrism(),
 };
 
 // Resolves a user's configured broker to its BrokerExecutor - replaces the

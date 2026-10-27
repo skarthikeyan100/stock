@@ -22,6 +22,7 @@ import * as niftyStatsBuilder from './strategies/niftyStatsBuilder';
 import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 import { FeedSource, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
+import { exchangeForTsym } from '../util/underlyings';
 
 // Entry point for the `strategies` process. No Prism/Kite dependency at all -
 // ticks arrive over stdin (piped from `data` by the orchestrator), orders go out
@@ -73,7 +74,7 @@ async function onFill(userId: string, raw: any) {
     // for its own antSquareOffBare/reconcile calls - found on review: without
     // this, a held BFO token's subscription here would default to NFO and
     // never receive a tick back from AliceBlue.
-    const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
+    const exchange: 'NFO' | 'BFO' = exchangeForTsym(trade.tsym);
     if (isDuplicateFill(trade)) {
         Log.log(`[strategies] Ignoring duplicate fill delivery for order ${trade.brokerOrderId} (${trade.action} ${trade.quantity} ${trade.tsym})`);
         return;

@@ -3,6 +3,7 @@ import { writeJsonLine } from '../../ipc/jsonLines';
 import { OptionQuote, Trade } from '../../model/model';
 import configService from '../../prism/ConfigService';
 import { BROKER_TO_FEED_SOURCE, DEFAULT_FEED_SOURCE } from '../../ipc/feedSource';
+import { exchangeForTsym } from '../../util/underlyings';
 
 // In-app target/SL exit monitoring, for trades placed with useGTT=false (see
 // bookkeeping.getUserUseGTT / kiteExecutor.finalizeEntry, antExecutor.finalizeEntry).
@@ -216,7 +217,7 @@ export function reconcileFromTrades(trades: Trade[]): void {
         // whichever executor's Trade shape this is (antOrderNo present -> ant,
         // prismCoverOrderNo present -> prism, otherwise kite - matches
         // this file's existing Broker union).
-        const exchange: 'NFO' | 'BFO' = trade.tsym?.startsWith('SENSEX') ? 'BFO' : 'NFO';
+        const exchange: 'NFO' | 'BFO' = exchangeForTsym(trade.tsym);
         const broker: Broker = reBroker;
         // A GTT/bracket/cover trade already has its exit owned by the broker -
         // reconcile it watch-only (mark-to-market only) so a restart doesn't

@@ -24,7 +24,6 @@ export type OrderRequestType =
     | 'antManualBuy'
     | 'antPlaceCoverOrder'
     | 'antSquareOff'
-    | 'antSetTargetStopLoss'
     | 'reloadSession'
     | 'reloadUserLimits'
     | 'reconcileBrokerPositions'
@@ -173,5 +172,3 @@ export interface OrderCancelledNotification {
     // pending-order pollers don't yet surface an equivalent.
     rejectReason?: string;
 }
-
-export type OrderMessage = OrderRequest | OrderResponse | FillNotification | PositionsChangedNotification | OrderCancelledNotification;

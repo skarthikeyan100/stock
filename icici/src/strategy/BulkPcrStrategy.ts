@@ -15,6 +15,7 @@ import { PnlStop } from './PnlStop';
 import { TrailStop } from './TrailStop';
 import { sleep } from '../util/sleep';
 import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
+import { exchangeForTsym } from '../util/underlyings';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
 
@@ -1214,7 +1215,7 @@ export default class BulkPcrStrategy extends Strategy {
     // Pair brokers only: a non-pair slot is never ticked by its held token.
     private watchSlot(pos: BrokerPosition): void {
         if (!isPairBroker(pos.broker) || !pos.heldToken) return;
-        watchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
+        watchTokenOnSource('ant', pos.heldToken, this, exchangeForTsym(pos.heldTsym));
     }
 
     // Stops tick routing for a slot's held token - but only if no other pair slot still holds the
@@ -1226,7 +1227,7 @@ export default class BulkPcrStrategy extends Strategy {
             k !== exceptKey && p !== pos && isPairBroker(p.broker) && p.phase !== 'done' && p.heldToken === pos.heldToken
         );
         if (stillHeld) return;
-        unwatchTokenOnSource('ant', pos.heldToken, this, pos.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
+        unwatchTokenOnSource('ant', pos.heldToken, this, exchangeForTsym(pos.heldTsym));
     }
 
     // Opens the opposite side against a lone slot that moved slDistance against its entry. Sized to
@@ -1483,7 +1484,7 @@ export default class BulkPcrStrategy extends Strategy {
                 let squareOffAvg: number | undefined;
                 if (remaining > 0) {
                     if (broker === 'ant') {
-                        const trade = await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: tsym.startsWith('SENSEX') ? 'BFO' : 'NFO' });
+                        const trade = await OrderClient.getInstance().antSquareOffBare(this.userId, { tradingSymbol: tsym, quantity: remaining, exchange: exchangeForTsym(tsym) });
                         squareOffAvg = trade?.price;
                     } else if (broker === 'kite' || broker === 'breeze') {
                         const res = await OrderClient.getInstance().chunkedSquareOff(this.userId, { tsym, quantity: remaining, broker });
@@ -1589,7 +1590,7 @@ export default class BulkPcrStrategy extends Strategy {
         if (this.phase === 'done') return;
         // Unwatch every pair slot's held token - a no-op for any that was never watched.
         for (const slot of this.pairSlots()) {
-            if (slot.heldToken) unwatchTokenOnSource('ant', slot.heldToken, this, slot.heldTsym?.startsWith('SENSEX') ? 'BFO' : 'NFO');
+            if (slot.heldToken) unwatchTokenOnSource('ant', slot.heldToken, this, exchangeForTsym(slot.heldTsym));
         }
         // Not configService.getStrategyConfig(type) - see cfg()'s comment above for why;
         // this call site was missed when that fix landed. A second instance under a

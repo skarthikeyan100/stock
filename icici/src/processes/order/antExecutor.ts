@@ -13,6 +13,7 @@ import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder } from './pendingAntLimitOrders';
 import { sleep } from '../../util/sleep';
+import { exchangeForIndex } from '../../util/underlyings';
 
 // AliceBlue/ANT execution, mirroring kiteExecutor.ts's shape and the same
 // per-user useGTT gating (bookkeeping.getUserUseGTT) - but the actual
@@ -51,7 +52,6 @@ async function resolveUnconfirmedAntBuy(
 ): Promise<{ quantity: number; avgPrice: number }> {
     const manualReview = (why: string) =>
         new Error(`ANT order ${orderNo} fill status unresolved (${why}) - manual review required. Poll error: ${pollErr?.message ?? pollErr}`);
-    const terminal = isTerminalOrderStatus;
 
     let before: { quantity: number; avgPrice: number } | null = null;
     try {
@@ -84,7 +84,7 @@ async function resolveUnconfirmedAntBuy(
     if (cancelErr) {
         // Cancel didn't go through: the order is dead only if its status is terminal.
         const status = await ant.getOrderStatus(orderNo).catch(() => null);
-        if (!status || !terminal(status.status)) {
+        if (!status || !isTerminalOrderStatus(status.status)) {
             throw manualReview(`cancel failed: ${cancelErr?.message ?? cancelErr}, order not terminal`);
         }
         statusFilledQty = status.filledQuantity ?? 0;
@@ -94,7 +94,7 @@ async function resolveUnconfirmedAntBuy(
         let settled = false;
         for (let i = 0; i < 10 && !settled; i++) {
             const status = await ant.getOrderStatus(orderNo).catch(() => null);
-            settled = !!status && terminal(status.status);
+            settled = !!status && isTerminalOrderStatus(status.status);
             if (settled) statusFilledQty = status!.filledQuantity ?? 0;
             else await sleep(1000);
         }
@@ -600,7 +600,7 @@ async function requireAntLtp(exch: string, token: string, retryDelaysMs: number[
 // the app's sole live tick source) is the pricing reference for both executors.
 export async function estimateOptionPrice(symbol: string, strike: number, optionType: string): Promise<number> {
     try {
-        const exch = symbol === 'SENSEX' ? 'BFO' : 'NFO';
+        const exch = exchangeForIndex(symbol);
         const resolved = AntContractMaster.getInstance().findNearestExpiryOption({ symbol, exch, strike, optionType });
         return await safeAntQuote(resolved.exch as 'NFO' | 'BFO', resolved.token, SIZING_ESTIMATE_BACKOFF_MS);
     } catch (e) {
@@ -686,7 +686,7 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
         const canonical = parseCanonicalSymbol(req.contract);
         const resolved = AntContractMaster.getInstance().findNearestExpiryOption({
             symbol: canonical.symbol,
-            exch: canonical.symbol === 'SENSEX' ? 'BFO' : 'NFO',
+            exch: exchangeForIndex(canonical.symbol),
             strike: canonical.strike,
             optionType: canonical.optionType,
         });
@@ -706,32 +706,6 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
     const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
 
     return buyIndexOnAnt({ userId: req.userId, index: req.index, niftyLtp: await getSpotLtp(index), right: req.right, quantity, targetPoints, stopLossPoints });
-}
-
-// AliceBlue's BO modify endpoint field shape for re-pricing a live bracket's
-// legs hasn't been confirmed against a live response, so this only updates
-// local bookkeeping for now - the broker-side BO leg prices are NOT
-// re-priced. Once the modify shape is verified, add the live call here
-// (mirroring kiteExecutor.setTargetStopLoss's modifyTargetStopLossGTT call).
-export async function setTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number): Promise<void> {
-    const trade = bookkeeping.trades.find((t) => t.token === token && t.user === userId);
-    if (!trade) throw new Error(`No open trade for token ${token} and user ${userId}`);
-
-    // 0 / missing / non-numeric means "leave that side unset" (the UI may set only one side). Without this a 0 became
-    // price -/+ 0 = the entry price, i.e. an exit at the first tick.
-    const hasTarget = Number.isFinite(targetPoints) && targetPoints > 0;
-    const hasStop = Number.isFinite(stopLossPoints) && stopLossPoints > 0;
-    if (!hasTarget && !hasStop) throw new Error('setTargetStopLoss: targetPoints and/or stopLossPoints must be a positive number');
-    if (hasTarget) {
-        trade.targetPrice = trade.price + targetPoints;
-        trade.targetPoints = targetPoints;
-    }
-    if (hasStop) trade.stopLossPrice = trade.price - stopLossPoints;
-
-    if (trade.antOrderNo) {
-        Log.log(`[order] setTargetStopLoss updated local bookkeeping for ANT order ${trade.antOrderNo} - live BO leg re-price not yet implemented (unverified endpoint shape)`);
-    }
-    bookkeeping.notifyTargetStopLossChanged();
 }
 
 // Returns immediately with {orderId} - fill arrives later via

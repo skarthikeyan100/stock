@@ -202,8 +202,6 @@ export interface BrokerPosition {
 export interface BrokerExecutor {
     readonly brokerName: 'kite' | 'ant' | 'prism' | 'breeze';
 
-    hasValidSession(): Promise<boolean>;
-
     buy(request: BuyRequest): Promise<Trade>;
 
     // Matches the signature kiteExecutor.squareOffOnKite/antExecutor.squareOffOnAnt
@@ -233,10 +231,4 @@ export interface BrokerExecutor {
     // check for this type to tell "already closed, don't touch again" apart
     // from a genuine cancel failure that still leaves the position open.
     cancelOrder(orderId: string): Promise<void>;
-
-    getFillPrice(orderId: string): Promise<number>;
-
-    getPositions(): Promise<BrokerPosition[]>;
-
-    getTrades(): Promise<Trade[]>;
 }

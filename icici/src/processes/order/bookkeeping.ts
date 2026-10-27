@@ -15,7 +15,8 @@ import configService from '../../prism/ConfigService';
 import { drawdownLimit, drawdownDecision } from '../../prism/percentConfig';
 import { startOfWeek } from '../../util/weekWindow';
 import AntContractMaster from '../../ant/AntContractMaster';
-import { normalizeBrokerName, normalizeBrokerList } from '../../util/brokerName';
+import { normalizeBrokerName } from '../../util/brokerName';
+import { exchangeForTsym } from '../../util/underlyings';
 
 // Open-P&L pricing gets a short budget: it runs inside every buy's drawdown check, so a slow quote must not stall an order.
 const OPEN_PNL_TIMEOUT_MS = 4_000;
@@ -353,10 +354,6 @@ class OrderBookkeeping {
             .reduce((sum, t) => sum + t.price * t.quantity, 0);
     }
 
-    isInvestmentLimitReached(user: string, broker?: string): boolean {
-        return this.getCurrentInvestment(user, broker) >= this.getUserMaxInvestment(user);
-    }
-
     // Called by orderProcess.ts immediately after canPlaceOrder() returns
     // allowed:true and before the broker call, so a concurrent canPlaceOrder()
     // call for the same user sees this reservation for the duration of the
@@ -539,7 +536,7 @@ class OrderBookkeeping {
         for (const { trade, sign } of rows) {
             let token: string | undefined;
             try {
-                const exch = trade.tsym.startsWith('SENSEX') ? 'BFO' : 'NFO';
+                const exch = exchangeForTsym(trade.tsym);
                 token = AntContractMaster.getInstance().findByTradingSymbol(trade.tsym, exch)?.token;
                 if (!token || !Number.isFinite(trade.price) || !(trade.quantity > 0)) { failed++; continue; }
                 let ltp = quotes.get(token);

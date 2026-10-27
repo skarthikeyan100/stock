@@ -8,6 +8,7 @@ import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSe
 import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol } from './pendingPrismLimitOrders';
 import { sleep } from '../../util/sleep';
 import { roundToTick } from '../../kite/Kite';
+import { exchangeForTsym } from '../../util/underlyings';
 
 // Prism/Shoonya's contract-by-price-range order path - the secondary/legacy
 // broker path (Kite is primary, see kiteExecutor.ts). `Prism.getInstance()`
@@ -102,7 +103,7 @@ export async function sellContract(userId: string, contract: string, quantity: n
     // after a flat delay with no status check, so an exit that never filled was booked as closed (a phantom close).
     const limitPrice = price ?? roundToTick((await prism.getStockOptionQuote(contract)).ltp * 0.99);
     const token = await prism.getToken(contract);
-    const exchange: 'NFO' | 'BFO' = contract.startsWith('SENSEX') ? 'BFO' : 'NFO';
+    const exchange: 'NFO' | 'BFO' = exchangeForTsym(contract);
     const { orderId } = await prism.placeLimitSellBare(contract, token, quantity, limitPrice, userId, exchange);
 
     const book = async (qty: number, px: number): Promise<Trade> => {
@@ -162,12 +163,19 @@ const BUY_FILL_POLL_DELAY_MS = 2500;
 async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userId: string): Promise<number> {
     const prism = Prism.getInstance();
     for (let attempt = 1; attempt <= BUY_FILL_POLL_ATTEMPTS; attempt++) {
-        const { status, fillPrice } = await prism.getOrderStatus(orderId);
+        const { status, fillPrice, filledQuantity } = await prism.getOrderStatus(orderId);
         if (status === 'COMPLETE') {
             if (!fillPrice) throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) reported COMPLETE but no fill price - manual review required`);
             return fillPrice;
         }
         if (status === 'REJECTED' || status === 'CANCELED' || status === 'CANCELLED') {
+            // Cancelled after a partial fill: report the filled part (same convention as the post-timeout path below).
+            if (Number(filledQuantity ?? 0) > 0 && fillPrice) {
+                Log.log(`[order] ALERT: Prism order ${orderId} (${tradingSymbol}, ${userId}) ${status} after a PARTIAL fill of ${filledQuantity} - reported on the error, caller must book it`);
+                throw Object.assign(new Error(`Prism order ${orderId} (${tradingSymbol}, ${userId}) ${status} after partially filling ${filledQuantity}`), {
+                    filledQuantity: Number(filledQuantity), averagePrice: fillPrice, partial: true,
+                });
+            }
             throw new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) ${status} - not filled`);
         }
         if (attempt < BUY_FILL_POLL_ATTEMPTS) await sleep(BUY_FILL_POLL_DELAY_MS);
@@ -341,7 +349,9 @@ export async function squareOffOnPrism(userId: string, tsym: string, quantity: n
 }
 
 async function squareOffOnPrismUnguarded(userId: string, tsym: string, quantity: number): Promise<Trade> {
-    const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId);
+    // This broker's rows only (an ant+prism pseudo-user can hold the same tsym on both).
+    const isPrismRow = (t: Trade) => t.broker === undefined || t.broker === 'prism';
+    const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId && isPrismRow(t));
     if (existing?.prismCoverOrderNo) {
         Log.log(`[order] Square-off ${tsym} qty=${quantity} for ${userId} via Prism exitCoverOrder (${existing.prismCoverOrderNo})`);
         await Prism.getInstance().exitCoverOrder(existing.prismCoverOrderNo);
@@ -365,7 +375,7 @@ async function squareOffOnPrismUnguarded(userId: string, tsym: string, quantity:
     // A resting limit sell for this position (e.g. BulkPcr's target chunks) must come off first, or both could fill and oversell.
     const settled = await cancelRestingSellsAheadOfExit({
         pending: findPendingOrdersForSymbol(userId, tsym), cancel: cancelOrderOnPrism,
-        openQuantity: () => bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId)?.quantity,
+        openQuantity: () => bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId && isPrismRow(t))?.quantity,
         requested: quantity, label: `squareOffOnPrism ${tsym} (${userId})`,
     });
     if (!(settled.quantity > 0)) {
@@ -415,14 +425,6 @@ export async function cancelOrderOnPrism(orderId: string): Promise<void> {
     });
 }
 
-export async function getFillPriceOnPrism(orderId: string): Promise<number> {
-    // requestedPrice fallback of 0 is a real gap when called standalone (not
-    // via buyOnPrism, which always has a real requested price to fall back
-    // to) - acceptable for now since nothing calls this outside buyOnPrism
-    // yet; flagged rather than silently hidden.
-    return Prism.getInstance().getOrderFillPrice(orderId, 0);
-}
-
 export async function getPositionsOnPrism(): Promise<BrokerPosition[]> {
     const positions = await Prism.getInstance().getPositions();
     return positions.map((p: any) => ({
@@ -432,15 +434,4 @@ export async function getPositionsOnPrism(): Promise<BrokerPosition[]> {
         avgPrice: Number(p.netavgprc ?? 0),
         exchange: p.exch ?? 'NFO',
     }));
-}
-
-export async function getTradesOnPrism(): Promise<Trade[]> {
-    return Prism.getInstance().getTradeList();
-}
-
-// No session-validity concept exists in Prism/RestAPI.ts today (unlike
-// Kite.hasValidSession's real token check) - always reports valid until a
-// real check is worth adding. See ToDo.md.
-export async function hasValidSessionOnPrism(): Promise<boolean> {
-    return true;
 }
