@@ -49,20 +49,29 @@ function isDuplicateFill(trade: Trade): boolean {
 // already serialised per user, so nothing else for the user runs meanwhile, and other users are unaffected). The
 // order process books a fill before it broadcasts it, so the snapshot already includes that first fill: the caller
 // must not apply it again. Returns false when the read failed or timed out; the map is then left alone and the
-// first Sell falls back to unregistering (the old behaviour), and the next fill tries the seed again.
+// first Sell falls back to unregistering (the old behaviour), and a later fill retries the seed after SEED_RETRY_AFTER_MS.
 const SEED_TIMEOUT_MS = 15_000;
+const SEED_RETRY_AFTER_MS = 60_000;
 const seededUsers = new Set<string>();
+const seedFailedAt = new Map<string, number>();
 async function seedOpenQty(userId: string): Promise<boolean> {
+    if (Date.now() - (seedFailedAt.get(userId) ?? 0) < SEED_RETRY_AFTER_MS) return false;
     let open: any[];
+    let timer: NodeJS.Timeout | undefined;
     try {
         open = await Promise.race([
             OrderClient.getInstance().getOpenTrades(userId),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timed out')), SEED_TIMEOUT_MS).unref()),
+            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), SEED_TIMEOUT_MS); }),
         ]);
     } catch (e) {
+        seedFailedAt.set(userId, Date.now());
         Log.log(`[strategies] Could not seed open quantities for ${userId}:`, e);
         return false;
+    } finally {
+        clearTimeout(timer);
     }
+    // The snapshot replaces whatever fills built so far for this user (it already includes them).
+    for (const key of Array.from(openQty.keys())) if (key.startsWith(`${userId}|`)) openQty.delete(key);
     for (const t of open) {
         const qty = Number(t?.quantity);
         if (!t?.token || !(qty > 0)) continue;
@@ -71,6 +80,7 @@ async function seedOpenQty(userId: string): Promise<boolean> {
         openQty.set(key, (openQty.get(key) ?? 0) + qty);
         openQtyExchange.set(key, exchangeForTsym(t.tsym));
     }
+    seedFailedAt.delete(userId);
     seededUsers.add(userId);
     return true;
 }
@@ -79,6 +89,7 @@ function clearOpenQtyFor(strategy: { userId?: string }): void {
     for (const key of Array.from(openQty.keys())) {
         const [uid, feed, token] = key.split('|');
         if (uid !== strategy.userId) continue;
+        seededUsers.delete(uid);
         const owner = strategies.getByUserId(uid);
         if (owner) unregisterTrade(token, owner, feed === 'default' ? undefined : (feed as FeedSource), openQtyExchange.get(key));
         openQty.delete(key);
@@ -108,8 +119,9 @@ async function onFill(userId: string, raw: any) {
     }
     const qtyKey = `${userId}|${feed ?? 'default'}|${trade.token}`;
     const fillQty = Number.isFinite(Number(trade.quantity)) && Number(trade.quantity) > 0 ? Number(trade.quantity) : 0;
-    // First fill for this user: the snapshot already counts this fill (see seedOpenQty), so it is not applied again.
-    const justSeeded = !seededUsers.has(userId) && (await seedOpenQty(userId));
+    // First fill for this user: the snapshot normally already counts this fill (see seedOpenQty), so it is not applied
+    // again - unless the snapshot has no entry for the fill's key (booked under another key), then it is applied.
+    const justSeeded = !seededUsers.has(userId) && (await seedOpenQty(userId)) && (trade.action === 'Sell' || openQty.has(qtyKey));
     if (trade.action === 'Buy' && trade.token) {
         if (!justSeeded) openQty.set(qtyKey, (openQty.get(qtyKey) ?? 0) + fillQty);
         openQtyExchange.set(qtyKey, exchange);
