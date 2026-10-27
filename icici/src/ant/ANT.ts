@@ -1,3 +1,4 @@
+import { markNotPlaced } from '../util/notPlaced';
 import { createHash } from 'crypto';
 import Log from '../util/Log';
 import fs from 'fs';
@@ -26,7 +27,7 @@ export type AntProduct = 'INTRADAY' | 'LONGTERM';
 function orderTypeFor(price: number | undefined): 'LIMIT' | 'MARKET' {
     if (price === undefined) return 'MARKET';
     // Nothing was sent: flagged so the exit re-price chain retries instead of treating the outcome as unknown.
-    if (!Number.isFinite(price) || price <= 0) throw Object.assign(new Error(`ANT order refused: invalid limit price ${price}`), { orderNotPlaced: true });
+    if (!Number.isFinite(price) || price <= 0) throw markNotPlaced(new Error(`ANT order refused: invalid limit price ${price}`));
     return 'LIMIT';
 }
 

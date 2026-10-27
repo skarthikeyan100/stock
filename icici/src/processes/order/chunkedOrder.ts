@@ -180,6 +180,12 @@ export async function squareOffLimitChunked(
             ), { placedQuantity: placedQty, orderIds: orderIds.slice(), partial: placedQty > 0 });
         }
     }
-    // placedQuantity can be below the request: Kite's never-short guard clamps a sell to what is really sellable.
+    // Below the request means a never-short guard clamped a sell to what is really sellable: the caller believes the full quantity is
+    // resting and would wait for fills that cannot happen, so this is surfaced as a failure (manual review), not returned as success.
+    if (placedQty < quantity) {
+        throw Object.assign(new Error(
+            `squareOffLimitChunked: only ${placedQty}/${quantity} placed (a never-short guard clamped a sell) - ${quantity - placedQty} qty NOT resting. Manual review required.`
+        ), { placedQuantity: placedQty, orderIds: orderIds.slice(), partial: placedQty > 0 });
+    }
     return { orderIds, placedQuantity: placedQty };
 }

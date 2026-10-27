@@ -1180,7 +1180,7 @@ export default class Prism {
         if (!reply || (reply.stat !== undefined && reply.stat !== 'Ok') || !reply.norenordno) {
             // The broker ANSWERED with a rejection: definitively not placed (safe to retry). A missing reply is ambiguous and is not tagged.
             const answered = !!reply && reply.stat !== undefined && reply.stat !== 'Ok';
-            throw Object.assign(new Error(`Prism order for ${order?.tsym} was not accepted: ${reply?.emsg ?? JSON.stringify(reply) ?? 'no reply'}`), answered ? { notPlaced: true } : {});
+            throw Object.assign(new Error(`Prism order for ${order?.tsym} was not accepted: ${reply?.emsg ?? JSON.stringify(reply) ?? 'no reply'}`), answered ? { notPlaced: true, orderNotPlaced: true } : {});
         }
     }
 

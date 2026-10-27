@@ -235,14 +235,18 @@ function requestIsLoopback(req: express.Request): boolean {
 // user is rejected on their next request instead of keeping access until the cookie expires.
 const USER_CACHE_TTL_MS = 15_000;
 const userCache = new Map<string, { at: number; user: Awaited<ReturnType<typeof getUser>> }>();
+// Bumped on every invalidation: a read that was in flight across an invalidation holds a document from before it and must not be cached.
+let userCacheEpoch = 0;
 async function getActiveUser(email: string) {
     const hit = userCache.get(email);
     if (hit && Date.now() - hit.at < USER_CACHE_TTL_MS) return hit.user;
+    const epoch = userCacheEpoch;
     const user = await getUser(email);
-    userCache.set(email, { at: Date.now(), user });
+    if (epoch === userCacheEpoch) userCache.set(email, { at: Date.now(), user });
     return user;
 }
 function invalidateUserCache(email?: string): void {
+    userCacheEpoch++;
     if (email) userCache.delete(email); else userCache.clear();
 }
 

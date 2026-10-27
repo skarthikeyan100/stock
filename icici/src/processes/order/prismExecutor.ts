@@ -1,3 +1,4 @@
+import { markNotPlaced } from '../../util/notPlaced';
 import Log from '../../util/Log';
 import Prism from '../../prism';
 import indexMap from '../../nse_index';
@@ -178,7 +179,9 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
                     filledQuantity: Number(filledQuantity), averagePrice: fillPrice, partial: true,
                 });
             }
-            throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) ${status} - not filled`), { notPlaced: true });
+            const refusal = new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) ${status} - not filled`);
+            // Definite only when nothing filled (a partial fill with an unreadable price must not read as "not placed").
+            throw Number(filledQuantity ?? 0) === 0 ? markNotPlaced(refusal) : refusal;
         }
         if (attempt < BUY_FILL_POLL_ATTEMPTS) await sleep(BUY_FILL_POLL_DELAY_MS);
     }

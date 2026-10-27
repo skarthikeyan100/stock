@@ -1,3 +1,4 @@
+import { markNotPlaced } from '../util/notPlaced';
 import { KiteConnect } from 'kiteconnect';
 import Log from '../util/Log';
 import fs from 'fs';
@@ -365,7 +366,7 @@ class Kite {
                     );
                 }
                 // Nothing filled: a definite refusal, so a strategy may safely re-arm ([NOT_PLACED] in the order process).
-                throw Object.assign(new Error(`Kite order ${orderId} ${latest.status}`), { notPlaced: true });
+                throw markNotPlaced(new Error(`Kite order ${orderId} ${latest.status}`));
             }
 
             // Skip the drift check on the very first attempt: the resting

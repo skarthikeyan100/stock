@@ -92,6 +92,10 @@ function spawnChild(name: string, scriptRelPath: string, stdio: ('pipe' | 'inher
     return child;
 }
 
+function isAlive(child: ChildProcessWithoutNullStreams | undefined): boolean {
+    return !!child && child.exitCode === null && child.signalCode === null;
+}
+
 // Stops a child and resolves once it has really exited (SIGKILL after 5s), so a replacement is never spawned while the
 // old process still holds its socket/port.
 function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
@@ -106,7 +110,7 @@ function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
 }
 
 // Backoff for crash respawns: 1s, 2s, 4s ... capped at 30s; reset once a process has stayed up for a minute.
-function makeRespawner(name: string, restart: () => Promise<void>, current: () => ChildProcessWithoutNullStreams | undefined): () => void {
+function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) => Promise<void>): () => void {
     let failures = 0;
     let lastStart = Date.now();
     let pending = false;
@@ -120,14 +124,11 @@ function makeRespawner(name: string, restart: () => Promise<void>, current: () =
         setTimeout(async () => {
             pending = false;
             if (shuttingDown) return;
-            // A hot restart may have replaced the crashed child while this timer waited: restarting again would stop the healthy one.
-            const live = current();
-            if (live && live.exitCode === null && live.signalCode === null) {
-                log(name, 'respawn skipped - a live replacement is already running');
-                return;
-            }
             lastStart = Date.now();
-            try { await restart(); } catch (e) { log(name, 'respawn failed:', e); }
+            // onlyIfDead: the check runs INSIDE the serialised restart, right before stopping the old child. A hot restart may have
+            // replaced the crashed child while this timer waited or while this restart was queued behind it; stopping then would kill the
+            // healthy replacement.
+            try { await restart({ onlyIfDead: true }); } catch (e) { log(name, 'respawn failed:', e); }
         }, delay);
     };
 }
@@ -173,8 +174,9 @@ async function main() {
         if (frontend) { data.stdout.pipe(frontend.stdin, { end: false }); frontend.stdout.pipe(data.stdin, { end: false }); }
         if (strategies) { data.stdout.pipe(strategies.stdin, { end: false }); strategies.stdout.pipe(data.stdin, { end: false }); }
     };
-    const restartData = () => serial('data', async () => {
+    const restartData = (opts?: { onlyIfDead?: boolean }) => serial('data', async () => {
         const old = data;
+        if (opts?.onlyIfDead && isAlive(old)) { log('data', 'respawn skipped - a live replacement is already running'); return; }
         for (const other of [order, frontend, strategies]) {
             if (!other) continue;
             old.stdout.unpipe(other.stdin);
@@ -191,7 +193,7 @@ async function main() {
             }, delayMs);
         }
     });
-    const respawnData = makeRespawner('data', restartData, () => data);
+    const respawnData = makeRespawner('data', restartData);
 
     // --- order: the Unix-socket IPC server (strategies/frontend place orders through it) is the main reason it
     // exists, but its stdin/stdout are also wired into the tick-feed pipe like strategies/frontend, solely so
@@ -201,42 +203,45 @@ async function main() {
         data.stdout.pipe(order.stdin, { end: false });
         order.stdout.pipe(data.stdin, { end: false });
     };
-    const restartOrder = () => serial('order', async () => {
+    const restartOrder = (opts?: { onlyIfDead?: boolean }) => serial('order', async () => {
         const old = order;
+        if (opts?.onlyIfDead && isAlive(old)) { log('order', 'respawn skipped - a live replacement is already running'); return; }
         data.stdout.unpipe(old.stdin);
         old.stdout.unpipe(data.stdin);
         await stopChild(old);
         startOrder();
     });
-    const respawnOrder = makeRespawner('order', restartOrder, () => order);
+    const respawnOrder = makeRespawner('order', restartOrder);
 
     const startFrontend = () => {
         frontend = spawnChild('frontend', 'server.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV, respawnFrontend);
         data.stdout.pipe(frontend.stdin, { end: false });
         frontend.stdout.pipe(data.stdin, { end: false });
     };
-    const restartFrontend = () => serial('frontend', async () => {
+    const restartFrontend = (opts?: { onlyIfDead?: boolean }) => serial('frontend', async () => {
         const old = frontend;
+        if (opts?.onlyIfDead && isAlive(old)) { log('frontend', 'respawn skipped - a live replacement is already running'); return; }
         data.stdout.unpipe(old.stdin);
         old.stdout.unpipe(data.stdin);
         await stopChild(old);
         startFrontend();
     });
-    const respawnFrontend = makeRespawner('frontend', restartFrontend, () => frontend);
+    const respawnFrontend = makeRespawner('frontend', restartFrontend);
 
     const startStrategies = () => {
         strategies = spawnChild('strategies', 'processes/strategiesProcess.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV, respawnStrategies);
         data.stdout.pipe(strategies.stdin, { end: false });
         strategies.stdout.pipe(data.stdin, { end: false });
     };
-    const restartStrategies = () => serial('strategies', async () => {
+    const restartStrategies = (opts?: { onlyIfDead?: boolean }) => serial('strategies', async () => {
         const old = strategies;
+        if (opts?.onlyIfDead && isAlive(old)) { log('strategies', 'respawn skipped - a live replacement is already running'); return; }
         data.stdout.unpipe(old.stdin);
         old.stdout.unpipe(data.stdin);
         await stopChild(old);
         startStrategies();
     });
-    const respawnStrategies = makeRespawner('strategies', restartStrategies, () => strategies);
+    const respawnStrategies = makeRespawner('strategies', restartStrategies);
 
     log('boot', 'Starting data...');
     startData();
