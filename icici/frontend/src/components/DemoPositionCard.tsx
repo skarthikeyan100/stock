@@ -17,7 +17,7 @@ export default function DemoPositionCard({ trade, closed }: { trade: Trade; clos
   const pnlColor = pnl >= 0 ? 'text-success' : 'text-danger';
   const rightLabel = trade.right === 'call' || trade.right === 'CE' ? 'CE' : 'PE';
 
-  const hasTargetSet = !!trade.targetPrice || !!trade.stopLossPrice;
+  const hasTargetSet = !!trade.targetPrice && !!trade.stopLossPrice; // both sides, as PositionCard: a single side still shows the inputs
 
   const handleSetTargetSL = () => {
     const tp = targetPoints ? parseFloat(targetPoints) : 0;

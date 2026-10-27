@@ -15,7 +15,8 @@ import { useEventSource } from '../hooks/useEventSource';
 // instrument token can't be subscribed on it. See AntContractMaster.ts's
 // "must never be stored as trade.token" warning.
 
-const maxLoss = 15000;
+export const DEMO_MAX_LOSS = 15000;
+const maxLoss = DEMO_MAX_LOSS;
 const lotLimit = 10;
 const NIFTY_LOT_SIZE = 65;
 
@@ -228,9 +229,11 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
 
   const setTargetStopLoss = useCallback(
     async (token: string, targetPoints: number, stopLossPoints: number): Promise<boolean> => {
+      // One row only (the first on this token), matching squareOff: rows can share a contract and each is its own position.
+      let applied = false;
       applyTrades(
         tradesRef.current.map((t) =>
-          t.token === token
+          t.token === token && !applied && (applied = true)
             ? {
                 ...t,
                 targetPrice: targetPoints > 0 ? t.price + targetPoints : t.targetPrice,

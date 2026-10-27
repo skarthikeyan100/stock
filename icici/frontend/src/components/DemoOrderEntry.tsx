@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
 import { InputGroup, Form, Button, Spinner, Alert, ListGroup } from 'react-bootstrap';
 import { useTrading } from '../context/TradingContext';
+import { DEMO_MAX_LOSS } from '../context/DemoTradingContext';
 import DemoHelpTip from './DemoHelpTip';
 import { apiFetch } from '../utils/api';
 
@@ -86,11 +87,12 @@ export default function DemoOrderEntry() {
   const handleContractBuy = async (e: FormEvent) => {
     e.preventDefault();
     if (!selected) return;
-    await placeContractOrder(
+    const placed = await placeContractOrder(
       `${selected.token}|${selected.tradingSymbol}|${selected.optionType}`,
       targetPoints ? Number(targetPoints) : undefined,
       stopLossPoints ? Number(stopLossPoints) : undefined
     );
+    if (!placed) return; // keep the selection so the user can retry
     setInput('');
     setSelected(null);
   };
@@ -99,7 +101,7 @@ export default function DemoOrderEntry() {
     await placeOrder(right);
   };
 
-  const lossExceeded = totalPnL <= -15000;
+  const lossExceeded = totalPnL <= -DEMO_MAX_LOSS;
 
   return (
     <div>
@@ -132,7 +134,7 @@ export default function DemoOrderEntry() {
           style={{ width: 'auto', float: 'none', padding: '0 6px', fontSize: '1rem', marginBottom: 8 }}
         >
           Search &amp; Buy
-          <DemoHelpTip text="Type at least 4 characters to search NIFTY option contracts, pick one from the list, optionally set target/stop-loss points, then click Buy. Like Flash Trade, the position fills once a live price is received." />
+          <DemoHelpTip text="Type at least 2 characters to search NIFTY option contracts, pick one from the list, optionally set target/stop-loss points, then click Buy. Like Flash Trade, the position fills once a live price is received." />
         </legend>
         <div ref={dropdownRef} style={{ position: 'relative' }}>
           <form onSubmit={handleContractBuy}>

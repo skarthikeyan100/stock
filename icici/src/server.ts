@@ -246,35 +246,42 @@ function invalidateUserCache(email?: string): void {
     if (email) userCache.delete(email); else userCache.clear();
 }
 
+// The one session check behind requireAuth / requireAdmin / requireSelfOrAdmin: a valid session cookie (not expired or revoked) for a
+// user that still exists and is enabled. Returns the user, or the status and message to answer with.
+async function authenticate(req: express.Request): Promise<{ ok: true; email: string; user: NonNullable<Awaited<ReturnType<typeof getUser>>> } | { ok: false; status: number; error: string }> {
+    const email = resolveUser(req);
+    if (!email) return { ok: false, status: 401, error: 'Not logged in' };
+    const user = await getActiveUser(email);
+    if (!user || sessionRevoked(req, user)) return { ok: false, status: 401, error: 'Unknown user' };
+    if (user.enabled === false) return { ok: false, status: 403, error: 'Account disabled' };
+    return { ok: true, email, user };
+}
+
 async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
     if (requestIsLoopback(req)) { next(); return; }
-    const email = resolveUser(req);
-    if (!email) { res.status(401).json({ error: 'Not logged in' }); return; }
-    const user = await getActiveUser(email);
-    if (!user || sessionRevoked(req, user)) { res.status(401).json({ error: 'Unknown user' }); return; }
-    if (user.enabled === false) { res.status(403).json({ error: 'Account disabled' }); return; }
+    const auth = await authenticate(req);
+    if ('error' in auth) { res.status(auth.status).json({ error: auth.error }); return; }
     next();
 }
 
 async function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
     if (requestIsLoopback(req)) { next(); return; }
-    const email = resolveUser(req);
-    if (!email) { res.status(401).json({ error: 'Not logged in' }); return; }
-    const user = await getActiveUser(email);
-    if (!user || user.role !== 'admin' || user.enabled === false || sessionRevoked(req, user)) { res.status(403).json({ error: 'Forbidden' }); return; }
+    const auth = await authenticate(req);
+    if ('error' in auth) {
+        if (auth.error === 'Not logged in') res.status(401).json({ error: auth.error }); else res.status(403).json({ error: 'Forbidden' });
+        return;
+    }
+    if (auth.user.role !== 'admin') { res.status(403).json({ error: 'Forbidden' }); return; }
     next();
 }
 
 function requireSelfOrAdmin(paramName = 'email') {
     return async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
         if (requestIsLoopback(req)) { next(); return; }
-        const email = resolveUser(req);
-        if (!email) { res.status(401).json({ error: 'Not logged in' }); return; }
-        const caller = await getActiveUser(email);
-        if (!caller || sessionRevoked(req, caller)) { res.status(401).json({ error: 'Unknown user' }); return; }
-        if (caller.enabled === false) { res.status(403).json({ error: 'Account disabled' }); return; }
-        if (email === req.params[paramName]) { next(); return; }
-        if (caller.role === 'admin') { next(); return; }
+        const auth = await authenticate(req);
+        if ('error' in auth) { res.status(auth.status).json({ error: auth.error }); return; }
+        if (auth.email === req.params[paramName]) { next(); return; }
+        if (auth.user.role === 'admin') { next(); return; }
         res.status(403).json({ error: 'Forbidden' });
     };
 }
@@ -1313,10 +1320,7 @@ getOrPost('/breeze/connect', requireAdmin, async function (req, res) {
 const breezeStreamClients = new Set<express.Response>();
 app.get('/breeze/stream', requireAdmin, function (req, res) {
     req.on('close', () => breezeStreamClients.delete(res));
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
+    openSse(res);
     breezeStreamClients.add(res);
 });
 myEmitter.on('breeze-quote', (tick: any) => {
@@ -1400,10 +1404,7 @@ getOrPost('/ant/connect', requireAdmin, async function (req, res) {
 const antStreamClients = new Set<express.Response>();
 app.get('/ant/stream', requireAdmin, function (req, res) {
     req.on('close', () => antStreamClients.delete(res));
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
+    openSse(res);
     antStreamClients.add(res);
 });
 
@@ -1669,10 +1670,15 @@ const positionStreamClients = new Map<express.Response, string>(); // res -> use
 // live update - which may not arrive until the next session.
 let lastNiftyQuote: any = null;
 
-function openMarketStream(req: express.Request, res: express.Response, clients: Set<express.Response>, replay?: () => string | null): void {
+// SSE preamble shared by every stream route: headers, flush, reconnect hint.
+function openSse(res: express.Response): void {
     res.set({ 'Cache-Control': 'no-cache', 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
     res.flushHeaders();
     res.write('retry: 10000\n\n');
+}
+
+function openMarketStream(req: express.Request, res: express.Response, clients: Set<express.Response>, replay?: () => string | null): void {
+    openSse(res);
     const first = replay?.();
     if (first) res.write(first);
     clients.add(res);
@@ -1847,9 +1853,7 @@ async function pushPositionSnapshot(res: express.Response, user: string, sharedS
 
 app.get('/positionstream', requireAuth, async function (req, res) {
     const user = resolveUser(req);
-    res.set({ 'Cache-Control': 'no-cache', 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
-    res.flushHeaders();
-    res.write('retry: 10000\n\n');
+    openSse(res);
     // Registered before the first await: a client that disconnects during the snapshot fetch must still be removed.
     req.on('close', () => positionStreamClients.delete(res));
     positionStreamClients.set(res, user);
@@ -1908,9 +1912,7 @@ app.patch('/users/:email/notifications/:id/read', requireSelfOrAdmin('email'), a
 
 app.get('/notificationstream', requireAuth, async function (req, res) {
     const user = resolveUser(req);
-    res.set({ 'Cache-Control': 'no-cache', 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
-    res.flushHeaders();
-    res.write('retry: 10000\n\n');
+    openSse(res);
     notificationStreamClients.set(res, user);
     req.on('close', () => notificationStreamClients.delete(res));
 });

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Container, Alert, Tab, Tabs, Badge, Button } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
 import { useTrading } from '../context/TradingContext';
+import { DEMO_MAX_LOSS } from '../context/DemoTradingContext';
 import DemoOrderEntry from '../components/DemoOrderEntry';
 import NiftyTicker from '../components/NiftyTicker';
 import DemoPositionCard from '../components/DemoPositionCard';
@@ -13,7 +14,7 @@ import DemoPositionCard from '../components/DemoPositionCard';
 export default function DemoTradingPage() {
   const { trades, closedTrades, openPnL, totalPnL, usedAmount } = useTrading();
   const navigate = useNavigate();
-  const maxLoss = 15000;
+  const maxLoss = DEMO_MAX_LOSS;
   const investmentAmount = 100000;
   const availableAmount = investmentAmount - usedAmount;
   const [activeTab, setActiveTab] = useState('active');
@@ -92,8 +93,8 @@ export default function DemoTradingPage() {
               }
             >
               {trades.length > 0 ? (
-                trades.map((trade) => (
-                  <DemoPositionCard key={trade.tsym} trade={trade} />
+                trades.map((trade, i) => (
+                  <DemoPositionCard key={`${trade.token}-${i}`} trade={trade} />
                 ))
               ) : (
                 <div className="text-center text-muted py-4">
