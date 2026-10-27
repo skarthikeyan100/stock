@@ -54,6 +54,7 @@ class Contract {
     lastOrderedPrice: number = 0;
     lastOrderedQuantity: number = 0;
     strategy: Strategy = {} as Strategy;
+    averageCount = 0; // average-in buys placed so far (capped by maxAverages)
 
     constructor(strategy, contract) {
         this.contract = contract;
@@ -79,6 +80,7 @@ class Contract {
         this.buyAt = 0;
         this.sellAt = 0;
         this.orderPlaced =false;
+        this.averageCount = 0;
     }
 
     canHandleOptionQuote = (token) => {
@@ -100,16 +102,22 @@ class Contract {
     
             //Handle negative direction
             
+                // Averaging buys the configured order quantity (was a hard-coded 600) and is capped: with no cap a falling contract
+                // was bought again every `averageThreshold` points without limit.
+                const maxAverages = (this.strategy as SentimentStrategy).getConfig().maxAverages ?? 3;
                 if (this.token && this.token == quote.token
                     && !this.orderPlaced
                     && this.lastOrderedPrice > 0
+                    && this.averageCount < maxAverages
                     && (quote.ltp - this.lastOrderedPrice) < -averageThreshold) {
                         this.orderPlaced = true
-                        this.strategy.buyContract(this.contract, 600, quote.ltp)
+                        this.averageCount++
+                        this.strategy.buyContract(this.contract, orderQuantity, quote.ltp)
                 }
             
             //Handle positive direction
-            const canSell = (quote.ltp - this.price) >= targetPrice
+            // Only against a real position: a sell sized from qty 0 / price 0 (no Buy fill recorded yet) must never fire.
+            const canSell = this.qty > 0 && this.price > 0 && (quote.ltp - this.price) >= targetPrice
     
             if (this.token && this.token == quote.token &&
                 canSell == true && !this.orderPlaced) {
@@ -159,6 +167,8 @@ export default class SentimentStrategy extends Strategy {
     name: string;
     ordered = false
     iterationCount = 0;
+    // Buy fills that arrived before buyIndex's response created the Contract (the fill can beat the response); replayed once it exists.
+    private earlyFills: Trade[] = [];
 
 
     // Public so Contract reads this instance's own config block.
@@ -188,6 +198,7 @@ export default class SentimentStrategy extends Strategy {
         this.contract?.clear?.();
         this.ordered = false;
         this.iterationCount = 0;
+        this.earlyFills = [];
     }
 
     canHandleOptionQuote = (quote: OptionQuote): boolean => {
@@ -216,16 +227,27 @@ export default class SentimentStrategy extends Strategy {
         const enabled = this.instanceConfig().enabled;
         const loopCount = this.instanceConfig().loopCount;
         if (enabled) {
-            if (this.iterationCount <= loopCount && this.isTimeInRange() && !this.ordered && this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) {
+            if (this.iterationCount < loopCount && this.isTimeInRange() && !this.ordered && this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) {
                 this.ordered = true;
                 Log.log('Initiate buy index for NIFTY at ', quote.ltp, ' with initial quantity: ', orderQuantity, ' iterationCount: ', this.iterationCount);
-                const response = await OrderClient.getInstance().buyIndex(this.userId, { niftyLtp: quote.ltp - 2, right: sentiment, quantity: orderQuantity });
+                let response;
+                try {
+                    response = await OrderClient.getInstance().buyIndex(this.userId, { niftyLtp: quote.ltp - 2, right: sentiment, quantity: orderQuantity });
+                } catch (e) {
+                    // The buy did not happen: re-arm, or `ordered` stayed true with no contract and the strategy was dead until reset.
+                    Log.log('[SentimentStrategy] buyIndex failed:', e);
+                    this.ordered = false;
+                    return;
+                }
                 this.iterationCount++;
                 this.recordTriggerTime();
                 if (response) {
                     Log.log('Response: ', response)
                     this.contract = new Contract(this, response.tsym);
                     this.contract.update(response.token);
+                    const early = this.earlyFills;
+                    this.earlyFills = [];
+                    for (const t of early) await this.updateTrade(t);
                 }
             }
         }
@@ -235,7 +257,12 @@ export default class SentimentStrategy extends Strategy {
     updateTrade = async (trade: Trade) => {
         // Log.log('Sentiment Strategy: Update Trade action: ', trade.action, ' ', trade.right, ' ', trade.tsym, ' ', trade.token)
 
-        if (this.contract?.updateTrade) {
+        if (!this.contract?.updateTrade) {
+            // No Contract yet: the entry's fill beat buyIndex's response. Keep it (bounded) and replay it once the Contract exists.
+            if (trade.action === 'Buy' && this.ordered && this.earlyFills.length < 50) this.earlyFills.push(trade);
+            return;
+        }
+        {
             const tradeClosed = await this.contract.updateTrade(trade)
             if (tradeClosed) {
                 this.ordered = false;

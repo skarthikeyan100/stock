@@ -117,6 +117,15 @@ export function expandRuleBasedConfig(config: StrategyInstanceConfig): StrategyI
 export function createStrategiesFromConfig(configs: StrategyInstanceConfig[]): Strategy[] {
     return configs
         .flatMap(expandRuleBasedConfig)   // Expand RuleBasedStrategy → multiple configs
-        .map(createStrategy)               // Instantiate each config → Strategy
+        .map((config) => {                  // Instantiate each config → Strategy
+            // One bad constructor must not abort the whole map: strategiesProcess would start with zero strategies, and every
+            // other (live-position-managing) strategy would be gone with it.
+            try {
+                return createStrategy(config);
+            } catch (e) {
+                Log.log(`[StrategyFactory] ALERT: failed to create ${config.type}${config.userId ? ':' + config.userId : ''} - skipping it, the others are unaffected:`, e);
+                return null;
+            }
+        })
         .filter((s): s is Strategy => s !== null);
 }

@@ -18,6 +18,7 @@ class RateOfChangeContract {
     buyOrderPlaced: boolean = false;
     sellOrderPlaced: boolean = false;
     ltp: number = 0;
+    buyFailedAt = 0; // when buyContract returned null; the sentinel is released after a grace period if no fill shows up
 
     clear() {
         this.contract = '';
@@ -29,6 +30,7 @@ class RateOfChangeContract {
         this.buyOrderPlaced = false;
         this.sellOrderPlaced = false;
         this.ltp = 0;
+        this.buyFailedAt = 0;
     }
 
     async processOptionQuote(quote: OptionQuote, strategy: RateOfChangeStrategy): Promise<boolean> {
@@ -67,6 +69,14 @@ class RateOfChangeContract {
 
         const config = strategy.getConfig();
 
+        // A chunked entry books one Buy per chunk: fold chunks that land shortly after the first into the average, so the timeout sell is
+        // sized for the whole position, not only the first chunk.
+        if (!this.buyOrderPlaced && trade.action === 'Buy' && this.quantity > 0 && Date.now() - this.entryTime < 30_000) {
+            const total = this.quantity * this.price + trade.quantity * trade.price;
+            this.quantity += trade.quantity;
+            this.price = total / this.quantity;
+            return false;
+        }
         if (this.buyOrderPlaced && trade.action === 'Buy') {
             this.buyOrderPlaced = false;
             this.price = trade.price;
@@ -131,7 +141,16 @@ export default class RateOfChangeStrategy extends Strategy {
 
         if (!this.enabled || !this.isTimeInRange()) return;
 
-        if (this.contract !== null) return;
+        if (this.contract !== null) {
+            // A failed entry (buyContract returned null) used to leave the sentinel set for good, so the strategy never traded again.
+            // A late fill is still accepted during the grace period; after it the sentinel is released.
+            if (this.contract.buyOrderPlaced && this.contract.buyFailedAt > 0 && Date.now() - this.contract.buyFailedAt > 60_000) {
+                Log.log('[RoC] Entry buy failed and no fill appeared - releasing the entry sentinel');
+                this.contract.clear();
+                this.contract = null;
+            }
+            return;
+        }
 
         if (!this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) return;
 
@@ -197,6 +216,11 @@ export default class RateOfChangeStrategy extends Strategy {
 
         const token = await orderClient.getToken(this.userId, contract);
         Log.log('Token for contract ', contract, ': ', token)
+        if (!token) {
+            Log.log('[RoC] No token for contract', contract, '- not entering');
+            this.contract = null;
+            return;
+        }
 
         Log.log(`[RoC] TRIGGERED: ${right} at NIFTY=${quote.ltp} PointsChange=${round(pointsChange)}`);
         Log.log(`[RoC] Buying ${contract} qty=${config.quantity}`);
@@ -207,7 +231,8 @@ export default class RateOfChangeStrategy extends Strategy {
         this.contract.buyOrderPlaced = true;
         this.recordTriggerTime();
 
-        await this.buyContract(contract, config.quantity);
+        const bought = await this.buyContract(contract, config.quantity);
+        if (!bought && this.contract) this.contract.buyFailedAt = Date.now();
     }
 
     private calculatePointsChange(numberOfDatapoints: number): number {

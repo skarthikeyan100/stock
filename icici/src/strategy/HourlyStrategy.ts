@@ -102,6 +102,12 @@ interface BrokerPosition {
     // notification (onOrderCancelled) isn't mistaken for an unexpected one
     // and re-placed on top of the close that's already happening.
     squaringOff?: boolean;
+    // In-memory only. True while the resting exit sell is still being placed (chunked placement takes seconds). A close that fires in
+    // that window would find no (or only some) resting chunks to cancel, market-sell the whole remainder, and the chunks placed after
+    // would sell it a second time - so it is deferred (closeRequested) until placement finishes.
+    placingExit?: boolean;
+    closeRequested?: 'invalidation' | 'eod';
+    lastCloseAttemptAt?: number; // throttle: a persistently failing close must not retry on every tick
     heldTsym: string | null;
     heldToken: string | null;
     entryAvg: number;
@@ -273,8 +279,18 @@ export default class HourlyStrategy extends Strategy {
         Log.log(`[Hourly] Invalidation: NIFTY=${ltp} crossed back through ${level} (${direction}) - closing all broker positions`);
         for (const pos of this.positions.values()) {
             if (pos.phase !== 'selling' || pos.squaringOff) continue;
+            if (pos.placingExit) { pos.closeRequested = 'invalidation'; continue; }
+            if (!this.closeAttemptAllowed(pos)) continue;
             this.invalidateClose(pos).catch((e) => Log.log(`[Hourly] [${pos.broker}] invalidation close failed:`, e));
         }
+    }
+
+    // At most one close attempt per position every 5s (these checks run on every NIFTY tick).
+    private closeAttemptAllowed(pos: BrokerPosition): boolean {
+        const now = Date.now();
+        if (pos.lastCloseAttemptAt !== undefined && now - pos.lastCloseAttemptAt < 5000) return false;
+        pos.lastCloseAttemptAt = now;
+        return true;
     }
 
     // End of day: flatten any live position at cfg.eodCloseTime (default 15:10) instead of carrying it past the close.
@@ -285,6 +301,8 @@ export default class HourlyStrategy extends Strategy {
         if (now.getHours() * 60 + now.getMinutes() < h * 60 + m) return;
         for (const pos of this.positions.values()) {
             if (pos.phase !== 'selling' || pos.squaringOff) continue;
+            if (pos.placingExit) { pos.closeRequested = 'eod'; continue; }
+            if (!this.closeAttemptAllowed(pos)) continue;
             Log.log(`[Hourly] [${pos.broker}] EOD flatten of ${pos.heldTsym}`);
             this.invalidateClose(pos).catch((e) => Log.log(`[Hourly] [${pos.broker}] EOD close failed:`, e));
         }
@@ -427,6 +445,7 @@ export default class HourlyStrategy extends Strategy {
             pos.targetQuantity = quantity;
         }
         pos.phase = 'selling';
+        pos.placingExit = true;
         this.persistState();
 
         try {
@@ -438,6 +457,15 @@ export default class HourlyStrategy extends Strategy {
             Log.log(`[Hourly] [${broker}] Resting limit-sell placement failed - manual review required:`, e);
             pos.phase = 'error';
             this.persistState();
+        } finally {
+            pos.placingExit = false;
+            // A stop/EOD fired while the chunks were still being placed: run it now that every chunk is resting and can be cancelled.
+            const deferred = pos.closeRequested;
+            pos.closeRequested = undefined;
+            if (deferred && pos.phase === 'selling' && !pos.squaringOff) {
+                Log.log(`[Hourly] [${broker}] Running the ${deferred} close that was deferred while the exit was being placed`);
+                this.invalidateClose(pos).catch((e) => Log.log(`[Hourly] [${broker}] deferred ${deferred} close failed:`, e));
+            }
         }
     }
 
@@ -589,7 +617,7 @@ export default class HourlyStrategy extends Strategy {
     private persistState(): void {
         const positions: Partial<Record<BrokerName, BrokerPosition>> = {};
         for (const [broker, pos] of this.positions) {
-            const { squaringOff: _inFlight, ...durable } = pos;
+            const { squaringOff: _inFlight, placingExit: _placing, closeRequested: _deferred, lastCloseAttemptAt: _last, ...durable } = pos;
             positions[broker] = durable as BrokerPosition;
         }
         const doc = { userId: this.userId, positions };
