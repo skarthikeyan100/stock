@@ -61,7 +61,7 @@ import StrategiesClient from './ipc/StrategiesClient';
 import { readJsonLines, writeJsonLine } from './ipc/jsonLines';
 import { cloudflareOnly, isLoopback } from './middleware/cloudflareOnly';
 import { OAuth2Client } from 'google-auth-library';
-import { normalizeBrokerName } from './util/brokerName';
+import { BrokerName, isBrokerName, isUserBroker, normalizeBrokerName } from './util/brokerName';
 
 // `frontend` process (server.ts, unchanged name/entry point - see the plan:
 // "frontend should be server.ts itself, edited in place"). Every route below
@@ -539,7 +539,7 @@ app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (
         if (profitSplitPercent !== undefined && !(finite(profitSplitPercent) && profitSplitPercent >= 0)) return bad('profitSplitPercent must be a number >= 0');
         if (profitSplitPercent !== undefined && profitSplitPercent > 100) return bad('profitSplitPercent must be <= 100');
         if (Object.values({ lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled }).every((v) => v === undefined)) return bad('No settings supplied');
-        if (broker !== undefined && !['ant', 'kite', 'breeze'].includes(normalizeBrokerName(broker))) {
+        if (broker !== undefined && !isUserBroker(broker)) {
             res.status(400).json({ error: `Invalid broker '${broker}' (expected ant, kite or breeze)` });
             return;
         }
@@ -1084,42 +1084,6 @@ app.get('/prism/oauthurl', function (_req, res) {
     res.json({ url });
 });
 
-app.get('/prism/login', async function (req, res) {
-    try {
-        const url = Prism.getInstance().getOAuthURL();
-        Log.log('Redirecting to Shoonya authorization:', url);
-        res.redirect(302, url);
-    } catch (e: any) {
-        Log.log('Shoonya login error:', e);
-        res.status(500).json({ error: 'Failed to initiate Shoonya login' });
-    }
-});
-
-const shoonyaCallback = async function (req: express.Request, res: express.Response) {
-    const code = req.query.code as string;
-    if (!code) {
-        res.status(400).json({ error: 'No authorization code received' });
-        return;
-    }
-    try {
-        authorizationCode = code;
-        Log.log('Authorization code received, exchanging for token');
-        await Prism.getInstance().loginWithGenAcsTok(code);
-        await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
-        Log.log('Shoonya authentication successful.');
-        res.redirect(302, '/');
-    } catch (e: any) {
-        Log.log('Shoonya callback error:', e);
-        res.status(500).json({ error: 'Authentication failed' });
-    }
-};
-
-app.get('/prism/callback', shoonyaCallback);
-// Shoonya's registered OAuth app redirect URI is /shoonya/callback (a broker-side
-// dashboard setting, not something this code controls) - alias it to the same
-// handler rather than requiring the app registration to change.
-app.get('/shoonya/callback', shoonyaCallback);
-
 app.get('/prism/authcode', requireAdmin, function (_req, res) {
     if (!authorizationCode) {
         res.status(404).json({ error: 'No authorization code stored' });
@@ -1145,127 +1109,136 @@ app.get('/prism/token', requireAdmin, async function (req, res) {
     }
 });
 
-app.get('/ant/login', async function (req, res) {
-    try {
-        const ant = ANT.getInstance();
-        const authUrl = ant.getAuthorizationUrl();
-        Log.log('Redirecting to ANT authorization:', authUrl);
-        res.redirect(302, authUrl);
-    } catch (e: any) {
-        Log.log('ANT login error:', e);
-        res.status(500).json({ error: 'Failed to initiate ANT login' });
-    }
-});
-
-app.get('/ant/callback', async function (req, res) {
-    try {
-        const authCode = req.query.authCode as string;
-        const userId = req.query.userId as string;
-        if (!authCode || !userId) {
-            Log.log('Missing authCode or userId in callback');
-            res.status(400).json({ error: 'Missing authCode or userId from Alice Blue' });
-            return;
-        }
-        Log.log('ANT Callback received - exchanging authCode for token');
-        const ant = ANT.getInstance();
-        const result = await ant.exchangeAuthCodeForToken(userId, authCode);
-        // (No ant_session cookie: the broker token lives server-side only; nothing reads a browser copy.)
-        void result;
-        // Tell `data` to (re)connect now that a session exists - same mechanism
-        // /ant/connect uses (see below), needed here since `data` typically
-        // started before this login flow completed and may not be connected yet.
-        writeJsonLine(process.stdout, { cmd: 'reconnect' });
-        // Same problem exists in `order`: its own ANT singleton loaded whatever
-        // (possibly stale/absent) session was on disk when it started, and
-        // AntOrderNotifyStream.connect() only ever ran once at that startup -
-        // so it never picks up today's login without this. reloadSession()
-        // re-reads .ant_session.json and (re)connects the order-notify stream.
-        await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
-        Log.log('ANT Authentication successful. Token stored.');
-        res.redirect(302, '/');
-    } catch (e: any) {
-        Log.log('ANT callback error:', e);
-        res.status(500).json({ error: 'Authentication failed' });
-    }
-});
-
-app.get('/kite/login', async function (req, res) {
-    try {
-        const kite = Kite.getInstance();
-        const loginUrl = kite.getLoginURL();
-        Log.log('Redirecting to Kite login:', loginUrl);
-        res.redirect(302, loginUrl);
-    } catch (e: any) {
-        Log.log('Kite login error:', e);
-        res.status(500).json({ error: 'Failed to initiate Kite login' });
-    }
-});
-
-app.get('/kite/callback', async function (req, res) {
-    try {
-        const requestToken = req.query.request_token as string;
-        if (!requestToken) {
-            Log.log('Missing request_token in Kite callback');
-            res.status(400).json({ error: 'Missing request_token from Kite' });
-            return;
-        }
-        Log.log('Kite Callback received - exchanging request_token for access_token');
-        const kite = Kite.getInstance();
-        const result = await kite.exchangeRequestTokenForSession(requestToken);
-        void result; // broker token stays server-side only - no cookie copy
-        await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
-        Log.log('Kite Authentication successful. Token stored.');
-        res.redirect(302, '/');
-    } catch (e: any) {
-        Log.log('Kite callback error:', e);
-        res.status(500).json({ error: 'Authentication failed' });
-    }
-});
-
-app.get('/breeze/login', async function (req, res) {
-    try {
-        const breeze = Breeze.getInstance();
-        const loginUrl = breeze.getLoginURL();
-        Log.log('Redirecting to Breeze login:', loginUrl);
-        res.redirect(302, loginUrl);
-    } catch (e: any) {
-        Log.log('Breeze login error:', e);
-        res.status(500).json({ error: 'Failed to initiate Breeze login' });
-    }
-});
-
-// ICICI's redirect back to this route can hand the session value back either
-// as a GET query param or as POST form data (unconfirmed which until a live
-// login - see ToDo.md), so this accepts both methods and checks query/body
-// under either of the two param names ICICI's own docs/SDK use.
-async function handleBreezeCallback(req: express.Request, res: express.Response) {
-    try {
-        const apiSession = (req.query.apisession ?? req.query.API_Session ?? req.body?.apisession ?? req.body?.API_Session) as string;
-        if (!apiSession) {
-            // Key names only: the query/body of a login callback can carry secrets and must never reach the log.
-            Log.log('Missing API_Session in Breeze callback', { queryKeys: Object.keys(req.query ?? {}), bodyKeys: Object.keys(req.body ?? {}) });
-            res.status(400).json({ error: 'Missing API_Session from ICICI Breeze' });
-            return;
-        }
-        Log.log('Breeze Callback received - generating session');
-        const breeze = Breeze.getInstance();
-        await breeze.generateSession(apiSession);
-        // Tell `data` to (re)connect its BreezeDataStream now that a session
-        // exists - mirrors /ant/callback's same-purpose signal below. Without
-        // this, a Breeze login completing after `data` already started (the
-        // common case, since `data`'s own initial connect attempt fails with
-        // no session yet) leaves BreezeDataStream stuck until a full restart.
-        writeJsonLine(process.stdout, { cmd: 'reconnect', source: 'breeze' });
-        await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
-        Log.log('Breeze Authentication successful. Session stored.');
-        res.redirect(302, '/');
-    } catch (e: any) {
-        Log.log('Breeze callback error:', e);
-        res.status(500).json({ error: 'Authentication failed' });
-    }
+// --- Broker registry: login redirect, OAuth/session callback, and the debug trades/positions reads, per broker. ---
+// One generic handler pair serves every broker's /<broker>/login and /<broker>/callback route; a broker-specific detail (which
+// query param carries the code, whether `data` must reconnect its stream) is data on its entry, not another handler.
+class CallbackError extends Error {
+    constructor(message: string, readonly status = 400) { super(message); }
 }
-app.get('/breeze/callback', handleBreezeCallback);
-app.post('/breeze/callback', handleBreezeCallback);
+interface BrokerEntry {
+    label: string;
+    loginUrl(): string;
+    // Exchanges what the broker's redirect carried for a stored session. Throws CallbackError (400) when it is missing.
+    exchangeCallback(req: express.Request): Promise<void>;
+    // Sent to `data` once a session exists so it (re)connects its stream; absent when `data` has no stream for this broker.
+    reconnectCmd?: { cmd: 'reconnect'; source?: string };
+    getTrades(): Promise<any[]>;
+    getPositions(): Promise<any[]>;
+}
+
+const BROKERS: Record<BrokerName, BrokerEntry> = {
+    prism: {
+        label: 'Shoonya',
+        loginUrl: () => Prism.getInstance().getOAuthURL(),
+        exchangeCallback: async (req) => {
+            const code = req.query.code as string;
+            if (!code) throw new CallbackError('No authorization code received');
+            authorizationCode = code;
+            Log.log('Authorization code received, exchanging for token');
+            await Prism.getInstance().loginWithGenAcsTok(code);
+        },
+        getTrades: async () => Prism.getInstance().getTradeList(),
+        getPositions: async () => Prism.getInstance().getPositions(),
+    },
+    ant: {
+        label: 'ANT',
+        loginUrl: () => ANT.getInstance().getAuthorizationUrl(),
+        exchangeCallback: async (req) => {
+            const authCode = req.query.authCode as string;
+            const userId = req.query.userId as string;
+            if (!authCode || !userId) throw new CallbackError('Missing authCode or userId from Alice Blue');
+            Log.log('ANT Callback received - exchanging authCode for token');
+            // (No ant_session cookie: the broker token lives server-side only; nothing reads a browser copy.)
+            await ANT.getInstance().exchangeAuthCodeForToken(userId, authCode);
+        },
+        // `data` typically started before this login completed and may not be connected yet.
+        reconnectCmd: { cmd: 'reconnect' },
+        getTrades: () => ANT.getInstance().getTrades(),
+        getPositions: () => ANT.getInstance().getPositions(),
+    },
+    kite: {
+        label: 'Kite',
+        loginUrl: () => Kite.getInstance().getLoginURL(),
+        exchangeCallback: async (req) => {
+            const requestToken = req.query.request_token as string;
+            if (!requestToken) throw new CallbackError('Missing request_token from Kite');
+            Log.log('Kite Callback received - exchanging request_token for access_token');
+            await Kite.getInstance().exchangeRequestTokenForSession(requestToken); // broker token stays server-side only - no cookie copy
+        },
+        getTrades: () => Kite.getInstance().getTrades(),
+        getPositions: () => Kite.getInstance().getPositions(),
+    },
+    breeze: {
+        label: 'Breeze',
+        loginUrl: () => Breeze.getInstance().getLoginURL(),
+        // ICICI's redirect back can hand the session value back either as a GET query param or as POST form data (unconfirmed
+        // which until a live login), so both are accepted, under either of the two param names ICICI's docs/SDK use.
+        exchangeCallback: async (req) => {
+            const apiSession = (req.query.apisession ?? req.query.API_Session ?? req.body?.apisession ?? req.body?.API_Session) as string;
+            if (!apiSession) {
+                // Key names only: the query/body of a login callback can carry secrets and must never reach the log.
+                Log.log('Missing API_Session in Breeze callback', { queryKeys: Object.keys(req.query ?? {}), bodyKeys: Object.keys(req.body ?? {}) });
+                throw new CallbackError('Missing API_Session from ICICI Breeze');
+            }
+            Log.log('Breeze Callback received - generating session');
+            await Breeze.getInstance().generateSession(apiSession);
+        },
+        // Without this a Breeze login completing after `data` already started leaves BreezeDataStream stuck until a restart.
+        reconnectCmd: { cmd: 'reconnect', source: 'breeze' },
+        getTrades: async () => {
+            const toDate = new Date();
+            const fromDate = new Date(toDate);
+            fromDate.setDate(fromDate.getDate() - 7);
+            const result = await Breeze.getInstance().getTradeList({ fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), exchangeCode: 'NFO' });
+            return Array.isArray(result?.Success) ? result.Success : [];
+        },
+        getPositions: async () => {
+            const result = await Breeze.getInstance().getPortfolioPositions();
+            return Array.isArray(result?.Success) ? result.Success : [];
+        },
+    },
+};
+
+const brokerLogin = (name: BrokerName) => async function (_req: express.Request, res: express.Response) {
+    const entry = BROKERS[name];
+    try {
+        const url = entry.loginUrl();
+        Log.log(`Redirecting to ${entry.label} authorization:`, url);
+        res.redirect(302, url);
+    } catch (e: any) {
+        Log.log(`${entry.label} login error:`, e);
+        res.status(500).json({ error: `Failed to initiate ${entry.label} login` });
+    }
+};
+
+const brokerCallback = (name: BrokerName) => async function (req: express.Request, res: express.Response) {
+    const entry = BROKERS[name];
+    try {
+        await entry.exchangeCallback(req);
+        if (entry.reconnectCmd) writeJsonLine(process.stdout, entry.reconnectCmd);
+        // `order` loaded whatever (possibly stale/absent) session was on disk when it started; reloadSession re-reads it (and
+        // reconnects the order-notify stream where there is one).
+        await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
+        Log.log(`${entry.label} Authentication successful.`);
+        res.redirect(302, '/');
+    } catch (e: any) {
+        if (e instanceof CallbackError) {
+            res.status(e.status).json({ error: e.message });
+            return;
+        }
+        Log.log(`${entry.label} callback error:`, e);
+        res.status(500).json({ error: 'Authentication failed' });
+    }
+};
+
+for (const name of Object.keys(BROKERS) as BrokerName[]) {
+    app.get(`/${name}/login`, brokerLogin(name));
+    app.get(`/${name}/callback`, brokerCallback(name));
+}
+app.post('/breeze/callback', brokerCallback('breeze'));
+// Shoonya's registered OAuth app redirect URI is /shoonya/callback (a broker-side dashboard setting, not something this code
+// controls) - alias it to the same handler rather than requiring the app registration to change.
+app.get('/shoonya/callback', brokerCallback('prism'));
 
 // Manual test-order route for the Breeze integration (admin-only, mirrors the
 // admin/debug nature of the other manual broker routes above) - resolves the
@@ -1347,31 +1320,12 @@ myEmitter.on('breeze-quote', (tick: any) => {
 // - that pulls in bookkeeping.ts/exitMonitor.ts, which are `order`-process
 // state this `frontend` process has no business touching (see this file's
 // own header comment on the IPC process split).
-async function getBrokerTrades(broker: string): Promise<any[]> {
-    if (normalizeBrokerName(broker) === 'kite') return Kite.getInstance().getTrades();
-    broker = normalizeBrokerName(broker);
-    if (broker === 'ant') return ANT.getInstance().getTrades();
-    if (broker === 'prism') return Prism.getInstance().getTradeList();
-    if (broker === 'breeze') {
-        const toDate = new Date();
-        const fromDate = new Date(toDate);
-        fromDate.setDate(fromDate.getDate() - 7);
-        const result = await Breeze.getInstance().getTradeList({ fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), exchangeCode: 'NFO' });
-        return Array.isArray(result?.Success) ? result.Success : [];
-    }
-    throw new Error(`Unknown broker '${broker}' - expected kite, ant, prism, or breeze`);
+function brokerEntry(broker: string): BrokerEntry {
+    if (!isBrokerName(broker)) throw new Error(`Unknown broker '${broker}' - expected kite, ant, prism, or breeze`);
+    return BROKERS[normalizeBrokerName(broker) as BrokerName];
 }
-async function getBrokerPositions(broker: string): Promise<any[]> {
-    if (normalizeBrokerName(broker) === 'kite') return Kite.getInstance().getPositions();
-    broker = normalizeBrokerName(broker);
-    if (broker === 'ant') return ANT.getInstance().getPositions();
-    if (broker === 'prism') return Prism.getInstance().getPositions();
-    if (broker === 'breeze') {
-        const result = await Breeze.getInstance().getPortfolioPositions();
-        return Array.isArray(result?.Success) ? result.Success : [];
-    }
-    throw new Error(`Unknown broker '${broker}' - expected kite, ant, prism, or breeze`);
-}
+const getBrokerTrades = (broker: string): Promise<any[]> => brokerEntry(broker).getTrades();
+const getBrokerPositions = (broker: string): Promise<any[]> => brokerEntry(broker).getPositions();
 
 app.get('/broker/:broker/trades', requireAdmin, async function (req, res) {
     try {

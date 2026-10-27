@@ -18,6 +18,12 @@ export function normalizeBrokerName(name: unknown): string {
     return ALIASES[lower] ?? lower;
 }
 
+export const ALL_BROKERS: readonly BrokerName[] = ['ant', 'kite', 'breeze', 'prism'];
+// Brokers a user account can be configured to trade through (prism is only ever addressed explicitly, by strategies).
+export const USER_BROKERS: readonly BrokerName[] = ['ant', 'kite', 'breeze'];
+export const isBrokerName = (name: unknown): name is BrokerName => ALL_BROKERS.includes(normalizeBrokerName(name) as BrokerName);
+export const isUserBroker = (name: unknown): name is BrokerName => USER_BROKERS.includes(normalizeBrokerName(name) as BrokerName);
+
 export function normalizeBrokerList(list: unknown): string[] {
     return Array.isArray(list) ? list.map(normalizeBrokerName).filter(Boolean) : [];
 }
