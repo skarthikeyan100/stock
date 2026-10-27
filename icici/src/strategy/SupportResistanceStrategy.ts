@@ -1,3 +1,4 @@
+import { isPastTime } from '../util/marketHours';
 import Log from '../util/Log';
 import { Strategy } from './strategy';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
@@ -131,9 +132,7 @@ export default class SupportResistanceStrategy extends Strategy {
     // Same end-of-day close as ContinuousStrategy: cfg.eodCloseTime ('HH:mm', default 15:10).
     private isPastEodCloseTime(): boolean {
         if (MOCK_BROKER) return false;
-        const [h, m] = String(this.cfg().eodCloseTime ?? '15:10').split(':').map(Number);
-        const now = new Date();
-        return now.getHours() * 60 + now.getMinutes() >= h * 60 + m;
+        return isPastTime(this.cfg().eodCloseTime);
     }
 
     async processNiftyQuote(quote: NiftyQuote): Promise<void> {

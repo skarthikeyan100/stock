@@ -75,3 +75,12 @@ export function isWithinTradingWindow(): boolean {
     (now.getHours() === TRADING_WINDOW_START_HOUR && now.getMinutes() >= TRADING_WINDOW_START_MINUTE);
   return afterStart && !isPastMarketClose();
 }
+
+// True when the local clock is at or past "HH:mm" (e.g. a strategy's eodCloseTime). Minutes since midnight, so it is one comparison
+// instead of the hour/minute pair every caller used to spell out. An unparsable value falls back to the default.
+export function isPastTime(hhmm: string | undefined, fallback = '15:10', now: Date = new Date()): boolean {
+  const parse = (v: string) => { const [h, m] = v.split(':').map(Number); return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : NaN; };
+  let limit = parse(String(hhmm ?? fallback));
+  if (Number.isNaN(limit)) limit = parse(fallback);
+  return now.getHours() * 60 + now.getMinutes() >= limit;
+}

@@ -1,3 +1,4 @@
+import GateLogger from '../util/GateLogger';
 import Log from '../util/Log';
 import { localDayKey } from './dayKey';
 import SerialWriter from './SerialWriter';
@@ -303,7 +304,7 @@ export default class BulkPcrStrategy extends Strategy {
     // Keyed by slotKey: a non-pair broker's name, or <broker>_call / <broker>_put for a pair broker.
     private positions = new Map<string, BrokerPosition>();
     private momentum = new MomentumSignal();
-    private lastGateLog = new Map<string, number>();
+    private gateLog = new GateLogger('[BulkPcrStrategy] gate:');
     private lastEntryAttemptTime = 0;
     // Most recent NIFTY tick seen by processNiftyQuote. enterOnBroker's one-shot retry reads
     // this (not the stale quote captured at the first attempt) so the direction and LTP it
@@ -422,11 +423,7 @@ export default class BulkPcrStrategy extends Strategy {
     // through its phases once, but keeps the "why isn't it firing" question
     // answerable from orchestrator.log the same way as every other strategy.
     private logGateOnce(reason: string): void {
-        const now = Date.now();
-        const last = this.lastGateLog.get(reason) ?? 0;
-        if (now - last < 5 * 60 * 1000) return;
-        this.lastGateLog.set(reason, now);
-        Log.log(`[BulkPcrStrategy] gate: ${reason}`);
+        this.gateLog.log(reason);
     }
 
     // Persists one BrokerPosition per configured broker, keyed by broker -

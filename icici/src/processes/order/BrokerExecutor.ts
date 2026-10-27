@@ -73,6 +73,19 @@ export async function neverShortSellable(args: {
     return args.quantity;
 }
 
+// The "nothing left to sell" result of a square-off whose resting sells already closed the position: a zero-quantity, complete Sell.
+export function emptyExitTrade(userId: string, tsym: string, broker: 'kite' | 'ant' | 'breeze' | 'prism'): Trade {
+    const done = new Trade();
+    done.tsym = tsym;
+    done.quantity = 0;
+    done.price = 0;
+    done.action = 'Sell';
+    done.status = 'COMPLETE';
+    done.user = userId;
+    done.broker = broker;
+    return done;
+}
+
 // Cancels a broker's resting limit sells on one contract ahead of a market-style exit (squareOff), so both cannot fill and
 // oversell (e.g. BulkPcr's resting target chunks). Each cancel rechecks for a fill (OrderAlreadyFilledError); a fill that landed in
 // the race window is not booked yet (the poller books it), so it is subtracted from the quantity to sell. A cancel that fails for

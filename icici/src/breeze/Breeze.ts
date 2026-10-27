@@ -152,6 +152,12 @@ class Breeze {
     }
 
     // Every public method that needs an active session calls this first.
+    // Waits for the on-disk session to finish loading, then throws if there still is none. Every API wrapper starts with this.
+    private async requireSession(): Promise<void> {
+        await this.ensureSessionRestored();
+        if (!this.apiSession) throw new Error('No active Breeze session. Please login first.');
+    }
+
     private async ensureSessionRestored(): Promise<void> {
         if (this.sessionLoadPromise) {
             await this.sessionLoadPromise;
@@ -285,10 +291,7 @@ class Breeze {
         getMarketDepth?: boolean;
         getOrderNotification?: boolean;
     }): Promise<any> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         return this.callSdk('subscribeFeeds', () => this.breeze.subscribeFeeds(params));
     }
 
@@ -304,10 +307,7 @@ class Breeze {
         getMarketDepth?: boolean;
         getOrderNotification?: boolean;
     }): Promise<any> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         return this.callSdk('unsubscribeFeeds', () => this.breeze.unsubscribeFeeds(params));
     }
 
@@ -376,18 +376,12 @@ class Breeze {
     }
 
     async getCustomerDetails(): Promise<any> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         return this.callSdk('getCustomerDetails', () => this.breeze.getCustomerDetails(this.apiSession));
     }
 
     async getFunds(): Promise<any> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         return this.callSdk('getFunds', () => this.breeze.getFunds());
     }
 
@@ -399,10 +393,7 @@ class Breeze {
         right?: string;
         strikePrice?: string;
     }): Promise<any> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         return this.callSdk('getQuotes', () => this.breeze.getQuotes(params));
     }
 
@@ -414,10 +405,7 @@ class Breeze {
         right?: string;
         strikePrice?: string;
     }): Promise<any> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         return this.callSdk('getOptionChainQuotes', () => this.breeze.getOptionChainQuotes(params));
     }
 
@@ -441,10 +429,7 @@ class Breeze {
         strikePrice?: string;
         userRemark?: string;
     }): Promise<{ orderId: string }> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         Log.log(`[Breeze] Placing ${params.action} ${params.orderType} order: ${params.stockCode} qty=${params.quantity}`);
         const response = await this.callSdk('placeOrder', () => this.breeze.placeOrder(params));
         const orderId = response?.Success?.order_id;
@@ -470,10 +455,7 @@ class Breeze {
         strikePrice?: string;
         disclosedQuantity?: string;
     }): Promise<{ orderId: string }> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         Log.log(`[Breeze] Squaring off: ${params.stockCode} qty=${params.quantity}`);
         const response = await this.callSdk('squareOff', () => this.breeze.squareOff(params));
         const orderId = response?.Success?.order_id;
@@ -484,10 +466,7 @@ class Breeze {
     }
 
     async cancelOrder(exchangeCode: string, orderId: string): Promise<void> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         Log.log(`[Breeze] Cancelling order ${orderId}`);
         // breezeconnect's cancelOrder calls axios.delete(url, body, {headers}) - axios takes (url, config), so
         // the auth headers are never sent and every cancel fails with "appkey is empty". Send it ourselves.
@@ -509,26 +488,17 @@ class Breeze {
     }
 
     async getOrderDetail(exchangeCode: string, orderId: string): Promise<any> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         return this.callSdk('getOrderDetail', () => this.breeze.getOrderDetail({ exchangeCode, orderId }));
     }
 
     async getOrderList(params: { exchangeCode: string; fromDate: string; toDate: string }): Promise<any> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         return this.callSdk('getOrderList', () => this.breeze.getOrderList(params));
     }
 
     async getPortfolioPositions(): Promise<any> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         try {
             return await this.callSdk('getPortfolioPositions', () => this.breeze.getPortfolioPositions());
         } catch (e: any) {
@@ -547,10 +517,7 @@ class Breeze {
         action?: string;
         stockCode?: string;
     }): Promise<any> {
-        await this.ensureSessionRestored();
-        if (!this.apiSession) {
-            throw new Error('No active Breeze session. Please login first.');
-        }
+        await this.requireSession();
         return this.callSdk('getTradeList', () => this.breeze.getTradeList(params));
     }
 

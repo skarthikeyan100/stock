@@ -12,7 +12,7 @@ import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol, isTrackedPendingOrder } from './pendingLimitOrders';
-import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError } from './BrokerExecutor';
+import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { exchangeForTsym } from '../../util/underlyings';
 
 // Kite is the primary execution broker (per current product decision - Prism
@@ -416,15 +416,7 @@ export async function squareOffOnKite(userId: string, tsym: string, quantity: nu
         }
         if (!(quantity > 0)) {
             Log.log(`[order] squareOffOnKite: nothing left to sell for ${tsym} (${userId}) after resting sells settled`);
-            const done = new Trade();
-            done.tsym = tsym;
-            done.quantity = 0;
-            done.price = 0;
-            done.action = 'Sell';
-            done.status = 'COMPLETE';
-            done.user = userId;
-            done.broker = 'kite';
-            return done;
+            return emptyExitTrade(userId, tsym, 'kite');
         }
 
         let orderId: string;

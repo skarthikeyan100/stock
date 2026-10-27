@@ -4,7 +4,7 @@ import indexMap from '../../nse_index';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
-import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable } from './BrokerExecutor';
+import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, emptyExitTrade } from './BrokerExecutor';
 import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol } from './pendingPrismLimitOrders';
 import { sleep } from '../../util/sleep';
 import { roundToTick } from '../../kite/Kite';
@@ -382,15 +382,7 @@ async function squareOffOnPrismUnguarded(userId: string, tsym: string, quantity:
     });
     if (!(settled.quantity > 0)) {
         Log.log(`[order] squareOffOnPrism: nothing left to sell for ${tsym} (${userId}) after resting sells settled`);
-        const done = new Trade();
-        done.tsym = tsym;
-        done.quantity = 0;
-        done.price = 0;
-        done.action = 'Sell';
-        done.status = 'COMPLETE';
-        done.user = userId;
-        done.broker = 'prism';
-        return done;
+        return emptyExitTrade(userId, tsym, 'prism');
     }
     return sellContract(userId, tsym, settled.quantity);
 }

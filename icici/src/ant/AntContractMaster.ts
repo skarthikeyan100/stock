@@ -3,6 +3,16 @@ import path from 'path';
 import Log from '../util/Log';
 import { exchangeForIndex } from '../util/underlyings';
 
+// A row's trading symbol: the master files spell the column "Trading Symbol" in one format and "Trading" in another.
+function tradingSymbolOf(record: { 'Trading Symbol'?: string; Trading?: string }): string {
+  return record['Trading Symbol'] || record.Trading || '';
+}
+
+// Start of the current UTC day in epoch ms - the cut-off the master's expiry dates are compared against.
+function todayStartUtc(): number {
+  return Math.floor(Date.now() / 86400000) * 86400000;
+}
+
 interface ContractRecord {
   Symbol: string;
   Token: string;
@@ -103,46 +113,30 @@ class AntContractMaster {
     this.lastMtimeCheck.set(filePath, Date.now());
   }
 
-  private loadNFO(): ContractRecord[] {
-    if (this.nfoCache && !this.cacheIsFresh(this.NFO_PATH)) {
-      Log.log('[AntContractMaster] NFO master file changed on disk - reloading');
-      // Parse first, swap only on success: a half-written/corrupt file keeps the working cache.
+  // Loads (and hot-reloads) one exchange's master file. A reload parses first and swaps only on success, so a half-written or corrupt
+  // file keeps the working cache.
+  private loadMaster(key: 'NFO' | 'BFO'): ContractRecord[] {
+    const path = key === 'NFO' ? this.NFO_PATH : this.BFO_PATH;
+    const read = (): ContractRecord[] => JSON.parse(fs.readFileSync(path, 'utf-8'))[key] || [];
+    const cached = key === 'NFO' ? this.nfoCache : this.bfoCache;
+    const store = (data: ContractRecord[]) => { if (key === 'NFO') this.nfoCache = data; else this.bfoCache = data; this.noteLoaded(path); };
+    if (cached && !this.cacheIsFresh(path)) {
+      Log.log(`[AntContractMaster] ${key} master file changed on disk - reloading`);
       try {
-        const data = JSON.parse(fs.readFileSync(this.NFO_PATH, 'utf-8'));
-        this.nfoCache = data.NFO || [];
-        this.noteLoaded(this.NFO_PATH);
+        store(read());
       } catch (e: any) {
-        Log.log(`[AntContractMaster] NFO reload failed, keeping the previous cache: ${e?.message ?? e}`);
+        Log.log(`[AntContractMaster] ${key} reload failed, keeping the previous cache: ${e?.message ?? e}`);
       }
     }
-    if (!this.nfoCache) {
-      this.checkStaleness(this.NFO_PATH);
-      const data = JSON.parse(fs.readFileSync(this.NFO_PATH, 'utf-8'));
-      this.nfoCache = data.NFO || [];
-      this.noteLoaded(this.NFO_PATH);
+    if (!(key === 'NFO' ? this.nfoCache : this.bfoCache)) {
+      this.checkStaleness(path);
+      store(read());
     }
-    return this.nfoCache;
+    return (key === 'NFO' ? this.nfoCache : this.bfoCache)!;
   }
 
-  private loadBFO(): ContractRecord[] {
-    if (this.bfoCache && !this.cacheIsFresh(this.BFO_PATH)) {
-      Log.log('[AntContractMaster] BFO master file changed on disk - reloading');
-      try {
-        const data = JSON.parse(fs.readFileSync(this.BFO_PATH, 'utf-8'));
-        this.bfoCache = data.BFO || [];
-        this.noteLoaded(this.BFO_PATH);
-      } catch (e: any) {
-        Log.log(`[AntContractMaster] BFO reload failed, keeping the previous cache: ${e?.message ?? e}`);
-      }
-    }
-    if (!this.bfoCache) {
-      this.checkStaleness(this.BFO_PATH);
-      const data = JSON.parse(fs.readFileSync(this.BFO_PATH, 'utf-8'));
-      this.bfoCache = data.BFO || [];
-      this.noteLoaded(this.BFO_PATH);
-    }
-    return this.bfoCache;
-  }
+  private loadNFO(): ContractRecord[] { return this.loadMaster('NFO'); }
+  private loadBFO(): ContractRecord[] { return this.loadMaster('BFO'); }
 
   private nseFailedAt = 0;
 
@@ -221,7 +215,7 @@ class AntContractMaster {
       );
     }
 
-    const tradingSymbol = record['Trading Symbol'] || record.Trading || '';
+    const tradingSymbol = tradingSymbolOf(record);
     return {
       token: record.Token,
       exch: record.Exch,
@@ -249,10 +243,10 @@ class AntContractMaster {
   // TopStockOptionsOpeningGapStrategy.
   findNearestStrikeOption(symbol: string, optionType: string, referencePrice: number, exch: string = 'NFO'): { token: string; exch: string; tradingSymbol: string; lotSize: string; strike: number; expiry: string } {
     const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
-    const todayStartUtc = Math.floor(Date.now() / 86400000) * 86400000;
+    const todayStart = todayStartUtc();
 
     const candidates = cache.filter(
-      (r) => r.Symbol === symbol && r.Exch === exch && r['Option Type'] === optionType && parseInt(r['Expiry Date']) >= todayStartUtc
+      (r) => r.Symbol === symbol && r.Exch === exch && r['Option Type'] === optionType && parseInt(r['Expiry Date']) >= todayStart
     );
     if (candidates.length === 0) {
       throw new Error(`No ${symbol} ${exch} ${optionType} contract found for any strike (nearest expiry)`);
@@ -273,7 +267,7 @@ class AntContractMaster {
     return {
       token: best.Token,
       exch: best.Exch,
-      tradingSymbol: best['Trading Symbol'] || best.Trading || '',
+      tradingSymbol: tradingSymbolOf(best),
       lotSize: best['Lot Size'],
       strike: Number(best['Strike Price']),
       expiry: new Date(nearestExpiry).toISOString(),
@@ -316,7 +310,7 @@ class AntContractMaster {
     // hours are entirely after 5:30am IST. Compare against the start of
     // today (UTC) instead, mirroring KiteContractMaster's day-truncated
     // comparison (`today.setHours(0,0,0,0)`) so a same-day expiry still counts.
-    const todayStartUtc = Math.floor(Date.now() / 86400000) * 86400000;
+    const todayStart = todayStartUtc();
 
     const candidates = cache
       .filter(
@@ -325,7 +319,7 @@ class AntContractMaster {
           r.Exch === exch &&
           Number(r['Strike Price']) === strike &&
           r['Option Type'] === optionType &&
-          parseInt(r['Expiry Date']) >= todayStartUtc
+          parseInt(r['Expiry Date']) >= todayStart
       )
       .sort((a, b) => parseInt(a['Expiry Date']) - parseInt(b['Expiry Date']));
 
@@ -337,7 +331,7 @@ class AntContractMaster {
     return {
       token: record.Token,
       exch: record.Exch,
-      tradingSymbol: record['Trading Symbol'] || record.Trading || '',
+      tradingSymbol: tradingSymbolOf(record),
       lotSize: record['Lot Size'],
     };
   }
@@ -372,15 +366,15 @@ class AntContractMaster {
   // one strike at a time.
   listNearestExpiryOptions(symbol: string, exch: string = 'NFO'): { token: string; tradingSymbol: string; strike: number; optionType: string }[] {
     const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
-    const todayStartUtc = Math.floor(Date.now() / 86400000) * 86400000;
-    const candidates = cache.filter((r) => r.Symbol === symbol && r.Exch === exch && parseInt(r['Expiry Date']) >= todayStartUtc);
+    const todayStart = todayStartUtc();
+    const candidates = cache.filter((r) => r.Symbol === symbol && r.Exch === exch && parseInt(r['Expiry Date']) >= todayStart);
     if (candidates.length === 0) return [];
     const nearestExpiry = Math.min(...candidates.map((r) => parseInt(r['Expiry Date'])));
     return candidates
       .filter((r) => parseInt(r['Expiry Date']) === nearestExpiry)
       .map((r) => ({
         token: r.Token,
-        tradingSymbol: r['Trading Symbol'] || r.Trading || '',
+        tradingSymbol: tradingSymbolOf(r),
         strike: Number(r['Strike Price']),
         optionType: r['Option Type'],
       }));
@@ -399,7 +393,7 @@ class AntContractMaster {
       strike: Number(record['Strike Price']),
       optionType: record['Option Type'],
       exch: record.Exch,
-      tradingSymbol: record['Trading Symbol'] || record.Trading || '',
+      tradingSymbol: tradingSymbolOf(record),
     };
   }
 
@@ -409,14 +403,14 @@ class AntContractMaster {
   // price that's since moved. Used by GapScreenerOptionQuoteEod.ts.
   findByTradingSymbol(tradingSymbol: string, exch: 'NFO' | 'BFO' = 'NFO'): { token: string; strike: number; optionType: string; exch: string; tradingSymbol: string; lotSize: string } | undefined {
     const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
-    const record = cache.find((r) => (r['Trading Symbol'] || r.Trading) === tradingSymbol);
+    const record = cache.find((r) => tradingSymbolOf(r) === tradingSymbol);
     if (!record) return undefined;
     return {
       token: record.Token,
       strike: Number(record['Strike Price']),
       optionType: record['Option Type'],
       exch: record.Exch,
-      tradingSymbol: record['Trading Symbol'] || record.Trading || '',
+      tradingSymbol: tradingSymbolOf(record),
       lotSize: record['Lot Size'],
     };
   }

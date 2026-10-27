@@ -1,3 +1,4 @@
+import GateLogger from '../util/GateLogger';
 import crypto from 'crypto';
 import Log from '../util/Log';
 import { CALL, PUT, DEFAULT_MAX_INVESTMENT } from '../constants';
@@ -45,7 +46,6 @@ const PENDING = '__pending__';
 // Gate-log throttle for LegManager's own gated log lines (e.g. "no
 // underlying price yet") - matches ContinuousStrategy's original
 // GATE_LOG_THROTTLE_MS value (5 min) so behavior is unchanged post-extraction.
-const GATE_LOG_THROTTLE_MS = 5 * 60 * 1000;
 
 export interface Leg {
     legId: string;
@@ -166,7 +166,7 @@ export class LegManager {
     private pendingReEntries: Map<string, PendingReEntry> = new Map(); // keyed by token
     private deferredRootRefill: PendingReEntry | null = null;
     private legIdCounter = 0;
-    private lastGateLog = new Map<string, number>();
+    private gateLog?: GateLogger; // created on first use: the prefix needs deps.ownerType
     // True forever (until reset()) from the moment any capitalCheck() call
     // first observes total exposure that would exceed maxInvestment. One-way
     // latch, not a per-tick re-check: once breached, no NEW order is ever
@@ -290,11 +290,7 @@ export class LegManager {
     }
 
     private logGateOnce(reason: string): void {
-        const now = Date.now();
-        const last = this.lastGateLog.get(reason) ?? 0;
-        if (now - last < GATE_LOG_THROTTLE_MS) return;
-        this.lastGateLog.set(reason, now);
-        Log.log(`[${this.deps.ownerType}] ${reason}`);
+        (this.gateLog ??= new GateLogger(`[${this.deps.ownerType}]`)).log(reason);
     }
 
     // Fire-and-forget, same convention as bookkeeping.ts's notifications/

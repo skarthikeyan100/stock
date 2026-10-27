@@ -138,67 +138,55 @@ class OrderClient {
         });
     }
 
-    async buyIndex(userId: string, payload: { niftyLtp: number; right: string; quantity: number; index?: 'NIFTY' | 'SENSEX'; targetPoints?: number; stopLossPoints?: number; strike?: number; expiry?: string; skipIfOpenPositionType?: 'CE' | 'PE' }): Promise<any> {
-        const res = await this.request('buyIndex', userId, payload);
+    // Sends a request and unwraps the response: throws the order process's error text on !ok, else returns the result. Every simple
+    // wrapper below is one line over this (about 30 were three-line copies of it).
+    private async call<T = any>(type: OrderRequestType, userId: string, payload: any, timeoutMs?: number): Promise<T> {
+        const res = await this.request(type, userId, payload, timeoutMs);
         if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return res.result as T;
+    }
+
+    async buyIndex(userId: string, payload: { niftyLtp: number; right: string; quantity: number; index?: 'NIFTY' | 'SENSEX'; targetPoints?: number; stopLossPoints?: number; strike?: number; expiry?: string; skipIfOpenPositionType?: 'CE' | 'PE' }): Promise<any> {
+        return this.call('buyIndex', userId, payload);
     }
 
     async squareOff(userId: string, payload: { tsym?: string; token?: string; quantity?: number; exchange?: 'NFO' | 'BFO' }): Promise<any> {
-        const res = await this.request('squareOff', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('squareOff', userId, payload);
     }
 
     async canPlaceOrder(userId: string): Promise<{ allowed: boolean; reason?: string }> {
-        const res = await this.request('canPlaceOrder', userId, {});
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('canPlaceOrder', userId, {});
     }
 
     // Prism/Shoonya contract-by-price-range path (secondary broker path - see
     // src/processes/order/prismExecutor.ts). userId isn't meaningful for the
     // read-only lookups but the wire protocol always carries one.
     async getContractByPriceRange(userId: string, right: string): Promise<string | null> {
-        const res = await this.request('getContractByPriceRange', userId, { right });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('getContractByPriceRange', userId, { right });
     }
 
     async getToken(userId: string, contract: string): Promise<string> {
-        const res = await this.request('getToken', userId, { contract });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('getToken', userId, { contract });
     }
 
     async getNiftyQuote(userId: string): Promise<any> {
-        const res = await this.request('getNiftyQuote', userId, {});
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('getNiftyQuote', userId, {});
     }
 
     async buyContract(userId: string, contract: string, quantity: number, price?: number): Promise<any> {
-        const res = await this.request('buyContract', userId, { contract, quantity, price });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('buyContract', userId, { contract, quantity, price });
     }
 
     async sellContract(userId: string, contract: string, quantity: number, price?: number): Promise<any> {
-        const res = await this.request('sellContract', userId, { contract, quantity, price });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('sellContract', userId, { contract, quantity, price });
     }
 
     async stats(userId = 'Default'): Promise<{ trades: any[]; closedTrades: any[]; userPnL: Record<string, number> }> {
-        const res = await this.request('stats', userId, {});
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('stats', userId, {});
     }
 
     async manualBuy(userId: string, payload: { index?: 'NIFTY' | 'SENSEX'; right?: string; contract?: string; strikePrice?: number; price?: number; quantity?: number; targetPoints?: number; stopLossPoints?: number }): Promise<any> {
-        const res = await this.request('manualBuy', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('manualBuy', userId, payload);
     }
 
     async setTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number): Promise<void> {
@@ -209,15 +197,11 @@ class OrderClient {
     // ANT (AliceBlue) order path - see src/processes/order/antExecutor.ts.
     // ICICI Breeze order path - see src/processes/order/breezeExecutor.ts.
     async breezeBuyIndex(userId: string, payload: { right: string; index?: 'NIFTY' | 'SENSEX'; quantity?: number; targetPoints?: number; stopLossPoints?: number }): Promise<any> {
-        const res = await this.request('breezeBuyIndex', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('breezeBuyIndex', userId, payload);
     }
 
     async breezeSquareOff(userId: string, payload: { tsym: string; quantity: number }): Promise<any> {
-        const res = await this.request('breezeSquareOff', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('breezeSquareOff', userId, payload);
     }
 
     // Broker-agnostic freeze-quantity-chunked buy/squareoff - see
@@ -245,15 +229,11 @@ class OrderClient {
     // multi-broker support). Omitted by every other caller, which keeps
     // today's per-userId resolution unchanged.
     async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism'; driftCancelPoints?: number; index?: 'NIFTY' | 'SENSEX' }): Promise<any> {
-        const res = await this.request('chunkedBuyIndex', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('chunkedBuyIndex', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 
     async chunkedSquareOff(userId: string, payload: { tsym: string; quantity: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<any> {
-        const res = await this.request('chunkedSquareOff', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('chunkedSquareOff', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 
     // LIMIT-priced counterpart of chunkedSquareOff - returns once the resting
@@ -262,15 +242,11 @@ class OrderClient {
     // placement is still up to 8 sequential broker calls, even though it
     // shouldn't normally take anywhere near as long as a fill-waiting call.
     async chunkedSquareOffLimit(userId: string, payload: { tsym: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<any> {
-        const res = await this.request('chunkedSquareOffLimit', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('chunkedSquareOffLimit', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 
     async antPlaceCoverOrder(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; transactionType: 'BUY' | 'SELL'; stopLossPoints: number }): Promise<any> {
-        const res = await this.request('antPlaceCoverOrder', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('antPlaceCoverOrder', userId, payload);
     }
 
     // ANT-specific (see orderProtocol.ts's comment) - plain MARKET buy (with
@@ -278,42 +254,30 @@ class OrderClient {
     // fill inside `order` and returns the resulting Trade (targetPrice set
     // after the real fill from underlyingOpen).
     async antBuyTargetOnly(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO'; underlyingOpen: number; marketProtectionPercent: number; product?: 'INTRADAY' | 'LONGTERM' }): Promise<Trade> {
-        const res = await this.request('antBuyTargetOnly', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('antBuyTargetOnly', userId, payload);
     }
 
     async antPlaceLimitBuyBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
-        const res = await this.request('antPlaceLimitBuyBare', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('antPlaceLimitBuyBare', userId, payload);
     }
 
     async antPlaceLimitSellBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; exchange: 'NFO' | 'BFO'; product?: 'INTRADAY' | 'LONGTERM' }): Promise<{ orderId: string }> {
-        const res = await this.request('antPlaceLimitSellBare', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('antPlaceLimitSellBare', userId, payload);
     }
 
     // Broker-parameterized counterpart of antPlaceLimitSellBare - see orderProtocol.ts's comment.
     async brokerPlaceLimitSellBare(userId: string, payload: { broker: 'kite' | 'breeze' | 'ant'; tradingSymbol: string; instrumentToken: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
-        const res = await this.request('brokerPlaceLimitSellBare', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('brokerPlaceLimitSellBare', userId, payload);
     }
 
     // ANT bare ops for BulkPcrStrategy's hedge tree (antLegOps.ts) - see
     // orderProtocol.ts's comment.
     async antBuyContractBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
-        const res = await this.request('antBuyContractBare', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('antBuyContractBare', userId, payload);
     }
 
     async antSquareOffBare(userId: string, payload: { tradingSymbol: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
-        const res = await this.request('antSquareOffBare', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('antSquareOffBare', userId, payload);
     }
 
     async antCancelOrderBare(userId: string, orderId: string): Promise<void> {
@@ -322,9 +286,7 @@ class OrderClient {
     }
 
     async cancelRestingLimitSells(userId: string, payload: { tsym: string; broker: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<{ filledQty: number; cancelFailed: boolean }> {
-        const res = await this.request('cancelRestingLimitSells', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('cancelRestingLimitSells', userId, payload);
     }
 
     // ButterflyStrategy's narrow sell-to-open exception ONLY - see Kite.ts's
@@ -335,33 +297,23 @@ class OrderClient {
     // 'sellContractBare' (which resolve broker per-user, wrong for one strategy
     // instance running several brokers' legs concurrently).
     async butterflyBuyLeg(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
-        const res = await this.request('butterflyBuyLeg', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('butterflyBuyLeg', userId, payload);
     }
 
     async butterflyCloseLeg(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
-        const res = await this.request('butterflyCloseLeg', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('butterflyCloseLeg', userId, payload);
     }
 
     async butterflySellToOpen(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
-        const res = await this.request('butterflySellToOpen', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('butterflySellToOpen', userId, payload);
     }
 
     async butterflyBuyToClose(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
-        const res = await this.request('butterflyBuyToClose', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('butterflyBuyToClose', userId, payload);
     }
 
     async resolveOptionContract(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE' }): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
-        const res = await this.request('resolveOptionContract', userId, payload);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('resolveOptionContract', userId, payload);
     }
 
     async reloadSession(userId = 'Default'): Promise<void> {
@@ -377,21 +329,15 @@ class OrderClient {
     // Explicit broker-position reconcile (POST /reconcile) - returns per-broker
     // success flags; throws if the order process refused (e.g. before 09:10).
     async reconcileBrokerPositions(): Promise<Record<string, boolean>> {
-        const res = await this.request('reconcileBrokerPositions', 'Default', {}, 180000);
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('reconcileBrokerPositions', 'Default', {}, 180000);
     }
 
     async refreshTradeList(userId = 'Default'): Promise<any> {
-        const res = await this.request('refreshTradeList', userId, {});
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('refreshTradeList', userId, {});
     }
 
     async getOrders(userId = 'Default'): Promise<any> {
-        const res = await this.request('getOrders', userId, {});
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('getOrders', userId, {});
     }
 
     async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number; accountClosed?: boolean }): Promise<void> {
@@ -402,23 +348,17 @@ class OrderClient {
     // undefined result means "no per-user override" - caller falls back to
     // its own config default (see ContinuousStrategy.capitalCheck).
     async getOpenTrades(userId: string): Promise<any[]> {
-        const res = await this.request('openTrades', userId, {});
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('openTrades', userId, {});
     }
 
     // Broker-uniform query of this app's own pending-order trackers for a given tsym,
     // filtered to SELL orders only (see orderProtocol.ts's 'getPendingSells' comment).
     async getPendingSells(userId: string, broker: string, tradingSymbol: string): Promise<{ quantity: number }[]> {
-        const res = await this.request('getPendingSells', userId, { broker, tradingSymbol });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('getPendingSells', userId, { broker, tradingSymbol });
     }
 
     async findToken(userId: string, index: string, depth: number, right: string): Promise<string> {
-        const res = await this.request('findToken', userId, { index, depth, right });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('findToken', userId, { index, depth, right });
     }
 
     async connectPrism(userId = 'Default'): Promise<void> {
@@ -427,15 +367,11 @@ class OrderClient {
     }
 
     async getIndexQuote(userId: string, index: 'NIFTY' | 'BANKNIFTY' | 'FINNIFTY'): Promise<any> {
-        const res = await this.request('getIndexQuote', userId, { index });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('getIndexQuote', userId, { index });
     }
 
     async getStockQuote(userId: string, symbol: string): Promise<any> {
-        const res = await this.request('getStockQuote', userId, { symbol });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('getStockQuote', userId, { symbol });
     }
 
     // Bare (unprotected, self-monitored) execution path used by LegManager
@@ -448,24 +384,18 @@ class OrderClient {
     // same per-user convention buyIndex/manualBuy/squareOff already use for
     // real users, so this class stays entirely broker-agnostic.
     async buyContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number): Promise<any> {
-        const res = await this.request('buyContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('buyContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price });
     }
 
     async sellContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<any> {
-        const res = await this.request('sellContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('sellContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange });
     }
 
     // Returns immediately with {orderId} - the fill arrives later as a normal
     // fill notification once pendingLimitOrders.ts's/breezePendingLimitOrders.ts's
     // poller sees it complete.
     async placeLimitBuyBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO'): Promise<{ orderId: string }> {
-        const res = await this.request('placeLimitBuyBare', userId, { tradingSymbol, instrumentToken, quantity, price, exchange });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('placeLimitBuyBare', userId, { tradingSymbol, instrumentToken, quantity, price, exchange });
     }
 
     async cancelOrderBare(userId: string, orderId: string): Promise<void> {
@@ -474,21 +404,15 @@ class OrderClient {
     }
 
     async getContractByPriceRangeBare(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, index: 'NIFTY' | 'SENSEX' = 'NIFTY', excludeStrikes: number[] = []): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
-        const res = await this.request('getContractByPriceRangeBare', userId, { underlyingLtp, optionType, minPremium, index, excludeStrikes });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('getContractByPriceRangeBare', userId, { underlyingLtp, optionType, minPremium, index, excludeStrikes });
     }
 
     async getPCR(userId: string, underlying: string, spot: number, window: number): Promise<number> {
-        const res = await this.request('getPCR', userId, { underlying, spot, window });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('getPCR', userId, { underlying, spot, window });
     }
 
     async getATMTokens(userId: string, niftyLtp: number, index: string = 'NIFTY'): Promise<{ ce: { token: string; tradingSymbol: string }; pe: { token: string; tradingSymbol: string } }> {
-        const res = await this.request('getATMTokens', userId, { niftyLtp, index });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
+        return this.call('getATMTokens', userId, { niftyLtp, index });
     }
 }
 

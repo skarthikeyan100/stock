@@ -6,7 +6,7 @@ import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
-import { BrokerExecutor, BuyRequest, Exchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError } from './BrokerExecutor';
+import { BrokerExecutor, BuyRequest, Exchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol } from './breezePendingLimitOrders';
 import { roundToTick } from '../../kite/Kite';
@@ -414,15 +414,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
         });
         if (!(settled.quantity > 0)) {
             Log.log(`[order] squareOffOnBreeze: nothing left to sell for ${tsym} (${userId}) after resting sells settled`);
-            const done = new Trade();
-            done.tsym = tsym;
-            done.quantity = 0;
-            done.price = 0;
-            done.action = 'Sell';
-            done.status = 'COMPLETE';
-            done.user = userId;
-            done.broker = 'breeze';
-            return done;
+            return emptyExitTrade(userId, tsym, 'breeze');
         }
         // Resting sells were cancelled above, so none count against the live position.
         let remainingQty = await neverShortSellable({ label: `${tsym} (${userId}, Breeze)`, quantity: settled.quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0 });

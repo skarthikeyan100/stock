@@ -1,3 +1,4 @@
+import { isPastTime } from '../util/marketHours';
 import Log from '../util/Log';
 import { CALL, PUT } from '../constants';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
@@ -295,9 +296,7 @@ export default class HourlyStrategy extends Strategy {
     // End of day: flatten any live position at cfg.eodCloseTime (default 15:10) instead of carrying it past the close.
     private checkEod(): void {
         if (!this.hasOpenPosition()) return;
-        const [h, m] = String(this.cfg().eodCloseTime ?? '15:10').split(':').map(Number);
-        const now = new Date();
-        if (now.getHours() * 60 + now.getMinutes() < h * 60 + m) return;
+        if (!isPastTime(this.cfg().eodCloseTime)) return;
         for (const pos of this.positions.values()) {
             if (pos.phase !== 'selling' || pos.squaringOff) continue;
             if (pos.placingExit) { pos.closeRequested = 'eod'; continue; }

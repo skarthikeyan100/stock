@@ -1,3 +1,5 @@
+import { isPastTime } from '../util/marketHours';
+import GateLogger from '../util/GateLogger';
 import moment from 'moment';
 import Log from '../util/Log';
 import { CALL, PUT, MOCK_BROKER } from '../constants';
@@ -48,7 +50,7 @@ export default class ContinuousStrategy extends Strategy {
     private legManager: LegManager;
     private momentum = new MomentumSignal();
     private lastNiftyLtp = 0;
-    private lastGateLog = new Map<string, number>();
+    private gateLog = new GateLogger('[ContinuousStrategy] T1 gate:', GATE_LOG_THROTTLE_MS);
     private lastPcrCheckTime = 0;
     // Set by an ANT buy whose fill could not be confirmed (it may still be live): no new buy is placed until a human reviews it
     // and reset() clears the flag. Exits are unaffected.
@@ -115,11 +117,7 @@ export default class ContinuousStrategy extends Strategy {
     // "gates clear" then "pcr throttled") would otherwise look "new" every
     // time and bypass the throttle entirely.
     private logGateOnce(reason: string): void {
-        const now = Date.now();
-        const last = this.lastGateLog.get(reason) ?? 0;
-        if (now - last < GATE_LOG_THROTTLE_MS) return;
-        this.lastGateLog.set(reason, now);
-        Log.log(`[ContinuousStrategy] T1 gate: ${reason}`);
+        this.gateLog.log(reason);
     }
 
     // Called once at strategies-process startup, after initialize() resolves
@@ -262,9 +260,7 @@ export default class ContinuousStrategy extends Strategy {
     // Monday expiry on 2026-10-19 left every leg open), so the strategy closes its own legs before then.
     private isPastEodCloseTime(): boolean {
         if (MOCK_BROKER) return false;
-        const [h, m] = String(this.cfg().eodCloseTime ?? '15:10').split(':').map(Number);
-        const now = new Date();
-        return now.getHours() * 60 + now.getMinutes() >= h * 60 + m;
+        return isPastTime(this.cfg().eodCloseTime);
     }
 
     private lastEodAttempt = 0;

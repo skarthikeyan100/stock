@@ -1,7 +1,7 @@
 import Log from '../../util/Log';
 import { getSpotLtp } from './spotQuote';
 import ANT from '../../ant/ANT';
-import { cancelOrderWithFillRecheck } from './BrokerExecutor';
+import { cancelOrderWithFillRecheck, emptyExitTrade } from './BrokerExecutor';
 import { roundToTick } from '../../kite/Kite';
 import AntOrderNotifyStream from '../../ant/AntOrderNotifyStream';
 import AntContractMaster from '../../ant/AntContractMaster';
@@ -1086,15 +1086,7 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
                 throw new Error(`Square-off for ${tsym}: nothing open in bookkeeping and no resting exit - not placing an order; check the broker`);
             }
             Log.log(`[order] squareOffOnAnt: resting sells already closed all of ${tsym} for ${userId} - nothing left to exit`);
-            const done = new Trade();
-            done.tsym = tsym;
-            done.quantity = 0;
-            done.price = 0;
-            done.action = 'Sell';
-            done.status = 'COMPLETE';
-            done.user = userId;
-            done.broker = 'ant';
-            return done;
+            return emptyExitTrade(userId, tsym, 'ant');
         }
         const ant = ANT.getInstance();
         const existing = bookkeeping.trades.find((t) => t.tsym === tsym && t.user === userId && isAntRow(t));
