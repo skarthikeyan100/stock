@@ -210,12 +210,14 @@ export default class Decision {
             const trade = strategy.tradeMap.get(optionQuote.token) as Trade;
             if (trade) {
                 Log.log('Trade: ', trade.right, ' qty: ', trade.quantity, ' profit: ', trade.getProfit());
-                if (trade.getProfit() > this.profit) {
+                if (trade.getProfit() > this.profit && !trade.isSellPending) {
                     Log.log('[Auto] Sell ', trade);
+                    trade.isSellPending = true; // set before the await: every following tick re-enters while the sell is in flight
                     try {
                         await prism.squareOffOrder(trade.token, trade.quantity, undefined, trade.lastTradePrice);
                     } catch (e) {
                         Log.log('[Auto] square off failed - keeping the trade tracked:', e);
+                        if ((e as any)?.notPlaced) trade.isSellPending = false; // definitely not sent: retry; otherwise left for review
                         continue; // never record a failed exit as closed
                     }
                     trade.action = SELL;

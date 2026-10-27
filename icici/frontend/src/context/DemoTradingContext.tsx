@@ -214,7 +214,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   const placeOrder = useCallback(
     async (right: string) => {
       try {
-        const res = await fetch(`/demo/resolve?right=${encodeURIComponent(right)}`);
+        const res = await apiFetch(`/demo/resolve?right=${encodeURIComponent(right)}`);
         if (!res.ok) throw new Error('Failed to resolve contract');
         const { token, tradingSymbol } = await res.json();
         if (!token) throw new Error('No contract found');

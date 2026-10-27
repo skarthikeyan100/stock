@@ -18,6 +18,8 @@ export interface User {
     // Set when the user's realized loss in a trading week breached the weekly
     // drawdown limit (see bookkeeping.ts closeAccountForWeeklyBreach). The user
     // document is kept; the flag blocks new orders. Only an admin clears it.
+    // Session cookies issued at or before this instant are rejected (set on logout, so a copied cookie stops working).
+    sessionsValidAfter?: number;
     accountClosed?: boolean;
     accountClosedAt?: Date;
     accountClosedReason?: string;
@@ -242,6 +244,10 @@ export async function updateUserSettings(email: string, settings: { lossLimit?: 
 
 // Flags the account closed without removing the user. Idempotent: an already
 // closed account keeps its original closedAt/reason.
+export async function revokeSessions(email: string): Promise<void> {
+    await collection().updateOne({ email }, { $set: { sessionsValidAfter: Date.now() } });
+}
+
 export async function closeUserAccount(email: string, reason: string): Promise<void> {
     await collection().updateOne(
         { email, accountClosed: { $ne: true } },

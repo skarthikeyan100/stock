@@ -18,7 +18,7 @@ class RateOfChangeContract {
     buyOrderPlaced: boolean = false;
     sellOrderPlaced: boolean = false;
     ltp: number = 0;
-    buyFailedAt = 0; // when buyContract returned null; the sentinel is released after a grace period if no fill shows up
+    buyFailedAt = 0; // when buyContract returned null (the outcome is unknown: a timeout may still have placed the order)
 
     clear() {
         this.contract = '';
@@ -141,16 +141,7 @@ export default class RateOfChangeStrategy extends Strategy {
 
         if (!this.enabled || !this.isTimeInRange()) return;
 
-        if (this.contract !== null) {
-            // A failed entry (buyContract returned null) used to leave the sentinel set for good, so the strategy never traded again.
-            // A late fill is still accepted during the grace period; after it the sentinel is released.
-            if (this.contract.buyOrderPlaced && this.contract.buyFailedAt > 0 && Date.now() - this.contract.buyFailedAt > 60_000) {
-                Log.log('[RoC] Entry buy failed and no fill appeared - releasing the entry sentinel');
-                this.contract.clear();
-                this.contract = null;
-            }
-            return;
-        }
+        if (this.contract !== null) return;
 
         if (!this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) return;
 
@@ -232,7 +223,12 @@ export default class RateOfChangeStrategy extends Strategy {
         this.recordTriggerTime();
 
         const bought = await this.buyContract(contract, config.quantity);
-        if (!bought && this.contract) this.contract.buyFailedAt = Date.now();
+        if (!bought && this.contract) {
+            // buyContract returns null for every failure, including a timeout after which the order may still fill. Re-arming here could
+            // buy twice, so the entry sentinel stays: a late fill is still tracked, and the strategy resumes after an admin reset.
+            this.contract.buyFailedAt = Date.now();
+            Log.log('[RoC] ALERT: entry buy returned no confirmation - strategy paused (the order may still be live); reset the strategy once the account is checked');
+        }
     }
 
     private calculatePointsChange(numberOfDatapoints: number): number {

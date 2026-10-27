@@ -35,7 +35,7 @@ class AntWebSocket {
           reject(new Error('AntWS connect timed out'));
           try { this.ws?.terminate(); } catch (_) { /* ignore */ }
         }, 20000);
-        this.ws = new WebSocket(this.url, undefined, { rejectUnauthorized: false, handshakeTimeout: 15000 });
+        this.ws = new WebSocket(this.url, undefined, { handshakeTimeout: 15000 });
 
         // Transport-level liveness signal: fires whenever a ping we sent
         // (via ws.ping() in the heartbeat below) is answered by the peer,
@@ -121,6 +121,9 @@ class AntWebSocket {
           if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
           if (this.watchdogInterval) clearInterval(this.watchdogInterval);
           clearTimeout(connectTimer);
+          // A socket closing before it ever opened (and with no error event) used to leave connect() pending forever, wedging the
+          // callers' in-flight guards so no reconnect was attempted. A no-op once connect() has already resolved.
+          reject(new Error('AntWS closed before open'));
           this.trigger('close');
         };
       } catch (e) {

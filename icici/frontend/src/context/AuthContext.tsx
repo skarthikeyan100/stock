@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { apiFetch } from '../utils/api';
 
 export interface AuthUser {
   email: string;
@@ -83,7 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Check session on mount
   useEffect(() => {
-    fetch('/auth/me')
+    apiFetch('/auth/me')
       .then(res => {
         if (res.ok) return res.json();
         throw new Error('Not logged in');
@@ -106,7 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // (google-auth-library's verifyIdToken) and derives email/name/picture
     // from the verified payload itself, rather than trusting client-decoded
     // fields (which anyone could forge with an unsigned POST).
-    const res = await fetch('/auth/login', {
+    const res = await apiFetch('/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ credential }),
@@ -118,7 +119,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await fetch('/auth/logout', { method: 'POST' });
+    await apiFetch('/auth/logout', { method: 'POST' });
     setUser(null);
     setTermsAcceptedState(false); // in-memory reset only - the persisted per-email acceptance is left intact for next login
   }, []);
@@ -143,7 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // extracting a PAN/Aadhaar number from an uploaded document) so the UI
   // reflects it without requiring a full re-login.
   const refreshUser = useCallback(async () => {
-    const res = await fetch('/auth/me');
+    const res = await apiFetch('/auth/me');
     if (res.ok) setUser(await res.json());
   }, []);
 

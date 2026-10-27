@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Container, Card, Form, Button, Badge, Alert, Spinner, Row, Col, Table } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
 import NotificationBell from '../components/NotificationBell';
-import { readError } from '../utils/api';
+import { readError, apiFetch } from '../utils/api';
 
 function VerifiedBadge({ verified, hasValue }: { verified: boolean; hasValue: boolean }) {
   if (verified) return <Badge bg="success" className="ms-2">Verified</Badge>;
@@ -131,7 +131,7 @@ export default function ProfilePage() {
 
   useEffect(() => {
     if (!user) return;
-    fetch(`/users/${encodeURIComponent(user.email)}/payouts`)
+    apiFetch(`/users/${encodeURIComponent(user.email)}/payouts`)
       .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
       .then(data => { if (Array.isArray(data)) setPayouts(data); })
       .catch(() => {})
@@ -144,7 +144,7 @@ export default function ProfilePage() {
     setBankSaved(false);
     setBankError(null);
     try {
-      const res = await fetch(`/users/${encodeURIComponent(user.email)}/bank-details`, {
+      const res = await apiFetch(`/users/${encodeURIComponent(user.email)}/bank-details`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -172,7 +172,7 @@ export default function ProfilePage() {
     if (!decisionLogs[payout._id] && !user) return;
     if (!decisionLogs[payout._id]) {
       try {
-        const res = await fetch(`/users/${encodeURIComponent(user!.email)}/payouts/${payout._id}/decision-log`);
+        const res = await apiFetch(`/users/${encodeURIComponent(user!.email)}/payouts/${payout._id}/decision-log`);
         const data = res.ok ? await res.json() : null;
         // Only a real list may be stored: an error object here would crash the .map in the render.
         setDecisionLogs(prev => ({ ...prev, [payout._id]: Array.isArray(data) ? data : [] }));
@@ -193,7 +193,7 @@ export default function ProfilePage() {
     }
     setPhoneSaving(true);
     try {
-      const res = await fetch(`/users/${encodeURIComponent(user!.email)}/profile`, {
+      const res = await apiFetch(`/users/${encodeURIComponent(user!.email)}/profile`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone }),
@@ -213,7 +213,7 @@ export default function ProfilePage() {
     setModeSaved(false);
     setModeSaving(true);
     try {
-      const res = await fetch(`/users/${encodeURIComponent(user!.email)}/settings`, {
+      const res = await apiFetch(`/users/${encodeURIComponent(user!.email)}/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ investmentMode }),
@@ -232,7 +232,7 @@ export default function ProfilePage() {
     setEntityTypeError(null);
     setEntityTypeSaving(true);
     try {
-      const res = await fetch(`/users/${encodeURIComponent(user!.email)}/entity-type`, {
+      const res = await apiFetch(`/users/${encodeURIComponent(user!.email)}/entity-type`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ entityType: next }),
@@ -254,7 +254,7 @@ export default function ProfilePage() {
     setCompanyError(null);
     setCompanySaving(true);
     try {
-      const res = await fetch(`/users/${encodeURIComponent(user!.email)}/company-profile`, {
+      const res = await apiFetch(`/users/${encodeURIComponent(user!.email)}/company-profile`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ gstin, companyRegisteredName: companyName }),
@@ -280,7 +280,7 @@ export default function ProfilePage() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const res = await fetch(`/users/${encodeURIComponent(user!.email)}/documents/${docType}`, {
+      const res = await apiFetch(`/users/${encodeURIComponent(user!.email)}/documents/${docType}`, {
         method: 'POST',
         body: formData,
       });
@@ -303,7 +303,7 @@ export default function ProfilePage() {
       }
     } catch (e: any) {
       setUploadStatus(prev => ({ ...prev, [docType]: 'error' }));
-      // A fetch() that never reached the server (server not running, no
+      // A apiFetch() that never reached the server (server not running, no
       // network) throws a generic "Failed to fetch" TypeError, not an HTTP
       // error - surface that distinctly rather than implying the file itself
       // was rejected.

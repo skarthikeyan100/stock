@@ -50,7 +50,6 @@ export function isNonPositiveProfitBlocked(grossProfit: number): boolean {
 // at 100% (a day can be at most the sum of all winning days).
 export function computeConsistencyBreach(
     periodTrades: Array<{ exitTime: any; realizedPnL?: number }>,
-    grossProfit: number,
     consistencyLimitPercent: number
 ): { worstDay?: string; worstPnL: number; worstPercent: number; tradeIds: any[]; breached: boolean } {
     const byDay = groupByDay(periodTrades);
@@ -78,7 +77,7 @@ function closedTradesCollection() {
     return Mongo.getInstance().db.collection('closedTrades');
 }
 
-// Groups a period's closed trades by exitTime's calendar date (UTC) and sums
+// Groups a period's closed trades by exitTime's calendar date (IST, see istDayKey) and sums
 // realizedPnL per day - used by both the consistency-rule check and the
 // trader-facing "why was my payout blocked" breakdown.
 function istDayKey(d: Date): string {
@@ -99,9 +98,7 @@ function groupByDay(trades: any[]): Map<string, { pnl: number; tradeIds: any[] }
 
 // Groups a period's closed trades by their trading week (Wed-Tue, local
 // time - see util/weekWindow.ts), keyed by that week's Wednesday. Deliberately
-// local time, unlike groupByDay's UTC calendar-date slicing above - that's a
-// pre-existing inconsistency this change doesn't attempt to fix, since
-// groupByDay's UTC semantics are unrelated to the weekly-drawdown rule.
+// local time; groupByDay above groups by IST calendar date.
 function groupByWeek(trades: any[]): Map<string, { pnl: number; tradeIds: any[]; weekStart: Date; weekEnd: Date }> {
     const byWeek = new Map<string, { pnl: number; tradeIds: any[]; weekStart: Date; weekEnd: Date }>();
     for (const t of trades) {
@@ -207,7 +204,7 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
     // Consistency rule: no single day may contribute more than
     // consistencyLimitPercent of the period's gross winnings.
     if (!blocked) {
-        const consistency = computeConsistencyBreach(periodTrades, grossProfit, consistencyLimitPercent);
+        const consistency = computeConsistencyBreach(periodTrades, consistencyLimitPercent);
         if (consistency.breached) {
             blocked = true;
             blockReason = `${consistency.worstDay} contributed ${consistency.worstPercent.toFixed(0)}% of this period's winning days (limit ${consistencyLimitPercent}%).`;
@@ -399,6 +396,21 @@ export async function createPayoutRecord(user: string, periodStart: Date, period
         throw new Error('periodStart must be a valid date before periodEnd');
     }
     await ensurePayoutIndexes();
+    return withPayoutLock(user, () => createPayoutRecordLocked(user, periodStart, periodEnd));
+}
+
+// Serialises create-payout per user within this (single) frontend process: the overlap check and the insert below are separate
+// operations, so two concurrent requests for the same period could otherwise both pass the check and both insert a pending payout.
+const payoutLocks = new Map<string, Promise<unknown>>();
+function withPayoutLock<T>(user: string, fn: () => Promise<T>): Promise<T> {
+    const prev = payoutLocks.get(user) ?? Promise.resolve();
+    const next = prev.catch(() => undefined).then(fn);
+    payoutLocks.set(user, next);
+    next.finally(() => { if (payoutLocks.get(user) === next) payoutLocks.delete(user); }).catch(() => undefined);
+    return next;
+}
+
+async function createPayoutRecordLocked(user: string, periodStart: Date, periodEnd: Date): Promise<any> {
     // The same closedTrades must never be paid twice: refuse a period that overlaps any payout that is not rejected.
     const overlapping = await payoutsCollection().findOne({
         user,
@@ -478,7 +490,7 @@ function toObjectId(payoutId: any): any {
 
 // Compare-and-set: only a PENDING payout can be decided, exactly once. A payout the rules rejected at creation, an
 // already-paid one, or an unknown id cannot be (re)decided - so a rule block can't be bypassed by marking it paid.
-export async function markPayoutDecision(payoutId: any, status: 'paid' | 'rejected', note: string | undefined, adminEmail: string | null | undefined): Promise<any> {
+export async function markPayoutDecision(payoutId: any, status: 'rejected', note: string | undefined, adminEmail: string | null | undefined): Promise<any> {
     if (!adminEmail) throw new Error('A decision must be attributed to an admin');
     const id = toObjectId(payoutId);
     const existing = await payoutsCollection().findOne({ _id: id });
@@ -493,7 +505,7 @@ export async function markPayoutDecision(payoutId: any, status: 'paid' | 'reject
     await decisionLogCollection().insertOne({
         user: updated.user,
         payoutId: id,
-        type: status === 'paid' ? 'payout_paid' : 'payout_rejected',
+        type: 'payout_rejected',
         reason: note,
         detail: { decidedBy: adminEmail },
         createdAt: new Date(),

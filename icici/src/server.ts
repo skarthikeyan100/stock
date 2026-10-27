@@ -41,7 +41,7 @@ import fs from 'fs';
 import { Trade } from './model/model';
 import configService from './prism/ConfigService';
 import { validateFlatConfig, validateConfigFile } from './prism/configValidation';
-import { getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields, normalizeEmail } from './user';
+import { revokeSessions, getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields, normalizeEmail } from './user';
 import { computePayout, createPayoutRecord, markPayoutDecision, markPayoutPaidWithProof, setPayoutEmailStatus, claimPayoutEmailSend, getPayout, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary, periodFromInputs } from './payout';
 import multer from 'multer';
 import { GridFSBucket, ObjectId } from 'mongodb';
@@ -101,6 +101,26 @@ app.use(express.static(path.join(__dirname, '../public')));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 app.use(cookieParser(SESSION_COOKIE_SECRET));
+// Global CSRF guard: every state-changing request must carry X-Requested-With (a header a cross-site page or a plain HTML form cannot
+// add without a CORS preflight this server never grants). Previously only getOrPost routes and /order/settarget were guarded, so
+// /config, /reconcile, /strategies, /users*, /admin/payouts* relied on SameSite=Lax alone. Loopback (ops scripts) is exempt.
+app.use((req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') { next(); return; }
+    requireCsrfHeader(req, res, next);
+});
+// Identity/filter fields must be plain strings. Express parses `?user[$ne]=` and `{"user": {"$ne": null}}` into objects, which would
+// reach a Mongo filter as an operator instead of a value.
+const MUST_BE_STRING = ['user', 'email', 'status', 'userId'];
+app.use((req, res, next) => {
+    for (const source of [req.query, req.body]) {
+        if (!source || typeof source !== 'object') continue;
+        for (const key of MUST_BE_STRING) {
+            const v = (source as any)[key];
+            if (v !== undefined && typeof v !== 'string') { res.status(400).json({ error: `${key} must be a string` }); return; }
+        }
+    }
+    next();
+});
 app.disable('etag');
 
 // Express 4 does not catch a rejected promise from an async handler/middleware: left alone it becomes an unhandled
@@ -177,8 +197,28 @@ function pushUserToOrderProcess(user: any, context: string): Promise<void> {
 // identity at all). Returns null when there's no valid session; callers that
 // need a guaranteed identity go through requireAuth/requireSelfOrAdmin below
 // first, which reject the request before the handler body ever runs.
+// The session cookie value is `email|issuedAtMs` (signed). The issue time lets the SERVER enforce an expiry and revoke sessions;
+// the cookie's maxAge is only a hint to the browser. A legacy cookie holding just the email has no issue time (treated as
+// issued at 0: valid until a revocation, and re-issued with a timestamp on the next /auth/me).
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+function sessionCookieValue(email: string): string { return `${email}|${Date.now()}`; }
+function parseSession(req: express.Request): { email: string; issuedAt: number; legacy: boolean } | null {
+    const raw = (req as any).signedCookies?.session;
+    if (typeof raw !== 'string' || !raw) return null;
+    const i = raw.lastIndexOf('|');
+    if (i < 0) return { email: raw, issuedAt: 0, legacy: true };
+    const issuedAt = Number(raw.slice(i + 1));
+    if (!Number.isFinite(issuedAt)) return null;
+    if (Date.now() - issuedAt > SESSION_MAX_AGE_MS) return null; // expired server-side, whatever the browser still holds
+    return { email: raw.slice(0, i), issuedAt, legacy: false };
+}
 function resolveUser(req: express.Request): string | null {
-    return (req as any).signedCookies?.session || null;
+    return parseSession(req)?.email ?? null;
+}
+// True when the user's sessions were revoked (logout) after this cookie was issued.
+function sessionRevoked(req: express.Request, user: { sessionsValidAfter?: number } | null | undefined): boolean {
+    const s = parseSession(req);
+    return !!s && !!user?.sessionsValidAfter && s.issuedAt <= user.sessionsValidAfter;
 }
 
 // Loopback requests (a process on this same machine - see isLoopback's own
@@ -210,7 +250,7 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
     const email = resolveUser(req);
     if (!email) { res.status(401).json({ error: 'Not logged in' }); return; }
     const user = await getActiveUser(email);
-    if (!user) { res.status(401).json({ error: 'Unknown user' }); return; }
+    if (!user || sessionRevoked(req, user)) { res.status(401).json({ error: 'Unknown user' }); return; }
     if (user.enabled === false) { res.status(403).json({ error: 'Account disabled' }); return; }
     next();
 }
@@ -220,7 +260,7 @@ async function requireAdmin(req: express.Request, res: express.Response, next: e
     const email = resolveUser(req);
     if (!email) { res.status(401).json({ error: 'Not logged in' }); return; }
     const user = await getActiveUser(email);
-    if (!user || user.role !== 'admin' || user.enabled === false) { res.status(403).json({ error: 'Forbidden' }); return; }
+    if (!user || user.role !== 'admin' || user.enabled === false || sessionRevoked(req, user)) { res.status(403).json({ error: 'Forbidden' }); return; }
     next();
 }
 
@@ -230,7 +270,7 @@ function requireSelfOrAdmin(paramName = 'email') {
         const email = resolveUser(req);
         if (!email) { res.status(401).json({ error: 'Not logged in' }); return; }
         const caller = await getActiveUser(email);
-        if (!caller) { res.status(401).json({ error: 'Unknown user' }); return; }
+        if (!caller || sessionRevoked(req, caller)) { res.status(401).json({ error: 'Unknown user' }); return; }
         if (caller.enabled === false) { res.status(403).json({ error: 'Account disabled' }); return; }
         if (email === req.params[paramName]) { next(); return; }
         if (caller.role === 'admin') { next(); return; }
@@ -273,7 +313,7 @@ app.post('/auth/login', async function (req, res) {
         }
         invalidateUserCache(user.email);
         await pushUserToOrderProcess(user, 'login');
-        res.cookie('session', user.email, { signed: true, httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
+        res.cookie('session', sessionCookieValue(user.email), { signed: true, httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
         res.json(toClientUser(user));
     } catch (e) {
         Log.log('Login error:', e);
@@ -282,16 +322,19 @@ app.post('/auth/login', async function (req, res) {
 });
 
 app.get('/auth/me', async function (req, res) {
-    const email = (req as any).signedCookies?.session;
-    if (!email) {
+    const session = parseSession(req);
+    const email = session?.email;
+    if (!session || !email) {
         res.status(401).json({ error: 'Not logged in' });
         return;
     }
     const user = await getUser(email);
-    if (!user) {
+    if (!user || sessionRevoked(req, user)) {
         res.status(401).json({ error: 'Unknown user' });
         return;
     }
+    // Re-issue a legacy (timestamp-less) cookie so it picks up server-side expiry and revocation.
+    if (session.legacy) res.cookie('session', sessionCookieValue(user.email), { signed: true, httpOnly: true, secure: true, sameSite: 'lax', maxAge: SESSION_MAX_AGE_MS });
     if (user.enabled === false) {
         res.status(403).json({ error: 'Account disabled' });
         return;
@@ -305,7 +348,17 @@ app.get('/auth/me', async function (req, res) {
     res.json(toClientUser(user));
 });
 
-app.post('/auth/logout', function (req, res) {
+app.post('/auth/logout', async function (req, res) {
+    // Revokes the user's sessions server-side too (not just this browser's copy), so a leaked or copied cookie stops working.
+    const email = resolveUser(req);
+    if (email) {
+        try {
+            await revokeSessions(email);
+            invalidateUserCache(email);
+        } catch (e) {
+            Log.log('[frontend] session revoke on logout failed (cookie still cleared):', e);
+        }
+    }
     res.clearCookie('session');
     res.sendStatus(200);
 });
@@ -1170,7 +1223,8 @@ async function handleBreezeCallback(req: express.Request, res: express.Response)
     try {
         const apiSession = (req.query.apisession ?? req.query.API_Session ?? req.body?.apisession ?? req.body?.API_Session) as string;
         if (!apiSession) {
-            Log.log('Missing API_Session in Breeze callback', { query: req.query, body: req.body });
+            // Key names only: the query/body of a login callback can carry secrets and must never reach the log.
+            Log.log('Missing API_Session in Breeze callback', { queryKeys: Object.keys(req.query ?? {}), bodyKeys: Object.keys(req.body ?? {}) });
             res.status(400).json({ error: 'Missing API_Session from ICICI Breeze' });
             return;
         }
@@ -1863,7 +1917,20 @@ app.get('/notificationstream', requireAuth, async function (req, res) {
     req.on('close', () => notificationStreamClients.delete(res));
 });
 
+// Notification ids already pushed to clients. Payout notifications are inserted AND emitted immediately, and the 12s poller below then
+// finds the same document: without this the client saw each one twice.
+const sentNotificationIds = new Set<string>();
+function markNotificationSent(n: any): boolean {
+    const id = n?._id ? String(n._id) : null;
+    if (!id) return true; // no id to dedupe on: deliver
+    if (sentNotificationIds.has(id)) return false;
+    sentNotificationIds.add(id);
+    if (sentNotificationIds.size > 5000) sentNotificationIds.delete(sentNotificationIds.values().next().value as string);
+    return true;
+}
+
 myEmitter.on('notification', ({ user, notification }: { user: string; notification: any }) => {
+    if (!markNotificationSent(notification)) return;
     for (const [res, streamUser] of notificationStreamClients) {
         if (streamUser === user) res.write(`data: ${JSON.stringify(notification)}\n\n`);
     }
@@ -1871,11 +1938,14 @@ myEmitter.on('notification', ({ user, notification }: { user: string; notificati
 
 setInterval(async () => {
     try {
-        const cutoff = lastNotificationPollAt;
+        // Overlap the window: a document stamped just before the cutoff can be committed after the previous query ran, and would be
+        // missed for good otherwise. The sent-id set absorbs the overlap.
+        const cutoff = new Date(lastNotificationPollAt.getTime() - 5_000);
         lastNotificationPollAt = new Date();
         if (notificationStreamClients.size === 0) return;
         const fresh = await Mongo.getInstance().db.collection('notifications').find({ createdAt: { $gt: cutoff } }).toArray();
         for (const n of fresh) {
+            if (!markNotificationSent(n)) continue;
             for (const [res, streamUser] of notificationStreamClients) {
                 if (streamUser === n.user) res.write(`data: ${JSON.stringify(n)}\n\n`);
             }

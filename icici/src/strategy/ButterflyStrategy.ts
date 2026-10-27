@@ -150,6 +150,7 @@ export default class ButterflyStrategy extends Strategy {
         // (identical to BulkPcrStrategy's phase='running' pre-await pattern).
         this.phase = 'running';
         this.cyclesToday++;
+        this.persistState(); // so a restart cannot re-fire a cycle that already started today
 
         const atmStrike = Math.round(quote.ltp / this.strikeStep()) * this.strikeStep();
         const brokers = this.configuredBrokers();
@@ -470,14 +471,11 @@ export default class ButterflyStrategy extends Strategy {
             if (leg.status !== 'open') continue;
             const ltp = this.latestLtp.get(leg.token!);
             if (ltp == null) return null;
-            // A leg whose last tick is old is not "fresh": a stale wing quote used to hold the stop/target decision without anyone
-            // noticing. No decision on stale data - and say so, since the exit is then effectively paused.
-            if (Date.now() - (this.latestLtpAt.get(leg.token!) ?? 0) > STALE_LEG_QUOTE_MS) {
-                if (Date.now() - this.lastStaleAlertAt > 5 * 60_000) {
-                    this.lastStaleAlertAt = Date.now();
-                    Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] ALERT: no tick for ${leg.tsym} in over ${STALE_LEG_QUOTE_MS / 1000}s - stop/target decisions paused until it ticks`);
-                }
-                return null;
+            // A leg whose last tick is old is priced at its last known value (a far wing can go quiet for minutes, and pausing the stop
+            // on that would leave a live short unprotected) - but say so, since the decision rests on a stale quote.
+            if (Date.now() - (this.latestLtpAt.get(leg.token!) ?? 0) > STALE_LEG_QUOTE_MS && Date.now() - this.lastStaleAlertAt > 5 * 60_000) {
+                this.lastStaleAlertAt = Date.now();
+                Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] ALERT: no tick for ${leg.tsym} in over ${STALE_LEG_QUOTE_MS / 1000}s - stop/target decision uses its last known price ${ltp}`);
             }
             total += leg.side === 'BUY' ? leg.filledQty * (ltp - leg.entryAvg) : leg.filledQty * (leg.entryAvg - ltp);
         }
@@ -555,7 +553,7 @@ export default class ButterflyStrategy extends Strategy {
             const { squaringOff: _inFlight, ...durable } = pos;
             positions[broker] = durable as BrokerButterflyPosition;
         }
-        const doc = { userId: this.userId, positions };
+        const doc = { userId: this.userId, positions, cycleDay: this.cycleDay, cyclesToday: this.cyclesToday };
         this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION)
             .replaceOne({ userId: this.userId }, doc, { upsert: true }));
     }
@@ -575,6 +573,8 @@ export default class ButterflyStrategy extends Strategy {
     // explicit per-strategy call-site wiring needed.
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
         const saved = await this.loadState();
+        // The per-day cycle count survives a restart, or a restart would let a cycle that already ran (and stopped out) fire again.
+        if ((saved as any)?.cycleDay === localDayKey()) { this.cycleDay = (saved as any).cycleDay; this.cyclesToday = Number((saved as any).cyclesToday ?? 0); }
         if (!saved?.positions) { this.phase = 'idle'; return; }
 
         for (const [broker, pos] of Object.entries(saved.positions) as [BrokerName, BrokerButterflyPosition][]) {
@@ -776,6 +776,7 @@ export default class ButterflyStrategy extends Strategy {
         this.phase = 'idle';
         this.positions.clear();
         this.eodDone = false;
+        this.cyclesToday = 0; // an admin reset re-arms the strategy for the day
     }
     isRunning(): boolean { return this.phase === 'running' || [...this.positions.values()].some((p) => p.phase !== 'done'); }
 }

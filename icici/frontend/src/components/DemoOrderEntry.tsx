@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, FormEvent } from 'react';
 import { InputGroup, Form, Button, Spinner, Alert, ListGroup } from 'react-bootstrap';
 import { useTrading } from '../context/TradingContext';
 import DemoHelpTip from './DemoHelpTip';
+import { apiFetch } from '../utils/api';
 
 interface AntOption {
   token: string;
@@ -29,7 +30,7 @@ export default function DemoOrderEntry() {
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetch('/demo/symbols?symbol=NIFTY')
+    apiFetch('/demo/symbols?symbol=NIFTY')
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
       .then((data: AntOption[]) => { if (Array.isArray(data)) setOptions(data); })
       .catch((err) => console.error('Failed to load demo symbols:', err));
@@ -40,7 +41,7 @@ export default function DemoOrderEntry() {
   // startPendingTrade) - shown here purely so the placeholder matches the
   // live OrderEntry page's copy rather than the vague, unexplained "(default)".
   useEffect(() => {
-    fetch('/config')
+    apiFetch('/config')
       .then((res) => (res.ok ? res.json() : null)) // /config is admin-only: anonymous visitors just get no hint
       .then((data) => {
         if (!data) return;

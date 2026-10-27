@@ -575,7 +575,7 @@ class NorenRestApi {
       values["prd"] = product_type
     }
 
-    if (product_type != '') {
+    if (segment != '') {
       values["seg"] = segment
     }
 

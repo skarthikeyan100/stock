@@ -462,8 +462,9 @@ export default class HourlyStrategy extends Strategy {
             // A stop/EOD fired while the chunks were still being placed: run it now that every chunk is resting and can be cancelled.
             const deferred = pos.closeRequested;
             pos.closeRequested = undefined;
-            if (deferred && pos.phase === 'selling' && !pos.squaringOff) {
+            if (deferred && (pos.phase === 'selling' || pos.phase === 'error') && pos.heldTsym && !pos.squaringOff) {
                 Log.log(`[Hourly] [${broker}] Running the ${deferred} close that was deferred while the exit was being placed`);
+                if (pos.phase === 'error') pos.phase = 'selling'; // a later chunk failed, but earlier chunks may be resting: cancel and flatten them
                 this.invalidateClose(pos).catch((e) => Log.log(`[Hourly] [${broker}] deferred ${deferred} close failed:`, e));
             }
         }

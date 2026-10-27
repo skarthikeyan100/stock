@@ -81,7 +81,7 @@ const stickyActionsStyle: CSSProperties = {
 };
 
 async function patchVerify(email: string, field: 'email' | 'phone' | 'address' | 'dob' | 'pan', verified: boolean) {
-  await fetch(`/users/${encodeURIComponent(email)}/verify`, {
+  await apiFetch(`/users/${encodeURIComponent(email)}/verify`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ field, verified }),
@@ -163,8 +163,8 @@ export default function AdminPage() {
       const pnlUser = STRATEGY_PNL_USER[configKey];
       const today = resolveDateRange('day', '', '').from;
       const [closedRes, openRes] = await Promise.all([
-        fetch(`/admin/trades/closed?user=${encodeURIComponent(pnlUser)}&from=${today}&to=${today}`),
-        fetch(`/admin/trades/open?user=${encodeURIComponent(pnlUser)}`),
+        apiFetch(`/admin/trades/closed?user=${encodeURIComponent(pnlUser)}&from=${today}&to=${today}`),
+        apiFetch(`/admin/trades/open?user=${encodeURIComponent(pnlUser)}`),
       ]);
       if (!closedRes.ok || !openRes.ok) throw new Error('status fetch failed');
       const [closedData, openData] = await Promise.all([closedRes.json(), openRes.json()]);
@@ -183,7 +183,7 @@ export default function AdminPage() {
   const fetchAdminPayouts = () => {
     setPayoutsLoading(true);
     const qs = payoutsFilter ? `?status=${encodeURIComponent(payoutsFilter)}` : '';
-    fetch(`/admin/payouts${qs}`)
+    apiFetch(`/admin/payouts${qs}`)
       .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
       .then(data => { if (Array.isArray(data)) setAdminPayouts(data); })
       .catch(() => {})
@@ -197,7 +197,7 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (activeTab !== 'trades') return;
-    fetch('/strategies')
+    apiFetch('/strategies')
       .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
       .then(data => { if (Array.isArray(data)) setStrategies(data); })
       .catch(() => {});
@@ -216,8 +216,8 @@ export default function AdminPage() {
       if (tradeDateRange.from) closedQs.set('from', tradeDateRange.from);
       if (tradeDateRange.to) closedQs.set('to', tradeDateRange.to);
       const [openRes, closedRes] = await Promise.all([
-        fetch(`/admin/trades/open${userQs ? `?${userQs}` : ''}`),
-        fetch(`/admin/trades/closed?${closedQs.toString()}`),
+        apiFetch(`/admin/trades/open${userQs ? `?${userQs}` : ''}`),
+        apiFetch(`/admin/trades/closed?${closedQs.toString()}`),
       ]);
       if (!openRes.ok) throw new Error(await readError(openRes));
       if (!closedRes.ok) throw new Error(await readError(closedRes));
@@ -259,7 +259,7 @@ export default function AdminPage() {
     setPnlSummary(null); // never show the previous selection's summary under new filters
     let stale = false;
     const timer = setTimeout(() => {
-      fetch(`/admin/trades/pnl-summary?${qs.toString()}`)
+      apiFetch(`/admin/trades/pnl-summary?${qs.toString()}`)
         .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
         .then(data => { if (!stale && data && typeof data.eligibleTotal === 'number') setPnlSummary(data); })
         .catch(() => { if (!stale) setPnlSummary(null); });
@@ -286,7 +286,7 @@ export default function AdminPage() {
     }
     setComputing(true);
     try {
-      const res = await fetch('/admin/payouts/compute', {
+      const res = await apiFetch('/admin/payouts/compute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user: payoutUser, periodStart: payoutPeriod.from, periodEnd: payoutPeriod.to }),
@@ -348,7 +348,7 @@ export default function AdminPage() {
   };
 
   const fetchUsers = () => {
-    fetch('/users')
+    apiFetch('/users')
       .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
       .then(data => {
         if (Array.isArray(data)) setUsers(data);
@@ -371,7 +371,7 @@ export default function AdminPage() {
   const fetchConfig = () => {
     setConfigLoading(true);
     setConfigError(null);
-    fetch('/config')
+    apiFetch('/config')
       .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
       .then(data => {
         configBaseRef.current = JSON.parse(JSON.stringify(data));
@@ -523,7 +523,7 @@ export default function AdminPage() {
     setConfigSaving(true);
     try {
       // Merge onto the server's current config, not the snapshot fetched at page load.
-      const latestRes = await fetch('/config');
+      const latestRes = await apiFetch('/config');
       if (!latestRes.ok) throw new Error(await readError(latestRes));
       const merged = await latestRes.json();
       for (const c of changes) setIn(merged, c.path, c.value);
@@ -575,7 +575,7 @@ export default function AdminPage() {
       return;
     }
     try {
-      const res = await fetch('/users', {
+      const res = await apiFetch('/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -601,7 +601,7 @@ export default function AdminPage() {
   const handleDeleteUser = async (email: string) => {
     if (!confirm(`Are you sure you want to delete user ${email}?`)) return;
     try {
-      const res = await fetch(`/users/${encodeURIComponent(email)}`, { method: 'DELETE' });
+      const res = await apiFetch(`/users/${encodeURIComponent(email)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to delete user');
       fetchUsers();
     } catch (err) {

@@ -43,13 +43,16 @@ export async function neverShortSellable(args: {
     quantity: number;
     livePosition: () => Promise<number>;
     restingSellQuantity: number;
+    // Re-read once after a short wait before refusing on a flat reading. Only for a sell placed right after the entry fill (a target
+    // sell, a sell-back), where the positions endpoint can lag; never for a stop-loss/EOD exit, which must not wait.
+    recheckIfFlat?: boolean;
 }): Promise<number> {
     let live: number;
     try {
         live = await args.livePosition();
         // A positions endpoint can lag a fill by a few seconds (a target sell placed right after the entry fill, a sell-back right
         // after its buy): before refusing on a flat reading, look once more.
-        if (Number.isFinite(live) && live - args.restingSellQuantity <= 0) {
+        if (args.recheckIfFlat && Number.isFinite(live) && live - args.restingSellQuantity <= 0) {
             await new Promise((r) => setTimeout(r, 2500));
             live = await args.livePosition();
         }

@@ -234,9 +234,14 @@ export default class SentimentStrategy extends Strategy {
                 try {
                     response = await OrderClient.getInstance().buyIndex(this.userId, { niftyLtp: quote.ltp - 2, right: sentiment, quantity: orderQuantity });
                 } catch (e) {
-                    // The buy did not happen: re-arm, or `ordered` stayed true with no contract and the strategy was dead until reset.
                     Log.log('[SentimentStrategy] buyIndex failed:', e);
-                    this.ordered = false;
+                    // Re-arm only on a definite rejection. After a timeout/IPC failure the order may still be live: re-arming would buy
+                    // again, so the strategy stays paused (ordered=true) until an admin reset.
+                    if (/reject|margin|not allowed|no contract|invalid|insufficient|not active/i.test(String((e as any)?.message ?? e))) {
+                        this.ordered = false;
+                    } else {
+                        Log.log('[SentimentStrategy] ALERT: entry outcome unknown - strategy paused (the order may be live); reset it once the account is checked');
+                    }
                     return;
                 }
                 this.iterationCount++;

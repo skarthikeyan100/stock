@@ -35,6 +35,15 @@ async function main(): Promise<void> {
         throw new Error(`Screener did not produce ${SCREENER_OUTPUT_CSV}`);
     }
 
+    // The screener can exit 0 without writing anything new; copying yesterday's file would give the cover-order step stale
+    // recommendations (its own freshness gate looks at a different file that gapscreener:start rewrites, so it would not notice).
+    const istDay = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+    const writtenOn = istDay(fs.statSync(SCREENER_OUTPUT_CSV).mtime);
+    const today = istDay(new Date());
+    if (writtenOn !== today) {
+        throw new Error(`Screener output ${SCREENER_OUTPUT_CSV} was last written on ${writtenOn}, not today (${today}) - refusing to copy a stale file`);
+    }
+
     fs.copyFileSync(SCREENER_OUTPUT_CSV, LOCAL_OUTPUT_CSV);
     console.log(`[gapScreenerGenerate] Copied ${SCREENER_OUTPUT_CSV} -> ${LOCAL_OUTPUT_CSV}`);
 }

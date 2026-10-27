@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, FormEvent } from 'react';
 import { InputGroup, Form, Button, Spinner, Alert, ListGroup } from 'react-bootstrap';
 import { useTrading } from '../context/TradingContext';
 import { useAuth } from '../context/AuthContext';
+import { apiFetch } from '../utils/api';
 
 export default function OrderEntry() {
   const { placeOrder, placeContractOrder, isOrderDisabled, placingOrder, totalPnL, orderError, clearError } = useTrading();
@@ -23,7 +24,7 @@ export default function OrderEntry() {
   // config.yml's global settings.targetPriceDiff/stopLossPriceDiff - so the
   // placeholder shows the real value that will be used, not a vague "(default)".
   useEffect(() => {
-    fetch('/config')
+    apiFetch('/config')
       .then(res => (res.ok ? res.json() : null)) // /config is admin-only: a trader just gets no placeholder hint
       .then(data => {
         if (!data) return;
@@ -43,7 +44,7 @@ export default function OrderEntry() {
   // two different encodings depending on expiry type (e.g. monthly
   // NIFTY26AUG24100CE vs weekly NIFTY2690124100CE).
   useEffect(() => {
-    fetch(import.meta.env.BASE_URL + 'symbols.txt')
+    apiFetch(import.meta.env.BASE_URL + 'symbols.txt')
       .then(res => res.text())
       .then(text => {
         const lines = text.split('\n').filter(l => l.trim());

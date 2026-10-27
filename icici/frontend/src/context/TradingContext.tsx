@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import { useMarketHours } from '../utils/marketHours';
-import { apiPost, readError } from '../utils/api';
+import { apiPost, readError, apiFetch } from '../utils/api';
 
 export interface Trade {
   tsym: string;
@@ -155,7 +155,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     const check = () => {
-      fetch('/prism/canPlaceOrder')
+      apiFetch('/prism/canPlaceOrder')
         .then(res => {
           // A 401/500 says nothing about the trading rules: keep the last known state instead of flipping to "blocked".
           if (!res.ok) throw new Error(`canPlaceOrder ${res.status}`);

@@ -72,6 +72,7 @@ interface UserSettings {
     targetPoints?: number;
     stopLossPoints?: number;
     accountClosed?: boolean;
+    closedAtMs?: number; // when this process closed the account (see updateUserSettings)
 }
 
 // One reservation per in-flight, not-yet-resolved buy request. A Set<string>
@@ -189,10 +190,13 @@ class OrderBookkeeping {
     }
 
     updateUserSettings(user: string, settings: UserSettings) {
-        // accountClosed is sticky: it can be set by a weekly-drawdown breach that is still being persisted, so a push built from a
-        // user document that has not caught up must never re-open the account. (No code path re-opens an account at runtime.)
-        const wasClosed = this.userSettingsCache.get(user)?.accountClosed === true;
-        this.userSettingsCache.set(user, { ...settings, accountClosed: settings.accountClosed === true || wasClosed });
+        // A closure this process made moments ago may not be in the user document yet, so a push built from a document that has not
+        // caught up must not re-open the account. Once the closure is older than the persist window the document is authoritative
+        // again, which is how an admin clearing accountClosed in Mongo takes effect without a restart.
+        const prev = this.userSettingsCache.get(user);
+        const recentlyClosed = prev?.accountClosed === true && Date.now() - (prev.closedAtMs ?? 0) < 60_000;
+        const closed = settings.accountClosed === true || recentlyClosed;
+        this.userSettingsCache.set(user, { ...settings, accountClosed: closed, closedAtMs: closed ? (prev?.closedAtMs ?? Date.now()) : undefined });
     }
 
     getUserLossLimit(user: string): number {
@@ -640,6 +644,7 @@ class OrderBookkeeping {
         const settings = this.userSettingsCache.get(user);
         if (!settings || settings.accountClosed) return;
         settings.accountClosed = true;
+        settings.closedAtMs = Date.now();
         const reason = `Weekly loss limit of ${drawdownLimit(configService.getConfig().settings as any, 'maxWeeklyDrawdownPercent')}% breached`;
         Log.log(`[order] Account closed for ${user}: ${reason}`);
         closeUserAccount(user, reason).catch((e) => {

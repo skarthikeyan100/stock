@@ -125,7 +125,7 @@ class AntOrderNotifyStream {
             try { old.close(); } catch (e) { /* already closed */ }
         }
 
-        const ws = new WebSocket('wss://a3.aliceblueonline.com/open-api/order-notify/websocket', undefined, { rejectUnauthorized: false });
+        const ws = new WebSocket('wss://a3.aliceblueonline.com/open-api/order-notify/websocket', undefined);
         this.ws = ws;
 
         ws.onopen = () => {

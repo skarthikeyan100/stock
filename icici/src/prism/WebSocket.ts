@@ -30,12 +30,12 @@ class WebSocketClient {
     connect = (params, callbacks) => {
         Log.log('WS Connect is called')
         return new Promise((resolve, reject) => {
-            if (this.apikey === null || this.url === null) return "apikey or url is missing";
+            if (this.apikey === null || this.url === null) { reject(new Error("apikey or url is missing")); return; }
 
             //callbacks to the app are set here
             this.set_callbacks(callbacks);
 
-            this.ws = new web_socket(this.url, undefined, { rejectUnauthorized: false });
+            this.ws = new web_socket(this.url, undefined);
 
             const ws = this.ws;
             this.ws.onopen = (evt) => {
@@ -69,6 +69,7 @@ class WebSocketClient {
                 // Log.log('Result from socket: ', result);
 
                 if (result.t == 'ck' || result.t == 'ak') {
+                    resolve(result); // authenticated: settle the connect() promise (it used to stay pending forever)
                     this.trigger("open", [result]);
                 }
                 if (result.t == 'tk' || result.t == 'tf') {
@@ -91,6 +92,7 @@ class WebSocketClient {
             this.ws.onclose =  (evt) => {
                 Log.log("Socket closed")
                 if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+                reject(new Error('Prism WS closed before it was acknowledged')); // no-op once resolved
                 this.trigger("close", [JSON.stringify(evt.data)]);
             };
         })

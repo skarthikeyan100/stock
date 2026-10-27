@@ -23,7 +23,7 @@ export default function NotificationBell() {
     if (!user) return;
     // Merge (dedupe by _id): a notification pushed over SSE while this fetch was in flight must not appear twice.
     const loadUnread = () =>
-      fetch(`/users/${encodeURIComponent(user.email)}/notifications?unreadOnly=true`)
+      apiFetch(`/users/${encodeURIComponent(user.email)}/notifications?unreadOnly=true`)
         .then(res => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
         .then((data: Notification[]) => {
           if (!Array.isArray(data)) return;

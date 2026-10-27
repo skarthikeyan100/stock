@@ -721,7 +721,7 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
     const ant = ANT.getInstance();
     quantity = await neverShortSellable({
         label: `${tradingSymbol} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),
-        restingSellQuantity: pendingAntSellsFor(userId, tradingSymbol).reduce((sum, o) => sum + o.quantity, 0),
+        restingSellQuantity: pendingAntSellsFor(userId, tradingSymbol).reduce((sum, o) => sum + o.quantity, 0), recheckIfFlat: true,
     });
     Log.log(`[order] Bare ANT limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderNo } = await ant.placeOrder({

@@ -1108,11 +1108,11 @@ export default class Prism {
     // response; falls back defensively (0 qty/price) rather than throwing on
     // an unexpected shape.
     getPositions = async (opts?: { strict?: boolean }): Promise<any[]> => {
-        const positions: any = (await NorenRestApi.get_positions()) ?? [];
-        // strict: a non-array reply (a Not_Ok envelope, an expired session) must throw, not read as "no positions" - the
-        // never-short guard would otherwise refuse a real exit on a flat-looking account.
-        if (opts?.strict && !Array.isArray(positions)) throw new Error(`Prism get_positions returned a non-array reply: ${JSON.stringify(positions).slice(0, 200)}`);
-        return Array.isArray(positions) ? positions : [];
+        const raw: any = await NorenRestApi.get_positions();
+        // strict: a null/non-array reply (a Not_Ok envelope, an expired session) must throw, not read as "no positions" - the
+        // never-short guard would otherwise refuse a real exit on a flat-looking account. Checked BEFORE any `?? []` default.
+        if (opts?.strict && !Array.isArray(raw)) throw new Error(`Prism get_positions returned a non-array reply: ${JSON.stringify(raw)?.slice(0, 200)}`);
+        return Array.isArray(raw) ? raw : [];
     }
 
     buyIndex = async({ userContext, index, ltp, right, qty }: { userContext?: UserContext, index: string, ltp?: number, right?: string, qty?: number }) => {
@@ -1123,13 +1123,11 @@ export default class Prism {
         let calculatedOptionPrice
         let calculatedToken
         
-        let factor
-        if (nseIndex.token == nseIndex.niftyToken) {
-            if (!ltp) {
-                const indexQuote = await this.getNiftyQuote()
-                ltp = indexQuote.ltp
-            }
-            factor = 50
+        // The index's own strike step (never undefined, so a non-NIFTY index cannot produce NaN strikes).
+        const factor = nseIndex.factor
+        if (!ltp) {
+            const indexQuote = await this.getNiftyQuote()
+            ltp = indexQuote.ltp
         }
 
         const floorPrice = Math.floor(ltp/factor) * factor;
@@ -1209,13 +1207,11 @@ export default class Prism {
         const nseIndex = indexMap.get('NIFTY');
         let calculatedRight
         
-        let factor
-        if (nseIndex.token == nseIndex.niftyToken) {
-            if (!ltp) {
-                const indexQuote = await this.getNiftyQuote()
-                ltp = indexQuote.ltp
-            }
-            factor = 50
+        // The index's own strike step (never undefined, so a non-NIFTY index cannot produce NaN strikes).
+        const factor = nseIndex.factor
+        if (!ltp) {
+            const indexQuote = await this.getNiftyQuote()
+            ltp = indexQuote.ltp
         }
 
         const floorPrice = Math.floor(ltp/factor) * factor;
@@ -1464,7 +1460,9 @@ export default class Prism {
     // {stat:'Not_Ok', emsg} (or an empty reply) means nothing was placed.
     _assertOrderAccepted = (reply: any, order: any) => {
         if (!reply || (reply.stat !== undefined && reply.stat !== 'Ok') || !reply.norenordno) {
-            throw new Error(`Prism order for ${order?.tsym} was not accepted: ${reply?.emsg ?? JSON.stringify(reply) ?? 'no reply'}`);
+            // The broker ANSWERED with a rejection: definitively not placed (safe to retry). A missing reply is ambiguous and is not tagged.
+            const answered = !!reply && reply.stat !== undefined && reply.stat !== 'Ok';
+            throw Object.assign(new Error(`Prism order for ${order?.tsym} was not accepted: ${reply?.emsg ?? JSON.stringify(reply) ?? 'no reply'}`), answered ? { notPlaced: true } : {});
         }
     }
 
@@ -1552,12 +1550,15 @@ export default class Prism {
                 Log.log('Construct trade now in refresh trades')
                 var trade = Trade.fromPrism(element);
                 Log.log('Trade sym: ', trade.tsym, ' trade.quantity: ', trade.quantity)
-                if (trade.tsym.startsWith('NIFTY') && trade.quantity > 0) {
+                if ((trade.tsym.startsWith('NIFTY') || trade.tsym.startsWith('SENSEX')) && trade.quantity > 0) {
+                    trade.broker = 'prism';
                     trades.push(trade)
                 }
             }
         });
-        bookkeeping.refreshTrades(trades);
+        // Replace only Prism's own rows: this used to overwrite bookkeeping.trades wholesale, dropping every kite/ant/breeze position
+        // from risk bookkeeping.
+        bookkeeping.refreshTrades([...bookkeeping.trades.filter((t) => t.broker !== 'prism'), ...trades]);
         return bookkeeping.trades;
     }
 }
