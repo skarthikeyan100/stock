@@ -14,12 +14,12 @@ console.log = console.error;
 // hostnames that need it (see kiteDns.ts) - `order` is the only process that
 // calls api.kite.trade (Kite) AND the one that places/cancels/exits ANT
 // orders via a3.aliceblueonline.com, so it's installed here.
-import { TRACKERS, TRACKER_BROKERS } from './order/pendingTrackers';
-import { TrackerBroker } from './order/pendingOrderTracker';
 import '../util/tz'; // pin TZ=Asia/Kolkata before any other module reads the clock
 import { installIpv4OnlyHostOverride } from './order/kiteDns';
 installIpv4OnlyHostOverride();
 
+import { TRACKERS, TRACKER_BROKERS } from './order/pendingTrackers';
+import { TrackerBroker } from './order/pendingOrderTracker';
 import net from 'net';
 import fs from 'fs';
 import Log from '../util/Log';
@@ -87,6 +87,9 @@ bookkeeping.onFill((userId, trade) => {
 bookkeeping.onPositionsChanged(() => {
     broadcast({ kind: 'positionsChanged' });
 });
+
+// Own-key lookup: a broker name from an IPC payload must never resolve to an inherited property (`constructor`).
+const trackerOf = (broker: string | undefined) => (broker && Object.prototype.hasOwnProperty.call(TRACKERS, broker) ? TRACKERS[broker as TrackerBroker] : undefined);
 
 for (const trackerBroker of TRACKER_BROKERS) {
     TRACKERS[trackerBroker].onCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason) => {
@@ -313,7 +316,7 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
     // symbol at once - a foreign order id sent to the wrong broker's cancel
     // API, silently relying on that broker's API to reject it rather than on
     // correct routing.
-    const pending = (TRACKERS[executor.brokerName as TrackerBroker]?.find(userId, tsym) ?? []).filter((o) => o.action === 'Sell');
+    const pending = (trackerOf(executor.brokerName)?.find(userId, tsym) ?? []).filter((o) => o.action === 'Sell');
     let filledQty = 0;
     let cancelFailed = false;
     for (const order of pending) {
@@ -804,7 +807,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // Broker-uniform: dispatch to whichever tracker owns this broker's pending
                 // orders, filter to SELL generically here (not per-tracker) since all four
                 // trackers already share the same {quantity, action, ...} shape.
-                const tracker = TRACKERS[req.payload.broker as TrackerBroker];
+                const tracker = trackerOf(req.payload.broker);
                 const result = tracker ? tracker.find(req.userId, req.payload.tradingSymbol).filter((o) => o.action === 'Sell') : [];
                 return { kind: 'response', id: req.id, ok: true, result };
             }
@@ -1480,7 +1483,7 @@ async function main() {
     guardedInterval('evaluateOpenDrawdowns', () => bookkeeping.evaluateOpenDrawdowns(), 10_000);
     guardedInterval('pollGttFills', pollGttFills, 60_000);
     guardedInterval('reconcileManualSells', reconcileManualSells, 60_000);
-    for (const name of TRACKER_BROKERS) guardedInterval(`pollPending${name}LimitOrders`, TRACKERS[name].poll, 15_000);
+    for (const name of TRACKER_BROKERS) guardedInterval(`pollPending${name === 'kite' ? '' : name[0].toUpperCase() + name.slice(1)}LimitOrders`, TRACKERS[name].poll, 15_000);
     // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
     // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than
     // event-driven since there's no fill/tick event marking "expiry day
