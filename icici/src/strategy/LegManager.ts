@@ -165,6 +165,11 @@ export class LegManager {
     // Loss-side mirror of maxProfitTripped: cumulative (realized + unrealized) P&L <= -threshold. Same close-all, same
     // same-day Mongo latch, cleared by reset().
     private maxLossTripped = false;
+    // Target-hit / square-off closes delete the leg from legsByToken BEFORE their sell await, and a target-hit root
+    // registers its refill only after that await. Without this counter isIdle() is true for that whole window, so
+    // the owning strategy's T1 gate re-enters (real 2026-10-27 09:51 bug: a fresh T1 entry stacked on the refill,
+    // leaving an untracked 65-qty position). Held until the refill is registered (or the close failed/finished).
+    private closesInFlight = 0;
     // End-of-day force close latch: once set, onOptionTick keeps closing every leg (retrying a failed sell on the
     // next tick) and nothing new is opened. Not persisted - the trading day is over either way.
     private eodClosing = false;
@@ -539,7 +544,7 @@ export class LegManager {
     }
 
     isIdle(): boolean {
-        return this.legsByToken.size === 0 && this.pendingReEntries.size === 0 && !this.deferredRootRefill;
+        return this.legsByToken.size === 0 && this.pendingReEntries.size === 0 && !this.deferredRootRefill && this.closesInFlight === 0;
     }
 
     isCapitalGateTripped(): boolean {
@@ -715,49 +720,52 @@ export class LegManager {
         const target = this.targetFor(leg, cfg, D);
         if (ltp >= target) {
             leg.status = 'CLOSING'; // synchronous, before any await - blocks re-entry into this branch for concurrent ticks
-            // Deleted BEFORE the sell await - see closeAllLegsAndCancelReEntries's
-            // identical comment for why (ANT fill-notify race with handleFillOrExternalSell).
-            this.legsByToken.delete(leg.token);
+            this.closesInFlight++; // held until the refill below is registered - see the field comment
             try {
-                await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
-            } catch (e) {
-                this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
-                leg.status = 'OPEN';
-                Log.log(`[${this.deps.ownerType}] Target-hit sell failed, leg remains open for retry:`, e);
-                return;
-            }
-            const pnl = (ltp - leg.avgPrice) * leg.totalQuantity;
-            this.recordOutcome('win', pnl);
-            Log.log(`[${this.deps.ownerType}] Target hit (${leg.isRoot ? 'root' : 'nested'}): ${leg.tsym} pnl=${Math.round(pnl)}`);
-
-            if (!leg.isRoot) {
-                this.freeParentSlot(leg);
-                await this.maybePromoteDeferredRootRefill();
-            }
-
-            const eligible = cfg.refillEnabled !== false && (leg.isRoot || this.isParentAlive(leg.parentLegId));
-            if (eligible) {
-                const intent: PendingReEntry = {
-                    token: leg.token, tsym: leg.tsym, exchange: leg.exchange, strike: leg.strike,
-                    right: leg.right, quantity: leg.quantity, limitPrice: leg.entryPrice,
-                    orderId: '', // set once placeRefill's order placement returns
-                    isRoot: leg.isRoot, parentLegId: leg.parentLegId, parentLevel: leg.parentLevel,
-                    parentLegRef: leg.parentLegRef,
-                };
-                let placed: boolean;
-                if (leg.isRoot && this.hasOpenNestedLegs()) {
-                    this.deferredRootRefill = intent;
-                    Log.log(`[${this.deps.ownerType}] Root refill deferred (nested legs still open): ${leg.tsym}`);
-                    placed = true;
-                } else {
-                    placed = await this.placeRefill(intent);
+                // Deleted BEFORE the sell await - see closeAllLegsAndCancelReEntries's
+                // identical comment for why (ANT fill-notify race with handleFillOrExternalSell).
+                this.legsByToken.delete(leg.token);
+                try {
+                    await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+                } catch (e) {
+                    this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
+                    leg.status = 'OPEN';
+                    Log.log(`[${this.deps.ownerType}] Target-hit sell failed, leg remains open for retry:`, e);
+                    return;
                 }
-                if (!placed) await this.cancelChildRefills(leg);
-            } else {
-                Log.log(`[${this.deps.ownerType}] No refill - parent closed: ${leg.tsym}`);
-                await this.cancelChildRefills(leg);
-            }
-            return;
+                const pnl = (ltp - leg.avgPrice) * leg.totalQuantity;
+                this.recordOutcome('win', pnl);
+                Log.log(`[${this.deps.ownerType}] Target hit (${leg.isRoot ? 'root' : 'nested'}): ${leg.tsym} pnl=${Math.round(pnl)}`);
+
+                if (!leg.isRoot) {
+                    this.freeParentSlot(leg);
+                    await this.maybePromoteDeferredRootRefill();
+                }
+
+                const eligible = cfg.refillEnabled !== false && (leg.isRoot || this.isParentAlive(leg.parentLegId));
+                if (eligible) {
+                    const intent: PendingReEntry = {
+                        token: leg.token, tsym: leg.tsym, exchange: leg.exchange, strike: leg.strike,
+                        right: leg.right, quantity: leg.quantity, limitPrice: leg.entryPrice,
+                        orderId: '', // set once placeRefill's order placement returns
+                        isRoot: leg.isRoot, parentLegId: leg.parentLegId, parentLevel: leg.parentLevel,
+                        parentLegRef: leg.parentLegRef,
+                    };
+                    let placed: boolean;
+                    if (leg.isRoot && this.hasOpenNestedLegs()) {
+                        this.deferredRootRefill = intent;
+                        Log.log(`[${this.deps.ownerType}] Root refill deferred (nested legs still open): ${leg.tsym}`);
+                        placed = true;
+                    } else {
+                        placed = await this.placeRefill(intent);
+                    }
+                    if (!placed) await this.cancelChildRefills(leg);
+                } else {
+                    Log.log(`[${this.deps.ownerType}] No refill - parent closed: ${leg.tsym}`);
+                    await this.cancelChildRefills(leg);
+                }
+                return;
+            } finally { this.closesInFlight--; }
         }
 
         // Adverse levels (1x-N), measured from this leg's own ORIGINAL entry price -
@@ -770,27 +778,30 @@ export class LegManager {
         const squareOffDistance = cfg.squareOffDistance ?? 50; // default preserves the old 5*slDistance(10)=50 behavior
         if (adverseMove >= squareOffDistance) {
             leg.status = 'CLOSING'; // synchronous, before any await - blocks re-entry into this branch for concurrent ticks
-            // Deleted BEFORE the sell await - see closeAllLegsAndCancelReEntries's
-            // identical comment for why (ANT fill-notify race with handleFillOrExternalSell).
-            this.legsByToken.delete(leg.token);
+            this.closesInFlight++;
             try {
-                await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
-            } catch (e) {
-                this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
-                leg.status = 'OPEN';
-                Log.log(`[${this.deps.ownerType}] Square-off sell failed, leg remains open for retry:`, e);
-                return;
-            }
-            const pnl = (ltp - leg.avgPrice) * leg.totalQuantity;
-            this.recordOutcome('loss', pnl);
-            Log.log(`[${this.deps.ownerType}] Square-off (${leg.isRoot ? 'root' : 'nested'}): ${leg.tsym} pnl=${Math.round(pnl)}`);
+                // Deleted BEFORE the sell await - see closeAllLegsAndCancelReEntries's
+                // identical comment for why (ANT fill-notify race with handleFillOrExternalSell).
+                this.legsByToken.delete(leg.token);
+                try {
+                    await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+                } catch (e) {
+                    this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
+                    leg.status = 'OPEN';
+                    Log.log(`[${this.deps.ownerType}] Square-off sell failed, leg remains open for retry:`, e);
+                    return;
+                }
+                const pnl = (ltp - leg.avgPrice) * leg.totalQuantity;
+                this.recordOutcome('loss', pnl);
+                Log.log(`[${this.deps.ownerType}] Square-off (${leg.isRoot ? 'root' : 'nested'}): ${leg.tsym} pnl=${Math.round(pnl)}`);
 
-            if (!leg.isRoot) {
-                this.freeParentSlot(leg);
-                await this.maybePromoteDeferredRootRefill();
-            }
-            await this.cancelChildRefills(leg); // leg is gone for good either way (root or nested)
-            return;
+                if (!leg.isRoot) {
+                    this.freeParentSlot(leg);
+                    await this.maybePromoteDeferredRootRefill();
+                }
+                await this.cancelChildRefills(leg); // leg is gone for good either way (root or nested)
+                return;
+            } finally { this.closesInFlight--; }
         }
 
         const maxLevels = cfg.maxLevels ?? 4;
