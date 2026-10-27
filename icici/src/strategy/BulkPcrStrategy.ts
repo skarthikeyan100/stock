@@ -127,8 +127,8 @@ function tsymRight(tsym: string): string {
     return /PE?$/.test(String(tsym).replace(/\d+$/, '')) ? PUT : CALL;
 }
 
-// True only for a buy failure that provably filled nothing - safe to retry. Ambiguous outcomes
-// ("fill status unresolved") and partial fills are never retried.
+// True only for a buy failure that provably filled nothing - safe to retry. Ambiguous outcomes (ANT's "fill status unresolved",
+// or any broker's [ORDER_MAY_BE_LIVE] tag from a fill wait whose cancel failed) and partial fills are never retried.
 function isNothingBought(e: any): boolean {
     const message = typeof e?.message === 'string' ? e.message : '';
     // [ORDER_MAY_BE_LIVE]: a fill wait could not settle the order (e.g. its cancel failed) - it may still be resting or filled.
@@ -173,6 +173,9 @@ interface BrokerPosition {
     entryQuantity?: number;
     // Epoch ms of the last buy attempt - throttles retries of a 'pending' buy.
     lastBuyAttemptAt?: number;
+    // Latched when an entry stopped early and the cancel of its unfilled remainder failed: that remainder may still fill at the
+    // broker, so this slot never re-buys (a second buy would stack on top of it). Manual review required.
+    liveRemainder?: boolean;
     // Epoch ms when phase last transitioned to 'selling' - lets reconcile()
     // tell a genuinely still-resting exit apart from one that's certainly
     // gone: every resting sell chunk placed by chunkedSquareOffLimit is a DAY
@@ -831,7 +834,10 @@ export default class BulkPcrStrategy extends Strategy {
             pos.heldToken = feedTokenOf(result);
             pos.entryAvg = result.avgPrice;
             Log.log(`[BulkPcrStrategy] [${broker}] Entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
-            if (result.orderMayBeLive) Log.log(`[BulkPcrStrategy] [${broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} entry FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked qty, manual review required`);
+            if (result.orderMayBeLive) {
+                pos.liveRemainder = true;
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} entry FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked qty and this slot will not re-buy, manual review required`);
+            }
             pos.entryQuantity = result.quantity;
             await this.placeExitSell(key, result.quantity);
         } catch (e: any) {
@@ -854,11 +860,7 @@ export default class BulkPcrStrategy extends Strategy {
             // any partial fill ("failed after filling N/<requested>" with N>0 - there's a real,
             // unmonitored position at stake then, not nothing). One retry only (isRetry).
             const message = typeof e?.message === 'string' ? e.message : '';
-            const ambiguousOutcome = message.includes('fill status unresolved') || message.includes(ORDER_MAY_BE_LIVE_TAG);
-            const nothingWasBought = !ambiguousOutcome && (
-                message.includes('no available investment headroom to size an order from')
-                || /failed after filling 0\//.test(message)
-            );
+            const nothingWasBought = isNothingBought(e);
             if (nothingWasBought && MARGIN_SHORTFALL_REASON_PATTERN.test(message)) {
                 // Deterministic: waiting 10s and re-sending the same order cannot succeed.
                 Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${right} entry rejected for margin - not retrying: ${message.slice(0, 200)}`);
@@ -1275,6 +1277,10 @@ export default class BulkPcrStrategy extends Strategy {
     private async buyAndExit(key: string): Promise<void> {
         const pos = this.positions.get(key);
         if (!pos || !pos.right || !(pos.entryQuantity && pos.entryQuantity > 0)) return;
+        if (pos.liveRemainder) {
+            Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} re-buy skipped: an earlier entry's unfilled remainder may still be live at the broker - manual review required`);
+            return;
+        }
 
         if (this.isBrokerStopped(pos.broker)) {
             // Stopped before this buy started: nothing is bought, so the side simply ends.
@@ -1311,7 +1317,10 @@ export default class BulkPcrStrategy extends Strategy {
             pos.entryAvg = result.avgPrice;
             pos.buyAttempts = 0;
             Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
-            if (result.orderMayBeLive) Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} re-buy FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked qty, manual review required`);
+            if (result.orderMayBeLive) {
+                pos.liveRemainder = true;
+                Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} re-buy FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked qty and this slot will not re-buy, manual review required`);
+            }
             if (this.eodDone || this.mustClose(pos)) {
                 // EOD or the loss stop started while this buy was in flight - square it off now, don't rest a sell.
                 pos.targetQuantity = result.quantity;

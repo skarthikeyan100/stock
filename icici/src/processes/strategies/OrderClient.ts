@@ -1,4 +1,5 @@
 import net from 'net';
+import type { ChunkedFillResult } from '../order/chunkedOrder';
 import Log from '../../util/Log';
 import { writeJsonLine, readJsonLines } from '../../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderRequestType, OrderResponse, FillNotification, OrderCancelledNotification } from '../../ipc/orderProtocol';
@@ -16,14 +17,11 @@ type PositionsChangedHandler = () => void;
 type CancelledHandler = (userId: string, notification: OrderCancelledNotification) => void;
 
 // What 'chunkedBuyIndex' returns: the chunked run's totals plus the contract that was bought (see chunkedOrder.ChunkedFillResult).
-export interface ChunkedBuyIndexResult {
+export type ChunkedBuyIndexResult = ChunkedFillResult & {
     tsym: string;
     token: string | number;
     feedToken?: string | number;
-    quantity: number;
-    avgPrice: number;
-    orderMayBeLive?: true;
-}
+};
 
 class OrderClient {
     private static instance: OrderClient;
