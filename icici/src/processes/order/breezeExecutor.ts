@@ -6,7 +6,7 @@ import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
-import { BuyRequest, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
+import { BuyRequest, Exchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol } from './breezePendingLimitOrders';
 import { roundToTick } from '../../kite/Kite';
@@ -645,7 +645,9 @@ async function getBreezeOrderFillInfo(orderId: string): Promise<{ filledQuantity
 // the generic executor.cancelOrder dispatch) and depends on that throw to
 // run its own independent fill-check + recordSellFill instead of looping
 // into a fresh sell for a quantity that already closed.
-export async function cancelOrderOnBreeze(orderId: string): Promise<void> {
+export async function cancelOrderOnBreeze(orderId: string, exchange?: Exchange): Promise<void> {
+    // A caller-supplied exchange (the tracker's record for this order) beats the side-map lookup and the NFO default.
+    if (exchange && exchange !== 'NSE') rememberOrderExchange(orderId, exchange);
     const breeze = Breeze.getInstance();
     await cancelOrderWithFillRecheck({
         orderId,

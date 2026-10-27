@@ -291,7 +291,7 @@ export interface BrokerExecutor {
     getContractByPriceRange(underlyingLtp: number, optionType: 'CE' | 'PE', index: OptionIndex, minPremium: number, excludeStrikes: Set<number>): Promise<any>;
 
     // This broker's resting limit orders on one contract (the pending-order tracker's view).
-    findPendingOrders(userId: string, tradingSymbol: string): { orderId: string; action: 'Buy' | 'Sell'; quantity: number }[];
+    findPendingOrders(userId: string, tradingSymbol: string): { orderId: string; action: 'Buy' | 'Sell'; quantity: number; exchange: 'NFO' | 'BFO' }[];
 
     buy(request: BuyRequest): Promise<Trade>;
 
@@ -320,5 +320,6 @@ export interface BrokerExecutor {
     // also force-close the same quantity (e.g. cancelAnyRestingLimitSell)
     // check for this type to tell "already closed, don't touch again" apart
     // from a genuine cancel failure that still leaves the position open.
-    cancelOrder(orderId: string): Promise<void>;
+    // `exchange` (when the caller knows it, e.g. from the pending-order tracker) is used by brokers whose cancel API needs it (Breeze).
+    cancelOrder(orderId: string, exchange?: Exchange): Promise<void>;
 }

@@ -61,7 +61,9 @@ import StrategiesClient from './ipc/StrategiesClient';
 import { readJsonLines, writeJsonLine } from './ipc/jsonLines';
 import { cloudflareOnly, isLoopback } from './middleware/cloudflareOnly';
 import { OAuth2Client } from 'google-auth-library';
-import { ALL_BROKERS, BrokerName, USER_BROKERS_TEXT, isBrokerName, isUserBroker, normalizeBrokerName } from './util/brokerName';
+import { BROKER_CLIENTS, brokerClientFor } from './broker/brokerClients';
+import { BrokerClient, CallbackParams, MissingCredentialsError } from './broker/BrokerClient';
+import { ALL_BROKERS, BrokerName, USER_BROKERS_TEXT, isUserBroker, normalizeBrokerName } from './util/brokerName';
 
 // `frontend` process (server.ts, unchanged name/entry point - see the plan:
 // "frontend should be server.ts itself, edited in place"). Every route below
@@ -1110,99 +1112,50 @@ app.get('/prism/token', requireAdmin, async function (req, res) {
 });
 
 // --- Broker registry: login redirect, OAuth/session callback, and the debug trades/positions reads, per broker. ---
-// One generic handler pair serves every broker's /<broker>/login and /<broker>/callback route; a broker-specific detail (which
-// query param carries the code, whether `data` must reconnect its stream) is data on its entry, not another handler.
-class CallbackError extends Error {
-    constructor(message: string, readonly status = 400) { super(message); }
-}
-interface BrokerEntry {
-    label: string;
-    loginUrl(): string;
-    // Exchanges what the broker's redirect carried for a stored session. Throws CallbackError (400) when it is missing.
-    exchangeCallback(req: express.Request): Promise<void>;
+// One generic handler pair serves every broker's /<broker>/login and /<broker>/callback route over the BrokerClient registry
+// (src/broker/brokerClients.ts); a broker-specific detail is data in BROKER_ROUTES, not another handler.
+// Per broker, only what is not on the BrokerClient: how its redirect's query/body maps to credentials, and whether `data` must
+// reconnect its stream once a session exists.
+interface BrokerRoute {
+    callbackParams(req: express.Request): CallbackParams;
     // Sent to `data` once a session exists so it (re)connects its stream; absent when `data` has no stream for this broker.
     reconnectCmd?: { cmd: 'reconnect'; source?: string };
-    getTrades(): Promise<any[]>;
-    getPositions(): Promise<any[]>;
 }
 
-const BROKERS: Record<BrokerName, BrokerEntry> = {
+const BROKER_ROUTES: Record<BrokerName, BrokerRoute> = {
     prism: {
-        label: 'Shoonya',
-        loginUrl: () => Prism.getInstance().getOAuthURL(),
-        exchangeCallback: async (req) => {
-            const code = req.query.code as string;
-            if (!code) throw new CallbackError('No authorization code received');
-            authorizationCode = code;
-            Log.log('Authorization code received, exchanging for token');
-            await Prism.getInstance().loginWithGenAcsTok(code);
+        callbackParams: (req) => {
+            const code = req.query.code as string | undefined;
+            if (code) authorizationCode = code;
+            return { code };
         },
-        getTrades: async () => Prism.getInstance().getTradeList(),
-        getPositions: async () => Prism.getInstance().getPositions(),
     },
     ant: {
-        label: 'ANT',
-        loginUrl: () => ANT.getInstance().getAuthorizationUrl(),
-        exchangeCallback: async (req) => {
-            const authCode = req.query.authCode as string;
-            const userId = req.query.userId as string;
-            if (!authCode || !userId) throw new CallbackError('Missing authCode or userId from Alice Blue');
-            Log.log('ANT Callback received - exchanging authCode for token');
-            // (No ant_session cookie: the broker token lives server-side only; nothing reads a browser copy.)
-            await ANT.getInstance().exchangeAuthCodeForToken(userId, authCode);
-        },
+        callbackParams: (req) => ({ authCode: req.query.authCode as string, userId: req.query.userId as string }),
         // `data` typically started before this login completed and may not be connected yet.
         reconnectCmd: { cmd: 'reconnect' },
-        getTrades: () => ANT.getInstance().getTrades(),
-        getPositions: () => ANT.getInstance().getPositions(),
     },
     kite: {
-        label: 'Kite',
-        loginUrl: () => Kite.getInstance().getLoginURL(),
-        exchangeCallback: async (req) => {
-            const requestToken = req.query.request_token as string;
-            if (!requestToken) throw new CallbackError('Missing request_token from Kite');
-            Log.log('Kite Callback received - exchanging request_token for access_token');
-            await Kite.getInstance().exchangeRequestTokenForSession(requestToken); // broker token stays server-side only - no cookie copy
-        },
-        getTrades: () => Kite.getInstance().getTrades(),
-        getPositions: () => Kite.getInstance().getPositions(),
+        callbackParams: (req) => ({ requestToken: req.query.request_token as string }),
     },
     breeze: {
-        label: 'Breeze',
-        loginUrl: () => Breeze.getInstance().getLoginURL(),
         // ICICI's redirect back can hand the session value back either as a GET query param or as POST form data (unconfirmed
         // which until a live login), so both are accepted, under either of the two param names ICICI's docs/SDK use.
-        exchangeCallback: async (req) => {
+        callbackParams: (req) => {
             const apiSession = (req.query.apisession ?? req.query.API_Session ?? req.body?.apisession ?? req.body?.API_Session) as string;
-            if (!apiSession) {
-                // Key names only: the query/body of a login callback can carry secrets and must never reach the log.
-                Log.log('Missing API_Session in Breeze callback', { queryKeys: Object.keys(req.query ?? {}), bodyKeys: Object.keys(req.body ?? {}) });
-                throw new CallbackError('Missing API_Session from ICICI Breeze');
-            }
-            Log.log('Breeze Callback received - generating session');
-            await Breeze.getInstance().generateSession(apiSession);
+            // Key names only: the query/body of a login callback can carry secrets and must never reach the log.
+            if (!apiSession) Log.log('Missing API_Session in Breeze callback', { queryKeys: Object.keys(req.query ?? {}), bodyKeys: Object.keys(req.body ?? {}) });
+            return { apiSession };
         },
         // Without this a Breeze login completing after `data` already started leaves BreezeDataStream stuck until a restart.
         reconnectCmd: { cmd: 'reconnect', source: 'breeze' },
-        getTrades: async () => {
-            const toDate = new Date();
-            const fromDate = new Date(toDate);
-            fromDate.setDate(fromDate.getDate() - 7);
-            const result = await Breeze.getInstance().getTradeList({ fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), exchangeCode: 'NFO' });
-            return Array.isArray(result?.Success) ? result.Success : [];
-        },
-        getPositions: async () => {
-            const result = await Breeze.getInstance().getPortfolioPositions();
-            return Array.isArray(result?.Success) ? result.Success : [];
-        },
     },
 };
 
 const brokerLogin = (name: BrokerName) => async function (_req: express.Request, res: express.Response) {
-    const entry = BROKERS[name];
+    const entry = BROKER_CLIENTS[name];
     try {
-        const url = entry.loginUrl();
+        const url = entry.getLoginUrl();
         Log.log(`Redirecting to ${entry.label} authorization:`, url);
         res.redirect(302, url);
     } catch (e: any) {
@@ -1212,18 +1165,19 @@ const brokerLogin = (name: BrokerName) => async function (_req: express.Request,
 };
 
 const brokerCallback = (name: BrokerName) => async function (req: express.Request, res: express.Response) {
-    const entry = BROKERS[name];
+    const entry = BROKER_CLIENTS[name];
+    const route = BROKER_ROUTES[name];
     try {
-        await entry.exchangeCallback(req);
-        if (entry.reconnectCmd) writeJsonLine(process.stdout, entry.reconnectCmd);
+        await entry.exchangeToken(route.callbackParams(req));
+        if (route.reconnectCmd) writeJsonLine(process.stdout, route.reconnectCmd);
         // `order` loaded whatever (possibly stale/absent) session was on disk when it started; reloadSession re-reads it (and
         // reconnects the order-notify stream where there is one).
         await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
         Log.log(`${entry.label} Authentication successful.`);
         res.redirect(302, '/');
     } catch (e: any) {
-        if (e instanceof CallbackError) {
-            res.status(e.status).json({ error: e.message });
+        if (e instanceof MissingCredentialsError) {
+            res.status(400).json({ error: e.message });
             return;
         }
         Log.log(`${entry.label} callback error:`, e);
@@ -1320,9 +1274,10 @@ myEmitter.on('breeze-quote', (tick: any) => {
 // - that pulls in bookkeeping.ts/exitMonitor.ts, which are `order`-process
 // state this `frontend` process has no business touching (see this file's
 // own header comment on the IPC process split).
-function brokerEntry(broker: string): BrokerEntry {
-    if (!isBrokerName(broker)) throw new Error(`Unknown broker '${broker}' - expected ${ALL_BROKERS.join(', ')}`);
-    return BROKERS[normalizeBrokerName(broker) as BrokerName];
+function brokerEntry(broker: string): BrokerClient {
+    const client = brokerClientFor(broker);
+    if (!client) throw new Error(`Unknown broker '${broker}' - expected ${ALL_BROKERS.join(', ')}`);
+    return client;
 }
 const getBrokerTrades = (broker: string): Promise<any[]> => brokerEntry(broker).getTrades();
 const getBrokerPositions = (broker: string): Promise<any[]> => brokerEntry(broker).getPositions();

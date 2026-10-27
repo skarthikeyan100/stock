@@ -317,7 +317,7 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
     let cancelFailed = false;
     for (const order of pending) {
         try {
-            await executor.cancelOrder(order.orderId);
+            await executor.cancelOrder(order.orderId, order.exchange);
             Log.log(`[order] cancelAnyRestingLimitSell: cancelled resting limit sell ${order.orderId} for ${tsym} (${userId}) ahead of a force-close`);
         } catch (e) {
             if (e instanceof OrderAlreadyFilledError) {
