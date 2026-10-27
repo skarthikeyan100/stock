@@ -143,6 +143,15 @@ export interface LegManagerDeps {
     onSpawnBuyError?: (e: any) => void;
 }
 
+// A cancel that lost the race to a fill. The order process throws OrderAlreadyFilledError (name + filledQuantity), but
+// across the IPC hop to this process it arrives as a plain Error carrying only the message, so fall back to parsing
+// "Order <id> already filled (qty=N)" (real 2026-10-27 10:04: the direct sell-back never fired, only the fill-echo net did).
+function alreadyFilledQty(e: any): number {
+    if (e?.name === 'OrderAlreadyFilledError') return Number(e.filledQuantity ?? 0);
+    const m = /already filled \(qty=(\d+)\)/.exec(String(e?.message ?? ''));
+    return m ? Number(m[1]) : 0;
+}
+
 export class LegManager {
     private rawOps: LegBrokerOps;
     private legsByToken: Map<string, Leg> = new Map();
@@ -251,7 +260,7 @@ export class LegManager {
             await this.currentOps().cancel(this.deps.userId, intent.orderId);
             Log.log(`[${this.deps.ownerType}] ${label}: pending re-entry cancelled: ${intent.tsym}`);
         } catch (e: any) {
-            const filledQty = e?.name === 'OrderAlreadyFilledError' ? Number(e.filledQuantity ?? 0) : 0;
+            const filledQty = alreadyFilledQty(e);
             if (filledQty > 0) {
                 if (intent.orderId) { this.supersededRefills.delete(intent.orderId); this.handledBuyOrderIds.add(intent.orderId); }
                 Log.log(`[${this.deps.ownerType}] ALERT: ${label}: refill ${intent.orderId} (${intent.tsym}) had already filled ${filledQty} - selling it back so it is not left untracked`);
@@ -1003,7 +1012,7 @@ export class LegManager {
                 // quantity). This refill was just superseded - its intent is already deleted above, so nothing
                 // tracks the quantity it bought; left alone it is an orphaned long (2026-10-19: 130 + 195 lots
                 // of 23000 CE). Sell it straight back.
-                const filledQty = e?.name === 'OrderAlreadyFilledError' ? Number(e.filledQuantity ?? 0) : 0;
+                const filledQty = alreadyFilledQty(e);
                 if (filledQty > 0) {
                     // Sold back right here, so the echo of this same fill must not trigger a second sell-back.
                     this.supersededRefills.delete(intent.orderId);
