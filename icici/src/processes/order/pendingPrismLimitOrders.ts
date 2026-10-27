@@ -1,4 +1,5 @@
 import Log from '../../util/Log';
+import { recordOrderOwner } from './orderOwners';
 import Prism from '../../prism';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
@@ -34,6 +35,7 @@ export function findPendingOrdersForSymbol(userId: string, tradingSymbol: string
 }
 
 export function trackPendingPrismLimitOrder(order: PendingPrismLimitOrder): void {
+    recordOrderOwner(order.orderId, order.userId, 'prism');
     pending.set(order.orderId, order);
     Mongo.getInstance()?.db.collection(PENDING_COLLECTION)
         .replaceOne({ orderId: order.orderId }, order, { upsert: true })

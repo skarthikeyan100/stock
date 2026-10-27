@@ -8,6 +8,7 @@ import RulesPage from './pages/RulesPage';
 import TradingPage from './pages/TradingPage';
 import DemoTradingPage from './pages/DemoTradingPage';
 import AdminPage from './pages/AdminPage';
+import PayoutPaymentPage from './pages/PayoutPaymentPage';
 import ProfilePage from './pages/ProfilePage';
 import PrivacyPolicyPage from './pages/PrivacyPolicyPage';
 import TermsAndConditionsPage from './pages/TermsAndConditionsPage';
@@ -65,6 +66,7 @@ export default function App() {
                 </RequireAdmin>
               }
             />
+            <Route path="/admin/payouts/:id" element={<RequireAdmin><PayoutPaymentPage /></RequireAdmin>} />
             <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
             <Route path="/terms-and-conditions" element={<TermsAndConditionsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

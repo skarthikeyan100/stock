@@ -47,8 +47,6 @@
       "Bash(mkdir -p /home/karthikeyan/work/icici/data/ant)",
       "Bash(unzip -o -q /home/karthikeyan/Downloads/BFO.zip -d bfo_temp)",
       "Bash(unzip -o -q /home/karthikeyan/Downloads/NFO_contract.zip -d nfo_temp)",
-      "Bash(cp bfo_temp/*.json /home/karthikeyan/work/icici/data/ant/BFO_contract.json)",
-      "Bash(cp nfo_temp/*.json /home/karthikeyan/work/icici/data/ant/NFO_contract.json)",
       "WebFetch(domain:unofficed.com)",
       "WebFetch(domain:www.chittorgarh.com)",
       "WebFetch(domain:v2api.aliceblueonline.com)",

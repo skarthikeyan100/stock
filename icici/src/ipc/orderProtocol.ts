@@ -83,6 +83,8 @@ export type OrderRequestType =
     // 'antPlaceLimitSellBare' right after.
     | 'antBuyTargetOnly'
     | 'antPlaceLimitSellBare'
+    // Resting limit BUY on ANT (ContinuousStrategy's refill) - 'placeLimitBuyBare' refuses ANT users.
+    | 'antPlaceLimitBuyBare'
     // Broker-parameterized counterpart of 'antPlaceLimitSellBare' - same
     // plain resting-limit-sell-only shape, dispatched by an explicit
     // `broker` field (kite/breeze/ant) instead of being ANT-only, so

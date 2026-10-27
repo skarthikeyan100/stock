@@ -106,7 +106,7 @@ cookie with each other or with the application `session` cookie from §1.
 restored on process boot if present — `fs.existsSync('userToken.txt')` in the constructor);
 in-memory `authorizationCode` var in `server.ts` (not persisted, lost on restart);
 `Prism.getInstance()` singleton wraps `NorenRestApi` and additionally caches
-`NFO_symbols.txt` into memory (`cacheFile()`) for token/contract lookups.
+`data/prism/NFO_symbols.txt` into memory (`cacheFile()`) for token/contract lookups.
 **Gotcha carried over:** `RestAPI.ts` installs a *global* axios response interceptor that
 unwraps `response.data` — any code sharing the global axios instance is affected.
 
@@ -404,7 +404,7 @@ shared with the offline pipeline tool.
 ## 12. Startup Sequence (in `app.listen` callback)
 
 1. `Prism.getInstance()` — constructs singleton, triggers `cacheFile()` (loads
-   `NFO_symbols.txt`, repo root, into memory for token/contract/lot-size lookups).
+   `data/prism/NFO_symbols.txt` into memory for token/contract/lot-size lookups).
 2. `await Mongo.init()` — connects to `mongodb://localhost:27017/stocks`, ensures
    collections `trade`, `quote`, `NiftyQuote`, `users` exist (other collections like
    `Quote`, `OptionQuote`, `SensexQuote`, `documents.*` GridFS chunks/files are created

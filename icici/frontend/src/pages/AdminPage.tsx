@@ -327,9 +327,9 @@ export default function AdminPage() {
   };
 
   const [decisionNote, setDecisionNote] = useState('');
-  const decidePayout = async (id: string, status: 'paid' | 'rejected') => {
+  const decidePayout = async (id: string, status: 'rejected') => {
     if (decidingId) return;
-    if (!window.confirm(status === 'paid' ? 'Mark this payout as PAID? This cannot be undone.' : 'Reject this payout? This cannot be undone.')) return;
+    if (!window.confirm('Reject this payout? This cannot be undone.')) return;
     setDecidingId(id);
     try {
       const res = await apiFetch(`/admin/payouts/${id}`, {
@@ -1793,7 +1793,7 @@ export default function AdminPage() {
                 <div className="p-2 border-bottom">
                   <Form.Control
                     size="sm"
-                    placeholder="Note for the next Mark Paid / Reject (optional)"
+                    placeholder="Note for the next Reject (optional)"
                     value={decisionNote}
                     onChange={e => setDecisionNote(e.target.value)}
                   />
@@ -1825,7 +1825,7 @@ export default function AdminPage() {
                           <td>
                             {p.status === 'pending' && (
                               <div className="d-flex gap-1">
-                                <Button size="sm" variant="success" disabled={decidingId === p._id} onClick={() => decidePayout(p._id, 'paid')}>Mark Paid</Button>
+                                <Button size="sm" variant="success" disabled={decidingId === p._id} onClick={() => navigate(`/admin/payouts/${p._id}`)}>Pay</Button>
                                 <Button size="sm" variant="outline-danger" disabled={decidingId === p._id} onClick={() => decidePayout(p._id, 'rejected')}>Reject</Button>
                               </div>
                             )}

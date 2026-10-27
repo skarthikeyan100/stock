@@ -191,6 +191,7 @@ function resolveRequestBroker(req: OrderRequest): string {
         case 'antPlaceCoverOrder':
         case 'antBuyTargetOnly':
         case 'antBuyContractBare':
+        case 'antPlaceLimitBuyBare':
             return 'ant';
         case 'breezeBuyIndex':
             return 'breeze';
@@ -877,6 +878,14 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return placeOrderWithPendingGuard(req, undefined, () =>
                     antExecutor.enterPosition(req.userId, tradingSymbol, instrumentId, quantity, exchange, 0, 0, 'target-only', undefined,
                         { underlyingOpen, marketProtectionPercent: String(marketProtectionPercent), product }),
+                );
+            }
+
+            case 'antPlaceLimitBuyBare': {
+                const { tradingSymbol, instrumentId, quantity, price, exchange } = req.payload;
+                const estimatedValue = price && quantity ? price * quantity : undefined;
+                return await placeOrderWithPendingGuard(req, estimatedValue, () =>
+                    antExecutor.placeLimitBuyBareOnAnt(req.userId, tradingSymbol, instrumentId, quantity, price, exchange),
                 );
             }
 

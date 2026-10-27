@@ -324,6 +324,12 @@ class OrderClient {
         return res.result;
     }
 
+    async antPlaceLimitBuyBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
+        const res = await this.request('antPlaceLimitBuyBare', userId, payload);
+        if (!res.ok) throw new Error(res.error);
+        return res.result;
+    }
+
     async antPlaceLimitSellBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; exchange: 'NFO' | 'BFO'; product?: 'INTRADAY' | 'LONGTERM' }): Promise<{ orderId: string }> {
         const res = await this.request('antPlaceLimitSellBare', userId, payload);
         if (!res.ok) throw new Error(res.error);

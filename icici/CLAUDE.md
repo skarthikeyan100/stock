@@ -41,6 +41,9 @@ The freeze on the `code-review` skill and test scripts (originally "until 2026-1
 
 **Only use the Claude-in-Chrome browser extension with the user's approval first** — it burns significantly more tokens than server-side checks (curl, logs, DB queries). Before reaching for it, ask whether it's OK to drive the browser; don't invoke it proactively just because it's connected/available.
 
+## Follow Standing Instructions Exactly
+**When the user gives an instruction about how to behave (e.g. "don't send me monitor events", "only tell me when something needs attention", "stop monitoring"), follow it literally from that moment on, every time, until they say otherwise.** Do not reply to automated monitor / task notifications the user has told you to ignore — not with a summary, not with a "noted", not with a "." Stay silent unless the event genuinely needs attention. If the user says the monitoring is too noisy, `TaskStop` the monitors immediately rather than continuing to reply to them. Do not explain or apologize at length when corrected; just comply. This was violated 2026-10-27: after being told to relay only attention-worthy events, routine target-hit events kept getting replies.
+
 ## Overview
 This is a Node.js/TypeScript-based options trading platform built for automated trading strategies using ICICI Direct APIs. The system supports multiple users, real-time market data streaming, and automated trade execution with risk management.
 

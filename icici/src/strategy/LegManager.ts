@@ -141,6 +141,9 @@ export interface LegManagerDeps {
     // freeing the slot for retry on the next qualifying tick - this hook exists only
     // for the one failure mode that must NOT self-heal.
     onSpawnBuyError?: (e: any) => void;
+    // The owner can veto every NEW buy (entry, hedge spawn, average-in, refill) - e.g. an ANT buy whose fill could not be
+    // confirmed and may still be live. Exits are never blocked by this.
+    isOrderingBlocked?: () => boolean;
 }
 
 // A cancel that lost the race to a fill. The order process throws OrderAlreadyFilledError (name + filledQuantity), but
@@ -250,7 +253,7 @@ export class LegManager {
     // max-loss or EOD trip that happened while it waited.
     private newOrdersBlocked(): boolean {
         this.rollDayIfNeeded();
-        return this.maxProfitTripped || this.maxLossTripped || this.eodClosing;
+        return this.maxProfitTripped || this.maxLossTripped || this.eodClosing || (this.deps.isOrderingBlocked?.() ?? false);
     }
 
     // Cancels a resting refill and, if it had already (partly) filled, sells that quantity straight back so no

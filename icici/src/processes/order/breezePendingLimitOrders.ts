@@ -1,4 +1,5 @@
 import Log from '../../util/Log';
+import { recordOrderOwner } from './orderOwners';
 import Breeze from '../../breeze/Breeze';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
@@ -46,6 +47,7 @@ export function findPendingOrdersForSymbol(userId: string, tradingSymbol: string
 }
 
 export function trackPendingBreezeLimitOrder(order: PendingBreezeLimitOrder): void {
+    recordOrderOwner(order.orderId, order.userId, 'breeze');
     pending.set(order.orderId, order);
     Mongo.getInstance()?.db.collection(PENDING_COLLECTION)
         .replaceOne({ orderId: order.orderId }, order, { upsert: true })

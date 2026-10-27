@@ -1,4 +1,5 @@
 import Log from '../../util/Log';
+import { recordOrderOwner } from './orderOwners';
 import Kite from '../../kite/Kite';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
@@ -60,6 +61,7 @@ export function isTrackedPendingOrder(orderId: string): boolean {
 }
 
 export function trackPendingLimitOrder(order: PendingLimitOrder): void {
+    recordOrderOwner(order.orderId, order.userId, 'kite');
     pending.set(order.orderId, order);
     // Fire-and-forget, same convention as bookkeeping's Mongo writes - never
     // let a Mongo hiccup block live order placement.

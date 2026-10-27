@@ -9,6 +9,8 @@ import { Trade } from '../../model/model';
 import { UserContext, closeUserAccount } from '../../user';
 import { PUT, CALL, USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../../constants';
 import * as exitMonitor from './exitMonitor';
+import { collapseFillsByOrderId, netFifoLots } from './fillNetting';
+import { recordOrderOwner, loadOrderOwners } from './orderOwners';
 import configService from '../../prism/ConfigService';
 import { drawdownLimit, drawdownDecision } from '../../prism/percentConfig';
 import { startOfWeek } from '../../util/weekWindow';
@@ -866,6 +868,20 @@ class OrderBookkeeping {
         this.trades.forEach((t) => (t.lastTradePrice = t.price));
     }
 
+    // True when a raw fill doc for this broker order and side is already in Mongo. Fails open (false) if Mongo is unreadable:
+    // a fill must never be dropped just because the lookup failed.
+    private async fillAlreadyStored(tradeEvent: Trade): Promise<boolean> {
+        try {
+            const db = Mongo.getInstance()?.db;
+            if (!db || !tradeEvent.brokerOrderId) return false;
+            const hit = await db.collection('Trade').findOne({ brokerOrderId: tradeEvent.brokerOrderId, action: tradeEvent.action }, { projection: { _id: 1 } });
+            return !!hit;
+        } catch (e) {
+            Log.log('[order] fillAlreadyStored: Mongo lookup failed (treating as not stored):', tradeEvent.brokerOrderId, e);
+            return false;
+        }
+    }
+
     // Records a fill directly (used by the Kite buy/GTT-trigger path, which
     // doesn't go through Prism's websocket 'om' message shape at all).
     async recordFill(tradeEvent: Trade): Promise<void> {
@@ -874,7 +890,17 @@ class OrderBookkeeping {
                 Log.log(`[order] Ignoring redelivered fill for broker order ${tradeEvent.brokerOrderId} (${tradeEvent.tsym}) - already processed`);
                 return;
             }
+            // processedFillIds dies with the process; the raw fill doc does not. A restart used to forget it, so the same broker
+            // order was booked a second time (real 2026-10-27: one Kite sell sat in Mongo under two users).
+            if (await this.fillAlreadyStored(tradeEvent)) {
+                this.processedFillIds.add(tradeEvent.brokerOrderId);
+                Log.log(`[order] Ignoring fill for broker order ${tradeEvent.brokerOrderId} (${tradeEvent.tsym}) - already stored in Mongo`);
+                return;
+            }
             this.processedFillIds.add(tradeEvent.brokerOrderId);
+            // First writer wins: resting orders were recorded at placement, so this only fills in the owner of orders that fill
+            // in the same call that placed them.
+            recordOrderOwner(tradeEvent.brokerOrderId, tradeEvent.user, tradeEvent.broker ?? 'kite');
         }
         try {
             await this._processTradeEvent(tradeEvent);
@@ -1332,6 +1358,20 @@ class OrderBookkeeping {
         // second latent bug this fixes at the same time).
         const users: string[] = await db.collection('Trade').distinct('user', { tsym, action: 'Buy', ...brokerOrLegacy });
 
+        // Every user's fills for this contract in one pass, collapsed so each broker order id counts once, for its owner (the
+        // order-owner ledger). An order id booked under several users with no ledger answer is not guessed at: the whole contract
+        // is held for manual review, because a wrong split here is what sizes the exit sells.
+        const allFills: any[] = await db.collection('Trade')
+            .find({ tsym, action: { $in: ['Buy', 'Sell'] }, ...brokerOrLegacy })
+            .sort({ entryTime: 1 })
+            .toArray();
+        const owners = await loadOrderOwners(Array.from(new Set(allFills.map((f: any) => f.brokerOrderId).filter(Boolean).map(String))));
+        const { fills: ownedFills, ambiguousOrderIds } = collapseFillsByOrderId(allFills, (id) => owners.get(id));
+        if (ambiguousOrderIds.length > 0) {
+            Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) has broker order(s) booked under more than one user with no recorded owner (${ambiguousOrderIds.join(', ')}) - restoring NOTHING for this contract, manual review required`);
+            return [];
+        }
+
         const restored: Trade[] = [];
         let totalRestoredQty = 0;
         for (const user of users) {
@@ -1353,26 +1393,7 @@ class OrderBookkeeping {
             // Net the fills FIFO: every Sell (including a PARTIAL one - a partly-sold leg is still open for the
             // rest) consumes the oldest remaining Buy lots, so what's left is the position actually still held.
             // The old "buys after the last Sell" boundary ignored partial sells and restored the full quantity.
-            const fills = await db.collection('Trade')
-                .find({ tsym, user, action: { $in: ['Buy', 'Sell'] }, ...brokerOrLegacy })
-                .sort({ entryTime: 1 })
-                .toArray();
-            const lots: { doc: any; remaining: number }[] = [];
-            for (const f of fills) {
-                const q = Number(f.quantity);
-                if (!(q > 0)) continue;
-                if (f.action === 'Buy') {
-                    lots.push({ doc: f, remaining: q });
-                    continue;
-                }
-                let toSell = q;
-                while (toSell > 0 && lots.length > 0) {
-                    const use = Math.min(toSell, lots[0].remaining);
-                    lots[0].remaining -= use;
-                    toSell -= use;
-                    if (lots[0].remaining <= 0) lots.shift();
-                }
-            }
+            const lots = netFifoLots<any>(ownedFills.filter((f: any) => f.user === user));
             // newest-first, same orientation the rest of this block expects; quantity = what is still held per lot
             const rows = lots.map((l) => ({ ...l.doc, quantity: l.remaining, originalQuantity: Number(l.doc.quantity) })).reverse();
             const row = rows[0];
@@ -1422,6 +1443,12 @@ class OrderBookkeeping {
             totalRestoredQty += totalQty;
         }
 
+        if (totalRestoredQty > brokerQuantity) {
+            // More restored than the broker holds: every exit sized from this would sell quantity that is not there (or belongs to
+            // another owner). Restore nothing and leave it for review.
+            Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) restores to ${totalRestoredQty} across ${restored.length} user(s) but the broker holds only ${brokerQuantity} - restoring NOTHING for this contract, manual review required`);
+            return [];
+        }
         if (restored.length === 0) {
             Log.log(`[order] loadOpenTradesFromBroker: WARNING - broker reports an open position on ${tsym} (qty=${brokerQuantity}) with no matching Mongo Buy doc for any user - leaving untracked`);
         } else if (totalRestoredQty !== brokerQuantity) {

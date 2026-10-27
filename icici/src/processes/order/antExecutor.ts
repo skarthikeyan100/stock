@@ -746,6 +746,24 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
     return { orderId: orderNo };
 }
 
+// Buy counterpart of placeLimitSellBareOnAnt: a plain REGULAR LIMIT buy at a caller-chosen price (ContinuousStrategy's
+// refill - re-enter the leg at its original entry price). Returns immediately with {orderId}; the fill arrives later via
+// pollPendingAntLimitOrders, which books it under `userId` (the order id is recorded as that user's in the owner ledger).
+export async function placeLimitBuyBareOnAnt(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+    const ant = ANT.getInstance();
+    Log.log(`[order] Bare ANT limit buy ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
+    const { orderNo } = await ant.placeOrder({
+        exchange,
+        instrumentId,
+        tradingSymbol,
+        quantity,
+        transactionType: 'BUY',
+        price,
+    });
+    trackPendingAntLimitOrder({ orderId: orderNo, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Buy' });
+    return { orderId: orderNo };
+}
+
 // Cancels a resting ANT limit order (e.g. cancelAnyRestingLimitSell ahead of
 // a force-close) and untracks it - mirrors kiteExecutor.cancelOrderOnKite.
 // Without the untrack, the next pollPendingAntLimitOrders tick would

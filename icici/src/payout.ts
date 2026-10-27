@@ -501,6 +501,56 @@ export async function markPayoutDecision(payoutId: any, status: 'paid' | 'reject
     return updated;
 }
 
+// Pending -> paid with the bank-payment proof attached, exactly once (compare-and-set on status). The proof file is
+// already stored by the caller; if this loses the race the caller deletes it.
+export async function markPayoutPaidWithProof(
+    payoutId: any,
+    proof: { fileId: string; paymentRef?: string; paidTo: string; note?: string },
+    adminEmail: string | null | undefined
+): Promise<any> {
+    if (!adminEmail) throw new Error('A decision must be attributed to an admin');
+    const id = toObjectId(payoutId);
+    const existing = await payoutsCollection().findOne({ _id: id });
+    if (!existing) throw new Error('Payout not found');
+    const now = new Date();
+    const res: any = await payoutsCollection().findOneAndUpdate(
+        { _id: id, status: 'pending' },
+        { $set: { status: 'paid', adminNote: proof.note, decidedAt: now, decidedBy: adminEmail, paidAt: now, proofFileId: proof.fileId, paymentRef: proof.paymentRef, paidTo: proof.paidTo, emailStatus: 'pending' } },
+        { returnDocument: 'after' }
+    );
+    const updated = res?.value ?? (res && res._id ? res : null);
+    if (!updated) throw new Error(`Payout is already ${existing.status} - only a pending payout can be decided`);
+    await decisionLogCollection().insertOne({
+        user: updated.user,
+        payoutId: id,
+        type: 'payout_paid',
+        reason: proof.note,
+        detail: { decidedBy: adminEmail, paymentRef: proof.paymentRef, proofFileId: proof.fileId },
+        createdAt: now,
+    });
+    const notification = {
+        user: updated.user,
+        type: 'payout_status' as const,
+        message: `Payout ${updated.invoiceNumber} of ₹${updated.netAmount.toFixed(2)} has been paid`,
+        read: false,
+        createdAt: now,
+    };
+    await Mongo.getInstance().db.collection('notifications').insertOne(notification);
+    myEmitter.emit('notification', { user: updated.user, notification });
+    return updated;
+}
+
+export async function setPayoutEmailStatus(payoutId: any, status: 'sent' | 'failed', error?: string): Promise<void> {
+    await payoutsCollection().updateOne(
+        { _id: toObjectId(payoutId), status: 'paid' },
+        { $set: { emailStatus: status, emailError: status === 'failed' ? error : undefined, emailAttemptAt: new Date() } }
+    );
+}
+
+export async function getPayout(payoutId: any): Promise<any | null> {
+    return payoutsCollection().findOne({ _id: toObjectId(payoutId) });
+}
+
 // `email` (when given) must own the payout, otherwise it is treated as not found - the route only authorises the :email
 // segment, so without this any user could read another user's payout by id.
 export async function getPayoutDecisionLog(payoutId: any, email?: string): Promise<any[]> {

@@ -6,6 +6,9 @@ import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
 import { LegManager, LegManagerConfig } from './LegManager';
+import { antLegOps } from './antLegOps';
+import { LegBrokerOps, defaultLegOps } from './LegBrokerOps';
+import { normalizeBrokerName } from '../util/brokerName';
 import MomentumSignal from './MomentumSignal';
 import { sleep } from '../util/sleep';
 
@@ -48,6 +51,9 @@ export default class ContinuousStrategy extends Strategy {
     private lastNiftyLtp = 0;
     private lastGateLog = new Map<string, number>();
     private lastPcrCheckTime = 0;
+    // Set by an ANT buy whose fill could not be confirmed (it may still be live): no new buy is placed until a human reviews it
+    // and reset() clears the flag. Exits are unaffected.
+    private manualReview = false;
 
     constructor(userId?: string) {
         super(userId);
@@ -58,7 +64,31 @@ export default class ContinuousStrategy extends Strategy {
             getConfig: (): LegManagerConfig => this.cfg() as unknown as LegManagerConfig,
             getLastUnderlyingLtp: () => this.lastNiftyLtp,
             recordOutcome: (outcome, pnl) => this.recordOutcome(outcome, pnl),
+            ops: this.brokerOps(),
+            onSpawnBuyError: (e) => this.noteUnconfirmedBuy(e),
+            isOrderingBlocked: () => this.manualReview,
         });
+    }
+
+    // Order routing follows this instance's own `broker:` config key, read at call time: ANT has its own ops (the Kite/Breeze
+    // 'Bare' IPCs refuse ANT), everything else uses the default per-user routing. One config block per broker, each with its
+    // own userId, gives one independent tree per broker.
+    private brokerOps(): LegBrokerOps {
+        const pick = (): LegBrokerOps => (normalizeBrokerName(this.cfg()?.broker) === 'ant' ? antLegOps : defaultLegOps);
+        return {
+            pickContract: (...a) => pick().pickContract(...a),
+            buy: (...a) => pick().buy(...a),
+            sell: (...a) => pick().sell(...a),
+            cancel: (...a) => pick().cancel(...a),
+            buyLimit: (...a) => pick().buyLimit(...a),
+        };
+    }
+
+    // antLegOps.buy tags a buy whose fill is unresolved as '[HEDGE_UNCONFIRMED]': never retry it (double-buy risk).
+    private noteUnconfirmedBuy(e: any): void {
+        if (!String(e?.message ?? e).includes('[HEDGE_UNCONFIRMED]')) return;
+        this.manualReview = true;
+        Log.log(`[ContinuousStrategy] ALERT: an ANT buy could not be confirmed and may be live - no new buys until it is reviewed and the strategy is reset: ${e?.message ?? e}`);
     }
 
     receive(oldStats, newStats) {}
@@ -262,6 +292,7 @@ export default class ContinuousStrategy extends Strategy {
         const cfg = this.cfg();
         if (!this.enabled) { this.logGateOnce('disabled'); return; }
         if (!this.isTimeInRange()) { this.logGateOnce('outside time window'); return; }
+        if (this.manualReview) { this.logGateOnce('manual review pending (unconfirmed ANT buy)'); return; }
         // isIdle() too: a tick landing between a target-hit leg's deletion and its refill's registration
         // can clear `ordered`, and a new entry would then stack on top of the resting refill.
         if (this.ordered || !this.legManager.isIdle()) { this.logGateOnce('entry already in progress or an open leg exists (no broker order implied)'); return; }
@@ -299,6 +330,7 @@ export default class ContinuousStrategy extends Strategy {
             }
         } catch (e) {
             Log.log('[ContinuousStrategy] T1 entry failed:', e);
+            this.noteUnconfirmedBuy(e);
             this.ordered = false;
         }
     }
@@ -326,5 +358,6 @@ export default class ContinuousStrategy extends Strategy {
         this.legManager.reset();
         this.ordered = false;
         this.entering = false;
+        this.manualReview = false;
     }
 }

@@ -26,7 +26,7 @@ strategies:
   - type: ContinuousStrategy
     enabled: false
     broker: kite
-    initialQuantity: 260
+    initialQuantity: 65
     slDistance: 10
     targetDistance: 5
     squareOffDistance: 500
@@ -40,6 +40,54 @@ strategies:
     right: none
     marketSentiment: none
     maxLevels: 4
+    cooldownSeconds: 60
+    refillCancelDistance: 50
+    logEnabled: true
+    momentumEnabled: false
+    momentumTimeoutMs: 3000
+  - type: ContinuousStrategy
+    userId: ContinuousStrategy-ANT
+    enabled: false
+    broker: ant
+    initialQuantity: 65
+    slDistance: 10
+    targetDistance: 5
+    squareOffDistance: 500
+    postAverageTargetDistance: 2
+    minPremium: 50
+    maxInvestment: 200000
+    maxProfit: 4%
+    maxLoss: 6%
+    spawnQuantityMode: '1'
+    averageQuantityMode: same
+    right: none
+    marketSentiment: none
+    maxLevels: 4
+    refillEnabled: false
+    cooldownSeconds: 60
+    refillCancelDistance: 50
+    logEnabled: true
+    momentumEnabled: false
+    momentumTimeoutMs: 3000
+  - type: ContinuousStrategy
+    userId: ContinuousStrategy-Breeze
+    enabled: false
+    broker: breeze
+    initialQuantity: 65
+    slDistance: 10
+    targetDistance: 5
+    squareOffDistance: 500
+    postAverageTargetDistance: 2
+    minPremium: 50
+    maxInvestment: 200000
+    maxProfit: 4%
+    maxLoss: 6%
+    spawnQuantityMode: '1'
+    averageQuantityMode: same
+    right: none
+    marketSentiment: none
+    maxLevels: 4
+    refillEnabled: false
     cooldownSeconds: 60
     refillCancelDistance: 50
     logEnabled: true
@@ -116,7 +164,6 @@ strategies:
     brokers:
       - zerodha
       - ant
-      - breeze
     quantity: 65
     maxInvestment: 100000
     targetPrice: 15
@@ -142,53 +189,84 @@ strategies:
     chunkDriftCancelPoints: 10
     right: none
     maxInvestment: 100000
-    maxLoss: 10%
-    slDistance: 50
+    maxLossPerOrder: 10%
+    maxProfit: 10%
+    slDistance: 30
     logEnabled: true
     brokers:
       - ant
+      - zerodha
     index: SENSEX
   - type: BulkPcrStrategy
     userId: BulkPcr-NIFTY
     enabled: false
     quantity: -1
-    targetPoints: 2
+    targetPoints: 3
     chunkDriftCancelPoints: 10
     right: none
     maxInvestment: 100000
-    slDistance: 10
+    maxLossPerOrder: 10%
+    maxProfit: 10%
+    slDistance: 5
     logEnabled: true
     brokers:
       - ant
+      - breeze
     index: NIFTY
   - type: BulkPcrAutoStartStrategy
     userId: BulkPcrAutoStart-SENSEX
     targetUserId: BulkPcr-SENSEX
     enabled: false
     times:
-      - '10:35'
-      - '11:05'
-      - '11:35'
+      - '11:45'
+      - '11:50'
+      - '11:55'
+      - '12:00'
       - '12:05'
+      - '12:10'
+      - '12:15'
+      - '12:20'
+      - '12:25'
+      - '12:30'
+      - '12:35'
+      - '12:40'
+      - '12:45'
     quantity: -1
     targetPoints: 10
     index: SENSEX
     brokers:
       - ant
+      - zerodha
   - type: BulkPcrAutoStartStrategy
     userId: BulkPcrAutoStart-NIFTY
     targetUserId: BulkPcr-NIFTY
     enabled: false
     times:
       - '10:35'
+      - '10:45'
+      - '10:55'
       - '11:05'
+      - '11:15'
+      - '11:25'
       - '11:35'
+      - '11:45'
+      - '11:55'
       - '12:05'
+      - '12:15'
+      - '12:25'
+      - '12:35'
+      - '12:45'
+      - '12:55'
+      - '13:05'
+      - '13:15'
+      - '13:25'
+      - '13:35'
     quantity: -1
-    targetPoints: 2
+    targetPoints: 3
     index: NIFTY
     brokers:
       - ant
+      - breeze
   - type: TopStockOptionsOpeningGapStrategy
     enabled: false
     broker: ant

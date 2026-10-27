@@ -87,7 +87,7 @@ No `market_protection` param here — that's MARKET/SL-M only; Kite accepts a pl
 
 **IPC wiring** — add `'getContractByPriceRangeZerodha'` request type, an `orderProcess.ts` case (`excludeStrikes` travels as a plain array over JSON, rehydrated into a `Set` in the handler since `Set` doesn't survive JSON), and an `OrderClient.getContractByPriceRangeZerodha(userId, underlyingLtp, optionType, minPremium, index, excludeStrikes)` method.
 
-**Pre-flight check** (no code change): confirm `data/zerodha/NFO_instruments.csv` and `BFO_instruments.csv` exist and are reasonably fresh before relying on this in testing — `ls -la data/zerodha/`; re-run `scripts/download-zerodha-master.sh` if stale/missing.
+**Pre-flight check** (no code change): confirm `data/zerodha/NFO_instruments.csv` and `BFO_instruments.csv` exist and are reasonably fresh before relying on this in testing — `ls -la data/zerodha/`; re-run `scripts/download-all-masters.sh` if stale/missing.
 
 ### Task Group C — `ContinuousStrategy` class (`src/strategy/ContinuousStrategy.ts`, new file)
 

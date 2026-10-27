@@ -1,4 +1,5 @@
 import Log from '../../util/Log';
+import { recordOrderOwner } from './orderOwners';
 import ANT from '../../ant/ANT';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
@@ -73,6 +74,7 @@ export function findPendingOrdersForSymbol(userId: string, tradingSymbol: string
 }
 
 export function trackPendingAntLimitOrder(order: PendingAntLimitOrder): void {
+    recordOrderOwner(order.orderId, order.userId, 'ant');
     pending.set(order.orderId, order);
     Mongo.getInstance()?.db.collection(PENDING_COLLECTION)
         .replaceOne({ orderId: order.orderId }, order, { upsert: true })

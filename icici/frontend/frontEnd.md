@@ -16,17 +16,18 @@
 | `npm run dev:mock` | Vite dev server, proxies to `localhost:4000` (mock backend) |
 | `npm run mock` | Standalone Express mock backend on port 4000 |
 | `npm run build` | Build to `../public/app/`, served by Express at `/app/` |
-| `npm run symbols -- <MONTH>` | Regenerate `public/symbols.txt` for the given expiry month (e.g. `APR`, `MAY`) |
+| `npm run symbols` | Regenerate `public/symbols.txt` from the local Zerodha instrument master (`data/zerodha/*_instruments.csv`) |
 
 ### Updating symbols.txt
 
-`public/symbols.txt` contains NFO contract symbols used by the typeahead search in OrderEntry. It must be refreshed each month when the new expiry series becomes active.
+`public/symbols.txt` contains the canonical `SYMBOL_STRIKE_CE|PE` list used by the typeahead search in OrderEntry. Run `scripts/download-all-masters.sh` first to refresh the Zerodha instrument master, then regenerate.
 
 ```bash
-npm run symbols -- APR   # replace with the new month before expiry
+scripts/download-all-masters.sh   # refresh the instrument masters
+npm run symbols                   # regenerate public/symbols.txt
 ```
 
-The script (`update-symbols.sh`) filters column 5 (TradingSymbol) from `/home/karthikeyan/Downloads/NFO_symbols.txt/NFO_symbols.txt` for the given month. The month name is case-insensitive (`apr`, `Apr`, `APR` all work). Defaults to `APR` if no argument is provided.
+The script (`frontend/update-symbols.sh`) reads the local Zerodha NFO/BFO instrument CSVs, keeps contracts whose expiry is today or later, and emits one `SYMBOL_STRIKE_CE|PE` line per contract. It never calls the network. Expiry is resolved at order time, not by the frontend.
 
 ---
 

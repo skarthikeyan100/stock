@@ -42,9 +42,10 @@ import { Trade } from './model/model';
 import configService from './prism/ConfigService';
 import { validateFlatConfig, validateConfigFile } from './prism/configValidation';
 import { getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields, normalizeEmail } from './user';
-import { computePayout, createPayoutRecord, markPayoutDecision, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary, periodFromInputs } from './payout';
+import { computePayout, createPayoutRecord, markPayoutDecision, markPayoutPaidWithProof, setPayoutEmailStatus, getPayout, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary, periodFromInputs } from './payout';
 import multer from 'multer';
 import { GridFSBucket, ObjectId } from 'mongodb';
+import { sendPayoutPaidEmail } from './mailer';
 import Tesseract from 'tesseract.js';
 import sharp from 'sharp';
 import Decision from './decision';
@@ -840,8 +841,11 @@ app.post('/admin/payouts', requireAdmin, async function (req, res) {
 app.patch('/admin/payouts/:id', requireAdmin, async function (req, res) {
     try {
         const { status, note } = req.body;
-        if (status !== 'paid' && status !== 'rejected') {
-            res.status(400).json({ error: 'status must be paid or rejected' }); return;
+        if (status === 'paid') {
+            res.status(400).json({ error: 'Use POST /admin/payouts/:id/pay (with the payment screenshot) to mark a payout paid' }); return;
+        }
+        if (status !== 'rejected') {
+            res.status(400).json({ error: 'status must be rejected' }); return;
         }
         // Loopback callers have no session: attribute the decision to 'loopback' rather than to nobody.
         const adminEmail = resolveUser(req) ?? (requestIsLoopback(req) ? 'loopback' : null);
@@ -851,6 +855,136 @@ app.patch('/admin/payouts/:id', requireAdmin, async function (req, res) {
         console.error('Mark payout decision error:', e);
         const msg = e.message || 'Failed to update payout';
         res.status(/not found/i.test(msg) ? 404 : /already/i.test(msg) ? 409 : 400).json({ error: msg });
+    }
+});
+
+// Payment page data: the payout plus the payee's full bank/UPI details (admin only - the persisted bankSnapshot is masked).
+app.get('/admin/payouts/:id', requireAdmin, async function (req, res) {
+    try {
+        if (!ObjectId.isValid(req.params.id)) { res.status(400).json({ error: 'Invalid payout id' }); return; }
+        const payout = await getPayout(req.params.id);
+        if (!payout) { res.status(404).json({ error: 'Payout not found' }); return; }
+        const user = await getUser(payout.user);
+        res.json({
+            payout,
+            payee: {
+                name: user?.legalName || user?.name, email: payout.user,
+                bankAccountHolderName: user?.bankAccountHolderName, bankAccountNumber: user?.bankAccountNumber,
+                bankIFSC: user?.bankIFSC, upiId: user?.upiId,
+            },
+        });
+    } catch (e) {
+        console.error('Admin get payout error:', e);
+        res.sendStatus(500);
+    }
+});
+
+function payoutEmailVars(payout: any, user: any) {
+    const method = payout.paidTo;
+    const destination = method === 'upi' ? `UPI ${payout.bankSnapshot?.upiId ?? ''}` : `Bank account ${payout.bankSnapshot?.accountNumberMasked ?? ''}`;
+    return {
+        name: String(user?.legalName || user?.name || payout.user),
+        invoiceNumber: String(payout.invoiceNumber),
+        period: `${new Date(payout.periodStart).toDateString()} – ${new Date(payout.periodEnd).toDateString()}`,
+        netAmount: Number(payout.netAmount).toFixed(2),
+        paidDate: new Date(payout.paidAt ?? Date.now()).toDateString(),
+        destination,
+        paymentRef: String(payout.paymentRef || '—'),
+        note: String(payout.adminNote ?? ''),
+    };
+}
+
+async function sendPaidEmailAndRecord(payout: any): Promise<{ emailStatus: 'sent' | 'failed'; emailError?: string }> {
+    try {
+        const user = await getUser(payout.user);
+        const bucket = new GridFSBucket(Mongo.getInstance().db, { bucketName: 'payout_proofs' });
+        const files = await bucket.find({ _id: new ObjectId(payout.proofFileId) }).toArray();
+        const chunks: Buffer[] = [];
+        for await (const chunk of bucket.openDownloadStream(new ObjectId(payout.proofFileId))) chunks.push(chunk as Buffer);
+        const contentType = files[0]?.contentType || 'image/png';
+        const ext = contentType.split('/')[1] || 'png';
+        await sendPayoutPaidEmail(payout.user, payoutEmailVars(payout, user), {
+            filename: `payment-proof-${payout.invoiceNumber}.${ext}`, content: Buffer.concat(chunks), contentType,
+        });
+        await setPayoutEmailStatus(payout._id, 'sent');
+        return { emailStatus: 'sent' };
+    } catch (e: any) {
+        console.error('Payout paid email failed:', e);
+        await setPayoutEmailStatus(payout._id, 'failed', e.message || String(e)).catch(() => undefined);
+        return { emailStatus: 'failed', emailError: e.message || String(e) };
+    }
+}
+
+// Mark a payout paid: the admin has made the bank/UPI transfer manually and attaches a screenshot. Stores the proof,
+// flips pending -> paid exactly once, then emails the user. The payment stays recorded if the email fails (see resend).
+app.post('/admin/payouts/:id/pay', requireAdmin, upload.single('proof'), async function (req, res) {
+    let proofId: ObjectId | null = null;
+    try {
+        if (!ObjectId.isValid(req.params.id)) { res.status(400).json({ error: 'Invalid payout id' }); return; }
+        if (!req.file) { res.status(400).json({ error: 'Payment screenshot is required' }); return; }
+        if (!req.file.mimetype.startsWith('image/')) { res.status(400).json({ error: 'The proof must be an image' }); return; }
+        const { paymentRef, note, paidTo } = req.body as { paymentRef?: string; note?: string; paidTo?: string };
+        if (paidTo !== 'bank' && paidTo !== 'upi') { res.status(400).json({ error: 'paidTo must be bank or upi' }); return; }
+        const adminEmail = resolveUser(req) ?? (requestIsLoopback(req) ? 'loopback' : null);
+
+        const existing = await getPayout(req.params.id);
+        if (!existing) { res.status(404).json({ error: 'Payout not found' }); return; }
+        if (existing.status !== 'pending') { res.status(409).json({ error: `Payout is already ${existing.status}` }); return; }
+
+        const bucket = new GridFSBucket(Mongo.getInstance().db, { bucketName: 'payout_proofs' });
+        const safeName = String(req.file.originalname ?? 'proof').replace(/[^A-Za-z0-9._-]/g, '_').slice(-80);
+        const uploadStream = bucket.openUploadStream(`${req.params.id}_${Date.now()}_${safeName}`, { contentType: req.file.mimetype });
+        uploadStream.end(req.file.buffer);
+        await new Promise<void>((resolve, reject) => { uploadStream.on('finish', resolve); uploadStream.on('error', reject); });
+        proofId = uploadStream.id as ObjectId;
+
+        let payout;
+        try {
+            payout = await markPayoutPaidWithProof(req.params.id, { fileId: proofId.toString(), paymentRef: paymentRef?.trim() || undefined, paidTo, note: note?.trim() || undefined }, adminEmail);
+        } catch (e) {
+            // Lost the pending->paid race (or the payout vanished): the stored screenshot must not be orphaned.
+            await bucket.delete(proofId).catch(() => undefined);
+            proofId = null;
+            throw e;
+        }
+        const email = await sendPaidEmailAndRecord(payout);
+        res.json({ ...payout, ...email });
+    } catch (e: any) {
+        console.error('Pay payout error:', e);
+        const msg = e.message || 'Failed to mark payout paid';
+        res.status(/not found/i.test(msg) ? 404 : /already/i.test(msg) ? 409 : 400).json({ error: msg });
+    }
+});
+
+app.post('/admin/payouts/:id/resend-email', requireAdmin, async function (req, res) {
+    try {
+        if (!ObjectId.isValid(req.params.id)) { res.status(400).json({ error: 'Invalid payout id' }); return; }
+        const payout = await getPayout(req.params.id);
+        if (!payout) { res.status(404).json({ error: 'Payout not found' }); return; }
+        if (payout.status !== 'paid' || !payout.proofFileId) { res.status(409).json({ error: 'Only a paid payout with a payment screenshot can be emailed' }); return; }
+        if (payout.emailStatus === 'sent') { res.status(409).json({ error: 'The email was already sent' }); return; }
+        res.json(await sendPaidEmailAndRecord(payout));
+    } catch (e) {
+        console.error('Resend payout email error:', e);
+        res.sendStatus(500);
+    }
+});
+
+app.get('/users/:email/payouts/:id/proof', requireSelfOrAdmin('email'), async function (req, res) {
+    try {
+        if (!ObjectId.isValid(req.params.id)) { res.status(400).json({ error: 'Invalid payout id' }); return; }
+        const payout = await getPayout(req.params.id);
+        if (!payout || String(payout.user).toLowerCase() !== req.params.email.toLowerCase() || !payout.proofFileId) { res.status(404).json({ error: 'Proof not found' }); return; }
+        const bucket = new GridFSBucket(Mongo.getInstance().db, { bucketName: 'payout_proofs' });
+        const files = await bucket.find({ _id: new ObjectId(payout.proofFileId) }).toArray();
+        if (!files.length) { res.status(404).json({ error: 'File not found' }); return; }
+        res.setHeader('Content-Type', files[0].contentType?.startsWith('image/') && files[0].contentType !== 'image/svg+xml' ? files[0].contentType : 'application/octet-stream');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+        bucket.openDownloadStream(new ObjectId(payout.proofFileId)).pipe(res);
+    } catch (e) {
+        console.error('Payout proof download error:', e);
+        res.sendStatus(500);
     }
 });
 
