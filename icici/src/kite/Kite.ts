@@ -474,7 +474,7 @@ class Kite {
         if (settled.result?.outcome === 'partial') {
             const { filledQuantity, avgPrice: averagePrice } = settled.result;
             throw Object.assign(
-                new Error(`Kite order ${orderId} only partially filled within timeout (${filledQuantity} @ ${averagePrice}), remainder cancelled`),
+                new Error(`Kite order ${orderId} only partially filled within timeout (${filledQuantity} @ ${averagePrice}), ${settled.cancelFailed ? 'remainder may STILL BE RESTING (cancel failed)' : 'remainder cancelled'}`),
                 { timeoutPartial: true, driftCancelled: true, filledQuantity, averagePrice, orderMayBeLive: settled.cancelFailed }
             );
         }

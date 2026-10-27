@@ -570,7 +570,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
             // return a success trade for a position bookkeeping still shows open.
             throw Object.assign(
                 new Error(`Square-off for ${tsym}: sold ${totalFilledQty}/${quantity} but booking a fill failed - not retrying (would double-sell): ${bookingFailure instanceof Error ? bookingFailure.message : bookingFailure}`),
-                { filledQuantity: totalFilledQty, averagePrice: totalFilledQty > 0 ? totalFilledValue / totalFilledQty : 0 }
+                { filledQuantity: totalFilledQty, averagePrice: totalFilledQty > 0 ? totalFilledValue / totalFilledQty : 0, ...(stuck ? { orderMayBeLive: true } : {}) }
             );
         }
         if (remainingQty > 0) {

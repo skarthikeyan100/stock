@@ -108,6 +108,11 @@ export class SensexQuote {
 
 export class Trade {
     tsym: string;
+    // Canonical name for `tsym` (REFACTOR_PLAN section 3). `tsym` is the stored field (Mongo documents, query strings, the frontend), so
+    // this is an accessor on the prototype: it is not an own property, so it never reaches a stored document or JSON, while
+    // Object.assign(new Trade(), { tradingSymbol }) and new code can use the canonical name.
+    get tradingSymbol(): string { return this.tsym; }
+    set tradingSymbol(value: string) { this.tsym = value; }
     token: string;
     stockCode: any;
     expiryDate: any;

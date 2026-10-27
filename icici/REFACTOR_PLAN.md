@@ -36,6 +36,8 @@ These are the three tasks from `REVIEW_FINDINGS.md` that are still open after th
 
 ## 3. Vocabulary (A1 30-34, A2 10, A3 10, A3b 11, A4 10, A5 10)
 
+**Status (2026-10-28):** done so far - `Trade.tradingSymbol` accessor alias for the stored `tsym` (prototype accessor: never an own property, so stored documents and JSON are unchanged); new code (the pending-order tracker, `BrokerExecutor`, `BrokerClient`) uses `tradingSymbol`, `token` (ANT common token) and `OptionExchange`; broker names derive from one `ALL_BROKERS` list. Not started - the bulk internal renames (`.tsym` has ~280 uses and is also a field on raw broker payloads such as Noren orders, so a blind rename is unsafe), `instrumentId`/`instrumentToken`/`antToken` -> `token`/`brokerToken`/`feedToken`, and every persisted/config/API rename in the table below (capital, pnl, target/stop, lots), each of which needs its dual-read first.
+
 **Rule:** rename only with a compatibility alias at every persisted or wire boundary; rename internals mechanically with the compiler as the check.
 
 | Concept | Canonical | Notes |

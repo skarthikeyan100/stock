@@ -125,6 +125,8 @@ export interface OrderRequest {
 // Prefix on an error that is a DEFINITE refusal (the order never reached the broker). Absent = outcome unknown.
 export const NOT_PLACED_TAG = '[NOT_PLACED]';
 // The opposite verdict: the order may be live or filled at the broker (a fill wait could not settle it). Never retry blind.
+// Tagged by antLegOps.buy on a buy whose fill outcome could not be confirmed.
+export const HEDGE_UNCONFIRMED_TAG = '[HEDGE_UNCONFIRMED]';
 export const ORDER_MAY_BE_LIVE_TAG = '[ORDER_MAY_BE_LIVE]';
 
 export interface OrderResponse {

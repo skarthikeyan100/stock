@@ -169,7 +169,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
     for (let attempt = 1; attempt <= BUY_FILL_POLL_ATTEMPTS; attempt++) {
         const { status, fillPrice, filledQuantity } = await prism.getOrderStatus(orderId);
         if (status === 'COMPLETE') {
-            if (!fillPrice) throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) reported COMPLETE but no fill price - manual review required`), { fillStateUnknown: true, filledQuantity: 0, averagePrice: 0 });
+            if (!fillPrice) throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) reported COMPLETE but no fill price - manual review required`), { fillStateUnknown: true });
             return fillPrice;
         }
         if (status === 'REJECTED' || status === 'CANCELED' || status === 'CANCELLED') {
@@ -200,7 +200,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
         recheck: async () => {
             const finalCheck = await Prism.getInstance().getOrderStatus(orderId);
             if (finalCheck.status === 'COMPLETE') {
-                if (!finalCheck.fillPrice) throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window but reported no fill price - manual review required`), { filledNoPrice: true, fillStateUnknown: true, orderMayBeLive: false, filledQuantity: 0, averagePrice: 0 });
+                if (!finalCheck.fillPrice) throw Object.assign(new Error(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window but reported no fill price - manual review required`), { filledNoPrice: true, fillStateUnknown: true });
                 return { outcome: 'full', avgPrice: finalCheck.fillPrice };
             }
             const partialQty = Number(finalCheck.filledQuantity ?? 0);
@@ -208,7 +208,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
             return { outcome: 'none' };
         },
     });
-    if ((settled.recheckError as any)?.filledNoPrice) throw Object.assign(settled.recheckError as Error, { orderMayBeLive: settled.cancelFailed }); // it DID fill - keep the specific error
+    if ((settled.recheckError as any)?.filledNoPrice) throw settled.recheckError; // it DID fill - keep the specific error
     if (settled.recheckError) throw fillStateUnknownError(`Prism buy ${orderId} (${tradingSymbol}, ${userId}) fill-wait timeout: the status re-check failed: ${(settled.recheckError as any)?.message ?? settled.recheckError}`, settled.cancelFailed);
     if (settled.result?.outcome === 'full') {
         Log.log(`[order] Prism buy ${orderId} (${tradingSymbol}, ${userId}) filled in the cancel race window - treating as filled at ${settled.result.avgPrice}`);

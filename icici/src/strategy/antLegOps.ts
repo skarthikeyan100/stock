@@ -3,7 +3,7 @@ import ANT from '../ant/ANT';
 import AntContractMaster from '../ant/AntContractMaster';
 import OrderClient from '../processes/strategies/OrderClient';
 import { LegBrokerOps } from './LegBrokerOps';
-import { HEDGE_UNCONFIRMED_TAG } from './LegManager';
+import { HEDGE_UNCONFIRMED_TAG } from '../ipc/orderProtocol';
 
 // LegBrokerOps implementation LegManager uses for an instance that trades on ANT (ContinuousStrategy with `broker: ant`;
 // BulkPcrStrategy's old hedge tree used it before the pair rewrite). Used instead of the Kite/Breeze 'Bare' IPC family
