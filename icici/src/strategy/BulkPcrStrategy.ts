@@ -1,4 +1,5 @@
 import GateLogger from '../util/GateLogger';
+import { ORDER_MAY_BE_LIVE_TAG } from '../ipc/orderProtocol';
 import Log from '../util/Log';
 import { localDayKey } from './dayKey';
 import SerialWriter from './SerialWriter';
@@ -130,7 +131,8 @@ function tsymRight(tsym: string): string {
 // ("fill status unresolved") and partial fills are never retried.
 function isNothingBought(e: any): boolean {
     const message = typeof e?.message === 'string' ? e.message : '';
-    if (message.includes('fill status unresolved')) return false;
+    // [ORDER_MAY_BE_LIVE]: a fill wait could not settle the order (e.g. its cancel failed) - it may still be resting or filled.
+    if (message.includes('fill status unresolved') || message.includes(ORDER_MAY_BE_LIVE_TAG)) return false;
     return message.includes('no available investment headroom to size an order from')
         || /failed after filling 0\//.test(message);
 }
@@ -829,7 +831,7 @@ export default class BulkPcrStrategy extends Strategy {
             pos.heldToken = feedTokenOf(result);
             pos.entryAvg = result.avgPrice;
             Log.log(`[BulkPcrStrategy] [${broker}] Entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
-            if (result.orderMayBeLive) Log.log(`[BulkPcrStrategy] [${broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} entry FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked lots, manual review required`);
+            if (result.orderMayBeLive) Log.log(`[BulkPcrStrategy] [${broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} entry FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked qty, manual review required`);
             pos.entryQuantity = result.quantity;
             await this.placeExitSell(key, result.quantity);
         } catch (e: any) {
@@ -852,7 +854,7 @@ export default class BulkPcrStrategy extends Strategy {
             // any partial fill ("failed after filling N/<requested>" with N>0 - there's a real,
             // unmonitored position at stake then, not nothing). One retry only (isRetry).
             const message = typeof e?.message === 'string' ? e.message : '';
-            const ambiguousOutcome = message.includes('fill status unresolved');
+            const ambiguousOutcome = message.includes('fill status unresolved') || message.includes(ORDER_MAY_BE_LIVE_TAG);
             const nothingWasBought = !ambiguousOutcome && (
                 message.includes('no available investment headroom to size an order from')
                 || /failed after filling 0\//.test(message)
@@ -1309,7 +1311,7 @@ export default class BulkPcrStrategy extends Strategy {
             pos.entryAvg = result.avgPrice;
             pos.buyAttempts = 0;
             Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
-            if (result.orderMayBeLive) Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} re-buy FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked lots, manual review required`);
+            if (result.orderMayBeLive) Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} re-buy FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked qty, manual review required`);
             if (this.eodDone || this.mustClose(pos)) {
                 // EOD or the loss stop started while this buy was in flight - square it off now, don't rest a sell.
                 pos.targetQuantity = result.quantity;

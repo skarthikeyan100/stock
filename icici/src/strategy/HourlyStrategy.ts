@@ -418,7 +418,7 @@ export default class HourlyStrategy extends Strategy {
             pos.heldToken = String(result.token);
             pos.entryAvg = result.avgPrice;
             Log.log(`[Hourly] [${broker}] Entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
-            if (result.orderMayBeLive) Log.log(`[Hourly] [${broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} entry FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked lots, manual review required`);
+            if (result.orderMayBeLive) Log.log(`[Hourly] [${broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} entry FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked qty, manual review required`);
             await this.placeExitSellAtTargetPrice(broker, result.quantity, true);
         } catch (e) {
             Log.log(`[Hourly] [${broker}] Entry failed - manual review required:`, e);

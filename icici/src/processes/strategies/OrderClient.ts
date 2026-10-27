@@ -15,6 +15,16 @@ type FillHandler = (userId: string, trade: any) => void;
 type PositionsChangedHandler = () => void;
 type CancelledHandler = (userId: string, notification: OrderCancelledNotification) => void;
 
+// What 'chunkedBuyIndex' returns: the chunked run's totals plus the contract that was bought (see chunkedOrder.ChunkedFillResult).
+export interface ChunkedBuyIndexResult {
+    tsym: string;
+    token: string | number;
+    feedToken?: string | number;
+    quantity: number;
+    avgPrice: number;
+    orderMayBeLive?: true;
+}
+
 class OrderClient {
     private static instance: OrderClient;
     // Default timeout for a single request()/response round trip over the
@@ -228,7 +238,7 @@ class OrderClient {
     // place independent orders on several brokers at once (BulkPcrStrategy's
     // multi-broker support). Omitted by every other caller, which keeps
     // today's per-userId resolution unchanged.
-    async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism'; driftCancelPoints?: number; index?: 'NIFTY' | 'SENSEX' }): Promise<any /* { tsym, token, feedToken?, quantity, avgPrice, orderMayBeLive?: true } - see ChunkedFillResult */> {
+    async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism'; driftCancelPoints?: number; index?: 'NIFTY' | 'SENSEX' }): Promise<ChunkedBuyIndexResult> {
         return this.call('chunkedBuyIndex', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 
