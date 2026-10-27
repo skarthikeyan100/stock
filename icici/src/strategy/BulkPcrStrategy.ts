@@ -2072,7 +2072,6 @@ export default class BulkPcrStrategy extends Strategy {
                 const failedPos = this.positions.get(key)!;
                 failedPos.phase = 'error';
                 this.persistState();
-                this.watchSlot(failedPos); // ticks keep flowing for the unprotected leg
                 Log.log(`[BulkPcrStrategy] [${broker}] ALERT: reconcile could not confirm whether an exit sell is already resting for ${brokerTrade.tsym} - no exit placed, manual review required`);
                 continue;
             }

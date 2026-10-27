@@ -1,8 +1,6 @@
-import { BrokerName } from '../util/brokerName';
-
-// The session/read surface every broker's client singleton (Kite, ANT, Breeze, Prism) offers, behind one interface so
-// server.ts (login, callback, debug reads) and the executors do not branch on the broker name. Order placement is NOT here:
-// that lives in the order process's BrokerExecutor (src/processes/order/BrokerExecutor.ts), which needs bookkeeping state this
+// The login/read surface every broker's client singleton (Kite, ANT, Breeze, Prism) offers, behind one interface so
+// server.ts (login, callback, debug reads) does not branch on the broker name. Order placement and cancels are NOT here:
+// they live in the order process's BrokerExecutor (src/processes/order/BrokerExecutor.ts), which needs bookkeeping state this
 // interface (and the `frontend` process using it) must not pull in.
 
 // Thrown by exchangeToken when the broker's redirect did not carry what the exchange needs; the caller answers 400.
@@ -18,14 +16,10 @@ export interface CallbackParams {
 }
 
 export interface BrokerClient {
-    readonly name: BrokerName;
     readonly label: string;
-    hasValidSession(): Promise<boolean>;
     getLoginUrl(): string;
     // Exchanges the redirect's credentials for a stored session. Throws MissingCredentialsError when they are absent.
     exchangeToken(params: CallbackParams): Promise<void>;
-    // `exchange` is needed by brokers whose cancel API takes it (Breeze); the others ignore it.
-    cancelOrder(orderId: string, exchange?: string): Promise<void>;
     getTrades(): Promise<any[]>;
     getPositions(): Promise<any[]>;
 }

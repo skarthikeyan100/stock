@@ -2,6 +2,7 @@ import { Trade } from '../../model/model';
 import Log from '../../util/Log';
 
 export type Exchange = 'NFO' | 'BFO' | 'NSE'; // NSE added for Breeze cash-equity orders
+export type OptionExchange = Exclude<Exchange, 'NSE'>; // an option contract's exchange
 
 // Thrown by every broker's cancelOrderOnX (kiteExecutor.ts, antExecutor.ts,
 // prismExecutor.ts, breezeExecutor.ts) specifically when a post-cancel status
@@ -291,7 +292,7 @@ export interface BrokerExecutor {
     getContractByPriceRange(underlyingLtp: number, optionType: 'CE' | 'PE', index: OptionIndex, minPremium: number, excludeStrikes: Set<number>): Promise<any>;
 
     // This broker's resting limit orders on one contract (the pending-order tracker's view).
-    findPendingOrders(userId: string, tradingSymbol: string): { orderId: string; action: 'Buy' | 'Sell'; quantity: number; exchange: 'NFO' | 'BFO' }[];
+    findPendingOrders(userId: string, tradingSymbol: string): { orderId: string; action: 'Buy' | 'Sell'; quantity: number; exchange: OptionExchange }[];
 
     buy(request: BuyRequest): Promise<Trade>;
 
@@ -321,5 +322,5 @@ export interface BrokerExecutor {
     // check for this type to tell "already closed, don't touch again" apart
     // from a genuine cancel failure that still leaves the position open.
     // `exchange` (when the caller knows it, e.g. from the pending-order tracker) is used by brokers whose cancel API needs it (Breeze).
-    cancelOrder(orderId: string, exchange?: Exchange): Promise<void>;
+    cancelOrder(orderId: string, exchange?: OptionExchange): Promise<void>;
 }

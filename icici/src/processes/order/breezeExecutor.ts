@@ -6,7 +6,7 @@ import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
-import { BuyRequest, Exchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
+import { BuyRequest, Exchange, OptionExchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol } from './breezePendingLimitOrders';
 import { roundToTick } from '../../kite/Kite';
@@ -82,7 +82,7 @@ async function waitForBreezeFillBooking(orderId: string, tpl: Partial<Trade>, re
 }
 
 // Breeze's getOrderDetail / cancelOrder / getFillPrice are all keyed by exchangeCode, and the
-// BrokerExecutor interface's cancelOrder(orderId) / getFillPrice(orderId) carry no exchange.
+// BrokerExecutor interface's getFillPrice(orderId) carries no exchange (cancelOrder takes it optionally).
 // So every order this process places records its exchange here, keyed by orderId, and the
 // order-keyed calls look it up. An orderId this process never placed (e.g. from before an
 // `order` restart) falls back to NFO - the pre-SENSEX behaviour - and a BFO order in that
@@ -645,9 +645,9 @@ async function getBreezeOrderFillInfo(orderId: string): Promise<{ filledQuantity
 // the generic executor.cancelOrder dispatch) and depends on that throw to
 // run its own independent fill-check + recordSellFill instead of looping
 // into a fresh sell for a quantity that already closed.
-export async function cancelOrderOnBreeze(orderId: string, exchange?: Exchange): Promise<void> {
+export async function cancelOrderOnBreeze(orderId: string, exchange?: OptionExchange): Promise<void> {
     // A caller-supplied exchange (the tracker's record for this order) beats the side-map lookup and the NFO default.
-    if (exchange && exchange !== 'NSE') rememberOrderExchange(orderId, exchange);
+    if (exchange) rememberOrderExchange(orderId, exchange);
     const breeze = Breeze.getInstance();
     await cancelOrderWithFillRecheck({
         orderId,

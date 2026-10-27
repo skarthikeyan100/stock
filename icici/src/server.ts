@@ -1118,17 +1118,17 @@ app.get('/prism/token', requireAdmin, async function (req, res) {
 // reconnect its stream once a session exists.
 interface BrokerRoute {
     callbackParams(req: express.Request): CallbackParams;
+    // Side effect on the credentials as received, before the exchange (kept out of callbackParams so that stays a pure mapper).
+    remember?(params: CallbackParams): void;
     // Sent to `data` once a session exists so it (re)connects its stream; absent when `data` has no stream for this broker.
     reconnectCmd?: { cmd: 'reconnect'; source?: string };
 }
 
 const BROKER_ROUTES: Record<BrokerName, BrokerRoute> = {
     prism: {
-        callbackParams: (req) => {
-            const code = req.query.code as string | undefined;
-            if (code) authorizationCode = code;
-            return { code };
-        },
+        callbackParams: (req) => ({ code: req.query.code as string | undefined }),
+        // Served back by /prism/authcode.
+        remember: (params) => { if (params.code) authorizationCode = params.code; },
     },
     ant: {
         callbackParams: (req) => ({ authCode: req.query.authCode as string, userId: req.query.userId as string }),
@@ -1168,7 +1168,9 @@ const brokerCallback = (name: BrokerName) => async function (req: express.Reques
     const entry = BROKER_CLIENTS[name];
     const route = BROKER_ROUTES[name];
     try {
-        await entry.exchangeToken(route.callbackParams(req));
+        const params = route.callbackParams(req);
+        route.remember?.(params);
+        await entry.exchangeToken(params);
         if (route.reconnectCmd) writeJsonLine(process.stdout, route.reconnectCmd);
         // `order` loaded whatever (possibly stale/absent) session was on disk when it started; reloadSession re-reads it (and
         // reconnects the order-notify stream where there is one).

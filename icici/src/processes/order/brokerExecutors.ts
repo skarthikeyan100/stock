@@ -179,8 +179,8 @@ export function getExecutorByBroker(name: unknown, op?: string): BrokerExecutor 
 // caller omits it and gets today's per-userId behavior unchanged.
 export function getBrokerExecutor(userId: string, brokerOverride?: string | null): BrokerExecutor {
     // An unknown name throws: a silent fallback to Kite would send another broker's order to the wrong account.
-    // An absent, empty or blank override (a trade row with no broker) means "use the user's broker"; exit paths rely on it. Anything
+    // An absent or empty override (a trade row with no broker) means "use the user's broker"; exit paths rely on it. Anything
     // else that is not a known broker name (a number, an object, a typo) throws instead of falling back to another account.
-    const useUserBroker = brokerOverride === undefined || brokerOverride === null || (typeof brokerOverride === 'string' && normalizeBrokerName(brokerOverride) === '');
+    const useUserBroker = brokerOverride === undefined || brokerOverride === null || brokerOverride === '';
     return getExecutorByBroker(useUserBroker ? bookkeeping.getUserBroker(userId) : brokerOverride, 'getBrokerExecutor');
 }

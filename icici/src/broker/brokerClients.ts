@@ -9,24 +9,18 @@ import { BrokerClient, MissingCredentialsError } from './BrokerClient';
 // Wraps the four client singletons behind BrokerClient. Thin: each method is the singleton's own call.
 export const BROKER_CLIENTS: Record<BrokerName, BrokerClient> = {
     prism: {
-        name: 'prism',
         label: 'Shoonya',
-        // Prism has no cheap auth probe: a readable order book means the session works.
-        hasValidSession: () => Prism.getInstance().getOrderBook().then(() => true, () => false),
         getLoginUrl: () => Prism.getInstance().getOAuthURL(),
         exchangeToken: async ({ code }) => {
             if (!code) throw new MissingCredentialsError('No authorization code received');
             Log.log('Authorization code received, exchanging for token');
             await Prism.getInstance().loginWithGenAcsTok(code);
         },
-        cancelOrder: (orderId) => Prism.getInstance().cancelOrder(orderId),
         getTrades: async () => Prism.getInstance().getTradeList(),
         getPositions: async () => Prism.getInstance().getPositions(),
     },
     ant: {
-        name: 'ant',
         label: 'ANT',
-        hasValidSession: () => ANT.getInstance().hasValidSession(),
         getLoginUrl: () => ANT.getInstance().getAuthorizationUrl(),
         exchangeToken: async ({ authCode, userId }) => {
             if (!authCode || !userId) throw new MissingCredentialsError('Missing authCode or userId from Alice Blue');
@@ -34,36 +28,28 @@ export const BROKER_CLIENTS: Record<BrokerName, BrokerClient> = {
             // (No ant_session cookie: the broker token lives server-side only; nothing reads a browser copy.)
             await ANT.getInstance().exchangeAuthCodeForToken(userId, authCode);
         },
-        cancelOrder: (orderId) => ANT.getInstance().cancelOrder(orderId),
         getTrades: () => ANT.getInstance().getTrades(),
         getPositions: () => ANT.getInstance().getPositions(),
     },
     kite: {
-        name: 'kite',
         label: 'Kite',
-        hasValidSession: () => Kite.getInstance().hasValidSession(),
         getLoginUrl: () => Kite.getInstance().getLoginURL(),
         exchangeToken: async ({ requestToken }) => {
             if (!requestToken) throw new MissingCredentialsError('Missing request_token from Kite');
             Log.log('Kite Callback received - exchanging request_token for access_token');
             await Kite.getInstance().exchangeRequestTokenForSession(requestToken); // broker token stays server-side only - no cookie copy
         },
-        cancelOrder: (orderId) => Kite.getInstance().cancelOrder(orderId),
         getTrades: () => Kite.getInstance().getTrades(),
         getPositions: () => Kite.getInstance().getPositions(),
     },
     breeze: {
-        name: 'breeze',
         label: 'Breeze',
-        hasValidSession: () => Breeze.getInstance().hasValidSession(),
         getLoginUrl: () => Breeze.getInstance().getLoginURL(),
         exchangeToken: async ({ apiSession }) => {
             if (!apiSession) throw new MissingCredentialsError('Missing API_Session from ICICI Breeze');
             Log.log('Breeze Callback received - generating session');
             await Breeze.getInstance().generateSession(apiSession);
         },
-        // Breeze's cancel API needs the exchange; NFO is the default for an order whose exchange the caller does not know.
-        cancelOrder: (orderId, exchange) => Breeze.getInstance().cancelOrder(exchange ?? 'NFO', orderId),
         getTrades: async () => {
             const toDate = new Date();
             const fromDate = new Date(toDate);
