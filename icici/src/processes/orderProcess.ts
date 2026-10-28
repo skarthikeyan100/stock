@@ -141,6 +141,13 @@ async function connectBreezeOrderNotifyIfSessionValid(context: string): Promise<
     BreezeOrderNotifyStream.getInstance().connect().catch((e) => Log.log('[order] BreezeOrderNotifyStream connect failed (Breeze fills will fall back to REST polling):', e));
 }
 
+// The IPC payload names the contract `tradingSymbol`; `tsym` (the old wire name, and still what /order/squareoff?tsym= and a strategies
+// process started before a hot restart send) is accepted too.
+function payloadTradingSymbol(payload: any): string {
+    return payload.tradingSymbol ?? payload.tsym;
+}
+
+
 // Shared guard for every buy-style request type: check canPlaceOrder, reserve
 // the slot via bookkeeping.markPending() (so a concurrent request for the same
 // user sees the reservation - see bookkeeping.markPending's doc comment), then
@@ -182,12 +189,6 @@ async function connectBreezeOrderNotifyIfSessionValid(context: string): Promise<
 // Every other (single-implicit-broker-per-user) type falls back to
 // bookkeeping.getUserBroker(userId), identical to how its own handler
 // resolves which broker to actually call.
-// The IPC payload names the contract `tradingSymbol`; `tsym` (the old wire name, and still what /order/squareoff?tsym= and a strategies
-// process started before a hot restart send) is accepted too.
-function payloadTradingSymbol(payload: any): string {
-    return payload.tradingSymbol ?? payload.tsym;
-}
-
 function resolveRequestBroker(req: OrderRequest): string {
     switch (req.type) {
         case 'antPlaceCoverOrder':
@@ -560,7 +561,24 @@ async function squareOffByToken(userId: string, token: any, quantity: number | u
     return Object.assign(new Trade(), results[0], { quantity: results.reduce((sum, r) => sum + (r.quantity || 0), 0) });
 }
 
+// Request types retired in favour of the generic Bare family with an explicit broker. Translated here so a strategies process still
+// running the previous build (the orchestrator restarts children independently) keeps working across a deploy.
+function upgradeLegacyRequest(req: OrderRequest): OrderRequest {
+    const p = req.payload ?? {};
+    switch (req.type as string) {
+        case 'antBuyContractBare':
+            return { ...req, type: 'buyContractBare', payload: { tradingSymbol: p.tradingSymbol, instrumentToken: p.instrumentId, quantity: p.quantity, exchange: p.exchange, broker: 'ant' } };
+        case 'antCancelOrderBare':
+            return { ...req, type: 'cancelOrderBare', payload: { orderId: p.orderId, broker: 'ant' } };
+        case 'antPlaceLimitBuyBare':
+            return { ...req, type: 'placeLimitBuyBare', payload: { tradingSymbol: p.tradingSymbol, instrumentToken: p.instrumentId, quantity: p.quantity, price: p.price, exchange: p.exchange, broker: 'ant' } };
+        default:
+            return req;
+    }
+}
+
 async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
+    req = upgradeLegacyRequest(req);
     try {
         // Accept legacy broker names (e.g. 'zerodha') from any caller before anything dispatches on them.
         if (req.payload && typeof (req.payload as any).broker === 'string') (req.payload as any).broker = normalizeBrokerName((req.payload as any).broker);
@@ -595,7 +613,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // to close.
                 await waitForReconcile();
                 const { quantity, exchange, token } = req.payload;
-                const tsym = req.payload.tradingSymbol ?? req.payload.tsym;
+                const tsym = payloadTradingSymbol(req.payload);
                 if (!tsym && token) {
                     const byToken = await squareOffByToken(req.userId, token, quantity, exchange);
                     if ('error' in byToken) return { kind: 'response', id: req.id, ok: false, error: byToken.error };
@@ -664,7 +682,8 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // review purely because reconcile hadn't finished yet.
                 if (reconcileInFlight) await reconcileInFlight;
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
-                const result = await squareOffChunked(executor, req.userId, payloadTradingSymbol(req.payload), req.payload.quantity, exchangeForTsym(payloadTradingSymbol(req.payload)), req.payload.freezeQuantity);
+                const tsym = payloadTradingSymbol(req.payload);
+                const result = await squareOffChunked(executor, req.userId, tsym, req.payload.quantity, exchangeForTsym(tsym), req.payload.freezeQuantity);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -673,13 +692,14 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // BulkPcrStrategy's actual target-hit exit path.
                 if (reconcileInFlight) await reconcileInFlight;
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
+                const tsym = payloadTradingSymbol(req.payload);
                 const result = await squareOffLimitChunked(
                     executor,
                     req.userId,
-                    payloadTradingSymbol(req.payload),
+                    tsym,
                     req.payload.instrumentId,
                     req.payload.quantity,
-                    exchangeForTsym(payloadTradingSymbol(req.payload)),
+                    exchangeForTsym(tsym),
                     req.payload.price,
                     req.payload.freezeQuantity
                 );

@@ -651,7 +651,7 @@ export async function cancelOrderOnBreeze(orderId: string, exchange?: OptionExch
     });
 }
 
-// Generic BrokerExecutor.buy() path: instrumentId is a Breeze FnoRecord.token
+// Generic BrokerExecutor.buy() path: brokerToken is a Breeze FnoRecord.token
 // (see BuyRequest's own "already resolved by the caller" contract) - resolve
 // it back to the full contract, then place the same bare limit buy
 // buyIndexOnBreeze does for a pre-resolved contract. No caller in this

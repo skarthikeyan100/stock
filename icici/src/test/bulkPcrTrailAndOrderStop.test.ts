@@ -103,7 +103,7 @@ async function testPerOrderStopTrips() {
     assert(!s.isBrokerStopped('kite'), 'call -500 with put +4000: no trip (no netting needed, and none applied)');
     await s.processOptionQuote(tick('C1', 89)); // call -1100 > 1000
     assert(s.isBrokerStopped('kite'), 'call -1100 breaches its own 1000 cap');
-    assert(calls.squareOffs.length === 1 && calls.squareOffs[0].tsym === 'NIFTYC', `only the call is squared off (got ${JSON.stringify(calls.squareOffs.map((c) => c.tsym))})`);
+    assert(calls.squareOffs.length === 1 && calls.squareOffs[0].tradingSymbol === 'NIFTYC', `only the call is squared off (got ${JSON.stringify(calls.squareOffs.map((c) => c.tradingSymbol))})`);
     assert(s.positions.get('kite_put').phase === 'selling', 'the put keeps its exit');
     assert(s.stopFor('kite_call').isTripped() && !s.stopFor('kite_put').isTripped(), 'the latch is per order');
 }

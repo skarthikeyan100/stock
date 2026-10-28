@@ -71,7 +71,7 @@ function mockOrderClient(
     client.getOpenTrades = async (_userId: string) => openTrades;
     client.getPendingSells = async (_userId: string, _broker: string, _tsym: string) => pendingSells;
     client.chunkedSquareOffLimit = async (_userId: string, payload: any) => {
-        placedSells.push({ tsym: payload.tsym, quantity: payload.quantity, broker: payload.broker });
+        placedSells.push({ tsym: payload.tradingSymbol, quantity: payload.quantity, broker: payload.broker });
         return { soldQty: payload.quantity, soldValue: payload.quantity * payload.price };
     };
 }
