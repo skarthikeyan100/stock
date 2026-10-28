@@ -57,7 +57,7 @@ const tracker = new PendingOrderTracker<PendingBreezeLimitOrder, null, 'breeze'>
         orderId: row.orderId,
         userId: row.userId,
         tradingSymbol: row.tradingSymbol,
-        antToken: row.antToken,
+        antToken: row.token ?? row.antToken,
         quantity: row.quantity,
         exchange: row.exchange,
         action: row.action ?? 'Buy', // pre-2026-09-22 rows predate this field - all were Buy

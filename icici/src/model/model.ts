@@ -112,6 +112,11 @@ export class Trade {
     // this is an accessor on the prototype: it is not an own property, so it never reaches a stored document or JSON, while
     // Object.assign(new Trade(), { tradingSymbol }) and new code can use the canonical name.
     get tradingSymbol(): string { return this.tsym; }
+    // Canonical (camel-case) names of the stored realizedPnL / unrealizedPnL fields - same prototype-accessor technique as tradingSymbol.
+    get realizedPnl(): number { return this.realizedPnL; }
+    set realizedPnl(value: number) { this.realizedPnL = value; }
+    get unrealizedPnl(): number { return this.unrealizedPnL; }
+    set unrealizedPnl(value: number) { this.unrealizedPnL = value; }
     set tradingSymbol(value: string) { this.tsym = value; }
     token: string;
     stockCode: any;

@@ -111,8 +111,10 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     track = (order: T): void => {
         recordOrderOwner(order.orderId, order.userId, this.adapter.broker);
         this.pending.set(order.orderId, order);
+        // `token` is the canonical name of the position's token (REFACTOR_PLAN.md section 3); the broker-specific field (instrumentId /
+        // instrumentToken / antToken) is still stored too, for builds that read it, and either is accepted on load (fromDoc).
         Mongo.getInstance()?.db.collection(this.adapter.collection)
-            .replaceOne({ orderId: order.orderId }, order, { upsert: true })
+            .replaceOne({ orderId: order.orderId }, { ...order, token: this.adapter.tokenOf(order) }, { upsert: true })
             .catch((e) => Log.log(`[order] ${this.adapter.collection}: Mongo persist failed for`, order.orderId, e));
     };
 

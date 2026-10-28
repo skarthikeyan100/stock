@@ -30,7 +30,7 @@ const tracker = new PendingOrderTracker<PendingPrismLimitOrder, any[], 'prism'>(
         orderId: row.orderId,
         userId: row.userId,
         tradingSymbol: row.tradingSymbol,
-        instrumentId: row.instrumentId,
+        instrumentId: row.token ?? row.instrumentId,
         quantity: row.quantity,
         exchange: row.exchange,
         action: row.action ?? 'Sell',
