@@ -436,7 +436,13 @@ export default class BulkPcrStrategy extends Strategy {
     // admin reset - a human must check the broker first.
     private liveRemainder = new Set<BrokerName>();
 
+    // Public: BulkPcrAutoStartStrategy does not arm a latched broker.
+    isLiveRemainderLatched(broker: string): boolean {
+        return this.liveRemainder.has(broker as BrokerName);
+    }
+
     private latchLiveRemainder(broker: BrokerName, what: string, bookedQty: number): void {
+        this.ensureToday(); // stamp the latch with today's day (persisted as realizedDay)
         this.liveRemainder.add(broker);
         this.persistState();
         Log.log(`[BulkPcrStrategy] [${broker}] ALERT: the cancel of the unfilled remainder of the ${what} FAILED - it may still be resting live and fill later; the exit covers only the ${bookedQty} booked qty and this broker takes no new entry, hedge or re-buy until reviewed (admin reset)`);
@@ -493,6 +499,7 @@ export default class BulkPcrStrategy extends Strategy {
         const today = localDayKey();
         if (today === this.statsDay) return;
         this.statsDay = today;
+        this.liveRemainder.clear(); // the latch is for the day, like the loss lockouts (the broker was checked or the order expired)
         this.dayRealizedByBroker.clear();
         this.stops.clear();
         this.profitStops.clear();
@@ -1299,8 +1306,8 @@ export default class BulkPcrStrategy extends Strategy {
         if (!pos || !pos.right || !(pos.entryQuantity && pos.entryQuantity > 0)) return;
         if (this.liveRemainder.has(pos.broker)) {
             Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} re-buy skipped: an earlier entry's unfilled remainder may still be live at the broker - manual review required`);
-            // A side still waiting to re-buy would otherwise be retried (and skipped) on every tick, and the cycle could never be judged.
-            if (pos.phase === 'pending') { pos.phase = 'error'; this.persistState(); }
+            // A side still waiting to re-buy would otherwise be retried (and skipped) on every tick: it holds nothing, so it ends here.
+            if (pos.phase === 'pending') this.abandonBuy(pos, 'a possibly-live remainder is outstanding on this broker');
             return;
         }
 

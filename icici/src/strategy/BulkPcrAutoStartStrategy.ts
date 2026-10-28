@@ -208,9 +208,9 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         }
         // A loss-stopped broker is not armed for today (maxloss.md B3.8). cfg itself is not mutated.
         const wanted: string[] = normalizeBrokerList(Array.isArray(cfg.brokers) ? cfg.brokers : [cfg.broker ?? 'kite']);
-        const armable = wanted.filter((b) => !target.isBrokerStopped(String(b).toLowerCase()));
+        const armable = wanted.filter((b) => !target.isBrokerStopped(String(b).toLowerCase()) && !target.isLiveRemainderLatched(String(b).toLowerCase()));
         if (armable.length === 0) {
-            Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: every configured broker is loss-stopped for today - skipping`);
+            Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: every configured broker is loss-stopped or has a possibly-live entry remainder (manual review) - skipping`);
             return;
         }
         // Refuse to arm on a missing/invalid size or target: copying undefined used to make BulkPcrStrategy silently default to its
