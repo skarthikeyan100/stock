@@ -1025,6 +1025,14 @@ export class LegManager {
             // any concurrent root entry/spawn decision.
             return await this.withOpLock(async () => {
                 if (this.newOrdersBlocked()) return false; // a stop latched while queued - never rest a new buy
+                // This refill queued behind the lock while a spawn/entry ran first: the intent is only registered in
+                // pendingReEntries below, so that spawn's openStrikesFor() could not see the strike and may have picked
+                // this very token (2026-10-28 10:07: NIFTY26N0322500PE). Resting a buy on a token a live leg already holds
+                // can only end as a duplicate fill that has to be sold back at market.
+                if (this.legsByToken.has(intent.token)) {
+                    Log.log(`[${this.deps.ownerType}] Refill skipped: ${intent.tsym} is already held by a tracked leg (taken over by a spawn/entry while this refill was queued)`);
+                    return false;
+                }
                 const context = intent.isRoot ? 'Root refill' : `Nested refill (${intent.tsym})`;
                 if (!(await this.capitalCheck(intent.quantity, intent.limitPrice, context))) {
                     return false; // capital gate tripped - gone for good, root and nested alike, no retry
