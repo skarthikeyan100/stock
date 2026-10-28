@@ -173,9 +173,6 @@ interface BrokerPosition {
     entryQuantity?: number;
     // Epoch ms of the last buy attempt - throttles retries of a 'pending' buy.
     lastBuyAttemptAt?: number;
-    // Latched when an entry stopped early and the cancel of its unfilled remainder failed: that remainder may still fill at the
-    // broker, so this slot never re-buys (a second buy would stack on top of it). Manual review required.
-    liveRemainder?: boolean;
     // Epoch ms when phase last transitioned to 'selling' - lets reconcile()
     // tell a genuinely still-resting exit apart from one that's certainly
     // gone: every resting sell chunk placed by chunkedSquareOffLimit is a DAY
@@ -234,6 +231,8 @@ interface PersistedState {
     stoppedSlots?: string[];
     // Same as stoppedBrokers, for the maxProfit latch.
     profitStoppedBrokers?: BrokerName[];
+    // Brokers latched by latchLiveRemainder on realizedDay.
+    liveRemainderBrokers?: BrokerName[];
     realizedDay?: string;
 }
 
@@ -431,6 +430,18 @@ export default class BulkPcrStrategy extends Strategy {
         this.gateLog.log(reason);
     }
 
+    // Brokers where an entry stopped early and the cancel of its unfilled remainder FAILED: that remainder may still fill at the
+    // broker with no exit on it. A latched broker takes no new entry, hedge or re-buy, the cycle is never judged complete, and
+    // hasBrokerError() reports it. Durable (state doc) for the day like the loss lockouts, kept across a re-arm, cleared only by an
+    // admin reset - a human must check the broker first.
+    private liveRemainder = new Set<BrokerName>();
+
+    private latchLiveRemainder(broker: BrokerName, what: string, bookedQty: number): void {
+        this.liveRemainder.add(broker);
+        this.persistState();
+        Log.log(`[BulkPcrStrategy] [${broker}] ALERT: the cancel of the unfilled remainder of the ${what} FAILED - it may still be resting live and fill later; the exit covers only the ${bookedQty} booked qty and this broker takes no new entry, hedge or re-buy until reviewed (admin reset)`);
+    }
+
     // Persists one BrokerPosition per configured broker, keyed by broker -
     // lets reconcile() tell 'selling' (a limit-sell exit is already resting
     // at that broker - re-placing it on restart would risk a SECOND exit for
@@ -460,6 +471,7 @@ export default class BulkPcrStrategy extends Strategy {
             stoppedBrokers,
             stoppedSlots,
             profitStoppedBrokers,
+            liveRemainderBrokers: Array.from(this.liveRemainder),
             realizedDay: this.statsDay,
         };
         return this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION).replaceOne({ userId: this.userId }, doc, { upsert: true }));
@@ -574,6 +586,12 @@ export default class BulkPcrStrategy extends Strategy {
             // while it was running, so it must not be overwritten by one.
             for (const [broker, pnl] of Object.entries(persisted.dayRealizedByBroker ?? {})) {
                 if (Number.isFinite(Number(pnl)) && !this.dayRealizedByBroker.has(broker as BrokerName)) this.dayRealizedByBroker.set(broker as BrokerName, Number(pnl));
+            }
+        }
+        if (stateDayIsToday) {
+            for (const broker of persisted?.liveRemainderBrokers ?? []) {
+                if (!this.liveRemainder.has(broker)) Log.log(`[BulkPcrStrategy] [${broker}] ALERT: restored a possibly-live entry remainder latch - no new entry, hedge or re-buy until an admin reset`);
+                this.liveRemainder.add(broker);
             }
         }
         for (const broker of this.configuredBrokers()) {
@@ -813,6 +831,10 @@ export default class BulkPcrStrategy extends Strategy {
     // comment. Only safe today because config.yml's `brokers` list is a
     // single entry.
     private async enterOnBroker(broker: BrokerName, right: string, quantity: number, niftyLtp: number, isRetry: boolean = false): Promise<void> {
+        if (this.liveRemainder.has(broker)) {
+            Log.log(`[BulkPcrStrategy] [${broker}] ${right} entry skipped: an earlier entry's unfilled remainder may still be live at this broker - manual review required`);
+            return;
+        }
         const key = slotKey(broker, right);
         this.positions.set(key, {
             broker,
@@ -834,10 +856,7 @@ export default class BulkPcrStrategy extends Strategy {
             pos.heldToken = feedTokenOf(result);
             pos.entryAvg = result.avgPrice;
             Log.log(`[BulkPcrStrategy] [${broker}] Entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
-            if (result.orderMayBeLive) {
-                pos.liveRemainder = true;
-                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} entry FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked qty and this slot will not re-buy, manual review required`);
-            }
+            if (result.orderMayBeLive) this.latchLiveRemainder(broker, `${pos.heldTsym} entry`, result.quantity);
             pos.entryQuantity = result.quantity;
             await this.placeExitSell(key, result.quantity);
         } catch (e: any) {
@@ -1257,6 +1276,7 @@ export default class BulkPcrStrategy extends Strategy {
     // the lone slot's still-open quantity. The lone slot's own +2 sell is never cancelled.
     private async openOppositeSide(slot: BrokerPosition): Promise<void> {
         if (this.isBrokerStopped(slot.broker)) return;
+        if (this.liveRemainder.has(slot.broker)) return; // a possibly-live remainder is already outstanding on this broker
         const right = slot.right === CALL ? PUT : CALL;
         const remaining = slot.targetQuantity - slot.soldQty;
         if (remaining <= 0) return;
@@ -1277,8 +1297,10 @@ export default class BulkPcrStrategy extends Strategy {
     private async buyAndExit(key: string): Promise<void> {
         const pos = this.positions.get(key);
         if (!pos || !pos.right || !(pos.entryQuantity && pos.entryQuantity > 0)) return;
-        if (pos.liveRemainder) {
+        if (this.liveRemainder.has(pos.broker)) {
             Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} re-buy skipped: an earlier entry's unfilled remainder may still be live at the broker - manual review required`);
+            // A side still waiting to re-buy would otherwise be retried (and skipped) on every tick, and the cycle could never be judged.
+            if (pos.phase === 'pending') { pos.phase = 'error'; this.persistState(); }
             return;
         }
 
@@ -1317,10 +1339,7 @@ export default class BulkPcrStrategy extends Strategy {
             pos.entryAvg = result.avgPrice;
             pos.buyAttempts = 0;
             Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
-            if (result.orderMayBeLive) {
-                pos.liveRemainder = true;
-                Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} re-buy FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked qty and this slot will not re-buy, manual review required`);
-            }
+            if (result.orderMayBeLive) this.latchLiveRemainder(pos.broker, `${pos.heldTsym} re-buy`, result.quantity);
             if (this.eodDone || this.mustClose(pos)) {
                 // EOD or the loss stop started while this buy was in flight - square it off now, don't rest a sell.
                 pos.targetQuantity = result.quantity;
@@ -1568,6 +1587,7 @@ export default class BulkPcrStrategy extends Strategy {
     // or in error. A 'pending' side only counts as finished when no other side is still active.
     private allBrokersFinished(): boolean {
         return this.configuredBrokers().every((b) => {
+            if (this.liveRemainder.has(b)) return false; // a remainder may still fill: the cycle is not over
             const slots = Array.from(this.positions.values()).filter((p) => p.broker === b);
             if (slots.length === 0) return false;
             const anyActive = slots.some((p) => p.phase === 'selling' || p.phase === 'buying' || p.phase === 'error');
@@ -2167,7 +2187,7 @@ export default class BulkPcrStrategy extends Strategy {
     // distinctly from an ordinary "already running - skipping" line, which
     // otherwise looks identical for both.
     hasBrokerError(): boolean {
-        return Array.from(this.positions.values()).some((p) => p.phase === 'error');
+        return this.liveRemainder.size > 0 || Array.from(this.positions.values()).some((p) => p.phase === 'error');
     }
 
     // keepStops: the auto-start re-arm path. It keeps today's loss-stop latches and realized P&L (the stop
@@ -2201,6 +2221,7 @@ export default class BulkPcrStrategy extends Strategy {
         this.stops.clear();
         this.profitStops.clear();
         this.dayRealizedByBroker.clear();
+        this.liveRemainder.clear();
         this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION).deleteOne({ userId: this.userId }));
         Log.log(`[${this.userId}] Reset via admin request`);
     }

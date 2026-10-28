@@ -1,4 +1,5 @@
 import { isPastTime } from '../util/marketHours';
+import { localDayKey } from './dayKey';
 import Log from '../util/Log';
 import { CALL, PUT } from '../constants';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
@@ -121,10 +122,24 @@ interface BrokerPosition {
 interface PersistedState {
     userId: string;
     positions: Partial<Record<BrokerName, BrokerPosition>>;
+    // Brokers latched by latchLiveRemainder on `liveRemainderDay`.
+    liveRemainderBrokers?: BrokerName[];
+    liveRemainderDay?: string;
 }
 
 export default class HourlyStrategy extends Strategy {
     private positions: Map<BrokerName, BrokerPosition> = new Map();
+    // Brokers where an entry stopped early and the cancel of its unfilled remainder FAILED: that remainder may still fill with no
+    // exit on it. A latched broker takes no new entry today (durable for the day, cleared by reset()) until a human has checked it.
+    private liveRemainder = new Set<BrokerName>();
+    private liveRemainderDay = localDayKey();
+
+    private latchLiveRemainder(broker: BrokerName, what: string, bookedQty: number): void {
+        this.liveRemainder.add(broker);
+        this.liveRemainderDay = localDayKey();
+        this.persistState();
+        Log.log(`[Hourly] [${broker}] ALERT: the cancel of the unfilled remainder of the ${what} FAILED - it may still be resting live and fill later; the exit covers only the ${bookedQty} booked qty and this broker takes no new entry today until reviewed (reset)`);
+    }
     private writer = new SerialWriter('Hourly');
 
     // Hourly level tracking.
@@ -399,6 +414,10 @@ export default class HourlyStrategy extends Strategy {
     }
 
     private async enterOnBroker(broker: BrokerName, right: string, quantity: number, niftyLtp: number): Promise<void> {
+        if (this.liveRemainder.has(broker) && this.liveRemainderDay === localDayKey()) {
+            Log.log(`[Hourly] [${broker}] entry skipped: an earlier entry's unfilled remainder may still be live at this broker - manual review required`);
+            return;
+        }
         this.positions.set(broker, {
             broker,
             phase: 'buying',
@@ -418,7 +437,7 @@ export default class HourlyStrategy extends Strategy {
             pos.heldToken = String(result.token);
             pos.entryAvg = result.avgPrice;
             Log.log(`[Hourly] [${broker}] Entry complete: ${pos.heldTsym} qty=${result.quantity} avg=${pos.entryAvg}`);
-            if (result.orderMayBeLive) Log.log(`[Hourly] [${broker}] ALERT: the cancel of the unfilled remainder of the ${pos.heldTsym} entry FAILED - it may still be resting live and fill later; the exit covers only the ${result.quantity} booked qty, manual review required`);
+            if (result.orderMayBeLive) this.latchLiveRemainder(broker, `${pos.heldTsym} entry`, result.quantity);
             await this.placeExitSellAtTargetPrice(broker, result.quantity, true);
         } catch (e) {
             Log.log(`[Hourly] [${broker}] Entry failed - manual review required:`, e);
@@ -620,7 +639,7 @@ export default class HourlyStrategy extends Strategy {
             const { squaringOff: _inFlight, placingExit: _placing, closeRequested: _deferred, lastCloseAttemptAt: _last, ...durable } = pos;
             positions[broker] = durable as BrokerPosition;
         }
-        const doc = { userId: this.userId, positions };
+        const doc = { userId: this.userId, positions, liveRemainderBrokers: Array.from(this.liveRemainder), liveRemainderDay: this.liveRemainderDay };
         this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION)
             .replaceOne({ userId: this.userId }, doc, { upsert: true }));
     }
@@ -644,6 +663,13 @@ export default class HourlyStrategy extends Strategy {
     // than guessing whether its resting sell survived the restart.
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
         const persisted = await this.loadState();
+        if (persisted?.liveRemainderDay === localDayKey()) {
+            for (const broker of persisted.liveRemainderBrokers ?? []) {
+                this.liveRemainder.add(broker);
+                this.liveRemainderDay = persisted.liveRemainderDay;
+                Log.log(`[Hourly] [${broker}] ALERT: restored a possibly-live entry remainder latch - no new entry today until reset`);
+            }
+        }
         if (persisted?.positions) {
             for (const [broker, pos] of Object.entries(persisted.positions)) {
                 if (pos && pos.phase !== 'done') this.positions.set(broker as BrokerName, pos as BrokerPosition);
@@ -700,6 +726,8 @@ export default class HourlyStrategy extends Strategy {
     reset(): void {
         super.reset();
         this.positions.clear();
+        this.liveRemainder.clear();
+        this.persistState();
         this.currentHourBucket = null;
         this.hourComplete = false;
         this.resistance = null;
