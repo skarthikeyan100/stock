@@ -15,6 +15,8 @@ settings:
   gapScreenerCoverOrderUserEmail: ''
   gapScreenerCoverOrderQuantity: 0
   gapScreenerCoverOrderStopLossPoints: 0
+  targetPoints: 2
+  stopLossPoints: 11
 strategies:
   - type: SentimentStrategy
     enabled: false
@@ -41,10 +43,11 @@ strategies:
     marketSentiment: none
     maxLevels: 4
     cooldownSeconds: 60
-    refillCancelDistance: 50
+    refillCancelDistance: 20
     logEnabled: true
     momentumEnabled: false
     momentumTimeoutMs: 3000
+    maxExposure: 200000
   - type: ContinuousStrategy
     userId: ContinuousStrategy-ANT
     enabled: false
@@ -69,6 +72,7 @@ strategies:
     logEnabled: true
     momentumEnabled: false
     momentumTimeoutMs: 3000
+    maxExposure: 200000
   - type: ContinuousStrategy
     userId: ContinuousStrategy-Breeze
     enabled: false
@@ -93,6 +97,7 @@ strategies:
     logEnabled: true
     momentumEnabled: false
     momentumTimeoutMs: 3000
+    maxExposure: 200000
   - type: RateOfChangeStrategy
     enabled: false
     pointsThreshold: 30
@@ -159,6 +164,7 @@ strategies:
     maxProfit: 100%
     cooldownSeconds: 60
     marketSentiment: none
+    maxExposure: 200000
   - type: HourlyStrategy
     enabled: false
     brokers:
@@ -170,6 +176,7 @@ strategies:
     cooldownSeconds: 60
     driftCancelPoints: 10
     logEnabled: true
+    maxExposure: 100000
   - type: TargetReachStrategy
     enabled: false
     symbol: NIFTY
@@ -197,6 +204,12 @@ strategies:
       - ant
       - zerodha
     index: SENSEX
+    maxExposure: 100000
+    lossCooldownSeconds: 300
+    lossInvestmentCut: 10000
+    maxExposureByBroker:
+      ant: 100000
+      zerodha: 100000
   - type: BulkPcrStrategy
     userId: BulkPcr-NIFTY
     enabled: false
@@ -207,12 +220,16 @@ strategies:
     maxInvestment: 100000
     maxLossPerOrder: 10%
     maxProfit: 10%
-    slDistance: 5
+    slDistance: 10
     logEnabled: true
     brokers:
       - ant
-      - breeze
     index: NIFTY
+    maxExposure: 100000
+    lossCooldownSeconds: 300
+    lossInvestmentCut: 10000
+    maxExposureByBroker:
+      ant: 100000
   - type: BulkPcrAutoStartStrategy
     userId: BulkPcrAutoStart-SENSEX
     targetUserId: BulkPcr-SENSEX
@@ -266,7 +283,6 @@ strategies:
     index: NIFTY
     brokers:
       - ant
-      - breeze
   - type: TopStockOptionsOpeningGapStrategy
     enabled: false
     broker: ant

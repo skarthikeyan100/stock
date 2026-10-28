@@ -24,6 +24,8 @@ export type OrderRequestType =
     | 'refreshTradeList'
     | 'getOrders'
     | 'updateUserSettings'
+    // Runtime per-(user, broker) investment cap for the rest of the local day (BulkPcr loss-trip cut). payload: { broker, cap }.
+    | 'setBrokerInvestmentCap'
     | 'openTrades'
     | 'findToken'
     | 'connectPrism'

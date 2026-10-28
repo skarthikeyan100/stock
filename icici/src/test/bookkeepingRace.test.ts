@@ -106,6 +106,16 @@ async function main() {
     const clearNow = await bookkeeping.canPlaceOrder(MULTI_USER);
     assert(clearNow.allowed === true, 'once both reservations are released the user can order again');
 
+    // (e) A per-broker cap gates each broker on its own, and a runtime cut (BulkPcr loss trip) survives a config reload.
+    const CAP_USER = 'CapTestUser';
+    const caps = { lossLimit: USER_LOSS_LIMIT, lotLimit: 1, maxInvestment: 100000, maxInvestmentByBroker: { ant: 100000, kite: 80000 } };
+    bookkeeping.updateUserSettings(CAP_USER, caps);
+    assert(bookkeeping.getUserMaxInvestment(CAP_USER, 'kite') === 80000 && bookkeeping.getUserMaxInvestment(CAP_USER, 'ant') === 100000, 'each broker reads its own configured cap');
+    assert(bookkeeping.getUserMaxInvestment(CAP_USER, 'breeze') === 100000 && bookkeeping.getUserMaxInvestment(CAP_USER) === 100000, 'a broker with no entry (or none given) uses the user cap');
+    bookkeeping.setBrokerInvestmentCap(CAP_USER, 'kite', 70000);
+    bookkeeping.updateUserSettings(CAP_USER, caps); // a config reload replaces the whole settings entry
+    assert(bookkeeping.getUserMaxInvestment(CAP_USER, 'kite') === 70000 && bookkeeping.getUserMaxInvestment(CAP_USER, 'ant') === 100000, "today's runtime cut survives the reload and touches only its broker");
+
     if (process.exitCode === 1) {
         console.log('SOME TESTS FAILED');
     } else {

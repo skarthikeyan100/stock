@@ -19,20 +19,23 @@ function assert(condition: boolean, message: string) {
 }
 
 (marketHours as any).isPastMarketClose = () => false;
+// durablyDisable writes the in-memory config back to disk: point it at a scratch file, never the real config.yml.
+(configService as any).configPath = `/tmp/bulkPcrTrailAndOrderStop-config-${process.pid}.yml`;
 
 function setConfig(userId: string, extra: Record<string, unknown>) {
     (configService as any).config = {
         settings: {},
-        strategies: [{ type: 'BulkPcrStrategy', userId, enabled: true, brokers: ['kite'], targetPoints: 2, quantity: -1, slDistance: 10, maxInvestment: 100000, ...extra }],
+        strategies: [{ type: 'BulkPcrStrategy', userId, enabled: true, brokers: ['kite'], targetPoints: 2, quantity: -1, slDistance: 10, maxInvestment: 100000, maxExposureByBroker: { kite: 100000 }, lossCooldownSeconds: 300, lossInvestmentCut: 10000, ...extra }],
     };
 }
 
-interface Calls { sells: any[]; cancels: any[]; squareOffs: any[] }
+interface Calls { sells: any[]; cancels: any[]; squareOffs: any[]; caps: any[] }
 function mockClient(): Calls {
-    const calls: Calls = { sells: [], cancels: [], squareOffs: [] };
+    const calls: Calls = { sells: [], cancels: [], squareOffs: [], caps: [] };
     const client = OrderClient.getInstance() as any;
     client.chunkedSquareOffLimit = async (_u: string, p: any) => { calls.sells.push(p); return {}; };
     client.cancelRestingLimitSells = async (_u: string, p: any) => { calls.cancels.push(p); return { filledQty: 0, cancelFailed: false }; };
+    client.setBrokerInvestmentCap = async (_u: string, broker: string, cap: number) => { calls.caps.push({ broker, cap }); };
     client.chunkedSquareOff = async (_u: string, p: any) => { calls.squareOffs.push(p); return { avgPrice: 0 }; };
     return calls;
 }
@@ -108,10 +111,51 @@ async function testPerOrderStopTrips() {
     assert(s.stopFor('kite_call').isTripped() && !s.stopFor('kite_put').isTripped(), 'the latch is per order');
 }
 
+async function testLossCooldown() {
+    console.log('Test: loss trip cuts the broker cap and releases the lockout after the cooldown');
+    setConfig('cool-1', { maxLossPerOrder: '1%' });
+    const calls = mockClient();
+    const s = new BulkPcrStrategy('cool-1') as any;
+    s.positions.set('kite_call', slot('call', 'NIFTYC', 'C1', 100));
+    s.positions.set('kite_put', slot('put', 'NIFTYP', 'P1', 40));
+    await s.processOptionQuote(tick('C1', 89)); // call -1100 > 1000
+    assert(s.isBrokerStopped('kite'), 'tripped');
+    assert(s.effectiveCap('kite') === 90000 && calls.caps.length === 1 && calls.caps[0].cap === 90000, `cap cut by 10000 and pushed (got ${JSON.stringify(calls.caps)})`);
+    const until = s.lossCooldownUntil.get('kite');
+    assert(until !== undefined && until - Date.now() > 290_000 && until - Date.now() <= 300_000, 'cooldown of 300s recorded');
+    await s.maybeReleaseLoss('kite');
+    assert(s.isBrokerStopped('kite'), 'still locked before the cooldown has elapsed');
+    s.lossCooldownUntil.set('kite', Date.now() - 1);
+    await s.maybeReleaseLoss('kite');
+    assert(!s.isBrokerStopped('kite') && !s.lossCooldownUntil.has('kite'), 'released after the cooldown');
+    assert(s.effectiveCap('kite') === 90000, 'the cut stays after the release');
+    // A second trip cuts again (cumulative) and a maxProfit lockout is never released.
+    s.positions.get('kite_call').phase = 'selling';
+    s.lastLtpByKey.clear();
+    await s.processOptionQuote(tick('C1', 80));
+    assert(s.isBrokerStopped('kite') && s.effectiveCap('kite') === 80000, `second trip cuts again (cap ${s.effectiveCap('kite')})`);
+    s.profitStopFor('kite').markTripped();
+    s.lossCooldownUntil.set('kite', Date.now() - 1);
+    await s.maybeReleaseLoss('kite');
+    assert(s.isBrokerStopped('kite') && !s.lossCooldownUntil.has('kite'), 'a maxProfit lockout is not released');
+}
+
+async function testNoCooldownConfigured() {
+    console.log('Test: lossCooldownSeconds 0 keeps the lockout for the day (cut still applies)');
+    setConfig('cool-2', { maxLossPerOrder: '1%', lossCooldownSeconds: 0 });
+    mockClient();
+    const s = new BulkPcrStrategy('cool-2') as any;
+    s.positions.set('kite_call', slot('call', 'NIFTYC', 'C1', 100));
+    await s.processOptionQuote(tick('C1', 89));
+    assert(s.isBrokerStopped('kite') && s.lossCooldownUntil.size === 0 && s.effectiveCap('kite') === 90000, 'locked, no cooldown entry, cap cut');
+}
+
 async function main() {
     await testTrail();
     await testTrailOffAndRootLeg();
     await testPerOrderStopTrips();
+    await testLossCooldown();
+    await testNoCooldownConfigured();
     console.log(process.exitCode ? 'SOME TESTS FAILED' : 'ALL TESTS PASSED');
 }
 main().then(() => process.exit(process.exitCode ?? 0));

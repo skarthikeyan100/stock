@@ -341,6 +341,12 @@ class OrderClient {
         if (!res.ok) throw new Error(res.error);
     }
 
+    // Sets this strategy's cap for one broker for the rest of the local day (BulkPcr loss-trip cut).
+    async setBrokerInvestmentCap(userId: string, broker: string, cap: number): Promise<void> {
+        const res = await this.request('setBrokerInvestmentCap', userId, { broker, cap });
+        if (!res.ok) throw new Error(res.error);
+    }
+
     // undefined result means "no per-user override" - caller falls back to
     // its own config default (see ContinuousStrategy.capitalCheck).
     async getOpenTrades(userId: string): Promise<any[]> {

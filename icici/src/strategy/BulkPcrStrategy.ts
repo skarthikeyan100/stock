@@ -17,7 +17,7 @@ import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategie
 import { PnlStop } from './PnlStop';
 import { TrailStop } from './TrailStop';
 import { sleep } from '../util/sleep';
-import { normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
+import { normalizeBrokerList, normalizeBrokerName, normalizePersistedBrokers } from '../util/brokerName';
 import { exchangeForTsym } from '../util/underlyings';
 
 const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
@@ -247,6 +247,10 @@ interface PersistedState {
     profitStoppedBrokers?: BrokerName[];
     // Brokers latched by latchLiveRemainder on realizedDay.
     liveRemainderBrokers?: BrokerName[];
+    // Rupees cut off each broker's investment cap by today's loss trips (cumulative), and the epoch ms at which a tripped broker's
+    // loss lockout may be released (absent = locked for the day). Both only valid when realizedDay is today.
+    cutsByBroker?: Partial<Record<BrokerName, number>>;
+    lossCooldownUntil?: Partial<Record<BrokerName, number>>;
     realizedDay?: string;
 }
 
@@ -351,6 +355,11 @@ export default class BulkPcrStrategy extends Strategy {
     // Day's realized P&L per pair broker over every completed slot cycle today - what maxProfit is measured against.
     // Survives a re-arm (reset({keepStops})) and is cleared only by an admin reset or the day rollover.
     private dayRealizedByBroker = new Map<BrokerName, number>();
+    // Today's cumulative cut off each broker's investment cap (`lossInvestmentCut` per loss trip), and when each loss-tripped broker's
+    // lockout may be released (`lossCooldownSeconds` after the trip). Durable in the state doc; cleared by the day rollover or an admin reset.
+    private cutsByBroker = new Map<BrokerName, number>();
+    private lossCooldownUntil = new Map<BrokerName, number>();
+    private releaseTimers = new Map<BrokerName, NodeJS.Timeout>();
     // Last tick price per slot key, in memory only. Feeds the unrealized part of the stop check.
     private lastLtpByKey = new Map<string, number>();
     // Local day the stop accumulators belong to. A rollover clears them (see ensureToday).
@@ -508,6 +517,8 @@ export default class BulkPcrStrategy extends Strategy {
             stoppedSlots,
             profitStoppedBrokers,
             liveRemainderBrokers: Array.from(this.liveRemainder),
+            cutsByBroker: Object.fromEntries(this.cutsByBroker),
+            lossCooldownUntil: Object.fromEntries(this.lossCooldownUntil),
             realizedDay: this.statsDay,
         };
         return this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION).replaceOne({ userId: this.userId }, doc, { upsert: true }));
@@ -533,6 +544,7 @@ export default class BulkPcrStrategy extends Strategy {
         if (hadLatch) Log.log(`[BulkPcrStrategy] day rolled over - clearing the possibly-live remainder latch for ${Array.from(this.liveRemainder).join(', ')} (a DAY order does not outlive its session)`);
         this.liveRemainder.clear(); // the latch is for the day, like the loss lockouts
         this.dayRealizedByBroker.clear();
+        this.clearLossCooldowns();
         this.stops.clear();
         this.profitStops.clear();
         this.trails.clear();
@@ -567,11 +579,89 @@ export default class BulkPcrStrategy extends Strategy {
                 scope: key,
                 kind: 'loss',
                 getCapPct: () => this.cfg().maxLossPerOrder,
-                getMaxInvestment: () => (this.cfg().maxExposure ?? this.cfg().maxInvestment) ?? 0,
+                getMaxInvestment: () => this.effectiveCap(brokerOfKey(key)),
             });
             this.stops.set(key, stop);
         }
         return stop;
+    }
+
+    // The broker's configured investment cap (config `maxExposureByBroker`; keys may use a broker alias such as zerodha).
+    private baseCap(broker: BrokerName): number {
+        for (const [name, cap] of Object.entries(this.cfg().maxExposureByBroker)) {
+            if (normalizeBrokerName(name) === broker) return Number(cap);
+        }
+        return NaN;
+    }
+
+    // The cap in force today: the configured one less every loss-trip cut so far. The loss and profit percentages are taken of it.
+    private effectiveCap(broker: BrokerName): number {
+        return this.baseCap(broker) - (this.cutsByBroker.get(broker) ?? 0);
+    }
+
+    // Tells the order process this broker's current cap (it gates buys and sizes `quantity: -1` per broker). Fire-and-forget: the
+    // strategy re-sends it on every restart (loadStopLatches).
+    private pushCap(broker: BrokerName): void {
+        OrderClient.getInstance().setBrokerInvestmentCap(this.userId, broker, this.effectiveCap(broker))
+            .catch((e) => Log.log(`[BulkPcrStrategy] [${broker}] ALERT: could not push the investment cap ${this.effectiveCap(broker)} to the order process - it keeps enforcing the previous cap:`, e));
+    }
+
+    private clearLossCooldowns(): void {
+        for (const t of this.releaseTimers.values()) clearTimeout(t);
+        this.releaseTimers.clear();
+        this.cutsByBroker.clear();
+        this.lossCooldownUntil.clear();
+    }
+
+    // A broker's maxLossPerOrder just tripped (called once per broker per check): cut its cap and start the cooldown after which the
+    // lockout is released (lossCooldownSeconds = 0: no release, locked for the day). Durable via the persistState that lockOutBroker does.
+    private onLossTrip(broker: BrokerName): void {
+        this.cutsByBroker.set(broker, (this.cutsByBroker.get(broker) ?? 0) + this.cfg().lossInvestmentCut);
+        const cooldownMs = this.cfg().lossCooldownSeconds * 1000;
+        Log.log(`[BulkPcrStrategy] [${broker}] loss trip: investment cap ${this.baseCap(broker)} cut to ${this.effectiveCap(broker)}${cooldownMs > 0 ? `, lockout released in ${cooldownMs / 1000}s` : ', locked out for the rest of the day (no cooldown)'}`);
+        this.pushCap(broker);
+        if (cooldownMs > 0) {
+            this.lossCooldownUntil.set(broker, Date.now() + cooldownMs);
+            this.scheduleRelease(broker);
+        }
+    }
+
+    private scheduleRelease(broker: BrokerName, delayMs?: number): void {
+        const until = this.lossCooldownUntil.get(broker);
+        if (until === undefined) return;
+        clearTimeout(this.releaseTimers.get(broker));
+        const timer = setTimeout(() => { void this.maybeReleaseLoss(broker); }, delayMs ?? Math.max(0, until - Date.now()));
+        timer.unref();
+        this.releaseTimers.set(broker, timer);
+    }
+
+    // Anything of this broker still being opened or closed: releasing now would let a late buy keep its position (buyAndExit squares
+    // off only while the broker is stopped) or leave the tripped order's close half done.
+    private brokerBusy(broker: BrokerName): boolean {
+        return this.slotsOf(broker).some((p) => p.squaringOff || this.placingKeys.has(this.keyOf(p))
+            || p.phase === 'buying' || p.phase === 'pending' || p.phase === 'resting' || (p.phase === 'selling' && this.mustClose(p)));
+    }
+
+    // Releases a loss-tripped broker's lockout once its cooldown has elapsed. It stays locked for the day when maxProfit also tripped,
+    // when the cut left no cap, or when the latch state is unreadable; it waits while the broker is still closing or a restart reconcile runs.
+    private async maybeReleaseLoss(broker: BrokerName): Promise<void> {
+        const until = this.lossCooldownUntil.get(broker);
+        if (until === undefined || this.eodDone) return;
+        if (Date.now() < until) { this.scheduleRelease(broker); return; }
+        const keys = [slotKey(broker, CALL), slotKey(broker, PUT)];
+        const giveUp = (why: string) => {
+            Log.log(`[BulkPcrStrategy] [${broker}] loss lockout NOT released (${why}) - locked out for the rest of the day`);
+            this.lossCooldownUntil.delete(broker);
+            this.persistState();
+        };
+        if (this.profitStopFor(broker).isTripped()) return giveUp('maxProfit also tripped');
+        if (!(this.effectiveCap(broker) > 0)) return giveUp(`investment cap is ${this.effectiveCap(broker)} after the cuts`);
+        if (keys.some((k) => this.stopFor(k).isTripped() && !this.stopFor(k).isLatched())) return giveUp('lockout state unreadable');
+        if (this.reconciling || this.brokerBusy(broker)) { this.scheduleRelease(broker, 5000); return; }
+        this.lossCooldownUntil.delete(broker);
+        for (const k of keys) await this.stopFor(k).release();
+        await this.persistState();
+        Log.log(`[BulkPcrStrategy] [${broker}] loss cooldown over - lockout released, investment cap ${this.effectiveCap(broker)}`);
     }
 
     // Either side of the broker has a tripped order stop.
@@ -596,7 +686,7 @@ export default class BulkPcrStrategy extends Strategy {
                 scope: `${broker}:maxProfit`,
                 kind: 'profit',
                 getCapPct: () => this.cfg().maxProfit,
-                getMaxInvestment: () => (this.cfg().maxExposure ?? this.cfg().maxInvestment) ?? 0,
+                getMaxInvestment: () => this.effectiveCap(broker),
             });
             this.profitStops.set(broker, stop);
         }
@@ -634,8 +724,18 @@ export default class BulkPcrStrategy extends Strategy {
                 this.liveRemainder.add(broker);
             }
         }
+        if (stateDayIsToday) {
+            // Only where memory has no entry yet (as for dayRealizedByBroker): a live process is never older than a read made while it ran.
+            for (const [broker, cut] of Object.entries(persisted?.cutsByBroker ?? {})) {
+                if (!this.cutsByBroker.has(broker as BrokerName)) this.cutsByBroker.set(broker as BrokerName, Number(cut));
+            }
+            for (const [broker, until] of Object.entries(persisted?.lossCooldownUntil ?? {})) {
+                if (!this.lossCooldownUntil.has(broker as BrokerName)) this.lossCooldownUntil.set(broker as BrokerName, Number(until));
+            }
+        }
         for (const broker of this.configuredBrokers()) {
             if (!isPairBroker(broker)) continue;
+            if (this.cutsByBroker.has(broker)) this.pushCap(broker);
             for (const side of [CALL, PUT]) {
                 const key = slotKey(broker, side);
                 const stop = this.stopFor(key);
@@ -659,6 +759,12 @@ export default class BulkPcrStrategy extends Strategy {
             if (!profitLatchReadOk && profitStop.isTripped() && !profitStop.isLatched()) {
                 Log.log(`[BulkPcrStrategy] [${broker}] ALERT: profit lockout state unreadable - broker held closed until it can be read`);
             }
+        }
+        // A restored cooldown: release now if it already elapsed (outside reconcile, so the auto-start sees the broker free), else wait it out.
+        // During reconcile the release waits until the restored positions are in and the lockout has closed what it must.
+        for (const broker of Array.from(this.lossCooldownUntil.keys())) {
+            if (!this.reconciling && this.lossCooldownUntil.get(broker)! <= Date.now()) await this.maybeReleaseLoss(broker);
+            else this.scheduleRelease(broker);
         }
     }
 
@@ -720,6 +826,7 @@ export default class BulkPcrStrategy extends Strategy {
             if (pos.right === undefined) continue;
             if (this.stopFor(this.keyOf(pos)).evaluate(this.slotUnrealized(pos))) lossTripped = true;
         }
+        if (lossTripped) this.onLossTrip(broker); // one cut and one cooldown per broker, even if both orders breached together
         const profitTripped = this.profitStopFor(broker).evaluate(this.dayPnl(broker));
         return lossTripped || profitTripped;
     }
@@ -2553,6 +2660,8 @@ export default class BulkPcrStrategy extends Strategy {
         this.stops.clear();
         this.profitStops.clear();
         this.dayRealizedByBroker.clear();
+        this.clearLossCooldowns();
+        for (const broker of this.configuredBrokers()) if (isPairBroker(broker)) this.pushCap(broker); // back to the configured cap
         this.liveRemainder.clear();
         this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION).deleteOne({ userId: this.userId }));
         Log.log(`[${this.userId}] Reset via admin request`);

@@ -254,6 +254,14 @@ pending slot of that broker. If the lockout state cannot be read at all, the bro
 Only the admin `GET /strategies/BulkPcrStrategy/reset` clears it, or the local day rollover. The auto-start
 re-arm (`reset({ keepStops: true })`) keeps the lockout.
 No `maxLossPerOrder` (or 0) = off. A `maxLossPerOrder` without a usable `maxInvestment` fails config validation.
+**Cooldown and per-broker investment (mandatory BulkPcr keys, added 2026-10-29)**: `maxExposureByBroker` (map broker -> rupees; keys may use
+an alias such as `zerodha`) is each broker's investment cap, enforced per (strategy, broker) in the order process (`bookkeeping.getUserMaxInvestment(user, broker)`)
+and the base of that broker's `maxLossPerOrder`/`maxProfit` percentages. Each `maxLossPerOrder` trip cuts the tripped broker's cap by
+`lossInvestmentCut` (cumulative for the day, pushed to the order process by `setBrokerInvestmentCap`, reset at the day rollover or an admin reset) and,
+after `lossCooldownSeconds`, releases that broker's loss lockout (`PnlStop.release`, both orders) so the next entry / auto-start slot can use it again;
+nothing is re-entered by the release itself. Not released: a `maxProfit` lockout, a broker whose cut cap is <= 0, an unreadable latch, or while the broker
+is still opening/closing (checked every 5 s). `lossCooldownSeconds: 0` keeps the lockout for the day. The cut and the release time are in the state doc
+(`cutsByBroker`, `lossCooldownUntil`), so a restart resumes the cooldown. Known gap: if only the order process restarts, its cut is lost until the strategy next calls `loadStopLatches` (the next auto-start slot or a reconcile).
 
 **Hedge trail exit (`hedgeTrailDistance`, points, optional, ships unset = off)**: applies to the hedge leg (the side
 opened by the `slDistance` trigger) only; the root leg keeps its fixed `targetPoints` resting sell. With it set, the hedge

@@ -74,7 +74,7 @@ export class PnlStop {
         if (this.deps.kind === 'loss') {
             if (!(pnl <= -threshold)) return false;
             this.tripped = true;
-            Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] MAX LOSS TRIPPED - open-position P&L=${Math.round(pnl)} threshold=-${Math.round(threshold)} (maxLossPerOrder=${pct}% of maxInvestment=${maxInvestment}) - locked out for the rest of the day`);
+            Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] MAX LOSS TRIPPED - open-position P&L=${Math.round(pnl)} threshold=-${Math.round(threshold)} (maxLossPerOrder=${pct}% of maxInvestment=${maxInvestment}) - locked out (for the rest of the day unless the strategy releases it after a cooldown)`);
         } else {
             if (!(pnl >= threshold)) return false;
             this.tripped = true;
@@ -111,6 +111,24 @@ export class PnlStop {
             this.loadFailed = this.capEnabled();
             Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] ERROR could not read strategyLatches${this.loadFailed ? ' - broker held CLOSED (fail-closed) until it can be read' : ''}:`, e);
             return false;
+        }
+    }
+
+    // Releases a loss latch after its cooldown (BulkPcr lossCooldownSeconds): clears memory and writes the cleared flag for today, so a
+    // restart does not bring the lockout back. Retried once; resolves even on failure (the in-memory release holds, but a restart
+    // could then re-lock the broker for the day - safe side).
+    async release(): Promise<void> {
+        this.tripped = false;
+        const key = { ownerType: this.deps.ownerType, userId: this.deps.userId, scope: this.deps.scope, day: PnlStop.latchDay() };
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                const col = Mongo.getInstance()?.db.collection('strategyLatches');
+                if (!col) throw new Error('Mongo not connected');
+                await col.updateOne(key, { $set: { [this.latchField]: false, updatedAt: new Date() } }, { upsert: true });
+                return;
+            } catch (e) {
+                if (attempt === 2) Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] strategyLatches release write failed (released in memory only):`, e);
+            }
         }
     }
 

@@ -230,7 +230,7 @@ function resolveChunkedBuyQuantity(req: OrderRequest, pricePerUnit: number, tsym
     const lotSize = knownLotSize && knownLotSize > 0 ? knownLotSize : bookkeeping.getInstrumentLotSize(tsym);
     const quantity = bookkeeping.resolveMaxInvestmentQuantity(req.userId, pricePerUnit, lotSize, broker);
     if (quantity <= 0) {
-        return { error: `chunkedBuyIndex: quantity=-1 but no available investment headroom to size an order from (broker=${broker}, maxInvestment=${bookkeeping.getUserMaxInvestment(req.userId)}, current=${bookkeeping.getCurrentInvestment(req.userId, broker)}, price=${pricePerUnit})` };
+        return { error: `chunkedBuyIndex: quantity=-1 but no available investment headroom to size an order from (broker=${broker}, maxInvestment=${bookkeeping.getUserMaxInvestment(req.userId, broker)}, current=${bookkeeping.getCurrentInvestment(req.userId, broker)}, price=${pricePerUnit})` };
     }
     return { quantity };
 }
@@ -953,6 +953,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 bookkeeping.updateUserSettings(req.userId, req.payload);
                 return { kind: 'response', id: req.id, ok: true };
             }
+            case 'setBrokerInvestmentCap': {
+                bookkeeping.setBrokerInvestmentCap(req.userId, normalizeBrokerName(req.payload.broker), Number(req.payload.cap));
+                return { kind: 'response', id: req.id, ok: true };
+            }
             // Explicit broker-position reconcile - POST /reconcile in server.ts
             // invokes this first, then `strategies`' reconcile (which depends on
             // the restored bookkeeping.trades). Refused before 09:10.
@@ -1093,6 +1097,9 @@ async function applyConfigStrategyLimitsOnce() {
             lossLimit: mongoUser?.lossLimit ?? USER_LOSS_LIMIT,
             lotLimit: mongoUser?.lotLimit ?? mongoUser?.lotCount ?? DEFAULT_LOT_LIMIT,
             maxInvestment: (cfg as any).maxExposure || (cfg as any).maxInvestment || DEFAULT_MAX_INVESTMENT,
+            maxInvestmentByBroker: (cfg as any).maxExposureByBroker
+                ? Object.fromEntries(Object.entries((cfg as any).maxExposureByBroker).map(([b, v]) => [normalizeBrokerName(b), Number(v)]))
+                : undefined,
             useGTT: cfg.useGTT ?? mongoUser?.useGTT ?? true,
             broker: normalizeBrokerName((cfg as any).broker ?? (mongoUser as any)?.broker ?? 'kite') as any,
         });

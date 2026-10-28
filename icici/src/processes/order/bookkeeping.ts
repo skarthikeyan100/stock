@@ -16,6 +16,7 @@ import { drawdownLimit, drawdownDecision } from '../../prism/percentConfig';
 import { startOfWeek } from '../../util/weekWindow';
 import AntContractMaster from '../../ant/AntContractMaster';
 import { normalizeBrokerName } from '../../util/brokerName';
+import { localDayKey } from '../../strategy/dayKey';
 import { exchangeForTsym } from '../../util/underlyings';
 
 // Open-P&L pricing gets a short budget: it runs inside every buy's drawdown check, so a slow quote must not stall an order.
@@ -63,6 +64,8 @@ interface UserSettings {
     lossLimit: number;
     lotLimit?: number;
     maxInvestment?: number;
+    // Per-broker investment caps (BulkPcr `maxExposureByBroker`, keyed by canonical broker name). A broker without an entry uses maxInvestment.
+    maxInvestmentByBroker?: Record<string, number>;
     investmentMode?: string;
     accountCapital?: number;
     useGTT?: boolean;
@@ -212,8 +215,24 @@ class OrderBookkeeping {
         return this.userSettingsCache.get(user)?.lotLimit ?? DEFAULT_LOT_LIMIT;
     }
 
-    getUserMaxInvestment(user: string): number {
-        return this.userSettingsCache.get(user)?.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
+    // `broker` selects that broker's own cap: today's runtime override (a BulkPcr loss-trip cut, see setBrokerInvestmentCap), else the
+    // configured per-broker cap, else the user's single cap. Without `broker` it is the user's single cap.
+    getUserMaxInvestment(user: string, broker?: string): number {
+        const settings = this.userSettingsCache.get(user);
+        if (broker) {
+            const override = this.brokerCapOverride.get(`${user}|${broker}`);
+            if (override && override.day === localDayKey()) return override.cap;
+            const configured = settings?.maxInvestmentByBroker?.[broker];
+            if (configured !== undefined) return configured;
+        }
+        return settings?.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
+    }
+
+    // Runtime per-(user, broker) cap for the rest of the local day. Kept apart from userSettingsCache because a config reload
+    // replaces that whole entry (updateUserSettings) and must not undo the day's cuts; a stale day's override is ignored.
+    private brokerCapOverride = new Map<string, { day: string; cap: number }>();
+    setBrokerInvestmentCap(user: string, broker: string, cap: number): void {
+        this.brokerCapOverride.set(`${user}|${broker}`, { day: localDayKey(), cap });
     }
 
     getUserUseGTT(user: string): boolean {
@@ -335,7 +354,7 @@ class OrderBookkeeping {
     // negative/NaN.
     resolveMaxInvestmentQuantity(user: string, pricePerUnit: number, lotSize: number, broker?: string): number {
         if (!(pricePerUnit > 0) || !(lotSize > 0)) return 0;
-        const available = this.getUserMaxInvestment(user) - this.getCurrentInvestment(user, broker) - this.pendingValue(user, broker);
+        const available = this.getUserMaxInvestment(user, broker) - this.getCurrentInvestment(user, broker) - this.pendingValue(user, broker);
         if (available <= 0) return 0;
         const lots = Math.floor(available / (pricePerUnit * lotSize));
         return lots * lotSize;
@@ -776,7 +795,7 @@ class OrderBookkeeping {
         // maxInvestment-only gate.
         if (this.isCapitalOnlyExemptUser(user)) {
             const currentInvestment = this.getCurrentInvestment(user, broker) + this.pendingValue(user, broker);
-            const maxInvestment = this.getUserMaxInvestment(user);
+            const maxInvestment = this.getUserMaxInvestment(user, broker);
             if (currentInvestment >= maxInvestment) {
                 return { allowed: false, reason: `User '${user}'${broker ? ` (${broker})` : ''} has reached max investment (${currentInvestment}/${maxInvestment}).` };
             }
@@ -788,7 +807,7 @@ class OrderBookkeeping {
             return { allowed: false, reason: `User '${user}' has reached the lot limit (${tradedLots}/${lotLimit} lots).` };
         }
         const currentInvestment = this.getCurrentInvestment(user, broker) + this.pendingValue(user, broker);
-        const maxInvestment = this.getUserMaxInvestment(user);
+        const maxInvestment = this.getUserMaxInvestment(user, broker);
         if (currentInvestment >= maxInvestment) {
             return { allowed: false, reason: `User '${user}'${broker ? ` (${broker})` : ''} has reached max investment (${currentInvestment}/${maxInvestment}).` };
         }
