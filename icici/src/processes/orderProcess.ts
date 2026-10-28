@@ -213,6 +213,73 @@ function resolveChunkedBuyQuantity(req: OrderRequest, pricePerUnit: number, tsym
     return { quantity };
 }
 
+// The contract a 'chunkedBuyIndex' buys, resolved per broker from the underlying's spot (`niftyLtp`, ANT-sourced for every
+// broker): which instrument, its pre-trade price estimate and the order quantity (-1 = size from the investment headroom).
+// `orderToken` is what the broker's executor is given (instrumentId); `token` is what the caller and bookkeeping key the position
+// by (the ANT common token for kite, the broker's own id for breeze/ant/prism); `feedToken` (breeze only) is the ANT common
+// token live ticks and resting-sell tracking key off. Live ticks for a kite-routed strategy arrive over the ANT feed, not Kite's
+// own, so a kite position's token must be ANT's commonToken, never KiteContractMaster's instrumentToken.
+interface ChunkedContract {
+    tradingSymbol: string;
+    orderToken: string;
+    token: string;
+    feedToken?: string | number;
+    exchange: 'NFO' | 'BFO';
+    supportsDriftCancel: boolean;
+}
+async function resolveChunkedContract(
+    executor: BrokerExecutor,
+    req: OrderRequest,
+): Promise<{ contract: ChunkedContract; estimatedPrice: number; quantity: number } | { error: string }> {
+    const broker = executor.brokerName;
+    const optionType = req.payload.right === CALL ? 'CE' : 'PE';
+    const niftyLtp = req.payload.niftyLtp;
+    if (!Number.isFinite(niftyLtp)) return { error: `chunkedBuyIndex (${broker}): niftyLtp is required and must be a finite number` };
+    // index threaded through (never hardcoded NIFTY): a SENSEX-configured instance resolves a BFO contract against the SENSEX spot
+    // it passes as niftyLtp.
+    const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
+    const ant = AntContractMaster.getInstance();
+    const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
+    const atmStrike = Math.round(niftyLtp / step) * step;
+
+    let contract: ChunkedContract;
+    let estimatedPrice: number;
+    let lotSize: number | undefined;
+    if (broker === 'breeze') {
+        // Real pre-trade valuation (maxInvestment/perOrderCap must actually gate this order). The premium estimate is ANT-sourced
+        // (getMarketableBreezeBuyPrice): Breeze's own getQuotes was observed returning a generic nginx "resource unavailable" page
+        // live 2026-09-23, and niftyLtp is available here for free either way.
+        const c = await BreezeContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
+        estimatedPrice = await getMarketableBreezeBuyPrice(c);
+        lotSize = c.lotSize;
+        // feedToken is resolved before the order is placed so a lookup failure cannot follow a live fill.
+        contract = { tradingSymbol: tsymFor(c), orderToken: c.token, token: c.token, feedToken: ant.resolveCommonToken(index, optionType, { atmLtp: niftyLtp }), exchange: c.exchange, supportsDriftCancel: false };
+    } else if (broker === 'kite') {
+        const c = await KiteContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
+        const commonToken = String(ant.resolveCommonToken(index, optionType, { atmLtp: niftyLtp }));
+        estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
+        lotSize = c.lotSize;
+        contract = { tradingSymbol: c.tradingSymbol, orderToken: commonToken, token: commonToken, exchange: c.exchange, supportsDriftCancel: true };
+    } else if (broker === 'ant') {
+        // ANT's own token IS the live-tick token here (this order executes on ANT itself).
+        const c = ant.findATMOption(niftyLtp, optionType, index);
+        estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
+        lotSize = Number(c.lotSize);
+        contract = { tradingSymbol: c.tradingSymbol, orderToken: c.token, token: c.token, exchange: c.exch as 'NFO' | 'BFO', supportsDriftCancel: true };
+    } else if (broker === 'prism') {
+        // PrismContractMaster has no live-tick concept and no exchange field (derived from the index); the price estimate reuses
+        // ANT, and it carries no lot size (resolveChunkedBuyQuantity falls back to a guess for that one broker).
+        const c = PrismContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
+        estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
+        contract = { tradingSymbol: c.tradingSymbol, orderToken: c.token, token: c.token, exchange: exchangeForIndex(index), supportsDriftCancel: true };
+    } else {
+        return { error: `chunkedBuyIndex: broker '${broker}' not yet supported (breeze/kite/ant/prism only)` };
+    }
+    const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol, lotSize);
+    if (resolvedQty.error) return { error: resolvedQty.error };
+    return { contract, estimatedPrice, quantity: resolvedQty.quantity };
+}
+
 async function placeOrderWithPendingGuard(
     req: OrderRequest,
     estimatedOrderValue: number | undefined,
@@ -536,185 +603,26 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // to other brokers additive, not a rewrite.
             case 'chunkedBuyIndex': {
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
-                const optionType = req.payload.right === CALL ? 'CE' : 'PE';
+                const resolved = await resolveChunkedContract(executor, req);
+                if ('error' in resolved) return { kind: 'response', id: req.id, ok: false, error: resolved.error };
+                const { contract, estimatedPrice, quantity } = resolved;
+                const estimatedOrderValue = quantity * estimatedPrice;
 
-                if (executor.brokerName === 'breeze') {
-                    // Real pre-trade valuation (unlike breezeBuyIndex's `undefined`) -
-                    // this order is large enough that maxInvestment/perOrderCap must
-                    // actually gate it, not just record it after the fact.
-                    //
-                    // Uses the caller-supplied niftyLtp (ANT-sourced, same as the
-                    // kite branch below) instead of an independent Breeze spot
-                    // quote, and getMarketableBreezeBuyPrice (also ANT-sourced) for
-                    // the option premium estimate - Breeze's own getQuotes has been
-                    // observed live 2026-09-23 returning a generic nginx "resource
-                    // unavailable" page (session/auth endpoints kept working in the
-                    // same window, so this is API/infra flakiness, not an auth
-                    // problem), and req.payload.niftyLtp was already available here
-                    // for free either way.
-                    const niftyLtp = req.payload.niftyLtp;
-                    if (!Number.isFinite(niftyLtp)) {
-                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (breeze): niftyLtp is required and must be a finite number' };
-                    }
-                    // index threaded through (not hardcoded NIFTY) - a SENSEX-configured instance resolves a BFO
-                    // contract against the SENSEX spot it passes as niftyLtp, same as the kite/ant/prism branches.
-                    const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
-                    const contract = await BreezeContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
-                    const buyPrice = await getMarketableBreezeBuyPrice(contract);
-                    const resolvedQty = resolveChunkedBuyQuantity(req, buyPrice, tsymFor(contract), contract.lotSize);
-                    if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
-                    const quantity = resolvedQty.quantity;
-                    const estimatedOrderValue = quantity * buyPrice;
-                    // feedToken: the ANT common token for this same contract - the id live ticks
-                    // and resting-sell tracking key off (kite's branch returns it as `token`).
-                    // `token` stays Breeze's own id, which bookkeeping/squareOff use. Resolved
-                    // before the order is placed so a lookup failure can't follow a live fill.
-                    const feedToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: niftyLtp });
-
-                    return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
-                        const result = await buyChunked(
-                            executor,
-                            {
-                                userId: req.userId,
-                                tradingSymbol: tsymFor(contract),
-                                instrumentId: contract.token,
-                                quantity,
-                                exchange: contract.exchange,
-                            },
-                            req.payload.freezeQuantity
-                        );
-                        return { tsym: tsymFor(contract), token: contract.token, feedToken, ...result };
-                    });
-                }
-
-                if (executor.brokerName === 'kite') {
-                    // Live option ticks for a kite-routed strategy arrive over the
-                    // ANT feed, not Kite's own (tokenRouter.ts's resolveSource maps
-                    // broker 'kite' -> feed 'ant'), so the token recorded on the
-                    // Trade - and therefore what registerTrade subscribes to and what
-                    // the strategy's canHandleOptionQuote matches against - must be
-                    // ANT's commonToken, not KiteContractMaster's instrumentToken.
-                    // Mirrors buyIndexOnKite's exact same resolution.
-                    const niftyLtp = req.payload.niftyLtp;
-                    if (!Number.isFinite(niftyLtp)) {
-                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (kite): niftyLtp is required and must be a finite number' };
-                    }
-                    // index threaded through exactly like the ant branch below - found on review:
-                    // this used to hardcode 'NIFTY' regardless of req.payload.index, which for a
-                    // SENSEX-configured instance would resolve a NIFTY contract (wrong strike/
-                    // exchange entirely) against a SENSEX spot price.
-                    const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
-                    const contract = await KiteContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
-                    const commonToken = String(AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: niftyLtp }));
-                    // Strike step mirrors KiteContractMaster.findATMOption's own rounding -
-                    // needed here only for the pre-trade price estimate.
-                    const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
-                    const atmStrike = Math.round(niftyLtp / step) * step;
-                    const estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
-                    const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol, contract.lotSize);
-                    if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
-                    const quantity = resolvedQty.quantity;
-                    const estimatedOrderValue = quantity * estimatedPrice;
-
-                    return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
-                        const result = await buyChunked(
-                            executor,
-                            {
-                                userId: req.userId,
-                                tradingSymbol: contract.tradingSymbol,
-                                instrumentId: commonToken,
-                                quantity,
-                                exchange: contract.exchange,
-                                driftCancelPoints: req.payload.driftCancelPoints,
-                            },
-                            req.payload.freezeQuantity
-                        );
-                        return { tsym: contract.tradingSymbol, token: commonToken, ...result };
-                    });
-                }
-
-                if (executor.brokerName === 'ant') {
-                    // AntContractMaster resolves directly (no separate
-                    // commonToken-resolution step like the kite branch
-                    // above needs - ANT's own token IS the live-tick token
-                    // here, since this order executes on ANT itself).
-                    const niftyLtp = req.payload.niftyLtp;
-                    if (!Number.isFinite(niftyLtp)) {
-                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (ant): niftyLtp is required and must be a finite number' };
-                    }
-                    const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
-                    const contract = AntContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
-                    const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
-                    const atmStrike = Math.round(niftyLtp / step) * step;
-                    const estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
-                    const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol, Number(contract.lotSize));
-                    if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
-                    const quantity = resolvedQty.quantity;
-                    const estimatedOrderValue = quantity * estimatedPrice;
-
-                    return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
-                        const result = await buyChunked(
-                            executor,
-                            {
-                                userId: req.userId,
-                                tradingSymbol: contract.tradingSymbol,
-                                instrumentId: contract.token,
-                                quantity,
-                                exchange: contract.exch as 'NFO' | 'BFO',
-                                driftCancelPoints: req.payload.driftCancelPoints,
-                            },
-                            req.payload.freezeQuantity
-                        );
-                        return { tsym: contract.tradingSymbol, token: contract.token, ...result };
-                    });
-                }
-
-                if (executor.brokerName === 'prism') {
-                    // PrismContractMaster has no live-tick concept of its own -
-                    // this order's fill/exit still flows through bookkeeping
-                    // keyed by this tsym/token like every other broker. Pricing
-                    // estimate reuses ANT (same reasoning as the kite/ant
-                    // branches above - Prism has no reliable live quote path of
-                    // its own wired in here).
-                    const niftyLtp = req.payload.niftyLtp;
-                    if (!Number.isFinite(niftyLtp)) {
-                        return { kind: 'response', id: req.id, ok: false, error: 'chunkedBuyIndex (prism): niftyLtp is required and must be a finite number' };
-                    }
-                    // index threaded through exactly like the ant/kite branches above - found on
-                    // review: this used to hardcode 'NIFTY' regardless of req.payload.index, which for
-                    // a SENSEX-configured instance would resolve a NIFTY contract against a SENSEX
-                    // spot price (PrismContractMaster.STRIKE_STEP's own comment already flagged this
-                    // exact gap). exchange derived the same way AntContractMaster/KiteContractMaster
-                    // do elsewhere - PrismContractMaster.findATMOption doesn't return one.
-                    const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
-                    const prismExchange = exchangeForIndex(index);
-                    const contract = PrismContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
-                    const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
-                    const atmStrike = Math.round(niftyLtp / step) * step;
-                    const estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
-                    const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol);
-                    if (resolvedQty.error) return { kind: 'response', id: req.id, ok: false, error: resolvedQty.error };
-                    const quantity = resolvedQty.quantity;
-                    const estimatedOrderValue = quantity * estimatedPrice;
-
-                    return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
-                        const result = await buyChunked(
-                            executor,
-                            {
-                                userId: req.userId,
-                                tradingSymbol: contract.tradingSymbol,
-                                instrumentId: contract.token,
-                                quantity,
-                                exchange: prismExchange,
-                                driftCancelPoints: req.payload.driftCancelPoints,
-                            },
-                            req.payload.freezeQuantity
-                        );
-                        return { tsym: contract.tradingSymbol, token: contract.token, ...result };
-                    });
-                }
-
-                return { kind: 'response', id: req.id, ok: false, error: `chunkedBuyIndex: broker '${executor.brokerName}' not yet supported (breeze/kite/ant/prism only)` };
+                return await placeOrderWithPendingGuard(req, estimatedOrderValue, async () => {
+                    const result = await buyChunked(
+                        executor,
+                        {
+                            userId: req.userId,
+                            tradingSymbol: contract.tradingSymbol,
+                            instrumentId: contract.orderToken,
+                            quantity,
+                            exchange: contract.exchange,
+                            driftCancelPoints: contract.supportsDriftCancel ? req.payload.driftCancelPoints : undefined,
+                        },
+                        req.payload.freezeQuantity
+                    );
+                    return { tsym: contract.tradingSymbol, token: contract.token, ...(contract.feedToken !== undefined ? { feedToken: contract.feedToken } : {}), ...result };
+                });
             }
 
             case 'chunkedSquareOff': {

@@ -728,7 +728,7 @@ export default class HourlyStrategy extends Strategy {
         this.positions.clear();
         this.liveRemainder.clear();
         // Only the latch is cleared durably - the persisted positions stay, so a restart can still restore a live resting exit.
-        this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION).updateOne({ userId: this.userId }, { $set: { liveRemainderBrokers: [] } }));
+        this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION).updateOne({ userId: this.userId }, { $set: { liveRemainderBrokers: [] } }, { upsert: true }));
         this.currentHourBucket = null;
         this.hourComplete = false;
         this.resistance = null;
