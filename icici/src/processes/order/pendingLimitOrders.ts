@@ -15,16 +15,27 @@ interface PendingLimitOrder extends PendingOrder {
     instrumentToken: string;
 }
 
-const tracker = new PendingOrderTracker<PendingLimitOrder, null, 'kite'>({
+// One getOrders() call per tick (every order's latest state) instead of a getOrderHistory call per pending order: N resting chunks
+// would otherwise cost N REST calls every 15s, the pattern that already hit a broker rate limit. An order missing from the snapshot
+// (very new, or the list is truncated) falls back to its own history.
+type KiteOrderRow = { order_id: string; status: string; average_price: number; filled_quantity: number };
+const tracker = new PendingOrderTracker<PendingLimitOrder, Map<string, KiteOrderRow>, 'kite'>({
     broker: 'kite',
     collection: 'pendingLimitOrders',
     label: 'Kite',
     bookAtAnyPrice: true,
     tokenOf: (order) => order.instrumentToken,
     ready: () => Kite.getInstance().hasValidSession(),
-    statusOf: async (order) => {
-        const history = await Kite.getInstance().getKiteConnect().getOrderHistory(order.orderId);
-        const latest = history[history.length - 1];
+    fetchSnapshot: async () => {
+        const orders: KiteOrderRow[] = await Kite.getInstance().getKiteConnect().getOrders() as any;
+        return new Map(orders.map((o) => [String(o.order_id), o]));
+    },
+    statusOf: async (order, snapshot) => {
+        let latest: KiteOrderRow | undefined = snapshot.get(order.orderId);
+        if (!latest) {
+            const history = await Kite.getInstance().getKiteConnect().getOrderHistory(order.orderId);
+            latest = history[history.length - 1];
+        }
         if (!latest) return { status: 'PENDING' };
         // Kite Connect has no separate "EXPIRED" status - an unfilled DAY order the exchange auto-cancels at EOD comes back as
         // plain 'CANCELLED', indistinguishable from a same-day manual cancel. Re-placing after the close fails and drives the
@@ -57,5 +68,7 @@ export const isTrackedPendingOrder = (orderId: string): boolean => tracker.get(o
 export const trackPendingLimitOrder = tracker.track;
 // Called after an explicit cancel (cancelOrderOnKite) so the poll doesn't keep polling an order we just told the broker to drop.
 export const untrackPendingLimitOrder = tracker.untrack;
+export const beginCancelOfPendingLimitOrders = tracker.beginCancel;
+export const endCancelOfPendingLimitOrders = tracker.endCancel;
 export const loadPendingLimitOrdersFromMongo = tracker.loadFromMongo;
 export const pollPendingLimitOrders = tracker.poll;

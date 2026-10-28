@@ -4,6 +4,7 @@ import { splitIntoFreezeQtyChunks } from '../../util/quantityChunks';
 import Log from '../../util/Log';
 import { sleep } from '../../util/sleep';
 import { markNotPlaced, isNotPlaced } from '../../util/notPlaced';
+import type { ChunkedFillResult } from '../../ipc/orderProtocol';
 
 
 // Confirmed live 2026-09-23: a burst of back-to-back chunk placements (an
@@ -46,13 +47,7 @@ async function throttleOrderPlacement(): Promise<void> {
 // needs zero broker-specific code. Any strategy on any broker gets
 // freeze-quantity safety for free by routing a large order through these
 // instead of calling a broker's single-order function directly.
-export interface ChunkedFillResult {
-    quantity: number;
-    avgPrice: number;
-    // Set when the run stopped early and the cancel of the unfilled remainder FAILED: `quantity` is booked, but the remainder
-    // may still be resting at the broker and fill later. A caller must not re-arm or retry the entry.
-    orderMayBeLive?: true;
-}
+export type { ChunkedFillResult };
 
 // A chunk whose fill could not be settled may be live or filled: carry those flags (unchanged) onto the error the chunked run
 // throws, so no caller retries it.

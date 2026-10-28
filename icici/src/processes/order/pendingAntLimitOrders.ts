@@ -208,6 +208,8 @@ export const onCancelled = tracker.onCancelled;
 export const findPendingOrdersForSymbol = tracker.find;
 export const trackPendingAntLimitOrder = tracker.track;
 export const untrackPendingAntLimitOrder = tracker.untrack;
+export const beginCancelOfPendingAntLimitOrders = tracker.beginCancel;
+export const endCancelOfPendingAntLimitOrders = tracker.endCancel;
 export const loadPendingAntLimitOrdersFromMongo = tracker.loadFromMongo;
 export const pollPendingAntLimitOrders = tracker.poll;
 export const pendingAntSellsFor = (userId: string, tradingSymbol: string): PendingAntLimitOrder[] =>

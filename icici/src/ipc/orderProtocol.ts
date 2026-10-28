@@ -143,6 +143,10 @@ export interface FillNotification {
     kind: 'fill';
     userId: string;
     trade: any;
+    // The user's net open quantity of this trade's token on this trade's broker AFTER the fill was booked (0 = flat). Computed in
+    // the order process at the moment the fill is announced, so a consumer never has to reconstruct it from the fill stream (which
+    // loses positions held from before a restart and double-counts around one).
+    openQuantity?: number;
 }
 
 // Unsolicited push from order -> frontend on any trades/closedTrades mutation
@@ -172,4 +176,13 @@ export interface OrderCancelledNotification {
     // Only populated on the ANT path today (AliceBlue's rejreason field) - other brokers'
     // pending-order pollers don't yet surface an equivalent.
     rejectReason?: string;
+}
+
+// What a chunked buy/sell run returns over the wire (produced by processes/order/chunkedOrder.ts).
+export interface ChunkedFillResult {
+    quantity: number;
+    avgPrice: number;
+    // Set when the run stopped early and the cancel of the unfilled remainder FAILED: `quantity` is booked, but the remainder
+    // may still be resting at the broker and fill later. A caller must not re-arm or retry the entry.
+    orderMayBeLive?: true;
 }

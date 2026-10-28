@@ -41,5 +41,7 @@ export const onCancelled = tracker.onCancelled;
 export const findPendingOrdersForSymbol = tracker.find;
 export const trackPendingPrismLimitOrder = tracker.track;
 export const untrackPendingPrismLimitOrder = tracker.untrack;
+export const beginCancelOfPendingPrismLimitOrders = tracker.beginCancel;
+export const endCancelOfPendingPrismLimitOrders = tracker.endCancel;
 export const loadPendingPrismLimitOrdersFromMongo = tracker.loadFromMongo;
 export const pollPendingPrismLimitOrders = tracker.poll;

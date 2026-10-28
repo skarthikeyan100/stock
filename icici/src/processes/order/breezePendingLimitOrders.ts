@@ -72,5 +72,7 @@ export const findPendingOrdersForSymbol = tracker.find;
 export const trackPendingBreezeLimitOrder = tracker.track;
 // Called after an explicit cancel (cancelOrderOnBreeze) so the poll doesn't keep polling an order we just told the broker to drop.
 export const untrackPendingBreezeLimitOrder = tracker.untrack;
+export const beginCancelOfBreezePendingLimitOrders = tracker.beginCancel;
+export const endCancelOfBreezePendingLimitOrders = tracker.endCancel;
 export const loadPendingBreezeLimitOrdersFromMongo = tracker.loadFromMongo;
 export const pollPendingBreezeLimitOrders = tracker.poll;

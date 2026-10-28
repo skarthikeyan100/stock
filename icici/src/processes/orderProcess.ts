@@ -19,6 +19,7 @@ import { installIpv4OnlyHostOverride } from './order/kiteDns';
 installIpv4OnlyHostOverride();
 
 import { TRACKERS, TRACKER_BROKERS } from './order/pendingTrackers';
+import { BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
 import net from 'net';
 import fs from 'fs';
 import Log from '../util/Log';
@@ -80,7 +81,14 @@ function broadcast(msg: FillNotification | PositionsChangedNotification | OrderC
 }
 
 bookkeeping.onFill((userId, trade) => {
-    broadcast({ kind: 'fill', userId, trade });
+    // Net open quantity of this token once the fill is booked (listeners run after booking), summed over every broker on the same
+    // tick feed: the strategies process keys its subscription by (user, feed, token), and kite and ant share the ANT feed.
+    const feedOf = (broker?: string) => BROKER_TO_FEED_SOURCE[(broker ?? 'kite') as keyof typeof BROKER_TO_FEED_SOURCE];
+    const feed = feedOf(trade.broker);
+    const openQuantity = bookkeeping.getOpenTrades(userId)
+        .filter((t) => t.token === trade.token && feedOf(t.broker) === feed)
+        .reduce((sum, t) => sum + (Number(t.quantity) || 0), 0);
+    broadcast({ kind: 'fill', userId, trade, openQuantity });
 });
 
 bookkeeping.onPositionsChanged(() => {

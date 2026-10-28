@@ -31,8 +31,9 @@ import { exchangeForTsym } from '../util/underlyings';
 // Net open quantity per (userId, feed, token), built from this process's own fill stream. A position can be
 // opened in several chunks (and sold the same way); a Sell fill for ONE chunk must not drop the token's
 // subscription while the other chunks are still held, or their exit/stop logic goes blind. The strategy
-// stays registered until the running net hits zero. After a restart the map is seeded from the order process's
-// open trades (seedOpenQty), so a partial Sell of a position held from before the restart does not drop the token either.
+// stays registered until the running net hits zero. The net comes from the order process with every fill (FillNotification.openQuantity,
+// computed after the fill is booked), so it is right for a position held from before a restart too; only a fill without it (an older
+// order process) falls back to counting this process's own fill stream.
 const openQty = new Map<string, number>();
 const openQtyExchange = new Map<string, 'NFO' | 'BFO'>();
 // Fills already applied, so a duplicate delivery (same broker order + side) cannot double-count the net quantity.
@@ -45,62 +46,8 @@ function isDuplicateFill(trade: Trade): boolean {
     if (seenFillKeys.size > 5000) seenFillKeys.delete(seenFillKeys.values().next().value as string);
     return false;
 }
-// Seeds one user's net quantities from the order process's open trades, once, on that user's first fill (fills are
-// already serialised per user, so nothing else for the user runs meanwhile, and other users are unaffected). The
-// order process books a fill before it broadcasts it, so the snapshot already includes that first fill: the caller
-// must not apply it again. Returns false when the read failed or timed out; the map is then left alone and the
-// first Sell falls back to unregistering (the old behaviour), and a later fill retries the seed after SEED_RETRY_AFTER_MS.
-const SEED_TIMEOUT_MS = 15_000;
-const SEED_RETRY_AFTER_MS = 5_000;
-// Bumped by a strategy reset: a seed that was in flight across it holds pre-reset positions and is discarded.
-const seedEpoch = new Map<string, number>();
-const seededUsers = new Set<string>();
-const seedFailedAt = new Map<string, number>();
-async function seedOpenQty(userId: string): Promise<boolean> {
-    if (Date.now() - (seedFailedAt.get(userId) ?? 0) < SEED_RETRY_AFTER_MS) return false;
-    const epoch = seedEpoch.get(userId) ?? 0;
-    let open: any[];
-    let timer: NodeJS.Timeout | undefined;
-    try {
-        open = await Promise.race([
-            OrderClient.getInstance().getOpenTrades(userId),
-            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), SEED_TIMEOUT_MS); }),
-        ]);
-    } catch (e) {
-        seedFailedAt.set(userId, Date.now());
-        Log.log(`[strategies] Could not seed open quantities for ${userId}:`, e);
-        return false;
-    } finally {
-        clearTimeout(timer);
-    }
-    if ((seedEpoch.get(userId) ?? 0) !== epoch) return false;
-    // The snapshot replaces whatever fills built so far for this user (it already includes them). Their trade-holder
-    // registrations stay: a later Sell with no entry unregisters, so nothing lingers past the position's exit.
-    for (const key of Array.from(openQty.keys())) {
-        if (!key.startsWith(`${userId}|`)) continue;
-        openQty.delete(key);
-        openQtyExchange.delete(key);
-    }
-    for (const t of open) {
-        const qty = Number(t?.quantity);
-        if (!t?.token || !(qty > 0)) continue;
-        const feed = t.broker ? BROKER_TO_FEED_SOURCE[t.broker as keyof typeof BROKER_TO_FEED_SOURCE] : undefined;
-        const key = `${userId}|${feed ?? 'default'}|${t.token}`;
-        openQty.set(key, (openQty.get(key) ?? 0) + qty);
-        openQtyExchange.set(key, exchangeForTsym(t.tsym));
-    }
-    seedFailedAt.delete(userId);
-    seededUsers.add(userId);
-    return true;
-}
 // A reset strategy abandons its positions' bookkeeping: drop the net quantities and trade-holder registrations.
 function clearOpenQtyFor(strategy: { userId?: string }): void {
-    if (strategy.userId) {
-        // The next fill re-reads the order process's open trades.
-        seededUsers.delete(strategy.userId);
-        seedFailedAt.delete(strategy.userId);
-        seedEpoch.set(strategy.userId, (seedEpoch.get(strategy.userId) ?? 0) + 1);
-    }
     for (const key of Array.from(openQty.keys())) {
         const [uid, feed, token] = key.split('|');
         if (uid !== strategy.userId) continue;
@@ -111,7 +58,7 @@ function clearOpenQtyFor(strategy: { userId?: string }): void {
     }
 }
 
-async function onFill(userId: string, raw: any) {
+async function onFill(userId: string, raw: any, openQuantity?: number) {
     const trade = Object.assign(new Trade(), raw) as Trade;
     const strategy = strategies.getByUserId(userId);
     if (!strategy) {
@@ -133,15 +80,15 @@ async function onFill(userId: string, raw: any) {
     }
     const qtyKey = `${userId}|${feed ?? 'default'}|${trade.token}`;
     const fillQty = Number.isFinite(Number(trade.quantity)) && Number(trade.quantity) > 0 ? Number(trade.quantity) : 0;
-    // First fill for this user: the snapshot normally already counts this fill (see seedOpenQty), so it is not applied
-    // again - unless the snapshot has no entry for the fill's key (booked under another key), then it is applied.
-    const justSeeded = !seededUsers.has(userId) && (await seedOpenQty(userId)) && (trade.action === 'Sell' || openQty.has(qtyKey));
+    // The order process's own net (after this fill was booked) is authoritative: it already covers a position held from before a
+    // restart and fills this process never saw. Without it (an older order process) count this process's fill stream.
+    const reportedNet = Number.isFinite(openQuantity) && (openQuantity as number) >= 0 ? (openQuantity as number) : undefined;
     if (trade.action === 'Buy' && trade.token) {
-        if (!justSeeded) openQty.set(qtyKey, (openQty.get(qtyKey) ?? 0) + fillQty);
+        openQty.set(qtyKey, reportedNet ?? (openQty.get(qtyKey) ?? 0) + fillQty);
         openQtyExchange.set(qtyKey, exchange);
         registerTrade(trade.token, strategy, feed, exchange);
     } else if (trade.action === 'Sell' && trade.token) {
-        const remaining = (openQty.get(qtyKey) ?? 0) - (justSeeded ? 0 : fillQty);
+        const remaining = reportedNet ?? (openQty.get(qtyKey) ?? 0) - fillQty;
         if (remaining > 0) {
             openQty.set(qtyKey, remaining);
         } else {
@@ -422,8 +369,8 @@ async function main() {
 
     await Mongo.init().catch((e) => Log.log('[strategies] Mongo.init failed (continuing without persistence):', e));
 
-    OrderClient.getInstance().onFill((userId, trade) => {
-        enqueueFifo(`fill:${userId}`, () => onFill(userId, trade));
+    OrderClient.getInstance().onFill((userId, trade, openQuantity) => {
+        enqueueFifo(`fill:${userId}`, () => onFill(userId, trade, openQuantity));
     });
     OrderClient.getInstance().onCancelled((userId, notification) => {
         // Own queue: a cancel handler can wait seconds (BulkPcr sleeps, then re-places an exit over a long IPC call) and must not

@@ -135,7 +135,22 @@ export async function cancelRestingSellsAheadOfExit(args: {
 // being caught by review and only then backported to the others. Each
 // broker still owns its own cancel/isFilled/untrack calls (the actual
 // broker API shapes genuinely differ), just not the control flow around them.
-export async function cancelOrderWithFillRecheck(params: {
+export async function cancelOrderWithFillRecheck(params: Parameters<typeof cancelAndRecheck>[0] & {
+    // The pending-order poller marks the order "cancelling" for the whole call: a poll that lands between the broker's cancel and
+    // our untrack sees CANCELLED, and without the mark it would tell the cancelled listeners, which re-place an exit for quantity a
+    // force-close is already selling. A marked order still has its fills booked; only the untrack/notify is left to this caller.
+    beginCancel?: () => void;
+    endCancel?: () => void;
+}): Promise<void> {
+    params.beginCancel?.();
+    try {
+        await cancelAndRecheck(params);
+    } finally {
+        params.endCancel?.();
+    }
+}
+
+async function cancelAndRecheck(params: {
     orderId: string;
     label: string; // e.g. 'cancelOrderOnAnt' - only used for log lines
     cancel: () => Promise<void>;

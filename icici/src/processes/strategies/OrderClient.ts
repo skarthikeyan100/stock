@@ -1,5 +1,5 @@
 import net from 'net';
-import type { ChunkedFillResult } from '../order/chunkedOrder';
+import type { ChunkedFillResult } from '../../ipc/orderProtocol';
 import Log from '../../util/Log';
 import { writeJsonLine, readJsonLines } from '../../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, OrderRequest, OrderRequestType, OrderResponse, FillNotification, OrderCancelledNotification } from '../../ipc/orderProtocol';
@@ -12,7 +12,7 @@ import { Trade } from '../../model/model';
 // Also used directly by server.ts (the `frontend` process) - not strategy-only
 // despite the file's location, see src/server.ts's imports.
 
-type FillHandler = (userId: string, trade: any) => void;
+type FillHandler = (userId: string, trade: any, openQuantity?: number) => void;
 type PositionsChangedHandler = () => void;
 type CancelledHandler = (userId: string, notification: OrderCancelledNotification) => void;
 
@@ -94,7 +94,7 @@ class OrderClient {
                     }
                 } else if (msg.kind === 'fill') {
                     const fill = msg as FillNotification;
-                    for (const h of this.fillHandlers) h(fill.userId, fill.trade);
+                    for (const h of this.fillHandlers) h(fill.userId, fill.trade, fill.openQuantity);
                 } else if (msg.kind === 'positionsChanged') {
                     for (const h of this.positionsChangedHandlers) h();
                 } else if (msg.kind === 'cancelled') {
