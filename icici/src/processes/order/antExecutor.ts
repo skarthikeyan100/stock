@@ -12,7 +12,7 @@ import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { neverShortSellable } from './BrokerExecutor';
-import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder, beginCancelOfPendingAntLimitOrders, endCancelOfPendingAntLimitOrders } from './pendingAntLimitOrders';
+import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder, beginCancelOfPendingAntLimitOrders, endCancelOfPendingAntLimitOrders, silenceListenersOfPendingAntLimitOrders } from './pendingAntLimitOrders';
 import { sleep } from '../../util/sleep';
 import { exchangeForIndex } from '../../util/underlyings';
 import { markNotPlaced } from '../../util/notPlaced';
@@ -778,6 +778,7 @@ export async function cancelOrderOnAnt(orderId: string): Promise<void> {
         untrack: () => untrackPendingAntLimitOrder(orderId),
         beginCancel: () => beginCancelOfPendingAntLimitOrders(orderId),
         endCancel: () => endCancelOfPendingAntLimitOrders(orderId),
+        silenceListeners: () => silenceListenersOfPendingAntLimitOrders(orderId),
     });
 }
 

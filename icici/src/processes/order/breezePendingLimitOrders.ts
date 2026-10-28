@@ -74,5 +74,6 @@ export const trackPendingBreezeLimitOrder = tracker.track;
 export const untrackPendingBreezeLimitOrder = tracker.untrack;
 export const beginCancelOfBreezePendingLimitOrders = tracker.beginCancel;
 export const endCancelOfBreezePendingLimitOrders = tracker.endCancel;
+export const silenceListenersOfBreezePendingLimitOrders = tracker.silenceListeners;
 export const loadPendingBreezeLimitOrdersFromMongo = tracker.loadFromMongo;
 export const pollPendingBreezeLimitOrders = tracker.poll;

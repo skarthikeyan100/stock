@@ -83,8 +83,11 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     private readonly noPriceAlerted = new Set<string>();
     private readonly cancelledListeners: CancelledListener<B>[] = [];
     private pollInFlight = false;
+    private pollOffset = 0;
     // Orders an executor is in the middle of cancelling (see beginCancel): a poll must not untrack or notify for them.
     private readonly cancelling = new Map<string, number>();
+    // Orders whose CANCELLED/REJECTED outcome must not reach the listeners (see silenceListeners); cleared by untrack.
+    private readonly silenced = new Set<string>();
     private notReadyAlertedAt = 0;
 
     constructor(private readonly adapter: BrokerOrderAdapter<T, Snapshot, B>) {}
@@ -93,6 +96,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
 
     // Bracket an explicit cancel (cancelOrderWithFillRecheck): fills are still booked meanwhile, but a CANCELLED/REJECTED poll
     // result neither untracks nor tells the cancelled listeners - the cancelling caller owns both.
+    silenceListeners = (orderId: string): void => { this.silenced.add(orderId); };
     beginCancel = (orderId: string): void => { this.cancelling.set(orderId, (this.cancelling.get(orderId) ?? 0) + 1); };
     endCancel = (orderId: string): void => {
         const n = (this.cancelling.get(orderId) ?? 0) - 1;
@@ -115,6 +119,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
     untrack = (orderId: string): void => {
         this.pending.delete(orderId);
         this.noPriceAlerted.delete(orderId);
+        this.silenced.delete(orderId);
         Mongo.getInstance()?.db.collection(this.adapter.collection).deleteOne({ orderId })
             .catch((e) => Log.log(`[order] ${this.adapter.collection}: Mongo delete failed for`, orderId, e));
     };
@@ -170,7 +175,10 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             return;
         }
         const pollStartedAt = Date.now();
-        for (const [orderId, order] of Array.from(this.pending)) {
+        // Rotating start: orders behind a slow one at the front are not starved when the budget runs out.
+        const entries = Array.from(this.pending);
+        const start = entries.length > 0 ? this.pollOffset++ % entries.length : 0;
+        for (const [orderId, order] of [...entries.slice(start), ...entries.slice(0, start)]) {
             if (!this.pending.has(orderId)) continue;
             if (Date.now() - pollStartedAt > POLL_BUDGET_MS) {
                 Log.log(`[order] poll pending ${label} limit orders: budget of ${POLL_BUDGET_MS}ms spent - the remaining orders are polled next tick`);
@@ -181,7 +189,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             } catch (e) {
                 if (this.adapter.ignoreStaleStatus && !this.pending.has(orderId)) {
                     // Untracked meanwhile: nothing left to verify - but a failure here may be a fill that was not booked, so it is not silent.
-                    Log.log(`[order] ALERT: poll pending ${label} limit orders: ${orderId} (${order.tradingSymbol}, ${order.userId}) failed after being untracked (a fill may be unbooked - reconcile if the position looks wrong):`, e);
+                    Log.log(`[order] poll pending ${label} limit orders: ${orderId} (${order.tradingSymbol}, ${order.userId}) failed after being untracked (usually harmless - a caller cancelled it; reconcile if a fill looks unbooked):`, e);
                     continue;
                 }
                 if (this.adapter.onPollError && (await bounded('onPollError', this.adapter.onPollError(order, e)).catch(() => false))) continue;
@@ -210,7 +218,9 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             trade.user = order.userId;
             trade.broker = broker;
             trade.brokerOrderId = orderId;
-            await bounded('recordFill', bookkeeping.recordFill(trade));
+            // Deliberately not time-bounded: an abandoned recordFill keeps running with its fill id claimed, so a retry would see it as
+        // booked and untrack the order even if the original then failed. A stuck recordFill is the bookkeeping layer's to bound.
+        await bookkeeping.recordFill(trade);
             Log.log(`[order] Pending ${label} limit order filled: ${order.tradingSymbol} (${order.userId}) ${order.action} qty=${qty} at ${trade.price}`);
         };
         if (status === 'COMPLETE' && this.adapter.resolveFill) {
@@ -262,10 +272,13 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             // An explicit cancel is in flight for this order: its partial fill is booked above, and the caller untracks (or leaves it
             // tracked on a confirmed fill) and owns the follow-up - telling the listeners would re-place a sell it is closing.
             if (this.cancelling.has(orderId)) return;
+            const silencedOrder = this.silenced.has(orderId);
             this.untrack(orderId);
             const remainingQty = order.quantity - filledQty;
             if (remainingQty <= 0) return;
-            if (skipListener) {
+            if (silencedOrder) {
+                Log.log(`[order] Pending ${label} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) ${status} after a fill in the cancel race - the cancelling caller owns the remainder, listeners not notified`);
+            } else if (skipListener) {
                 Log.log(`[order] Pending ${label} limit order ${orderId} (${order.tradingSymbol}, ${order.userId}) cancelled after market close (or expired) - leaving re-placement to tomorrow's reconcile()`);
             } else {
                 const reason = status === 'REJECTED' ? 'REJECTED' : 'CANCELLED';

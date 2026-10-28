@@ -43,5 +43,6 @@ export const trackPendingPrismLimitOrder = tracker.track;
 export const untrackPendingPrismLimitOrder = tracker.untrack;
 export const beginCancelOfPendingPrismLimitOrders = tracker.beginCancel;
 export const endCancelOfPendingPrismLimitOrders = tracker.endCancel;
+export const silenceListenersOfPendingPrismLimitOrders = tracker.silenceListeners;
 export const loadPendingPrismLimitOrdersFromMongo = tracker.loadFromMongo;
 export const pollPendingPrismLimitOrders = tracker.poll;

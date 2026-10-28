@@ -88,8 +88,14 @@ async function onFill(userId: string, raw: any, openQuantity?: number) {
         openQtyExchange.set(qtyKey, exchange);
         registerTrade(trade.token, strategy, feed, exchange);
     } else if (trade.action === 'Sell' && trade.token) {
+        // Without the order process's net and without a tracked quantity this process cannot tell whether the position is flat (it may
+        // hold chunks from before a restart): keep the subscription - a lingering one is cleaned up by a strategy reset, a dropped one
+        // blinds the remaining chunks' exits.
+        const unknownNet = reportedNet === undefined && !openQty.has(qtyKey);
         const remaining = reportedNet ?? (openQty.get(qtyKey) ?? 0) - fillQty;
-        if (remaining > 0) {
+        if (unknownNet) {
+            Log.log(`[strategies] Sell fill for ${trade.tsym} with no known net quantity - keeping the tick subscription`);
+        } else if (remaining > 0) {
             openQty.set(qtyKey, remaining);
         } else {
             openQty.delete(qtyKey);

@@ -1,3 +1,4 @@
+import Log from '../../util/Log';
 import Kite from '../../kite/Kite';
 import { isPastMarketClose } from '../../util/marketHours';
 import { PendingOrder, PendingOrderTracker } from './pendingOrderTracker';
@@ -27,8 +28,14 @@ const tracker = new PendingOrderTracker<PendingLimitOrder, Map<string, KiteOrder
     tokenOf: (order) => order.instrumentToken,
     ready: () => Kite.getInstance().hasValidSession(),
     fetchSnapshot: async () => {
-        const orders: KiteOrderRow[] = await Kite.getInstance().getKiteConnect().getOrders() as any;
-        return new Map(orders.map((o) => [String(o.order_id), o]));
+        try {
+            const orders: KiteOrderRow[] = await Kite.getInstance().getKiteConnect().getOrders() as any;
+            return new Map(orders.map((o) => [String(o.order_id), o]));
+        } catch (e) {
+            // The account-wide list failing must not blind every order: an empty snapshot sends each one to its own history.
+            Log.log('[order] pending Kite orders: getOrders failed - falling back to per-order history for this tick:', e);
+            return new Map<string, KiteOrderRow>();
+        }
     },
     statusOf: async (order, snapshot) => {
         let latest: KiteOrderRow | undefined = snapshot.get(order.orderId);
@@ -70,5 +77,6 @@ export const trackPendingLimitOrder = tracker.track;
 export const untrackPendingLimitOrder = tracker.untrack;
 export const beginCancelOfPendingLimitOrders = tracker.beginCancel;
 export const endCancelOfPendingLimitOrders = tracker.endCancel;
+export const silenceListenersOfPendingLimitOrders = tracker.silenceListeners;
 export const loadPendingLimitOrdersFromMongo = tracker.loadFromMongo;
 export const pollPendingLimitOrders = tracker.poll;

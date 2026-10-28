@@ -11,7 +11,7 @@ import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
-import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol, isTrackedPendingOrder, beginCancelOfPendingLimitOrders, endCancelOfPendingLimitOrders } from './pendingLimitOrders';
+import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol, isTrackedPendingOrder, beginCancelOfPendingLimitOrders, endCancelOfPendingLimitOrders, silenceListenersOfPendingLimitOrders } from './pendingLimitOrders';
 import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { exchangeForTsym } from '../../util/underlyings';
 
@@ -764,6 +764,7 @@ export async function cancelOrderOnKite(orderId: string): Promise<void> {
         untrack: () => untrackPendingLimitOrder(orderId),
         beginCancel: () => beginCancelOfPendingLimitOrders(orderId),
         endCancel: () => endCancelOfPendingLimitOrders(orderId),
+        silenceListeners: () => silenceListenersOfPendingLimitOrders(orderId),
     });
 }
 

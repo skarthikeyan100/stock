@@ -8,7 +8,7 @@ import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
 import { BuyRequest, Exchange, OptionExchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
-import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, beginCancelOfBreezePendingLimitOrders, endCancelOfBreezePendingLimitOrders } from './breezePendingLimitOrders';
+import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, beginCancelOfBreezePendingLimitOrders, endCancelOfBreezePendingLimitOrders, silenceListenersOfBreezePendingLimitOrders } from './breezePendingLimitOrders';
 import { roundToTick } from '../../kite/Kite';
 
 // ICICI Breeze execution, mirroring kiteExecutor.ts/antExecutor.ts's shape.
@@ -664,6 +664,7 @@ export async function cancelOrderOnBreeze(orderId: string, exchange?: OptionExch
         untrack: () => untrackPendingBreezeLimitOrder(orderId),
         beginCancel: () => beginCancelOfBreezePendingLimitOrders(orderId),
         endCancel: () => endCancelOfBreezePendingLimitOrders(orderId),
+        silenceListeners: () => silenceListenersOfBreezePendingLimitOrders(orderId),
     });
 }
 

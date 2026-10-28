@@ -139,14 +139,21 @@ export async function cancelOrderWithFillRecheck(params: Parameters<typeof cance
     // The pending-order poller marks the order "cancelling" for the whole call: a poll that lands between the broker's cancel and
     // our untrack sees CANCELLED, and without the mark it would tell the cancelled listeners, which re-place an exit for quantity a
     // force-close is already selling. A marked order still has its fills booked; only the untrack/notify is left to this caller.
-    beginCancel?: () => void;
-    endCancel?: () => void;
+    beginCancel: () => void;
+    endCancel: () => void;
+    // Called when the recheck finds a fill in the race window (OrderAlreadyFilledError): the order stays tracked so the poller books
+    // that fill, but its eventual CANCELLED status must not reach the cancelled listeners - the caller (a force-close) is selling
+    // the rest. Cleared by the order's untrack.
+    silenceListeners: () => void;
 }): Promise<void> {
-    params.beginCancel?.();
+    params.beginCancel();
     try {
         await cancelAndRecheck(params);
+    } catch (e) {
+        if (e instanceof OrderAlreadyFilledError) params.silenceListeners();
+        throw e;
     } finally {
-        params.endCancel?.();
+        params.endCancel();
     }
 }
 
