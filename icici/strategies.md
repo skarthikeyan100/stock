@@ -206,6 +206,12 @@ the other side is no longer open / the broker is stopped / EOD - then
 the broker and exits that part (nothing filled = the side stays out for the cycle).
 `sweepRestingRebuys` (run from `finishIfFlat`) triggers that. `reconcile()` settles a
 persisted `'resting'` slot the same way on restart.
+**Drift re-place**: each tick of the resting contract (`checkRebuyDrift`) compares its LTP with the limit; once it is more than
+`driftCancelPoints` (BulkPcrStrategy config, default 10, 0 = off; separate from `chunkDriftCancelPoints`) above it, the limit
+would never fill. If the hedge is still needed (the other side is held and its last tick is still below its entry, no stop/EOD)
+the limit is cancelled and a new one is rested at the current price for the still-unbought quantity (`replaceRestingRebuy`;
+what already filled is carried, not re-bought). No cap on re-places. If the hedge is no longer needed the re-buy is cancelled
+and the side stays out (`settleRestingRebuy`).
 **EOD (15:15)**: `eodCloseAnt` pulls each open ANT slot's resting sells
 (`cancelRestingLimitSells`) and squares off the remainder (`chunkedSquareOff`).
 Nothing re-buys after EOD (`eodDone`).
