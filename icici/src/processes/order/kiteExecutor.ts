@@ -27,6 +27,32 @@ import { exchangeForTsym } from '../../util/underlyings';
 // trade registered with exitMonitor.ts, which watches the tick feed piped in
 // from `data` and squares off in-app when target/SL is crossed.
 
+// The one place a Kite fill's Trade is built. A Sell does not carry lastTradePrice (its exit price is booked from the fill, and the
+// open position it closes has its own mark), every other action does. `right` is set only for index entries.
+interface KiteFillSpec {
+    tsym: string;
+    token: string;
+    action: 'Buy' | 'Sell' | 'SellToOpen' | 'BuyToClose';
+    userId: string;
+    orderId: string;
+    right?: any;
+}
+function kiteFillTrade(spec: KiteFillSpec, qty: number, price: number): Trade {
+    const t = new Trade();
+    t.tsym = spec.tsym;
+    t.token = spec.token;
+    t.quantity = qty;
+    t.price = price;
+    if (spec.action !== 'Sell') t.lastTradePrice = price;
+    t.action = spec.action;
+    t.status = 'COMPLETE';
+    if (spec.right !== undefined) t.right = spec.right;
+    t.user = spec.userId;
+    t.broker = 'kite';
+    t.brokerOrderId = spec.orderId;
+    return t;
+}
+
 // Waits for a fill; if the order ends partially filled (Kite.getFillPrice throws driftCancelled with
 // filledQuantity), books that real quantity before rethrowing - otherwise it'd be an untracked position/sale.
 async function getFillBookingPartial(kite: Kite, orderId: string, mk: (qty: number, price: number) => Trade, record: (t: Trade) => Promise<unknown>): Promise<number> {
@@ -201,21 +227,7 @@ export async function buyIndexOnKite(req: BuyIndexRequest): Promise<Trade> {
 
     const buyPrice = await getMarketableKitePrice(commonToken, contract.exchange, 'BUY');
     const { orderId } = await kite.placeLimitBuyOption(contract.tradingSymbol, req.quantity, buyPrice, contract.exchange);
-    const mkPartial = (qty: number, price: number): Trade => {
-        const t = new Trade();
-        t.tsym = contract.tradingSymbol;
-        t.token = commonToken;
-        t.quantity = qty;
-        t.price = price;
-        t.lastTradePrice = price;
-        t.action = 'Buy';
-        t.status = 'COMPLETE';
-        t.right = req.right;
-        t.user = req.userId;
-        t.broker = 'kite';
-        t.brokerOrderId = orderId;
-        return t;
-    };
+    const mkPartial = (qty: number, price: number): Trade => kiteFillTrade({ tsym: contract.tradingSymbol, token: commonToken, action: 'Buy', userId: req.userId, orderId: orderId, right: req.right }, qty, price);
     const entryPrice = await getFillBookingPartial(kite, orderId, mkPartial, (t) => finalizeEntry(t, req.userId, contract.exchange, targetPoints, stopLossPoints));
     Log.log(`[order] Filled ${contract.tradingSymbol} at ${entryPrice} for ${req.userId}`);
 
@@ -295,20 +307,7 @@ async function buyContractOnKite(userId: string, tradingSymbol: string, commonTo
     Log.log(`[order] Buying (manual) ${tradingSymbol} qty=${quantity} for ${userId}`);
     const buyPrice = await getMarketableKitePrice(commonToken, exchange, 'BUY');
     const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
-    const mkPartial = (qty: number, px: number): Trade => {
-        const t = new Trade();
-        t.tsym = tradingSymbol;
-        t.token = commonToken;
-        t.quantity = qty;
-        t.price = px;
-        t.lastTradePrice = px;
-        t.action = 'Buy';
-        t.status = 'COMPLETE';
-        t.user = userId;
-        t.broker = 'kite';
-        t.brokerOrderId = orderId;
-        return t;
-    };
+    const mkPartial = (qty: number, px: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: commonToken, action: 'Buy', userId: userId, orderId: orderId }, qty, px);
     // Always wait for the real fill: a caller-supplied price used to skip this and book the order as filled at that price, so an
     // unfilled order left a phantom position with a GTT and an exit sell.
     const entryPrice = await getFillBookingPartial(kite, orderId, mkPartial, (t) =>
@@ -561,20 +560,7 @@ export async function marketBuyBareOnKite(userId: string, tradingSymbol: string,
     // getMarketableKitePrice needs to query ANT for a live quote.
     const buyPrice = await getMarketableKitePrice(instrumentToken, exchange, 'BUY');
     const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
-    const mk = (qty: number, price: number): Trade => {
-        const t = new Trade();
-        t.tsym = tradingSymbol;
-        t.token = instrumentToken;
-        t.quantity = qty;
-        t.price = price;
-        t.lastTradePrice = price;
-        t.action = 'Buy';
-        t.status = 'COMPLETE';
-        t.user = userId;
-        t.broker = 'kite';
-        t.brokerOrderId = orderId;
-        return t;
-    };
+    const mk = (qty: number, price: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: instrumentToken, action: 'Buy', userId: userId, orderId: orderId }, qty, price);
     const entryPrice = await getFillBookingPartial(kite, orderId, mk, (t) => bookkeeping.recordFill(t));
     const trade = mk(quantity, entryPrice);
 
@@ -596,19 +582,7 @@ export async function marketSellBareOnKite(userId: string, tradingSymbol: string
         Log.log(`[order] marketSellBareOnKite: sell for ${tradingSymbol} (${userId}) clamped ${quantity} -> ${placed.quantity} by the never-short guard`);
         quantity = placed.quantity;
     }
-    const mk = (qty: number, price: number): Trade => {
-        const t = new Trade();
-        t.tsym = tradingSymbol;
-        t.token = instrumentToken;
-        t.quantity = qty;
-        t.price = price;
-        t.action = 'Sell';
-        t.status = 'COMPLETE';
-        t.user = userId;
-        t.broker = 'kite';
-        t.brokerOrderId = orderId;
-        return t;
-    };
+    const mk = (qty: number, price: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: instrumentToken, action: 'Sell', userId: userId, orderId: orderId }, qty, price);
     const fillPrice = await getFillBookingPartial(kite, orderId, mk, (t) => bookkeeping.recordFill(t));
     const trade = mk(quantity, fillPrice);
 
@@ -631,20 +605,7 @@ export async function enterShortOnKite(userId: string, tradingSymbol: string, in
     Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) ${tradingSymbol} qty=${quantity} for ${userId}`);
     const sellPrice = await getMarketableKitePrice(instrumentToken, exchange, 'SELL');
     const { orderId } = await kite.placeShortEntryOption(tradingSymbol, quantity, sellPrice, exchange);
-    const mk = (qty: number, price: number): Trade => {
-        const t = new Trade();
-        t.tsym = tradingSymbol;
-        t.token = instrumentToken;
-        t.quantity = qty;
-        t.price = price;
-        t.lastTradePrice = price;
-        t.action = 'SellToOpen';
-        t.status = 'COMPLETE';
-        t.user = userId;
-        t.broker = 'kite';
-        t.brokerOrderId = orderId;
-        return t;
-    };
+    const mk = (qty: number, price: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: instrumentToken, action: 'SellToOpen', userId: userId, orderId: orderId }, qty, price);
     const fillPrice = await getFillBookingPartial(kite, orderId, mk, (t) => bookkeeping.recordShortFill(t));
     const trade = mk(quantity, fillPrice);
 
@@ -665,20 +626,7 @@ export async function buyToCloseOnKite(userId: string, tradingSymbol: string, in
     Log.log(`[order] [BUTTERFLY] Buy-to-close ${tradingSymbol} qty=${quantity} for ${userId}`);
     const buyPrice = await getMarketableKitePrice(instrumentToken, exchange, 'BUY');
     const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
-    const mk = (qty: number, price: number): Trade => {
-        const t = new Trade();
-        t.tsym = tradingSymbol;
-        t.token = instrumentToken;
-        t.quantity = qty;
-        t.price = price;
-        t.lastTradePrice = price;
-        t.action = 'BuyToClose';
-        t.status = 'COMPLETE';
-        t.user = userId;
-        t.broker = 'kite';
-        t.brokerOrderId = orderId;
-        return t;
-    };
+    const mk = (qty: number, price: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: instrumentToken, action: 'BuyToClose', userId: userId, orderId: orderId }, qty, price);
     const fillPrice = await getFillBookingPartial(kite, orderId, mk, (t) => bookkeeping.recordShortFill(t));
     const trade = mk(quantity, fillPrice);
 

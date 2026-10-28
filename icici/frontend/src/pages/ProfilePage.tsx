@@ -5,6 +5,9 @@ import { useAuth } from '../context/AuthContext';
 import NotificationBell from '../components/NotificationBell';
 import { readError, apiFetch } from '../utils/api';
 
+// periodEnd is stored exclusive (next day 00:00 for a date-only period): show the last instant inside the period.
+const periodEndShown = (periodEnd: string | number | Date) => new Date(new Date(periodEnd).getTime() - 1);
+
 function VerifiedBadge({ verified, hasValue }: { verified: boolean; hasValue: boolean }) {
   if (verified) return <Badge bg="success" className="ms-2">Verified</Badge>;
   if (hasValue) return <Badge bg="warning" text="dark" className="ms-2">Under Verification</Badge>;
@@ -655,7 +658,7 @@ export default function ProfilePage() {
             <Card.Body>
               {pendingPayouts.map(p => (
                 <div key={p._id} className="small">
-                  Period: {new Date(p.periodStart).toDateString()} – {new Date(p.periodEnd).toDateString()} &nbsp;
+                  Period: {new Date(p.periodStart).toDateString()} – {periodEndShown(p.periodEnd).toDateString()} &nbsp;
                   Gross: ₹{p.grossProfit.toFixed(2)} &nbsp;
                   <Badge bg="warning" text="dark">Pending Review</Badge>
                 </div>
@@ -687,7 +690,7 @@ export default function ProfilePage() {
                   {payouts.map(p => (
                     <Fragment key={p._id}>
                       <tr>
-                        <td>{new Date(p.periodStart).toLocaleDateString()} – {new Date(p.periodEnd).toLocaleDateString()}</td>
+                        <td>{new Date(p.periodStart).toLocaleDateString()} – {periodEndShown(p.periodEnd).toLocaleDateString()}</td>
                         <td>₹{p.grossProfit.toFixed(2)}</td>
                         <td>₹{p.tdsAmount.toFixed(2)}</td>
                         <td>₹{p.netAmount.toFixed(2)}</td>

@@ -3,6 +3,7 @@
 // dataProcess.ts).
 console.log = console.error;
 
+import { ownSocketTracker } from '../ipc/ownSocket';
 import '../util/tz'; // pin TZ=Asia/Kolkata before any other module reads the clock
 import net from 'net';
 import fs from 'fs';
@@ -369,19 +370,12 @@ function startStrategiesServer() {
         socket.on('error', (e) => Log.log('[strategies] Client socket error:', e));
     });
     server.listen(STRATEGIES_SOCKET_PATH, () => {
-        try { ownSocketIno = fs.statSync(STRATEGIES_SOCKET_PATH).ino; } catch { /* ignore */ }
+        ownSocket.record(STRATEGIES_SOCKET_PATH);
         Log.log('[strategies] Listening on', STRATEGIES_SOCKET_PATH);
     });
 }
 
-// Unlink the socket on shutdown ONLY if it is still the file THIS process created: during a hot restart the replacement
-// may already have bound the same path, and deleting that would cut every IPC client off from a healthy process.
-let ownSocketIno: number | null = null;
-function unlinkOwnSocket(socketPath: string): void {
-    try {
-        if (ownSocketIno !== null && fs.statSync(socketPath).ino === ownSocketIno) fs.unlinkSync(socketPath);
-    } catch { /* already gone */ }
-}
+const ownSocket = ownSocketTracker(); // see ipc/ownSocket.ts
 
 async function main() {
     // TopStock (and antLegOps) resolve ANT contracts in this process - warm the NFO/NSE caches
@@ -451,6 +445,6 @@ main().catch((e) => {
 });
 
 process.on('SIGTERM', () => {
-    unlinkOwnSocket(STRATEGIES_SOCKET_PATH);
+    ownSocket.unlink(STRATEGIES_SOCKET_PATH);
     process.exit(0);
 });

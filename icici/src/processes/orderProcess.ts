@@ -20,6 +20,7 @@ installIpv4OnlyHostOverride();
 
 import { TRACKERS, TRACKER_BROKERS } from './order/pendingTrackers';
 import { BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
+import { ownSocketTracker } from '../ipc/ownSocket';
 import net from 'net';
 import fs from 'fs';
 import Log from '../util/Log';
@@ -1188,14 +1189,7 @@ async function onTick(tick: any) {
     }
 }
 
-// Unlink the socket on shutdown ONLY if it is still the file THIS process created: during a hot restart the replacement
-// may already have bound the same path, and deleting that would cut every IPC client off from a healthy process.
-let ownSocketIno: number | null = null;
-function unlinkOwnSocket(socketPath: string): void {
-    try {
-        if (ownSocketIno !== null && fs.statSync(socketPath).ino === ownSocketIno) fs.unlinkSync(socketPath);
-    } catch { /* already gone */ }
-}
+const ownSocket = ownSocketTracker(); // see ipc/ownSocket.ts
 
 async function main() {
     // Warm every broker's contract master before the IPC socket accepts requests, so the first
@@ -1374,7 +1368,7 @@ async function main() {
     });
 
     server.listen(ORDER_SOCKET_PATH, () => {
-        try { ownSocketIno = fs.statSync(ORDER_SOCKET_PATH).ino; } catch { /* ignore */ }
+        ownSocket.record(ORDER_SOCKET_PATH);
         Log.log('[order] Listening on', ORDER_SOCKET_PATH);
     });
 }
@@ -1385,6 +1379,6 @@ main().catch((e) => {
 });
 
 process.on('SIGTERM', () => {
-    unlinkOwnSocket(ORDER_SOCKET_PATH);
+    ownSocket.unlink(ORDER_SOCKET_PATH);
     process.exit(0);
 });

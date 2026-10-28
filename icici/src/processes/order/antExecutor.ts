@@ -67,8 +67,20 @@ async function resolveUnconfirmedAntBuy(
     // cancel (the cancel only produced "order is not open to cancel" noise on every retry, live 2026-10-22).
     if (/\bREJECTED\b/.test(String(pollErr?.message ?? '')) && !(before && before.quantity > 0)) {
         Log.log(`[order] ANT order ${orderNo} was REJECTED at the broker - nothing filled, not cancelling`);
-        // Definite only when the trade book was actually read and showed nothing; an unreadable book proves nothing about fills.
-        throw before && before.quantity === 0 ? markNotPlaced(pollErr) : pollErr;
+        // Definite when the trade book was read and showed nothing. With the book unreadable, the order's own history is the next
+        // best evidence: a REJECTED record whose highest filledQuantity across all its records is 0 never traded (a partial fill
+        // followed by a rejection would show the partial there).
+        if (before && before.quantity === 0) throw markNotPlaced(pollErr);
+        if (!before) {
+            try {
+                const st = await ant.getOrderStatus(orderNo);
+                if (st.status === 'REJECTED' && st.filledQuantity === 0) throw markNotPlaced(pollErr);
+            } catch (e: any) {
+                if (e?.notPlaced) throw e;
+                Log.log(`[order] ANT order ${orderNo}: REJECTED, trade book and order history both unreadable - not tagged NOT_PLACED: ${e?.message ?? e}`);
+            }
+        }
+        throw pollErr;
     }
 
     if (!mayCancel) {

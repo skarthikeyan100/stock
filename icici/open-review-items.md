@@ -5,15 +5,8 @@ Optional, not a code item: set CF_ORIGIN_SECRET plus a Cloudflare Transform Rule
 Remove an item from this file when it is fixed.
 
 ## Awaiting a decision
-29. [SEV: med] src/monitor.ts:166 (+ constants.ts USER_LOSS_LIMIT fallback 150,000,000) - getInstrumentLotSize hardcodes lots and defaults every other symbol (SENSEX 20, BSE) to 65, so SENSEX lot limit allows ~3x; users missing from settings cache effectively have no loss limit (fail-open). Fix: lot-size table incl. SENSEX/BANKNIFTY/FINNIFTY (or from contract master) and throw/deny for unknown; fall back to a conservative loss limit (e.g. 0 or default 15000) instead of 150,000,000. [PARTIAL-DONE: lot sizes (SENSEX 20, unknown conservative). USER_LOSS_LIMIT fallback left at 150000000 on purpose: strategy pseudo-users (BulkPcr-NIFTY etc.) have no user doc and rely on it; needs a human decision]
 
 ## Post-fix review (unfixed)
-4. [SEV: med] src/strategy/goodMorningRetry.ts:25 - recoverFromStaleRetry flags a stale previousClose only on the first day after a retry then deletes its markers; day 3 trades off the stale intraday value.
-7. [SEV: med] src/monitor.ts:~255 - canPlaceOrder now rejects while pendingUsers has the user, but pendingUsers is only cleared on a completed fill or immediate failure: a resting/cancelled/rejected order leaves the user blocked until restart. (Legacy in-process Monitor path.)
-8. [SEV: med] src/payout.ts:~382 - date-only period end is stored as next-day 00:00 IST but invoice, ProfilePage and block notification print periodEnd as-is, so the printed period is one day too long. Display periodEnd-1ms or store an inclusive end.
-13. [SEV: low] src/processes/order/kiteExecutor.ts:~306 - the Trade-building lambda is copy-pasted six times (Sell variants differ by omitting lastTradePrice); unlinkOwnSocket duplicated in orderProcess.ts and strategiesProcess.ts. Extract helpers.
-14. [SEV: low] src/tools/gapscreener/GapScreenerCoverOrder.ts:~176 - symbol recorded as placed before the call, so a definitive rejection (auth/margin) also blocks a same-day rerun; only an ambiguous failure justifies the latch. Remove the entry on a definitive failure.
-15. [SEV: med] src/processes/order/antExecutor.ts (REJECTED handling) - when ANT reports REJECTED and the trade book cannot be read, the error is not tagged `[NOT_PLACED]`, so the strategy treats the buy as possibly placed (manual review) even when it was a clean refusal. Left on purpose: an unreadable book cannot rule out a partial fill followed by a rejection. Revisit if ANT exposes a reliable "filled quantity" on the REJECTED order itself.
 
 ## Partial or skipped (low priority)
 F22. [SEV: low] LoginPage.tsx:33,148 - always navigate('/rules') even for users who already accepted; failures (missing credential, non-OK /auth/login) only console.error; duplicated GoogleLogin handlers. Fix: navigate based on termsAccepted, show error, share one handler. [PARTIAL-DONE: errors shown; navigation left (RulesPage already branches on termsAccepted)]

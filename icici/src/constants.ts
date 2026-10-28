@@ -7,7 +7,11 @@ export const CALL = 'call';
 export const PUT = 'put';
 export const BOUGHT = 'BOUGHT';
 export const CLOSED = 'CLOSED';
+// Loss limit of a strategy pseudo-user with no user document (BulkPcr-NIFTY etc.): effectively unlimited, set explicitly in
+// applyConfigStrategyLimits. Never a fallback for an unknown user - see UNKNOWN_USER_LOSS_LIMIT.
 export const USER_LOSS_LIMIT = 150000000;
+// Loss limit applied to a user who is missing from the settings cache (not yet synced / unknown): fail closed, not open.
+export const UNKNOWN_USER_LOSS_LIMIT = 15000;
 export const DEFAULT_LOT_LIMIT = 10;
 export const DEFAULT_MAX_INVESTMENT = 100000;
 export const DEFAULT_PROFIT_SPLIT_PERCENT = 80;

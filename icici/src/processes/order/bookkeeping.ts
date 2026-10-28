@@ -7,7 +7,7 @@ import ANT from '../../ant/ANT';
 import Breeze from '../../breeze/Breeze';
 import { Trade } from '../../model/model';
 import { UserContext, closeUserAccount } from '../../user';
-import { PUT, CALL, USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../../constants';
+import { PUT, CALL, UNKNOWN_USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../../constants';
 import * as exitMonitor from './exitMonitor';
 import { collapseFillsByOrderId, netFifoLots } from './fillNetting';
 import { recordOrderOwner, loadOrderOwners } from './orderOwners';
@@ -200,7 +200,7 @@ class OrderBookkeeping {
     }
 
     getUserLossLimit(user: string): number {
-        return this.userSettingsCache.get(user)?.lossLimit ?? USER_LOSS_LIMIT;
+        return this.userSettingsCache.get(user)?.lossLimit ?? UNKNOWN_USER_LOSS_LIMIT;
     }
 
     getUserLotLimit(user: string): number {
@@ -264,7 +264,7 @@ class OrderBookkeeping {
         const investmentAmount = cache?.investmentAmount ?? 0;
         return {
             email,
-            lossLimit: cache?.lossLimit ?? USER_LOSS_LIMIT,
+            lossLimit: cache?.lossLimit ?? UNKNOWN_USER_LOSS_LIMIT,
             lotCount: cache?.lotLimit ?? DEFAULT_LOT_LIMIT,
             investmentMode: (cache?.investmentMode ?? 'investmentAmount') as 'lotCount' | 'investmentAmount',
             investmentAmount,

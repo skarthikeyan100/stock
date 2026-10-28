@@ -5,6 +5,9 @@ import { useAuth, AuthUser } from '../context/AuthContext';
 import DateRangeFilter, { DateRange, resolveDateRange, formatRangeLabel } from '../components/DateRangeFilter';
 import { apiFetch, apiPost, readError } from '../utils/api';
 
+// periodEnd is stored exclusive (next day 00:00 for a date-only period): show the last instant inside the period.
+const periodEndShown = (periodEnd: string | number | Date) => new Date(new Date(periodEnd).getTime() - 1);
+
 interface UserRow extends AuthUser {
   sessionPnL: number;
   hasActiveTrade: boolean;
@@ -1813,7 +1816,7 @@ export default function AdminPage() {
                       {adminPayouts.map(p => (
                         <tr key={p._id}>
                           <td>{p.user}</td>
-                          <td>{new Date(p.periodStart).toLocaleDateString()} – {new Date(p.periodEnd).toLocaleDateString()}</td>
+                          <td>{new Date(p.periodStart).toLocaleDateString()} – {periodEndShown(p.periodEnd).toLocaleDateString()}</td>
                           <td>&#8377;{p.grossProfit.toFixed(2)}</td>
                           <td>&#8377;{p.netAmount.toFixed(2)}</td>
                           <td>

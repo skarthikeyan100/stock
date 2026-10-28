@@ -42,7 +42,7 @@ import { Trade } from './model/model';
 import configService from './prism/ConfigService';
 import { validateFlatConfig, validateConfigFile } from './prism/configValidation';
 import { revokeSessions, getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields } from './user';
-import { computePayout, createPayoutRecord, markPayoutDecision, markPayoutPaidWithProof, setPayoutEmailStatus, claimPayoutEmailSend, getPayout, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary, periodFromInputs } from './payout';
+import { computePayout, createPayoutRecord, markPayoutDecision, markPayoutPaidWithProof, setPayoutEmailStatus, claimPayoutEmailSend, getPayout, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary, periodFromInputs, displayPeriodEnd } from './payout';
 import multer from 'multer';
 import { GridFSBucket, ObjectId } from 'mongodb';
 import { sendPayoutPaidEmail } from './mailer';
@@ -958,7 +958,7 @@ function payoutEmailVars(payout: any, user: any) {
     return {
         name: String(user?.legalName || user?.name || payout.user),
         invoiceNumber: String(payout.invoiceNumber),
-        period: `${new Date(payout.periodStart).toDateString()} – ${new Date(payout.periodEnd).toDateString()}`,
+        period: `${new Date(payout.periodStart).toDateString()} – ${displayPeriodEnd(payout.periodEnd).toDateString()}`,
         netAmount: Number(payout.netAmount).toFixed(2),
         paidDate: new Date(payout.paidAt ?? Date.now()).toDateString(),
         destination,

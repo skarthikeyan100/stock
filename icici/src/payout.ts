@@ -374,6 +374,12 @@ async function nextInvoiceNumber(): Promise<string> {
     return `INV-${year}-${String(seq).padStart(6, '0')}`;
 }
 
+// The last INSTANT of a payout period, for display: periodEnd is stored exclusive (next day 00:00 IST for a date-only input), so
+// printing it as-is shows one day too many. 1ms before it is the last moment inside the period.
+export function displayPeriodEnd(periodEnd: Date | string | number): Date {
+    return new Date(new Date(periodEnd).getTime() - 1);
+}
+
 // Date-only inputs (YYYY-MM-DD) are IST calendar days: [start 00:00 IST, end+1 day 00:00 IST). A full timestamp is used
 // as given (end exclusive). Back-to-back periods that share a boundary therefore never double-count a trade.
 export function periodFromInputs(periodStart: unknown, periodEnd: unknown): { start: Date; end: Date } {
@@ -464,7 +470,7 @@ async function createPayoutRecordLocked(user: string, periodStart: Date, periodE
         const notification = {
             user,
             type: 'payout_status' as const,
-            message: `Payout for ${new Date(periodStart).toDateString()} – ${new Date(periodEnd).toDateString()} was blocked: ${computation.blockReason}`,
+            message: `Payout for ${new Date(periodStart).toDateString()} – ${displayPeriodEnd(periodEnd).toDateString()} was blocked: ${computation.blockReason}`,
             read: false,
             createdAt: new Date(),
         };
@@ -627,7 +633,7 @@ export async function generateInvoiceHtml(payoutId: any, email?: string): Promis
   <div style="color:#666; margin-bottom:24px;">${escapeHtml(payout.invoiceNumber)}</div>
   <table style="width:100%; border-collapse:collapse; margin-bottom:16px;">
     <tr><td style="color:#666">Trader</td><td style="text-align:right">${escapeHtml(userDoc?.legalName || userDoc?.name)} (${escapeHtml(payout.user)})</td></tr>
-    <tr><td style="color:#666">Period</td><td style="text-align:right">${new Date(payout.periodStart).toDateString()} – ${new Date(payout.periodEnd).toDateString()}</td></tr>
+    <tr><td style="color:#666">Period</td><td style="text-align:right">${new Date(payout.periodStart).toDateString()} – ${displayPeriodEnd(payout.periodEnd).toDateString()}</td></tr>
     <tr><td style="color:#666">Status</td><td style="text-align:right">${escapeHtml(payout.status)}</td></tr>
   </table>
   <table style="width:100%; border-collapse:collapse; border-top:1px solid #ddd; padding-top:8px;">

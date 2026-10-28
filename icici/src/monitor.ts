@@ -7,7 +7,7 @@ import Prism from './prism';
 import AntStream from './ant/AntStream';
 import Config from './prism/config';
 import configService from './prism/ConfigService';
-import {  PUT, CALL, USER_LOSS_LIMIT,  DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT} from './constants'
+import {  PUT, CALL, UNKNOWN_USER_LOSS_LIMIT,  DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT} from './constants'
 import strategies from './strategy/strategies';
 import { Strategy } from './strategy/strategy';
 
@@ -74,13 +74,12 @@ export default class Monitor {
         this.pendingUsers.add(userId);
         Log.log(`[Monitor] Placing buy order for ${userId}: ${contract} qty=${qty} price=${price}`);
         try {
-            const response = await Prism.getInstance().buyContract(contract, qty, price, this.getUserContext(userId));
-            // Nothing placed: the user must not stay "pending" forever (the fill path is the only other place that clears it).
-            if (!response) this.pendingUsers.delete(userId);
-            return response;
-        } catch (e) {
+            return await Prism.getInstance().buyContract(contract, qty, price, this.getUserContext(userId));
+        } finally {
+            // The mark only covers the request being in flight (two concurrent requests must not both pass the lot check). Once the
+            // broker has answered, a filled order is in this.trades, and a resting, cancelled or rejected one must not leave the
+            // user blocked until a restart (the fill path also clears it).
             this.pendingUsers.delete(userId);
-            throw e;
         }
     }
 
@@ -98,12 +97,9 @@ export default class Monitor {
         this.pendingUsers.add(userId);
         Log.log(`[Monitor] Placing buyIndex order for ${userId}: ${index} right=${right} qty=${qty}`);
         try {
-            const result = await Prism.getInstance().buyIndex({ userContext: this.getUserContext(userId), index, ltp, right, qty });
-            if (!result) this.pendingUsers.delete(userId);
-            return result;
-        } catch (e) {
-            this.pendingUsers.delete(userId);
-            throw e;
+            return await Prism.getInstance().buyIndex({ userContext: this.getUserContext(userId), index, ltp, right, qty });
+        } finally {
+            this.pendingUsers.delete(userId); // see requestBuy
         }
     }
 
@@ -146,7 +142,7 @@ export default class Monitor {
 
     getUserLossLimit(user: string): number {
         const cached = this.userSettingsCache.get(user);
-        return cached ? cached.lossLimit : USER_LOSS_LIMIT;
+        return cached ? cached.lossLimit : UNKNOWN_USER_LOSS_LIMIT;
     }
 
     getUserLotLimit(user: string): number {
@@ -169,7 +165,7 @@ export default class Monitor {
         const investmentAmount = cache?.investmentAmount ?? 0;
         return {
             email,
-            lossLimit: cache?.lossLimit ?? USER_LOSS_LIMIT,
+            lossLimit: cache?.lossLimit ?? UNKNOWN_USER_LOSS_LIMIT,
             lotCount: cache?.lotLimit ?? DEFAULT_LOT_LIMIT,
             investmentMode: (cache?.investmentMode ?? 'investmentAmount') as 'lotCount' | 'investmentAmount',
             investmentAmount,

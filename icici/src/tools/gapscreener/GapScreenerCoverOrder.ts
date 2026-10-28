@@ -23,6 +23,7 @@
  * (user, quantity, stop-loss points) come from config.yml.
  */
 
+import { NOT_PLACED_TAG } from '../../ipc/orderProtocol';
 import * as fs from 'fs';
 import * as path from 'path';
 import { parse } from 'csv-parse/sync';
@@ -188,6 +189,13 @@ async function main(): Promise<void> {
             placed++;
         } catch (e: any) {
             console.error(`[gapScreenerCoverOrder] Failed to place cover order for ${row.antStockCode} -> ${row.optionContract}:`, e.message);
+            // A definite refusal ([NOT_PLACED]: auth, margin, validation - nothing reached the broker) must not block a same-day
+            // rerun; only an ambiguous failure (timeout) keeps the latch, since that order may be live.
+            if (String(e?.message ?? '').includes(NOT_PLACED_TAG)) {
+                alreadyPlaced.delete(row.antStockCode);
+                writePlaced(alreadyPlaced);
+                console.warn(`[gapScreenerCoverOrder] ${row.antStockCode}: refused before reaching the broker - a rerun today is allowed`);
+            }
         }
     }
 
