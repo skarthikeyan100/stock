@@ -65,7 +65,7 @@ const tracker = new PendingOrderTracker<PendingBreezeLimitOrder, null, 'breeze'>
 });
 
 export const onCancelled = tracker.onCancelled;
-// Exchange of a still-resting limit order, restored from Mongo across restarts. Lets breezeExecutor's exchangeOfOrder
+// Exchange of a still-resting limit order, restored from Mongo across restarts. Lets breezeExecutor's resolveOrderExchange
 // resolve a BFO (SENSEX) order placed before an `order` restart instead of defaulting it to NFO.
 export const pendingBreezeOrderExchange = (orderId: string): 'NFO' | 'BFO' | undefined => tracker.get(orderId)?.exchange;
 export const findPendingOrdersForSymbol = tracker.find;
