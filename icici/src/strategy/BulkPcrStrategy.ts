@@ -3,7 +3,8 @@ import { ORDER_MAY_BE_LIVE_TAG } from '../ipc/orderProtocol';
 import Log from '../util/Log';
 import { localDayKey } from './dayKey';
 import SerialWriter from './SerialWriter';
-import { CALL, PUT } from '../constants';
+import { CALL, PUT, NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY } from '../constants';
+import { splitIntoFreezeQtyChunks } from '../util/quantityChunks';
 import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
@@ -157,7 +158,8 @@ interface BrokerPosition {
     // Pair brokers only: the option side this slot holds (CALL | PUT).
     right?: string;
     // 'pending' = a side whose buy did not fill, retried off the other side's ticks.
-    phase: 'buying' | 'selling' | 'pending' | 'error' | 'done';
+    // 'resting': a re-buy limit order (see rebuyLimit / rebuy) is resting at the broker, nothing is held yet.
+    phase: 'buying' | 'resting' | 'selling' | 'pending' | 'error' | 'done';
     // Set while eodSquareOff is cancelling this slot's resting sell. updateTrade ignores fills
     // meanwhile: the cancel's own filledQty already accounts for any chunk that filled during the
     // cancel, so counting those fills again would under-square-off.
@@ -210,12 +212,24 @@ interface BrokerPosition {
     // resting sell and the trail (double sell, or no sell at all).
     trailDistance?: number;
     trailTarget?: number;
+    // Points the opposite (still open) leg sat below its entry when this hedge's buy started; the hedge target is half of it.
+    hedgeAdverse?: number;
     // Epoch ms of our own last re-price cancel - the only window in which a cancellation notice is that cancel's echo.
     repriceCancelAt?: number;
     exitLimitPrice?: number;
     exitPlacedAt?: number;
     // In-memory only: a trail exit is being placed / re-priced right now (ticks must not start a second one).
     trailBusy?: boolean;
+    // A re-buy after this side's exit sold out is a LIMIT buy of the SAME contract at the price it just sold at (its average
+    // exit price), not a market buy of the current ATM. Set by onSlotSoldOut and kept until the re-buy fills or the slot ends,
+    // so a retry of a re-buy that failed to place is a limit buy too. Never set on a first or hedge-opening buy.
+    rebuyLimit?: { tsym: string; token: string; price: number };
+    // The resting re-buy (phase 'resting'): its order ids (one per freeze-quantity chunk), the total quantity placed, and what has
+    // filled so far (from fill notifications). Rests until it fills or the other side of the pair is no longer open.
+    rebuy?: { orderIds: string[]; quantity: number; filledQty: number; filledValue: number };
+    // In-memory only: the resting re-buy is being cancelled / settled right now (fill notifications are ignored meanwhile - the
+    // settle reads the position back from the broker instead, so a fill is never counted twice).
+    cancellingRebuy?: boolean;
 }
 
 interface PersistedState {
@@ -368,9 +382,18 @@ export default class BulkPcrStrategy extends Strategy {
         return Number.isFinite(n) && n > 0 ? n : 0;
     }
 
-    // Target of a trailing hedge: half the SL distance, rounded up (slDistance 10 -> 5, 5 -> 3). It arms the trail.
-    private hedgeTarget(): number {
-        return Math.ceil(this.slDistance() / 2);
+    // Target of a trailing hedge: half the points the opposite leg is below its entry, rounded up (CE bought 100, at 90 -> 5;
+    // at 80 -> 10). Falls back to slDistance when that leg's price is unknown. It arms the trail.
+    private hedgeTarget(pos?: BrokerPosition): number {
+        const adverse = pos?.hedgeAdverse;
+        return Math.ceil((adverse !== undefined && adverse > 0 ? adverse : this.slDistance()) / 2);
+    }
+
+    // How far the broker's other open leg is below its entry right now (0 when unknown or not below).
+    private oppositeAdverse(pos: BrokerPosition): number {
+        const other = this.slotsOf(pos.broker).find((p) => p.right !== pos.right && p.phase !== 'done' && p.heldToken);
+        const ltp = other ? this.lastLtpByKey.get(this.keyOf(other)) : undefined;
+        return other && ltp !== undefined ? Math.max(0, other.entryAvg - ltp) : 0;
     }
 
     // The slot's trail applies: a pair-broker hedge leg while hedgeTrailDistance is set.
@@ -380,7 +403,7 @@ export default class BulkPcrStrategy extends Strategy {
 
     // Points above entry the slot's exit is anchored to: the trailing hedge's target, else the fixed targetPoints.
     private targetPointsFor(pos: BrokerPosition): number {
-        return this.isTrailSlot(pos) ? pos.trailTarget ?? this.hedgeTarget() : this.cfg().targetPoints ?? 2;
+        return this.isTrailSlot(pos) ? pos.trailTarget ?? this.hedgeTarget(pos) : this.cfg().targetPoints ?? 2;
     }
 
     // One TrailStop per slot (never shared), restored from the persisted peak the first time it is needed.
@@ -390,7 +413,7 @@ export default class BulkPcrStrategy extends Strategy {
         const key = this.keyOf(pos);
         let trail = this.trails.get(key);
         if (!trail) {
-            trail = new TrailStop({ getTrailDistance: () => pos.trailDistance ?? 0, getActivation: () => pos.trailTarget ?? this.hedgeTarget() });
+            trail = new TrailStop({ getTrailDistance: () => pos.trailDistance ?? 0, getActivation: () => pos.trailTarget ?? this.hedgeTarget(pos) });
             trail.restore(pos.trail);
             this.trails.set(key, trail);
         }
@@ -462,7 +485,7 @@ export default class BulkPcrStrategy extends Strategy {
         const positions: Partial<Record<BrokerName, BrokerPosition>> = {};
         // squaringOff is in-memory only: persisted true would survive a crash mid-close and block updateTrade after restart.
         for (const [broker, pos] of this.positions) {
-            const { squaringOff: _inFlight, trailBusy: _trailInFlight, ...durable } = pos;
+            const { squaringOff: _inFlight, trailBusy: _trailInFlight, cancellingRebuy: _cancelInFlight, ...durable } = pos;
             positions[broker] = durable as BrokerPosition;
         }
         const stoppedSlots = this.sideKeys().filter((k) => this.stops.get(k)?.isLatched() === true);
@@ -980,7 +1003,7 @@ export default class BulkPcrStrategy extends Strategy {
             this.lastTrailPersistAt.delete(key);
             const trailDistance = this.hedgeTrailDistance();
             pos.trailDistance = pos.hedge === true && trailDistance > 0 ? trailDistance : undefined;
-            pos.trailTarget = pos.trailDistance ? this.hedgeTarget() : undefined;
+            pos.trailTarget = pos.trailDistance ? this.hedgeTarget(pos) : undefined;
         }
         // A trail exit that already fired keeps its own limit on a re-placement; otherwise entry + target.
         const targetPrice = pos.exitLimitPrice ?? roundToTick(pos.entryAvg + this.targetPointsFor(pos));
@@ -1325,6 +1348,11 @@ export default class BulkPcrStrategy extends Strategy {
             return;
         }
 
+        if (pos.rebuyLimit) {
+            await this.placeRestingRebuy(key);
+            return;
+        }
+
         const niftyLtp = this.lastNiftyQuote?.ltp ?? 0;
         if (!(niftyLtp > 0)) {
             pos.phase = 'pending';
@@ -1335,6 +1363,7 @@ export default class BulkPcrStrategy extends Strategy {
 
         pos.phase = 'buying';
         pos.lastBuyAttemptAt = Date.now();
+        if (pos.hedge === true) pos.hedgeAdverse = this.oppositeAdverse(pos) || pos.hedgeAdverse;
         this.persistState();
         try {
             // Same chunked buy the root entry uses: splits above the exchange freeze quantity and
@@ -1374,6 +1403,170 @@ export default class BulkPcrStrategy extends Strategy {
         }
         this.persistState();
         this.finishIfFlat();
+    }
+
+    // True while a side holds a position (or its first buy is still being market-filled): the other side of the pair may keep
+    // re-buying against it. A side that is only RESTING a re-buy limit holds nothing, so it does not count.
+    private holdsOrIsBuying(pos: BrokerPosition): boolean {
+        return pos.phase === 'selling' || (pos.phase === 'buying' && !pos.rebuyLimit);
+    }
+
+    // Rests the re-buy: a LIMIT buy of the same contract at pos.rebuyLimit.price for pos.entryQuantity, split into freeze-quantity
+    // chunks (one order each). Returns once the orders are placed; the fills arrive later through updateTrade -> onRebuyFill.
+    // It rests until it fills, or the other side of the pair is no longer open (settleRestingRebuy), or the broker is stopped / EOD.
+    private async placeRestingRebuy(key: string): Promise<void> {
+        const pos = this.positions.get(key);
+        if (!pos || !pos.rebuyLimit || !(pos.entryQuantity && pos.entryQuantity > 0)) return;
+        const { tsym, token, price } = pos.rebuyLimit;
+        const broker = pos.broker;
+        const sibling = this.slotsOf(broker).find((p) => p.right !== pos.right);
+        if (!sibling || !this.holdsOrIsBuying(sibling)) {
+            // The other side closed before this (re)try: nothing to hedge against, so the side simply ends.
+            pos.rebuyLimit = undefined;
+            pos.phase = 'done';
+            this.persistState();
+            this.finishIfFlat();
+            return;
+        }
+        pos.phase = 'buying';
+        pos.lastBuyAttemptAt = Date.now();
+        this.persistState();
+        const exchange = exchangeForTsym(tsym);
+        const chunks = splitIntoFreezeQtyChunks(pos.entryQuantity, exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY);
+        const orderIds: string[] = [];
+        let placedQty = 0;
+        let failure: any;
+        for (let i = 0; i < chunks.length; i++) {
+            if (i > 0) await sleep(1000); // order-rate spacing, same reason as the order process's chunk throttle
+            try {
+                const { orderId } = await OrderClient.getInstance().placeLimitBuyBare(this.userId, tsym, token, chunks[i], price, exchange, broker);
+                orderIds.push(orderId);
+                placedQty += chunks[i];
+            } catch (e) {
+                failure = e;
+                break;
+            }
+        }
+        if (orderIds.length === 0) {
+            const message = typeof failure?.message === 'string' ? failure.message : String(failure);
+            if (isNothingBought(failure)) {
+                this.onBuyNotFilled(pos, message);
+            } else {
+                pos.phase = 'error';
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${pos.right} re-buy limit placement outcome unconfirmed - an order may be LIVE, manual review required: ${message}`);
+            }
+            this.persistState();
+            this.finishIfFlat();
+            return;
+        }
+        if (failure) {
+            // Chunks 1..i are resting; the rest was not placed. The resting part is kept as the re-buy (smaller than asked).
+            Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${pos.right} re-buy limit placed only ${placedQty}/${pos.entryQuantity} (${orderIds.length}/${chunks.length} orders) - keeping the placed part: ${failure?.message ?? failure}`);
+        }
+        pos.buyAttempts = 0;
+        pos.rebuy = { orderIds, quantity: placedQty, filledQty: 0, filledValue: 0 };
+        pos.phase = 'resting';
+        Log.log(`[BulkPcrStrategy] [${broker}] ${tsym} re-buy limit resting: qty=${placedQty} @ ${price} (${orderIds.length} order(s))`);
+        this.persistState();
+        // The other side may have closed, or a stop / EOD may have started, while the orders were being placed.
+        const stillHedged = this.slotsOf(broker).some((p) => p !== pos && this.holdsOrIsBuying(p));
+        if (this.eodDone || this.mustClose(pos) || this.isBrokerStopped(broker) || !stillHedged) {
+            await this.settleRestingRebuy(pos);
+        }
+    }
+
+    // A buy fill for a resting re-buy (any chunk, possibly partial). Complete once the whole placed quantity has filled.
+    private async onRebuyFill(trade: Trade, pos: BrokerPosition): Promise<void> {
+        const rebuy = pos.rebuy;
+        if (pos.phase !== 'resting' || !rebuy || pos.cancellingRebuy || trade.tsym !== pos.rebuyLimit?.tsym) return;
+        rebuy.filledQty += trade.quantity;
+        rebuy.filledValue += trade.quantity * trade.price;
+        Log.log(`[BulkPcrStrategy] [${pos.broker}] Re-buy fill: ${trade.tsym} qty=${trade.quantity} @ ${trade.price} (bought ${rebuy.filledQty}/${rebuy.quantity})`);
+        this.persistState();
+        if (rebuy.filledQty < rebuy.quantity) return;
+        await this.completeRebuy(pos, rebuy.filledQty, rebuy.filledValue / rebuy.filledQty);
+    }
+
+    // The resting re-buy is now a held position of `quantity` at `avg`: rest its +N exit (or square it off if a stop / EOD started).
+    private async completeRebuy(pos: BrokerPosition, quantity: number, avg: number): Promise<void> {
+        const key = this.keyOf(pos);
+        pos.phase = 'buying'; // synchronous, before any await: a second fill notification finds the slot no longer resting
+        pos.entryAvg = avg;
+        pos.rebuy = undefined;
+        pos.rebuyLimit = undefined;
+        pos.buyAttempts = 0;
+        // Same refresh buyAndExit does before a market buy: the trailing hedge's target is half the other leg's current adverse move.
+        if (pos.hedge === true) pos.hedgeAdverse = this.oppositeAdverse(pos) || pos.hedgeAdverse;
+        Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} entry complete: ${pos.heldTsym} qty=${quantity} avg=${avg} (re-buy limit)`);
+        try {
+            await this.placeExitSell(key, quantity);
+        } catch (e) {
+            pos.phase = 'error';
+            Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: exit placement after the re-buy fill failed - position may be LIVE and UNPROTECTED, manual review required:`, e);
+        }
+        this.persistState();
+        this.finishIfFlat();
+    }
+
+    // Ends a resting re-buy: cancels its orders and keeps whatever filled. Called when the other side of the pair is no longer open
+    // (the rest would be a naked, unhedged buy), at EOD and on a stop. What is held afterwards is read back from the broker (a fill
+    // in the cancel window may not have been notified yet) and gets the normal +N exit; nothing held ends the side for the cycle.
+    private async settleRestingRebuy(pos: BrokerPosition): Promise<void> {
+        const rebuy = pos.rebuy;
+        if (pos.phase !== 'resting' || !rebuy || pos.cancellingRebuy) return;
+        const broker = pos.broker;
+        const tsym = pos.rebuyLimit?.tsym ?? pos.heldTsym!;
+        pos.cancellingRebuy = true;
+        let held = 0;
+        try {
+            let cancelResult: { filledQty: number; cancelFailed: boolean };
+            try {
+                cancelResult = await OrderClient.getInstance().cancelRestingLimitBuys(this.userId, { tradingSymbol: tsym, broker });
+            } catch (e) {
+                cancelResult = { filledQty: 0, cancelFailed: true };
+                Log.log(`[BulkPcrStrategy] [${broker}] re-buy cancel request failed for ${tsym}:`, e);
+            }
+            if (cancelResult.cancelFailed) {
+                // The resting order's state is unknown: it may still fill. Same treatment as a failed entry-remainder cancel.
+                pos.phase = 'error';
+                this.latchLiveRemainder(broker, `${tsym} resting re-buy`, rebuy.filledQty);
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: the resting re-buy of ${tsym} could not be cancelled - it may fill later; manual review required`);
+                this.persistState();
+                return;
+            }
+            let live = 0;
+            try {
+                live = await OrderClient.getInstance().getLiveQuantity(this.userId, broker, tsym);
+            } catch (e) {
+                Log.log(`[BulkPcrStrategy] [${broker}] could not read the live quantity of ${tsym} after the re-buy cancel - using the notified fills:`, e);
+            }
+            // Max, not sum: all three count the same fills, and the largest is the least likely to leave a held lot unprotected.
+            held = Math.min(rebuy.quantity, Math.max(live, rebuy.filledQty, cancelResult.filledQty));
+        } finally {
+            pos.cancellingRebuy = false;
+        }
+        if (held > 0) {
+            const avg = rebuy.filledQty > 0 ? rebuy.filledValue / rebuy.filledQty : pos.rebuyLimit!.price;
+            Log.log(`[BulkPcrStrategy] [${broker}] re-buy of ${tsym} cancelled with ${held}/${rebuy.quantity} filled - exiting what was bought`);
+            await this.completeRebuy(pos, held, avg);
+            return;
+        }
+        Log.log(`[BulkPcrStrategy] [${broker}] re-buy of ${tsym} cancelled unfilled - ${pos.right} stays out for this cycle`);
+        pos.rebuy = undefined;
+        pos.rebuyLimit = undefined;
+        pos.phase = 'done';
+        this.persistState();
+        this.finishIfFlat();
+    }
+
+    // Any resting re-buy whose broker has no open opposite side left is cancelled (a re-buy rests only to hedge a held position).
+    private sweepRestingRebuys(): void {
+        for (const pos of this.pairSlots()) {
+            if (pos.phase !== 'resting' || pos.cancellingRebuy) continue;
+            const hedged = this.slotsOf(pos.broker).some((p) => p !== pos && this.holdsOrIsBuying(p));
+            if (hedged && !this.eodDone && !this.isBrokerStopped(pos.broker) && !this.mustClose(pos)) continue;
+            this.settleRestingRebuy(pos).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] settling the resting re-buy failed:`, e));
+        }
     }
 
     // A buy provably filled nothing. A margin rejection is deterministic: the identical order can never succeed, so
@@ -1421,6 +1614,7 @@ export default class BulkPcrStrategy extends Strategy {
     private abandonBuy(pos: BrokerPosition, why: string): void {
         pos.phase = 'done';
         pos.abandoned = true;
+        pos.rebuyLimit = undefined;
         Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: ${pos.right} buy abandoned for this cycle - ${why}`);
     }
 
@@ -1455,8 +1649,11 @@ export default class BulkPcrStrategy extends Strategy {
         const tripped = this.tripIfBreached(pos.broker);
         if (isPairBroker(pos.broker) && !this.eodDone) {
             const sibling = this.slotsOf(pos.broker).find((p) => p.right !== pos.right);
-            if (sibling && (sibling.phase === 'selling' || sibling.phase === 'buying') && !this.isBrokerStopped(pos.broker)) {
-                Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} +2 filled while ${sibling.right} is still open - re-buying ${pos.right}`);
+            if (sibling && this.holdsOrIsBuying(sibling) && !this.isBrokerStopped(pos.broker)) {
+                // Re-buy the SAME contract with a limit at the price it just sold at (average exit price).
+                const soldAvg = pos.soldQty > 0 ? roundToTick(pos.soldValue / pos.soldQty) : 0;
+                if (pos.heldTsym && pos.heldToken && soldAvg > 0) pos.rebuyLimit = { tsym: pos.heldTsym, token: pos.heldToken, price: soldAvg };
+                Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} +2 filled while ${sibling.right} is still open - re-buying ${pos.right}${pos.rebuyLimit ? ` with a limit @ ${pos.rebuyLimit.price} (its sold price)` : ''}`);
                 this.buyAndExit(this.keyOf(pos)).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] re-buy failed:`, e));
             }
         }
@@ -1491,6 +1688,8 @@ export default class BulkPcrStrategy extends Strategy {
                 if (!this.mustClose(pos)) continue;
                 if (pos.squaringOff || this.placingKeys.has(key)) continue;
                 await this.eodSquareOff(pos);
+            } else if (pos.phase === 'resting') {
+                await this.settleRestingRebuy(pos); // cancels the resting re-buy; anything it filled is squared off by the stop
             } else if (pos.phase === 'pending') {
                 pos.phase = 'done'; // nothing held - the buy never filled
             } else if (pos.phase === 'error') {
@@ -1589,6 +1788,7 @@ export default class BulkPcrStrategy extends Strategy {
                 if (this.placingKeys.has(this.keyOf(pos))) continue;
                 await this.eodSquareOff(pos);
             }
+            else if (pos.phase === 'resting') await this.settleRestingRebuy(pos); // eodDone: anything it filled is squared off at once
             else if (pos.phase === 'pending') pos.phase = 'done'; // nothing held - the buy never filled
             else if (pos.phase === 'error') Log.log(`[BulkPcrStrategy] [${pos.broker}] EOD: ${pos.right} slot is in error - skipped, manual review required`);
         }
@@ -1603,12 +1803,13 @@ export default class BulkPcrStrategy extends Strategy {
             if (this.liveRemainder.has(b)) return false; // a remainder may still fill: the cycle is not over
             const slots = Array.from(this.positions.values()).filter((p) => p.broker === b);
             if (slots.length === 0) return false;
-            const anyActive = slots.some((p) => p.phase === 'selling' || p.phase === 'buying' || p.phase === 'error');
+            const anyActive = slots.some((p) => p.phase === 'selling' || p.phase === 'buying' || p.phase === 'resting' || p.phase === 'error');
             return !anyActive && slots.every((p) => p.phase === 'done' || p.phase === 'pending');
         });
     }
 
     private finishIfFlat(): void {
+        this.sweepRestingRebuys();
         if (this.allBrokersFinished()) this.durablyDisable('Cycle complete on every configured broker');
     }
 
@@ -1620,6 +1821,10 @@ export default class BulkPcrStrategy extends Strategy {
         const broker = trade.broker as BrokerName | undefined;
         if (!broker) return; // untagged fill - can't attribute to a position, ignore defensively
         const pos = this.slotFor(broker, trade.tsym);
+        if (pos && pos.phase === 'resting' && trade.action === 'Buy') {
+            await this.onRebuyFill(trade, pos);
+            return;
+        }
         if (!pos || pos.phase !== 'selling' || pos.squaringOff) return;
         if (trade.action !== 'Sell' || trade.tsym !== pos.heldTsym) return;
 
@@ -1862,6 +2067,24 @@ export default class BulkPcrStrategy extends Strategy {
             if (persistedPos && (persistedPos.phase === 'done' || persistedPos.phase === 'pending')) {
                 this.positions.set(key, { ...persistedPos });
                 anyRestored = true;
+                continue;
+            }
+
+            if (persistedPos?.phase === 'resting') {
+                // A re-buy limit was resting at the broker when this process last stopped. Its hedge state (the other side) is
+                // not known yet and a stale DAY order must not linger, so cancel it and keep whatever it filled (read back from
+                // the broker), which then gets its normal exit.
+                const pos: BrokerPosition = { ...persistedPos };
+                this.positions.set(key, pos);
+                anyRestored = true;
+                if (pos.rebuy && pos.heldTsym) {
+                    Log.log(`[BulkPcrStrategy] [${broker}] reconcile: a re-buy limit for ${pos.heldTsym} was resting (${pos.rebuy.filledQty}/${pos.rebuy.quantity} filled) - cancelling it and keeping what filled`);
+                    await this.settleRestingRebuy(pos);
+                } else {
+                    pos.phase = 'error';
+                    Log.log(`[BulkPcrStrategy] [${broker}] ALERT: reconcile: persisted 'resting' re-buy has no order record - manual review required`);
+                    this.persistState();
+                }
                 continue;
             }
 

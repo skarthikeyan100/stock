@@ -194,6 +194,18 @@ there are never more than two open trades, one per direction. Buys use
 nothing becomes `'pending'` and is retried off the active side's ticks
 (`retryPendingRebuys`, throttled). An ambiguous or partial buy becomes `'error'`
 (manual review). The cycle ends when no side is active (`allBrokersFinished`).
+**Re-buy is a resting limit, not a market buy**: a re-buy after a +2 fill (not the
+first buy, not the hedge-opening buy) is a limit buy of the *same contract* at its
+average sold price (`rebuyLimit`, set in `onSlotSoldOut`), split into freeze-quantity
+chunks via `placeLimitBuyBare` (`placeRestingRebuy`). The slot sits in phase
+`'resting'` (holds nothing, counts as active for the cycle but not as a hedge for
+the other side). Fills arrive through `updateTrade` (`onRebuyFill`); once the whole
+quantity fills, `completeRebuy` rests the normal +N exit. It rests until it fills, or
+the other side is no longer open / the broker is stopped / EOD - then
+`settleRestingRebuy` cancels it (`cancelRestingLimitBuys`), reads back what filled from
+the broker and exits that part (nothing filled = the side stays out for the cycle).
+`sweepRestingRebuys` (run from `finishIfFlat`) triggers that. `reconcile()` settles a
+persisted `'resting'` slot the same way on restart.
 **EOD (15:15)**: `eodCloseAnt` pulls each open ANT slot's resting sells
 (`cancelRestingLimitSells`) and squares off the remainder (`chunkedSquareOff`).
 Nothing re-buys after EOD (`eodDone`).

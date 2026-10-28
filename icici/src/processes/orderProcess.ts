@@ -401,7 +401,9 @@ async function withUserGate<T>(user: string, fn: () => Promise<T>): Promise<T> {
 // BulkPcrStrategy's hedge hand-off (cancelRestingLimitSells's caller) must
 // NOT adopt the root leg on a failed cancel - see BulkPcrStrategy.ts's
 // handOff.
-async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: string, tsym: string): Promise<{ filledQty: number; cancelFailed: boolean }> {
+// `action` selects which side's resting orders are cancelled; every force-close caller wants the default 'Sell', BulkPcrStrategy's
+// resting re-buy cancel passes 'Buy' (the filledQty then is the quantity BOUGHT in the cancel window).
+async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: string, tsym: string, action: 'Sell' | 'Buy' = 'Sell'): Promise<{ filledQty: number; cancelFailed: boolean }> {
     // Looks at ONLY this executor's broker's pending orders, not all four merged
     // together - BulkPcrAutoStartStrategy can now hold simultaneous
     // ant+prism positions on the identical tsym (both Noren/Omnesys-family
@@ -412,7 +414,7 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
     // symbol at once - a foreign order id sent to the wrong broker's cancel
     // API, silently relying on that broker's API to reject it rather than on
     // correct routing.
-    const pending = executor.findPendingOrders(userId, tsym).filter((o) => o.action === 'Sell');
+    const pending = executor.findPendingOrders(userId, tsym).filter((o) => o.action === action);
     let filledQty = 0;
     let cancelFailed = false;
     for (const order of pending) {
@@ -784,6 +786,13 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'cancelRestingLimitSells': {
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
                 const result = await cancelAnyRestingLimitSell(executor, req.userId, payloadTradingSymbol(req.payload));
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            // Buy-side counterpart (BulkPcrStrategy's resting re-buy): cancels every resting limit BUY for this tsym on this broker.
+            case 'cancelRestingLimitBuys': {
+                const executor = getBrokerExecutor(req.userId, req.payload.broker);
+                const result = await cancelAnyRestingLimitSell(executor, req.userId, payloadTradingSymbol(req.payload), 'Buy');
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 

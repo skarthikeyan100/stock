@@ -280,6 +280,11 @@ class OrderClient {
         return this.call('cancelRestingLimitSells', userId, payload);
     }
 
+    // Buy-side counterpart: filledQty is the quantity bought in the cancel window (orders found already filled at the recheck).
+    async cancelRestingLimitBuys(userId: string, payload: { tradingSymbol: string; broker: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<{ filledQty: number; cancelFailed: boolean }> {
+        return this.call('cancelRestingLimitBuys', userId, payload);
+    }
+
     // ButterflyStrategy's narrow sell-to-open exception ONLY - see Kite.ts's
     // NEVER-SHORT GUARD comment. Deliberately NOT a generic "sell" method - do not call
     // this from any other strategy.

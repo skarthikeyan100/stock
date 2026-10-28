@@ -86,6 +86,7 @@ export type OrderRequestType =
     // (buyContractBare/sellContractBare/placeLimitBuyBare/cancelOrderBare/getContractByPriceRangeBare)
     // takes an optional explicit `broker` in its payload: antLegOps.ts passes 'ant' for the ANT hedge/refill legs.
     | 'cancelRestingLimitSells'
+    | 'cancelRestingLimitBuys'
     // ButterflyStrategy's narrow sell-to-open/buy-to-close exception (see
     // Kite.ts's NEVER-SHORT GUARD comment and bookkeeping.recordShortFill) -
     // dispatches per-broker in orderProcess.ts. 'resolveOptionContract' is a
