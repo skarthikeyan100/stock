@@ -1463,23 +1463,23 @@ app.get('/openTrades', requireAdmin, async function (req: express.Request, res) 
 });
 
 // Per-strategy realized (closed trades) and unrealized (open positions) P&L for the current `order` session,
-// used by the monitor-strategies skill's "status" report. Optional ?match=<regex> filters on Trade.strategy.
+// used by the monitor-strategies skill's "status" report. Optional ?match=<regex> filters on Trade.strategy, falling back to Trade.user (bare broker orders carry no strategy).
 app.get('/strategyPnl', requireAdmin, async function (req: express.Request, res) {
     try {
         const stats = await orderClient.stats();
         const re = req.query.match ? new RegExp(String(req.query.match), 'i') : null;
         const rows = new Map<string, { strategy: string; realized: number; unrealized: number; open: number; closed: number }>();
         const row = (t: Trade) => {
-            const key = t.strategy || '(none)';
+            const key = t.strategy || t.user || '(none)';
             if (!rows.has(key)) rows.set(key, { strategy: key, realized: 0, unrealized: 0, open: 0, closed: 0 });
             return rows.get(key)!;
         };
         for (const t of stats.closedTrades as Trade[]) {
-            if (re && !re.test(t.strategy || '')) continue;
+            if (re && !re.test(t.strategy || t.user || '')) continue;
             const r = row(t); r.closed++; r.realized += Number(t.realizedPnL) || 0;
         }
         for (const t of stats.trades as Trade[]) {
-            if (re && !re.test(t.strategy || '')) continue;
+            if (re && !re.test(t.strategy || t.user || '')) continue;
             const r = row(t); r.open++; r.unrealized += Number(t.unrealizedPnL) || 0;
             r.realized += Number(t.realizedPnL) || 0; // partial exits on a still-open trade
         }
