@@ -76,20 +76,15 @@ export type OrderRequestType =
     // 'antPlaceLimitSellBare' right after.
     | 'antBuyTargetOnly'
     | 'antPlaceLimitSellBare'
-    // Resting limit BUY on ANT (ContinuousStrategy's refill) - 'placeLimitBuyBare' refuses ANT users.
     // Broker-parameterized counterpart of 'antPlaceLimitSellBare' - same
     // plain resting-limit-sell-only shape, dispatched by an explicit
     // `broker` field (kite/breeze/ant) instead of being ANT-only, so
     // TopStockOptionsOpeningGapStrategy's kite/breeze legs can place
     // their own target-only resting sell too.
     | 'brokerPlaceLimitSellBare'
-    // ANT bare ops for BulkPcrStrategy's hedge tree (LegManager via
-    // antLegOps.ts) - see orderProcess.ts's case comments for why these are
-    // ANT-specific rather than routed through the broker-generic 'Bare'
-    // family above (BulkPcr trades the hedge tree on ANT only, and ANT has
-    // no contract-by-price-range lookup of its own).
-    // Broker-dispatched (see orderProcess.ts's case comment) - not ANT-specific like
-    // the antXBare family above despite living in the same block.
+    // Broker-dispatched (see orderProcess.ts's case comment). The generic 'Bare' family above
+    // (buyContractBare/sellContractBare/placeLimitBuyBare/cancelOrderBare/getContractByPriceRangeBare)
+    // takes an optional explicit `broker` in its payload: antLegOps.ts passes 'ant' for the ANT hedge/refill legs.
     | 'cancelRestingLimitSells'
     // ButterflyStrategy's narrow sell-to-open/buy-to-close exception (see
     // Kite.ts's NEVER-SHORT GUARD comment and bookkeeping.recordShortFill) -

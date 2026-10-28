@@ -194,6 +194,7 @@ function resolveRequestBroker(req: OrderRequest): string {
         case 'chunkedBuyIndex':
         case 'butterflyBuyLeg':
         case 'butterflySellToOpen':
+            return normalizeBrokerName(req.payload?.broker) || bookkeeping.getUserBroker(req.userId);
         // The generic Bare family: an explicit payload broker (a strategy running legs on a broker other than the user's default, e.g.
         // an ANT tree) wins, otherwise the user's own broker.
         case 'buyContractBare':
@@ -201,7 +202,7 @@ function resolveRequestBroker(req: OrderRequest): string {
         case 'placeLimitBuyBare':
         case 'cancelOrderBare':
         case 'getContractByPriceRangeBare':
-            return req.payload?.broker ?? bookkeeping.getUserBroker(req.userId);
+            return normalizeBrokerName(req.payload?.broker) || bookkeeping.getUserBroker(req.userId);
         default:
             return bookkeeping.getUserBroker(req.userId);
     }
@@ -741,10 +742,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
-            // ANT-specific bare ops for BulkPcrStrategy's hedge tree (LegManager via
-            // antLegOps.ts) - BulkPcr trades on ANT, so the Kite/Breeze-only
-            // getContractByPriceRangeBare/buyContractBare/etc 'Bare' family above can't
-            // be reused for it (see antLegOps.ts's header comment).
             // Cancels any resting limit sell(s) for this tsym ahead of a hand-off to
             // the hedge tree (BulkPcrStrategy, ANT-only) or a plain invalidation-close
             // (HourlyStrategy, kite/ant/breeze) - same closure the drawdown-breach/

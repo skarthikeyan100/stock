@@ -383,8 +383,8 @@ class OrderClient {
         return this.call('buyContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price, broker });
     }
 
-    async sellContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<any> {
-        return this.call('sellContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange });
+    async sellContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', broker?: BrokerName): Promise<any> {
+        return this.call('sellContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, broker });
     }
 
     // Returns immediately with {orderId} - the fill arrives later as a normal
@@ -399,8 +399,8 @@ class OrderClient {
         if (!res.ok) throw new Error(res.error);
     }
 
-    async getContractByPriceRangeBare(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, index: 'NIFTY' | 'SENSEX' = 'NIFTY', excludeStrikes: number[] = []): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
-        return this.call('getContractByPriceRangeBare', userId, { underlyingLtp, optionType, minPremium, index, excludeStrikes });
+    async getContractByPriceRangeBare(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, index: 'NIFTY' | 'SENSEX' = 'NIFTY', excludeStrikes: number[] = [], broker?: BrokerName): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
+        return this.call('getContractByPriceRangeBare', userId, { underlyingLtp, optionType, minPremium, index, excludeStrikes, broker });
     }
 
     async getPCR(userId: string, underlying: string, spot: number, window: number): Promise<number> {

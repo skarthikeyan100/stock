@@ -6,12 +6,9 @@ import { LegBrokerOps } from './LegBrokerOps';
 import { HEDGE_UNCONFIRMED_TAG } from '../ipc/orderProtocol';
 
 // LegBrokerOps implementation LegManager uses for an instance that trades on ANT (ContinuousStrategy with `broker: ant`;
-// BulkPcrStrategy's old hedge tree used it before the pair rewrite). Used instead of the Kite/Breeze 'Bare' IPC family
-// (OrderClient.getContractByPriceRangeBare/buyContractBare/etc) because:
-//  - BulkPcrStrategy trades on ANT, and those IPCs route via
-//    bookkeeping.getUserBroker(userId), which only ever resolves Zerodha/Breeze.
-//  - ANT has no contract-by-price-range lookup of its own - the Zerodha/Breeze
-//    getContractByPriceRangeBare path would pick the wrong instrument entirely.
+// BulkPcrStrategy's old hedge tree used it before the pair rewrite). Orders go through the generic 'Bare' IPC family with an explicit
+// `broker: 'ant'` (the default ops route by the user's configured broker instead). The contract pick is ANT's own: ANT has no
+// contract-by-price-range lookup, so the strike is chosen here from its option chain.
 const NIFTY_STRIKE_STEP = 50;
 
 interface ChainSide { ltp: number; token: number | string }

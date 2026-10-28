@@ -23,6 +23,8 @@ These are the three tasks from `REVIEW_FINDINGS.md` that are still open after th
 
 **Done already:** `squareOffLimit` is required and returns the placed quantity; the never-short guard and resting-sell cancel are shared helpers used by ANT, Breeze and Prism; `getLiveQuantity` is an order-process IPC; `exchangeForTsym/exchangeForIndex` replace ~20 inline rules; broker-prefixed in-flight keys.
 
+**Status (2026-10-28):** steps 1-3, 4 (BrokerClient for login/callback/reads, exchange on cancel, Breeze side map removed), 5 (shared cancel-on-timeout tail) and 7 (server BROKERS registry) are done; step 6 is done for the generic Bare family (the ANT-only duplicates are removed; the generic requests take an explicit `broker`). Still ANT-specific on purpose: `antBuyTargetOnly`, `antPlaceLimitSellBare` (they carry ANT-only fields: underlyingOpen/marketProtection, product) and `antPlaceCoverOrder`.
+
 **Steps**
 1. Extend `BrokerExecutor` with the missing operations: `enterShort`, `buyToClose`, `marketBuy`, `marketSell`, `placeLimitBuy`, `resolveContract`, `getContractByPriceRange`, `findPendingOrders`, plus `capabilities: { enterShort: boolean, ... }` so an unsupported operation is a flag, not a throw in one branch.
 2. Move the `BreezeExecutor` object next to the other three (`brokerExecutors.ts`); make `getBrokerExecutor` throw on an unknown broker name instead of falling back to Kite.
