@@ -718,6 +718,8 @@ export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: strin
     const { bestAsk } = await getOptionQuote(contract);
     Log.log(`[order] Bare Breeze limit buy (at best ask) ${tradingSymbol} qty=${quantity} @ ${bestAsk} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, bestAsk);
+    // Tracked from placement until the fill is booked - same restart-window reasoning as marketBuyBareOnKite.
+    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange: contract.exchange, action: 'Buy' });
     const entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, { tsym: tradingSymbol, token: antToken, action: 'Buy', user: userId }, (t) => bookkeeping.recordFill(t));
 
     const trade = new Trade();
@@ -732,6 +734,7 @@ export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: strin
     trade.broker = 'breeze';
     trade.brokerOrderId = orderId;
     await bookkeeping.recordFill(trade);
+    untrackPendingBreezeLimitOrder(orderId);
     return trade;
 }
 

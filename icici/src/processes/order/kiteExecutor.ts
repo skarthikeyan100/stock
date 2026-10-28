@@ -560,11 +560,17 @@ export async function marketBuyBareOnKite(userId: string, tradingSymbol: string,
     // getMarketableKitePrice needs to query ANT for a live quote.
     const buyPrice = await getMarketableKitePrice(instrumentToken, exchange, 'BUY');
     const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
+    // Tracked (persisted, owner-ledgered) from placement until its fill is booked: this call waits for the fill in-process, so an
+    // order-process restart in that window used to lose the fill - a real broker position with no Buy doc, which reconcile can only
+    // leave untracked (2026-10-28 10:06, NIFTY26N0322550PE). The pending poller books it after a restart; recordFill dedupes on
+    // brokerOrderId, so it is booked once whichever side gets there first. Left tracked if the wait throws: the poller resolves it.
+    trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity, exchange, action: 'Buy' });
     const mk = (qty: number, price: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: instrumentToken, action: 'Buy', userId: userId, orderId: orderId }, qty, price);
     const entryPrice = await getFillBookingPartial(kite, orderId, mk, (t) => bookkeeping.recordFill(t));
     const trade = mk(quantity, entryPrice);
 
     await bookkeeping.recordFill(trade);
+    untrackPendingLimitOrder(orderId);
     return trade;
 }
 
