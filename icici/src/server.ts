@@ -1480,7 +1480,10 @@ app.get('/strategyPnl', requireAdmin, async function (req: express.Request, res)
         }
         for (const t of stats.trades as Trade[]) {
             if (re && !re.test(t.strategy || t.user || '')) continue;
-            const r = row(t); r.open++; r.unrealized += Number(t.unrealizedPnL) || 0;
+            // The order process never fills Trade.unrealizedPnL (only the legacy in-process Monitor does), so
+            // mark open trades to market from lastTradePrice, which exitMonitor keeps live.
+            const mark = (Number(t.lastTradePrice) - Number(t.price)) * Number(t.quantity);
+            const r = row(t); r.open++; r.unrealized += Number(t.unrealizedPnL) || (Number.isFinite(mark) ? mark : 0);
             r.realized += Number(t.realizedPnL) || 0; // partial exits on a still-open trade
         }
         res.json([...rows.values()].map((r) => ({ ...r, realized: +r.realized.toFixed(2), unrealized: +r.unrealized.toFixed(2) })));
