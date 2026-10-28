@@ -248,7 +248,7 @@ async function cancelAndRecheck(params: {
 export interface BuyRequest {
     userId: string;
     tradingSymbol: string;
-    instrumentId: string; // broker-specific contract id (ANT token / Kite instrument_token / Prism token) - already resolved by the caller, opaque here
+    brokerToken: string; // broker-specific contract id (ANT token / Kite instrument_token / Prism token) - already resolved by the caller, opaque here
     quantity: number;
     exchange: Exchange;
     // Optional protection - when both are set, the implementation protects the

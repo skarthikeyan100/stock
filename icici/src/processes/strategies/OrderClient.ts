@@ -209,7 +209,7 @@ class OrderClient {
         return this.call('breezeBuyIndex', userId, payload);
     }
 
-    async breezeSquareOff(userId: string, payload: { tsym: string; quantity: number }): Promise<any> {
+    async breezeSquareOff(userId: string, payload: { tradingSymbol: string; quantity: number }): Promise<any> {
         return this.call('breezeSquareOff', userId, payload);
     }
 
@@ -241,7 +241,7 @@ class OrderClient {
         return this.call('chunkedBuyIndex', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 
-    async chunkedSquareOff(userId: string, payload: { tsym: string; quantity: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<any> {
+    async chunkedSquareOff(userId: string, payload: { tradingSymbol: string; quantity: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<any> {
         return this.call('chunkedSquareOff', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 
@@ -250,7 +250,7 @@ class OrderClient {
     // squareOffLimitChunked). Reuses the same generous chunked timeout since
     // placement is still up to 8 sequential broker calls, even though it
     // shouldn't normally take anywhere near as long as a fill-waiting call.
-    async chunkedSquareOffLimit(userId: string, payload: { tsym: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<any> {
+    async chunkedSquareOffLimit(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<any> {
         return this.call('chunkedSquareOffLimit', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 
@@ -276,7 +276,7 @@ class OrderClient {
     }
 
 
-    async cancelRestingLimitSells(userId: string, payload: { tsym: string; broker: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<{ filledQty: number; cancelFailed: boolean }> {
+    async cancelRestingLimitSells(userId: string, payload: { tradingSymbol: string; broker: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<{ filledQty: number; cancelFailed: boolean }> {
         return this.call('cancelRestingLimitSells', userId, payload);
     }
 

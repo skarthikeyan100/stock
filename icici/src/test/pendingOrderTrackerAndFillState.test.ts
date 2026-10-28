@@ -127,7 +127,7 @@ async function main() {
             call++;
             if (call === 1) return filled(q);
             throw Object.assign(new Error('drift'), { driftCancelled: true, filledQuantity: 10, averagePrice: 101, orderMayBeLive: true });
-        }), { userId: 'U1', tradingSymbol: 'T', instrumentId: 'I', quantity: 200, exchange: 'NFO' } as any, 100);
+        }), { userId: 'U1', tradingSymbol: 'T', brokerToken: 'I', quantity: 200, exchange: 'NFO' } as any, 100);
         assert(live.quantity === 110 && live.orderMayBeLive === true, 'booked 100 + 10 returned, flagged orderMayBeLive');
 
         let threw: any;
@@ -137,13 +137,13 @@ async function main() {
                 call++;
                 if (call === 1) return filled(q);
                 throw fillStateUnknownError('chunk 2', true);
-            }), { userId: 'U1', tradingSymbol: 'T', instrumentId: 'I', quantity: 200, exchange: 'NFO' } as any, 100);
+            }), { userId: 'U1', tradingSymbol: 'T', brokerToken: 'I', quantity: 200, exchange: 'NFO' } as any, 100);
         } catch (e) { threw = e; }
         assert(!!threw && threw.fillStateUnknown === true && threw.orderMayBeLive === true && threw.filledQuantity === 100, 'unknown fill state thrown with flags and the 100 already booked');
 
         let refused: any;
         try {
-            await buyChunked(exec(async () => { throw markNotPlaced(new Error('margin')); }), { userId: 'U1', tradingSymbol: 'T', instrumentId: 'I', quantity: 100, exchange: 'NFO' } as any, 100);
+            await buyChunked(exec(async () => { throw markNotPlaced(new Error('margin')); }), { userId: 'U1', tradingSymbol: 'T', brokerToken: 'I', quantity: 100, exchange: 'NFO' } as any, 100);
         } catch (e) { refused = e; }
         assert(!!refused && isNotPlaced(refused), 'a clean refusal of the first chunk stays "not placed"');
     }

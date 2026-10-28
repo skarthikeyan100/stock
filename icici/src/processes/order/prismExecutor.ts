@@ -228,7 +228,7 @@ async function waitForPrismBuyFill(orderId: string, tradingSymbol: string, userI
 }
 
 export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
-    const { userId, tradingSymbol, instrumentId, quantity, stopLossPoints, exchange } = request;
+    const { userId, tradingSymbol, brokerToken: instrumentId, quantity, stopLossPoints, exchange } = request;
     if (stopLossPoints && stopLossPoints > 0) {
         Log.log(`[order] Buying (Prism) ${tradingSymbol} qty=${quantity} for ${userId} via cover order (sl=${stopLossPoints})`);
         const response = await Prism.getInstance().placeCoverOrder(tradingSymbol, quantity, stopLossPoints);

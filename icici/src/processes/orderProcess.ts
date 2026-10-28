@@ -182,6 +182,12 @@ async function connectBreezeOrderNotifyIfSessionValid(context: string): Promise<
 // Every other (single-implicit-broker-per-user) type falls back to
 // bookkeeping.getUserBroker(userId), identical to how its own handler
 // resolves which broker to actually call.
+// The IPC payload names the contract `tradingSymbol`; `tsym` (the old wire name, and still what /order/squareoff?tsym= and a strategies
+// process started before a hot restart send) is accepted too.
+function payloadTradingSymbol(payload: any): string {
+    return payload.tradingSymbol ?? payload.tsym;
+}
+
 function resolveRequestBroker(req: OrderRequest): string {
     switch (req.type) {
         case 'antPlaceCoverOrder':
@@ -588,7 +594,8 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // mid-reconcile could miss or mis-size the trade it's trying
                 // to close.
                 await waitForReconcile();
-                const { tsym, quantity, exchange, token } = req.payload;
+                const { quantity, exchange, token } = req.payload;
+                const tsym = req.payload.tradingSymbol ?? req.payload.tsym;
                 if (!tsym && token) {
                     const byToken = await squareOffByToken(req.userId, token, quantity, exchange);
                     if ('error' in byToken) return { kind: 'response', id: req.id, ok: false, error: byToken.error };
@@ -614,7 +621,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // risk as 'squareOff'/'antSquareOff': squareOffOnBreeze
                 // resolves the position from bookkeeping.trades too.
                 if (reconcileInFlight) await reconcileInFlight;
-                const trade = await squareOffOnBreeze(req.userId, req.payload.tsym, req.payload.quantity);
+                const trade = await squareOffOnBreeze(req.userId, payloadTradingSymbol(req.payload), req.payload.quantity);
                 return { kind: 'response', id: req.id, ok: true, result: trade };
             }
 
@@ -636,7 +643,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                         {
                             userId: req.userId,
                             tradingSymbol: contract.tradingSymbol,
-                            instrumentId: contract.orderToken,
+                            brokerToken: contract.orderToken,
                             quantity,
                             exchange: contract.exchange,
                             driftCancelPoints: contract.supportsDriftCancel ? req.payload.driftCancelPoints : undefined,
@@ -657,7 +664,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 // review purely because reconcile hadn't finished yet.
                 if (reconcileInFlight) await reconcileInFlight;
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
-                const result = await squareOffChunked(executor, req.userId, req.payload.tsym, req.payload.quantity, exchangeForTsym(req.payload.tsym), req.payload.freezeQuantity);
+                const result = await squareOffChunked(executor, req.userId, payloadTradingSymbol(req.payload), req.payload.quantity, exchangeForTsym(payloadTradingSymbol(req.payload)), req.payload.freezeQuantity);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -669,10 +676,10 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 const result = await squareOffLimitChunked(
                     executor,
                     req.userId,
-                    req.payload.tsym,
+                    payloadTradingSymbol(req.payload),
                     req.payload.instrumentId,
                     req.payload.quantity,
-                    exchangeForTsym(req.payload.tsym),
+                    exchangeForTsym(payloadTradingSymbol(req.payload)),
                     req.payload.price,
                     req.payload.freezeQuantity
                 );
@@ -752,7 +759,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // market force-close double-sell.
             case 'cancelRestingLimitSells': {
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
-                const result = await cancelAnyRestingLimitSell(executor, req.userId, req.payload.tsym);
+                const result = await cancelAnyRestingLimitSell(executor, req.userId, payloadTradingSymbol(req.payload));
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 

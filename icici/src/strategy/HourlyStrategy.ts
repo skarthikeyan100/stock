@@ -468,7 +468,7 @@ export default class HourlyStrategy extends Strategy {
 
         try {
             await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
-                tsym: pos.heldTsym, instrumentId: pos.heldToken, quantity, price: targetPrice, broker,
+                tradingSymbol: pos.heldTsym, instrumentId: pos.heldToken, quantity, price: targetPrice, broker,
             });
             Log.log(`[Hourly] [${broker}] Resting limit sell placed for ${pos.heldTsym} qty=${quantity} @ ${targetPrice}`);
         } catch (e) {
@@ -508,7 +508,7 @@ export default class HourlyStrategy extends Strategy {
         const broker = pos.broker;
         let cancelResult: { filledQty: number; cancelFailed: boolean };
         try {
-            cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym, broker });
+            cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: tsym, broker });
         } catch (e) {
             cancelResult = { filledQty: 0, cancelFailed: true };
             Log.log(`[Hourly] [${broker}] Invalidation cancel request failed for ${tsym}:`, e);
@@ -537,7 +537,7 @@ export default class HourlyStrategy extends Strategy {
         const remaining = pos.targetQuantity - pos.soldQty;
         try {
             if (remaining > 0) {
-                const result = await OrderClient.getInstance().chunkedSquareOff(this.userId, { tsym, quantity: remaining, broker: broker as 'kite' | 'ant' | 'breeze' });
+                const result = await OrderClient.getInstance().chunkedSquareOff(this.userId, { tradingSymbol: tsym, quantity: remaining, broker: broker as 'kite' | 'ant' | 'breeze' });
                 pos.soldQty += remaining;
                 pos.soldValue += remaining * (result?.avgPrice ?? targetPrice);
             }

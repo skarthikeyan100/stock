@@ -475,17 +475,17 @@ export async function buyResolvedOnKite(request: BuyRequest): Promise<Trade> {
     const exchange = request.exchange as 'NFO' | 'BFO';
     Log.log(`[order] Buying ${request.tradingSymbol} qty=${request.quantity} for ${request.userId} (BrokerExecutor.buy)`);
     // ANT.getQuote's own TTL cache means a chunked buy (buyChunked calling
-    // this once per chunk, same request.instrumentId every time) naturally
+    // this once per chunk, same request.brokerToken every time) naturally
     // reuses one ANT quote fetch across the whole chunk batch instead of one
     // per chunk.
-    const buyPrice = await getMarketableKitePrice(request.instrumentId, exchange, 'BUY');
+    const buyPrice = await getMarketableKitePrice(request.brokerToken, exchange, 'BUY');
     // Shared by the full-fill path below and the partial-fill-on-drift-cancel
     // path in the catch block - both build an identical Trade shape, differing
     // only in quantity/price.
     const buildTrade = (quantity: number, price: number, orderId: string): Trade => {
         const trade = new Trade();
         trade.tsym = request.tradingSymbol;
-        trade.token = request.instrumentId;
+        trade.token = request.brokerToken;
         trade.quantity = quantity;
         trade.price = price;
         trade.lastTradePrice = price;
@@ -512,7 +512,7 @@ export async function buyResolvedOnKite(request: BuyRequest): Promise<Trade> {
                       // poll, not ANT.getQuote's own cached snapshot (see its
                       // comment); otherwise this could compare the resting
                       // limit price against the exact same quote that set it.
-                      getLtp: () => ANT.getInstance().getQuote(exchange, request.instrumentId, { skipCache: true }),
+                      getLtp: () => ANT.getInstance().getQuote(exchange, request.brokerToken, { skipCache: true }),
                   }
                 : undefined
         );

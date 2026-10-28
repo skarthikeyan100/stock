@@ -1229,7 +1229,7 @@ getOrPost('/breeze/order/squareoff', requireAdmin, async function (req, res) {
     try {
         const { tsym, qty, user: userOverride } = req.query;
         const user = (userOverride as string) || resolveUser(req);
-        const result = await orderClient.breezeSquareOff(user, { tsym: tsym as string, quantity: Number(qty) });
+        const result = await orderClient.breezeSquareOff(user, { tradingSymbol: tsym as string, quantity: Number(qty) });
         res.json(result);
     } catch (e: any) {
         Log.log(e);

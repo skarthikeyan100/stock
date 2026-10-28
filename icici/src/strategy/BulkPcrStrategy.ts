@@ -1018,7 +1018,7 @@ export default class BulkPcrStrategy extends Strategy {
             // filled; completion is handled in updateTrade below as fills
             // arrive asynchronously.
             await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
-                tsym: pos.heldTsym!,
+                tradingSymbol: pos.heldTsym!,
                 instrumentId: pos.heldToken!,
                 quantity,
                 price: targetPrice,
@@ -1089,7 +1089,7 @@ export default class BulkPcrStrategy extends Strategy {
         this.persistState();
         try {
             await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
-                tsym: pos.heldTsym!, instrumentId: pos.heldToken!, quantity: remaining, price, broker: pos.broker,
+                tradingSymbol: pos.heldTsym!, instrumentId: pos.heldToken!, quantity: remaining, price, broker: pos.broker,
             });
         } catch (e) {
             Log.log(`[BulkPcrStrategy] [${pos.broker}] Trail limit-sell placement failed - manual review required:`, e);
@@ -1137,7 +1137,7 @@ export default class BulkPcrStrategy extends Strategy {
         try {
             let cancelResult: { filledQty: number; cancelFailed: boolean };
             try {
-                cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym, broker });
+                cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: tsym, broker });
             } catch (e) {
                 cancelResult = { filledQty: 0, cancelFailed: true };
                 Log.log(`[BulkPcrStrategy] [${broker}] trail re-price cancel request failed for ${tsym}:`, e);
@@ -1163,7 +1163,7 @@ export default class BulkPcrStrategy extends Strategy {
                 this.persistState();
                 try {
                     await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
-                        tsym, instrumentId: pos.heldToken!, quantity: remaining, price, broker,
+                        tradingSymbol: tsym, instrumentId: pos.heldToken!, quantity: remaining, price, broker,
                     });
                 } catch (e) {
                     Log.log(`[BulkPcrStrategy] [${broker}] Trail re-price placement failed - manual review required:`, e);
@@ -1515,7 +1515,7 @@ export default class BulkPcrStrategy extends Strategy {
         try {
             let cancelResult: { filledQty: number; cancelFailed: boolean };
             try {
-                cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tsym, broker });
+                cancelResult = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: tsym, broker });
             } catch (e) {
                 cancelResult = { filledQty: 0, cancelFailed: true };
                 Log.log(`[BulkPcrStrategy] [${broker}] EOD cancel request failed for ${tsym}:`, e);
@@ -1550,7 +1550,7 @@ export default class BulkPcrStrategy extends Strategy {
                         throw new Error(`EOD square-off: broker '${broker}' does not run a pair`);
                     }
                     // Chunked for every broker: one order above the exchange freeze quantity is rejected outright.
-                    const res = await OrderClient.getInstance().chunkedSquareOff(this.userId, { tsym, quantity: remaining, broker });
+                    const res = await OrderClient.getInstance().chunkedSquareOff(this.userId, { tradingSymbol: tsym, quantity: remaining, broker });
                     if (Number(res?.quantity ?? remaining) < remaining) {
                         throw new Error(`only ${res.quantity}/${remaining} confirmed sold (rest unconfirmed, still being re-priced)`);
                     }

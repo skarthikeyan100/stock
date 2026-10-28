@@ -69,7 +69,7 @@ export const AntExecutor: BrokerExecutor = {
 
     buy: (request: BuyRequest): Promise<Trade> =>
         antExecutor.enterPosition(
-            request.userId, request.tradingSymbol, request.instrumentId, request.quantity, request.exchange as Exch,
+            request.userId, request.tradingSymbol, request.brokerToken, request.quantity, request.exchange as Exch,
             request.targetPoints ?? 0, request.stopLossPoints ?? 0,
         ),
 

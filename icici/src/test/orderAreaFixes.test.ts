@@ -65,7 +65,7 @@ async function main() {
         squareOff: async (_u: string, _s: string, q: number) => { if (++n > 1) throw new Error('boom'); const t = new Trade(); t.quantity = q; t.price = 50; return t; },
     };
     try {
-        await buyChunked(exec, { userId: 'x', tradingSymbol: 'NIFTY1', instrumentId: '1', quantity: 3000, exchange: 'NFO' }, 1000);
+        await buyChunked(exec, { userId: 'x', tradingSymbol: 'NIFTY1', brokerToken: '1', quantity: 3000, exchange: 'NFO' }, 1000);
         assert(false, 'buyChunked should throw');
     } catch (e: any) {
         assert(e.filledQuantity === 1000 && e.averagePrice === 50 && e.partial === true, 'buyChunked error carries filledQuantity/averagePrice');

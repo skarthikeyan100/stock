@@ -663,9 +663,9 @@ export async function buyResolvedOnBreeze(request: BuyRequest): Promise<Trade> {
     if (!(await breeze.hasValidSession())) {
         throw new Error('Breeze session not active - complete /breeze/login first.');
     }
-    const contract = await BreezeContractMaster.getInstance().findByToken(request.instrumentId);
+    const contract = await BreezeContractMaster.getInstance().findByToken(request.brokerToken);
     if (!contract) {
-        throw new Error(`Breeze contract master has no record for token ${request.instrumentId}`);
+        throw new Error(`Breeze contract master has no record for token ${request.brokerToken}`);
     }
     const buyPrice = await getMarketableBreezeBuyPrice(contract);
     const tsym = tsymFor(contract);
