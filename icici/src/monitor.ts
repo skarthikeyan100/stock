@@ -35,13 +35,16 @@ export default class Monitor {
     // block the user until a restart.
     private inflight: Map<string, number> = new Map();
     private graceUntil: Map<string, number> = new Map();
+    // Approximation (this is the legacy in-process path): per user, not per order. Users whose fill arrived while a request was still outstanding: the order is already in this.trades, so no grace is needed.
+    private filledWhileInflight: Set<string> = new Set();
     private static readonly PENDING_GRACE_MS = 60_000;
     markPendingUser(user: string): void { this.inflight.set(user, (this.inflight.get(user) ?? 0) + 1); }
     // `placed`: the broker accepted an order (it may rest unfilled) - grace window. Nothing placed (null result, rejection, throw): none.
-    private releasePendingUser(user: string, placed: boolean): void {
+    protected releasePendingUser(user: string, placed: boolean): void {
         const n = (this.inflight.get(user) ?? 0) - 1;
         if (n > 0) this.inflight.set(user, n); else this.inflight.delete(user);
-        if (placed) this.graceUntil.set(user, Date.now() + Monitor.PENDING_GRACE_MS);
+        if (placed && !this.filledWhileInflight.has(user)) this.graceUntil.set(user, Date.now() + Monitor.PENDING_GRACE_MS);
+        if (n <= 0) this.filledWhileInflight.delete(user);
     }
     private isUserPending(user: string): boolean {
         if ((this.inflight.get(user) ?? 0) > 0) return true;
@@ -455,9 +458,11 @@ export default class Monitor {
 
     _processTradeEvent = async (tradeEvent: Trade) => {
         Log.log(`[Trade] ${tradeEvent.action} ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} status=${tradeEvent.status}`)
-        Mongo.getInstance()?.insert(tradeEvent)?.catch(() => { /* Mongo not available */ });
+        Mongo.getInstance()?.tryInsert(tradeEvent);
         if (tradeEvent.action == 'Buy') {
-            this.graceUntil.delete(tradeEvent.user || 'Default'); // the fill is in this.trades now
+            const fillUser = tradeEvent.user || 'Default';
+            this.graceUntil.delete(fillUser); // the fill is in this.trades now
+            if ((this.inflight.get(fillUser) ?? 0) > 0) this.filledWhileInflight.add(fillUser); // arrived before the broker's reply
             // Match by tsym AND user so different strategies can hold the same contract independently
             const index = this.trades.findIndex(t => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user);
             if (index == -1) {
@@ -549,7 +554,7 @@ export default class Monitor {
 
     async _processQuoteForStrategies(optionQuote: OptionQuote) {
         if (configService.getConfig().settings?.logQuotes) {
-            Mongo.getInstance()?.insert(optionQuote)?.catch(() => { /* Mongo not available */ });
+            Mongo.getInstance()?.tryInsert(optionQuote);
         }
         const dispatched = new Set<Strategy>();
 

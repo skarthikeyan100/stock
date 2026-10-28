@@ -48,6 +48,7 @@ class MockMonitor extends Monitor {
         tradeEvent.lastTradePrice = orderInfo.price;
 
         await this._processTradeEvent(tradeEvent);
+        this.releasePendingUser(userId, true); // the simulated request is complete
 
         const strategy = (this as any).strategyMap.get(userId);
         if (strategy) {
@@ -95,6 +96,7 @@ class MockMonitor extends Monitor {
         orderInfo.token = 'TOKEN_' + (++orderCount);
         this.buyOrders.push({ userId, contract, qty: orderInfo.qty, price: orderInfo.price });
         console.log(`  [MockMonitor] BUYINDEX placed for ${userId}: ${contract} qty=${orderInfo.qty}`);
+        this.releasePendingUser(userId, true);
         return orderInfo;
     }
 }

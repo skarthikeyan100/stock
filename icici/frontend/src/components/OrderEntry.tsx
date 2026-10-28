@@ -2,11 +2,10 @@ import { useState, useEffect, useRef, FormEvent } from 'react';
 import { InputGroup, Form, Button, Spinner, Alert, ListGroup } from 'react-bootstrap';
 import { useTrading } from '../context/TradingContext';
 import { useAuth } from '../context/AuthContext';
-import { matchSymbols, parsePoints } from './orderEntryShared';
+import { matchSymbols, parsePoints, SYMBOL_SEARCH_MIN_CHARS } from './orderEntryShared';
 import { apiFetch } from '../utils/api';
 import DemoHelpTip from './DemoHelpTip';
 import { DEMO_MAX_LOSS } from '../context/DemoTradingContext';
-import { SYMBOL_SEARCH_MIN_CHARS } from './orderEntryShared';
 
 // One searchable contract: `label` is what the list shows, `value` is what placeContractOrder receives.
 interface ContractItem { label: string; value: string }
@@ -35,6 +34,7 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
   // config.yml's global settings.targetPriceDiff/stopLossPriceDiff - so the
   // placeholder shows the real value that will be used, not a vague "(default)".
   useEffect(() => {
+    if (demo) return; // the demo never applies a fallback target/stop: a blank box places the trade with neither
     apiFetch('/config')
       .then(res => (res.ok ? res.json() : null)) // /config is admin-only: a trader just gets no placeholder hint
       .then(data => {
@@ -43,10 +43,10 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
         setDefaultStopLossPoints(data?.settings?.stopLossPriceDiff ?? null);
       })
       .catch(err => console.error('Failed to load config:', err));
-  }, []);
+  }, [demo]);
 
-  const effectiveDefaultTarget = user?.targetPoints ?? defaultTargetPoints;
-  const effectiveDefaultStopLoss = user?.stopLossPoints ?? defaultStopLossPoints;
+  const effectiveDefaultTarget = demo ? null : (user?.targetPoints ?? defaultTargetPoints);
+  const effectiveDefaultStopLoss = demo ? null : (user?.stopLossPoints ?? defaultStopLossPoints);
 
   // Load symbols list once. Expiry filtering happens server-side now, at
   // generation time (see frontend/update-symbols.sh, which filters Kite's real

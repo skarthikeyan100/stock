@@ -197,7 +197,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   );
 
   // `contract` is a "<token>|<tradingSymbol>|<optionType>" triple produced by
-  // OrderEntry (demo)'s ANT-native symbol picker (see DemoOrderEntry.tsx) - not
+  // OrderEntry (demo)'s ANT-native symbol picker (see OrderEntry.tsx's `demo` branch) - not
   // a bare Kite tsym like the real OrderEntry passes.
   const placeContractOrder = useCallback(
     async (contract: string, targetPoints?: number, stopLossPoints?: number): Promise<boolean> => {

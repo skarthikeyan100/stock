@@ -41,6 +41,18 @@ export default class Mongo {
         await this.db.collection(name).insertOne(obj)
     }
 
+    // Fire-and-forget insert for tick-rate paths: a failure (Mongo down, db unset) is logged at most once a minute instead of per tick.
+    // Throttled per distinct message, so a flood of identical tick failures cannot hide a different (e.g. trade-audit) failure.
+    private lastInsertFailureLogAt = new Map<string, number>();
+    tryInsert = (obj, collectionName?: string): void => {
+        this.insert(obj, collectionName).catch((e) => {
+            const key = String(e?.message ?? e);
+            if (Date.now() - (this.lastInsertFailureLogAt.get(key) ?? 0) < 60_000) return;
+            this.lastInsertFailureLogAt.set(key, Date.now());
+            Log.log('[mongo] insert failed (the same failure is suppressed for 60s):', e);
+        });
+    }
+
     close = async () => {
         if (!this.client) return;
         const client = this.client;

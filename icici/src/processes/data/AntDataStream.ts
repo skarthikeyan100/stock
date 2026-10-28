@@ -191,11 +191,11 @@ class AntDataStream implements DataStream {
         if (!data.lp || !configService.getConfig().settings?.logQuotes) return;
         try {
             if (data.tk === this.INDEX_TOKEN) {
-                Mongo.getInstance()?.insert(NiftyQuote.fromAnt(data))?.catch((e) => Log.log('[mongo] quote insert failed:', e));
+                Mongo.getInstance()?.tryInsert(NiftyQuote.fromAnt(data));
             } else if (data.tk === this.SENSEX_TOKEN) {
-                Mongo.getInstance()?.insert(SensexQuote.fromAnt(data))?.catch((e) => Log.log('[mongo] quote insert failed:', e));
+                Mongo.getInstance()?.tryInsert(SensexQuote.fromAnt(data));
             } else if (this.dynamicOptionTokens.has(data.tk) || this.dynamicDepthTokens.has(data.tk)) {
-                Mongo.getInstance()?.insert(OptionQuote.fromAnt(data))?.catch((e) => Log.log('[mongo] quote insert failed:', e));
+                Mongo.getInstance()?.tryInsert(OptionQuote.fromAnt(data));
             }
         } catch (e) {
             Log.log('[AntDataStream] Mongo insert failed:', e);

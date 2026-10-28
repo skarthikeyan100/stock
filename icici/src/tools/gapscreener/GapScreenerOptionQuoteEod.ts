@@ -73,13 +73,10 @@ const GAPSCREENER_DIR = path.join(process.cwd(), 'src', 'tools', 'gapscreener');
 const RESULT_CSV = path.join(GAPSCREENER_DIR, 'gap_screener_option_quote.csv');
 const SCREENER_CSV = path.join(GAPSCREENER_DIR, 'gap-screener.csv');
 
-// AliceBlue's websocket only streams ticks during the live market session -
-// subscribing after the exchange closes just times out (confirmed: this is
-// why gapscreener:end doesn't work when run after market hours). Past this
-// cutoff, fall back to polling ANT's REST getScripQuote (ScripDetails
-// endpoint - confirmed live to still return post-close LTP, unlike the OHLC
-// endpoint used elsewhere in ANT.ts, which returned `result: [null]` for the
-// same token post-close) one token at a time instead of subscribing.
+// AliceBlue's websocket only streams ticks during the live market session - subscribing after the exchange closes just times out.
+// REST (ANT's ScripDetails getScripQuote, confirmed live to still return post-close LTP, unlike the OHLC endpoint used elsewhere in
+// ANT.ts, which returned `result: [null]` post-close) is the default at all hours; the websocket batch is opt-in
+// (GAPSCREENER_USE_WS=1) and only before this cutoff.
 const MARKET_DATA_CUTOFF_HOUR = 15;
 const MARKET_DATA_CUTOFF_MINUTE = 30;
 const REST_QUOTE_DELAY_MS = 1000;

@@ -163,12 +163,15 @@ class RedditClient {
 
 // Each feed is fetched once per run (5 feeds x N stocks was a request storm), then matched against every stock.
 const feedCache = new Map<string, Promise<any[]>>();
+const FEED_FAILURE_COOLDOWN_MS = 30_000; // long enough that the next few stocks skip a dead feed, short enough to retry within a run
 function fetchFeedItems(parser: Parser, feedUrl: string, tag: string): Promise<any[]> {
     let cached = feedCache.get(feedUrl);
     if (!cached) {
         cached = parser.parseURL(feedUrl).then((feed) => feed.items || []).catch((err: any) => {
             console.warn(`  [${tag}] Feed failed: ${err.message}`);
-            feedCache.delete(feedUrl); // a failure is not remembered: the next stock retries the feed
+            // A failed feed is remembered only briefly: the next stocks skip it instead of each waiting out the timeout, and a later
+            // run (or this one after the cooldown) retries it.
+            setTimeout(() => feedCache.delete(feedUrl), FEED_FAILURE_COOLDOWN_MS).unref();
             return [];
         });
         feedCache.set(feedUrl, cached);
