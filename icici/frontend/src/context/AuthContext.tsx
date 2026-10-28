@@ -6,8 +6,13 @@ export interface AuthUser {
   name: string;
   picture: string;
   lossLimit: number;
-  lotCount: number;
-  investmentAmount: number;
+  // Canonical names (lotLimit / accountCapital / strategyCapital); the server still sends the old ones too during the migration.
+  lotLimit: number;
+  /** @deprecated use lotLimit */
+  lotCount?: number;
+  accountCapital: number;
+  /** @deprecated use accountCapital */
+  investmentAmount?: number;
   investmentMode: 'lotCount' | 'investmentAmount';
   useGTT: boolean;
   role: string;
@@ -22,6 +27,8 @@ export interface AuthUser {
   dobVerified: boolean;
   panVerified: boolean;
   perOrderCap?: number;
+  strategyCapital?: number;
+  /** @deprecated use strategyCapital */
   allottedCapital?: number;
   targetPoints?: number;
   stopLossPoints?: number;

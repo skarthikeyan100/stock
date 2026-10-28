@@ -16,7 +16,7 @@ export default function TradingPage() {
   };
   const navigate = useNavigate();
   const maxLoss = user?.lossLimit ?? 15000;
-  const investmentAmount = user?.investmentAmount ?? 100000;
+  const investmentAmount = user?.accountCapital ?? user?.investmentAmount ?? 100000;
   const availableAmount = investmentAmount - usedAmount;
   const [activeTab, setActiveTab] = useState('active');
 

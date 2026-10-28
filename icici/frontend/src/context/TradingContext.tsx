@@ -53,7 +53,7 @@ export const TradingContext = createContext<TradingState | null>(null);
 export function TradingProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const maxLoss = user?.lossLimit ?? 15000;
-  const lotLimit = user?.lotCount ?? 10;
+  const lotLimit = user?.lotLimit ?? user?.lotCount ?? 10;
   const [trades, setTrades] = useState<Trade[]>([]);
   const [closedTrades, setClosedTrades] = useState<Trade[]>([]);
   const [placingOrder, setPlacingOrder] = useState(false);

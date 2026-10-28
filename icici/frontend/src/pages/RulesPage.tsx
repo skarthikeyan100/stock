@@ -22,7 +22,7 @@ export default function RulesPage() {
     if (await logout()) navigate('/');
   };
 
-  const investmentAmount = user?.investmentAmount ?? 100000;
+  const investmentAmount = user?.accountCapital ?? user?.investmentAmount ?? 100000;
   const dailyLimit = Math.round(investmentAmount * (DAILY_DRAWDOWN_PERCENT / 100));
   const weeklyLimit = Math.round(investmentAmount * (WEEKLY_LOSS_PERCENT / 100));
 

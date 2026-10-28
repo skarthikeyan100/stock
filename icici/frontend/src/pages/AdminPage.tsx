@@ -90,9 +90,9 @@ async function patchVerify(email: string, field: 'email' | 'phone' | 'address' |
 }
 
 interface UserEditRow {
-  lossLimit: string; lotCount: string; role: string; enabled: boolean; useGTT: boolean;
-  profitSplitPercent: string; perOrderCap: string; allottedCapital: string; targetPoints: string;
-  stopLossPoints: string; investmentAmount: string;
+  lossLimit: string; lotLimit: string; role: string; enabled: boolean; useGTT: boolean;
+  profitSplitPercent: string; perOrderCap: string; strategyCapital: string; targetPoints: string;
+  stopLossPoints: string; accountCapital: string;
 }
 
 // Legacy broker names still present in older config.yml files; mirrors src/util/brokerName.ts.
@@ -121,7 +121,7 @@ export default function AdminPage() {
   const [antResult, setAntResult] = useState<{ success: boolean; message: string } | null>(null);
   const [activeTab, setActiveTab] = useState('users');
   const [showAddUser, setShowAddUser] = useState(false);
-  const [newUser, setNewUser] = useState({ email: '', name: '', lossLimit: '15000', lotCount: '10', role: 'user' });
+  const [newUser, setNewUser] = useState({ email: '', name: '', lossLimit: '15000', lotLimit: '10', role: 'user' });
   const [userError, setUserError] = useState<string | null>(null);
 
   // Payments tab
@@ -402,14 +402,14 @@ export default function AdminPage() {
     setEditing(prev => ({
       ...prev,
       [u.email]: {
-        lossLimit: String(u.lossLimit), lotCount: String(u.lotCount), role: u.role, enabled: u.enabled ?? true, useGTT: u.useGTT ?? true,
+        lossLimit: String(u.lossLimit), lotLimit: String(u.lotLimit ?? u.lotCount ?? ''), role: u.role, enabled: u.enabled ?? true, useGTT: u.useGTT ?? true,
         profitSplitPercent: String(u.profitSplitPercent ?? 80), perOrderCap: u.perOrderCap !== undefined ? String(u.perOrderCap) : '',
         // Show the actual value in effect (override, else the resolved
         // default) rather than a blank field with a "default" placeholder.
-        allottedCapital: String(u.allottedCapital ?? userDefaults.allottedCapital ?? ''),
+        strategyCapital: String(u.strategyCapital ?? u.allottedCapital ?? userDefaults.allottedCapital ?? ''),
         targetPoints: String(u.targetPoints ?? userDefaults.targetPoints ?? ''),
         stopLossPoints: String(u.stopLossPoints ?? userDefaults.stopLossPoints ?? ''),
-        investmentAmount: String(u.investmentAmount ?? 100000),
+        accountCapital: String(u.accountCapital ?? u.investmentAmount ?? 100000),
       },
     }));
   };
@@ -463,11 +463,11 @@ export default function AdminPage() {
         enabled: vals.enabled,
         useGTT: vals.useGTT,
         lossLimit: numOrUndef(vals.lossLimit),
-        lotCount: numOrUndef(vals.lotCount),
+        lotLimit: numOrUndef(vals.lotLimit),
         profitSplitPercent: numOrUndef(vals.profitSplitPercent),
-        investmentAmount: numOrUndef(vals.investmentAmount),
+        accountCapital: numOrUndef(vals.accountCapital),
         perOrderCap: override(vals.perOrderCap, undefined),
-        allottedCapital: override(vals.allottedCapital, userDefaults.allottedCapital),
+        strategyCapital: override(vals.strategyCapital, userDefaults.allottedCapital),
         targetPoints: override(vals.targetPoints, userDefaults.targetPoints),
         stopLossPoints: override(vals.stopLossPoints, userDefaults.stopLossPoints),
       };
@@ -583,7 +583,7 @@ export default function AdminPage() {
           email: newUser.email,
           name: newUser.name,
           lossLimit: Number(newUser.lossLimit),
-          lotCount: Number(newUser.lotCount),
+          lotLimit: Number(newUser.lotLimit),
           role: newUser.role,
         }),
       });
@@ -591,7 +591,7 @@ export default function AdminPage() {
         const error = await res.json();
         throw new Error(error.error || 'Failed to create user');
       }
-      setNewUser({ email: '', name: '', lossLimit: '15000', lotCount: '10', role: 'user' });
+      setNewUser({ email: '', name: '', lossLimit: '15000', lotLimit: '10', role: 'user' });
       setShowAddUser(false);
       fetchUsers();
     } catch (err: any) {
@@ -933,8 +933,8 @@ export default function AdminPage() {
                         <Form.Label>Lot Count</Form.Label>
                         <Form.Control
                           type="number"
-                          value={newUser.lotCount}
-                          onChange={e => setNewUser(prev => ({ ...prev, lotCount: e.target.value }))}
+                          value={newUser.lotLimit}
+                          onChange={e => setNewUser(prev => ({ ...prev, lotLimit: e.target.value }))}
                         />
                       </Form.Group>
                     </Col>
@@ -1043,12 +1043,12 @@ export default function AdminPage() {
                           <Form.Control
                             size="sm"
                             type="number"
-                            value={editing[u.email].lotCount}
-                            onChange={e => updateEditingField(u.email, { lotCount: e.target.value })}
+                            value={editing[u.email].lotLimit}
+                            onChange={e => updateEditingField(u.email, { lotLimit: e.target.value })}
                             style={{ width: 80 }}
                           />
                         ) : (
-                          u.lotCount
+                          u.lotLimit ?? u.lotCount
                         )}
                       </td>
                       <td>
@@ -1056,12 +1056,12 @@ export default function AdminPage() {
                           <Form.Control
                             size="sm"
                             type="number"
-                            value={editing[u.email].investmentAmount}
-                            onChange={e => updateEditingField(u.email, { investmentAmount: e.target.value })}
+                            value={editing[u.email].accountCapital}
+                            onChange={e => updateEditingField(u.email, { accountCapital: e.target.value })}
                             style={{ width: 110 }}
                           />
                         ) : (
-                          <>&#8377;{(u.investmentAmount ?? 100000).toLocaleString()}</>
+                          <>&#8377;{(u.accountCapital ?? u.investmentAmount ?? 100000).toLocaleString()}</>
                         )}
                       </td>
                       <td>
@@ -1096,13 +1096,13 @@ export default function AdminPage() {
                           <Form.Control
                             size="sm"
                             type="number"
-                            value={editing[u.email].allottedCapital}
-                            onChange={e => updateEditingField(u.email, { allottedCapital: e.target.value })}
+                            value={editing[u.email].strategyCapital}
+                            onChange={e => updateEditingField(u.email, { strategyCapital: e.target.value })}
                             style={{ width: 120 }}
                           />
                         ) : (
-                          (u.allottedCapital ?? userDefaults.allottedCapital) != null
-                            ? <span title={u.allottedCapital == null ? 'strategy default' : undefined}>&#8377;{(u.allottedCapital ?? userDefaults.allottedCapital)!.toLocaleString()}</span>
+                          ((u.strategyCapital ?? u.allottedCapital) ?? userDefaults.allottedCapital) != null
+                            ? <span title={(u.strategyCapital ?? u.allottedCapital) == null ? 'strategy default' : undefined}>&#8377;{((u.strategyCapital ?? u.allottedCapital) ?? userDefaults.allottedCapital)!.toLocaleString()}</span>
                             : '—'
                         )}
                       </td>

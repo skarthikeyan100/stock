@@ -408,7 +408,8 @@ app.get('/users', requireAdmin, async function (req, res) {
 
 app.post('/users', requireAdmin, async function (req, res) {
     try {
-        const { email, name, lossLimit, lotCount, role } = req.body;
+        const { email, name, lossLimit, role } = req.body;
+        const lotCount = req.body.lotLimit ?? req.body.lotCount;
         if (!email || !name) {
             res.status(400).json({ error: 'Email and name are required' });
             return;
