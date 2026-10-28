@@ -270,6 +270,15 @@ http://localhost:3000
 
 ---
 
+### Per-broker login and callback routes
+`server.ts` registers these in a loop over the four brokers (`ant`, `kite`, `breeze`, `prism`), so they are not greppable by path:
+- `GET /{broker}/login` - redirects to the broker's authorization page.
+- `GET /{broker}/callback` - exchanges the returned code/token, tells `data` to reconnect, reloads the session in `order`, then redirects to `/`. Responds 400 for missing credentials, 500 when the exchange fails and 502 when the login succeeded but `order` could not load the new session (retry the login). The Prism authorization code is stored only after a successful exchange.
+- `POST /breeze/callback` - same handler (ICICI can redirect with a POST form).
+- `GET /shoonya/callback` - alias of `/prism/callback`'s handler (the Shoonya dashboard's registered redirect URI).
+
+---
+
 ### GET /prism/authcode
 **Description:** Retrieve stored authorization code
 

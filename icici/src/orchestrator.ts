@@ -98,6 +98,13 @@ function isAlive(child: ChildProcessWithoutNullStreams | undefined): boolean {
 
 // Stops a child and resolves once it has really exited (SIGKILL after 5s), so a replacement is never spawned while the
 // old process still holds its socket/port.
+// The first step of a crash respawn, run inside the serialised restart: a hot restart may already have replaced the crashed child.
+function replacementAlreadyRunning(name: string, child: ChildProcessWithoutNullStreams | undefined, opts?: { onlyIfDead?: boolean }): boolean {
+    if (!opts?.onlyIfDead || !isAlive(child)) return false;
+    log(name, 'respawn skipped - a live replacement is already running');
+    return true;
+}
+
 function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
     const managed = child as ManagedChild;
     managed.intentionalStop = true;
@@ -112,12 +119,19 @@ function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
 // Backoff for crash respawns: 1s, 2s, 4s ... capped at 30s; reset once a process has stayed up for a minute.
 type RestartOutcome = 'started' | 'skipped' | 'failed';
 
+const MAX_FAILED_RESTARTS = 10;
+
 function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) => Promise<RestartOutcome>): () => void {
     let failures = 0;
+    let failedRestarts = 0; // consecutive restarts that could not start a child (a persistently missing dist file would loop forever)
     let lastStart = Date.now();
     let pending = false;
     const respawn = (): void => {
         if (pending || shuttingDown) return;
+        if (failedRestarts >= MAX_FAILED_RESTARTS) {
+            log(name, `ALERT: ${failedRestarts} consecutive restarts failed - giving up until the next code change or orchestrator restart`);
+            return;
+        }
         pending = true;
         if (Date.now() - lastStart > 60_000) failures = 0;
         const delay = Math.min(30_000, 1000 * 2 ** failures);
@@ -130,8 +144,8 @@ function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) 
             // replaced the crashed child while this timer waited or while this restart was queued behind it; stopping then would kill the
             // healthy replacement.
             const outcome = await restart({ onlyIfDead: true });
-            if (outcome === 'started') lastStart = Date.now(); // a skipped respawn must not delay the next one's backoff reset
-            else if (outcome === 'failed') respawn(); // no child is running and no exit event will come: try again with a longer backoff
+            if (outcome === 'started') { lastStart = Date.now(); failedRestarts = 0; } // a skipped respawn must not delay the next one's backoff reset
+            else if (outcome === 'failed') { failedRestarts++; respawn(); } // no child is running and no exit event will come: try again with a longer backoff
         }, delay);
     };
     return respawn;
@@ -184,7 +198,7 @@ async function main() {
     };
     const restartData = (opts?: { onlyIfDead?: boolean }) => serial('data', async () => {
         const old = data;
-        if (opts?.onlyIfDead && isAlive(old)) { log('data', 'respawn skipped - a live replacement is already running'); return 'skipped'; }
+        if (replacementAlreadyRunning('data', old, opts)) return 'skipped';
         for (const other of [order, frontend, strategies]) {
             if (!other) continue;
             old.stdout.unpipe(other.stdin);
@@ -214,7 +228,7 @@ async function main() {
     };
     const restartOrder = (opts?: { onlyIfDead?: boolean }) => serial('order', async () => {
         const old = order;
-        if (opts?.onlyIfDead && isAlive(old)) { log('order', 'respawn skipped - a live replacement is already running'); return 'skipped'; }
+        if (replacementAlreadyRunning('order', old, opts)) return 'skipped';
         data.stdout.unpipe(old.stdin);
         old.stdout.unpipe(data.stdin);
         await stopChild(old);
@@ -230,7 +244,7 @@ async function main() {
     };
     const restartFrontend = (opts?: { onlyIfDead?: boolean }) => serial('frontend', async () => {
         const old = frontend;
-        if (opts?.onlyIfDead && isAlive(old)) { log('frontend', 'respawn skipped - a live replacement is already running'); return 'skipped'; }
+        if (replacementAlreadyRunning('frontend', old, opts)) return 'skipped';
         data.stdout.unpipe(old.stdin);
         old.stdout.unpipe(data.stdin);
         await stopChild(old);
@@ -246,7 +260,7 @@ async function main() {
     };
     const restartStrategies = (opts?: { onlyIfDead?: boolean }) => serial('strategies', async () => {
         const old = strategies;
-        if (opts?.onlyIfDead && isAlive(old)) { log('strategies', 'respawn skipped - a live replacement is already running'); return 'skipped'; }
+        if (replacementAlreadyRunning('strategies', old, opts)) return 'skipped';
         data.stdout.unpipe(old.stdin);
         old.stdout.unpipe(data.stdin);
         await stopChild(old);
@@ -266,7 +280,7 @@ async function main() {
         ...topLevel('constants.js', 'orderList.js', 'nse_index.js'),
     ], () => {
         log('dev', 'Restarting order (data/strategies/frontend untouched)...');
-        void restartOrder();
+        void restartOrder().then((outcome) => { if (outcome === 'failed') respawnOrder(); });
     });
 
     // Give order a moment to bind its socket before strategies/frontend try to
@@ -286,7 +300,7 @@ async function main() {
         ...topLevel('user.js', 'payout.js', 'tax.js', 'constants.js', 'monitor.js', 'decision.js', 'candle.js', 'nse_index.js', 'orderList.js'),
     ], () => {
         log('dev', 'Restarting frontend (data/order/strategies untouched)...');
-        void restartFrontend();
+        void restartFrontend().then((outcome) => { if (outcome === 'failed') respawnFrontend(); });
     });
 
     // --- strategies (the one meant to change most often) ---
@@ -303,7 +317,7 @@ async function main() {
         ],
         () => {
             log('dev', 'Restarting strategies (data/order untouched)...');
-            void restartStrategies();
+            void restartStrategies().then((outcome) => { if (outcome === 'failed') respawnStrategies(); });
         }
     );
 
@@ -320,7 +334,7 @@ async function main() {
         path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'), path.join(DIST, 'breeze'),
     ], () => {
         log('dev', 'Restarting data (order/strategies/frontend untouched)...');
-        void restartData();
+        void restartData().then((outcome) => { if (outcome === 'failed') respawnData(); });
     });
 }
 

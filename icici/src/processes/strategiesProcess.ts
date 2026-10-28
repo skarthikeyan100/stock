@@ -93,9 +93,9 @@ async function onFill(userId: string, raw: any, openQuantity?: number) {
                 OrderClient.getInstance().getOpenTrades(userId),
                 new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), 5_000); }),
             ]).finally(() => clearTimeout(timer));
-            // Same feed keying as the fill itself above (an untagged row shares the untagged fill's 'default' key).
-            const feedOf = (broker?: string) => (broker ? BROKER_TO_FEED_SOURCE[broker] : undefined);
-            reportedNet = open.filter((t) => t?.token === trade.token && feedOf(t.broker) === feed).reduce((sum, t) => sum + (Number(t.quantity) || 0), 0);
+            // Same feed matching as the order process's own net (orderProcess.ts onFill): an untagged row or fill counts as kite.
+            const feedOf = (broker?: string) => BROKER_TO_FEED_SOURCE[broker ?? 'kite'];
+            reportedNet = open.filter((t) => t?.token === trade.token && feedOf(t.broker) === feedOf(trade.broker)).reduce((sum, t) => sum + Math.max(0, Number(t.quantity) || 0), 0);
         } catch (e) {
             Log.log(`[strategies] Could not read open trades for ${userId} to size ${trade.tsym}'s net quantity:`, e);
         }

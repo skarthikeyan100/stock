@@ -1174,12 +1174,27 @@ const brokerCallback = (name: BrokerName) => async function (req: express.Reques
     const route = BROKER_ROUTES[name];
     try {
         const params = route.callbackParams(req);
-        route.remember?.(params);
         await entry.exchangeToken(params);
+        // Only a code that was actually exchanged is kept (served by /prism/authcode): a failed or replayed callback leaves none.
+        route.remember?.(params);
         if (route.reconnectCmd) writeJsonLine(process.stdout, route.reconnectCmd);
         // `order` loaded whatever (possibly stale/absent) session was on disk when it started; reloadSession re-reads it (and
         // reconnects the order-notify stream where there is one).
-        await orderClient.reloadSession().catch((e) => Log.log('[frontend] reloadSession failed:', e));
+        let reloaded = false;
+        for (let attempt = 1; attempt <= 3 && !reloaded; attempt++) {
+            try {
+                await orderClient.reloadSession();
+                reloaded = true;
+            } catch (e) {
+                Log.log(`[frontend] reloadSession failed (attempt ${attempt}/3):`, e);
+                if (attempt < 3) await new Promise((r) => setTimeout(r, 1000));
+            }
+        }
+        if (!reloaded) {
+            // The login itself succeeded and is saved, but `order` still holds the old session: say so rather than redirecting as if all is well.
+            res.status(502).json({ error: `${entry.label} login succeeded but the order process could not load the new session - retry the login or restart the order process` });
+            return;
+        }
         Log.log(`${entry.label} Authentication successful.`);
         res.redirect(302, '/');
     } catch (e: any) {

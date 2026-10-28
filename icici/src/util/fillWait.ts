@@ -36,9 +36,11 @@ export async function cancelThenRecheck(params: {
 
 // The error a fill wait throws when it can no longer tell whether the order filled (the re-check itself failed): never "did not
 // fill", which makes the caller retry the same order (double fill). `orderMayBeLive` says the cancel also failed. Not tagged
-// driftCancelled: buyChunked keeps a reduced fill for a drift-cancel, and an unknown state is not a clean cancel.
+// driftCancelled: buyChunked keeps a reduced fill for a drift-cancel, and an unknown state is not a clean cancel. No filledQuantity/
+// averagePrice: the order may have filled, so a 0 would make a consumer size the exit as if nothing was bought; fillStateUnknown tells
+// it to read the broker's open quantity instead.
 export function fillStateUnknownError(message: string, orderMayBeLive: boolean): Error {
     return Object.assign(new Error(`${message} (fill state UNKNOWN${orderMayBeLive ? ', cancel also failed - order may still be resting' : ''})`), {
-        fillStateUnknown: true, orderMayBeLive, filledQuantity: 0, averagePrice: 0,
+        fillStateUnknown: true, orderMayBeLive,
     });
 }

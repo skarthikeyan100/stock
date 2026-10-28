@@ -55,6 +55,22 @@ function carryFillStateFlags(target: Error, cause: any): void {
     if (cause?.fillStateUnknown || cause?.orderMayBeLive) Object.assign(target, { fillStateUnknown: !!cause.fillStateUnknown, orderMayBeLive: !!cause.orderMayBeLive });
 }
 
+// The error a chunked run throws when chunk `i` fails: what the earlier chunks already filled is carried on it (so a caller can tell a
+// partial entry from a clean failure), a clean refusal of the FIRST chunk stays a clean refusal of the whole request, and an
+// unsettled fill state is passed on. With nothing filled yet and the state unknown the order may have filled, so no 0 quantity is
+// reported (a consumer reads fillStateUnknown and sizes from the broker instead).
+function wrapChunkError(
+    label: string, verb: string, notVerb: string, i: number, chunkCount: number, total: number, filledQty: number, filledValue: number, cause: any
+): Error {
+    const err = Object.assign(new Error(
+        `${label}: chunk ${i + 1}/${chunkCount} failed after ${verb} ${filledQty}/${total} - ` +
+            `${total - filledQty} qty NOT ${notVerb}. Manual review required. Underlying error: ${cause?.message ?? cause}`
+    ), { partial: filledQty > 0 });
+    if (filledQty > 0 || !cause?.fillStateUnknown) Object.assign(err, { filledQuantity: filledQty, averagePrice: filledQty > 0 ? filledValue / filledQty : 0 });
+    carryFillStateFlags(err, cause);
+    return i === 0 && isNotPlaced(cause) ? markNotPlaced(err) : err;
+}
+
 export async function buyChunked(
     executor: BrokerExecutor,
     request: BuyRequest,
@@ -99,13 +115,7 @@ export async function buyChunked(
             }
             // filledQuantity/averagePrice carried on the error: earlier chunks are real, already-booked positions, so a
             // caller must be able to tell a partial entry from a clean failure.
-            const buyErr = Object.assign(new Error(
-                `buyChunked: chunk ${i + 1}/${chunks.length} failed after filling ${filledQty}/${request.quantity} - ` +
-                    `${request.quantity - filledQty} qty NOT placed. Manual review required. Underlying error: ${e?.message ?? e}`
-            ), { filledQuantity: filledQty, averagePrice: filledQty > 0 ? filledValue / filledQty : 0, partial: filledQty > 0 });
-            // A clean refusal of the first chunk is still a clean refusal of the whole request.
-            carryFillStateFlags(buyErr, e);
-            throw i === 0 && isNotPlaced(e) ? markNotPlaced(buyErr) : buyErr;
+            throw wrapChunkError('buyChunked', 'filling', 'placed', i, chunks.length, request.quantity, filledQty, filledValue, e);
         }
     }
     return { quantity: filledQty, avgPrice: filledQty > 0 ? filledValue / filledQty : 0 };
@@ -149,13 +159,7 @@ export async function squareOffChunked(
                 filledQty += e.filledQuantity;
                 filledValue += e.filledQuantity * e.averagePrice;
             }
-            const sellErr = Object.assign(new Error(
-                `squareOffChunked: chunk ${i + 1}/${chunks.length} failed after selling ${filledQty}/${quantity} - ` +
-                    `${quantity - filledQty} qty NOT sold. Manual review required. Underlying error: ${e?.message ?? e}`
-            ), { filledQuantity: filledQty, averagePrice: filledQty > 0 ? filledValue / filledQty : 0, partial: filledQty > 0 });
-            // A chunk whose fill could not be settled may be live or filled: carry that on, so no caller retries it.
-            carryFillStateFlags(sellErr, e);
-            throw i === 0 && isNotPlaced(e) ? markNotPlaced(sellErr) : sellErr;
+            throw wrapChunkError('squareOffChunked', 'selling', 'sold', i, chunks.length, quantity, filledQty, filledValue, e);
         }
     }
     return { quantity: filledQty, avgPrice: filledQty > 0 ? filledValue / filledQty : 0 };

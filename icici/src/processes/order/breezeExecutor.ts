@@ -84,14 +84,27 @@ async function waitForBreezeFillBooking(orderId: string, exchange: BreezeExchang
 // Breeze's getOrderDetail / cancelOrder / getFillPrice are all keyed by exchangeCode. Every placement site knows its contract's
 // exchange and passes it on explicitly. The only order-id-only entry point is a cancel by a caller that has just an id
 // (cancelOrderBare): that resolves from the Mongo-backed pending limit-order record (it survives an `order` restart), and only an
-// order that is neither passed nor tracked falls back to NFO - a BFO order in that state fails loudly at the broker (wrong
-// exchange) rather than silently acting on the wrong contract.
-function resolveOrderExchange(orderId: string, exchange?: BreezeExchange): BreezeExchange {
-    const known = exchange ?? pendingBreezeOrderExchange(orderId);
-    if (known) return known;
-    // Never guess NFO: a BFO (SENSEX) order handled on the wrong exchange fails ambiguously (the cancel errors, the status read comes
-    // back empty and reads as "nothing filled"). The caller must pass the exchange.
-    throw new Error(`Breeze order ${orderId}: exchange unknown (not passed, not a tracked pending order) - refusing to guess`);
+// order that is neither passed nor tracked is looked up on both exchanges (probeOrderExchange) - never guessed as NFO.
+// Distinct so a caller can tell "could not tell which exchange" from a broker failure.
+export class BreezeExchangeUnknownError extends Error {
+    constructor(orderId: string) {
+        super(`Breeze order ${orderId}: exchange unknown (not passed, not a tracked pending order) - refusing to guess`);
+        this.name = 'BreezeExchangeUnknownError';
+    }
+}
+
+// An id-only cancel that is neither passed an exchange nor tracked: find the exchange the broker actually holds the order on, so
+// the cancel and the fill re-check still run (throwing here would turn a recoverable cancel into a stuck exit). Only an order found
+// on neither exchange is refused.
+async function probeOrderExchange(orderId: string): Promise<BreezeExchange> {
+    for (const candidate of ['NFO', 'BFO'] as const) {
+        const info = await getBreezeOrderFillInfo(orderId, candidate).catch(() => null);
+        if (info) {
+            Log.log(`[order] Breeze order ${orderId}: exchange not passed or tracked - found it on ${candidate}`);
+            return candidate;
+        }
+    }
+    throw new BreezeExchangeUnknownError(orderId);
 }
 
 // Exported for chunkedBuyIndex's IPC handler (orderProcess.ts), which needs
@@ -634,7 +647,7 @@ async function getBreezeOrderFillInfo(orderId: string, exchange: BreezeExchange)
 // run its own independent fill-check + recordSellFill instead of looping
 // into a fresh sell for a quantity that already closed.
 export async function cancelOrderOnBreeze(orderId: string, exchange?: OptionExchange): Promise<void> {
-    const orderExchange = resolveOrderExchange(orderId, exchange);
+    const orderExchange = exchange ?? pendingBreezeOrderExchange(orderId) ?? (await probeOrderExchange(orderId));
     const breeze = Breeze.getInstance();
     await cancelOrderWithFillRecheck({
         orderId,

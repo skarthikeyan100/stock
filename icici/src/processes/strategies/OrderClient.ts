@@ -3,7 +3,7 @@ import type { BrokerName } from '../../util/brokerName';
 import type { ChunkedFillResult } from '../../ipc/orderProtocol';
 import Log from '../../util/Log';
 import { writeJsonLine, readJsonLines } from '../../ipc/jsonLines';
-import { ORDER_SOCKET_PATH, OrderRequest, OrderRequestType, OrderResponse, FillNotification, OrderCancelledNotification } from '../../ipc/orderProtocol';
+import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, OrderRequest, OrderRequestType, OrderResponse, FillNotification, OrderCancelledNotification } from '../../ipc/orderProtocol';
 import { Trade } from '../../model/model';
 
 // The strategies process's only path to broker execution - no Prism/Kite
@@ -124,7 +124,7 @@ class OrderClient {
 
     private request(type: OrderRequestType, userId: string, payload: any, timeoutMs: number = OrderClient.REQUEST_TIMEOUT_MS): Promise<OrderResponse> {
         return new Promise((resolve, reject) => {
-            if (!this.socket || !this.connected) return reject(new Error('Not connected to order process'));
+            if (!this.socket || !this.connected) return reject(new Error(`${NOT_PLACED_TAG} Not connected to order process`));
             const id = String(this.nextId++);
             // If `order` never replies (hung broker call inside it, a
             // dropped/malformed response, a wedged process that's still

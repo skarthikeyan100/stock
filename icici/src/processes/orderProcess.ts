@@ -88,7 +88,7 @@ bookkeeping.onFill((userId, trade) => {
     const feed = feedOf(trade.broker);
     const openQuantity = bookkeeping.getOpenTrades(userId)
         .filter((t) => t.token === trade.token && feedOf(t.broker) === feed)
-        .reduce((sum, t) => sum + (Number(t.quantity) || 0), 0);
+        .reduce((sum, t) => sum + Math.max(0, Number(t.quantity) || 0), 0);
     broadcast({ kind: 'fill', userId, trade, openQuantity });
 });
 

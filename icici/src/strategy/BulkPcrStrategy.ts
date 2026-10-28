@@ -1940,7 +1940,11 @@ export default class BulkPcrStrategy extends Strategy {
                     if (this.isTrailSlot(pos) && pos.exitLimitPrice !== undefined) {
                         // The fired trail exit is persisted before its order is placed: confirm it is really resting,
                         // else forget it so the (restored, armed) trail fires again instead of waiting on nothing.
-                        const resting = (await OrderClient.getInstance().getPendingSells(this.userId, broker, persistedPos.heldTsym).catch(() => null))
+                        const resting = (await OrderClient.getInstance().getPendingSells(this.userId, broker, persistedPos.heldTsym).catch((e) => {
+                            // Unreadable is not "nothing resting": leave the recorded trail exit in place (no second exit is placed).
+                            Log.log(`[BulkPcrStrategy] [${broker}] reconcile: could not read resting sells for ${persistedPos.heldTsym} - keeping the recorded trail exit:`, e);
+                            return null;
+                        }))
                             ?.reduce((sum, o) => sum + o.quantity, 0);
                         if (resting === 0) {
                             Log.log(`[BulkPcrStrategy] [${broker}] reconcile: trail exit for ${persistedPos.heldTsym} was recorded but nothing is resting at the broker - the trail will fire again`);
@@ -2013,7 +2017,11 @@ export default class BulkPcrStrategy extends Strategy {
                 if (persistedPos.phase === 'error' && persistedPos.heldTsym) {
                     const pendingSells = await OrderClient.getInstance()
                         .getPendingSells(this.userId, broker, persistedPos.heldTsym)
-                        .catch(() => [] as { quantity: number }[]);
+                        .catch((e) => {
+                            // Unreadable reads as nothing resting, which leaves the slot in 'error' (manual review) - never a new exit.
+                            Log.log(`[BulkPcrStrategy] [${broker}] reconcile: could not read resting sells for errored ${persistedPos.heldTsym} - leaving it for manual review:`, e);
+                            return [] as { quantity: number }[];
+                        });
                     const alreadyResting = pendingSells.reduce((sum, o) => sum + o.quantity, 0);
                     if (alreadyResting > 0) {
                         const pos: BrokerPosition = {
@@ -2200,7 +2208,9 @@ export default class BulkPcrStrategy extends Strategy {
     // distinctly from an ordinary "already running - skipping" line, which
     // otherwise looks identical for both.
     hasBrokerError(): boolean {
-        return this.liveRemainder.size > 0 || Array.from(this.positions.values()).some((p) => p.phase === 'error');
+        // A latched broker the current cycle does not use (an auto-start re-arm drops it from the list) is not this cycle's problem.
+        const used = this.configuredBrokers();
+        return Array.from(this.liveRemainder).some((b) => used.includes(b)) || Array.from(this.positions.values()).some((p) => p.phase === 'error');
     }
 
     // keepStops: the auto-start re-arm path. It keeps today's loss-stop latches and realized P&L (the stop
