@@ -20,26 +20,32 @@ interface PendingLimitOrder extends PendingOrder {
 // would otherwise cost N REST calls every 15s, the pattern that already hit a broker rate limit. An order missing from the snapshot
 // (very new, or the list is truncated) falls back to its own history.
 type KiteOrderRow = { order_id: string; status: string; average_price: number; filled_quantity: number };
-const tracker = new PendingOrderTracker<PendingLimitOrder, Map<string, KiteOrderRow>, 'kite'>({
+// When the account-wide list could not be read, orders missing from it are looked up one by one - at most HISTORY_FALLBACKS_PER_TICK of them
+// (a failing list is often a rate limit, which N more calls would only worsen); the rest wait for the next tick.
+interface KiteSnapshot { orders: Map<string, KiteOrderRow>; historyBudget: number }
+const HISTORY_FALLBACKS_PER_TICK = 5;
+const tracker = new PendingOrderTracker<PendingLimitOrder, KiteSnapshot, 'kite'>({
     broker: 'kite',
     collection: 'pendingLimitOrders',
     label: 'Kite',
     bookAtAnyPrice: true,
     tokenOf: (order) => order.instrumentToken,
     ready: () => Kite.getInstance().hasValidSession(),
-    fetchSnapshot: async () => {
+    fetchSnapshot: async (): Promise<KiteSnapshot> => {
         try {
             const orders: KiteOrderRow[] = await Kite.getInstance().getKiteConnect().getOrders() as any;
-            return new Map(orders.map((o) => [String(o.order_id), o]));
+            return { orders: new Map(orders.map((o) => [String(o.order_id), o])), historyBudget: Number.POSITIVE_INFINITY };
         } catch (e) {
-            // The account-wide list failing must not blind every order: an empty snapshot sends each one to its own history.
-            Log.log('[order] pending Kite orders: getOrders failed - falling back to per-order history for this tick:', e);
-            return new Map<string, KiteOrderRow>();
+            // The account-wide list failing must not blind every order: a few are looked up by their own history this tick.
+            Log.log(`[order] pending Kite orders: getOrders failed - falling back to per-order history for up to ${HISTORY_FALLBACKS_PER_TICK} orders this tick:`, e);
+            return { orders: new Map<string, KiteOrderRow>(), historyBudget: HISTORY_FALLBACKS_PER_TICK };
         }
     },
     statusOf: async (order, snapshot) => {
-        let latest: KiteOrderRow | undefined = snapshot.get(order.orderId);
+        let latest: KiteOrderRow | undefined = snapshot.orders.get(order.orderId);
         if (!latest) {
+            if (snapshot.historyBudget <= 0) return { status: 'PENDING' };
+            snapshot.historyBudget--;
             const history = await Kite.getInstance().getKiteConnect().getOrderHistory(order.orderId);
             latest = history[history.length - 1];
         }

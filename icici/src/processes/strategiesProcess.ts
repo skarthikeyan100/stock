@@ -82,15 +82,30 @@ async function onFill(userId: string, raw: any, openQuantity?: number) {
     const fillQty = Number.isFinite(Number(trade.quantity)) && Number(trade.quantity) > 0 ? Number(trade.quantity) : 0;
     // The order process's own net (after this fill was booked) is authoritative: it already covers a position held from before a
     // restart and fills this process never saw. Without it (an older order process) count this process's fill stream.
-    const reportedNet = Number.isFinite(openQuantity) && (openQuantity as number) >= 0 ? (openQuantity as number) : undefined;
+    let reportedNet = Number.isFinite(openQuantity) && (openQuantity as number) >= 0 ? (openQuantity as number) : undefined;
+    // No net from the order process (an older build) and none tracked here (a position held from before this process started): ask
+    // the order process for its open trades rather than guess - the same sum it would have sent (token on the same feed).
+    if (reportedNet === undefined && trade.token && !openQty.has(qtyKey)) {
+        try {
+            let timer: NodeJS.Timeout | undefined;
+            const open: any[] = await Promise.race([
+                OrderClient.getInstance().getOpenTrades(userId),
+                new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), 5_000); }),
+            ]).finally(() => clearTimeout(timer));
+            // Same feed keying as the fill itself above (an untagged row shares the untagged fill's 'default' key).
+            const feedOf = (broker?: string) => (broker ? BROKER_TO_FEED_SOURCE[broker] : undefined);
+            reportedNet = open.filter((t) => t?.token === trade.token && feedOf(t.broker) === feed).reduce((sum, t) => sum + (Number(t.quantity) || 0), 0);
+        } catch (e) {
+            Log.log(`[strategies] Could not read open trades for ${userId} to size ${trade.tsym}'s net quantity:`, e);
+        }
+    }
     if (trade.action === 'Buy' && trade.token) {
         openQty.set(qtyKey, reportedNet ?? (openQty.get(qtyKey) ?? 0) + fillQty);
         openQtyExchange.set(qtyKey, exchange);
         registerTrade(trade.token, strategy, feed, exchange);
     } else if (trade.action === 'Sell' && trade.token) {
-        // Without the order process's net and without a tracked quantity this process cannot tell whether the position is flat (it may
-        // hold chunks from before a restart): keep the subscription - a lingering one is cleaned up by a strategy reset, a dropped one
-        // blinds the remaining chunks' exits.
+        // Still unknown (the order process unreachable too): keep the subscription - a lingering one is cleaned up by a strategy
+        // reset, a dropped one blinds the remaining chunks' exits.
         const unknownNet = reportedNet === undefined && !openQty.has(qtyKey);
         const remaining = reportedNet ?? (openQty.get(qtyKey) ?? 0) - fillQty;
         if (unknownNet) {

@@ -142,8 +142,9 @@ export async function cancelOrderWithFillRecheck(params: Parameters<typeof cance
     beginCancel: () => void;
     endCancel: () => void;
     // Called when the recheck finds a fill in the race window (OrderAlreadyFilledError): the order stays tracked so the poller books
-    // that fill, but its eventual CANCELLED status must not reach the cancelled listeners - the caller (a force-close) is selling
-    // the rest. Cleared by the order's untrack.
+    // that fill, but its eventual CANCELLED status must not reach the cancelled listeners: every caller of an explicit cancel
+    // (force-closes, squareOff-ahead-of-exit, the hedge hand-off) sells or owns the rest itself, and a re-placed exit would sell it
+    // twice. Cleared by untrack.
     silenceListeners: () => void;
 }): Promise<void> {
     params.beginCancel();

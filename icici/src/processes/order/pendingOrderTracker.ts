@@ -96,7 +96,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
 
     // Bracket an explicit cancel (cancelOrderWithFillRecheck): fills are still booked meanwhile, but a CANCELLED/REJECTED poll
     // result neither untracks nor tells the cancelled listeners - the cancelling caller owns both.
-    silenceListeners = (orderId: string): void => { this.silenced.add(orderId); };
+    silenceListeners = (orderId: string): void => { if (this.pending.has(orderId)) this.silenced.add(orderId); };
     beginCancel = (orderId: string): void => { this.cancelling.set(orderId, (this.cancelling.get(orderId) ?? 0) + 1); };
     endCancel = (orderId: string): void => {
         const n = (this.cancelling.get(orderId) ?? 0) - 1;
@@ -175,13 +175,17 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
             return;
         }
         const pollStartedAt = Date.now();
-        // Rotating start: orders behind a slow one at the front are not starved when the budget runs out.
+        // Resumes where the previous poll's budget ran out, so orders behind a slow one are not starved.
         const entries = Array.from(this.pending);
-        const start = entries.length > 0 ? this.pollOffset++ % entries.length : 0;
-        for (const [orderId, order] of [...entries.slice(start), ...entries.slice(0, start)]) {
+        const start = entries.length > 0 ? this.pollOffset % entries.length : 0;
+        let nextOffset = start + 1;
+        const ordered = [...entries.slice(start), ...entries.slice(0, start)];
+        for (let i = 0; i < ordered.length; i++) {
+            const [orderId, order] = ordered[i];
             if (!this.pending.has(orderId)) continue;
             if (Date.now() - pollStartedAt > POLL_BUDGET_MS) {
                 Log.log(`[order] poll pending ${label} limit orders: budget of ${POLL_BUDGET_MS}ms spent - the remaining orders are polled next tick`);
+                nextOffset = start + i; // the next poll starts at the first order not reached
                 break;
             }
             try {
@@ -196,6 +200,7 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
                 Log.log(`[order] poll pending ${label} limit orders: failed to poll order`, orderId, e);
             }
         }
+        this.pollOffset = nextOffset % Math.max(1, ordered.length || 1);
     }
 
     private async pollOrder(orderId: string, order: T, snapshot: Snapshot): Promise<void> {
