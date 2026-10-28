@@ -102,7 +102,10 @@ lifecycle so the owning strategy only needs to supply entry-trigger logic.
   `capitalGateTripped` — total exposure (open legs + pending re-entries)
   would exceed `maxInvestment`; `maxProfitTripped` — cumulative realized +
   unrealized P&L crosses `maxProfit`% of `maxInvestment`, at which point
-  `closeAllOnMaxProfit` force-sells every open leg.
+  `closeAllOnMaxProfit` force-sells every open leg; `maxLossTripped` — the
+  unrealized P&L of the legs open right now (NOT cumulative: earlier realized
+  gains do not offset it, changed 2026-10-28) reaches `-maxLoss`% of
+  `maxInvestment`, which closes every open leg and blocks new entries.
 - **Restart safety**: `restoreFromOpenTrades()` rebuilds the leg tree from
   broker open trades + a Mongo `legLineage` collection (parent/level/isRoot
   per leg, keyed by a stable `legRef` UUID that survives restarts, unlike the
@@ -236,7 +239,7 @@ No `maxLossPerOrder` (or 0) = off. A `maxLossPerOrder` without a usable `maxInve
 
 **Hedge trail exit (`hedgeTrailDistance`, points, optional, ships unset = off)**: applies to the hedge leg (the side
 opened by the `slDistance` trigger) only; the root leg keeps its fixed `targetPoints` resting sell. With it set, the hedge
-has **no resting sell**. Its target is `ceil(slDistance / 2)` points above its entry (10 -> 5, 5 -> 3). Reaching the target
+has **no resting sell**. Its target is `ceil(d / 2)` points above its entry, where `d` is how far the other leg was below its entry when the hedge buy started (CE bought at 100, hedge opened at 90 -> 5; after that hedge closes, a new one opened with CE at 80 -> 10); `slDistance` is the fallback if that price is unknown. Reaching the target
 only **arms** the trail (`TrailStop.ts`, one instance per slot; nothing is sold). Once armed, the exit level is
 `max(entry + target, peak - hedgeTrailDistance)`: it follows the highest tick and never sits below the target. A tick at
 or below it fires the exit: a **limit** sell for the open quantity, priced at that tick (so it is marketable) and never

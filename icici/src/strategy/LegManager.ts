@@ -391,12 +391,17 @@ export class LegManager {
     // Realized (this-session, since the last reset()) + unrealized P&L across every
     // currently open leg.
     private computeCumulativeProfit(): number {
+        return (this.realizedPnL - this.maxProfitBaseline) + this.computeOpenUnrealized();
+    }
+
+    // Unrealized P&L of the legs open right now, with no realized P&L netted in (the max-loss stop's measure).
+    private computeOpenUnrealized(): number {
         let unrealized = 0;
         for (const leg of this.legsByToken.values()) {
             const ltp = leg.lastLtp ?? leg.avgPrice; // no quote seen yet -> contributes 0
             unrealized += (ltp - leg.avgPrice) * leg.totalQuantity;
         }
-        return (this.realizedPnL - this.maxProfitBaseline) + unrealized;
+        return unrealized;
     }
 
     // One-way latch, mirrors capitalGateTripped but keyed off cumulative P&L
@@ -487,9 +492,10 @@ export class LegManager {
         Log.log(`[${this.deps.ownerType}] ERROR ${field}=${JSON.stringify(raw)} is not a number - this stop is NOT being enforced; fix the config`);
     }
 
-    // Loss-side mirror of checkAndMaybeTripMaxProfit. maxLoss is a % of the CONFIGURED maxInvestment, so
-    // maxLoss == maxProfit gives a symmetric daily band. Cumulative P&L is realized-since-reset + unrealized of every open
-    // leg (computeCumulativeProfit). Unset/null maxLoss disables it.
+    // Loss-side counterpart of checkAndMaybeTripMaxProfit, but NOT cumulative: maxLoss is a % of the CONFIGURED maxInvestment
+    // compared with the unrealized P&L of the legs open right now (computeOpenUnrealized). Realized gains earlier in the session
+    // do not offset it - on 2026-10-28 +12.9k of realized profit hid a -16.5k open leg from a -12k stop, so it never fired.
+    // (maxProfit stays cumulative.) Unset/null maxLoss disables it.
     private checkAndMaybeTripMaxLoss(cfg: LegManagerConfig): void {
         this.rollDayIfNeeded();
         if (this.maxLossTripped) return;
@@ -498,11 +504,11 @@ export class LegManager {
         if (maxLossPct === null) { this.logUnparseablePercent('maxLoss', cfg.maxLoss); return; }
         const maxInvestment = cfg.maxExposure ?? cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
         const threshold = (maxLossPct / 100) * maxInvestment;
-        const cumulative = this.computeCumulativeProfit();
-        if (!(cumulative <= -threshold)) return; // NaN-safe: a NaN cumulative must not trip it
+        const openUnrealized = this.computeOpenUnrealized();
+        if (!(openUnrealized <= -threshold)) return; // NaN-safe: a NaN P&L must not trip it
         this.maxLossTripped = true;
         this.persistLatch('maxLossTripped');
-        Log.log(`[${this.deps.ownerType}] MAX LOSS TRIPPED - cumulative=${Math.round(cumulative)} threshold=-${Math.round(threshold)} (maxLoss=${maxLossPct}% of maxInvestment=${maxInvestment}) - closing every open leg and blocking new entries`);
+        Log.log(`[${this.deps.ownerType}] MAX LOSS TRIPPED - open-position P&L=${Math.round(openUnrealized)} threshold=-${Math.round(threshold)} (maxLoss=${maxLossPct}% of maxInvestment=${maxInvestment}) - closing every open leg and blocking new entries`);
     }
 
     isMaxLossTripped(): boolean {
