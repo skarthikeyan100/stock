@@ -339,6 +339,10 @@ async function placeOrderWithPendingGuard(
         const result = await bookkeeping.runWithReservation(req.userId, entry, place);
         // Chunk fills only consumed part of the reservation (see releasePending): the residual is estimate error, release it now.
         if (entry.filledInContext) bookkeeping.releaseReservation(req.userId, entry);
+        // A resting limit buy returns only its order id and keeps its reservation until it fills or is cancelled: remember which
+        // order owns it so either outcome releases exactly this one (bookkeeping.releaseReservationForOrder).
+        const restingOrderId = (result as any)?.orderId;
+        if (typeof restingOrderId === 'string' && restingOrderId && !entry.filledInContext) entry.orderId = restingOrderId;
         return { kind: 'response', id: req.id, ok: true, result };
     } catch (e) {
         // Identity release: if a chunk's fill already released this request's reservation, this is a no-op.

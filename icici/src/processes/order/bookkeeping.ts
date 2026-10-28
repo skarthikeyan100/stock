@@ -80,6 +80,7 @@ interface UserSettings {
 // add() is a no-op, and a single delete() would wipe out both) - that's
 // exactly the gap this whole fix closes, so this must be a per-user list.
 interface PendingOrder {
+    orderId?: string; // set for a resting limit buy once placed, so its fill or cancel releases THIS reservation (see releaseReservationForOrder)
     filledInContext?: boolean; // a fill booked inside the owning request already consumed part of estimatedValue
     estimatedLots: number;  // always 1: a conservative reservation - real
                              // quantity isn't always known yet (see buyIndex/
@@ -399,6 +400,22 @@ class OrderBookkeeping {
         if (idx === -1) return;
         list.splice(idx, 1);
         if (list.length === 0) this.pendingOrders.delete(user);
+    }
+
+    // Releases the reservation a resting limit buy took when it was placed (matched by broker order id). Returns false when no
+    // reservation carries that id (already released by its fill, a market buy, or lost in a restart). A cancelled or rejected
+    // resting buy never fills, so without this its reservation leaked until restart: 2026-10-28 ~150k of phantom pending value
+    // made ContinuousStrategy's max-investment gate reject every hedge for an open leg.
+    releaseReservationForOrder(orderId: string): boolean {
+        const id = String(orderId);
+        for (const [user, list] of this.pendingOrders) {
+            const idx = list.findIndex((p) => p.orderId === id);
+            if (idx === -1) continue;
+            list.splice(idx, 1);
+            if (list.length === 0) this.pendingOrders.delete(user);
+            return true;
+        }
+        return false;
     }
 
     // Releases exactly one pending reservation for `user` - never all of them -
@@ -1088,7 +1105,10 @@ class OrderBookkeeping {
         }
 
         if (tradeEvent.action == 'Buy') {
-            this.releasePending(tradeEvent.user || 'Default', tradeEvent.broker, tradeEvent.quantity * tradeEvent.price);
+            // A resting buy's own reservation first (by order id); otherwise the FIFO/in-context release as before.
+            if (!(tradeEvent.brokerOrderId && this.releaseReservationForOrder(tradeEvent.brokerOrderId))) {
+                this.releasePending(tradeEvent.user || 'Default', tradeEvent.broker, tradeEvent.quantity * tradeEvent.price);
+            }
             const index = this.trades.findIndex((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user && t.broker == tradeEvent.broker);
             if (index == -1) {
                 this.trades.push(tradeEvent);
