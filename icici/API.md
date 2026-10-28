@@ -574,6 +574,15 @@ Broker-position and strategy reconciliation is **on-demand only**: it is not run
 
 ---
 
+### GET /strategyPnl
+**Description:** Realized (closed trades) and unrealized (open positions) P&L per strategy for the current `order` session. Admin (loopback needs no auth). Used by `scripts/strategy-status.sh`.
+
+**Query:** `match` (optional regex on the trade's strategy name, case-insensitive)
+
+**Response:** `[{ strategy, realized, unrealized, open, closed }]`
+
+---
+
 ### GET /stats
 **Description:** Get strategy statistics and P&L data
 
