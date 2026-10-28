@@ -331,7 +331,7 @@ class OrderClient {
         return this.call('getOrders', userId, {});
     }
 
-    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; perOrderCap?: number; allottedCapital?: number; targetPoints?: number; stopLossPoints?: number; accountClosed?: boolean }): Promise<void> {
+    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; accountCapital?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; perOrderCap?: number; strategyCapital?: number; targetPoints?: number; stopLossPoints?: number; accountClosed?: boolean }): Promise<void> {
         const res = await this.request('updateUserSettings', userId, settings);
         if (!res.ok) throw new Error(res.error);
     }

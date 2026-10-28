@@ -762,7 +762,7 @@ export default class Prism {
                 const amountPerLot = price * lotSizeAsInt;
                 qty = amountPerLot > 0 ? Math.floor(userContext.availableAmount / amountPerLot) * lotSizeAsInt : 0;
             } else {
-                const lotCount = userContext?.lotCount ?? Config.lotCount;
+                const lotCount = userContext?.lotLimit ?? Config.lotCount;
                 qty = lotCount * lotSizeAsInt;
             }
         }
@@ -833,7 +833,7 @@ export default class Prism {
         if (!qty) {
             const lotSize = await this.findLotSizeByContract(contract);
             const lotSizeAsInt = parseInt(lotSize);
-            const lotCount = userContext?.lotCount ?? Config.lotCount;
+            const lotCount = userContext?.lotLimit ?? Config.lotCount;
             qty = lotCount * lotSizeAsInt;
         }
         const user = userContext?.email;

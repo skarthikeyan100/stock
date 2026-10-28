@@ -1077,7 +1077,7 @@ async function applyConfigStrategyLimitsOnce() {
         const mongoUser = await getUser(userId).catch(() => null);
         bookkeeping.updateUserSettings(userId, {
             lossLimit: mongoUser?.lossLimit ?? USER_LOSS_LIMIT,
-            lotLimit: mongoUser?.lotCount ?? DEFAULT_LOT_LIMIT,
+            lotLimit: mongoUser?.lotLimit ?? mongoUser?.lotCount ?? DEFAULT_LOT_LIMIT,
             maxInvestment: (cfg as any).maxInvestment || DEFAULT_MAX_INVESTMENT,
             useGTT: cfg.useGTT ?? mongoUser?.useGTT ?? true,
             broker: normalizeBrokerName((cfg as any).broker ?? (mongoUser as any)?.broker ?? 'kite') as any,
@@ -1093,18 +1093,18 @@ async function loadUserLimits() {
     // (login/create/settings-save - see server.ts) - never at order-process
     // startup. Preload everyone here too, so a restart doesn't silently drop
     // an already-logged-in user back to hardcoded defaults (e.g.
-    // investmentAmount=0) until they take one of those actions again.
+    // accountCapital=0) until they take one of those actions again.
     const users = await getAllUsers().catch(() => []);
     for (const user of users) {
         bookkeeping.updateUserSettings(user.email, {
             lossLimit: user.lossLimit,
-            lotLimit: user.lotCount,
+            lotLimit: user.lotLimit ?? user.lotCount,
             investmentMode: user.investmentMode,
-            investmentAmount: user.investmentAmount,
+            accountCapital: user.accountCapital ?? user.investmentAmount,
             useGTT: user.useGTT,
             broker: user.broker,
             perOrderCap: user.perOrderCap,
-            allottedCapital: user.allottedCapital,
+            strategyCapital: user.strategyCapital ?? user.allottedCapital,
             targetPoints: user.targetPoints,
             stopLossPoints: user.stopLossPoints,
             accountClosed: user.accountClosed,

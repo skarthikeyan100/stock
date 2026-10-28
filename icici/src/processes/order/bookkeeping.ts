@@ -64,11 +64,11 @@ interface UserSettings {
     lotLimit?: number;
     maxInvestment?: number;
     investmentMode?: string;
-    investmentAmount?: number;
+    accountCapital?: number;
     useGTT?: boolean;
     broker?: 'kite' | 'ant' | 'breeze';
     perOrderCap?: number;
-    allottedCapital?: number;
+    strategyCapital?: number;
     targetPoints?: number;
     stopLossPoints?: number;
     accountClosed?: boolean;
@@ -189,7 +189,11 @@ class OrderBookkeeping {
         this.notifyPositionsChanged();
     }
 
-    updateUserSettings(user: string, settings: UserSettings) {
+    // `settings` may still carry the pre-migration names (a frontend/strategies process on the previous build): they are mapped on entry.
+    updateUserSettings(user: string, rawSettings: UserSettings & { investmentAmount?: number; allottedCapital?: number }) {
+        const { investmentAmount, allottedCapital, ...settings } = rawSettings;
+        if (settings.accountCapital === undefined && investmentAmount !== undefined) settings.accountCapital = investmentAmount;
+        if (settings.strategyCapital === undefined && allottedCapital !== undefined) settings.strategyCapital = allottedCapital;
         // A closure this process made moments ago may not be in the user document yet, so a push built from a document that has not
         // caught up must not re-open the account. Once the closure is older than the persist window the document is authoritative
         // again, which is how an admin clearing accountClosed in Mongo takes effect without a restart.
@@ -245,7 +249,7 @@ class OrderBookkeeping {
     // undefined signals "no per-user override" - callers fall back to their
     // own strategy-level config.yml value (see ContinuousStrategy.capitalCheck).
     getUserAllottedCapital(user: string): number | undefined {
-        return this.userSettingsCache.get(user)?.allottedCapital;
+        return this.userSettingsCache.get(user)?.strategyCapital;
     }
 
     // undefined signals "no per-user override" - callers fall back to
@@ -261,14 +265,14 @@ class OrderBookkeeping {
 
     getUserContext(email: string): UserContext {
         const cache = this.userSettingsCache.get(email);
-        const investmentAmount = cache?.investmentAmount ?? 0;
+        const accountCapital = cache?.accountCapital ?? 0;
         return {
             email,
             lossLimit: cache?.lossLimit ?? UNKNOWN_USER_LOSS_LIMIT,
-            lotCount: cache?.lotLimit ?? DEFAULT_LOT_LIMIT,
+            lotLimit: cache?.lotLimit ?? DEFAULT_LOT_LIMIT,
             investmentMode: (cache?.investmentMode ?? 'investmentAmount') as 'lotCount' | 'investmentAmount',
-            investmentAmount,
-            availableAmount: investmentAmount - this.getCurrentInvestment(email),
+            accountCapital,
+            availableAmount: accountCapital - this.getCurrentInvestment(email),
         };
     }
 
@@ -507,8 +511,8 @@ class OrderBookkeeping {
     // anything other than 'ok'; the sell-side liquidation trigger acts only on
     // a definite 'breached' - an unreadable ledger must never close positions.
     async drawdownState(user: string, window: 'daily' | 'weekly'): Promise<'ok' | 'breached' | 'unknown'> {
-        const investmentAmount = this.userSettingsCache.get(user)?.investmentAmount;
-        if (!investmentAmount) return 'ok';
+        const accountCapital = this.userSettingsCache.get(user)?.accountCapital;
+        if (!accountCapital) return 'ok';
         // Once today's daily breach is latched it stays breached for the day, even if the position that caused it closed at a better price.
         if (window === 'daily' && this.drawdownLatched(user)) return 'breached';
         const settings = configService.getConfig().settings as any;
@@ -522,7 +526,7 @@ class OrderBookkeeping {
             ? await withFallbackTimeout(this.getOpenUnrealizedPnL(user), OPEN_PNL_TIMEOUT_MS, null, 'open P&L pricing')
             : null;
         const total = pnl === null ? null : pnl + (unrealized ?? 0);
-        return drawdownDecision(total, investmentAmount, limitPercent);
+        return drawdownDecision(total, accountCapital, limitPercent);
     }
 
     // Open P&L of this user's positions at live ANT prices (maxloss.md B4.1). Long: (ltp - price) * qty; short: the reverse.
@@ -600,7 +604,7 @@ class OrderBookkeeping {
     async evaluateOpenDrawdowns(): Promise<void> {
         const users = new Set([...this.trades, ...this.shortTrades].map((t) => t.user));
         for (const user of users) {
-            if (!this.userSettingsCache.get(user)?.investmentAmount) continue; // strategy pseudo-users are skipped by design
+            if (!this.userSettingsCache.get(user)?.accountCapital) continue; // strategy pseudo-users are skipped by design
             if (this.drawdownEvalInFlight.has(user)) continue;
             this.drawdownEvalInFlight.add(user);
             try {

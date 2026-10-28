@@ -96,7 +96,7 @@ export class Index {
             const amountPerLot = pricePerquantity * this.lotSize;
             return Math.floor(available / amountPerLot) * this.lotSize;
         }
-        const lotCount = userContext?.lotCount ?? config.lotCount;
+        const lotCount = userContext?.lotLimit ?? config.lotCount;
         return lotCount * this.lotSize;
     }
 

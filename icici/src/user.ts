@@ -8,8 +8,15 @@ export interface User {
     name: string;
     picture: string;
     lossLimit: number;
+    // Vocabulary migration (REFACTOR_PLAN.md section 3): the canonical names are lotLimit / accountCapital / strategyCapital. The old
+    // names (lotCount / investmentAmount / allottedCapital) are the stored fields older builds read, so for now BOTH are written and
+    // either is accepted on read (withCanonicalFields); the old ones are dropped in a later release once nothing reads them.
+    lotLimit: number;
+    /** @deprecated use lotLimit */
     lotCount: number;
     investmentMode: 'lotCount' | 'investmentAmount';
+    accountCapital: number;
+    /** @deprecated use accountCapital */
     investmentAmount: number;
     useGTT: boolean;
     broker?: 'kite' | 'ant' | 'breeze';
@@ -39,6 +46,8 @@ export interface User {
     // Per-user override of ContinuousStrategy's config.yml-level allottedCapital
     // (aggregate cap across all of that strategy's open legs) - unset means
     // "use the strategy's own config.yml value" (see ContinuousStrategy.capitalCheck).
+    strategyCapital?: number;
+    /** @deprecated use strategyCapital */
     allottedCapital?: number;
     // Per-user override of config.yml's global settings.targetPriceDiff/
     // stopLossPriceDiff, used by every Kite/ANT entry path
@@ -102,15 +111,46 @@ export function toClientUser(user: User): Omit<User, 'aadharNumber' | 'panNumber
     };
 }
 
+// Canonical <-> stored-name pairs of the vocabulary migration. Reading a document fills each name from the other; writing sets both.
+const FIELD_PAIRS = [['lotLimit', 'lotCount'], ['accountCapital', 'investmentAmount'], ['strategyCapital', 'allottedCapital']] as const;
+
+export function withCanonicalFields<T extends Record<string, any>>(doc: T): T {
+    const out: Record<string, any> = { ...doc };
+    for (const [canonical, legacy] of FIELD_PAIRS) {
+        const value = out[canonical] ?? out[legacy];
+        if (value !== undefined && value !== null) { out[canonical] = value; out[legacy] = value; }
+    }
+    return out as T;
+}
+
+// One-off at startup: documents written before the migration get the canonical fields stored too (idempotent).
+export async function backfillVocabularyFields(): Promise<void> {
+    try {
+        for (const user of await collection().find({}).toArray()) {
+            const set: Record<string, any> = {};
+            for (const [canonical, legacy] of FIELD_PAIRS) {
+                const value = user[canonical] ?? user[legacy];
+                if (value !== undefined && value !== null) {
+                    if (user[canonical] !== value) set[canonical] = value;
+                    if (user[legacy] !== value) set[legacy] = value;
+                }
+            }
+            if (Object.keys(set).length > 0) await collection().updateOne({ _id: user._id }, { $set: set });
+        }
+    } catch (e) {
+        Log.log('[User] vocabulary backfill failed (readers still accept both names):', e);
+    }
+}
+
 // Runtime context passed through the order placement chain.
 // Combines identity (email) with per-user trading config and current available capital.
 export interface UserContext {
     email: string;
     lossLimit: number;
-    lotCount: number;
+    lotLimit: number;
     investmentMode: 'lotCount' | 'investmentAmount';
-    investmentAmount: number;
-    availableAmount: number; // investmentAmount - currently deployed capital
+    accountCapital: number;
+    availableAmount: number; // accountCapital - currently deployed capital
 }
 
 // Admin emails - can be configured via environment variable or default list
@@ -151,16 +191,16 @@ export async function getOrCreateUser(rawEmail: string, name: string, picture: s
     if (existing) {
         const updates: Partial<User> & { lotSize?: number } = {};
         if (existing.name !== name || existing.picture !== picture) { updates.name = name; updates.picture = picture; }
-        if (existing.lotCount === undefined) updates.lotCount = existing.lotSize ?? 10;
+        if ((existing.lotCount ?? existing.lotLimit) === undefined) updates.lotCount = existing.lotSize ?? 10;
         if (existing.investmentMode === undefined) updates.investmentMode = 'investmentAmount';
-        if (existing.investmentAmount === undefined) updates.investmentAmount = 100000;
+        if ((existing.investmentAmount ?? existing.accountCapital) === undefined) updates.investmentAmount = 100000;
         if (existing.useGTT === undefined) updates.useGTT = true;
         if (existing.aadharVerified === undefined) updates.aadharVerified = false;
         if (existing.profitSplitPercent === undefined) updates.profitSplitPercent = DEFAULT_PROFIT_SPLIT_PERCENT;
         if (existing.entityType === undefined) updates.entityType = 'individual';
         if (existing.gstVerified === undefined) updates.gstVerified = false;
         if (Object.keys(updates).length > 0) await col.updateOne({ email }, { $set: updates });
-        return {
+        return withCanonicalFields({
             ...existing,
             lotCount: updates.lotCount ?? existing.lotCount,
             investmentMode: updates.investmentMode ?? existing.investmentMode,
@@ -172,7 +212,7 @@ export async function getOrCreateUser(rawEmail: string, name: string, picture: s
             profitSplitPercent: updates.profitSplitPercent ?? existing.profitSplitPercent,
             entityType: updates.entityType ?? existing.entityType,
             gstVerified: updates.gstVerified ?? existing.gstVerified,
-        } as User;
+        } as User);
     }
     // Auto-assign admin role for configured admin emails
     const role = isAdminEmail(email) ? 'admin' : 'user';
@@ -181,8 +221,10 @@ export async function getOrCreateUser(rawEmail: string, name: string, picture: s
         name,
         picture,
         lossLimit: 15000,
+        lotLimit: 10,
         lotCount: 10,
         investmentMode: 'investmentAmount',
+        accountCapital: 100000,
         investmentAmount: 100000,
         useGTT: true,
         role,
@@ -201,25 +243,27 @@ export async function getOrCreateUser(rawEmail: string, name: string, picture: s
     // Upsert-on-insert so two simultaneous first logins cannot create two users.
     await col.updateOne({ email }, { $setOnInsert: user }, { upsert: true });
     Log.log(`[User] Created new user: ${email} with role: ${role}`);
-    return (await col.findOne({ email })) as unknown as User;
+    return withCanonicalFields((await col.findOne({ email })) as unknown as User);
 }
 
 export async function getUser(email: string): Promise<User | null> {
     const doc = await collection().findOne({ email });
-    return doc as User | null;
+    return doc ? withCanonicalFields(doc as unknown as User) : null;
 }
 
 export async function getAllUsers(): Promise<User[]> {
     const docs = await collection().find({}).toArray();
-    return docs as User[];
+    return docs.map((d) => withCanonicalFields(d as unknown as User));
 }
 
-export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotCount?: number; investmentMode?: string; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; enabled?: boolean; perOrderCap?: number | null; allottedCapital?: number | null; targetPoints?: number | null; stopLossPoints?: number | null; profitSplitPercent?: number }): Promise<User | null> {
+export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotLimit?: number; lotCount?: number; investmentMode?: string; accountCapital?: number; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; enabled?: boolean; perOrderCap?: number | null; strategyCapital?: number | null; allottedCapital?: number | null; targetPoints?: number | null; stopLossPoints?: number | null; profitSplitPercent?: number }): Promise<User | null> {
     const update: any = {};
     if (settings.lossLimit !== undefined) update.lossLimit = settings.lossLimit;
-    if (settings.lotCount !== undefined) update.lotCount = settings.lotCount;
+    const lotLimit = settings.lotLimit ?? settings.lotCount;
+    if (lotLimit !== undefined) { update.lotLimit = lotLimit; update.lotCount = lotLimit; }
     if (settings.investmentMode !== undefined) update.investmentMode = settings.investmentMode;
-    if (settings.investmentAmount !== undefined) update.investmentAmount = settings.investmentAmount;
+    const accountCapital = settings.accountCapital ?? settings.investmentAmount;
+    if (accountCapital !== undefined) { update.accountCapital = accountCapital; update.investmentAmount = accountCapital; }
     if (settings.useGTT !== undefined) update.useGTT = settings.useGTT;
     if (settings.broker !== undefined) {
         const broker = normalizeBrokerName(settings.broker);
@@ -229,11 +273,14 @@ export async function updateUserSettings(email: string, settings: { lossLimit?: 
     if (settings.enabled !== undefined) update.enabled = settings.enabled;
     // null = clear a per-user override (falls back to the global/strategy default); undefined = leave as is.
     const unset: any = {};
-    for (const key of ['perOrderCap', 'allottedCapital', 'targetPoints', 'stopLossPoints'] as const) {
+    for (const key of ['perOrderCap', 'targetPoints', 'stopLossPoints'] as const) {
         const v = (settings as any)[key];
         if (v === null) unset[key] = '';
         else if (v !== undefined) update[key] = v;
     }
+    const strategyCapital = settings.strategyCapital !== undefined ? settings.strategyCapital : settings.allottedCapital;
+    if (strategyCapital === null) { unset.strategyCapital = ''; unset.allottedCapital = ''; }
+    else if (strategyCapital !== undefined) { update.strategyCapital = strategyCapital; update.allottedCapital = strategyCapital; }
     if (settings.profitSplitPercent !== undefined) update.profitSplitPercent = settings.profitSplitPercent;
     const ops: any = {};
     if (Object.keys(update).length > 0) ops.$set = update;
@@ -356,8 +403,10 @@ export async function createUser(email: string, name: string, lossLimit: number,
         name,
         picture: '',
         lossLimit,
+        lotLimit: lotCount,
         lotCount,
         investmentMode,
+        accountCapital: investmentAmount,
         investmentAmount,
         useGTT,
         role,

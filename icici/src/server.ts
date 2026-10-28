@@ -41,7 +41,7 @@ import fs from 'fs';
 import { Trade } from './model/model';
 import configService from './prism/ConfigService';
 import { validateFlatConfig, validateConfigFile } from './prism/configValidation';
-import { revokeSessions, getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields } from './user';
+import { revokeSessions, getOrCreateUser, getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields, backfillVocabularyFields } from './user';
 import { computePayout, createPayoutRecord, markPayoutDecision, markPayoutPaidWithProof, setPayoutEmailStatus, claimPayoutEmailSend, getPayout, generateInvoiceHtml, getPayoutDecisionLog, computePnlSummary, periodFromInputs, displayPeriodEnd } from './payout';
 import multer from 'multer';
 import { GridFSBucket, ObjectId } from 'mongodb';
@@ -180,13 +180,13 @@ const orderClient = OrderClient.getInstance();
 function pushUserToOrderProcess(user: any, context: string): Promise<void> {
     return orderClient.updateUserSettings(user.email, {
         lossLimit: user.lossLimit,
-        lotLimit: user.lotCount,
+        lotLimit: user.lotLimit ?? user.lotCount,
         investmentMode: user.investmentMode,
-        investmentAmount: user.investmentAmount,
+        accountCapital: user.accountCapital ?? user.investmentAmount,
         useGTT: user.useGTT,
         broker: user.broker,
         perOrderCap: user.perOrderCap,
-        allottedCapital: user.allottedCapital,
+        strategyCapital: user.strategyCapital ?? user.allottedCapital,
         targetPoints: user.targetPoints,
         stopLossPoints: user.stopLossPoints,
         accountClosed: user.accountClosed === true,
@@ -512,7 +512,11 @@ app.patch('/users/:email/role', requireAdmin, async function (req, res) {
 app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
-        const { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled } = req.body;
+        const { lossLimit, investmentMode, useGTT, broker, perOrderCap, targetPoints, stopLossPoints, profitSplitPercent, enabled } = req.body;
+        // Canonical names win; the old ones (lotCount / investmentAmount / allottedCapital) are still accepted (REFACTOR_PLAN.md section 3).
+        const lotCount = req.body.lotLimit ?? req.body.lotCount;
+        const investmentAmount = req.body.accountCapital ?? req.body.investmentAmount;
+        const allottedCapital = req.body.strategyCapital !== undefined ? req.body.strategyCapital : req.body.allottedCapital;
         // Self-service is limited to the investment mode; limits, capital (investmentAmount is the base the daily/weekly loss limits are
         // measured against), exit mode (useGTT), broker, profit split and the enabled flag are admin-controlled (a trader must not be able to raise their own loss limit or re-enable a disabled account).
         if (!requestIsLoopback(req)) {
@@ -545,7 +549,7 @@ app.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (
             res.status(400).json({ error: `Invalid broker '${broker}' (expected ${USER_BROKERS_TEXT})` });
             return;
         }
-        const user = await updateUserSettings(email, { lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled });
+        const user = await updateUserSettings(email, { lossLimit, lotLimit: lotCount, investmentMode, accountCapital: investmentAmount, useGTT, broker, perOrderCap, strategyCapital: allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled });
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;
@@ -2126,6 +2130,7 @@ app.use((err: any, req: express.Request, res: express.Response, _next: express.N
 
 async function main() {
     await Mongo.init().catch((e) => Log.log('[frontend] Mongo.init failed (continuing without persistence):', e));
+    await backfillVocabularyFields();
 
     orderClient.connect();
     strategiesClient.connect();

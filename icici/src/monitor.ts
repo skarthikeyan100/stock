@@ -53,7 +53,7 @@ export default class Monitor {
         if (until <= Date.now()) { this.graceUntil.delete(user); return false; }
         return true;
     }
-    userSettingsCache: Map<string, { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number }> = new Map();
+    userSettingsCache: Map<string, { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; accountCapital?: number }> = new Map();
     private strategyMap: Map<string, Strategy> = new Map();
     private watchTokens: Map<string, Set<Strategy>> = new Map();
     private niftyQuoteHistory: NiftyQuote[] = [];
@@ -185,20 +185,20 @@ export default class Monitor {
         return cached?.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
     }
 
-    updateUserSettings(user: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number }) {
+    updateUserSettings(user: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; accountCapital?: number }) {
         this.userSettingsCache.set(user, settings);
     }
 
     getUserContext(email: string): UserContext {
         const cache = this.userSettingsCache.get(email);
-        const investmentAmount = cache?.investmentAmount ?? 0;
+        const accountCapital = cache?.accountCapital ?? 0;
         return {
             email,
             lossLimit: cache?.lossLimit ?? UNKNOWN_USER_LOSS_LIMIT,
-            lotCount: cache?.lotLimit ?? DEFAULT_LOT_LIMIT,
+            lotLimit: cache?.lotLimit ?? DEFAULT_LOT_LIMIT,
             investmentMode: (cache?.investmentMode ?? 'investmentAmount') as 'lotCount' | 'investmentAmount',
-            investmentAmount,
-            availableAmount: investmentAmount - this.getCurrentInvestment(email),
+            accountCapital,
+            availableAmount: accountCapital - this.getCurrentInvestment(email),
         };
     }
 
