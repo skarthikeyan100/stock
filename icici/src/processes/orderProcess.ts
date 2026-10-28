@@ -186,8 +186,6 @@ function resolveRequestBroker(req: OrderRequest): string {
     switch (req.type) {
         case 'antPlaceCoverOrder':
         case 'antBuyTargetOnly':
-        case 'antBuyContractBare':
-        case 'antPlaceLimitBuyBare':
             return 'ant';
         case 'breezeBuyIndex':
             return 'breeze';
@@ -196,6 +194,13 @@ function resolveRequestBroker(req: OrderRequest): string {
         case 'chunkedBuyIndex':
         case 'butterflyBuyLeg':
         case 'butterflySellToOpen':
+        // The generic Bare family: an explicit payload broker (a strategy running legs on a broker other than the user's default, e.g.
+        // an ANT tree) wins, otherwise the user's own broker.
+        case 'buyContractBare':
+        case 'sellContractBare':
+        case 'placeLimitBuyBare':
+        case 'cancelOrderBare':
+        case 'getContractByPriceRangeBare':
             return req.payload?.broker ?? bookkeeping.getUserBroker(req.userId);
         default:
             return bookkeeping.getUserBroker(req.userId);
@@ -715,14 +720,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 );
             }
 
-            case 'antPlaceLimitBuyBare': {
-                const { tradingSymbol, instrumentId, quantity, price, exchange } = req.payload;
-                const estimatedValue = price && quantity ? price * quantity : undefined;
-                return await placeOrderWithPendingGuard(req, estimatedValue, () =>
-                    antExecutor.placeLimitBuyBareOnAnt(req.userId, tradingSymbol, instrumentId, quantity, price, exchange),
-                );
-            }
-
             case 'antPlaceLimitSellBare': {
                 await waitForReconcile();
                 const { tradingSymbol, instrumentId, quantity, price, exchange, product } = req.payload;
@@ -748,18 +745,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // antLegOps.ts) - BulkPcr trades on ANT, so the Kite/Breeze-only
             // getContractByPriceRangeBare/buyContractBare/etc 'Bare' family above can't
             // be reused for it (see antLegOps.ts's header comment).
-            case 'antBuyContractBare': {
-                const { tradingSymbol, instrumentId, quantity, exchange } = req.payload;
-                return await placeOrderWithPendingGuard(req, undefined, () =>
-                    antExecutor.enterPosition(req.userId, tradingSymbol, instrumentId, quantity, exchange, 0, 0, 'target-only'),
-                );
-            }
-
-            case 'antCancelOrderBare': {
-                await antExecutor.cancelOrderOnAnt(req.payload.orderId);
-                return { kind: 'response', id: req.id, ok: true };
-            }
-
             // Cancels any resting limit sell(s) for this tsym ahead of a hand-off to
             // the hedge tree (BulkPcrStrategy, ANT-only) or a plain invalidation-close
             // (HourlyStrategy, kite/ant/breeze) - same closure the drawdown-breach/
@@ -789,7 +774,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
 
             // Long-side (buy-to-open) leg, explicit-broker dispatch - see orderProtocol.ts's
-            // comment on why this can't reuse 'buyContractBare'/'antBuyContractBare'/'buyContract'
+            // comment on why this can't reuse 'buyContract'
             // directly for a strategy that runs several brokers' legs concurrently. Mechanically
             // identical to each broker's existing "bare" long-entry primitive; records via the
             // normal recordFill (this is an ordinary long, not a short). Routed through
@@ -979,32 +964,32 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'buyContractBare': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return await placeOrderWithPendingGuard(req, estimatedValue, () =>
-                    getBrokerExecutor(req.userId).marketBuy(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange),
+                    getBrokerExecutor(req.userId, req.payload.broker).marketBuy(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange),
                 );
             }
 
             case 'sellContractBare': {
                 await waitForReconcile();
-                const result = await getBrokerExecutor(req.userId).marketSell(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
+                const result = await getBrokerExecutor(req.userId, req.payload.broker).marketSell(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
             case 'placeLimitBuyBare': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return await placeOrderWithPendingGuard(req, estimatedValue, () => {
-                    const executor = getBrokerExecutor(req.userId);
+                    const executor = getBrokerExecutor(req.userId, req.payload.broker);
                     if (!executor.capabilities.placeLimitBuy) throw new Error(`placeLimitBuyBare: no ${executor.brokerName} limit-buy primitive - refusing to route a ${executor.brokerName} user to another broker`);
                     return executor.placeLimitBuy(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange);
                 });
             }
 
             case 'cancelOrderBare': {
-                await getBrokerExecutor(req.userId).cancelOrder(req.payload.orderId);
+                await getBrokerExecutor(req.userId, req.payload.broker).cancelOrder(req.payload.orderId, req.payload.exchange);
                 return { kind: 'response', id: req.id, ok: true, result: undefined };
             }
 
             case 'getContractByPriceRangeBare': {
-                const executor = getBrokerExecutor(req.userId);
+                const executor = getBrokerExecutor(req.userId, req.payload.broker);
                 const excludeStrikes = new Set<number>(req.payload.excludeStrikes || []);
                 if (!executor.capabilities.getContractByPriceRange) throw new Error(`getContractByPriceRangeBare: not implemented for ${executor.brokerName} - refusing to resolve another broker's contract for a ${executor.brokerName} user`);
                 const result = await executor.getContractByPriceRange(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes);

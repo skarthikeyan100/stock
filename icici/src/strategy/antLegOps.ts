@@ -65,7 +65,7 @@ async function pickContract(
 
 async function buy(userId: string, tradingSymbol: string, token: string, quantity: number, exchange: 'NFO' | 'BFO', _premiumHint: number) {
     try {
-        return await OrderClient.getInstance().antBuyContractBare(userId, { tradingSymbol, instrumentId: token, quantity, exchange });
+        return await OrderClient.getInstance().buyContractBare(userId, tradingSymbol, token, quantity, exchange, undefined, 'ant');
     } catch (e: any) {
         const message = typeof e?.message === 'string' ? e.message : String(e);
         // "fill status unresolved" is resolveUnconfirmedAntBuy's (antExecutor.ts)
@@ -100,12 +100,12 @@ async function sell(userId: string, tradingSymbol: string, _token: string, quant
     return res;
 }
 
-async function cancel(userId: string, orderId: string): Promise<void> {
-    await OrderClient.getInstance().antCancelOrderBare(userId, orderId);
+async function cancel(userId: string, orderId: string, exchange?: 'NFO' | 'BFO'): Promise<void> {
+    await OrderClient.getInstance().cancelOrderBare(userId, orderId, exchange, 'ant');
 }
 
 async function buyLimit(userId: string, tradingSymbol: string, token: string, quantity: number, exchange: 'NFO' | 'BFO', price: number): ReturnType<LegBrokerOps['buyLimit']> {
-    return OrderClient.getInstance().antPlaceLimitBuyBare(userId, { tradingSymbol, instrumentId: token, quantity, price, exchange });
+    return OrderClient.getInstance().placeLimitBuyBare(userId, tradingSymbol, token, quantity, price, exchange, 'ant');
 }
 
 export const antLegOps: LegBrokerOps = { pickContract, buy, sell, cancel, buyLimit };

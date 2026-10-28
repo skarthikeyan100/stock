@@ -65,8 +65,7 @@ export const KiteExecutor: BrokerExecutor = {
 
 export const AntExecutor: BrokerExecutor = {
     brokerName: 'ant',
-    // placeLimitBuy is off on purpose: the generic limit-buy ops refuse ANT (its limit buy has its own antPlaceLimitBuyBare request).
-    capabilities: { placeLimitBuy: false, getContractByPriceRange: false },
+    capabilities: { placeLimitBuy: true, getContractByPriceRange: false },
 
     buy: (request: BuyRequest): Promise<Trade> =>
         antExecutor.enterPosition(
@@ -88,7 +87,7 @@ export const AntExecutor: BrokerExecutor = {
     marketBuy: (userId, tradingSymbol, instrumentToken, quantity, exchange) =>
         antExecutor.enterPosition(userId, tradingSymbol, instrumentToken, quantity, exchange, 0, 0, 'target-only'),
     marketSell: (userId, tradingSymbol, _instrumentToken, quantity, exchange) => antExecutor.squareOffOnAnt(userId, tradingSymbol, quantity, exchange),
-    placeLimitBuy: unsupported('ant', 'placeLimitBuy'),
+    placeLimitBuy: antExecutor.placeLimitBuyBareOnAnt,
     getLiveQuantity: antExecutor.getLiveNetQuantity,
     resolveContract: async (index, strike, right): Promise<ResolvedContract> => {
         const r = antContractFor(index, strike, right);

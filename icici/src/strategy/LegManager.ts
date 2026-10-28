@@ -265,7 +265,7 @@ export class LegManager {
     // untracked position remains. Used by every path that has already deleted the intent.
     private async cancelIntentOrSellBack(intent: PendingReEntry, label: string): Promise<void> {
         try {
-            await this.currentOps().cancel(this.deps.userId, intent.orderId);
+            await this.currentOps().cancel(this.deps.userId, intent.orderId, intent.exchange);
             Log.log(`[${this.deps.ownerType}] ${label}: pending re-entry cancelled: ${intent.tsym}`);
         } catch (e: any) {
             const filledQty = alreadyFilledQty(e);
@@ -988,7 +988,7 @@ export class LegManager {
             unwatchToken(token, this.deps.strategyRef, intent.exchange);
             if (intent.orderId) this.supersededRefills.set(intent.orderId, { tsym: intent.tsym, token, exchange: intent.exchange });
             try {
-                await this.currentOps().cancel(this.deps.userId, intent.orderId);
+                await this.currentOps().cancel(this.deps.userId, intent.orderId, intent.exchange);
                 Log.log(`[${this.deps.ownerType}] Pending refill at level ${intent.parentLevel} cancelled (parent ${leg.tsym}): ${intent.tsym}`);
             } catch (e: any) {
                 // The refill filled before the cancel landed (OrderAlreadyFilledError carries the real filled

@@ -77,7 +77,6 @@ export type OrderRequestType =
     | 'antBuyTargetOnly'
     | 'antPlaceLimitSellBare'
     // Resting limit BUY on ANT (ContinuousStrategy's refill) - 'placeLimitBuyBare' refuses ANT users.
-    | 'antPlaceLimitBuyBare'
     // Broker-parameterized counterpart of 'antPlaceLimitSellBare' - same
     // plain resting-limit-sell-only shape, dispatched by an explicit
     // `broker` field (kite/breeze/ant) instead of being ANT-only, so
@@ -89,8 +88,6 @@ export type OrderRequestType =
     // ANT-specific rather than routed through the broker-generic 'Bare'
     // family above (BulkPcr trades the hedge tree on ANT only, and ANT has
     // no contract-by-price-range lookup of its own).
-    | 'antBuyContractBare'
-    | 'antCancelOrderBare'
     // Broker-dispatched (see orderProcess.ts's case comment) - not ANT-specific like
     // the antXBare family above despite living in the same block.
     | 'cancelRestingLimitSells'
@@ -106,7 +103,7 @@ export type OrderRequestType =
     // existing 'buyContractBare'/'sellContractBare' (those resolve broker via
     // bookkeeping.getUserBroker(userId) - a per-USER setting, wrong for one strategy
     // instance that runs several brokers' legs concurrently within one tick) nor
-    // 'antBuyContractBare'/'buyContract' alone (ant/prism-only, no kite/breeze
+    // 'buyContract' alone (prism-only, no kite/breeze
     // equivalent with this same explicit-broker shape). Mechanically identical to the
     // existing bare buy/sell primitives per broker - just dispatched by an explicit
     // `broker` field in the payload instead of a per-user default.

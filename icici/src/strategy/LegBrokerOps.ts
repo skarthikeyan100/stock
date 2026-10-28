@@ -14,7 +14,7 @@ export interface LegBrokerOps {
     pickContract(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, excludeStrikes: number[]): Promise<LegContract>;
     buy(userId: string, tradingSymbol: string, token: string, quantity: number, exchange: 'NFO' | 'BFO', premiumHint: number): Promise<Trade>;
     sell(userId: string, tradingSymbol: string, token: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<unknown>;
-    cancel(userId: string, orderId: string): Promise<void>;
+    cancel(userId: string, orderId: string, exchange?: 'NFO' | 'BFO'): Promise<void>;
     buyLimit(userId: string, tradingSymbol: string, token: string, quantity: number, exchange: 'NFO' | 'BFO', price: number): Promise<{ orderId: string }>;
 }
 
@@ -32,7 +32,7 @@ export const defaultLegOps: LegBrokerOps = {
         OrderClient.getInstance().buyContractBare(userId, tradingSymbol, token, quantity, exchange, premiumHint),
     sell: (userId, tradingSymbol, token, quantity, exchange) =>
         OrderClient.getInstance().sellContractBare(userId, tradingSymbol, token, quantity, exchange),
-    cancel: (userId, orderId) => OrderClient.getInstance().cancelOrderBare(userId, orderId),
+    cancel: (userId, orderId, exchange) => OrderClient.getInstance().cancelOrderBare(userId, orderId, exchange),
     buyLimit: (userId, tradingSymbol, token, quantity, exchange, price) =>
         OrderClient.getInstance().placeLimitBuyBare(userId, tradingSymbol, token, quantity, price, exchange),
 };

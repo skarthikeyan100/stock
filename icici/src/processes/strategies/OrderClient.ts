@@ -1,4 +1,5 @@
 import net from 'net';
+import type { BrokerName } from '../../util/brokerName';
 import type { ChunkedFillResult } from '../../ipc/orderProtocol';
 import Log from '../../util/Log';
 import { writeJsonLine, readJsonLines } from '../../ipc/jsonLines';
@@ -265,10 +266,6 @@ class OrderClient {
         return this.call('antBuyTargetOnly', userId, payload);
     }
 
-    async antPlaceLimitBuyBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
-        return this.call('antPlaceLimitBuyBare', userId, payload);
-    }
-
     async antPlaceLimitSellBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; exchange: 'NFO' | 'BFO'; product?: 'INTRADAY' | 'LONGTERM' }): Promise<{ orderId: string }> {
         return this.call('antPlaceLimitSellBare', userId, payload);
     }
@@ -278,16 +275,6 @@ class OrderClient {
         return this.call('brokerPlaceLimitSellBare', userId, payload);
     }
 
-    // ANT bare ops for BulkPcrStrategy's hedge tree (antLegOps.ts) - see
-    // orderProtocol.ts's comment.
-    async antBuyContractBare(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
-        return this.call('antBuyContractBare', userId, payload);
-    }
-
-    async antCancelOrderBare(userId: string, orderId: string): Promise<void> {
-        const res = await this.request('antCancelOrderBare', userId, { orderId });
-        if (!res.ok) throw new Error(res.error);
-    }
 
     async cancelRestingLimitSells(userId: string, payload: { tsym: string; broker: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<{ filledQty: number; cancelFailed: boolean }> {
         return this.call('cancelRestingLimitSells', userId, payload);
@@ -392,8 +379,8 @@ class OrderClient {
     // userId (a strategy's pseudo-user id) via bookkeeping.getUserBroker - the
     // same per-user convention buyIndex/manualBuy/squareOff already use for
     // real users, so this class stays entirely broker-agnostic.
-    async buyContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number): Promise<any> {
-        return this.call('buyContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price });
+    async buyContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number, broker?: BrokerName): Promise<any> {
+        return this.call('buyContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price, broker });
     }
 
     async sellContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<any> {
@@ -403,12 +390,12 @@ class OrderClient {
     // Returns immediately with {orderId} - the fill arrives later as a normal
     // fill notification once pendingLimitOrders.ts's/breezePendingLimitOrders.ts's
     // poller sees it complete.
-    async placeLimitBuyBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO'): Promise<{ orderId: string }> {
-        return this.call('placeLimitBuyBare', userId, { tradingSymbol, instrumentToken, quantity, price, exchange });
+    async placeLimitBuyBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO', broker?: BrokerName): Promise<{ orderId: string }> {
+        return this.call('placeLimitBuyBare', userId, { tradingSymbol, instrumentToken, quantity, price, exchange, broker });
     }
 
-    async cancelOrderBare(userId: string, orderId: string): Promise<void> {
-        const res = await this.request('cancelOrderBare', userId, { orderId });
+    async cancelOrderBare(userId: string, orderId: string, exchange?: 'NFO' | 'BFO', broker?: BrokerName): Promise<void> {
+        const res = await this.request('cancelOrderBare', userId, { orderId, exchange, broker });
         if (!res.ok) throw new Error(res.error);
     }
 

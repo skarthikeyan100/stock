@@ -93,8 +93,8 @@ export function emptyExitTrade(userId: string, tsym: string, broker: 'kite' | 'a
 // any other reason leaves the resting order's state unknown, so this throws rather than risk a double-sell.
 // `openQuantity` reads the live bookkeeping size, since the poller may book a fill (shrinking it) while a cancel is in flight.
 export async function cancelRestingSellsAheadOfExit(args: {
-    pending: { orderId: string; action: string }[];
-    cancel: (orderId: string) => Promise<void>;
+    pending: { orderId: string; action: string; exchange?: OptionExchange }[];
+    cancel: (orderId: string, exchange?: OptionExchange) => Promise<void>;
     openQuantity: () => number | undefined;
     requested: number;
     label: string;
@@ -106,7 +106,7 @@ export async function cancelRestingSellsAheadOfExit(args: {
     let cancelledAny = false;
     for (const order of resting) {
         try {
-            await args.cancel(order.orderId);
+            await args.cancel(order.orderId, order.exchange);
             cancelledAny = true;
         } catch (e) {
             if (e instanceof OrderAlreadyFilledError) filledNotBooked += e.filledQuantity;
