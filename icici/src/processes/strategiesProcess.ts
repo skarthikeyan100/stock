@@ -3,8 +3,8 @@
 // dataProcess.ts).
 console.log = console.error;
 
-import { ownSocketTracker } from '../ipc/ownSocket';
 import '../util/tz'; // pin TZ=Asia/Kolkata before any other module reads the clock
+import { ownSocketTracker } from '../ipc/ownSocket';
 import net from 'net';
 import fs from 'fs';
 import Log from '../util/Log';

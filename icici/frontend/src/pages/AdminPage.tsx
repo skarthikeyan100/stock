@@ -4,9 +4,8 @@ import { Container, Table, Form, Button, Spinner, Tabs, Tab, Card, Row, Col, Ale
 import { useAuth, AuthUser } from '../context/AuthContext';
 import DateRangeFilter, { DateRange, resolveDateRange, formatRangeLabel } from '../components/DateRangeFilter';
 import { apiFetch, apiPost, readError } from '../utils/api';
+import { periodEndShown } from '../utils/period';
 
-// periodEnd is stored exclusive (next day 00:00 for a date-only period): show the last instant inside the period.
-const periodEndShown = (periodEnd: string | number | Date) => new Date(new Date(periodEnd).getTime() - 1);
 
 interface UserRow extends AuthUser {
   sessionPnL: number;

@@ -4,9 +4,8 @@ import { Container, Card, Form, Button, Badge, Alert, Spinner, Row, Col, Table }
 import { useAuth } from '../context/AuthContext';
 import NotificationBell from '../components/NotificationBell';
 import { readError, apiFetch } from '../utils/api';
+import { periodEndShown } from '../utils/period';
 
-// periodEnd is stored exclusive (next day 00:00 for a date-only period): show the last instant inside the period.
-const periodEndShown = (periodEnd: string | number | Date) => new Date(new Date(periodEnd).getTime() - 1);
 
 function VerifiedBadge({ verified, hasValue }: { verified: boolean; hasValue: boolean }) {
   if (verified) return <Badge bg="success" className="ms-2">Verified</Badge>;

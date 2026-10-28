@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Container, Card, Table, Form, Button, Spinner, Alert, Row, Col } from 'react-bootstrap';
 import { apiFetch, readError } from '../utils/api';
+import { periodEndShown } from '../utils/period';
 
 type PaidTo = 'bank' | 'upi';
 
@@ -109,7 +110,7 @@ export default function PayoutPaymentPage() {
             <Card.Header className="fw-bold">Payout</Card.Header>
             <Table size="sm" className="mb-0"><tbody>
               <Row2 label="User" value={`${payee.name ?? ''} (${payee.email})`} />
-              <Row2 label="Period" value={`${new Date(payout.periodStart).toLocaleDateString()} – ${new Date(new Date(payout.periodEnd).getTime() - 1).toLocaleDateString()}`} />
+              <Row2 label="Period" value={`${new Date(payout.periodStart).toLocaleDateString()} – ${periodEndShown(payout.periodEnd).toLocaleDateString()}`} />
               <Row2 label="Gross profit" value={`₹${payout.grossProfit.toFixed(2)}`} />
               <Row2 label={`Split (${payout.profitSplitPercent}%)`} value={`₹${payout.splitAmount.toFixed(2)}`} />
               <Row2 label="TDS" value={`₹${payout.tdsAmount.toFixed(2)}`} />

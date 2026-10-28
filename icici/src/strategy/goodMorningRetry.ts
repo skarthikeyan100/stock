@@ -16,6 +16,7 @@ export function stashRetryBase(config: any): void {
 
 // Call AFTER the retry write set the new times/previousClose.
 export function stampRetry(config: any): void {
+    delete config.staleRetryPreviousClose; // a fresh retry supersedes any earlier stale flag
     config.retryDay = localDayKey();
     config.retryPreviousClose = config.previousClose;
 }

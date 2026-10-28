@@ -26,7 +26,7 @@ class MockMonitor extends Monitor {
             console.log(`  [MockMonitor] REJECTED buy for ${userId}: ${validation.reason}`);
             return null;
         }
-        this.pendingUsers.add(userId);
+        this.markPendingUser(userId);
         const orderInfo = new OrderInfo();
         orderInfo.contract = contract;
         orderInfo.qty = qty;
@@ -86,7 +86,7 @@ class MockMonitor extends Monitor {
             console.log(`  [MockMonitor] REJECTED buyIndex for ${userId}: ${validation.reason}`);
             return null;
         }
-        this.pendingUsers.add(userId);
+        this.markPendingUser(userId);
         const contract = `NIFTY13FEB26${right === 'put' ? 'P' : 'C'}${ltp || 24500}`;
         const orderInfo = new OrderInfo();
         orderInfo.contract = contract;

@@ -7,7 +7,7 @@ import Prism from './prism';
 import AntStream from './ant/AntStream';
 import Config from './prism/config';
 import configService from './prism/ConfigService';
-import {  PUT, CALL, UNKNOWN_USER_LOSS_LIMIT,  DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT} from './constants'
+import {  PUT, CALL, USER_LOSS_LIMIT,  DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT} from './constants'
 import strategies from './strategy/strategies';
 import { Strategy } from './strategy/strategy';
 
@@ -29,7 +29,19 @@ export default class Monitor {
     private orderUserMap: Map<string, string> = new Map();
     private pendingOrdersByTsym: Map<string, string[]> = new Map();
     userPnL: Map<string, number> = new Map();
-    pendingUsers: Set<string> = new Set();
+    // Users with an order in flight, as an expiry time (ms). Set to Infinity while the request is outstanding; once the broker has
+    // answered it falls back to a grace window - a filled order is then in this.trades (and the fill path clears the mark), while a
+    // resting, cancelled or rejected one must not block the user until a restart.
+    pendingUsers: Map<string, number> = new Map();
+    private static readonly PENDING_GRACE_MS = 60_000;
+    markPendingUser(user: string): void { this.pendingUsers.set(user, Number.POSITIVE_INFINITY); }
+    private releasePendingUser(user: string): void { this.pendingUsers.set(user, Date.now() + Monitor.PENDING_GRACE_MS); }
+    private isUserPending(user: string): boolean {
+        const until = this.pendingUsers.get(user);
+        if (until === undefined) return false;
+        if (until <= Date.now()) { this.pendingUsers.delete(user); return false; }
+        return true;
+    }
     userSettingsCache: Map<string, { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number }> = new Map();
     private strategyMap: Map<string, Strategy> = new Map();
     private watchTokens: Map<string, Set<Strategy>> = new Map();
@@ -71,7 +83,7 @@ export default class Monitor {
             Log.log(`[Monitor] Order rejected for ${userId}: ${validation.reason}`);
             return null;
         }
-        this.pendingUsers.add(userId);
+        this.markPendingUser(userId);
         Log.log(`[Monitor] Placing buy order for ${userId}: ${contract} qty=${qty} price=${price}`);
         try {
             return await Prism.getInstance().buyContract(contract, qty, price, this.getUserContext(userId));
@@ -79,7 +91,7 @@ export default class Monitor {
             // The mark only covers the request being in flight (two concurrent requests must not both pass the lot check). Once the
             // broker has answered, a filled order is in this.trades, and a resting, cancelled or rejected one must not leave the
             // user blocked until a restart (the fill path also clears it).
-            this.pendingUsers.delete(userId);
+            this.releasePendingUser(userId);
         }
     }
 
@@ -94,12 +106,12 @@ export default class Monitor {
             Log.log(`[Monitor] Order rejected for ${userId}: ${validation.reason}`);
             return null;
         }
-        this.pendingUsers.add(userId);
+        this.markPendingUser(userId);
         Log.log(`[Monitor] Placing buyIndex order for ${userId}: ${index} right=${right} qty=${qty}`);
         try {
             return await Prism.getInstance().buyIndex({ userContext: this.getUserContext(userId), index, ltp, right, qty });
         } finally {
-            this.pendingUsers.delete(userId); // see requestBuy
+            this.releasePendingUser(userId); // see requestBuy
         }
     }
 
@@ -142,7 +154,7 @@ export default class Monitor {
 
     getUserLossLimit(user: string): number {
         const cached = this.userSettingsCache.get(user);
-        return cached ? cached.lossLimit : UNKNOWN_USER_LOSS_LIMIT;
+        return cached ? cached.lossLimit : USER_LOSS_LIMIT;
     }
 
     getUserLotLimit(user: string): number {
@@ -165,7 +177,7 @@ export default class Monitor {
         const investmentAmount = cache?.investmentAmount ?? 0;
         return {
             email,
-            lossLimit: cache?.lossLimit ?? UNKNOWN_USER_LOSS_LIMIT,
+            lossLimit: cache?.lossLimit ?? USER_LOSS_LIMIT,
             lotCount: cache?.lotLimit ?? DEFAULT_LOT_LIMIT,
             investmentMode: (cache?.investmentMode ?? 'investmentAmount') as 'lotCount' | 'investmentAmount',
             investmentAmount,
@@ -190,7 +202,7 @@ export default class Monitor {
     }
 
     hasActiveTrade(user: string): boolean {
-        return this.trades.some(t => t.user === user) || this.pendingUsers.has(user);
+        return this.trades.some(t => t.user === user) || this.isUserPending(user);
     }
 
     isLossLimitReached(user: string): boolean {
@@ -248,7 +260,7 @@ export default class Monitor {
     canPlaceOrder(user: string): { allowed: boolean; reason?: string } {
         // An order already in flight for this user is not in this.trades yet: without this two concurrent requests
         // both pass the lot check.
-        if (this.pendingUsers.has(user)) {
+        if (this.isUserPending(user)) {
             return { allowed: false, reason: `User '${user}' already has an order in flight.` };
         }
         const tradedLots = this.getTradedLots(user);

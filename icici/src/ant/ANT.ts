@@ -934,7 +934,9 @@ class ANT {
             // transient broker hiccup apart from a rejection that will never succeed by retrying
             // unchanged (e.g. the position no longer exists to cover a sell against).
             const rejectReason = rejected.rejreason || rejected.remarks || undefined;
-            const filledQuantity = Math.max(0, ...records.map((r) => Number(r.filledQuantity ?? 0) || 0));
+            // Undefined when no record carries the field at all: a missing field must not read as "nothing filled".
+            const reported = records.filter((r) => r.filledQuantity !== undefined && r.filledQuantity !== null);
+            const filledQuantity = reported.length > 0 ? Math.max(0, ...reported.map((r) => Number(r.filledQuantity) || 0)) : undefined;
             return { status: ANT.canonicalStatus(rejected.orderStatus), filledQuantity, rejectReason };
         }
         // Still open: report any partial fill so far instead of a hard 0.
