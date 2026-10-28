@@ -232,6 +232,9 @@ async function resolveChunkedContract(
     req: OrderRequest,
 ): Promise<{ contract: ChunkedContract; estimatedPrice: number; quantity: number } | { error: string }> {
     const broker = executor.brokerName;
+    if (broker !== 'breeze' && broker !== 'kite' && broker !== 'ant' && broker !== 'prism') {
+        return { error: `chunkedBuyIndex: broker '${broker}' not yet supported (breeze/kite/ant/prism only)` };
+    }
     const optionType = req.payload.right === CALL ? 'CE' : 'PE';
     const niftyLtp = req.payload.niftyLtp;
     if (!Number.isFinite(niftyLtp)) return { error: `chunkedBuyIndex (${broker}): niftyLtp is required and must be a finite number` };
@@ -239,8 +242,11 @@ async function resolveChunkedContract(
     // it passes as niftyLtp.
     const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
     const ant = AntContractMaster.getInstance();
-    const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
-    const atmStrike = Math.round(niftyLtp / step) * step;
+    // ANT-sourced premium of the ATM strike (kite, ant and prism size and price the order off it).
+    const estimateAtmPrice = () => {
+        const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
+        return antExecutor.estimateOptionPrice(index, Math.round(niftyLtp / step) * step, optionType);
+    };
 
     let contract: ChunkedContract;
     let estimatedPrice: number;
@@ -257,23 +263,24 @@ async function resolveChunkedContract(
     } else if (broker === 'kite') {
         const c = await KiteContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
         const commonToken = String(ant.resolveCommonToken(index, optionType, { atmLtp: niftyLtp }));
-        estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
+        estimatedPrice = await estimateAtmPrice();
         lotSize = c.lotSize;
         contract = { tradingSymbol: c.tradingSymbol, orderToken: commonToken, token: commonToken, exchange: c.exchange, supportsDriftCancel: true };
     } else if (broker === 'ant') {
         // ANT's own token IS the live-tick token here (this order executes on ANT itself).
         const c = ant.findATMOption(niftyLtp, optionType, index);
-        estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
+        estimatedPrice = await estimateAtmPrice();
         lotSize = Number(c.lotSize);
         contract = { tradingSymbol: c.tradingSymbol, orderToken: c.token, token: c.token, exchange: c.exch as 'NFO' | 'BFO', supportsDriftCancel: true };
     } else if (broker === 'prism') {
         // PrismContractMaster has no live-tick concept and no exchange field (derived from the index); the price estimate reuses
         // ANT, and it carries no lot size (resolveChunkedBuyQuantity falls back to a guess for that one broker).
         const c = PrismContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
-        estimatedPrice = await antExecutor.estimateOptionPrice(index, atmStrike, optionType);
+        estimatedPrice = await estimateAtmPrice();
         contract = { tradingSymbol: c.tradingSymbol, orderToken: c.token, token: c.token, exchange: exchangeForIndex(index), supportsDriftCancel: true };
     } else {
-        return { error: `chunkedBuyIndex: broker '${broker}' not yet supported (breeze/kite/ant/prism only)` };
+        const unreachable: never = broker;
+        return { error: `chunkedBuyIndex: broker '${unreachable}' not yet supported (breeze/kite/ant/prism only)` };
     }
     const resolvedQty = resolveChunkedBuyQuantity(req, estimatedPrice, contract.tradingSymbol, lotSize);
     if (resolvedQty.error) return { error: resolvedQty.error };

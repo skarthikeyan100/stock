@@ -499,13 +499,15 @@ export default class BulkPcrStrategy extends Strategy {
         const today = localDayKey();
         if (today === this.statsDay) return;
         this.statsDay = today;
-        if (this.liveRemainder.size > 0) Log.log(`[BulkPcrStrategy] day rolled over - clearing the possibly-live remainder latch for ${Array.from(this.liveRemainder).join(', ')} (a DAY order does not outlive its session)`);
+        const hadLatch = this.liveRemainder.size > 0;
+        if (hadLatch) Log.log(`[BulkPcrStrategy] day rolled over - clearing the possibly-live remainder latch for ${Array.from(this.liveRemainder).join(', ')} (a DAY order does not outlive its session)`);
         this.liveRemainder.clear(); // the latch is for the day, like the loss lockouts
         this.dayRealizedByBroker.clear();
         this.stops.clear();
         this.profitStops.clear();
         this.trails.clear();
         this.lastTrailPersistAt.clear();
+        if (hadLatch) this.persistState(); // the state doc must not keep yesterday's latch
     }
 
     // The slot keys of every configured pair broker's two sides.
