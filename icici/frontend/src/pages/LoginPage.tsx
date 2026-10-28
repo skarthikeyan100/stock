@@ -7,14 +7,14 @@ import { isMarketHours } from '../utils/marketHours';
 export default function LoginPage() {
   const { login, isLoggedIn, termsAccepted } = useAuth();
   const navigate = useNavigate();
-  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<{ message: string; where: 'hero' | 'footer' } | null>(null);
 
   useEffect(() => {
     if (isLoggedIn && !termsAccepted) navigate('/rules', { replace: true });
   }, [isLoggedIn, termsAccepted, navigate]);
 
   // One handler pair for both Google buttons (hero and footer). /rules forwards a user who has already accepted the terms.
-  const onGoogleSuccess = async (credentialResponse: CredentialResponse) => {
+  const onGoogleSuccess = (where: 'hero' | 'footer') => async (credentialResponse: CredentialResponse) => {
     setLoginError(null);
     try {
       if (!credentialResponse.credential) throw new Error('Google did not return a credential');
@@ -22,10 +22,10 @@ export default function LoginPage() {
       navigate('/rules');
     } catch (e: any) {
       console.error('Login failed:', e);
-      setLoginError(e?.message || 'Login failed - please try again');
+      setLoginError({ message: e?.message || 'Login failed - please try again', where });
     }
   };
-  const onGoogleError = () => setLoginError('Google sign-in failed - please try again');
+  const onGoogleError = (where: 'hero' | 'footer') => () => setLoginError({ message: 'Google sign-in failed - please try again', where });
 
   return (
     <div className="landing-page">
@@ -59,8 +59,8 @@ export default function LoginPage() {
             you bring the skill. Keep 25% of every rupee you earn.
           </p>
           <div className="landing-hero-cta">
-            <GoogleLogin onSuccess={onGoogleSuccess} onError={onGoogleError} />
-            {loginError && <div className="text-danger small mt-2">{loginError}</div>}
+            <GoogleLogin onSuccess={onGoogleSuccess('hero')} onError={onGoogleError('hero')} />
+            {loginError?.where === 'hero' && <div className="text-danger small mt-2">{loginError.message}</div>}
           </div>
         </div>
         <div className="landing-hero-graphic">
@@ -178,8 +178,8 @@ export default function LoginPage() {
         <h2>Ready to start trading?</h2>
         <p>Sign in with your Google account to get access.</p>
         <div className="landing-cta-btn">
-          <GoogleLogin onSuccess={onGoogleSuccess} onError={onGoogleError} />
-          {loginError && <div className="text-danger small mt-2">{loginError}</div>}
+          <GoogleLogin onSuccess={onGoogleSuccess('footer')} onError={onGoogleError('footer')} />
+          {loginError?.where === 'footer' && <div className="text-danger small mt-2">{loginError.message}</div>}
         </div>
       </section>
 

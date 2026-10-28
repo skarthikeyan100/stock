@@ -168,6 +168,7 @@ function fetchFeedItems(parser: Parser, feedUrl: string, tag: string): Promise<a
     if (!cached) {
         cached = parser.parseURL(feedUrl).then((feed) => feed.items || []).catch((err: any) => {
             console.warn(`  [${tag}] Feed failed: ${err.message}`);
+            feedCache.delete(feedUrl); // a failure is not remembered: the next stock retries the feed
             return [];
         });
         feedCache.set(feedUrl, cached);
@@ -177,13 +178,12 @@ function fetchFeedItems(parser: Parser, feedUrl: string, tag: string): Promise<a
 
 // Whole-word, case-insensitive match: a bare substring test hits short symbols inside other words ("ITC" in "pitch", "SBIN" ...).
 // Names are matched as a phrase on word boundaries too. Terms shorter than 2 characters never match.
-function mentions(text: string, terms: string[]): boolean {
-    return terms.some((t) => {
-        const term = t.trim();
-        if (term.length < 2) return false;
-        const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return new RegExp(`(^|[^A-Za-z0-9])${escaped}($|[^A-Za-z0-9])`, 'i').test(text);
-    });
+function mentionMatcher(terms: string[]): (text: string) => boolean {
+    const patterns = terms
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 2)
+        .map((t) => new RegExp(`(^|[^A-Za-z0-9])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^A-Za-z0-9])`, 'i'));
+    return (text) => patterns.some((re) => re.test(text));
 }
 
 // ─── Economic Times Client ───────────────────────────────────────────────────
@@ -202,12 +202,12 @@ class EconomicTimesClient {
 
     async fetchHeadlines(symbol: string, name: string): Promise<string[]> {
         const texts: string[] = [];
-        const terms = [symbol, name];
+        const mentions = mentionMatcher([symbol, name]); // compiled once per stock, not per item
 
         for (const feedUrl of this.feeds) {
             for (const item of await fetchFeedItems(this.rssParser, feedUrl, 'EconomicTimes')) {
                 const combined = `${item.title || ''} ${item.contentSnippet || ''}`;
-                if (mentions(combined, terms)) {
+                if (mentions(combined)) {
                     if (item.title) texts.push(item.title);
                     if (item.contentSnippet) texts.push(item.contentSnippet);
                 }
@@ -233,12 +233,12 @@ class MoneycontrolClient {
 
     async fetchHeadlines(symbol: string, name: string): Promise<string[]> {
         const texts: string[] = [];
-        const terms = [symbol, name];
+        const mentions = mentionMatcher([symbol, name]); // compiled once per stock, not per item
 
         for (const feedUrl of this.feeds) {
             for (const item of await fetchFeedItems(this.rssParser, feedUrl, 'Moneycontrol')) {
                 const combined = `${item.title || ''} ${item.contentSnippet || ''}`;
-                if (mentions(combined, terms)) {
+                if (mentions(combined)) {
                     if (item.title) texts.push(item.title);
                     if (item.contentSnippet) texts.push(item.contentSnippet);
                 }

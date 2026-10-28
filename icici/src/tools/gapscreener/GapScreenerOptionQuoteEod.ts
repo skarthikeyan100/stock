@@ -6,11 +6,12 @@
  * Option Quote + Option Contract by the morning run - re-resolves each row's
  * *exact same* contract (not a freshly-recomputed nearest-OTM strike, since
  * spot may have moved intraday) via AntContractMaster.findByTradingSymbol,
- * fetches its live price - via the same websocket batch helper
- * (src/tools/AntBatchQuote.ts) before 3:30pm, or via ANT's REST
- * getScripQuote (polled one token at a time, 1s apart) after 3:30pm, since
- * the websocket subscribe stops delivering ticks once the exchange session
- * ends - as the option's EOD quote.
+ * fetches its price via ANT's REST getScripQuote (polled one token at a time,
+ * 1s apart - it still answers after the 3:30pm close) as the option's EOD quote.
+ * REST is the default because the websocket batch helper (src/tools/AntBatchQuote.ts)
+ * opens a second ANT session for the same user, which can kick the production
+ * data stream while the market is live; GAPSCREENER_USE_WS=1 opts back into it
+ * before 3:30pm (after that the websocket delivers no ticks).
  *
  * Also joins each row (by stock symbol) against gap-screener.csv, which
  * carries the stock's `LTP` and its `1st15m High` / `1st15m Low` (first
@@ -104,11 +105,12 @@ async function fetchStockLtp(antStockCode: string): Promise<number | undefined> 
     if (!equity) return undefined;
     try {
         const ltp = await ANT.getInstance().getScripQuote('NSE', equity.token);
-        await sleep(REST_QUOTE_DELAY_MS);
         return Number.isFinite(ltp) && ltp > 0 ? ltp : undefined;
     } catch (e: any) {
         console.warn(`[gapScreenerOptionQuoteEod] stock LTP fetch failed for ${antStockCode}:`, e.message);
         return undefined;
+    } finally {
+        await sleep(REST_QUOTE_DELAY_MS); // paced on failure too, so a run of errors cannot flood the endpoint
     }
 }
 

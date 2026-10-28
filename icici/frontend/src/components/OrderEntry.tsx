@@ -4,15 +4,25 @@ import { useTrading } from '../context/TradingContext';
 import { useAuth } from '../context/AuthContext';
 import { matchSymbols, parsePoints } from './orderEntryShared';
 import { apiFetch } from '../utils/api';
+import DemoHelpTip from './DemoHelpTip';
+import { DEMO_MAX_LOSS } from '../context/DemoTradingContext';
+import { SYMBOL_SEARCH_MIN_CHARS } from './orderEntryShared';
 
-export default function OrderEntry() {
+// One searchable contract: `label` is what the list shows, `value` is what placeContractOrder receives.
+interface ContractItem { label: string; value: string }
+interface AntOption { token: string; tradingSymbol: string; strike: number; optionType: string }
+
+// `demo`: the anonymous demo page renders this same component (its provider supplies the same trading context). Differences: the
+// contract list is the ANT-native /demo/symbols one (symbols.txt is Kite-format and not subscribable on ANT's feed), help bubbles
+// explain the controls, the loss limit is the fixed demo one, and no order is ever real.
+export default function OrderEntry({ demo }: { demo?: boolean }) {
   const { placeOrder, placeContractOrder, isOrderDisabled, placingOrder, totalPnL, orderError, clearError } = useTrading();
   const { user } = useAuth();
 
   const [input, setInput] = useState('');
-  const [symbols, setSymbols] = useState<string[]>([]);
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [selectedSymbol, setSelectedSymbol] = useState('');
+  const [symbols, setSymbols] = useState<ContractItem[]>([]);
+  const [suggestions, setSuggestions] = useState<ContractItem[]>([]);
+  const [selectedSymbol, setSelectedSymbol] = useState<ContractItem | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
   const [targetPoints, setTargetPoints] = useState('');
   const [stopLossPoints, setStopLossPoints] = useState('');
@@ -45,15 +55,24 @@ export default function OrderEntry() {
   // two different encodings depending on expiry type (e.g. monthly
   // NIFTY26AUG24100CE vs weekly NIFTY2690124100CE).
   useEffect(() => {
+    if (demo) {
+      apiFetch('/demo/symbols?symbol=NIFTY')
+        .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
+        .then((data: AntOption[]) => {
+          if (Array.isArray(data)) setSymbols(data.map((o) => ({ label: o.tradingSymbol, value: `${o.token}|${o.tradingSymbol}|${o.optionType}` })));
+        })
+        .catch((err) => console.error('Failed to load demo symbols:', err));
+      return;
+    }
     apiFetch(import.meta.env.BASE_URL + 'symbols.txt')
       .then(res => res.text())
       .then(text => {
         const lines = text.split('\n').filter(l => l.trim());
         lines.sort();
-        setSymbols(lines);
+        setSymbols(lines.map((l) => ({ label: l, value: l })));
       })
       .catch(err => console.error('Failed to load symbols:', err));
-  }, []);
+  }, [demo]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -69,16 +88,16 @@ export default function OrderEntry() {
   const handleInputChange = (value: string) => {
     const upper = value.toUpperCase();
     setInput(upper);
-    setSelectedSymbol('');
+    setSelectedSymbol(null);
 
-    const matches = matchSymbols(upper, symbols, (s) => s);
+    const matches = matchSymbols(upper, symbols, (s) => s.label);
     setSuggestions(matches);
     setShowDropdown(matches.length > 0);
   };
 
-  const handleSelect = (sym: string) => {
-    setInput(sym);
-    setSelectedSymbol(sym);
+  const handleSelect = (item: ContractItem) => {
+    setInput(item.label);
+    setSelectedSymbol(item);
     setShowDropdown(false);
   };
 
@@ -92,10 +111,10 @@ export default function OrderEntry() {
       return;
     }
     // Keep the selection if the order was rejected, so the user can correct and retry.
-    const ok = await placeContractOrder(selectedSymbol, tp, sl);
+    const ok = await placeContractOrder(selectedSymbol.value, tp, sl);
     if (ok) {
       setInput('');
-      setSelectedSymbol('');
+      setSelectedSymbol(null);
     }
   };
 
@@ -103,17 +122,18 @@ export default function OrderEntry() {
     await placeOrder(right);
   };
 
-  const lossExceeded = totalPnL <= -(user?.lossLimit ?? 15000);
+  const lossExceeded = totalPnL <= -(demo ? DEMO_MAX_LOSS : (user?.lossLimit ?? 15000));
 
   return (
     <div>
       {/* Section A: Flash Trade */}
       <fieldset style={{ border: '1px solid #dee2e6', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
         <legend
-          className="fw-bold text-muted"
+          className="fw-bold text-muted d-inline-flex align-items-center"
           style={{ width: 'auto', float: 'none', padding: '0 6px', fontSize: '1rem', marginBottom: 8 }}
         >
           Flash Trade
+          {demo && <DemoHelpTip text="One-click demo trade: Up buys the at-the-money NIFTY Call, Down buys the at-the-money Put. The position starts pending and fills once a live price is received - no real order is ever placed." />}
         </legend>
         <div className="d-flex align-items-center gap-2 flex-wrap">
           <Button
@@ -131,7 +151,7 @@ export default function OrderEntry() {
             {placingOrder ? <Spinner animation="border" size="sm" /> : 'Down'}
           </Button>
           <small className="text-muted" style={{ fontSize: '0.75rem' }}>
-            Predict the trend — buys NIFTY CE or PE at market
+            Predict the trend — buys NIFTY CE or PE {demo ? '(demo)' : 'at market'}
           </small>
         </div>
       </fieldset>
@@ -139,17 +159,18 @@ export default function OrderEntry() {
       {/* Section B: Symbol Search */}
       <fieldset style={{ border: '1px solid #dee2e6', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
         <legend
-          className="fw-bold text-muted"
+          className="fw-bold text-muted d-inline-flex align-items-center"
           style={{ width: 'auto', float: 'none', padding: '0 6px', fontSize: '1rem', marginBottom: 8 }}
         >
           Search &amp; Buy
+          {demo && <DemoHelpTip text={`Type at least ${SYMBOL_SEARCH_MIN_CHARS} characters to search NIFTY option contracts, pick one from the list, optionally set target/stop-loss points, then click Buy. Like Flash Trade, the position fills once a live price is received.`} />}
         </legend>
         <div ref={dropdownRef} style={{ position: 'relative' }}>
           <form onSubmit={handleContractBuy}>
             <InputGroup>
               <Form.Control
                 type="text"
-                placeholder="e.g. NIFTY_24100_CE"
+                placeholder={demo ? 'e.g. NIFTY 24100 CE' : 'e.g. NIFTY_24100_CE'}
                 value={input}
                 onChange={(e) => handleInputChange(e.target.value)}
                 disabled={isOrderDisabled}
@@ -192,14 +213,14 @@ export default function OrderEntry() {
                 overflowY: 'auto',
               }}
             >
-              {suggestions.map(sym => (
+              {suggestions.map(item => (
                 <ListGroup.Item
-                  key={sym}
+                  key={item.value}
                   action
-                  onClick={() => handleSelect(sym)}
+                  onClick={() => handleSelect(item)}
                   style={{ cursor: 'pointer' }}
                 >
-                  {sym}
+                  {item.label}
                 </ListGroup.Item>
               ))}
             </ListGroup>

@@ -197,7 +197,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   );
 
   // `contract` is a "<token>|<tradingSymbol>|<optionType>" triple produced by
-  // DemoOrderEntry's ANT-native symbol picker (see DemoOrderEntry.tsx) - not
+  // OrderEntry (demo)'s ANT-native symbol picker (see DemoOrderEntry.tsx) - not
   // a bare Kite tsym like the real OrderEntry passes.
   const placeContractOrder = useCallback(
     async (contract: string, targetPoints?: number, stopLossPoints?: number): Promise<boolean> => {
@@ -209,7 +209,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   );
 
   // Closes ONE row: the first open/pending trade on this token (rows can share a contract), releasing exactly one
-  // subscription. Both PositionCard and DemoPositionCard pass the trade's token.
+  // subscription. PositionCard (live and demo) passes the trade's token.
   const squareOff = useCallback(
     async (token: string): Promise<boolean> => {
       const idx = tradesRef.current.findIndex((t) => t.token === token);

@@ -1,8 +1,11 @@
 import { useState } from 'react';
 import { Card, Button, Badge, Row, Col, Form, InputGroup } from 'react-bootstrap';
 import { useTrading, Trade } from '../context/TradingContext';
+import DemoHelpTip from './DemoHelpTip';
 
-export default function PositionCard({ trade, closed }: { trade: Trade; closed?: boolean }) {
+// `demo`: the anonymous demo page renders this same card (its provider supplies the same trading context), with help bubbles on the
+// target/stop-loss controls and the pending-points hint while a fill waits for a price.
+export default function PositionCard({ trade, closed, demo }: { trade: Trade; closed?: boolean; demo?: boolean }) {
   const { squareOff, setTargetStopLoss } = useTrading();
   const [targetPoints, setTargetPoints] = useState('');
   const [slPoints, setSlPoints] = useState('');
@@ -82,7 +85,17 @@ export default function PositionCard({ trade, closed }: { trade: Trade; closed?:
                 </div>
               </>
             ) : (
-              <small className="text-muted">Waiting for price...</small>
+              <small className="text-muted">
+                Waiting for price...
+                {demo && (trade.pendingTargetPoints || trade.pendingStopLossPoints) && (
+                  <>
+                    <br />
+                    Will apply {trade.pendingTargetPoints ? `Target +${trade.pendingTargetPoints}pts` : ''}
+                    {trade.pendingTargetPoints && trade.pendingStopLossPoints ? ' / ' : ''}
+                    {trade.pendingStopLossPoints ? `SL -${trade.pendingStopLossPoints}pts` : ''} on fill
+                  </>
+                )}
+              </small>
             )}
           </Col>
 
@@ -107,10 +120,12 @@ export default function PositionCard({ trade, closed }: { trade: Trade; closed?:
                 Target: <span className="fw-bold text-success">{hasTarget ? <>&#8377;{trade.targetPrice?.toFixed(2)}</> : 'not set'}</span>
                 {' '}&middot;{' '}
                 Stop Loss: <span className="fw-bold text-danger">{hasStopLoss ? <>&#8377;{trade.stopLossPrice?.toFixed(2)}</> : 'not set'}</span>
+                {demo && hasTargetSet && <DemoHelpTip text="The position auto-squares-off the moment a live price reaches the Target or Stop Loss level - no action needed from you." />}
               </small>
             )}
             {!hasTargetSet && (
               <div className="d-flex align-items-center gap-2 flex-wrap">
+                {demo && <DemoHelpTip text="Optional: set a target and/or stop-loss in points from your entry price. The position auto-squares-off the moment a live price crosses either level." />}
                 {!hasTarget && (
                   <InputGroup size="sm" style={{ width: 120 }}>
                     <InputGroup.Text>T</InputGroup.Text>

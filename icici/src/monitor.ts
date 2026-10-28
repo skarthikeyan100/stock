@@ -29,23 +29,25 @@ export default class Monitor {
     private orderUserMap: Map<string, string> = new Map();
     private pendingOrdersByTsym: Map<string, string[]> = new Map();
     userPnL: Map<string, number> = new Map();
-    // Users with an order in flight, as an expiry time (ms). Set to Infinity while the request is outstanding; once the broker has
-    // answered it falls back to a grace window - a filled order is then in this.trades (and the fill path clears the mark), while a
-    // resting, cancelled or rejected one must not block the user until a restart.
-    private pendingUsers: Map<string, number> = new Map();
+    // Users with an order in flight. `inflight` counts outstanding requests per user (two concurrent requests are two marks, so one
+    // finishing never clears the other's); once the broker has accepted an order it also keeps `graceUntil` for a short window - a
+    // filled order is then in this.trades (and the fill path clears the grace), while a resting, cancelled or rejected one must not
+    // block the user until a restart.
+    private inflight: Map<string, number> = new Map();
+    private graceUntil: Map<string, number> = new Map();
     private static readonly PENDING_GRACE_MS = 60_000;
-    markPendingUser(user: string): void { this.pendingUsers.set(user, Number.POSITIVE_INFINITY); }
-    // `placed`: the broker accepted an order (it may rest unfilled) - keep the mark for a grace window. Nothing placed (null result,
-    // rejection, throw): clear it at once so a retry is not blocked. A mark the fill path already cleared (or replaced) is left alone.
+    markPendingUser(user: string): void { this.inflight.set(user, (this.inflight.get(user) ?? 0) + 1); }
+    // `placed`: the broker accepted an order (it may rest unfilled) - grace window. Nothing placed (null result, rejection, throw): none.
     private releasePendingUser(user: string, placed: boolean): void {
-        if (this.pendingUsers.get(user) !== Number.POSITIVE_INFINITY) return;
-        if (placed) this.pendingUsers.set(user, Date.now() + Monitor.PENDING_GRACE_MS);
-        else this.pendingUsers.delete(user);
+        const n = (this.inflight.get(user) ?? 0) - 1;
+        if (n > 0) this.inflight.set(user, n); else this.inflight.delete(user);
+        if (placed) this.graceUntil.set(user, Date.now() + Monitor.PENDING_GRACE_MS);
     }
     private isUserPending(user: string): boolean {
-        const until = this.pendingUsers.get(user);
+        if ((this.inflight.get(user) ?? 0) > 0) return true;
+        const until = this.graceUntil.get(user);
         if (until === undefined) return false;
-        if (until <= Date.now()) { this.pendingUsers.delete(user); return false; }
+        if (until <= Date.now()) { this.graceUntil.delete(user); return false; }
         return true;
     }
     userSettingsCache: Map<string, { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; investmentAmount?: number }> = new Map();
@@ -453,9 +455,9 @@ export default class Monitor {
 
     _processTradeEvent = async (tradeEvent: Trade) => {
         Log.log(`[Trade] ${tradeEvent.action} ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} status=${tradeEvent.status}`)
-        try { Mongo.getInstance()?.insert(tradeEvent); } catch (e) { /* Mongo not available */ }
+        Mongo.getInstance()?.insert(tradeEvent)?.catch(() => { /* Mongo not available */ });
         if (tradeEvent.action == 'Buy') {
-            this.pendingUsers.delete(tradeEvent.user || 'Default'); // the fill is in this.trades now
+            this.graceUntil.delete(tradeEvent.user || 'Default'); // the fill is in this.trades now
             // Match by tsym AND user so different strategies can hold the same contract independently
             const index = this.trades.findIndex(t => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user);
             if (index == -1) {
@@ -547,7 +549,7 @@ export default class Monitor {
 
     async _processQuoteForStrategies(optionQuote: OptionQuote) {
         if (configService.getConfig().settings?.logQuotes) {
-            try { Mongo.getInstance()?.insert(optionQuote); } catch (e) { /* Mongo not available */ }
+            Mongo.getInstance()?.insert(optionQuote)?.catch(() => { /* Mongo not available */ });
         }
         const dispatched = new Set<Strategy>();
 

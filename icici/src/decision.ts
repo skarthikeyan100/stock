@@ -132,6 +132,7 @@ export default class Decision {
         // Log.log(x.getDate());
 
         const stream = Mongo.getInstance().getAll('NiftyQuote', { day: 'Thursday' });
+        if (!stream) return; // Mongo not connected: nothing to replay
         stream.on('error', function (err) {
             // console.error(err)
         })

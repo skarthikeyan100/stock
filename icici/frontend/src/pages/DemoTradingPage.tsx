@@ -3,9 +3,9 @@ import { Container, Alert, Tab, Tabs, Badge, Button } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
 import { useTrading } from '../context/TradingContext';
 import { DEMO_MAX_LOSS } from '../context/DemoTradingContext';
-import DemoOrderEntry from '../components/DemoOrderEntry';
+import OrderEntry from '../components/OrderEntry';
 import NiftyTicker from '../components/NiftyTicker';
-import DemoPositionCard from '../components/DemoPositionCard';
+import PositionCard from '../components/PositionCard';
 
 // Standalone copy of TradingPage.tsx for anonymous/demo visitors - no
 // useAuth(), no Profile/Admin/Logout/NotificationBell. Kept as a separate
@@ -74,7 +74,7 @@ export default function DemoTradingPage() {
 
       <Container className="py-4" style={{ maxWidth: 700 }}>
         {/* Order Entry */}
-        <DemoOrderEntry />
+        <OrderEntry demo />
 
         {/* Positions Tabs */}
         <div className="mt-4">
@@ -94,7 +94,7 @@ export default function DemoTradingPage() {
             >
               {trades.length > 0 ? (
                 trades.map((trade, i) => (
-                  <DemoPositionCard key={`${trade.token}-${i}`} trade={trade} />
+                  <PositionCard key={`${trade.token}-${i}`} trade={trade} demo />
                 ))
               ) : (
                 <div className="text-center text-muted py-4">
@@ -114,7 +114,7 @@ export default function DemoTradingPage() {
             >
               {closedTrades.length > 0 ? (
                 closedTrades.map((trade, i) => (
-                  <DemoPositionCard key={`${trade.tsym}-closed-${i}`} trade={trade} closed />
+                  <PositionCard key={`${trade.tsym}-closed-${i}`} trade={trade} closed demo />
                 ))
               ) : (
                 <div className="text-center text-muted py-4">

@@ -216,11 +216,11 @@ class AntStream {
 
     try {
       if (data.tk === this.INDEX_TOKEN) {
-        Mongo.getInstance()?.insert(NiftyQuote.fromAnt(data));
+        Mongo.getInstance()?.insert(NiftyQuote.fromAnt(data))?.catch((e) => Log.log('[mongo] quote insert failed:', e));
       } else if (data.tk === this.SENSEX_TOKEN) {
-        Mongo.getInstance()?.insert(SensexQuote.fromAnt(data));
+        Mongo.getInstance()?.insert(SensexQuote.fromAnt(data))?.catch((e) => Log.log('[mongo] quote insert failed:', e));
       } else if (this.dynamicOptionTokens.has(data.tk)) {
-        Mongo.getInstance()?.insert(OptionQuote.fromAnt(data));
+        Mongo.getInstance()?.insert(OptionQuote.fromAnt(data))?.catch((e) => Log.log('[mongo] quote insert failed:', e));
       }
     } catch (e) {
       Log.log('[AntStream] Mongo insert failed:', e);
