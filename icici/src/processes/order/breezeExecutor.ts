@@ -2,6 +2,7 @@ import Log from '../../util/Log';
 import Breeze from '../../breeze/Breeze';
 import ANT from '../../ant/ANT';
 import BreezeContractMaster, { FnoRecord, BreezeExchange, breezeShortNameFor, indexNameFor, strikeStepFor } from '../../breeze/BreezeContractMaster';
+import AntContractMaster from '../../ant/AntContractMaster';
 import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
@@ -284,7 +285,7 @@ export async function buyIndexOnBreeze(req: BuyIndexOnBreezeRequest): Promise<Tr
     const index = req.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
     const spotLtp = await getBreezeSpot(index);
 
-    const contract = await BreezeContractMaster.getInstance().findATMOption(spotLtp, optionType, index);
+    const contract = await BreezeContractMaster.getInstance().findATMOption(AntContractMaster.getInstance().entryStrike(spotLtp, optionType, index), optionType, index);
     const quantity = req.quantity ?? contract.lotSize;
     const { bestAsk } = await getOptionQuote(contract);
     const tsym = tsymFor(contract);

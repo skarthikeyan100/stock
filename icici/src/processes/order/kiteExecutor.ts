@@ -217,12 +217,13 @@ export async function buyIndexOnKite(req: BuyIndexRequest): Promise<Trade> {
         }
     }
 
+    const entryStrike = AntContractMaster.getInstance().entryStrike(req.niftyLtp, optionType, index);
     const contract = req.strike && req.expiry
         ? await KiteContractMaster.getInstance().findExactOption(req.strike, req.expiry, optionType, index)
-        : await KiteContractMaster.getInstance().findATMOption(req.niftyLtp, optionType, index);
+        : await KiteContractMaster.getInstance().findATMOption(entryStrike, optionType, index);
     const commonToken = req.strike && req.expiry
         ? AntContractMaster.getInstance().resolveCommonToken(index, optionType, { strike: req.strike, expiry: req.expiry })
-        : AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.niftyLtp });
+        : AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: entryStrike });
     Log.log(`[order] Buying ${contract.tradingSymbol} qty=${req.quantity} for ${req.userId}`);
 
     const buyPrice = await getMarketableKitePrice(commonToken, contract.exchange, 'BUY');

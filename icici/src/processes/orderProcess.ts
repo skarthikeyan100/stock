@@ -264,10 +264,11 @@ async function resolveChunkedContract(
     // it passes as niftyLtp.
     const index = req.payload.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
     const ant = AntContractMaster.getInstance();
-    // ANT-sourced premium of the ATM strike (kite, ant and prism size and price the order off it).
+    // Entry strike (ATM shifted OTM by days to expiry), computed once so every broker resolves the same contract.
+    const entryStrike = ant.entryStrike(niftyLtp, optionType, index);
+    // ANT-sourced premium of the entry strike (kite, ant and prism size and price the order off it).
     const estimateAtmPrice = () => {
-        const step = AntContractMaster.STRIKE_STEP[index] ?? 50;
-        return antExecutor.estimateOptionPrice(index, Math.round(niftyLtp / step) * step, optionType);
+        return antExecutor.estimateOptionPrice(index, entryStrike, optionType);
     };
 
     let contract: ChunkedContract;
@@ -277,27 +278,27 @@ async function resolveChunkedContract(
         // Real pre-trade valuation (maxInvestment/perOrderCap must actually gate this order). The premium estimate is ANT-sourced
         // (getMarketableBreezeBuyPrice): Breeze's own getQuotes was observed returning a generic nginx "resource unavailable" page
         // live 2026-09-23, and niftyLtp is available here for free either way.
-        const c = await BreezeContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
+        const c = await BreezeContractMaster.getInstance().findATMOption(entryStrike, optionType, index);
         estimatedPrice = await getMarketableBreezeBuyPrice(c);
         lotSize = c.lotSize;
         // feedToken is resolved before the order is placed so a lookup failure cannot follow a live fill.
-        contract = { tradingSymbol: tsymFor(c), orderToken: c.token, token: c.token, feedToken: ant.resolveCommonToken(index, optionType, { atmLtp: niftyLtp }), exchange: c.exchange, supportsDriftCancel: false };
+        contract = { tradingSymbol: tsymFor(c), orderToken: c.token, token: c.token, feedToken: ant.resolveCommonToken(index, optionType, { atmLtp: entryStrike }), exchange: c.exchange, supportsDriftCancel: false };
     } else if (broker === 'kite') {
-        const c = await KiteContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
-        const commonToken = String(ant.resolveCommonToken(index, optionType, { atmLtp: niftyLtp }));
+        const c = await KiteContractMaster.getInstance().findATMOption(entryStrike, optionType, index);
+        const commonToken = String(ant.resolveCommonToken(index, optionType, { atmLtp: entryStrike }));
         estimatedPrice = await estimateAtmPrice();
         lotSize = c.lotSize;
         contract = { tradingSymbol: c.tradingSymbol, orderToken: commonToken, token: commonToken, exchange: c.exchange, supportsDriftCancel: true };
     } else if (broker === 'ant') {
         // ANT's own token IS the live-tick token here (this order executes on ANT itself).
-        const c = ant.findATMOption(niftyLtp, optionType, index);
+        const c = ant.findATMOption(entryStrike, optionType, index);
         estimatedPrice = await estimateAtmPrice();
         lotSize = Number(c.lotSize);
         contract = { tradingSymbol: c.tradingSymbol, orderToken: c.token, token: c.token, exchange: c.exch as 'NFO' | 'BFO', supportsDriftCancel: true };
     } else if (broker === 'prism') {
         // PrismContractMaster has no live-tick concept and no exchange field (derived from the index); the price estimate reuses
         // ANT, and it carries no lot size (resolveChunkedBuyQuantity falls back to a guess for that one broker).
-        const c = PrismContractMaster.getInstance().findATMOption(niftyLtp, optionType, index);
+        const c = PrismContractMaster.getInstance().findATMOption(entryStrike, optionType, index);
         estimatedPrice = await estimateAtmPrice();
         contract = { tradingSymbol: c.tradingSymbol, orderToken: c.token, token: c.token, exchange: exchangeForIndex(index), supportsDriftCancel: true };
     } else {

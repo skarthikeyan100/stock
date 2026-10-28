@@ -1792,7 +1792,7 @@ app.get('/demo/resolve', async function (req, res) {
             return;
         }
         const optionType = right === 'put' ? 'PE' : 'CE';
-        const resolved = AntContractMaster.getInstance().findATMOption(lastNiftyQuote.ltp, optionType, 'NIFTY');
+        const resolved = AntContractMaster.getInstance().findATMOption(AntContractMaster.getInstance().entryStrike(lastNiftyQuote.ltp, optionType, 'NIFTY'), optionType, 'NIFTY');
         allowDemoTokens([resolved.token]);
         res.json({ token: resolved.token, tradingSymbol: resolved.tradingSymbol });
     } catch (e: any) {

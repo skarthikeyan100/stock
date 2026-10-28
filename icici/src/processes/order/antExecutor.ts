@@ -533,7 +533,7 @@ export async function buyIndexOnAnt(req: BuyIndexRequest): Promise<Trade> {
 
     const contract = req.strike && req.expiry
         ? AntContractMaster.getInstance().findExactOption({ symbol: index, strike: req.strike, expiry: req.expiry, optionType })
-        : AntContractMaster.getInstance().findATMOption(req.niftyLtp, optionType, index);
+        : AntContractMaster.getInstance().findATMOption(AntContractMaster.getInstance().entryStrike(req.niftyLtp, optionType, index), optionType, index);
 
     return enterPosition(
         req.userId,

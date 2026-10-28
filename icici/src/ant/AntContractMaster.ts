@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import Log from '../util/Log';
 import { exchangeForIndex } from '../util/underlyings';
+import { tradingDaysToExpiry, shiftedStrike } from '../util/expiryOffset';
 
 // A row's trading symbol: the master files spell the column "Trading Symbol" in one format and "Trading" in another.
 function tradingSymbolOf(record: { 'Trading Symbol'?: string; Trading?: string }): string {
@@ -232,6 +233,27 @@ class AntContractMaster {
     const atmStrike = Math.round(underlyingLtp / step) * step;
     const exch = exchangeForIndex(symbol);
     return this.findNearestExpiryOption({ symbol, exch, strike: atmStrike, optionType, expiryOffset: 0 });
+  }
+
+  // Entry strike for a spot-based index buy, returned as a strike price (a multiple of the step, so passing it back through
+  // findATMOption / resolveCommonToken({atmLtp}) lands exactly on it). ATM moved OTM by the trading days left to the nearest
+  // expiry (CE up, PE down; pure ATM on expiry day). If the shifted strike is not listed, steps back toward ATM until one is.
+  // Every broker's entry resolves through this one function so a pair of brokers always gets the same contract.
+  entryStrike(underlyingLtp: number, optionType: string, symbol: string = 'NIFTY'): number {
+    const step = AntContractMaster.STRIKE_STEP[symbol] ?? 50;
+    const atm = Math.round(underlyingLtp / step) * step;
+    const exch = exchangeForIndex(symbol);
+    const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
+    const todayStart = todayStartUtc();
+    const rows = cache.filter((r) => r.Symbol === symbol && r.Exch === exch && r['Option Type'] === optionType && parseInt(r['Expiry Date']) >= todayStart);
+    if (rows.length === 0) return atm;
+    const nearestExpiry = Math.min(...rows.map((r) => parseInt(r['Expiry Date'])));
+    const listed = new Set(rows.filter((r) => parseInt(r['Expiry Date']) === nearestExpiry).map((r) => Number(r['Strike Price'])));
+    for (let days = tradingDaysToExpiry(nearestExpiry); days > 0; days--) {
+      const strike = shiftedStrike(atm, optionType, step, days);
+      if (listed.has(strike)) return strike;
+    }
+    return atm;
   }
 
   // ATM-by-nearest-listed-strike resolution for symbols with no sane fixed
