@@ -1478,12 +1478,22 @@ app.get('/strategyPnl', requireAdmin, async function (req: express.Request, res)
             if (re && !re.test(t.strategy || t.user || '')) continue;
             const r = row(t); r.closed++; r.realized += Number(t.realizedPnL) || 0;
         }
-        for (const t of stats.trades as Trade[]) {
-            if (re && !re.test(t.strategy || t.user || '')) continue;
-            // The order process never fills Trade.unrealizedPnL (only the legacy in-process Monitor does), so
-            // mark open trades to market from lastTradePrice, which exitMonitor keeps live.
-            const mark = (Number(t.lastTradePrice) - Number(t.price)) * Number(t.quantity);
-            const r = row(t); r.open++; r.unrealized += Number(t.unrealizedPnL) || (Number.isFinite(mark) ? mark : 0);
+        const openTrades = (stats.trades as Trade[]).filter((t) => !re || re.test(t.strategy || t.user || ''));
+        // The order process never fills Trade.unrealizedPnL (only the legacy in-process Monitor does) and keeps lastTradePrice
+        // fresh only for trades whose exits it monitors itself (resting-sell and reconcile-restored legs stay at their entry price),
+        // so price each open trade from a live quote, falling back to lastTradePrice when the quote call fails.
+        const liveLtp = new Map<Trade, number>();
+        await Promise.all(openTrades.map(async (t) => {
+            try {
+                if (!t.token) return;
+                const exchange = /^(SENSEX|BANKEX)/i.test(t.tsym || '') ? 'BFO' : 'NFO';
+                const q = await ANT.getInstance().getLiveQuote(exchange, String(t.token));
+                if (q.ltp > 0) liveLtp.set(t, q.ltp);
+            } catch (e) { /* fall back to lastTradePrice below */ }
+        }));
+        for (const t of openTrades) {
+            const mark = ((liveLtp.get(t) ?? Number(t.lastTradePrice)) - Number(t.price)) * Number(t.quantity);
+            const r = row(t); r.open++; r.unrealized += Number.isFinite(mark) ? mark : 0;
             r.realized += Number(t.realizedPnL) || 0; // partial exits on a still-open trade
         }
         res.json([...rows.values()].map((r) => ({ ...r, realized: +r.realized.toFixed(2), unrealized: +r.unrealized.toFixed(2) })));
