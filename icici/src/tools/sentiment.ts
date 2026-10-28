@@ -159,6 +159,33 @@ class RedditClient {
     }
 }
 
+// ─── RSS helpers (shared by the ET and Moneycontrol clients) ─────────────────
+
+// Each feed is fetched once per run (5 feeds x N stocks was a request storm), then matched against every stock.
+const feedCache = new Map<string, Promise<any[]>>();
+function fetchFeedItems(parser: Parser, feedUrl: string, tag: string): Promise<any[]> {
+    let cached = feedCache.get(feedUrl);
+    if (!cached) {
+        cached = parser.parseURL(feedUrl).then((feed) => feed.items || []).catch((err: any) => {
+            console.warn(`  [${tag}] Feed failed: ${err.message}`);
+            return [];
+        });
+        feedCache.set(feedUrl, cached);
+    }
+    return cached;
+}
+
+// Whole-word, case-insensitive match: a bare substring test hits short symbols inside other words ("ITC" in "pitch", "SBIN" ...).
+// Names are matched as a phrase on word boundaries too. Terms shorter than 2 characters never match.
+function mentions(text: string, terms: string[]): boolean {
+    return terms.some((t) => {
+        const term = t.trim();
+        if (term.length < 2) return false;
+        const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`(^|[^A-Za-z0-9])${escaped}($|[^A-Za-z0-9])`, 'i').test(text);
+    });
+}
+
 // ─── Economic Times Client ───────────────────────────────────────────────────
 //
 // Economic Times publishes RSS feeds for market news. We use the general
@@ -175,20 +202,15 @@ class EconomicTimesClient {
 
     async fetchHeadlines(symbol: string, name: string): Promise<string[]> {
         const texts: string[] = [];
-        const terms = [symbol.toLowerCase(), name.toLowerCase()];
+        const terms = [symbol, name];
 
         for (const feedUrl of this.feeds) {
-            try {
-                const feed = await this.rssParser.parseURL(feedUrl);
-                for (const item of feed.items || []) {
-                    const combined = `${item.title || ''} ${item.contentSnippet || ''}`.toLowerCase();
-                    if (terms.some(t => combined.includes(t))) {
-                        if (item.title) texts.push(item.title);
-                        if (item.contentSnippet) texts.push(item.contentSnippet);
-                    }
+            for (const item of await fetchFeedItems(this.rssParser, feedUrl, 'EconomicTimes')) {
+                const combined = `${item.title || ''} ${item.contentSnippet || ''}`;
+                if (mentions(combined, terms)) {
+                    if (item.title) texts.push(item.title);
+                    if (item.contentSnippet) texts.push(item.contentSnippet);
                 }
-            } catch (err: any) {
-                console.warn(`  [EconomicTimes] Feed failed: ${err.message}`);
             }
         }
         return texts;
@@ -211,20 +233,15 @@ class MoneycontrolClient {
 
     async fetchHeadlines(symbol: string, name: string): Promise<string[]> {
         const texts: string[] = [];
-        const terms = [symbol.toLowerCase(), name.toLowerCase()];
+        const terms = [symbol, name];
 
         for (const feedUrl of this.feeds) {
-            try {
-                const feed = await this.rssParser.parseURL(feedUrl);
-                for (const item of feed.items || []) {
-                    const combined = `${item.title || ''} ${item.contentSnippet || ''}`.toLowerCase();
-                    if (terms.some(t => combined.includes(t))) {
-                        if (item.title) texts.push(item.title);
-                        if (item.contentSnippet) texts.push(item.contentSnippet);
-                    }
+            for (const item of await fetchFeedItems(this.rssParser, feedUrl, 'Moneycontrol')) {
+                const combined = `${item.title || ''} ${item.contentSnippet || ''}`;
+                if (mentions(combined, terms)) {
+                    if (item.title) texts.push(item.title);
+                    if (item.contentSnippet) texts.push(item.contentSnippet);
                 }
-            } catch (err: any) {
-                console.warn(`  [Moneycontrol] Feed failed: ${err.message}`);
             }
         }
         return texts;
@@ -256,31 +273,9 @@ class YahooFinanceClient {
             console.warn(`  [Yahoo] News search failed for ${symbol}: ${err.message}`);
         }
 
-        // Endpoint 2: quote summary (longBusinessSummary has analyst sentiment language)
-        try {
-            const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(yahooSymbol)}?modules=assetProfile,recommendationTrend`;
-            const res = await axios.get(url, {
-                headers: { 'User-Agent': 'Mozilla/5.0' },
-                timeout: 10000,
-            });
-            const profile = res.data?.quoteSummary?.result?.[0]?.assetProfile;
-            if (profile?.longBusinessSummary) texts.push(profile.longBusinessSummary.substring(0, 500));
-
-            // recommendationTrend: strongBuy, buy, hold, sell, strongSell counts
-            const trend = res.data?.quoteSummary?.result?.[0]?.recommendationTrend?.trend?.[0];
-            if (trend) {
-                const { strongBuy = 0, buy = 0, hold = 0, sell = 0, strongSell = 0 } = trend;
-                // Synthesise analyst consensus into sentiment words VADER can score
-                for (let i = 0; i < strongBuy;  i++) texts.push('strong buy bullish analyst upgrade');
-                for (let i = 0; i < buy;        i++) texts.push('buy bullish positive outlook');
-                for (let i = 0; i < hold;       i++) texts.push('hold neutral stable');
-                for (let i = 0; i < sell;       i++) texts.push('sell bearish negative');
-                for (let i = 0; i < strongSell; i++) texts.push('strong sell bearish downgrade caution');
-            }
-        } catch {
-            // quoteSummary can 404 for some symbols — silently skip
-        }
-
+        // Only real headlines are samples. The quote-summary endpoint's business description (boilerplate, not sentiment) and strings
+        // synthesised from analyst-count buckets ("strong buy bullish analyst upgrade" x N) used to be added here and scored by VADER as
+        // if they were real text - they skewed every stock toward whatever the analyst mix looked like.
         return texts;
     }
 }

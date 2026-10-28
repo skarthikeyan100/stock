@@ -6,7 +6,6 @@ import DateRangeFilter, { DateRange, resolveDateRange, formatRangeLabel } from '
 import { apiFetch, apiPost, readError } from '../utils/api';
 import { periodEndShown } from '../utils/period';
 
-
 interface UserRow extends AuthUser {
   sessionPnL: number;
   hasActiveTrade: boolean;

@@ -33,9 +33,12 @@ export default class Mongo {
         return this;
     }
 
-    //TODO quoteCollection is hard-coded
-    insert = async (obj) => {
-        await this.db.collection(obj.constructor.name).insertOne(obj)
+    // The collection is the object's class name (Trade, NiftyQuote, OptionQuote ...), unless one is given. A plain object has no
+    // class name ('Object'): inserting it would silently create a junk collection, so it must name its collection explicitly.
+    insert = async (obj, collectionName?: string) => {
+        const name = collectionName ?? obj?.constructor?.name;
+        if (!name || name === 'Object') throw new Error('Mongo.insert: a plain object needs an explicit collection name');
+        await this.db.collection(name).insertOne(obj)
     }
 
     close = async () => {
@@ -45,17 +48,14 @@ export default class Mongo {
         await client.close();
     }
 
-    getAll = (collectionName) => {
+    // Streams a collection, optionally filtered. The only caller (decision.ts) replays the expiry-day (Thursday) quotes, so that is
+    // its filter; nothing else is implied here.
+    getAll = (collectionName: string, filter: Record<string, unknown> = {}) => {
         try {
-            const collection = this.db.collection(collectionName);
-            Log.log('Collection: ', collection)
-            return collection.find({'day': 'Thursday'}).stream()
-    
+            return this.db.collection(collectionName).find(filter).stream()
         } catch (e) {
             Log.log(e);
         }
-        
-        
     }
 
 };

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, FormEvent } from 'react';
 import { InputGroup, Form, Button, Spinner, Alert, ListGroup } from 'react-bootstrap';
 import { useTrading } from '../context/TradingContext';
 import { useAuth } from '../context/AuthContext';
+import { matchSymbols, parsePoints } from './orderEntryShared';
 import { apiFetch } from '../utils/api';
 
 export default function OrderEntry() {
@@ -70,15 +71,9 @@ export default function OrderEntry() {
     setInput(upper);
     setSelectedSymbol('');
 
-    if (upper.length >= 4) {
-      const terms = upper.split(/\s+/).filter(t => t);
-      const matches = symbols.filter(s => terms.every(t => s.includes(t))).slice(0, 10);
-      setSuggestions(matches);
-      setShowDropdown(matches.length > 0);
-    } else {
-      setSuggestions([]);
-      setShowDropdown(false);
-    }
+    const matches = matchSymbols(upper, symbols, (s) => s);
+    setSuggestions(matches);
+    setShowDropdown(matches.length > 0);
   };
 
   const handleSelect = (sym: string) => {
@@ -91,10 +86,9 @@ export default function OrderEntry() {
     e.preventDefault();
     if (!selectedSymbol) return;
     // Points must be positive finite numbers (a negative/zero value would put the target/stop on the wrong side).
-    const tp = targetPoints ? Number(targetPoints) : undefined;
-    const sl = stopLossPoints ? Number(stopLossPoints) : undefined;
-    if ((tp !== undefined && !(Number.isFinite(tp) && tp > 0)) || (sl !== undefined && !(Number.isFinite(sl) && sl > 0))) {
-      window.alert('Target and stop-loss points must be positive numbers.');
+    const { target: tp, stopLoss: sl, error } = parsePoints(targetPoints, stopLossPoints);
+    if (error) {
+      window.alert(error);
       return;
     }
     // Keep the selection if the order was rejected, so the user can correct and retry.

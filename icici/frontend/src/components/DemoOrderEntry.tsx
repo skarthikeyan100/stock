@@ -3,6 +3,7 @@ import { InputGroup, Form, Button, Spinner, Alert, ListGroup } from 'react-boots
 import { useTrading } from '../context/TradingContext';
 import { DEMO_MAX_LOSS } from '../context/DemoTradingContext';
 import DemoHelpTip from './DemoHelpTip';
+import { matchSymbols, parsePoints, SYMBOL_SEARCH_MIN_CHARS } from './orderEntryShared';
 import { apiFetch } from '../utils/api';
 
 interface AntOption {
@@ -67,15 +68,9 @@ export default function DemoOrderEntry() {
     setInput(upper);
     setSelected(null);
 
-    if (upper.length >= 2) {
-      const terms = upper.split(/\s+/).filter((t) => t);
-      const matches = options.filter((o) => terms.every((t) => o.tradingSymbol.toUpperCase().includes(t))).slice(0, 10);
-      setSuggestions(matches);
-      setShowDropdown(matches.length > 0);
-    } else {
-      setSuggestions([]);
-      setShowDropdown(false);
-    }
+    const matches = matchSymbols(upper, options, (o) => o.tradingSymbol);
+    setSuggestions(matches);
+    setShowDropdown(matches.length > 0);
   };
 
   const handleSelect = (opt: AntOption) => {
@@ -87,10 +82,15 @@ export default function DemoOrderEntry() {
   const handleContractBuy = async (e: FormEvent) => {
     e.preventDefault();
     if (!selected) return;
+    const points = parsePoints(targetPoints, stopLossPoints);
+    if (points.error) {
+      window.alert(points.error);
+      return;
+    }
     const placed = await placeContractOrder(
       `${selected.token}|${selected.tradingSymbol}|${selected.optionType}`,
-      targetPoints ? Number(targetPoints) : undefined,
-      stopLossPoints ? Number(stopLossPoints) : undefined
+      points.target,
+      points.stopLoss
     );
     if (!placed) return; // keep the selection so the user can retry
     setInput('');
@@ -134,7 +134,7 @@ export default function DemoOrderEntry() {
           style={{ width: 'auto', float: 'none', padding: '0 6px', fontSize: '1rem', marginBottom: 8 }}
         >
           Search &amp; Buy
-          <DemoHelpTip text="Type at least 2 characters to search NIFTY option contracts, pick one from the list, optionally set target/stop-loss points, then click Buy. Like Flash Trade, the position fills once a live price is received." />
+          <DemoHelpTip text={`Type at least ${SYMBOL_SEARCH_MIN_CHARS} characters to search NIFTY option contracts, pick one from the list, optionally set target/stop-loss points, then click Buy. Like Flash Trade, the position fills once a live price is received.`} />
         </legend>
         <div ref={dropdownRef} style={{ position: 'relative' }}>
           <form onSubmit={handleContractBuy}>

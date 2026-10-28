@@ -7,7 +7,7 @@ import Prism from './prism';
 import AntStream from './ant/AntStream';
 import Config from './prism/config';
 import configService from './prism/ConfigService';
-import {  PUT, CALL, USER_LOSS_LIMIT,  DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT} from './constants'
+import {  PUT, CALL, UNKNOWN_USER_LOSS_LIMIT,  DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT} from './constants'
 import strategies from './strategy/strategies';
 import { Strategy } from './strategy/strategy';
 
@@ -32,10 +32,16 @@ export default class Monitor {
     // Users with an order in flight, as an expiry time (ms). Set to Infinity while the request is outstanding; once the broker has
     // answered it falls back to a grace window - a filled order is then in this.trades (and the fill path clears the mark), while a
     // resting, cancelled or rejected one must not block the user until a restart.
-    pendingUsers: Map<string, number> = new Map();
+    private pendingUsers: Map<string, number> = new Map();
     private static readonly PENDING_GRACE_MS = 60_000;
     markPendingUser(user: string): void { this.pendingUsers.set(user, Number.POSITIVE_INFINITY); }
-    private releasePendingUser(user: string): void { this.pendingUsers.set(user, Date.now() + Monitor.PENDING_GRACE_MS); }
+    // `placed`: the broker accepted an order (it may rest unfilled) - keep the mark for a grace window. Nothing placed (null result,
+    // rejection, throw): clear it at once so a retry is not blocked. A mark the fill path already cleared (or replaced) is left alone.
+    private releasePendingUser(user: string, placed: boolean): void {
+        if (this.pendingUsers.get(user) !== Number.POSITIVE_INFINITY) return;
+        if (placed) this.pendingUsers.set(user, Date.now() + Monitor.PENDING_GRACE_MS);
+        else this.pendingUsers.delete(user);
+    }
     private isUserPending(user: string): boolean {
         const until = this.pendingUsers.get(user);
         if (until === undefined) return false;
@@ -85,13 +91,16 @@ export default class Monitor {
         }
         this.markPendingUser(userId);
         Log.log(`[Monitor] Placing buy order for ${userId}: ${contract} qty=${qty} price=${price}`);
+        let placed = false;
         try {
-            return await Prism.getInstance().buyContract(contract, qty, price, this.getUserContext(userId));
+            const response = await Prism.getInstance().buyContract(contract, qty, price, this.getUserContext(userId));
+            placed = !!response;
+            return response;
         } finally {
-            // The mark only covers the request being in flight (two concurrent requests must not both pass the lot check). Once the
-            // broker has answered, a filled order is in this.trades, and a resting, cancelled or rejected one must not leave the
-            // user blocked until a restart (the fill path also clears it).
-            this.releasePendingUser(userId);
+            // The mark covers the request in flight (two concurrent requests must not both pass the lot check). Once the broker has
+            // answered: an accepted order keeps the mark for a grace window (it may rest unfilled; the fill path clears it earlier),
+            // anything else clears it at once so a retry is not blocked - and nothing stays blocked until a restart.
+            this.releasePendingUser(userId, placed);
         }
     }
 
@@ -108,10 +117,13 @@ export default class Monitor {
         }
         this.markPendingUser(userId);
         Log.log(`[Monitor] Placing buyIndex order for ${userId}: ${index} right=${right} qty=${qty}`);
+        let placed = false;
         try {
-            return await Prism.getInstance().buyIndex({ userContext: this.getUserContext(userId), index, ltp, right, qty });
+            const result = await Prism.getInstance().buyIndex({ userContext: this.getUserContext(userId), index, ltp, right, qty });
+            placed = !!result;
+            return result;
         } finally {
-            this.releasePendingUser(userId); // see requestBuy
+            this.releasePendingUser(userId, placed); // see requestBuy
         }
     }
 
@@ -154,7 +166,7 @@ export default class Monitor {
 
     getUserLossLimit(user: string): number {
         const cached = this.userSettingsCache.get(user);
-        return cached ? cached.lossLimit : USER_LOSS_LIMIT;
+        return cached ? cached.lossLimit : UNKNOWN_USER_LOSS_LIMIT;
     }
 
     getUserLotLimit(user: string): number {
@@ -177,7 +189,7 @@ export default class Monitor {
         const investmentAmount = cache?.investmentAmount ?? 0;
         return {
             email,
-            lossLimit: cache?.lossLimit ?? USER_LOSS_LIMIT,
+            lossLimit: cache?.lossLimit ?? UNKNOWN_USER_LOSS_LIMIT,
             lotCount: cache?.lotLimit ?? DEFAULT_LOT_LIMIT,
             investmentMode: (cache?.investmentMode ?? 'investmentAmount') as 'lotCount' | 'investmentAmount',
             investmentAmount,
@@ -443,7 +455,7 @@ export default class Monitor {
         Log.log(`[Trade] ${tradeEvent.action} ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} status=${tradeEvent.status}`)
         try { Mongo.getInstance()?.insert(tradeEvent); } catch (e) { /* Mongo not available */ }
         if (tradeEvent.action == 'Buy') {
-            this.pendingUsers.delete(tradeEvent.user || 'Default');
+            this.pendingUsers.delete(tradeEvent.user || 'Default'); // the fill is in this.trades now
             // Match by tsym AND user so different strategies can hold the same contract independently
             const index = this.trades.findIndex(t => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user);
             if (index == -1) {

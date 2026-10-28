@@ -131,7 +131,7 @@ export default class Decision {
         // Log.log(x.toString());
         // Log.log(x.getDate());
 
-        const stream = Mongo.getInstance().getAll('NiftyQuote');
+        const stream = Mongo.getInstance().getAll('NiftyQuote', { day: 'Thursday' });
         stream.on('error', function (err) {
             // console.error(err)
         })

@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { GoogleLogin } from '@react-oauth/google';
+import { GoogleLogin, CredentialResponse } from '@react-oauth/google';
 import { useAuth } from '../context/AuthContext';
 import { isMarketHours } from '../utils/marketHours';
 
@@ -12,6 +12,20 @@ export default function LoginPage() {
   useEffect(() => {
     if (isLoggedIn && !termsAccepted) navigate('/rules', { replace: true });
   }, [isLoggedIn, termsAccepted, navigate]);
+
+  // One handler pair for both Google buttons (hero and footer). /rules forwards a user who has already accepted the terms.
+  const onGoogleSuccess = async (credentialResponse: CredentialResponse) => {
+    setLoginError(null);
+    try {
+      if (!credentialResponse.credential) throw new Error('Google did not return a credential');
+      await login(credentialResponse.credential);
+      navigate('/rules');
+    } catch (e: any) {
+      console.error('Login failed:', e);
+      setLoginError(e?.message || 'Login failed - please try again');
+    }
+  };
+  const onGoogleError = () => setLoginError('Google sign-in failed - please try again');
 
   return (
     <div className="landing-page">
@@ -45,20 +59,7 @@ export default function LoginPage() {
             you bring the skill. Keep 25% of every rupee you earn.
           </p>
           <div className="landing-hero-cta">
-            <GoogleLogin
-              onSuccess={async (credentialResponse) => {
-                setLoginError(null);
-                try {
-                  if (!credentialResponse.credential) throw new Error('Google did not return a credential');
-                  await login(credentialResponse.credential);
-                  navigate('/rules');
-                } catch (e: any) {
-                  console.error('Login failed:', e);
-                  setLoginError(e?.message || 'Login failed - please try again');
-                }
-              }}
-              onError={() => setLoginError('Google sign-in failed - please try again')}
-            />
+            <GoogleLogin onSuccess={onGoogleSuccess} onError={onGoogleError} />
             {loginError && <div className="text-danger small mt-2">{loginError}</div>}
           </div>
         </div>
@@ -177,17 +178,8 @@ export default function LoginPage() {
         <h2>Ready to start trading?</h2>
         <p>Sign in with your Google account to get access.</p>
         <div className="landing-cta-btn">
-          <GoogleLogin
-            onSuccess={async (credentialResponse) => {
-              try {
-                await login(credentialResponse.credential!);
-                navigate('/rules');
-              } catch (e) {
-                console.error('Login failed:', e);
-              }
-            }}
-            onError={() => console.error('Google login error')}
-          />
+          <GoogleLogin onSuccess={onGoogleSuccess} onError={onGoogleError} />
+          {loginError && <div className="text-danger small mt-2">{loginError}</div>}
         </div>
       </section>
 

@@ -98,6 +98,20 @@ function isBeforeMarketDataCutoff(): boolean {
 }
 
 
+// The stock's current LTP over REST (NSE cash segment), or undefined when its token or quote cannot be read.
+async function fetchStockLtp(antStockCode: string): Promise<number | undefined> {
+    const equity = AntContractMaster.getInstance().findEquityToken(antStockCode);
+    if (!equity) return undefined;
+    try {
+        const ltp = await ANT.getInstance().getScripQuote('NSE', equity.token);
+        await sleep(REST_QUOTE_DELAY_MS);
+        return Number.isFinite(ltp) && ltp > 0 ? ltp : undefined;
+    } catch (e: any) {
+        console.warn(`[gapScreenerOptionQuoteEod] stock LTP fetch failed for ${antStockCode}:`, e.message);
+        return undefined;
+    }
+}
+
 async function collectQuotesViaRest(pending: PendingQuote[]): Promise<Map<string, number>> {
     const quotes = new Map<string, number>();
     const ant = ANT.getInstance();
@@ -278,13 +292,15 @@ async function main(): Promise<void> {
         return;
     }
 
-    const useWebsocket = isBeforeMarketDataCutoff();
+    // REST by default, always: a websocket batch opens a SECOND ANT session for the same user, which can kick the production data
+    // stream while the markets are live. GAPSCREENER_USE_WS=1 opts back into the websocket before the 15:30 cutoff.
+    const useWebsocket = process.env.GAPSCREENER_USE_WS === '1' && isBeforeMarketDataCutoff();
     let quotes: Map<string, number>;
     if (useWebsocket) {
         console.log(`\nOpening ANT websocket session and subscribing ${pending.length} option(s)...`);
         quotes = await collectLiveQuotes(pending.map((p) => p.token));
     } else {
-        console.log(`\nPast 3:30pm - websocket subscribe won't receive ticks. Polling ANT getQuote for ${pending.length} option(s) (${REST_QUOTE_DELAY_MS}ms apart)...`);
+        console.log(`\nPolling ANT getScripQuote for ${pending.length} option(s) (${REST_QUOTE_DELAY_MS}ms apart)...`);
         quotes = await collectQuotesViaRest(pending);
     }
 
@@ -302,6 +318,11 @@ async function main(): Promise<void> {
 
         // recommendedRows already guarantees a Buy/Sell match in screenerBySymbol.
         const screenerRow = screenerBySymbol.get(p.antStockCode)!;
+        // The breakout is judged on the stock's EOD LTP, not the morning snapshot in gap-screener.csv. A failed refetch keeps the
+        // snapshot (logged) rather than dropping the row.
+        const eodStockLtp = await fetchStockLtp(p.antStockCode);
+        if (eodStockLtp !== undefined) screenerRow.ltp = eodStockLtp;
+        else console.warn(`[gapScreenerOptionQuoteEod] ${p.antStockCode}: could not refetch the stock LTP - using the screener snapshot ${screenerRow.ltp}`);
         if (!Number.isFinite(screenerRow.ltp) || !Number.isFinite(screenerRow.first15mHigh) || !Number.isFinite(screenerRow.first15mLow)) {
             console.warn(`[gapScreenerOptionQuoteEod] skipping ${p.antStockCode}: LTP/1st15m High/1st15m Low missing or not numeric in ${SCREENER_CSV}`);
             continue;

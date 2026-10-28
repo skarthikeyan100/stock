@@ -6,7 +6,6 @@ import NotificationBell from '../components/NotificationBell';
 import { readError, apiFetch } from '../utils/api';
 import { periodEndShown } from '../utils/period';
 
-
 function VerifiedBadge({ verified, hasValue }: { verified: boolean; hasValue: boolean }) {
   if (verified) return <Badge bg="success" className="ms-2">Verified</Badge>;
   if (hasValue) return <Badge bg="warning" text="dark" className="ms-2">Under Verification</Badge>;
