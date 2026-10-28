@@ -5,6 +5,7 @@ import { load, dump } from 'js-yaml';
 import AppConfig, { StrategyInstanceConfig } from './AppConfig';
 import { normalizePercentFields, formatPercentFields } from './percentConfig';
 import { validateConfigFile, coerceMaxInvestment } from './configValidation';
+import { withCanonicalSettings, withCanonicalStrategy } from './configVocabulary';
 
 class ConfigService {
   private configPath = process.env.CONFIG_PATH || './config.yml';
@@ -112,11 +113,16 @@ class ConfigService {
     }
     // Percent fields may be written as "2" or "2%"; normalise to numbers so
     // every consumer does arithmetic on a number.
-    const normalizeBlock = (o: any) => normalizePercentFields(
-      o && o.maxInvestment !== undefined ? { ...o, maxInvestment: coerceMaxInvestment(o.maxInvestment) } : o);
-    parsed.settings = normalizeBlock(parsed.settings);
+    // maxInvestment/maxExposure may be quoted in YAML ("100000"): coerced to a number, and both names kept in step (the canonical one
+    // wins - see configVocabulary.ts).
+    const normalizeBlock = (o: any) => {
+      if (!o) return o;
+      const exposure = o.maxExposure ?? o.maxInvestment;
+      return normalizePercentFields(exposure !== undefined ? { ...o, maxExposure: coerceMaxInvestment(exposure), maxInvestment: coerceMaxInvestment(exposure) } : o);
+    };
+    parsed.settings = withCanonicalSettings(normalizeBlock(parsed.settings));
     if (Array.isArray(parsed.strategies)) {
-      parsed.strategies = parsed.strategies.map((s: any) => normalizeBlock(s));
+      parsed.strategies = parsed.strategies.map((s: any) => withCanonicalStrategy(normalizeBlock(s)));
     }
     this.config = parsed as AppConfig;
     Log.log(`Config Updated: ${(this.config.strategies || []).length} strategies (${(this.config.strategies || []).map((s: any) => `${s.type}${s.userId ? ':' + s.userId : ''}${s.enabled ? '' : '(off)'}`).join(', ')})`);

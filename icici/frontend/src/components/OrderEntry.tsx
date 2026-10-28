@@ -31,7 +31,7 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
 
   // Mirrors the fallback chain manualBuyOnKite/manualBuyOnAnt apply server-side
   // when targetPoints/stopLossPoints are omitted: the user's own override, else
-  // config.yml's global settings.targetPriceDiff/stopLossPriceDiff - so the
+  // config.yml's global settings.targetPoints/stopLossPoints - so the
   // placeholder shows the real value that will be used, not a vague "(default)".
   useEffect(() => {
     if (demo) return; // the demo never applies a fallback target/stop: a blank box places the trade with neither
@@ -39,8 +39,8 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
       .then(res => (res.ok ? res.json() : null)) // /config is admin-only: a trader just gets no placeholder hint
       .then(data => {
         if (!data) return;
-        setDefaultTargetPoints(data?.settings?.targetPriceDiff ?? null);
-        setDefaultStopLossPoints(data?.settings?.stopLossPriceDiff ?? null);
+        setDefaultTargetPoints(data?.settings?.targetPoints ?? data?.settings?.targetPriceDiff ?? null);
+        setDefaultStopLossPoints(data?.settings?.stopLossPoints ?? data?.settings?.stopLossPriceDiff ?? null);
       })
       .catch(err => console.error('Failed to load config:', err));
   }, [demo]);

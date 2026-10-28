@@ -202,8 +202,8 @@ export async function buyIndexOnKite(req: BuyIndexRequest): Promise<Trade> {
     }
 
     const settings = configService.getConfig().settings;
-    const targetPoints = req.targetPoints ?? bookkeeping.getUserTargetPoints(req.userId) ?? settings.targetPriceDiff;
-    const stopLossPoints = req.stopLossPoints ?? bookkeeping.getUserStopLossPoints(req.userId) ?? settings.stopLossPriceDiff;
+    const targetPoints = req.targetPoints ?? bookkeeping.getUserTargetPoints(req.userId) ?? settings.targetPoints;
+    const stopLossPoints = req.stopLossPoints ?? bookkeeping.getUserStopLossPoints(req.userId) ?? settings.stopLossPoints;
     const optionType = req.right === CALL ? 'CE' : 'PE';
     const index = req.index ?? 'NIFTY';
 
@@ -315,8 +315,8 @@ async function buyContractOnKite(userId: string, tradingSymbol: string, commonTo
             t,
             userId,
             exchange,
-            targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? configService.getConfig().settings.targetPriceDiff,
-            stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? configService.getConfig().settings.stopLossPriceDiff
+            targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? configService.getConfig().settings.targetPoints,
+            stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? configService.getConfig().settings.stopLossPoints
         )
     );
 
@@ -333,8 +333,8 @@ async function buyContractOnKite(userId: string, tradingSymbol: string, commonTo
     trade.brokerOrderId = orderId;
 
     const settings = configService.getConfig().settings;
-    const finalTargetPoints = targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? settings.targetPriceDiff;
-    const finalStopLossPoints = stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? settings.stopLossPriceDiff;
+    const finalTargetPoints = targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? settings.targetPoints;
+    const finalStopLossPoints = stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? settings.stopLossPoints;
     await finalizeEntry(trade, userId, exchange, finalTargetPoints, finalStopLossPoints);
     return trade;
 }

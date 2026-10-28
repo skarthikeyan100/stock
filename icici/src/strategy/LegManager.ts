@@ -100,7 +100,9 @@ export interface LegManagerConfig {
     marketSentiment?: string;
     refillCancelDistance?: number; // default 50
     minPremium?: number; // default 100
-    maxInvestment?: number; // falls back to DEFAULT_MAX_INVESTMENT
+    maxExposure?: number; // canonical; falls back to maxInvestment, then DEFAULT_MAX_INVESTMENT
+    /** @deprecated use maxExposure */
+    maxInvestment?: number;
     maxProfit?: number | null; // null/undefined disables the feature
     maxLoss?: number | null; // % of maxInvestment, mirrors maxProfit on the loss side; null/undefined disables the feature
     // Used only by restoreFromOpenTrades's wasAveraged heuristic - optional
@@ -375,7 +377,7 @@ export class LegManager {
         this.rollDayIfNeeded();
         if (this.capitalGateTripped) return false; // latched permanently - see field comment
         const cfg = this.deps.getConfig();
-        const maxInvestment = cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
+        const maxInvestment = cfg.maxExposure ?? cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
         let total = 0;
         for (const leg of this.legsByToken.values()) total += leg.totalQuantity * leg.avgPrice;
         for (const pending of this.pendingReEntries.values()) total += pending.quantity * pending.limitPrice;
@@ -407,7 +409,7 @@ export class LegManager {
         if (cfg.maxProfit == null) return; // feature not configured
         const maxProfitPct = toPercentNumber(cfg.maxProfit);
         if (maxProfitPct === null) { this.logUnparseablePercent('maxProfit', cfg.maxProfit); return; }
-        const maxInvestment = cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
+        const maxInvestment = cfg.maxExposure ?? cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
         const threshold = (maxProfitPct / 100) * maxInvestment;
         const cumulative = this.computeCumulativeProfit();
         if (!(cumulative >= threshold)) return; // NaN-safe: a NaN cumulative must not trip it
@@ -494,7 +496,7 @@ export class LegManager {
         if (cfg.maxLoss == null) return;
         const maxLossPct = toPercentNumber(cfg.maxLoss);
         if (maxLossPct === null) { this.logUnparseablePercent('maxLoss', cfg.maxLoss); return; }
-        const maxInvestment = cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
+        const maxInvestment = cfg.maxExposure ?? cfg.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
         const threshold = (maxLossPct / 100) * maxInvestment;
         const cumulative = this.computeCumulativeProfit();
         if (!(cumulative <= -threshold)) return; // NaN-safe: a NaN cumulative must not trip it

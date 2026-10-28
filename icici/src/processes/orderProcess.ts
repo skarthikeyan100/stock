@@ -1078,7 +1078,7 @@ async function applyConfigStrategyLimitsOnce() {
         bookkeeping.updateUserSettings(userId, {
             lossLimit: mongoUser?.lossLimit ?? USER_LOSS_LIMIT,
             lotLimit: mongoUser?.lotLimit ?? mongoUser?.lotCount ?? DEFAULT_LOT_LIMIT,
-            maxInvestment: (cfg as any).maxInvestment || DEFAULT_MAX_INVESTMENT,
+            maxInvestment: (cfg as any).maxExposure || (cfg as any).maxInvestment || DEFAULT_MAX_INVESTMENT,
             useGTT: cfg.useGTT ?? mongoUser?.useGTT ?? true,
             broker: normalizeBrokerName((cfg as any).broker ?? (mongoUser as any)?.broker ?? 'kite') as any,
         });

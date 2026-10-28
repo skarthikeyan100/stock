@@ -537,7 +537,7 @@ export default class BulkPcrStrategy extends Strategy {
                 scope: key,
                 kind: 'loss',
                 getCapPct: () => this.cfg().maxLossPerOrder,
-                getMaxInvestment: () => this.cfg().maxInvestment ?? 0,
+                getMaxInvestment: () => (this.cfg().maxExposure ?? this.cfg().maxInvestment) ?? 0,
             });
             this.stops.set(key, stop);
         }
@@ -566,7 +566,7 @@ export default class BulkPcrStrategy extends Strategy {
                 scope: `${broker}:maxProfit`,
                 kind: 'profit',
                 getCapPct: () => this.cfg().maxProfit,
-                getMaxInvestment: () => this.cfg().maxInvestment ?? 0,
+                getMaxInvestment: () => (this.cfg().maxExposure ?? this.cfg().maxInvestment) ?? 0,
             });
             this.profitStops.set(broker, stop);
         }

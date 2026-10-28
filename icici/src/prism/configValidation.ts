@@ -13,7 +13,7 @@ function isNum(v: any): v is number {
 // in any single strategy's flat block). See the plan's field table for the
 // evidence behind each one.
 const NON_NEGATIVE_FIELDS: string[] = [
-    'lossLimit', 'lotLimit', 'maxInvestment',
+    'lossLimit', 'lotLimit', 'maxInvestment', 'maxExposure',
     'targetPoints', 'stopLossPoints', 'targetPrice', 'stopLossPrice', 'target', 'stopLoss',
     'minPrice', 'maxPrice', 'targetPriceDiff', 'stopLossPriceDiff', 'trailingDistance',
     'cooldownSeconds', 'safetyBufferAmount', 'maxTradesPerDay',
@@ -140,9 +140,11 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     // maxInvestment is the base every % stop is computed against. A non-numeric
     // value (e.g. "1,00,000") would make the thresholds NaN and silently
     // disable them, so it must be a positive number when present.
-    const maxInv = coerceMaxInvestment(obj.maxInvestment);
-    if (obj.maxInvestment != null && !(isNum(maxInv) && maxInv > 0)) {
-        errors.push(`${label}.maxInvestment must be a number > 0 (got ${JSON.stringify(obj.maxInvestment)})`);
+    // (maxExposure is the canonical name, maxInvestment the legacy one; the canonical wins when both are present.)
+    const rawExposure = obj.maxExposure ?? obj.maxInvestment;
+    const maxInv = coerceMaxInvestment(rawExposure);
+    if (rawExposure != null && !(isNum(maxInv) && maxInv > 0)) {
+        errors.push(`${label}.${obj.maxExposure != null ? 'maxExposure' : 'maxInvestment'} must be a number > 0 (got ${JSON.stringify(rawExposure)})`);
     }
     // A BulkPcr loss stop is a percent of maxInvestment: with no usable base it could never trip, so refuse the file.
     // Scoped to BulkPcr only - other strategies fall back to a default base and must keep loading as they do today.

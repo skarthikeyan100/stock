@@ -90,8 +90,8 @@ export abstract class Strategy {
 
     getMonitorConfig(): { targetPoints: number; stopLossPoints: number; trailingDistance: number } | null {
         return {
-            targetPoints: configService.getConfig().settings.targetPriceDiff,
-            stopLossPoints: configService.getConfig().settings.stopLossPriceDiff,
+            targetPoints: configService.getConfig().settings.targetPoints,
+            stopLossPoints: configService.getConfig().settings.stopLossPoints,
             trailingDistance: configService.getConfig().settings.trailingDistance,
         };
     }

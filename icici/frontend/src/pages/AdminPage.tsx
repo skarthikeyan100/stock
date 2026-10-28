@@ -394,8 +394,8 @@ export default function AdminPage() {
   // what the user gets right now when they have no explicit override.
   const userDefaults = {
     allottedCapital: config?.continuousStrategy?.allottedCapital,
-    targetPoints: config?.settings?.targetPriceDiff,
-    stopLossPoints: config?.settings?.stopLossPriceDiff,
+    targetPoints: config?.settings?.targetPoints ?? config?.settings?.targetPriceDiff,
+    stopLossPoints: config?.settings?.stopLossPoints ?? config?.settings?.stopLossPriceDiff,
   };
 
   const startEdit = (u: UserRow) => {
@@ -679,7 +679,7 @@ export default function AdminPage() {
     'continuousStrategy.slDistance': { description: 'Adverse-move step size (premium points) between each hedge/average level (levels 1-4).', values: 'Integer points, e.g. 10.' },
     'continuousStrategy.squareOffDistance': { description: 'Adverse move (premium points) from entry at which the leg is force-sold at market and abandoned for good, regardless of hedging/averaging already in place.', values: 'Integer points, independent of SL Distance. Default 50.' },
     'continuousStrategy.minPremium': { description: 'Lowest option premium a contract must have to be eligible for a T1 entry or hedge spawn.', values: 'Integer, in ₹ premium, default 100.' },
-    'continuousStrategy.maxInvestment': { description: 'Total capital (qty × price, across all open legs + pending refills) this strategy may deploy before new orders are permanently blocked for the session.', values: 'Integer, in ₹.' },
+    'continuousStrategy.maxExposure': { description: 'Total capital (qty × price, across all open legs + pending refills) this strategy may deploy before new orders are permanently blocked for the session.', values: 'Integer, in ₹.' },
     'continuousStrategy.spawnQuantityMode': { description: "Multiplier applied to a leg's current size when spawning an opposite-direction hedge at an adverse level.", values: 'Positive number, e.g. 2 = double. Falls back to 1 if missing/non-numeric/≤0.' },
     'continuousStrategy.maxProfit': { description: 'Cumulative realized+unrealized profit, as a % of Max Investment, at which every open leg is closed and new entries are permanently blocked for the session.', values: 'Percent, e.g. 2. Leave unset to disable.' },
     'continuousStrategy.right': { description: 'Restrict T1 entries to calls or puts, or resolve the direction automatically from PCR.', values: "'CE', 'PE', or 'none' for PCR-based auto-resolve." },
@@ -747,7 +747,7 @@ export default function AdminPage() {
     'supportResistanceStrategy.squareOffDistance': { description: 'Adverse move (premium points) from entry at which the leg is force-sold at market and abandoned for good.', values: 'Integer points, independent of SL Distance.' },
     'supportResistanceStrategy.maxLevels': { description: 'Number of stacked hedge/average levels between entry and the hard square-off.', values: 'Integer, e.g. 4.' },
     'supportResistanceStrategy.minPremium': { description: 'Lowest option premium a contract must have to be eligible for an entry or hedge spawn.', values: 'Integer, in ₹ premium.' },
-    'supportResistanceStrategy.maxInvestment': { description: 'Total capital (qty × price, across all open legs + pending refills) this strategy may deploy before new orders are permanently blocked for the session.', values: 'Integer, in ₹.' },
+    'supportResistanceStrategy.maxExposure': { description: 'Total capital (qty × price, across all open legs + pending refills) this strategy may deploy before new orders are permanently blocked for the session.', values: 'Integer, in ₹.' },
     'supportResistanceStrategy.maxProfit': { description: 'Cumulative realized+unrealized profit, as a % of Max Investment, at which every open leg is closed and new entries are permanently blocked for the session.', values: 'Percent, e.g. 2. Leave unset to disable.' },
     'supportResistanceStrategy.spawnQuantityMode': { description: "Multiplier applied to a leg's current size when spawning an opposite-direction hedge at an adverse level.", values: 'Positive number, e.g. 2 = double. Falls back to 1 if missing/non-numeric/≤0.' },
     'supportResistanceStrategy.cooldownSeconds': { description: 'Minimum wait after an entry before another entry can be attempted.', values: 'Integer seconds, default 60.' },
@@ -778,7 +778,7 @@ export default function AdminPage() {
     'bulkPcrStrategy.quantity': { description: 'Total quantity bought in one go, on each selected broker; split into exchange-compliant chunks automatically (NIFTY freeze quantity is 1755).', values: 'Integer, must be a multiple of the instrument lot size. Default 13975 (215 lots × 65).' },
     'bulkPcrStrategy.targetPoints': { description: 'Profit target, in points above entry average, that triggers the exit. There is no stop-loss — the position holds indefinitely until this is hit.', values: 'Integer points.' },
     'bulkPcrStrategy.right': { description: 'Fixed entry direction, or auto-resolve from PCR (put/call OI ratio) when left as none.', values: "'call', 'put', or 'none' for PCR-based auto-resolve." },
-    'bulkPcrStrategy.maxInvestment': { description: 'Reference figure for total capital this block order deploys (quantity × price). This is a per-account cap shared across every broker checked above, not per broker - with 2 brokers checked, both run under the same combined limit, so size this for the FULL combined exposure (roughly 2× a single-broker figure) or one broker can get rejected while the other succeeds.', values: 'Integer, in ₹.' },
+    'bulkPcrStrategy.maxExposure': { description: 'Reference figure for total capital this block order deploys (quantity × price). This is a per-account cap shared across every broker checked above, not per broker - with 2 brokers checked, both run under the same combined limit, so size this for the FULL combined exposure (roughly 2× a single-broker figure) or one broker can get rejected while the other succeeds.', values: 'Integer, in ₹.' },
     'bulkPcrStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
 
     'topStockOptionsOpeningGapStrategy.enabled': { description: 'Turn this one-shot strategy on/off. It durably disables itself (writes enabled: false back to config.yml) once at least one leg actually enters on a trading day - flip back on manually to arm another run.', values: 'On/Off.' },
@@ -1341,7 +1341,7 @@ export default function AdminPage() {
                             <Col md={6}>{renderConfigField('SL Distance', ['continuousStrategy', 'slDistance'], config.continuousStrategy?.slDistance)}</Col>
                             <Col md={6}>{renderConfigField('Square-off Distance', ['continuousStrategy', 'squareOffDistance'], config.continuousStrategy?.squareOffDistance)}</Col>
                             <Col md={6}>{renderConfigField('Minimum Premium', ['continuousStrategy', 'minPremium'], config.continuousStrategy?.minPremium)}</Col>
-                            <Col md={6}>{renderConfigField('Max Investment', ['continuousStrategy', 'maxInvestment'], config.continuousStrategy?.maxInvestment)}</Col>
+                            <Col md={6}>{renderConfigField('Max Exposure', ['continuousStrategy', 'maxExposure'], config.continuousStrategy?.maxExposure ?? config.continuousStrategy?.maxInvestment)}</Col>
                             <Col md={6}>{renderConfigField('Spawn Quantity Mode', ['continuousStrategy', 'spawnQuantityMode'], config.continuousStrategy?.spawnQuantityMode)}</Col>
                             <Col md={6}>{renderConfigField('Max Profit %', ['continuousStrategy', 'maxProfit'], config.continuousStrategy?.maxProfit)}</Col>
                             <Col md={6}>{renderConfigField('Right', ['continuousStrategy', 'right'], config.continuousStrategy?.right, 'text')}</Col>
@@ -1463,7 +1463,7 @@ export default function AdminPage() {
                             <Col md={6}>{renderConfigField('Square-off Distance', ['supportResistanceStrategy', 'squareOffDistance'], config.supportResistanceStrategy?.squareOffDistance)}</Col>
                             <Col md={6}>{renderConfigField('Max Levels', ['supportResistanceStrategy', 'maxLevels'], config.supportResistanceStrategy?.maxLevels)}</Col>
                             <Col md={6}>{renderConfigField('Minimum Premium', ['supportResistanceStrategy', 'minPremium'], config.supportResistanceStrategy?.minPremium)}</Col>
-                            <Col md={6}>{renderConfigField('Max Investment', ['supportResistanceStrategy', 'maxInvestment'], config.supportResistanceStrategy?.maxInvestment)}</Col>
+                            <Col md={6}>{renderConfigField('Max Exposure', ['supportResistanceStrategy', 'maxExposure'], config.supportResistanceStrategy?.maxExposure ?? config.supportResistanceStrategy?.maxInvestment)}</Col>
                             <Col md={6}>{renderConfigField('Max Profit %', ['supportResistanceStrategy', 'maxProfit'], config.supportResistanceStrategy?.maxProfit)}</Col>
                             <Col md={6}>{renderConfigField('Spawn Quantity Mode', ['supportResistanceStrategy', 'spawnQuantityMode'], config.supportResistanceStrategy?.spawnQuantityMode)}</Col>
                             <Col md={6}>{renderConfigField('Cooldown (sec)', ['supportResistanceStrategy', 'cooldownSeconds'], config.supportResistanceStrategy?.cooldownSeconds)}</Col>
@@ -1561,7 +1561,7 @@ export default function AdminPage() {
                             <Col md={6}>{renderConfigField('Quantity', ['bulkPcrStrategy', 'quantity'], config.bulkPcrStrategy?.quantity)}</Col>
                             <Col md={6}>{renderConfigField('Target Points', ['bulkPcrStrategy', 'targetPoints'], config.bulkPcrStrategy?.targetPoints)}</Col>
                             <Col md={6}>{renderConfigField('Right', ['bulkPcrStrategy', 'right'], config.bulkPcrStrategy?.right, 'text')}</Col>
-                            <Col md={6}>{renderConfigField('Max Investment', ['bulkPcrStrategy', 'maxInvestment'], config.bulkPcrStrategy?.maxInvestment)}</Col>
+                            <Col md={6}>{renderConfigField('Max Exposure', ['bulkPcrStrategy', 'maxExposure'], config.bulkPcrStrategy?.maxExposure ?? config.bulkPcrStrategy?.maxInvestment)}</Col>
                           </Row>
                           {renderConfigField('Log Enabled', ['bulkPcrStrategy', 'logEnabled'], config.bulkPcrStrategy?.logEnabled, 'boolean')}
                         </>

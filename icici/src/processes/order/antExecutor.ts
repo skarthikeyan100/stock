@@ -526,8 +526,8 @@ export interface BuyIndexRequest {
 
 export async function buyIndexOnAnt(req: BuyIndexRequest): Promise<Trade> {
     const settings = configService.getConfig().settings;
-    const targetPoints = req.targetPoints ?? bookkeeping.getUserTargetPoints(req.userId) ?? settings.targetPriceDiff;
-    const stopLossPoints = req.stopLossPoints ?? bookkeeping.getUserStopLossPoints(req.userId) ?? settings.stopLossPriceDiff;
+    const targetPoints = req.targetPoints ?? bookkeeping.getUserTargetPoints(req.userId) ?? settings.targetPoints;
+    const stopLossPoints = req.stopLossPoints ?? bookkeeping.getUserStopLossPoints(req.userId) ?? settings.stopLossPoints;
     const optionType = req.right === CALL ? 'CE' : 'PE';
     const index = req.index ?? 'NIFTY';
 
@@ -695,8 +695,8 @@ export async function estimateOptionPricesBatch(
 
 export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
     const settings = configService.getConfig().settings;
-    const targetPoints = req.targetPoints ?? bookkeeping.getUserTargetPoints(req.userId) ?? settings.targetPriceDiff;
-    const stopLossPoints = req.stopLossPoints ?? bookkeeping.getUserStopLossPoints(req.userId) ?? settings.stopLossPriceDiff;
+    const targetPoints = req.targetPoints ?? bookkeeping.getUserTargetPoints(req.userId) ?? settings.targetPoints;
+    const stopLossPoints = req.stopLossPoints ?? bookkeeping.getUserStopLossPoints(req.userId) ?? settings.stopLossPoints;
 
     if (req.contract) {
         const canonical = parseCanonicalSymbol(req.contract);
