@@ -49,6 +49,11 @@ import { normalizeBrokerList } from '../util/brokerName';
 // one snapshot+confirm pair, and "start another strategy" instead of
 // "place a trade" as the action.
 const LATE_WINDOW_MINUTES = 5;
+// When this process came up. A slot whose time is earlier than this is never armed: the process was not running at that time, so
+// a restart must not turn "the slot a minute or two ago" into a fresh entry (live 2026-10-29: restarts at 11:06 and 13:37 armed the
+// 11:05 and 13:35 slots and bought positions nobody was expecting). LATE_WINDOW_MINUTES still covers a tick that arrives late
+// while the process is running.
+const PROCESS_STARTED_AT = moment();
 
 export default class BulkPcrAutoStartStrategy extends Strategy {
     private tradingDay: string | null = null;
@@ -110,6 +115,11 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
             if (now.isBefore(slotTime)) continue;
 
             this.firedToday.add(timeStr); // each configured slot fires at most once per day, whether it starts, skips, or is too late
+
+            if (slotTime.isBefore(PROCESS_STARTED_AT)) {
+                Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot skipped - process started at ${PROCESS_STARTED_AT.format('HH:mm:ss')}, after it`);
+                continue;
+            }
 
             if (now.diff(slotTime, 'minutes') > LATE_WINDOW_MINUTES) {
                 Log.log(`[BulkPcrAutoStart:${this.userId}] Missed ${timeStr} slot (now ${now.format('HH:mm:ss')}) - skipping`);
