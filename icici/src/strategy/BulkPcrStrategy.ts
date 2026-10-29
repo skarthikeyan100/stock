@@ -15,6 +15,7 @@ import MomentumSignal from './MomentumSignal';
 import { isPastMarketClose } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { PnlStop } from './PnlStop';
+import { toPercentNumber } from '../prism/percentConfig';
 import { TrailStop } from './TrailStop';
 import { sleep } from '../util/sleep';
 import { normalizeBrokerList, normalizeBrokerName, normalizePersistedBrokers } from '../util/brokerName';
@@ -1382,8 +1383,9 @@ export default class BulkPcrStrategy extends Strategy {
             // cycle was otherwise permanently counted as a second active side, blocking this lone CE
             // slot from ever opening its hedge no matter how far price moved.
             if (this.slotsOf(slot.broker).filter((p) => p.phase !== 'done').length !== 1) continue;
-            if (quote.ltp > slot.entryAvg - this.slDistance()) continue;
-            await this.openOppositeSide(slot);
+            const hedgeBy = this.hedgeRule(slot, quote.ltp);
+            if (!hedgeBy) continue;
+            await this.openOppositeSide(slot, hedgeBy);
         }
     }
 
@@ -1425,9 +1427,29 @@ export default class BulkPcrStrategy extends Strategy {
         unwatchTokenOnSource('ant', pos.heldToken, this, exchangeForTsym(pos.heldTsym));
     }
 
+    // The order's loss stop in rupees (maxLossPerOrder % of the broker's cap in force), or null when the stop is off.
+    private lossStopRupees(broker: BrokerName): number | null {
+        const pct = toPercentNumber(this.cfg().maxLossPerOrder);
+        const cap = this.effectiveCap(broker);
+        return pct !== null && pct > 0 && cap > 0 ? (pct / 100) * cap : null;
+    }
+
+    // Why the opposite side should open now, or null. Two rules, either one is enough:
+    //  - points: the slot is slDistance below its entry (the original rule);
+    //  - rupees: its open loss reached hedgeAtPercentOfStop % of its own rupee loss stop. The stop is in rupees but the hedge was
+    //    only in points, and with quantity sized as cap / premium the stop works out to about 10% of the premium in points (9 at a
+    //    91 premium), so below ~100 the stop always fired before a 10-point hedge could open (live 2026-10-29).
+    private hedgeRule(slot: BrokerPosition, ltp: number): 'points' | 'rupees' | null {
+        if (ltp <= slot.entryAvg - this.slDistance()) return 'points';
+        const pct = Number(this.cfg().hedgeAtPercentOfStop ?? 80);
+        const stop = this.lossStopRupees(slot.broker);
+        if (!(pct > 0) || stop === null) return null;
+        return this.slotUnrealized(slot) <= -(pct / 100) * stop ? 'rupees' : null;
+    }
+
     // Opens the opposite side against a lone slot that moved slDistance against its entry. Sized to
     // the lone slot's still-open quantity. The lone slot's own +2 sell is never cancelled.
-    private async openOppositeSide(slot: BrokerPosition): Promise<void> {
+    private async openOppositeSide(slot: BrokerPosition, rule: 'points' | 'rupees' = 'points'): Promise<void> {
         if (this.isBrokerStopped(slot.broker)) return;
         if (this.liveRemainder.has(slot.broker)) return; // a possibly-live remainder is already outstanding on this broker
         const right = slot.right === CALL ? PUT : CALL;
@@ -1440,7 +1462,8 @@ export default class BulkPcrStrategy extends Strategy {
             broker: slot.broker, right, phase: 'buying', heldTsym: null, heldToken: null,
             entryAvg: 0, targetQuantity: 0, soldQty: 0, soldValue: 0, entryQuantity: remaining, hedge: true,
         });
-        Log.log(`[BulkPcrStrategy] [${slot.broker}] ${slot.heldTsym} is ${this.slDistance()} points below its entry ${slot.entryAvg} - opening ${right} qty=${remaining} against it`);
+        const stopRupees = this.lossStopRupees(slot.broker);
+        Log.log(`[BulkPcrStrategy] [${slot.broker}] ${slot.heldTsym} ${rule === 'points' ? `is ${this.slDistance()} points below its entry ${slot.entryAvg}` : `open loss ${Math.round(-this.slotUnrealized(slot))} reached hedgeAtPercentOfStop=${this.cfg().hedgeAtPercentOfStop ?? 80}% of its ${Math.round(stopRupees ?? 0)} stop (entry ${slot.entryAvg})`} - opening ${right} qty=${remaining} against it`);
         await this.buyAndExit(key);
     }
 
