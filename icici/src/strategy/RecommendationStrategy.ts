@@ -6,7 +6,7 @@ import { isPastTime } from '../util/marketHours';
 import { LimitEntryStrategy, Leg, ResolvedEntry } from './LimitEntryStrategy';
 
 // Trades one analyst recommendation given in config.yml: a contract ("22750 CE"), an entry price, a target and a stop loss.
-// Places a LIMIT buy at (entryPrice - entryOffset) on every configured broker, sized from maxInvestmentAmount (split evenly
+// Places a LIMIT buy at (entryPrice - entryOffset) on every configured broker, sized from maxInvestment (split evenly
 // across the brokers), and once it fills attaches the target and stop loss:
 //   kite  - one two-leg GTT (OCO) at the broker; if that fails, the in-app exitMonitor.
 //   ant   - the in-app exitMonitor (a bracket/cover order must BE the entry order, it cannot be attached to a filled one).
@@ -20,7 +20,7 @@ import { LimitEntryStrategy, Leg, ResolvedEntry } from './LimitEntryStrategy';
 //   entryPrice: 120               - recommended entry; the order goes in at entryPrice - entryOffset
 //   targetPrice: 150              - absolute option price
 //   stopLoss: 95                  - absolute option price; must be below the order price
-//   maxInvestmentAmount: 100000   - rupee budget for the whole entry
+//   maxInvestment: 100000   - rupee budget for the whole entry
 //   entryOffset: 5                - default 5
 //   index: NIFTY                  - default NIFTY
 //   brokers: [kite]
@@ -46,11 +46,11 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         const entryPrice = Number(cfg.entryPrice);
         const target = Number(cfg.targetPrice);
         const stop = Number(cfg.stopLoss);
-        const budget = Number(cfg.maxInvestmentAmount);
+        const budget = Number(cfg.maxInvestment);
         const offset = cfg.entryOffset == null ? 5 : Number(cfg.entryOffset);
         const orderPrice = roundToTick(entryPrice - offset);
         const problem = !parsed ? `contract '${cfg.contract}' is not like '22750 CE'`
-            : !(entryPrice > 0 && target > 0 && stop > 0 && budget > 0 && Number.isFinite(offset) && offset >= 0) ? 'entryPrice, targetPrice, stopLoss and maxInvestmentAmount must be positive numbers'
+            : !(entryPrice > 0 && target > 0 && stop > 0 && budget > 0 && Number.isFinite(offset) && offset >= 0) ? 'entryPrice, targetPrice, stopLoss and maxInvestment must be positive numbers'
             : !(stop < orderPrice && orderPrice < target) ? `need stopLoss (${stop}) < order price (${orderPrice} = entryPrice - entryOffset) < targetPrice (${target})`
             : null;
         const key = `${cfg.contract}|${entryPrice}|${target}|${stop}|${budget}|${offset}`;

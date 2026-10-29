@@ -49,7 +49,7 @@ const last = (fn: string) => calls.filter((c) => c.fn === fn).pop();
     assert(JSON.stringify(RecommendationStrategy.parseContract('22750 CE')) === '{"strike":22750,"right":"CE"}', 'parses "22750 CE"');
     assert(RecommendationStrategy.parseContract('22750') === null, 'rejects a contract with no CE/PE');
 
-    const recCfg = { type: 'RecommendationStrategy', userId: 'Rec-test', contract: '22750 CE', entryPrice: 120, targetPrice: 150, stopLoss: 95, entryOffset: 5, maxInvestmentAmount: 100000, brokers: ['kite'], startTime: '00:00', eodCloseTime: '23:59' };
+    const recCfg = { type: 'RecommendationStrategy', userId: 'Rec-test', contract: '22750 CE', entryPrice: 120, targetPrice: 150, stopLoss: 95, entryOffset: 5, maxInvestment: 100000, brokers: ['kite'], startTime: '00:00', eodCloseTime: '23:59' };
     let rec = make(RecommendationStrategy, recCfg);
     await rec.processNiftyQuote({ ltp: 22700 });
     const buy = last('placeLimitBuyBare');
