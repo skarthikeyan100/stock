@@ -68,14 +68,14 @@ async function onFill(userId: string, raw: any, openQuantity?: number) {
     }
     // A disabled strategy takes no action at all: it is not told about fills, so it cannot refill, re-buy, re-place an exit or
     // update leg state. (Fills are still booked by the order process.) Enable it and POST /reconcile to pick positions back up.
-    if (!strategy.enabled) {
-        Log.log(`[strategies] ${userId} is disabled - fill for ${raw?.tsym} not delivered`);
+    if (!strategy.receivesEvents()) {
+        Log.log(`[strategies] ${userId} is disabled (or outside the trading window) - fill for ${raw?.tsym} not delivered`);
         return;
     }
     // The fill's own broker decides the feed its token belongs to; the strategy's config `broker:`
     // key is only a fallback for untagged fills (a BulkPcr ANT pair under `broker: breeze` would
     // otherwise subscribe an ANT token on the Breeze feed).
-    const feed = trade.broker ? BROKER_TO_FEED_SOURCE[trade.broker] : undefined;
+    const feed = strategy.legTokenFeed ?? (trade.broker ? BROKER_TO_FEED_SOURCE[trade.broker] : undefined);
     // SENSEX (BFO) tsym -> 'BFO', same convention BulkPcrStrategy already uses
     // for its own BulkPcr square-off/reconcile calls - found on review: without
     // this, a held BFO token's subscription here would default to NFO and
@@ -134,8 +134,8 @@ async function onOrderCancelled(userId: string, notification: OrderCancelledNoti
         Log.log('[strategies] Order cancelled for unknown strategy userId:', userId);
         return;
     }
-    if (!strategy.enabled) {
-        Log.log(`[strategies] ${userId} is disabled - order cancellation not delivered`);
+    if (!strategy.receivesEvents()) {
+        Log.log(`[strategies] ${userId} is disabled (or outside the trading window) - order cancellation not delivered`);
         return;
     }
     if (strategy.onOrderCancelled) {
@@ -169,11 +169,39 @@ async function reconcileStrategies(): Promise<void> {
         // exit re-placement and lockout close) checks `enabled` itself.
         try {
             await (strategy as any).reconcile?.();
+            strategy.stateLoaded = true;
         } catch (e) {
-            Log.log(`[strategies] reconcile() failed for ${strategy.userId}:`, e);
+            Log.log(`[strategies] ALERT: reconcile() failed for ${strategy.userId} - it receives no ticks or fills until a reconcile succeeds:`, e);
         }
     }
     Log.log(`[strategies] Reconciled - ${strategies.getList().length} strategies.`);
+}
+
+const STARTUP_RECONCILE_RETRY_MS = 30_000;
+
+// Brings every strategy to a reconciled state after a (re)start. Fails closed: until it succeeds, strategies receive nothing.
+async function startupReconcile(): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+        if (strategies.getList().every((s) => s.stateLoaded)) return; // a manual POST /reconcile got there first
+        try {
+            const brokers = await OrderClient.getInstance().reconcileBrokerPositions();
+            const failed = Object.entries(brokers).filter(([, ok]) => !ok).map(([broker]) => broker);
+            if (failed.length === 0) {
+                await runReconcile();
+                const pending = strategies.getList().filter((s) => !s.stateLoaded);
+                if (pending.length === 0) {
+                    Log.log('[strategies] Startup reconcile complete - ticks and fills are now delivered');
+                    return;
+                }
+                Log.log(`[strategies] ALERT: startup reconcile left ${pending.map((s) => s.userId).join(', ')} unreconciled (attempt ${attempt}) - retrying in ${STARTUP_RECONCILE_RETRY_MS / 1000}s`);
+            } else {
+                Log.log(`[strategies] ALERT: startup reconcile blocked - broker positions could not be read for: ${failed.join(', ')} (attempt ${attempt}). No strategy receives ticks until this clears; log in to that broker. Retrying in ${STARTUP_RECONCILE_RETRY_MS / 1000}s`);
+            }
+        } catch (e) {
+            Log.log(`[strategies] ALERT: startup reconcile attempt ${attempt} failed (retrying in ${STARTUP_RECONCILE_RETRY_MS / 1000}s):`, e);
+        }
+        await new Promise((r) => setTimeout(r, STARTUP_RECONCILE_RETRY_MS));
+    }
 }
 
 // One strategy throwing on a tick must not starve the strategies after it (including ones managing live exits).
@@ -252,11 +280,24 @@ function enqueueLatest(key: string, quote: OptionQuote, job: (q: OptionQuote) =>
     })();
 }
 
+let feedDown = false;
+
 async function onTick(tick: any) {
     // Control line from the orchestrator after the data process was restarted: replay every live token subscription.
     if (tick.cmd === 'resync') {
         Log.log(`[strategies] data process restarted - resubscribed ${resubscribeAll()} token feed(s)`);
         return;
+    }
+    // The orchestrator does not restart `data` (review decision 5). Entries are tick-driven, so no ticks means no new entries;
+    // this only makes the outage loud, and the first tick afterwards logs the recovery.
+    if (tick.cmd === 'feedDown') {
+        feedDown = true;
+        Log.log(`[strategies] ALERT: ${tick.source ?? 'data'} feed is DOWN - no ticks will arrive, so no new entries; open positions are not being tick-monitored`);
+        return;
+    }
+    if (feedDown && tick.type) {
+        feedDown = false;
+        Log.log('[strategies] feed is delivering ticks again');
     }
     if (tick.type === 'nifty') {
         const quote = Object.assign(new NiftyQuote(), tick.quote) as NiftyQuote;
@@ -268,7 +309,7 @@ async function onTick(tick: any) {
         // One latest-wins slot per strategy: a strategy stuck awaiting a broker call only coalesces its own ticks, not everyone's.
         for (const strategy of strategies.getList()) {
             enqueueLatestIndex(`tick:nifty:${strategy.getClassName()}:${strategy.userId}`, quote, statsUpdate, async (q, statsList) => {
-                if (!strategy.enabled) return;
+                if (!strategy.receivesEvents()) return;
                 for (const u of statsList) {
                     await isolate(strategy, 'receive', () => strategy.receive(u.oldStats, u.newStats));
                 }
@@ -279,7 +320,7 @@ async function onTick(tick: any) {
         const quote = Object.assign(new SensexQuote(), tick.quote) as SensexQuote;
         for (const strategy of strategies.getList()) {
             enqueueLatestIndex(`tick:sensex:${strategy.getClassName()}:${strategy.userId}`, quote, undefined, async (q) => {
-                if (strategy.enabled) await isolate(strategy, 'processSensexQuote', () => strategy.processSensexQuote(q));
+                if (strategy.receivesEvents()) await isolate(strategy, 'processSensexQuote', () => strategy.processSensexQuote(q));
             });
         }
     } else if (tick.type === 'option') {
@@ -305,17 +346,6 @@ async function handleStrategiesRequest(req: StrategiesRequest): Promise<Strategi
                     ok: true,
                     result: strategies.getList().map((s) => ({ type: s.getClassName(), userId: s.userId, enabled: s.enabled })),
                 };
-
-            case 'setEnabled': {
-                const { identifier, enabled } = req.payload;
-                strategies.setEnabledOverride(identifier, enabled);
-                return {
-                    kind: 'response',
-                    id: req.id,
-                    ok: true,
-                    result: strategies.getList().map((s) => ({ type: s.getClassName(), userId: s.userId, enabled: s.enabled })),
-                };
-            }
 
             case 'reset': {
                 const matched = strategies.getList().filter((s) => s.getClassName() === req.payload.type);
@@ -431,20 +461,14 @@ async function main() {
         }
     }
 
-    // reconcile() does not run here or on any tick - it's the explicit
-    // 'reconcile' request (POST /reconcile), used only to repair a mismatch
-    // between broker positions and Mongo. Ticks and order events flow regardless.
+    // Ticks, fills and cancellations reach a strategy only once it is reconciled (Strategy.stateLoaded): broker positions first (the
+    // `order` process), then every strategy's reconcile(). Runs in the background and retries until it succeeds, so a broker that is
+    // not logged in yet holds trading back rather than letting a restarted strategy open a duplicate. POST /reconcile also satisfies it.
+    void startupReconcile();
 
-    // Keeps the trading-window gate (strategies.ts's enforceTradingWindow)
-    // self-correcting without needing a restart - disable-only: force-disables
-    // any strategy still enabled once the window closes (past 15:25). Never
-    // re-enables anything - a strategy only becomes enabled again via a fresh
-    // explicit enable action (config save or admin live-toggle) made while
-    // within the window; see strategies.ts's enforceTradingWindow/
-    // setEnabledOverride comments.
-    setInterval(() => strategies.recheckTradingWindow(), 60 * 1000);
+    // The trading window is enforced at dispatch (Strategy.receivesEvents), not by clearing `enabled` in memory.
 
-    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. POST /reconcile is on-demand only.`);
+    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. Startup reconcile running.`);
 }
 
 // A throw in any strategy callback (or a stray rejected promise) must not kill the process mid-position:

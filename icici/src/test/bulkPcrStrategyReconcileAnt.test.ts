@@ -57,7 +57,7 @@ function setConfig(userId: string, brokers: string[]) {
     (configService as any).config = {
         settings: {},
         strategies: [
-            { type: 'BulkPcrStrategy', userId, enabled: true, brokers, targetPoints: 2, quantity: -1 },
+            { type: 'BulkPcrStrategy', userId, enabled: true, brokers, targetPoints: 2, quantity: -1, slDistance: 10, index: 'NIFTY' },
         ],
     };
 }

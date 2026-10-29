@@ -10,7 +10,7 @@ import Mongo from '../tools/mongo';
 import { toPercentNumber } from '../prism/percentConfig';
 import { Strategy } from './strategy';
 import { localDayKey } from './dayKey';
-import { LegBrokerOps, defaultLegOps, dryRunOps } from './LegBrokerOps';
+import { LegBrokerOps, PartialSellError, defaultLegOps, dryRunOps } from './LegBrokerOps';
 
 // Extracted from ContinuousStrategy.ts (2026-09-11) so the same loss-driven
 // hedge-spawn/averaging/refill/maxProfit leg lifecycle can be reused by
@@ -44,6 +44,14 @@ interface LegLineageDoc {
 // on success, or removed again on failure/capital-block so the slot can retry.
 const PENDING = '__pending__';
 
+
+// A Map that calls `onChange` after every set/delete/clear.
+class ChangeNotifyingMap<K, V> extends Map<K, V> {
+    constructor(private readonly onChange: () => void) { super(); }
+    set(key: K, value: V): this { super.set(key, value); this.onChange?.(); return this; }
+    delete(key: K): boolean { const removed = super.delete(key); this.onChange?.(); return removed; }
+    clear(): void { super.clear(); this.onChange?.(); }
+}
 
 export interface Leg {
     legId: string;
@@ -165,7 +173,9 @@ function alreadyFilledQty(e: any): number {
 export class LegManager {
     private rawOps: LegBrokerOps;
     private legsByToken: Map<string, Leg> = new Map();
-    private pendingReEntries: Map<string, PendingReEntry> = new Map(); // keyed by token
+    // keyed by token. Mirrored to Mongo on every change (see persistPendingReEntries): the limit buy is live at the broker, so a restart
+    // must still know which leg it belongs to when it fills, or the position ends up with no stop (review R5-8).
+    private pendingReEntries: Map<string, PendingReEntry> = new ChangeNotifyingMap<string, PendingReEntry>(() => this.persistPendingReEntries());
     private deferredRootRefill: PendingReEntry | null = null;
     private legIdCounter = 0;
     private gateLog?: GateLogger; // created on first use: the prefix needs deps.ownerType
@@ -333,6 +343,40 @@ export class LegManager {
             Log.log(`[${this.deps.ownerType}] legLineage query failed - restored legs will default to isRoot:true with no lineage:`, e);
         }
         return result;
+    }
+
+    // One document per (user, owner): today's resting refill intents. Fire-and-forget like persistLegLineage.
+    private persistPendingReEntries(): void {
+        Mongo.getInstance()?.db.collection('legPendingReEntries').replaceOne(
+            { userId: this.deps.userId, ownerType: this.deps.ownerType },
+            { userId: this.deps.userId, ownerType: this.deps.ownerType, day: LegManager.latchDay(), intents: Array.from(this.pendingReEntries.values()) },
+            { upsert: true },
+        ).catch((e) => Log.log(`[${this.deps.ownerType}] pending re-entry persist failed (continuing without persistence):`, e));
+    }
+
+    // Called by the owning strategy's reconcile() AFTER restoreFromOpenTrades (or when there are no open trades at all - a root refill is
+    // resting while no leg is held). Re-creates today's resting refill intents so their fill finds its intent. An intent whose token now
+    // has a leg already filled while this process was down and was restored from the broker's open trades: dropped.
+    async restorePendingReEntries(): Promise<void> {
+        let doc: any;
+        try {
+            doc = await Mongo.getInstance()?.db.collection('legPendingReEntries').findOne({ userId: this.deps.userId, ownerType: this.deps.ownerType });
+        } catch (e) {
+            Log.log(`[${this.deps.ownerType}] reconcile: could not read pending re-entries (a resting refill that fills will be untracked):`, e);
+            return;
+        }
+        if (!doc || doc.day !== LegManager.latchDay()) return;
+        const legByRef = new Map<string, Leg>();
+        for (const leg of this.legsByToken.values()) legByRef.set(leg.legRef, leg);
+        let restored = 0;
+        for (const raw of (doc.intents ?? []) as PendingReEntry[]) {
+            if (this.legsByToken.has(raw.token) || this.pendingReEntries.has(raw.token)) continue;
+            const parent = raw.parentLegRef ? legByRef.get(raw.parentLegRef) : undefined;
+            this.pendingReEntries.set(raw.token, { ...raw, parentLegId: parent?.legId ?? null });
+            watchToken(raw.token, this.deps.strategyRef, raw.exchange); // keeps ticks flowing for checkRefillDrift
+            restored++;
+        }
+        if (restored > 0) Log.log(`[${this.deps.ownerType}] reconcile: restored ${restored} resting refill intent(s) after restart`);
     }
 
     private nextLegId(): string {
@@ -536,7 +580,7 @@ export class LegManager {
             // the leg still tracked and double-counts this same fill as an "external" sell.
             this.legsByToken.delete(leg.token);
             try {
-                await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+                await this.sellLeg(leg);
             } catch (e) {
                 this.legsByToken.set(leg.token, leg); // still live at broker - put back for retry
                 leg.status = 'OPEN';
@@ -557,6 +601,22 @@ export class LegManager {
         }
 
         this.deferredRootRefill = null; // never placed at the broker - just drop the intent
+    }
+
+    // Sells the leg's whole remaining quantity. When only part was confirmed sold (PartialSellError) the leg shrinks by that part, and its
+    // realized P&L is booked, before the error propagates - so the retry sells what is left instead of the original size.
+    private async sellLeg(leg: Leg): Promise<void> {
+        try {
+            await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+        } catch (e) {
+            if (e instanceof PartialSellError && e.soldQty > 0) {
+                const sold = Math.min(e.soldQty, leg.totalQuantity);
+                this.realizedPnL += ((leg.lastLtp ?? leg.avgPrice) - leg.avgPrice) * sold;
+                leg.totalQuantity -= sold;
+                Log.log(`[${this.deps.ownerType}] Partial sell of ${leg.tsym}: ${sold} confirmed sold, ${leg.totalQuantity} left to sell on retry`);
+            }
+            throw e;
+        }
     }
 
     private recordOutcome(outcome: 'win' | 'loss' | 'timeout', pnl: number): void {
@@ -710,7 +770,7 @@ export class LegManager {
                 // identical comment for why (ANT fill-notify race with handleFillOrExternalSell).
                 this.legsByToken.delete(leg.token);
                 try {
-                    await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+                    await this.sellLeg(leg);
                 } catch (e) {
                     this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
                     leg.status = 'OPEN';
@@ -768,7 +828,7 @@ export class LegManager {
                 // identical comment for why (ANT fill-notify race with handleFillOrExternalSell).
                 this.legsByToken.delete(leg.token);
                 try {
-                    await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+                    await this.sellLeg(leg);
                 } catch (e) {
                     this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
                     leg.status = 'OPEN';

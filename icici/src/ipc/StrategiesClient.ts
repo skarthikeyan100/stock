@@ -86,12 +86,6 @@ class StrategiesClient {
         return res.result;
     }
 
-    async setEnabled(identifier: string, enabled: boolean): Promise<any[]> {
-        const res = await this.request('setEnabled', { identifier, enabled });
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
-    }
-
     async reset(type: string): Promise<{ type: string; reset: number }> {
         const res = await this.request('reset', { type });
         if (!res.ok) throw new Error(res.error);

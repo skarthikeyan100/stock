@@ -34,7 +34,7 @@ import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, recon
 import * as antExecutor from './order/antExecutor';
 import { buyIndexOnBreeze, squareOffOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
 import { attachProtection, cancelProtection } from './order/attachProtection';
-import { buyChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
+import { buyChunked, marketBuyBareChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
 import Breeze from '../breeze/Breeze';
 import KiteContractMaster from '../kite/KiteContractMaster';
@@ -114,6 +114,10 @@ for (const trackerBroker of TRACKER_BROKERS) {
 // target-SL edit), not on the price tick itself.
 exitMonitor.onPriceUpdate(() => bookkeeping.triggerPositionsChanged());
 // Chunked entries register one detached Trade per chunk - exits and live prices must act on the bookkeeping aggregate.
+// Breeze has no broker-side bracket: exitMonitor squares a Breeze position off (chunked) when its target / stop is crossed.
+exitMonitor.onExit('breeze', async (trade, exchange) => {
+    await squareOffChunked(getBrokerExecutor(trade.user, 'breeze'), trade.user, trade.tsym, trade.quantity, exchange);
+});
 exitMonitor.setAggregateResolver((t, broker) =>
     bookkeeping.trades.find((x) => x.tsym === t.tsym && x.user === t.user && (x.broker === broker || (x.broker === undefined && broker === 'kite'))));
 
@@ -1201,7 +1205,7 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'buyContractBare': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return await placeOrderWithPendingGuard(req, estimatedValue, () =>
-                    getBrokerExecutor(req.userId, req.payload.broker).marketBuy(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange),
+                    marketBuyBareChunked(getBrokerExecutor(req.userId, req.payload.broker), req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange),
                 );
             }
 
@@ -1437,10 +1441,10 @@ async function main() {
     // on every restart even though nothing was actually lost (see
     // loadClosedTradesFromMongo's comment).
     await bookkeeping.loadClosedTradesFromMongo().catch((e) => Log.log('[order] startup: loadClosedTradesFromMongo failed (continuing):', e));
-    // Broker-position reconciliation is not run at startup - it's the explicit
-    // 'reconcileBrokerPositions' step (POST /reconcile), used only to repair a
-    // mismatch between broker positions and Mongo. Nothing waits for it.
-    Log.log('[order] startup: broker-position reconciliation is on-demand only (POST /reconcile)');
+    // Broker positions are not loaded here: the strategies process requests 'reconcileBrokerPositions' at its own startup and holds every
+    // strategy back until it succeeds (startupReconcile). This call sees an empty trade list; the real exit-monitor rebuild happens in
+    // reconcileAllBrokersOnce.
+    Log.log('[order] startup: waiting for the strategies process to request broker-position reconciliation');
     exitMonitor.reconcileFromTrades(bookkeeping.trades);
 
     // Restore any resting root-refill limit orders tracked before this restart,

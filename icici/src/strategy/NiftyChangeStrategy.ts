@@ -94,6 +94,16 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
         });
     }
 
+    protected async topUpExit(leg: Leg, delta: number): Promise<void> {
+        const targetPoints = Number((this.cfg() as any).targetPoints);
+        if (!(targetPoints > 0)) throw new Error(`targetPoints (${(this.cfg() as any).targetPoints}) invalid`);
+        const target = roundToTick(this.avgPrice(leg) + targetPoints);
+        await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
+            broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: delta, price: target, exchange: leg.exchange,
+        });
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: extra resting sell ${delta} @ ${target} for the later fill`);
+    }
+
     protected async placeExit(leg: Leg): Promise<void> {
         const targetPoints = Number((this.cfg() as any).targetPoints);
         if (!(targetPoints > 0)) throw new Error(`targetPoints (${(this.cfg() as any).targetPoints}) invalid`);

@@ -5,6 +5,7 @@ import Log from '../../util/Log';
 import { sleep } from '../../util/sleep';
 import { markNotPlaced, isNotPlaced } from '../../util/notPlaced';
 import type { ChunkedFillResult } from '../../ipc/orderProtocol';
+import { Trade } from '../../model/model';
 
 
 // Confirmed live 2026-09-23: a burst of back-to-back chunk placements (an
@@ -119,6 +120,44 @@ export async function buyChunked(
         }
     }
     return { quantity: filledQty, avgPrice: filledQty > 0 ? filledValue / filledQty : 0 };
+}
+
+// Chunked counterpart of the executors' bare market buy (LegManager entries, hedge spawns and average-adds). One order above the
+// exchange freeze quantity is rejected outright, so a buy is split like buyChunked's. Returns ONE Trade for what was filled (quantity
+// summed, price volume-weighted); each chunk's fill is already booked by the executor. If a later chunk fails after earlier ones filled,
+// the filled part is returned (never thrown away): the caller must track the position that exists. Nothing filled -> the error propagates.
+export async function marketBuyBareChunked(
+    executor: BrokerExecutor,
+    userId: string,
+    tradingSymbol: string,
+    instrumentToken: string,
+    quantity: number,
+    exchange: 'NFO' | 'BFO',
+    freezeQty: number = exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY
+): Promise<Trade> {
+    const chunks = splitIntoFreezeQtyChunks(quantity, freezeQty);
+    let filledQty = 0;
+    let filledValue = 0;
+    let last: Trade | undefined;
+    for (let i = 0; i < chunks.length; i++) {
+        if (chunks.length > 1) await throttleOrderPlacement();
+        try {
+            const trade = await executor.marketBuy(userId, tradingSymbol, instrumentToken, chunks[i], exchange);
+            filledQty += trade.quantity;
+            filledValue += trade.quantity * trade.price;
+            last = trade;
+            if (chunks.length > 1) Log.log(`[order] marketBuyBareChunked: ${tradingSymbol} chunk ${i + 1}/${chunks.length} filled qty=${trade.quantity} @ ${trade.price} for ${userId} (bought ${filledQty}/${quantity})`);
+        } catch (e: any) {
+            if (filledQty === 0) throw e;
+            Log.log(`[order] ALERT: marketBuyBareChunked: ${tradingSymbol} chunk ${i + 1}/${chunks.length} failed after filling ${filledQty}/${quantity} for ${userId} - returning the filled part so it is tracked; ${quantity - filledQty} qty NOT bought: ${e?.message ?? e}`);
+            break;
+        }
+    }
+    const aggregate = Object.assign(new Trade(), last);
+    aggregate.quantity = filledQty;
+    aggregate.price = filledValue / filledQty;
+    aggregate.lastTradePrice = aggregate.price;
+    return aggregate;
 }
 
 export async function squareOffChunked(

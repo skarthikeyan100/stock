@@ -40,7 +40,7 @@ async function main() {
         const leg = makeLeg('10914050');
         strategy.legManager.getLegsByToken().set(leg.token, leg);
 
-        orderClient.sellContractBare = async () => {
+        orderClient.chunkedSquareOff = async () => {
             throw new Error('IP not allowed to place orders for this app');
         };
 
@@ -59,7 +59,7 @@ async function main() {
         const leg = makeLeg('10914050');
         strategy.legManager.getLegsByToken().set(leg.token, leg);
 
-        orderClient.sellContractBare = async () => ({ status: 'COMPLETE' });
+        orderClient.chunkedSquareOff = async (_u: string, p: { quantity: number }) => ({ quantity: p.quantity, avgPrice: 100 });
 
         const quote = Object.assign(new OptionQuote(), { token: leg.token, ltp: 100000 });
         await strategy.processOptionQuote(quote);

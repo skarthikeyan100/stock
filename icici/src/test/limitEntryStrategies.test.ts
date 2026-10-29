@@ -116,7 +116,38 @@ const last = (fn: string) => calls.filter((c) => c.fn === fn).pop();
     await nc.processNiftyQuote({ ltp: 22710, prevClose: 22650 });
     assert(!calls.some((c) => c.fn === 'placeLimitBuyBare'), 'slot before process start is not fired');
 
-    for (const id of ['Rec-test', 'Rec-test-b', 'Rec-test-c', 'NC-test', 'NC-test-b', 'NC-test-c', 'NC-test-d']) {
+    console.log('Partial fills are protected as they arrive (R5-9)');
+    NiftyChangeStrategy.processStartedAt = moment().subtract(1, 'hour');
+    calls = [];
+    nc = make(NiftyChangeStrategy, { ...ncCfg, userId: 'NC-test-e', entryTimeoutMinutes: undefined });
+    await nc.processNiftyQuote({ ltp: 22710, prevClose: 22650 });
+    await nc.updateTrade(fill('NIFTY22750CE', 'Buy', 400, 96.5));
+    let sells = calls.filter((c) => c.fn === 'brokerPlaceLimitSellBare');
+    assert(sells.length === 1 && sells[0].args[1].quantity === 400, `a 400/975 partial fill gets a 400 resting sell at once (got ${sells.map((c) => c.args[1].quantity)})`);
+    await nc.updateTrade(fill('NIFTY22750CE', 'Buy', 575, 96.5));
+    sells = calls.filter((c) => c.fn === 'brokerPlaceLimitSellBare');
+    assert(sells.length === 2 && sells[1].args[1].quantity === 575, `the later 575 gets its own resting sell (got ${sells.map((c) => c.args[1].quantity)})`);
+    assert(nc.legs()[0].exitQty === 975, `the exit now covers all 975 (got ${nc.legs()[0].exitQty})`);
+
+    calls = []; attachFails = false;
+    rec = make(RecommendationStrategy, { ...recCfg, userId: 'Rec-test-e' });
+    await rec.processNiftyQuote({ ltp: 22700 });
+    await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 400, 115));
+    assert(calls.filter((c) => c.fn === 'attachProtection').length === 1, 'GTT attached for the first partial fill');
+    await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 445, 115));
+    assert(calls.filter((c) => c.fn === 'cancelProtection').length === 1 && calls.filter((c) => c.fn === 'attachProtection').length === 2, 'the later fill replaces the GTT with one over the whole quantity');
+    assert(rec.legs()[0].exit === 'gtt' && rec.legs()[0].exitQty === 845, 'still protected via GTT, covering 845');
+
+    calls = []; attachFails = true;
+    rec = make(RecommendationStrategy, { ...recCfg, userId: 'Rec-test-f', brokers: ['breeze'] });
+    await rec.processNiftyQuote({ ltp: 22700 });
+    await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 400, 115, 'breeze'));
+    await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 445, 115, 'breeze'));
+    sells = calls.filter((c) => c.fn === 'brokerPlaceLimitSellBare');
+    assert(sells.length === 2 && sells[0].args[1].quantity === 400 && sells[1].args[1].quantity === 445, 'self-managed exit: resting sell per fill, stop watched for the whole quantity');
+    attachFails = false;
+
+    for (const id of ['Rec-test', 'Rec-test-b', 'Rec-test-c', 'NC-test', 'NC-test-b', 'NC-test-c', 'NC-test-d', 'NC-test-e', 'Rec-test-e', 'Rec-test-f']) {
         try { require('fs').unlinkSync(`/tmp/limit-entry-test-${id}-${process.pid}.json`); } catch { /* none written */ }
     }
     process.exit(process.exitCode ?? 0); // config watcher / singletons keep the loop alive

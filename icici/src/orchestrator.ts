@@ -11,6 +11,7 @@ import fs from 'fs';
 import { createHash } from 'crypto';
 import path from 'path';
 import { sleep } from './util/sleep';
+import { shouldAutoRestart } from './orchestratorPolicy';
 
 // NOTE: do NOT force IPv4 globally here (e.g. via NODE_OPTIONS=--dns-result-
 // order=ipv4first) - tried that 2026-09-25 to fix Kite's IPv4-only IP
@@ -226,32 +227,18 @@ async function main() {
 
     // --- data (stdin: commands from strategies; stdout: tick feed - both real protocol channels) ---
     const startData = () => {
-        data = spawnChild('data', 'processes/dataProcess.js', ['pipe', 'pipe', 'inherit'], {}, respawnData);
+        data = spawnChild('data', 'processes/dataProcess.js', ['pipe', 'pipe', 'inherit'], {}, onDataCrash);
         if (order) { data.stdout.pipe(order.stdin, { end: false }); order.stdout.pipe(data.stdin, { end: false }); }
         if (frontend) { data.stdout.pipe(frontend.stdin, { end: false }); frontend.stdout.pipe(data.stdin, { end: false }); }
         if (strategies) { data.stdout.pipe(strategies.stdin, { end: false }); strategies.stdout.pipe(data.stdin, { end: false }); }
     };
-    const restartData = (opts?: { onlyIfDead?: boolean }) => serial('data', async () => {
-        const old = data;
-        if (replacementAlreadyRunning('data', old, opts)) return 'skipped';
-        for (const other of [order, frontend, strategies]) {
-            if (!other) continue;
-            old.stdout.unpipe(other.stdin);
-            other.stdout.unpipe(old.stdin);
-        }
-        await stopChild(old);
-        startData();
-        // The new data process has an empty subscription map: tell strategies to replay theirs (the second pass covers a data
-        // process that was not yet serving its stdin the first time).
-        for (const delayMs of [5_000, 20_000]) {
-            setTimeout(() => {
-                if (shuttingDown || !strategies || strategies.killed || !strategies.stdin.writable) return;
-                strategies.stdin.write(JSON.stringify({ cmd: 'resync' }) + '\n');
-            }, delayMs);
-        }
-        return 'started';
-    });
-    const respawnData = makeRespawner('data', restartData);
+    // `data` is never restarted automatically (review decision 5): a crash raises an alert and tells strategies the feed is down,
+    // and the operator restarts the whole run outside market hours. A rebuilt dist/ file does not restart it either.
+    const onDataCrash = () => {
+        if (shouldAutoRestart('data', 'crash')) return;
+        log('data', 'ALERT: data process exited - NOT restarting it automatically. Ticks have stopped; restart the orchestrator when it is safe.');
+        if (strategies && !strategies.killed && strategies.stdin.writable) strategies.stdin.write(JSON.stringify({ cmd: 'feedDown', source: 'data' }) + '\n');
+    };
 
     // --- order: the Unix-socket IPC server (strategies/frontend place orders through it) is the main reason it
     // exists, but its stdin/stdout are also wired into the tick-feed pipe like strategies/frontend, solely so
@@ -355,22 +342,6 @@ async function main() {
             void restartStrategies().then((outcome) => { if (outcome === 'failed') respawnStrategies(); });
         }
     );
-
-    // --- data itself (rare: only strategy/order-agnostic tick logic lives here) ---
-    // `data` now also watches `ant` (all 4 children import from shared dirs -
-    // see the dependency table this was derived from) - editing src/ant/* now
-    // correctly restarts the live WS instead of silently running stale code.
-    // Intentional: AntDataStream's exponential-backoff reconnect + the
-    // disk-persisted session (.ant_session.json) already make that
-    // reconnection fast and automatic, so the extra restarts are cheap.
-    watchAndRestart('data', [
-        path.join(DIST, 'processes', 'data'), path.join(DIST, 'processes', 'dataProcess.js'),
-        path.join(DIST, 'ant'), path.join(DIST, 'model'), path.join(DIST, 'util'),
-        path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'), path.join(DIST, 'breeze'),
-    ], () => {
-        log('dev', 'Restarting data (order/strategies/frontend untouched)...');
-        void restartData().then((outcome) => { if (outcome === 'failed') respawnData(); });
-    });
 }
 
 main().catch((e) => {

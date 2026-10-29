@@ -47,6 +47,7 @@ export default class ContinuousStrategy extends Strategy {
     name = 'ContinuousStrategy';
 
     private legManager: LegManager;
+    legTokenFeed = 'ant' as const; // LegManager legs carry ANT tokens on every broker (see Strategy.legTokenFeed)
     private momentum = new MomentumSignal();
     private lastNiftyLtp = 0;
     private gateLog = new GateLogger('[ContinuousStrategy] T1 gate:', GATE_LOG_THROTTLE_MS);
@@ -140,7 +141,7 @@ export default class ContinuousStrategy extends Strategy {
     // than a transient startup race that resolved itself a second later - see
     // ToDo.md's 2026-08-31 live incident (blocked from 08:57 through the 09:30
     // window open with 0 open positions the whole time).
-    // Called by strategiesProcess at startup, independent of reconcile() (which only runs on an explicit POST
+    // Called by strategiesProcess at startup, independent of reconcile() (which runs right after, once the broker positions are loaded; or on an explicit POST
     // /reconcile): a restart after a max-profit/max-loss trip must not re-open the strategy.
     async restoreLatches(): Promise<void> {
         await this.legManager.loadPersistedLatches();
@@ -165,8 +166,12 @@ export default class ContinuousStrategy extends Strategy {
                 await sleep(retryDelayMs);
             }
         }
-        if (openTrades!.length === 0) return; // fresh in-memory defaults already correct
+        if (openTrades!.length === 0) {
+            await this.legManager.restorePendingReEntries(); // a root refill may be resting while no leg is held
+            return; // fresh in-memory defaults already correct
+        }
         await this.legManager.restoreFromOpenTrades(openTrades);
+        await this.legManager.restorePendingReEntries();
         this.ordered = true;
     }
 

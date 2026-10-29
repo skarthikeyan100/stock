@@ -63,6 +63,24 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         await this.startCycle(key, entry, budget, async () => orderPrice);
     }
 
+    protected async topUpExit(leg: Leg, delta: number): Promise<void> {
+        if (leg.exit === 'exitMonitor' || leg.exit === 'none') return; // sized off the position when it triggers: later fills are covered already
+        if (leg.exit === 'gtt') {
+            // A GTT is sized when placed: drop it and attach a new one over the whole filled quantity. If the re-attach throws, exit is
+            // cleared so the housekeeping retry places a fresh exit.
+            await OrderClient.getInstance().cancelProtection(this.userId, { broker: leg.broker as any, tradingSymbol: leg.tsym });
+            leg.exit = undefined;
+            leg.exitQty = 0;
+            await this.placeExit(leg);
+            return;
+        }
+        const target = roundToTick(Number((this.cfg() as any).targetPrice));
+        await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
+            broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: delta, price: target, exchange: leg.exchange,
+        });
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: extra resting sell ${delta} @ ${target} for the later fill`);
+    }
+
     protected async placeExit(leg: Leg): Promise<void> {
         const cfg = this.cfg() as any;
         const target = roundToTick(Number(cfg.targetPrice));

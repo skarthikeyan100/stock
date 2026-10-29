@@ -7,6 +7,8 @@ import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import moment from "moment";
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 import OrderClient from "../processes/strategies/OrderClient";
+import { isWithinTradingWindow } from '../util/marketHours';
+import { FeedSource } from '../ipc/feedSource';
 
 export enum Outcome {
     WAIT = "WAIT",
@@ -25,6 +27,23 @@ export abstract class Strategy {
     ordered = false
     enabled = false
     token: string
+
+    // Set by strategies whose legs always carry ANT tokens, whatever broker places the orders (LegManager: the Kite and Breeze bare
+    // buys store `trade.token = antToken`). Their ticks must come from the ANT feed: routing by the order broker would subscribe an
+    // ANT token on the Breeze feed, where it is a different instrument or nothing, and tick-driven exits would never fire (R5-4).
+    legTokenFeed?: FeedSource
+
+    // False until the startup (or a manual POST /reconcile) reconcile has run for this strategy. A restarted strategy has no memory of
+    // the open positions it held, so a tick before then could open a duplicate or leave a live leg without its stop (review R4-1/R4-2/R5-1).
+    // Set by strategiesProcess; a strategy whose reconcile() threw stays false (and is retried) rather than trading blind.
+    stateLoaded = false
+
+    // What the dispatcher checks before delivering a tick, fill or cancellation: enabled in config.yml, inside the trading window,
+    // and state loaded. The window is a read-only clock test, so `enabled` stays equal to config.yml (it used to be force-cleared in
+    // memory at 15:25 and never restored, which silently disabled a strategy that config still said was on).
+    receivesEvents(): boolean {
+        return this.enabled && this.stateLoaded && isWithinTradingWindow();
+    }
 
     // Win/loss tracking
     wins = 0

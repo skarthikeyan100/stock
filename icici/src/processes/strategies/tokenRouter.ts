@@ -27,7 +27,8 @@ function getStrategies() {
 // does (bookkeeping.getUserBroker). Kept out of LegManager.ts/Strategy - every
 // watchToken/registerTrade call site keeps its existing (token, strategy)
 // signature.
-function resolveSource(strategy: Strategy): FeedSource {
+export function resolveSource(strategy: Strategy): FeedSource {
+    if (strategy.legTokenFeed) return strategy.legTokenFeed;
     const broker = getStrategies().getExpandedConfig(strategy.userId)?.broker;
     return (broker && BROKER_TO_FEED_SOURCE[normalizeBrokerName(broker) as keyof typeof BROKER_TO_FEED_SOURCE]) || DEFAULT_FEED_SOURCE;
 }
@@ -191,7 +192,7 @@ export function optionTickTargets(source: FeedSource, token: string): Strategy[]
 // Delivers one tick to one strategy, isolated from the others.
 export async function deliverOptionTick(strategy: Strategy, quote: OptionQuote): Promise<void> {
     // A disabled strategy takes no action at all - no leg management, stops, hedges, refills or exits off ticks.
-    if (!strategy.enabled) return;
+    if (!strategy.receivesEvents()) return;
     try {
         if (strategy.canHandleOptionQuote(quote)) await strategy.processOptionQuote(quote);
     } catch (e) {

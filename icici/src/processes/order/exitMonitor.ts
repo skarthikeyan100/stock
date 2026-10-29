@@ -14,7 +14,7 @@ import { exchangeForTsym } from '../../util/underlyings';
 // via onExit() rather than imported directly, to avoid a circular dependency
 // with kiteExecutor.ts/antExecutor.ts.
 
-export type Broker = 'kite' | 'ant' | 'prism';
+export type Broker = 'kite' | 'ant' | 'prism' | 'breeze';
 
 interface MonitoredTrade {
     trade: Trade;
@@ -204,10 +204,7 @@ export function reconcileFromTrades(trades: Trade[]): void {
     let reconciled = 0;
     for (const trade of trades) {
         if (!trade.token) continue;
-        // Breeze trades have no exit handler here (Breeze entries never register) - restoring one as 'kite'
-        // would square it off on the wrong broker.
-        if (trade.broker === 'breeze') continue;
-        const reBroker: Broker = trade.broker === 'ant' || trade.broker === 'prism' || trade.broker === 'kite'
+        const reBroker: Broker = trade.broker === 'ant' || trade.broker === 'prism' || trade.broker === 'kite' || trade.broker === 'breeze'
             ? trade.broker
             : trade.antOrderNo ? 'ant' : trade.prismCoverOrderNo ? 'prism' : 'kite';
         if (monitored.has(monitorKey(trade.user, trade.token, reBroker))) continue;

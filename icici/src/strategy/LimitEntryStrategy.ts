@@ -49,6 +49,7 @@ export interface Leg {
     exit?: ExitKind;
     exitAttempts?: number;
     exitRetryAt?: number;
+    exitQty?: number; // quantity the exit currently covers; below filledQty while later partial fills still need protecting
     stop?: number; // tick-driven stop: market out when the option's LTP falls to this (set only for a self-managed exit)
     closing?: boolean; // an EOD/stop close is in flight or done - never started twice
     outcomeRecorded?: boolean;
@@ -77,6 +78,9 @@ export abstract class LimitEntryStrategy extends Strategy {
     protected abstract readonly strategyType: string;
     // Called once an entry leg is fully filled (or cancelled with a partial fill): place the exit. Throw to have it retried.
     protected abstract placeExit(leg: Leg): Promise<void>;
+    // More of the entry filled after the exit was placed: cover the extra `delta` (a resting-sell exit sells `delta` more at the target;
+    // a GTT is re-attached for the whole quantity). Throw to have it retried.
+    protected abstract topUpExit(leg: Leg, delta: number): Promise<void>;
     // The subclass's own per-tick work (slot firing / one-shot placement). Runs only while enabled.
     protected abstract onNiftyTick(quote: NiftyQuote): Promise<void>;
 
@@ -279,9 +283,9 @@ export abstract class LimitEntryStrategy extends Strategy {
             leg.filledQty += qty;
             leg.boughtValue += qty * price;
             if (leg.status === 'resting' || leg.status === 'placing') leg.status = 'filled';
-            if (leg.exit && leg.filledQty > leg.qty) Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: a late entry fill took the position to ${leg.filledQty} (exit was sized for ${leg.qty}) - the extra is UNPROTECTED`);
+            if (leg.exit && leg.filledQty > leg.qty) Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: a late entry fill took the position to ${leg.filledQty} (ordered ${leg.qty}) - extending the exit over the extra`);
             this.save();
-            if (leg.filledQty >= leg.qty) await this.entryComplete(leg);
+            await this.protectFilled(leg);
         } else if (trade.action === 'Sell') {
             leg.soldQty += qty;
             leg.soldValue += qty * price;
@@ -319,7 +323,7 @@ export abstract class LimitEntryStrategy extends Strategy {
                 leg.boughtValue += missed * (Number(row.price) || leg.price);
                 leg.status = 'filled';
                 this.save();
-                if (leg.filledQty >= leg.qty) await this.entryComplete(leg);
+                await this.protectFilled(leg);
             }
         }
     }
@@ -346,6 +350,40 @@ export abstract class LimitEntryStrategy extends Strategy {
         this.recordOutcome(pnl >= 0 ? 'win' : 'loss', pnl);
     }
 
+    // Whatever has filled so far is protected straight away - a partial fill must not sit bare until the rest arrives (or the entry is
+    // cancelled at end of day). The first fill places the exit; later fills top it up.
+    private async protectFilled(leg: Leg): Promise<void> {
+        if (leg.closing || leg.filledQty <= 0) return;
+        if (!leg.exit) {
+            await this.entryComplete(leg);
+        } else if ((leg.exitQty ?? 0) < leg.filledQty) {
+            await this.topUp(leg);
+        }
+    }
+
+    private toppingUp = new Set<Leg>();
+    private async topUp(leg: Leg): Promise<void> {
+        if (this.toppingUp.has(leg) || leg.closing) return;
+        this.toppingUp.add(leg);
+        try {
+            let covered = leg.exitQty ?? 0;
+            while (covered < leg.filledQty && !leg.closing) {
+                const target = leg.filledQty; // a fill that lands while this runs is picked up by the next pass of the loop
+                try {
+                    await this.topUpExit(leg, target - covered);
+                } catch (e: any) {
+                    Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: could not extend the exit over ${target - covered} more filled (covered ${covered}/${leg.filledQty}) - that part is UNPROTECTED until the next housekeeping retry: ${e?.message ?? e}`);
+                    break;
+                }
+                covered = target;
+                leg.exitQty = covered;
+            }
+        } finally {
+            this.toppingUp.delete(leg);
+        }
+        this.save();
+    }
+
     private async entryComplete(leg: Leg): Promise<void> {
         if (leg.exit || leg.closing || leg.exitRetryAt === -1) return;
         leg.exitRetryAt = -1; // placement in flight: housekeeping must not start a second one
@@ -354,9 +392,12 @@ export abstract class LimitEntryStrategy extends Strategy {
 
     private async tryPlaceExit(leg: Leg): Promise<void> {
         leg.exitAttempts = (leg.exitAttempts ?? 0) + 1;
+        const covered = leg.filledQty; // placeExit sizes off filledQty as it is now; a fill that lands during placement is topped up below
         try {
             await this.placeExit(leg);
             leg.exitRetryAt = undefined;
+            if (leg.exit && leg.exit !== 'none') leg.exitQty = covered;
+            if (leg.exit && leg.filledQty > covered) await this.topUp(leg);
         } catch (e: any) {
             leg.exitRetryAt = leg.exitAttempts >= MAX_EXIT_ATTEMPTS ? Number.MAX_SAFE_INTEGER : Date.now() + RETRY_BACKOFF_MS;
             Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym} qty=${leg.filledQty} FILLED but exit placement failed (attempt ${leg.exitAttempts}/${MAX_EXIT_ATTEMPTS}) - position is UNPROTECTED${leg.exitAttempts >= MAX_EXIT_ATTEMPTS ? ' and will NOT be retried' : ', retrying'}: ${e?.message ?? e}`);
@@ -434,10 +475,13 @@ export abstract class LimitEntryStrategy extends Strategy {
                 await this.cancelEntry(leg, eod ? 'end of day' : `unfilled after ${cfg.entryTimeoutMinutes} min`);
             }
             // Only once every share of the entry has arrived is the leg's size final: exit placement and the EOD close use it.
-            if (leg.status === 'filled' && leg.filledQty >= leg.qty) {
-                if (!leg.exit && !leg.closing && leg.exitRetryAt !== -1 && (leg.exitRetryAt ?? 0) <= now) await this.tryPlaceExit(leg);
-                if (eod && !leg.closing) await this.closeLeg(leg, 'end of day');
+            // Exit placement and its top-up need only SOME fill (every filled share is protected as it arrives); the EOD close waits for the
+            // final size so it never sells while the entry could still fill.
+            if (leg.status === 'filled' && leg.filledQty > 0 && !leg.closing) {
+                if (!leg.exit && leg.exitRetryAt !== -1 && (leg.exitRetryAt ?? 0) <= now) await this.tryPlaceExit(leg);
+                else if (leg.exit && (leg.exitQty ?? 0) < leg.filledQty) await this.topUp(leg);
             }
+            if (leg.status === 'filled' && leg.filledQty >= leg.qty && eod && !leg.closing) await this.closeLeg(leg, 'end of day');
         }
     }
 }

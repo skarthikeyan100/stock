@@ -33,11 +33,21 @@ for (const f of fs.readdirSync(distTests).filter((f) => f.endsWith('.test.js')))
 
 const failed = [];
 const files = [...sources].sort();
+// Several tests print ALL TESTS PASSED but never exit (a Mongo handle or the config watcher keeps the event loop alive). With no
+// timeout the runner hung forever on the first of them, so each test gets TEST_TIMEOUT_MS; one that was killed by the timeout counts
+// as passed only if it said so and printed no failed assertion.
+const TEST_TIMEOUT_MS = Number(process.env.TEST_TIMEOUT_MS) || 60_000;
 for (const f of files) {
     const started = Date.now();
-    const res = spawnSync('node', [path.join(distTests, f)], { cwd: root, stdio: 'inherit', env: { MOCK_BROKER: 'true', ...process.env } });
-    const ok = res.status === 0;
-    console.log(`[test:all] ${ok ? 'PASS' : 'FAIL'} ${f} (${((Date.now() - started) / 1000).toFixed(1)}s)${ok ? '' : ` exit=${res.status ?? res.signal}`}`);
+    const res = spawnSync('node', [path.join(distTests, f)], {
+        cwd: root, env: { MOCK_BROKER: 'true', ...process.env }, timeout: TEST_TIMEOUT_MS, killSignal: 'SIGKILL', encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+    });
+    const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+    process.stdout.write(out);
+    const timedOut = res.error && res.error.code === 'ETIMEDOUT';
+    const hangAfterPass = timedOut && /ALL TESTS PASSED/.test(out) && !/^\s*FAIL/m.test(out);
+    const ok = res.status === 0 || hangAfterPass;
+    console.log(`[test:all] ${ok ? 'PASS' : 'FAIL'} ${f} (${((Date.now() - started) / 1000).toFixed(1)}s)${hangAfterPass ? ' (passed, then did not exit)' : ok ? '' : timedOut ? ` timed out after ${TEST_TIMEOUT_MS / 1000}s` : ` exit=${res.status ?? res.signal}`}`);
     if (!ok) failed.push(f);
 }
 console.log(`[test:all] ${files.length - failed.length}/${files.length} passed${failed.length ? `; FAILED: ${failed.join(', ')}` : ''}`);

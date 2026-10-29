@@ -2,7 +2,7 @@ import Log from '../util/Log';
 import ANT from '../ant/ANT';
 import AntContractMaster from '../ant/AntContractMaster';
 import OrderClient from '../processes/strategies/OrderClient';
-import { LegBrokerOps } from './LegBrokerOps';
+import { LegBrokerOps, chunkedLegSell } from './LegBrokerOps';
 import { HEDGE_UNCONFIRMED_TAG } from '../ipc/orderProtocol';
 
 // LegBrokerOps implementation LegManager uses for an instance that trades on ANT (ContinuousStrategy with `broker: ant`;
@@ -86,15 +86,8 @@ async function buy(userId: string, tradingSymbol: string, token: string, quantit
     }
 }
 
-// Chunked: one unchunked order above the exchange freeze quantity (1755 for NIFTY) is rejected outright, leaving the leg open.
 async function sell(userId: string, tradingSymbol: string, _token: string, quantity: number, _exchange: 'NFO' | 'BFO') {
-    const res = await OrderClient.getInstance().chunkedSquareOff(userId, { tradingSymbol, quantity, broker: 'ant' });
-    // A stopped chunk run (exit placed, fill unconfirmed) returns normally with less than asked. LegManager treats a normal return as
-    // fully sold and forgets the leg, so a short result must surface as a failure instead.
-    if (Number(res?.quantity ?? quantity) < quantity) {
-        throw new Error(`ANT sell of ${tradingSymbol}: only ${res.quantity}/${quantity} confirmed sold (rest unconfirmed, still being re-priced)`);
-    }
-    return res;
+    return chunkedLegSell(userId, tradingSymbol, quantity, 'ant');
 }
 
 async function cancel(userId: string, orderId: string, exchange?: 'NFO' | 'BFO'): Promise<void> {

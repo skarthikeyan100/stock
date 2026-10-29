@@ -125,6 +125,10 @@ interface PersistedState {
     // Brokers latched by latchLiveRemainder on `liveRemainderDay`.
     liveRemainderBrokers?: BrokerName[];
     liveRemainderDay?: string;
+    // The live cycle's invalidation level / direction (restored so a restart does not leave an open position with no stop - R5-7).
+    activeInvalidationLevel?: number | null;
+    activeDirection?: string | null;
+    activeDay?: string;
 }
 
 export default class HourlyStrategy extends Strategy {
@@ -293,11 +297,19 @@ export default class HourlyStrategy extends Strategy {
         if (!invalidated) return;
         Log.log(`[Hourly] Invalidation: NIFTY=${ltp} crossed back through ${level} (${direction}) - closing all broker positions`);
         for (const pos of this.positions.values()) {
-            if (pos.phase !== 'selling' || pos.squaringOff) continue;
+            if (!this.isClosable(pos) || pos.squaringOff) continue;
             if (pos.placingExit) { pos.closeRequested = 'invalidation'; continue; }
             if (!this.closeAttemptAllowed(pos)) continue;
+            if (pos.phase === 'error') pos.phase = 'selling'; // see isClosable
             this.invalidateClose(pos).catch((e) => Log.log(`[Hourly] [${pos.broker}] invalidation close failed:`, e));
         }
+    }
+
+    // A position the invalidation / EOD close may act on. 'error' counts when a contract is known: reconcile flags every restored
+    // 'selling' position 'error' (it cannot confirm the resting exit survived), and an unmanaged live position would otherwise
+    // never get its stop or its EOD flatten (R5-7). The close cancels any resting sell and squares off the remainder either way.
+    private isClosable(pos: BrokerPosition): boolean {
+        return pos.phase === 'selling' || (pos.phase === 'error' && !!pos.heldTsym);
     }
 
     // At most one close attempt per position every 5s (these checks run on every NIFTY tick).
@@ -313,9 +325,10 @@ export default class HourlyStrategy extends Strategy {
         if (!this.hasOpenPosition()) return;
         if (!isPastTime(this.cfg().eodCloseTime)) return;
         for (const pos of this.positions.values()) {
-            if (pos.phase !== 'selling' || pos.squaringOff) continue;
+            if (!this.isClosable(pos) || pos.squaringOff) continue;
             if (pos.placingExit) { pos.closeRequested = 'eod'; continue; }
             if (!this.closeAttemptAllowed(pos)) continue;
+            if (pos.phase === 'error') pos.phase = 'selling'; // see isClosable
             Log.log(`[Hourly] [${pos.broker}] EOD flatten of ${pos.heldTsym}`);
             this.invalidateClose(pos).catch((e) => Log.log(`[Hourly] [${pos.broker}] EOD close failed:`, e));
         }
@@ -639,7 +652,10 @@ export default class HourlyStrategy extends Strategy {
             const { squaringOff: _inFlight, placingExit: _placing, closeRequested: _deferred, lastCloseAttemptAt: _last, ...durable } = pos;
             positions[broker] = durable as BrokerPosition;
         }
-        const doc = { userId: this.userId, positions, liveRemainderBrokers: Array.from(this.liveRemainder), liveRemainderDay: this.liveRemainderDay };
+        const doc = {
+            userId: this.userId, positions, liveRemainderBrokers: Array.from(this.liveRemainder), liveRemainderDay: this.liveRemainderDay,
+            activeInvalidationLevel: this.activeInvalidationLevel, activeDirection: this.activeDirection, activeDay: localDayKey(),
+        };
         this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION)
             .replaceOne({ userId: this.userId }, doc, { upsert: true }));
     }
@@ -676,6 +692,11 @@ export default class HourlyStrategy extends Strategy {
             }
         }
         if (this.positions.size === 0) return;
+        if (persisted?.activeDay === localDayKey() && persisted.activeInvalidationLevel != null && persisted.activeDirection != null) {
+            this.activeInvalidationLevel = persisted.activeInvalidationLevel;
+            this.activeDirection = persisted.activeDirection;
+            Log.log(`[Hourly] reconcile: restored the live cycle's invalidation level ${this.activeInvalidationLevel} (${this.activeDirection})`);
+        }
 
         let openTrades: any[] | undefined;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {

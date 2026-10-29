@@ -218,6 +218,13 @@ export function validateConfigFile(parsed: any): string[] {
         }
         if (s.enabled === false) continue;
         errors.push(...validateNumericRanges(s.type, s));
+        if (s.type === 'BulkPcrStrategy') {
+            // Required, not defaulted at the read site: a missing quantity once fell back to a hidden size that bought about 215 lots.
+            for (const field of ['quantity', 'targetPoints', 'slDistance']) {
+                if (!isNum(s[field])) errors.push(`${s.type}.${field} is required for an enabled strategy (got ${JSON.stringify(s[field])})`);
+            }
+            if (s.index !== 'NIFTY' && s.index !== 'SENSEX') errors.push(`${s.type}.index must be NIFTY or SENSEX (got ${JSON.stringify(s.index)})`);
+        }
     }
     return errors;
 }

@@ -876,7 +876,15 @@ async function pollGttFillsOnce(): Promise<void> {
             sellTrade.broker = 'kite';
             sellTrade.brokerOrderId = sellFill.order_id; // dedupes against reconcileManualSells seeing the same order
 
-            await bookkeeping.recordFill(sellTrade);
+            // The GTT itself sold: clear the id first so booking this sell does not try to delete the trigger that just fired.
+            const firedId = trade.gttTriggerId;
+            trade.gttTriggerId = undefined;
+            try {
+                await bookkeeping.recordFill(sellTrade);
+            } catch (e) {
+                trade.gttTriggerId = firedId;
+                throw e;
+            }
             Log.log(`[order] GTT poll: ${trade.tsym} (${trade.user}) closed, recorded exit at ${sellTrade.price}`);
         } catch (e) {
             Log.log('[order] GTT poll: failed to resolve exit for', trade.tsym, e);

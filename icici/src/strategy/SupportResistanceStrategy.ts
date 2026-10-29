@@ -34,6 +34,7 @@ export default class SupportResistanceStrategy extends Strategy {
     name = 'SupportResistanceStrategy';
 
     private legManager: LegManager;
+    legTokenFeed = 'ant' as const; // LegManager legs carry ANT tokens on every broker (see Strategy.legTokenFeed)
     private lastNiftyLtp = 0;
     private srState: SRState = initSRState();
     // Sides with a root-leg attempt in flight: two breach events in quick succession must not both pass the
@@ -99,7 +100,7 @@ export default class SupportResistanceStrategy extends Strategy {
     // (and therefore this same restart-safety gap) only once it became
     // self-monitored. Same retry policy against a not-yet-connected order
     // IPC socket at startup.
-    // Called by strategiesProcess at startup, independent of reconcile() (which only runs on an explicit POST
+    // Called by strategiesProcess at startup, independent of reconcile() (which runs right after, once the broker positions are loaded; or on an explicit POST
     // /reconcile): a restart after a max-profit/max-loss trip must not re-open the strategy.
     async restoreLatches(): Promise<void> {
         await this.legManager.loadPersistedLatches();
@@ -124,8 +125,12 @@ export default class SupportResistanceStrategy extends Strategy {
                 await sleep(retryDelayMs);
             }
         }
-        if (openTrades!.length === 0) return;
+        if (openTrades!.length === 0) {
+            await this.legManager.restorePendingReEntries(); // a root refill may be resting while no leg is held
+            return;
+        }
         await this.legManager.restoreFromOpenTrades(openTrades);
+        await this.legManager.restorePendingReEntries();
         this.ordered = true;
     }
 

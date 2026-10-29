@@ -378,11 +378,11 @@ export default class BulkPcrStrategy extends Strategy {
     // Optional config key; defaults to 10 points.
     // Underlying this instance trades: config `index: SENSEX` (BFO options) or NIFTY (default).
     private index(): 'NIFTY' | 'SENSEX' {
-        return this.cfg().index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
+        return this.cfg().index as 'NIFTY' | 'SENSEX'; // validated at config load (validateConfigFile)
     }
 
     private slDistance(): number {
-        return this.cfg().slDistance ?? 10;
+        return this.cfg().slDistance;
     }
 
     // Config `driftCancelPoints` (default 10, 0 = off): how far above its limit a resting re-buy's contract may trade before the
@@ -420,7 +420,7 @@ export default class BulkPcrStrategy extends Strategy {
 
     // Points above entry the slot's exit is anchored to: the trailing hedge's target, else the fixed targetPoints.
     private targetPointsFor(pos: BrokerPosition): number {
-        return this.isTrailSlot(pos) ? pos.trailTarget ?? this.hedgeTarget(pos) : this.cfg().targetPoints ?? 2;
+        return this.isTrailSlot(pos) ? pos.trailTarget ?? this.hedgeTarget(pos) : this.cfg().targetPoints;
     }
 
     // One TrailStop per slot (never shared), restored from the persisted peak the first time it is needed.
@@ -916,6 +916,7 @@ export default class BulkPcrStrategy extends Strategy {
         await this.eodCheck();
 
         if (!this.enabled) { this.logGateOnce('disabled'); return; }
+        if (!this.stateLoaded) { this.logGateOnce('state not reconciled yet'); return; } // a restart mid-cycle looks idle until reconcile restores the slots
         if (this.phase !== 'idle') { this.logGateOnce(`entry already in progress or done (phase=${this.phase})`); return; }
         if (!this.isTimeInRange()) { this.logGateOnce('outside time window'); return; }
 
@@ -940,7 +941,7 @@ export default class BulkPcrStrategy extends Strategy {
         const right = await this.resolveEntryRight(quote, configuredRight);
         if (right == null) { this.phase = 'idle'; return; } // retried on the next tick
 
-        const quantity = cfg.quantity ?? 13975;
+        const quantity = cfg.quantity as number; // required by validateConfigFile; no default (a hidden one once bought ~215 lots)
         // A loss-stopped broker takes no new entry (maxloss.md B3.6).
         const brokers = this.configuredBrokers().filter((b) => !this.isBrokerStopped(b));
         if (brokers.length === 0) {

@@ -1188,6 +1188,13 @@ class OrderBookkeeping {
                 // Position state is updated BEFORE any await: other fills run while
                 // this one awaits, and must see this fill's quantity and removal.
                 buyTrade.quantity -= sellQty;
+                // A Kite GTT bypasses the never-short guard: left live after this exit it could sell a flat (or smaller) account short, and a
+                // GTT sized for the old quantity is wrong for what remains. The GTT's own fill (pollGttFills) clears the id before booking.
+                const gttToRelease = buyTrade.gttTriggerId;
+                if (gttToRelease != null) {
+                    buyTrade.gttTriggerId = undefined as any;
+                    this.trackGttRelease(this.releaseGtt(buyTrade, gttToRelease));
+                }
                 if (buyTrade.quantity <= 0) {
                     this.trades.splice(index, 1);
                     if (buyTrade.token) exitMonitor.unregisterTrade(user, buyTrade.token, buyTrade.broker === 'ant' || buyTrade.broker === 'prism' || buyTrade.broker === 'kite' ? buyTrade.broker : undefined);
@@ -1200,6 +1207,35 @@ class OrderBookkeeping {
             }
         }
         this.notifyPositionsChanged();
+    }
+
+    private gttReleases = new Set<Promise<void>>();
+    private trackGttRelease(p: Promise<void>): void {
+        this.gttReleases.add(p);
+        p.finally(() => this.gttReleases.delete(p));
+    }
+    // Resolves once every GTT delete started by a Sell fill has finished (tests; the order process never needs to wait).
+    async whenGttReleased(): Promise<void> {
+        while (this.gttReleases.size > 0) await Promise.all([...this.gttReleases]);
+    }
+
+    // Deletes the GTT of a position that has just been sold from, then hands what is left (if anything) to the in-app exit monitor.
+    private async releaseGtt(trade: Trade, gttTriggerId: number): Promise<void> {
+        try {
+            await Kite.getInstance().deleteGTT(gttTriggerId);
+            Log.log(`[order] GTT ${gttTriggerId} for ${trade.tsym} (${trade.user}) deleted - the position was sold from outside the GTT`);
+        } catch (e) {
+            // A GTT that already fired (its own sell is the fill being booked) cannot be deleted: only an ACTIVE one is a danger.
+            let stillActive = true;
+            try {
+                const live: any[] = await Kite.getInstance().getGTTs();
+                stillActive = live.some((g) => g.id === gttTriggerId && g.status === 'active');
+            } catch { /* cannot tell: assume it is live */ }
+            if (stillActive) Log.log(`[order] ALERT: GTT ${gttTriggerId} for ${trade.tsym} (${trade.user}) could NOT be deleted after a sell and may still be live - delete it by hand in Kite:`, e);
+        }
+        if (trade.quantity > 0 && trade.token && (trade.targetPrice != null || trade.stopLossPrice != null)) {
+            exitMonitor.registerTrade(trade, exchangeForTsym(trade.tsym), 'kite'); // replaces the watch-only entry: the in-app monitor now owns the exit
+        }
     }
 
     // Called once at order-process startup: this.closedTrades is in-memory

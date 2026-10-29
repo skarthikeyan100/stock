@@ -120,6 +120,15 @@ async function main() {
         'a stale invalid value in a DISABLED strategy block does not reject the file');
     assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, maxInvestment: '1,00,000' }] }).length > 0,
         'a non-numeric maxInvestment is rejected (would otherwise NaN-disable the stops)');
+    // An enabled BulkPcr block must state its own size and distances: a missing quantity once fell back to a hidden live default.
+    const bulk = (over: Record<string, any>) => ({ settings: {}, strategies: [{ type: 'BulkPcrStrategy', enabled: true, quantity: -1, targetPoints: 2, slDistance: 10, index: 'NIFTY', ...over }] });
+    assert(validateConfigFile(bulk({})).length === 0, 'an enabled BulkPcr block with quantity/targetPoints/slDistance is accepted');
+    for (const missing of ['quantity', 'targetPoints', 'slDistance']) {
+        assert(validateConfigFile(bulk({ [missing]: undefined })).some((e) => e.includes(missing)), `an enabled BulkPcr block without ${missing} is rejected`);
+    }
+    assert(validateConfigFile(bulk({ enabled: false, quantity: undefined, targetPoints: undefined, slDistance: undefined })).length === 0,
+        'a disabled BulkPcr block is not required to carry them');
+    assert(validateConfigFile(bulk({ index: 'BANKNIFTY' })).some((e) => e.includes('index')), 'an unknown BulkPcr index is rejected, not treated as NIFTY');
     assert(validateConfigFile({ settings: { maxDailyDrawdownPercent: '0%' }, strategies: [] }).length > 0,
         'a zero drawdown limit is rejected (would block every zero-P&L day)');
 

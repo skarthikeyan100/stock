@@ -25,7 +25,7 @@ function assert(condition: boolean, message: string) {
 function setConfig(userId: string, extra: Record<string, unknown>) {
     (configService as any).config = {
         settings: {},
-        strategies: [{ type: 'BulkPcrStrategy', userId, enabled: true, brokers: ['kite'], targetPoints: 2, quantity: -1, slDistance: 10, maxInvestment: 100000, maxExposureByBroker: { kite: 100000 }, lossCooldownSeconds: 300, lossInvestmentCut: 10000, ...extra }],
+        strategies: [{ type: 'BulkPcrStrategy', userId, enabled: true, brokers: ['kite'], targetPoints: 2, quantity: -1, slDistance: 10, index: 'NIFTY', maxInvestment: 100000, maxExposureByBroker: { kite: 100000 }, lossCooldownSeconds: 300, lossInvestmentCut: 10000, ...extra }],
     };
 }
 

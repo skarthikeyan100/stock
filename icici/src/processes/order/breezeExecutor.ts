@@ -7,6 +7,8 @@ import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import bookkeeping from './bookkeeping';
+import * as exitMonitor from './exitMonitor';
+import { exchangeForTsym } from '../../util/underlyings';
 import { BuyRequest, OptionExchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, beginCancelOfBreezePendingLimitOrders, endCancelOfBreezePendingLimitOrders, silenceListenersOfBreezePendingLimitOrders } from './breezePendingLimitOrders';
@@ -309,9 +311,15 @@ export async function buyIndexOnBreeze(req: BuyIndexOnBreezeRequest): Promise<Tr
     trade.brokerOrderId = orderId;
     trade.targetPoints = req.targetPoints;
 
-    // Deliberately no finalizeEntry-style GTT/exitMonitor step - see file
-    // header. Directly records the fill, same as every broker's tail call.
+    // Breeze has no broker-side bracket (see file header), so a requested target AND stop are enforced by the in-app exitMonitor off
+    // live ticks (breeze feed, Breeze's own contract token). Without them the position is deliberately unprotected, as before.
+    const hasExit = (req.targetPoints ?? 0) > 0 && (req.stopLossPoints ?? 0) > 0;
+    if (hasExit) {
+        trade.targetPrice = roundToTick(entryPrice + (req.targetPoints as number));
+        trade.stopLossPrice = roundToTick(entryPrice - (req.stopLossPoints as number));
+    }
     await bookkeeping.recordFill(trade);
+    if (hasExit && trade.token) exitMonitor.registerTrade(trade, exchangeForTsym(tsym), 'breeze');
     return trade;
 }
 

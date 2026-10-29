@@ -158,7 +158,6 @@ export default class SentimentStrategy extends Strategy {
         super(userId);
         this.tradeMap = new Map();
         this.name = 'SentimentStrategy';
-        this.enabled = true
     }
 
        

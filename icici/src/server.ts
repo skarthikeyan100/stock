@@ -2008,17 +2008,8 @@ app.get('/stats', requireAdmin, async function (req: express.Request, res) {
 
 const strategiesRoute = async function (req: express.Request, res: express.Response) {
     try {
-        const { strategy, userId, enable } = req.query;
-        const identifier = (userId || strategy) as string;
-        if (identifier && enable !== undefined) {
-            if (!requestIsLoopback(req) && !req.get('x-requested-with')) {
-                res.status(403).json({ error: 'X-Requested-With header required to change a strategy' });
-                return;
-            }
-            const result = await strategiesClient.setEnabled(identifier, enable === 'true');
-            res.json(result);
-            return;
-        }
+        // Read-only. Enabling or disabling a strategy is a config.yml edit (hot-reloaded by every process); an in-memory toggle
+        // would be lost on restart and silently diverge from the file.
         res.json(await strategiesClient.list());
     } catch (e) {
         Log.log(e);

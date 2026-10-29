@@ -69,6 +69,12 @@ class MockOrderClient {
         return trade;
     }
 
+    // LegManager sells through the chunked square-off now (R5-6); the mock keeps one sell log for both entry points.
+    async chunkedSquareOff(userId: string, p: { tradingSymbol: string; quantity: number }): Promise<{ quantity: number; avgPrice: number }> {
+        const t = await this.sellContractBare(userId, p.tradingSymbol, '', p.quantity, 'NFO');
+        return { quantity: t.quantity, avgPrice: t.price };
+    }
+
     async sellContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade> {
         this.sellContractCalls.push({ userId, tradingSymbol, instrumentToken, quantity, exchange });
         const trade = new Trade();
