@@ -190,18 +190,17 @@ strategies:
     logEnabled: true
   - type: BulkPcrStrategy
     userId: BulkPcr-SENSEX
-    enabled: false
+    enabled: true
     quantity: -1
     targetPoints: 10
     chunkDriftCancelPoints: 10
     right: none
     maxInvestment: 100000
-    maxLossPerOrder: 10%
+    maxLossPerOrder: 0
     maxProfit: 10%
     slDistance: 30
     logEnabled: true
     brokers:
-      - ant
       - zerodha
     index: SENSEX
     maxExposure: 100000
