@@ -197,7 +197,10 @@ order/data/strategies/frontend as children that inherit its already-populated `p
   IPC channels. Defaults: `/tmp/icici-order.sock`, `/tmp/icici-strategies.sock`.
 - `ORDER_IPC_TIMEOUT_MS` - timeout (ms) for a single order-process IPC request. Default: `90000`.
 - `HOT_RESTART` - `orchestrator.ts` dev convenience; set to `'false'` to disable auto-restarting a
-  child process when its compiled output changes. Default: on.
+  child process when its compiled output changes. Default: on. It restarts a child only when a watched
+  `dist/` file's CONTENT changed (a re-emit with identical content is ignored), and a change seen in the
+  first 90 s after start is deferred to the end of that grace, not applied mid-start. It does not watch
+  `config.yml`: every process hot-reads that itself, so strategy settings change at runtime with or without it.
 
 **Test/mock mode only (do not set for real trading):** `MOCK_BROKER`, `MOCK_QUOTES`, `MOCK_DATE` -
 see `src/constants.ts`.

@@ -8,6 +8,7 @@ import 'dotenv/config';
 
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'fs';
+import { createHash } from 'crypto';
 import path from 'path';
 import { sleep } from './util/sleep';
 
@@ -151,16 +152,50 @@ function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) 
     return respawn;
 }
 
-// Watches `watchPaths` (compiled dist/ output) and calls onChange (debounced)
-// whenever any of them changes - used to restart exactly one child.
+// sha1 of every file under `target` (a file or a directory tree), keyed by path.
+function hashTree(target: string): Map<string, string> {
+    const out = new Map<string, string>();
+    const walk = (p: string) => {
+        let st: fs.Stats;
+        try { st = fs.statSync(p); } catch { return; }
+        if (st.isDirectory()) { for (const e of fs.readdirSync(p)) walk(path.join(p, e)); return; }
+        try { out.set(p, createHash('sha1').update(fs.readFileSync(p)).digest('hex')); } catch { /* vanished mid-scan: the next scan sees it */ }
+    };
+    walk(target);
+    return out;
+}
+function sameHashes(a: Map<string, string>, b: Map<string, string>): boolean {
+    if (a.size !== b.size) return false;
+    for (const [k, v] of a) if (b.get(k) !== v) return false;
+    return true;
+}
+
+// A change seen this soon after the watch was set up is applied only once the grace has passed, never in the middle of a start.
+const HOT_RESTART_BOOT_GRACE_MS = 90_000;
+
+// Watches `watchPaths` (compiled dist/ output) and calls onChange (debounced) when a watched file's CONTENT changed - used to
+// restart exactly one child. A rewrite with identical content (tsc re-emitting on start-up touched dist/ after the children were
+// already running: live 2026-10-29 11:06:19, the entry ran twice) is ignored, and a real change during the first
+// HOT_RESTART_BOOT_GRACE_MS is deferred to the end of the grace so the child is not restarted while it is still starting.
+// HOT_RESTART=false disables it entirely. config.yml is not watched here: every process hot-reads it itself.
 function watchAndRestart(name: string, watchPaths: string[], onChange: () => void) {
     if (process.env.HOT_RESTART === 'false') return;
     const existing = watchPaths.filter((p) => fs.existsSync(p));
+    const graceEndsAt = Date.now() + HOT_RESTART_BOOT_GRACE_MS;
+    const snapshots = new Map(existing.map((t) => [t, hashTree(t)] as const));
     let debounce: NodeJS.Timeout | null = null;
+    const checkAndRestart = () => {
+        let changed = false;
+        for (const t of existing) {
+            const now = hashTree(t);
+            if (!sameHashes(snapshots.get(t)!, now)) { snapshots.set(t, now); changed = true; }
+        }
+        if (changed) onChange();
+    };
     for (const target of existing) {
         fs.watch(target, { recursive: true }, () => {
             if (debounce) clearTimeout(debounce);
-            debounce = setTimeout(onChange, 300);
+            debounce = setTimeout(checkAndRestart, Math.max(300, graceEndsAt - Date.now()));
         });
     }
     log('boot', `Watching ${name}:`, existing);
