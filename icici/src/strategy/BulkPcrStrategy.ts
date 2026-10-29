@@ -2406,7 +2406,9 @@ export default class BulkPcrStrategy extends Strategy {
                 Log.log(`[BulkPcrStrategy] [${broker}] reconcile: persisted limit-sell exit for ${persistedPos.heldTsym} was placed on a previous trading day (sellPlacedAt=${persistedPos.sellPlacedAt ?? 'unset'}) - DAY-order validity means it has certainly expired unfilled at the broker; re-placing exit for remaining qty=${remaining}`);
                 this.positions.set(key, { ...persistedPos });
                 anyRestored = true;
-                await this.placeExitSellAtTargetPrice(key, remaining, false);
+                // Reconcile restores state for a disabled strategy too, but a disabled strategy places no order.
+                if (this.enabled) await this.placeExitSellAtTargetPrice(key, remaining, false);
+                else Log.log(`[BulkPcrStrategy] [${broker}] reconcile: strategy is disabled - NOT re-placing the exit sell for ${persistedPos.heldTsym} (remaining qty=${remaining})`);
                 continue;
             }
 
@@ -2578,6 +2580,10 @@ export default class BulkPcrStrategy extends Strategy {
             }
 
             Log.log(`[BulkPcrStrategy] [${broker}] reconcile: restored open position ${brokerTrade.tsym} avg=${brokerTrade.price} qty=${brokerTrade.quantity} - placing exit sell`);
+            if (!this.enabled) {
+                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: strategy is disabled - NOT placing an exit sell for ${brokerTrade.tsym} (qty=${brokerTrade.quantity})`);
+                continue;
+            }
             await this.placeExitSell(key, brokerTrade.quantity);
         }
 
@@ -2589,7 +2595,9 @@ export default class BulkPcrStrategy extends Strategy {
         // not 'error') - a silent, permanent hang invisible to BulkPcrAutoStartStrategy, which
         // has no way to tell it apart from a healthy in-progress cycle.
         if (anyRestored && this.allBrokersFinished()) {
-            this.durablyDisable('reconcile: every configured broker was already fully closed at the broker on restart');
+            // Already disabled: nothing to persist (durablyDisable rewrites config.yml); just finish the cycle.
+            if (this.enabled) this.durablyDisable('reconcile: every configured broker was already fully closed at the broker on restart');
+            else this.phase = 'done';
         } else if (anyRestored) {
             this.phase = 'running';
         }
@@ -2598,6 +2606,10 @@ export default class BulkPcrStrategy extends Strategy {
         for (const b of this.configuredBrokers()) {
             if (!isPairBroker(b) || !this.isBrokerStopped(b)) continue;
             if (!this.slotsOf(b).some((p) => (p.phase === 'selling' && this.mustClose(p)) || p.phase === 'pending')) continue;
+            if (!this.enabled) {
+                Log.log(`[BulkPcrStrategy] [${b}] reconcile: strategy is disabled - NOT closing the locked-out broker's positions`);
+                continue;
+            }
             await this.lockOutBroker(b, 'restart found this broker locked out for today').catch((e) => Log.log(`[BulkPcrStrategy] [${b}] reconcile: lockout close failed:`, e));
         }
     }

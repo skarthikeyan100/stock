@@ -165,7 +165,8 @@ async function reconcileStrategies(): Promise<void> {
     // block the others (reconcile() itself already fails closed internally -
     // see ContinuousStrategy.reconcile).
     for (const strategy of strategies.getList()) {
-        if (!strategy.enabled) continue; // disabled = inert: no leg restore, no exit re-placement
+        // Runs for disabled strategies too: reconcile restores state. A strategy that would place an order while reconciling (BulkPcr's
+        // exit re-placement and lockout close) checks `enabled` itself.
         try {
             await (strategy as any).reconcile?.();
         } catch (e) {
