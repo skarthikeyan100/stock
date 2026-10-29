@@ -9,6 +9,7 @@ import { Trade } from '../../model/model';
 import { CALL } from '../../constants';
 import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
+import { pickContractByPremium } from './priceRangeContract';
 import * as exitMonitor from './exitMonitor';
 import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol, isTrackedPendingOrder, beginCancelOfPendingLimitOrders, endCancelOfPendingLimitOrders, silenceListenersOfPendingLimitOrders } from './pendingLimitOrders';
@@ -744,34 +745,8 @@ export async function getContractByPriceRangeOnKite(
     minPremium = 100,
     excludeStrikes: Set<number> = new Set()
 ): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
-    const strikeStep = index === 'SENSEX' ? 100 : 50;
-    const atmStrike = Math.round(underlyingLtp / strikeStep) * strikeStep;
-
-    // OTM depth 0-4, then ITM depth 1-4 - same priority order as before.
-    const candidateStrikes: number[] = [];
-    for (let depth = 0; depth < 5; depth++) {
-        const strike = optionType === 'CE' ? atmStrike + depth * strikeStep : atmStrike - depth * strikeStep;
-        if (!excludeStrikes.has(strike)) candidateStrikes.push(strike);
-    }
-    for (let depth = 1; depth < 5; depth++) {
-        const strike = optionType === 'CE' ? atmStrike - depth * strikeStep : atmStrike + depth * strikeStep;
-        if (!excludeStrikes.has(strike)) candidateStrikes.push(strike);
-    }
-
-    const premiumData = await estimateOptionPricesBatch(index, candidateStrikes.map((strike) => ({ strike, optionType })));
-
-    for (const strike of candidateStrikes) {
-        const data = premiumData.get(`${strike}_${optionType}`);
-        if (data == null || data.premium < minPremium) continue;
-        try {
-            const contract = await KiteContractMaster.getInstance().findNearestExpiryOption(strike, optionType, index);
-            return { ...contract, strike, premium: data.premium, antToken: data.antToken };
-        } catch (e) {
-            Log.log('[order] Kite contract resolution failed for a priced-in strike:', strike, optionType, e);
-        }
-    }
-
-    throw new Error(`No ${index} ${optionType} contract found with premium >= ${minPremium} (underlyingLtp=${underlyingLtp})`);
+    return pickContractByPremium(underlyingLtp, optionType, index, minPremium, excludeStrikes, (strike) =>
+        KiteContractMaster.getInstance().findNearestExpiryOption(strike, optionType, index));
 }
 
 // exitMonitor calls this when a useGTT=false trade crosses target/SL. Wired

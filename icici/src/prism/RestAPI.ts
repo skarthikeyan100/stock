@@ -42,13 +42,13 @@ class NorenRestApi {
 
 
   //Karthik
-  userId = 'FA96552'
-  passwd = 'Api@1237'
-  vendorCode = 'FA96552_U'
+  userId = process.env.PRISM_USER_ID ?? ''
+  passwd = process.env.PRISM_PASSWORD ?? ''
+  vendorCode = process.env.PRISM_VENDOR_CODE ?? ''
   imei = 'abc1234'
-  clientId = 'FA96552_U'
-  secretCode = 'jdp7x50aI14alydpaGIiC1am0xxxbrnfRq1nRE361iRarAr5359jmdMxxdaomga5'
-  otpRequest = {"uid":"FA96552","pan":"d6fca95415e3d0091d8bb888648246e4cf3b17f65e66405f0e20612736182679"}
+  clientId = process.env.PRISM_CLIENT_ID ?? ''
+  secretCode = process.env.PRISM_SECRET_CODE ?? ''
+  otpRequest = { uid: process.env.PRISM_USER_ID ?? '', pan: process.env.PRISM_PAN ?? '' }
 
   endpoint = 'test';
   userToken = '';   // susertoken — used as Bearer token for REST and WebSocket auth

@@ -1219,7 +1219,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return await placeOrderWithPendingGuard(req, estimatedValue, () => {
                     const executor = getBrokerExecutor(req.userId, req.payload.broker);
-                    if (!executor.capabilities.placeLimitBuy) throw new Error(`placeLimitBuyBare: no ${executor.brokerName} limit-buy primitive - refusing to route a ${executor.brokerName} user to another broker`);
                     return executor.placeLimitBuy(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.price, req.payload.exchange);
                 });
             }
@@ -1232,7 +1231,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'getContractByPriceRangeBare': {
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
                 const excludeStrikes = new Set<number>(req.payload.excludeStrikes || []);
-                if (!executor.capabilities.getContractByPriceRange) throw new Error(`getContractByPriceRangeBare: not implemented for ${executor.brokerName} - refusing to resolve another broker's contract for a ${executor.brokerName} user`);
                 const result = await executor.getContractByPriceRange(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes);
                 return { kind: 'response', id: req.id, ok: true, result };
             }

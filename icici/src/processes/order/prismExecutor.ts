@@ -4,6 +4,9 @@ import Prism from '../../prism';
 import indexMap from '../../nse_index';
 import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
+import { pickContractByPremium } from './priceRangeContract';
+import PrismContractMaster from '../../prism/PrismContractMaster';
+import AntContractMaster from '../../ant/AntContractMaster';
 import * as exitMonitor from './exitMonitor';
 import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, emptyExitTrade } from './BrokerExecutor';
 import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol, beginCancelOfPendingPrismLimitOrders, endCancelOfPendingPrismLimitOrders, silenceListenersOfPendingPrismLimitOrders } from './pendingPrismLimitOrders';
@@ -267,7 +270,28 @@ export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
     const quote = await prism.getStockOptionQuote(tradingSymbol);
     const limitPrice = quote.ltp;
     const { orderId } = await prism.placeLimitBuyBare(tradingSymbol, instrumentId, quantity, limitPrice, userId, (exchange as 'NFO' | 'BFO') ?? 'NFO');
-    const fillPrice = await waitForPrismBuyFill(orderId, tradingSymbol, userId);
+    let fillPrice: number;
+    try {
+        fillPrice = await waitForPrismBuyFill(orderId, tradingSymbol, userId);
+    } catch (e: any) {
+        // Cancelled after a PARTIAL fill: those lots are a real position at the broker. Book them here (buyChunked and every caller
+        // assume a thrown partial is already booked) before rethrowing, or they would be live and unknown to bookkeeping.
+        if (e?.partial && e.filledQuantity > 0 && e.averagePrice > 0) {
+            const partial = new Trade();
+            partial.tsym = tradingSymbol;
+            partial.token = instrumentId;
+            partial.quantity = e.filledQuantity;
+            partial.price = e.averagePrice;
+            partial.lastTradePrice = e.averagePrice;
+            partial.action = 'Buy';
+            partial.status = 'COMPLETE';
+            partial.user = userId;
+            partial.broker = 'prism';
+            partial.brokerOrderId = orderId;
+            await bookkeeping.recordFill(partial);
+        }
+        throw e;
+    }
 
     const trade = new Trade();
     trade.tsym = tradingSymbol;
@@ -346,7 +370,14 @@ export async function buyToClosePrism(userId: string, tradingSymbol: string, ins
     return trade;
 }
 
-export async function squareOffOnPrism(userId: string, tsym: string, quantity: number): Promise<Trade> {
+// Prism's contract master (NFO_symbols.txt) and order path are NFO-only: a BFO (SENSEX) request would resolve nothing or hit the wrong
+// instrument, so it fails loudly instead of being treated as NFO.
+function assertPrismExchange(op: string, exchange?: string): void {
+    if (exchange !== undefined && exchange !== 'NFO') throw new Error(`${op}: Prism supports NFO only (got ${exchange})`);
+}
+
+export async function squareOffOnPrism(userId: string, tsym: string, quantity: number, exchange?: string): Promise<Trade> {
+    assertPrismExchange('squareOffOnPrism', exchange);
     // Same in-flight guard as the other brokers (broker-prefixed key), so a manual square-off and an exitMonitor stop cannot both sell.
     const pendingKey = `prism:${userId}:${tsym}`;
     if (bookkeeping.pendingSquareOffs.has(pendingKey)) {
@@ -412,6 +443,33 @@ export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: s
     return { orderId };
 }
 
+// Returns immediately with {orderId} - the fill arrives later via pollPendingPrismLimitOrders. Mirrors placeLimitBuyBareOnKite
+// (LegManager root refills, Recommendation / NiftyChange entries).
+export async function placeLimitBuyBareOnPrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+    assertPrismExchange('placeLimitBuyBareOnPrism', exchange);
+    Log.log(`[order] Bare Prism limit buy ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
+    const { orderId } = await Prism.getInstance().placeLimitBuyBare(tradingSymbol, instrumentId, quantity, price, userId, exchange);
+    trackPendingPrismLimitOrder({ orderId, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Buy' });
+    return { orderId };
+}
+
+// Same shape as getContractByPriceRangeOnKite (premium from ANT's option chain, the broker's own tradingSymbol). Prism's master has no
+// lot size, so it comes from ANT's record for the same strike.
+export async function getContractByPriceRangeOnPrism(
+    underlyingLtp: number,
+    optionType: 'CE' | 'PE',
+    index: 'NIFTY' | 'SENSEX' = 'NIFTY',
+    minPremium = 100,
+    excludeStrikes: Set<number> = new Set()
+): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
+    assertPrismExchange('getContractByPriceRangeOnPrism', index === 'SENSEX' ? 'BFO' : 'NFO');
+    return pickContractByPremium(underlyingLtp, optionType, index, minPremium, excludeStrikes, (strike) => {
+        const prismRow = PrismContractMaster.getInstance().findNearestExpiryOption(index, strike, optionType, 0);
+        const antRow = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch: 'NFO', strike, optionType, expiryOffset: 0 });
+        return { tradingSymbol: prismRow.tradingSymbol, instrumentToken: Number(prismRow.token), lotSize: Number(antRow.lotSize), exchange: 'NFO' as const };
+    });
+}
+
 // Cancels and untracks - mirrors kiteExecutor.cancelOrderOnKite.
 // Without the untrack, the next pollPendingPrismLimitOrders tick would
 // independently discover the same order CANCELLED and fire the
@@ -420,7 +478,8 @@ export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: s
 // (e.g. cancelAnyRestingLimitSell ahead of a force-close). See
 // cancelOrderWithFillRecheck's own comment (BrokerExecutor.ts) for why
 // untracking isn't unconditional.
-export async function cancelOrderOnPrism(orderId: string): Promise<void> {
+export async function cancelOrderOnPrism(orderId: string, exchange?: string): Promise<void> {
+    assertPrismExchange('cancelOrderOnPrism', exchange);
     const prism = Prism.getInstance();
     await cancelOrderWithFillRecheck({
         orderId,

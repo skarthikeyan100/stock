@@ -39,14 +39,14 @@ function splitQty(qty) {
 
 export default class Prism {
     headless = false
-    username = 'SESHA100'
-    password = 'nava1000'
-    dob = '22091943'
+    username = process.env.PRISM_USERNAME ?? ''
+    password = process.env.PRISM_LOGIN_PASSWORD ?? ''
+    dob = process.env.PRISM_DOB ?? ''
 
-    secretKey = '95O8`0r061i03v2eWx137M739^9235`7';
-    appKey = 't8W086&730M11UG47649g22Cv26q41J3'
+    secretKey = process.env.PRISM_SECRET_KEY ?? '';
+    appKey = process.env.PRISM_APP_KEY ?? ''
     apiSession: '2047386';
-    sessionToken: String = 'U0VTSEExMDA6NTc3NTc4MDI=';
+    sessionToken: String = process.env.PRISM_SESSION_TOKEN ?? '';
 
     app_name = 'options';
     loginUrl = 'https://api.icicidirect.com/apiuser/login?api_key=t8W086%26730M11UG47649g22Cv26q41J3'

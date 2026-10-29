@@ -17,12 +17,9 @@ import KiteContractMaster from '../../kite/KiteContractMaster';
 import AntContractMaster from '../../ant/AntContractMaster';
 import PrismContractMaster from '../../prism/PrismContractMaster';
 import BreezeContractMaster from '../../breeze/BreezeContractMaster';
+import { pickContractByPremium } from './priceRangeContract';
 
 type Exch = 'NFO' | 'BFO';
-
-const unsupported = (broker: string, op: string) => (): never => {
-    throw new Error(`${op}: not supported for ${broker}`);
-};
 
 // ANT's common token for a strike (every broker's tick routing and Trade.token key off it, never the broker's own instrument id).
 function antContractFor(index: OptionIndex, strike: number, right: OptionRight) {
@@ -32,7 +29,6 @@ const antTokenFor = (index: OptionIndex, strike: number, right: OptionRight): st
 
 export const KiteExecutor: BrokerExecutor = {
     brokerName: 'kite',
-    capabilities: { placeLimitBuy: true, getContractByPriceRange: true },
 
     buy: (request: BuyRequest): Promise<Trade> => kiteExecutor.buyResolvedOnKite(request),
 
@@ -65,7 +61,6 @@ export const KiteExecutor: BrokerExecutor = {
 
 export const AntExecutor: BrokerExecutor = {
     brokerName: 'ant',
-    capabilities: { placeLimitBuy: true, getContractByPriceRange: false },
 
     buy: (request: BuyRequest): Promise<Trade> =>
         antExecutor.enterPosition(
@@ -93,29 +88,32 @@ export const AntExecutor: BrokerExecutor = {
         const r = antContractFor(index, strike, right);
         return { tsym: r.tradingSymbol, token: r.token, exchange: r.exch as Exch };
     },
-    getContractByPriceRange: unsupported('ant', 'getContractByPriceRange'),
+    getContractByPriceRange: (underlyingLtp, optionType, index, minPremium, excludeStrikes) =>
+        pickContractByPremium(underlyingLtp, optionType, index === 'SENSEX' ? 'SENSEX' : 'NIFTY', minPremium, excludeStrikes, (strike) => {
+            const r = antContractFor(index, strike, optionType);
+            return { tradingSymbol: r.tradingSymbol, instrumentToken: Number(r.token), lotSize: Number(r.lotSize), exchange: r.exch as Exch };
+        }),
     findPendingOrders: (userId, tradingSymbol) => TRACKERS.ant.find(userId, tradingSymbol),
 };
 
 export const PrismExecutor: BrokerExecutor = {
     brokerName: 'prism',
-    capabilities: { placeLimitBuy: false, getContractByPriceRange: false },
 
     buy: (request: BuyRequest): Promise<Trade> => prismExecutor.buyOnPrism(request),
 
-    squareOff: (userId, tradingSymbol, quantity, _exchange) =>
-        prismExecutor.squareOffOnPrism(userId, tradingSymbol, quantity),
+    squareOff: (userId, tradingSymbol, quantity, exchange) =>
+        prismExecutor.squareOffOnPrism(userId, tradingSymbol, quantity, exchange),
 
     squareOffLimit: (userId, tradingSymbol, instrumentId, quantity, exchange, limitPrice) =>
         prismExecutor.placeLimitSellBareOnPrism(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as Exch),
 
-    cancelOrder: (orderId) => prismExecutor.cancelOrderOnPrism(orderId),
+    cancelOrder: (orderId, exchange) => prismExecutor.cancelOrderOnPrism(orderId, exchange),
 
     enterShort: prismExecutor.enterShortOnPrism,
     buyToClose: prismExecutor.buyToClosePrism,
     marketBuy: (userId, tradingSymbol, _instrumentToken, quantity) => prismExecutor.buyContract(userId, tradingSymbol, quantity),
     marketSell: (userId, tradingSymbol, _instrumentToken, quantity) => prismExecutor.sellContract(userId, tradingSymbol, quantity),
-    placeLimitBuy: unsupported('prism', 'placeLimitBuy'),
+    placeLimitBuy: prismExecutor.placeLimitBuyBareOnPrism,
     getLiveQuantity: async (tradingSymbol) => Number((await prismExecutor.getPositionsOnPrism()).find((p) => p.tradingSymbol === tradingSymbol)?.quantity ?? 0),
     // Prism's own contract master (NFO_symbols.txt) carries no exchange field and uses the Shoonya/Prism token scheme, which is
     // NOT cross-referenced with ANT's - so ANT's token is resolved separately (every live tick flows through ANT).
@@ -123,13 +121,12 @@ export const PrismExecutor: BrokerExecutor = {
         const r = PrismContractMaster.getInstance().findNearestExpiryOption(index, strike, right, 0);
         return { tsym: r.tradingSymbol, token: antTokenFor(index, strike, right), exchange: exchangeForIndex(index) };
     },
-    getContractByPriceRange: unsupported('prism', 'getContractByPriceRange'),
+    getContractByPriceRange: prismExecutor.getContractByPriceRangeOnPrism,
     findPendingOrders: (userId, tradingSymbol) => TRACKERS.prism.find(userId, tradingSymbol),
 };
 
 export const BreezeExecutor: BrokerExecutor = {
     brokerName: 'breeze',
-    capabilities: { placeLimitBuy: true, getContractByPriceRange: true },
 
     buy: breezeExecutor.buyResolvedOnBreeze,
 

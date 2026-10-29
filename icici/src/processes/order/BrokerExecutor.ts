@@ -276,14 +276,6 @@ export interface BrokerPosition {
     exchange: string;
 }
 
-// Operations only some brokers have. A caller checks the flag and refuses with a clear message; the unsupported executor slot
-// also throws, so a missed check still fails loudly. (Every broker has enterShort/buyToClose/marketBuy/marketSell/
-// getLiveQuantity/resolveContract today, so those carry no flag.)
-export interface BrokerCapabilities {
-    placeLimitBuy: boolean;
-    getContractByPriceRange: boolean;
-}
-
 export type OptionRight = 'CE' | 'PE';
 export type OptionIndex = 'NIFTY' | 'SENSEX';
 
@@ -295,11 +287,9 @@ export interface ResolvedContract {
 
 export interface BrokerExecutor {
     readonly brokerName: 'kite' | 'ant' | 'prism' | 'breeze';
-    readonly capabilities: BrokerCapabilities;
 
     // "Bare" ops: a single order with no GTT/bracket/cover protection, for strategies that self-monitor their legs.
     // `instrumentToken` is the ANT common token carried on Trade.token (brokers that need their own id resolve it).
-    // placeLimitBuy / getContractByPriceRange throw for a broker whose capabilities rule them out.
     enterShort(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade>;
     buyToClose(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade>;
     marketBuy(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade>;
