@@ -37,7 +37,4 @@ export class Settings {
     gapScreenerCoverOrderUserEmail = ''
     gapScreenerCoverOrderQuantity = 0
     gapScreenerCoverOrderStopLossPoints = 0
-    // true: the order process refuses every buy-type request (entries, hedges, averages, refills, re-buys, manual buys); sells,
-    // cancels and exits keep working. Read from config.yml on every request, so it holds across restarts. /order/lock-profits sets it.
-    freezeBuys = false
 }

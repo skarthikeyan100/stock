@@ -190,6 +190,8 @@ export function optionTickTargets(source: FeedSource, token: string): Strategy[]
 
 // Delivers one tick to one strategy, isolated from the others.
 export async function deliverOptionTick(strategy: Strategy, quote: OptionQuote): Promise<void> {
+    // A disabled strategy takes no action at all - no leg management, stops, hedges, refills or exits off ticks.
+    if (!strategy.enabled) return;
     try {
         if (strategy.canHandleOptionQuote(quote)) await strategy.processOptionQuote(quote);
     } catch (e) {

@@ -556,7 +556,6 @@ interface LockProfitsEntry {
     note?: string;
 }
 interface LockProfitsResult {
-    buysFrozen: boolean;
     brokers: string[];
     positions: LockProfitsEntry[];
     cancelledBuys: { broker: string; user: string; tsym: string; orderId: string; filledQty?: number; error?: string }[];
@@ -575,10 +574,11 @@ async function lockProfits(brokerArg: string | undefined, reprice: boolean): Pro
 }
 
 async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean): Promise<LockProfitsResult> {
-    // Before anything is cancelled or sold: no strategy may buy behind the lock. The caller writes settings.freezeBuys to
-    // config.yml first; re-read it here so the lock never runs on a stale copy.
+    // Before anything is cancelled or sold: a disabled strategy takes no action at all, so with every strategy disabled nothing
+    // can buy behind the lock. The caller disables them in config.yml first; re-read it here so the lock never runs on a stale copy.
     configService.reloadNow();
-    if (!buysFrozen()) throw new Error('lockProfits: settings.freezeBuys is not true in config.yml - refusing to sell while buys are open (use POST /order/lock-profits, which sets it)');
+    const stillEnabled = (configService.getConfig().strategies || []).filter((st: any) => st.enabled).map((st: any) => st.userId || st.type);
+    if (stillEnabled.length > 0) throw new Error(`lockProfits: strategies still enabled in config.yml (${stillEnabled.join(', ')}) - refusing to sell while they can buy (use POST /order/lock-profits, which disables them)`);
     await waitForReconcile();
     const requested = brokerArg ? [normalizeBrokerName(brokerArg)] : null;
     const brokersWithRows = Array.from(new Set(bookkeeping.trades.filter((t) => t.broker).map((t) => normalizeBrokerName(t.broker))));
@@ -586,7 +586,7 @@ async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean):
     for (const b of brokers) {
         if (!TRACKER_BROKERS.includes(b as any)) throw new Error(`lockProfits: unsupported broker '${b}'`);
     }
-    const result: LockProfitsResult = { buysFrozen: true, brokers, positions: [], cancelledBuys: [], totalLockedPnl: 0 };
+    const result: LockProfitsResult = { brokers, positions: [], cancelledBuys: [], totalLockedPnl: 0 };
 
     // (1) Resting buys first. A buy that filled before its cancel landed is a new position: its fill is booked by the poller,
     // so it is reported and a repeat call locks it.
@@ -753,28 +753,11 @@ function upgradeLegacyRequest(req: OrderRequest): OrderRequest {
     }
 }
 
-// Buy freeze: config.yml `settings.freezeBuys: true` (set by lock-profits, cleared by editing the file). Every request that can
-// open or add to a long is refused as definitely NOT placed, whichever strategy, broker or manual caller sent it: a disabled
-// strategy still hedges, averages and refills open legs on ticks, and only this process sees all of those requests. Sells,
-// cancels, buy-to-close and read-only requests are untouched, so the lock's own sells and every exit keep working. Read from
-// the config on every request (not held in memory), so it survives a restart and a restart cannot start unfrozen.
-const BUY_REQUEST_TYPES = new Set<string>([
-    'buyContract', 'buyIndex', 'breezeBuyIndex', 'chunkedBuyIndex', 'manualBuy', 'buyContractBare', 'placeLimitBuyBare',
-    'antPlaceCoverOrder', 'antBuyTargetOnly', 'butterflySellToOpen', 'butterflyBuyLeg',
-]);
-function buysFrozen(): boolean {
-    return (configService.getConfig().settings as any)?.freezeBuys === true;
-}
-
 async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     req = upgradeLegacyRequest(req);
     try {
         // Accept legacy broker names (e.g. 'zerodha') from any caller before anything dispatches on them.
         if (req.payload && typeof (req.payload as any).broker === 'string') (req.payload as any).broker = normalizeBrokerName((req.payload as any).broker);
-        if (BUY_REQUEST_TYPES.has(req.type) && buysFrozen()) {
-            Log.log(`[order] settings.freezeBuys is true - refused ${req.type} from ${req.userId}`);
-            return { kind: 'response', id: req.id, ok: false, error: `${NOT_PLACED_TAG} buys are frozen (settings.freezeBuys: true in config.yml)` };
-        }
         switch (req.type) {
             case 'canPlaceOrder':
                 // See reconcileInFlight's comment on 'openTrades' below - a

@@ -66,6 +66,12 @@ async function onFill(userId: string, raw: any, openQuantity?: number) {
         Log.log('[strategies] Fill for unknown strategy userId:', userId);
         return;
     }
+    // A disabled strategy takes no action at all: it is not told about fills, so it cannot refill, re-buy, re-place an exit or
+    // update leg state. (Fills are still booked by the order process.) Enable it and POST /reconcile to pick positions back up.
+    if (!strategy.enabled) {
+        Log.log(`[strategies] ${userId} is disabled - fill for ${raw?.tsym} not delivered`);
+        return;
+    }
     // The fill's own broker decides the feed its token belongs to; the strategy's config `broker:`
     // key is only a fallback for untagged fills (a BulkPcr ANT pair under `broker: breeze` would
     // otherwise subscribe an ANT token on the Breeze feed).
@@ -128,6 +134,10 @@ async function onOrderCancelled(userId: string, notification: OrderCancelledNoti
         Log.log('[strategies] Order cancelled for unknown strategy userId:', userId);
         return;
     }
+    if (!strategy.enabled) {
+        Log.log(`[strategies] ${userId} is disabled - order cancellation not delivered`);
+        return;
+    }
     if (strategy.onOrderCancelled) {
         await strategy.onOrderCancelled(notification);
     }
@@ -155,6 +165,7 @@ async function reconcileStrategies(): Promise<void> {
     // block the others (reconcile() itself already fails closed internally -
     // see ContinuousStrategy.reconcile).
     for (const strategy of strategies.getList()) {
+        if (!strategy.enabled) continue; // disabled = inert: no leg restore, no exit re-placement
         try {
             await (strategy as any).reconcile?.();
         } catch (e) {
@@ -256,10 +267,11 @@ async function onTick(tick: any) {
         // One latest-wins slot per strategy: a strategy stuck awaiting a broker call only coalesces its own ticks, not everyone's.
         for (const strategy of strategies.getList()) {
             enqueueLatestIndex(`tick:nifty:${strategy.getClassName()}:${strategy.userId}`, quote, statsUpdate, async (q, statsList) => {
+                if (!strategy.enabled) return;
                 for (const u of statsList) {
                     await isolate(strategy, 'receive', () => strategy.receive(u.oldStats, u.newStats));
                 }
-                if (strategy.enabled) await isolate(strategy, 'processNiftyQuote', () => strategy.processNiftyQuote(q));
+                await isolate(strategy, 'processNiftyQuote', () => strategy.processNiftyQuote(q));
             });
         }
     } else if (tick.type === 'sensex') {

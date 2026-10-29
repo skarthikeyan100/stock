@@ -1417,26 +1417,25 @@ getOrPost('/order/buy', requireAuth, async function (req: express.Request, res) 
     }
 });
 
-// Lock profits: (1) writes settings.freezeBuys: true and enabled: false on every enabled strategy to config.yml - one atomic
-// write, hot-reloaded by every process, nothing held only in memory - so the order process refuses every buy (hedges,
-// averages, refills, re-buys, entries) and no strategy re-arms, then (2) has the order process cancel resting buys and
-// limit-sell every open long at its current price (orderProcess.ts's lockProfits), so realized P&L ends >= the open P&L at
-// the call. Query: ?broker=kite|breeze|ant (omitted = every broker with an open position), ?reprice=true to re-price a lock
-// that is still resting. To trade again, set settings.freezeBuys: false and enabled: true in config.yml.
+// Lock profits: (1) writes enabled: false on every enabled strategy to config.yml (one atomic write, hot-reloaded by every
+// process). A disabled strategy takes no action at all - no entries, hedges, refills, stops or exits - so nothing can buy
+// behind the lock. (2) The order process then cancels resting buys and limit-sells every open long at its broker live price
+// (orderProcess.ts's lockProfits), so realized P&L ends >= the open P&L at the call. Query: ?broker=kite|breeze|ant (omitted
+// = every broker with an open position), ?reprice=true to re-price a lock that is still resting. To trade again, set
+// enabled: true on the strategies you want in config.yml and POST /reconcile.
 getOrPost('/order/lock-profits', requireAdmin, async function (req, res) {
     try {
         const broker = typeof req.query.broker === 'string' && req.query.broker.trim() ? req.query.broker.trim() : undefined;
         const reprice = req.query.reprice === 'true';
-        // Persist the freeze and the disables before touching an order; a write that fails stops the call here, with nothing sold.
+        // Persist the disables before touching an order; a write that fails stops the call here, with nothing sold.
         const cfg = configService.getConfig();
         const toDisable = (cfg.strategies || []).filter((s: any) => s.enabled);
         const disabledStrategies = toDisable.map((s: any) => s.userId || s.type);
         toDisable.forEach((s: any) => { s.enabled = false; });
-        (cfg.settings as any).freezeBuys = true;
         configService.writeConfig(cfg);
         configService.reloadNow();
         const lock = await orderClient.lockProfits({ broker, reprice });
-        res.json({ freezeBuys: true, disabledStrategies, lock });
+        res.json({ disabledStrategies, lock });
     } catch (e: any) {
         Log.log('lock-profits failed:', e);
         res.status(500).json({ error: e?.message ?? String(e) });
