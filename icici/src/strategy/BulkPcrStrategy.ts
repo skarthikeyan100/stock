@@ -3,14 +3,14 @@ import { ORDER_MAY_BE_LIVE_TAG } from '../ipc/orderProtocol';
 import Log from '../util/Log';
 import { localDayKey } from './dayKey';
 import SerialWriter from './SerialWriter';
-import { CALL, PUT, NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY } from '../constants';
+import { CALL, PUT, NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY, INDEX_LOT_SIZE, PCR_WINDOW_POINTS } from '../constants';
 import { splitIntoFreezeQtyChunks } from '../util/quantityChunks';
 import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
-import { roundToTick } from '../kite/Kite';
+import { roundToTick } from '../util/tick';
 import MomentumSignal from './MomentumSignal';
 import { isPastMarketClose, isPastTime } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
@@ -18,10 +18,11 @@ import { PnlStop } from './PnlStop';
 import { toPercentNumber } from '../prism/percentConfig';
 import { TrailStop } from './TrailStop';
 import { sleep } from '../util/sleep';
-import { normalizeBrokerList, normalizeBrokerName, normalizePersistedBrokers } from '../util/brokerName';
+import { fetchOpenTradesWithRetry } from './openTrades';
+import { recordExitReject, MARGIN_SHORTFALL_REASON_PATTERN, EXIT_REJECT_RETRY_DELAY_MS } from './exitRejectPolicy';
+import { BrokerName, configuredBrokersOf, normalizeBrokerName, normalizePersistedBrokers } from '../util/brokerName';
 import { exchangeForTsym } from '../util/underlyings';
 
-const PCR_WINDOW_POINTS = 300; // same window width ContinuousStrategy uses around spot
 
 // Minimum gap between resolveEntryRight attempts (PCR option-chain fetch +
 // momentum's ATM subscribe/unsubscribe round trip). NiftyQuote ticks arrive
@@ -41,35 +42,8 @@ const REBUY_RETRY_THROTTLE_MS = 10_000;
 const MAX_BUY_RETRIES = 3;
 // Headroom kept when shrinking a hedge to fit margin: the premium moves between attempts.
 const MARGIN_RESIZE_BUFFER = 0.05;
-// Lot sizes needed to round a reduced quantity down to a whole lot. Same values as
-// bookkeeping.getInstrumentLotSize, which lives in the order process and is not importable here.
-const LOT_SIZE: Record<'NIFTY' | 'SENSEX', number> = { NIFTY: 65, SENSEX: 20 };
-
-// onOrderCancelled's re-placement cap/backoff (live incident 2026-10-15 - see BrokerPosition's
-// exitRejectCount comment). A rejection whose broker-supplied reason looks like a margin/
-// shortfall problem is never retried at all: it means there's nothing left to sell against
-// (e.g. the position was already closed outside the app), and resubmitting the identical
-// order will only be rejected identically forever.
-// Counts RE-PLACEMENTS after the original (non-retry) placement, not total placements -
-// exitRejectCount increments once per rejection and is checked with `>`, so rejections 1-5 each
-// still get a retry (5 re-placements total) and rejection 6 is what stops it. "6 total
-// placements of this exit" (the original plus 5 retries) is the same behavior described a
-// different way, not a bug - flagged twice on review as apparently off-by-one, so spelling it
-// out here to save a third look.
-const MAX_EXIT_REJECT_RETRIES = 5;
-const EXIT_REJECT_RETRY_DELAY_MS = 5000;
-// Rejections more than this far apart don't count as the same streak - narrowed on review:
-// a bare "insufficient" or "margin" match was broad enough to catch an unrelated transient
-// rejection (e.g. a liquidity/order-book message) on its very first occurrence and stop retrying
-// forever. Requiring "margin" together with a shortfall/insufficiency word is a closer match to
-// the actual broker wording this guards against ("insufficient margin" / "margin shortfall").
-// FIX (found on re-review): the first version used `[^a-z]{0,20}` for the gap between the two
-// words, which excludes ANY letter - so ordinary English phrasing with connector words in
-// between ("Margin is insufficient", "Not enough margin to cover order") never matched at all.
-// `.{0,30}` (any character) fixes this; `enough`/`short` added to catch "not enough margin"
-// phrasing specifically.
-const MARGIN_SHORTFALL_REASON_PATTERN = /margin.{0,30}(shortfall|insufficient|exceed|short)|(?:shortfall|insufficient|exceed|short|enough).{0,30}margin/i;
-const EXIT_REJECT_STREAK_RESET_MS = 120_000;
+// Lot sizes needed to round a reduced quantity down to a whole lot.
+const LOT_SIZE = INDEX_LOT_SIZE;
 
 // Hedge trail exit: how long a trail-exit limit may rest unfilled before it is re-priced to the tick, and how often
 // a moving peak is written durably.
@@ -84,7 +58,6 @@ const STATE_COLLECTION = 'bulkPcrStrategyState';
 // brokers - ant and prism were added alongside BulkPcrAutoStartStrategy
 // (the scheduled auto-arm wrapper) to let that wrapper run this strategy
 // against ant/prism instead of kite/breeze.
-type BrokerName = 'kite' | 'breeze' | 'ant' | 'prism';
 
 // Brokers that run the opposite-direction pair: one slot per option side per broker
 // (kite_call / kite_put, breeze_call, ant_put, ...). Prism stays a single slot.
@@ -446,9 +419,7 @@ export default class BulkPcrStrategy extends Strategy {
     // and durablyDisable below already use for the identical type-vs-instance
     // distinction.
     private cfg() {
-        return configService.getConfig().strategies?.find(
-            (s) => s.type === 'BulkPcrStrategy' && (s.userId || s.type) === this.userId
-        ) ?? { type: 'BulkPcrStrategy', enabled: false };
+        return configService.getInstanceConfig('BulkPcrStrategy', this.userId);
     }
 
     // `brokers: [kite, breeze]` (new, multi-broker) takes priority when
@@ -457,9 +428,7 @@ export default class BulkPcrStrategy extends Strategy {
     // lowercased so a config typo/duplicate can't silently double-run a
     // broker.
     private configuredBrokers(): BrokerName[] {
-        const cfg = this.cfg();
-        const list: string[] = normalizeBrokerList(Array.isArray(cfg.brokers) && cfg.brokers.length > 0 ? cfg.brokers : [cfg.broker ?? 'kite']);
-        return Array.from(new Set(list.map((b: string) => String(b).toLowerCase()))) as BrokerName[];
+        return configuredBrokersOf(this.cfg());
     }
 
     // Throttled gate-visibility logging, same shape as ContinuousStrategy's
@@ -2080,9 +2049,7 @@ export default class BulkPcrStrategy extends Strategy {
         // Not configService.getStrategyConfig(type) - see cfg()'s comment above for why;
         // this call site was missed when that fix landed. A second instance under a
         // different userId must disable ITS OWN entry, not whichever is listed first.
-        const liveCfg = configService.getConfig().strategies?.find(
-            (s) => s.type === 'BulkPcrStrategy' && (s.userId || s.type) === this.userId
-        );
+        const liveCfg = configService.findInstanceConfig('BulkPcrStrategy', this.userId);
         if (!liveCfg) {
             Log.log(`[BulkPcrStrategy] ALERT: durablyDisable could not find this instance's own config.yml entry - NOT persisted, flip enabled: false manually.`);
             this.enabled = false;
@@ -2138,22 +2105,17 @@ export default class BulkPcrStrategy extends Strategy {
             // streak if the gap since the last rejection is too large to plausibly be the same
             // problem - see BrokerPosition.exitRejectCount's comment for the remaining gap this
             // doesn't fully close (no per-chunk identity exists to solve it precisely).
-            const withinStreak = pos.exitLastRejectAt != null && now - pos.exitLastRejectAt <= EXIT_REJECT_STREAK_RESET_MS;
-            pos.exitRejectCount = (withinStreak ? pos.exitRejectCount ?? 0 : 0) + 1;
-            pos.exitLastRejectAt = now;
-
-            if (rejectReason && MARGIN_SHORTFALL_REASON_PATTERN.test(rejectReason)) {
-                // A margin/shortfall rejection means there's nothing left to sell against -
-                // most likely the position was already closed outside the app (see the
-                // 2026-10-15 incident this guards against). Retrying would just repeat the
-                // same rejection forever.
+            const verdict = recordExitReject(pos, rejectReason, now);
+            if (verdict === 'marginShortfall') {
+                // A margin/shortfall rejection means there's nothing left to sell against - most likely the position was already closed
+                // outside the app (see exitRejectPolicy.ts for the incident). Retrying would just repeat the same rejection forever.
                 Log.log(`[BulkPcrStrategy] [${broker}] Exit sell for ${notification.tradingSymbol} REJECTED (${rejectReason}) - looks like a margin/shortfall rejection, likely because the position is already closed at the broker. NOT re-placing - manual review required.`);
                 pos.phase = 'error';
                 this.persistState();
                 return;
             }
 
-            if (pos.exitRejectCount > MAX_EXIT_REJECT_RETRIES) {
+            if (verdict === 'tooMany') {
                 Log.log(`[BulkPcrStrategy] [${broker}] Exit sell for ${notification.tradingSymbol} REJECTED ${pos.exitRejectCount} times in a row (${rejectReason ?? 'no reason given'}) - giving up on auto re-placement. Manual review required.`);
                 pos.phase = 'error';
                 this.persistState();
@@ -2173,9 +2135,6 @@ export default class BulkPcrStrategy extends Strategy {
         await this.placeExitSellAtTargetPrice(this.keyOf(pos), notification.quantity, false);
     };
 
-    getMonitorConfig() {
-        return null; // self-monitored, no GTT/bracket - Breeze doesn't support them anyway
-    }
 
     // Restart-safety: without this, a restart mid-cycle would reset phase to
     // 'idle' in memory and could fire a SECOND live block buy on the next
@@ -2184,19 +2143,9 @@ export default class BulkPcrStrategy extends Strategy {
     // needing manual review, or a third was never even attempted yet.
     // Mirrors ContinuousStrategy.reconcile()'s retry shape.
     //
-    // KNOWN RACE (live 2026-10-21, ToDo.md): this is only as good as getOpenTradesOnce's
-    // first successful response. If the `order` process's own IPC socket is already
-    // accepting connections but its startup broker-position restore
-    // (loadOpenTradesFromBroker/restoreOpenTradesForTsym) hasn't finished populating
-    // bookkeeping.trades yet, getOpenTrades() succeeds (no retry triggered - the call
-    // itself doesn't error) and simply returns an empty/incomplete list. A real open
-    // position with no persisted state can then be missed entirely, anyRestored stays
-    // false, this.phase stays 'idle', and the ordinary fresh-entry gate opens instead -
-    // exactly what happened live when both `order` and `strategies` were restarted
-    // together. Restarting only `strategies` while `order` is already warm (its own
-    // restore long finished) avoids this; restarting both at once does not. Not fixed
-    // here - needs either a readiness handshake from `order` or retrying
-    // getOpenTradesOnce() when it returns suspiciously empty, not just when it throws.
+    // The 2026-10-21 race (`order`'s socket accepting connections before its startup broker-position restore finished, so a successful
+    // getOpenTrades() returned an empty list and a live position was missed) is closed by the startup sequence: strategies are only
+    // reconciled after `order` has loaded the brokers' positions (strategiesProcess.startupReconcile).
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
         this.reconciling = true;
         try {
@@ -2229,21 +2178,10 @@ export default class BulkPcrStrategy extends Strategy {
         let openTradesFetch: Promise<any[] | undefined> | null = null;
         const getOpenTradesOnce = (): Promise<any[] | undefined> => {
             if (!openTradesFetch) {
-                openTradesFetch = (async () => {
-                    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-                        try {
-                            return await OrderClient.getInstance().getOpenTrades(this.userId);
-                        } catch (e) {
-                            Log.log(`[BulkPcrStrategy] reconcile: order query attempt ${attempt}/${maxAttempts} failed:`, e);
-                            if (attempt === maxAttempts) {
-                                Log.log('[BulkPcrStrategy] reconcile: order query exhausted retries - failing closed for every broker still pending reconciliation');
-                                return undefined;
-                            }
-                            await sleep(retryDelayMs);
-                        }
-                    }
-                    return undefined;
-                })();
+                openTradesFetch = fetchOpenTradesWithRetry(this.userId, 'BulkPcrStrategy', maxAttempts, retryDelayMs).then((trades) => {
+                    if (!trades) Log.log('[BulkPcrStrategy] reconcile: order query exhausted retries - failing closed for every broker still pending reconciliation');
+                    return trades;
+                });
             }
             return openTradesFetch;
         };

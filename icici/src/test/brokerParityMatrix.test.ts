@@ -39,7 +39,11 @@ async function main() {
     (priceRange as any).estimateOptionPricesBatch = async (_i: string, c: { strike: number; optionType: string }[]) =>
         new Map(c.map((x) => [`${x.strike}_${x.optionType}`, { premium: x.strike === 22700 ? 120 : 40, antToken: 'ant-' + x.strike }]));
     (PrismContractMaster as any).getInstance = () => ({ findNearestExpiryOption: (_i: string, strike: number, right: string) => ({ token: String(strike), tradingSymbol: `NIFTY${strike}${right}` }) });
-    (AntContractMaster as any).getInstance = () => ({ findNearestExpiryOption: (p: any) => ({ token: 'a' + p.strike, tradingSymbol: `NIFTY${p.strike}${p.optionType}`, exch: 'NFO', lotSize: '65' }) });
+    (AntContractMaster as any).getInstance = () => ({
+        findNearestExpiryOption: (p: any) => ({ token: 'a' + p.strike, tradingSymbol: `NIFTY${p.strike}${p.optionType}`, exch: 'NFO', lotSize: '65' }),
+        // ANT's price-range pick resolves the contract from the token the premium came from (ant-<strike> in the stub above).
+        findByToken: (t: string) => { const strike = Number(t.replace('ant-', '')); return { token: t, strike, optionType: 'CE', exch: 'NFO', tradingSymbol: `NIFTY${strike}CE`, lotSize: '65' }; },
+    });
     const c = await PrismExecutor.getContractByPriceRange(22750, 'CE', 'NIFTY', 100, new Set());
     assert(c.strike === 22700 && c.premium === 120 && c.antToken === 'ant-22700' && c.lotSize === 65 && c.tradingSymbol === 'NIFTY22700CE', 'Prism getContractByPriceRange picks the first strike clearing the premium, with ANT token and lot size');
     const ca = await AntExecutor.getContractByPriceRange(22750, 'CE', 'NIFTY', 100, new Set());

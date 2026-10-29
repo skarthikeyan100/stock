@@ -16,6 +16,7 @@ installIpv4OnlyHostOverride();
 import { TRACKERS, TRACKER_BROKERS } from './order/pendingTrackers';
 import { BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
 import { ownSocketTracker } from '../ipc/ownSocket';
+import { verifyMasterFiles } from '../util/masterFiles';
 import { DataLink } from '../ipc/DataLink';
 import net from 'net';
 import fs from 'fs';
@@ -45,7 +46,8 @@ import { BrokerExecutor, OrderAlreadyFilledError } from './order/BrokerExecutor'
 import Kite from '../kite/Kite';
 import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
-import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, CALL } from '../constants';
+import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, CALL } from '../constants';
+import { resolveMaxExposure } from '../prism/configVocabulary';
 import { getUser, getAllUsers } from '../user';
 import { OptionQuote, Trade } from '../model/model';
 import { isPastExpirySquareOffTime, isPastReconcileTime } from '../util/marketHours';
@@ -1298,7 +1300,7 @@ async function applyConfigStrategyLimitsOnce() {
         bookkeeping.updateUserSettings(userId, {
             lossLimit: mongoUser?.lossLimit ?? USER_LOSS_LIMIT,
             lotLimit: mongoUser?.lotLimit ?? mongoUser?.lotCount ?? DEFAULT_LOT_LIMIT,
-            maxInvestment: (cfg as any).maxExposure || (cfg as any).maxInvestment || DEFAULT_MAX_INVESTMENT,
+            maxInvestment: resolveMaxExposure(cfg as any),
             maxInvestmentByBroker: (cfg as any).maxExposureByBroker
                 ? Object.fromEntries(Object.entries((cfg as any).maxExposureByBroker).map(([b, v]) => [normalizeBrokerName(b), Number(v)]))
                 : undefined,
@@ -1427,6 +1429,7 @@ export async function startOrderProcess() {
     // Warm every broker's contract master before the IPC socket accepts requests, so the first
     // order inside a trading window doesn't pay the file parse. Breeze's daily refresh runs
     // in the background (void) so a slow download can't delay startup.
+    verifyMasterFiles(); // a missing required master stops the start here, naming every missing file
     AntContractMaster.getInstance().preload({ bfo: true });
     KiteContractMaster.getInstance().preload();
     PrismContractMaster.getInstance().preload();

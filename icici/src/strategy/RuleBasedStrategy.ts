@@ -102,7 +102,7 @@ class RuleBasedContract {
             return true;
         }
 
-        // A Sell fill the strategy did not place itself: the broker-side target/stop-loss (getMonitorConfig) closed the
+        // A Sell fill the strategy did not place itself: the broker-side target/stop-loss closed the
         // position. Without this the contract is never cleared and the strategy can never trade again. Chunked exits
         // arrive as several fills - only complete once the held quantity is sold.
         if (!this.sellOrderPlaced && !this.buyOrderPlaced && trade.action === 'Sell' && this.price > 0 && this.quantity > 0) {
@@ -138,10 +138,6 @@ export default class RuleBasedStrategy extends Strategy {
         }
     }
 
-    getMonitorConfig() {
-        const config = this.getConfig();
-        return { targetPoints: config.target, stopLossPoints: config.stopLoss, trailingDistance: configService.getConfig().settings.trailingDistance };
-    }
 
     getConfig() {
         const strategiesSingleton = require('./strategies').default;

@@ -48,7 +48,6 @@ import ANT from './ant/ANT';
 import AntContractMaster from './ant/AntContractMaster';
 import Kite from './kite/Kite';
 import Breeze from './breeze/Breeze';
-import BreezeStream from './breeze/BreezeStream';
 import OrderClient from './processes/strategies/OrderClient';
 import StrategiesClient from './ipc/StrategiesClient';
 import { DataLink } from './ipc/DataLink';
@@ -1250,34 +1249,6 @@ getOrPost('/breeze/order/squareoff', requireAdmin, async function (req, res) {
     }
 });
 
-// Starts BreezeStream (live price ticks, this `frontend` process only - NOT
-// wired into Monitor/Decision, matching AntStream's own "isolated" scope for
-// a first pass) - mirrors /ant/connect's role. NOT yet live-verified - see
-// ToDo.md. The `order`-process order-notify stream (needed for
-// waitForBreezeFill's push path) connects separately, automatically, at
-// `order` process startup/reloadSession (see orderProcess.ts's
-// connectBreezeOrderNotifyIfSessionValid) - nothing to trigger here for that.
-getOrPost('/breeze/connect', requireAdmin, async function (req, res) {
-    try {
-        BreezeStream.getInstance().connect();
-        res.json({ status: 'connected' });
-    } catch (e: any) {
-        Log.log('Breeze connect error:', e);
-        res.status(500).json({ error: 'Failed to connect to Breeze streaming' });
-    }
-});
-
-const breezeStreamClients = new Set<express.Response>();
-app.get('/breeze/stream', requireAdmin, function (req, res) {
-    req.on('close', () => breezeStreamClients.delete(res));
-    openSse(res);
-    breezeStreamClients.add(res);
-});
-myEmitter.on('breeze-quote', (tick: any) => {
-    const payload = `data: ${JSON.stringify(tick)}\n\n`;
-    for (const res of breezeStreamClients) res.write(payload);
-});
-
 // ============================== Broker debug/ops queries (admin-only) ==============================
 // Consolidates the old broker-specific /kite/trades+/ant/trades and
 // /kite/positions+/ant/positions (plus /kite/token+/ant/token, deleted
@@ -1964,7 +1935,6 @@ setInterval(async () => {
 setInterval(() => {
     const heartbeat = ': heartbeat\n\n';
     for (const res of antStreamClients) res.write(heartbeat);
-    for (const res of breezeStreamClients) res.write(heartbeat);
     for (const res of niftyStreamClients) res.write(heartbeat);
     for (const res of optionStreamClients) res.write(heartbeat);
     for (const res of positionStreamClients.keys()) res.write(heartbeat);

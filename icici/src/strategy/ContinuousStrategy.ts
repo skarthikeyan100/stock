@@ -2,21 +2,19 @@ import { isPastTime } from '../util/marketHours';
 import GateLogger from '../util/GateLogger';
 import moment from 'moment';
 import Log from '../util/Log';
-import { CALL, PUT, MOCK_BROKER } from '../constants';
+import { CALL, PUT, MOCK_BROKER, PCR_WINDOW_POINTS } from '../constants';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
 import { LegManager, LegManagerConfig, isUnconfirmedBuyError } from './LegManager';
-import { legOpsFor } from './legOps';
-import { LegBrokerOps } from './LegBrokerOps';
+import { brokerLegOps } from './LegBrokerOps';
 import MomentumSignal from './MomentumSignal';
-import { sleep } from '../util/sleep';
+import { fetchOpenTradesWithRetry } from './openTrades';
 
 // PCR (Put/Call OI ratio) re-check cadence and near-the-money window for T1's
 // alignment gate - see isPcrAligned(). Not config-driven: exact values agreed
 // with the user (retest every 5 min, +/-300 points around spot).
 const PCR_RECHECK_MS = 5 * 60 * 1000;
-const PCR_WINDOW_POINTS = 300;
 
 // Gate-log throttle (see logGateOnce) - matches PCR_RECHECK_MS so the
 // "pcr check throttled - waiting for next 5-min window" message (and other
@@ -65,27 +63,13 @@ export default class ContinuousStrategy extends Strategy {
             getConfig: (): LegManagerConfig => this.cfg() as unknown as LegManagerConfig,
             getLastUnderlyingLtp: () => this.lastNiftyLtp,
             recordOutcome: (outcome, pnl) => this.recordOutcome(outcome, pnl),
-            ops: this.brokerOps(),
+            ops: brokerLegOps(() => this.cfg()?.broker), // follows this instance's own `broker:` key, read at call time
             onSpawnBuyError: (e) => this.noteUnconfirmedBuy(e),
             isOrderingBlocked: () => this.manualReview,
         });
     }
 
-    // Order routing follows this instance's own `broker:` config key, read at call time: ANT has its own ops (the Kite/Breeze
-    // 'Bare' IPCs refuse ANT), everything else uses the default per-user routing. One config block per broker, each with its
-    // own userId, gives one independent tree per broker.
-    private brokerOps(): LegBrokerOps {
-        const pick = (): LegBrokerOps => legOpsFor(this.cfg()?.broker);
-        return {
-            pickContract: (...a) => pick().pickContract(...a),
-            buy: (...a) => pick().buy(...a),
-            sell: (...a) => pick().sell(...a),
-            cancel: (...a) => pick().cancel(...a),
-            buyLimit: (...a) => pick().buyLimit(...a),
-        };
-    }
-
-    // antLegOps.buy tags a buy whose fill is unresolved as '[HEDGE_UNCONFIRMED]' (and the order process tags any broker's unsettled
+    // brokerLegOps.buy tags a buy whose fill is unresolved as '[HEDGE_UNCONFIRMED]' (and the order process tags any broker's unsettled
     // fill wait '[ORDER_MAY_BE_LIVE]'): never retry it (double-buy risk).
     private noteUnconfirmedBuy(e: any): void {
         if (!isUnconfirmedBuyError(e)) return;
@@ -150,23 +134,14 @@ export default class ContinuousStrategy extends Strategy {
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
         // Restore today's max-profit stop first, so a restart does not re-open a strategy that already hit its cap.
         await this.legManager.loadPersistedLatches();
-        let openTrades: Trade[] | undefined;
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                openTrades = await OrderClient.getInstance().getOpenTrades(this.userId);
-                break;
-            } catch (e) {
-                Log.log(`[ContinuousStrategy] reconcile: order query attempt ${attempt}/${maxAttempts} failed:`, e);
-                if (attempt === maxAttempts) {
-                    // Fail closed: better to skip a possible entry than risk a duplicate live order.
-                    Log.log('[ContinuousStrategy] reconcile: order query exhausted retries, blocking new T1 entries until next restart');
-                    this.ordered = true;
-                    return;
-                }
-                await sleep(retryDelayMs);
-            }
+        const openTrades = await fetchOpenTradesWithRetry(this.userId, 'ContinuousStrategy', maxAttempts, retryDelayMs);
+        if (!openTrades) {
+            // Fail closed: better to skip a possible entry than risk a duplicate live order.
+            Log.log('[ContinuousStrategy] reconcile: order query exhausted retries, blocking new T1 entries until next restart');
+            this.ordered = true;
+            return;
         }
-        if (openTrades!.length === 0) {
+        if (openTrades.length === 0) {
             await this.legManager.restorePendingReEntries(); // a root refill may be resting while no leg is held
             return; // fresh in-memory defaults already correct
         }
@@ -349,9 +324,6 @@ export default class ContinuousStrategy extends Strategy {
         if (!this.entering && this.legManager.isIdle()) this.ordered = false;
     };
 
-    getMonitorConfig() {
-        return null; // never goes through the base's GTT/exitMonitor bracket path - self-monitored
-    }
 
     reset(): void {
         super.reset();

@@ -24,15 +24,11 @@ class PrismContractMaster {
     private static instance: PrismContractMaster;
     private cache: Row[] | null = null;
 
-    // Warms the symbols cache at startup (see AntContractMaster.preload). Fail-soft.
+    // Warms the symbols cache at startup (see AntContractMaster.preload). A missing file throws: it is required.
     preload(): void {
         const t0 = Date.now();
-        try {
-            const rows = this.load().length;
-            Log.log(`[PrismContractMaster] preload: ${rows} rows in ${Date.now() - t0}ms`);
-        } catch (e: any) {
-            Log.log(`[PrismContractMaster] ALERT: preload failed - lookups will retry lazily: ${e?.message ?? e}`);
-        }
+        const rows = this.load().length;
+        Log.log(`[PrismContractMaster] preload: ${rows} rows in ${Date.now() - t0}ms`);
     }
 
     static getInstance(): PrismContractMaster {

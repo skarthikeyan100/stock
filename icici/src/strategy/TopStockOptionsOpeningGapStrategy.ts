@@ -7,7 +7,7 @@ import AntContractMaster from '../ant/AntContractMaster';
 import ANT from '../ant/ANT';
 import KiteContractMaster from '../kite/KiteContractMaster';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
-import { roundToTick } from '../kite/Kite';
+import { roundToTick } from '../util/tick';
 import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
 import { localDayKey } from './dayKey';
@@ -226,9 +226,6 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
         // no-op (see canHandleOptionQuote)
     }
 
-    getMonitorConfig() {
-        return null; // exit is a separately-placed resting limit sell per leg, not a GTT/bracket order
-    }
 
     reset(): void {
         this.phase = 'idle';
@@ -255,9 +252,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
         // type-vs-instance distinction - a second instance under a different
         // userId must trade off its OWN config.yml block, not silently inherit
         // whichever instance's block happens to be listed first.
-        const config = configService.getConfig().strategies?.find(
-            (s) => s.type === 'TopStockOptionsOpeningGapStrategy' && (s.userId || s.type) === this.userId
-        ) ?? { type: 'TopStockOptionsOpeningGapStrategy', enabled: false };
+        const config = configService.getInstanceConfig('TopStockOptionsOpeningGapStrategy', this.userId);
         const rankStart: number = config.rankStart ?? 3;
         const rankCount: number = config.rankCount ?? 3;
         const lots: number = config.lots ?? 1;
@@ -484,9 +479,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
         // disable whichever entry happens to be listed first. Same (cfg.userId
         // || type) === userId convention exitMonitor.ts's isSelfManagedTradeUser
         // already uses for the identical type-vs-instance distinction.
-        const liveCfg = configService.getConfig().strategies?.find(
-            (s) => s.type === 'TopStockOptionsOpeningGapStrategy' && (s.userId || s.type) === this.userId
-        );
+        const liveCfg = configService.findInstanceConfig('TopStockOptionsOpeningGapStrategy', this.userId);
         if (!liveCfg) {
             Log.log(`[${this.userId}] ALERT: durablyDisable could not find this instance's own config.yml entry - NOT persisted, flip enabled: false manually.`);
             this.enabled = false;

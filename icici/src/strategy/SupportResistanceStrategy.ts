@@ -6,8 +6,9 @@ import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import { CALL, PUT, MOCK_BROKER } from '../constants';
 import { LegManager, LegManagerConfig } from './LegManager';
+import { brokerLegOps } from './LegBrokerOps';
 import { initSRState, processTick, SRConfig, SRState } from '../lib/supportResistance';
-import { sleep } from '../util/sleep';
+import { fetchOpenTradesWithRetry } from './openTrades';
 
 // Trades NIFTY options on Kite off the dynamic support/resistance breach
 // detector (src/lib/supportResistance.ts, the same SEEKING/LOCKED/BREACH
@@ -28,7 +29,7 @@ import { sleep } from '../util/sleep';
 // maxProfit is a single combined latch across both sides), each side spawns
 // hedge legs/averages on an adverse move and refills on a target hit exactly
 // like ContinuousStrategy's root legs do. No broker-side GTT bracket is
-// placed for these trades (getMonitorConfig() returns null) - the strategy
+// placed for these trades (self-monitored) - the strategy
 // owns the whole exit lifecycle itself via LegManager.
 export default class SupportResistanceStrategy extends Strategy {
     name = 'SupportResistanceStrategy';
@@ -53,6 +54,7 @@ export default class SupportResistanceStrategy extends Strategy {
             getConfig: (): LegManagerConfig => this.cfg() as unknown as LegManagerConfig,
             getLastUnderlyingLtp: () => this.lastNiftyLtp,
             recordOutcome: (outcome, pnl) => this.recordOutcome(outcome, pnl),
+            ops: brokerLegOps(() => this.cfg()?.broker), // `broker: ant` used to throw here: the ANT-only contract pick was never wired in
         });
     }
 
@@ -75,9 +77,6 @@ export default class SupportResistanceStrategy extends Strategy {
         };
     }
 
-    getMonitorConfig() {
-        return null; // self-monitored, like ContinuousStrategy - bypass the base's GTT/exitMonitor bracket path
-    }
 
     receive(oldStats: any, newStats: any) {}
 
@@ -109,23 +108,14 @@ export default class SupportResistanceStrategy extends Strategy {
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
         // Restore today's max-profit / max-loss stop first, so a restart does not re-open a strategy that tripped.
         await this.legManager.loadPersistedLatches();
-        let openTrades: Trade[] | undefined;
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                openTrades = await OrderClient.getInstance().getOpenTrades(this.userId);
-                break;
-            } catch (e) {
-                Log.log(`[SupportResistance] reconcile: order query attempt ${attempt}/${maxAttempts} failed:`, e);
-                if (attempt === maxAttempts) {
-                    Log.log('[SupportResistance] reconcile: order query exhausted retries, blocking new entries until next restart');
-                    this.ordered = true;
-                    this.restoreFailed = true;
-                    return;
-                }
-                await sleep(retryDelayMs);
-            }
+        const openTrades = await fetchOpenTradesWithRetry(this.userId, 'SupportResistance', maxAttempts, retryDelayMs);
+        if (!openTrades) {
+            Log.log('[SupportResistance] reconcile: order query exhausted retries, blocking new entries until next restart');
+            this.ordered = true;
+            this.restoreFailed = true;
+            return;
         }
-        if (openTrades!.length === 0) {
+        if (openTrades.length === 0) {
             await this.legManager.restorePendingReEntries(); // a root refill may be resting while no leg is held
             return;
         }

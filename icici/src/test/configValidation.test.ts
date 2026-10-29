@@ -129,6 +129,11 @@ async function main() {
     assert(validateConfigFile(bulk({ enabled: false, quantity: undefined, targetPoints: undefined, slDistance: undefined })).length === 0,
         'a disabled BulkPcr block is not required to carry them');
     assert(validateConfigFile(bulk({ index: 'BANKNIFTY' })).some((e) => e.includes('index')), 'an unknown BulkPcr index is rejected, not treated as NIFTY');
+    for (const [type, extra] of [['HourlyStrategy', {}], ['ButterflyStrategy', { targetPoints: 10, stopLossPoints: 15 }]] as [string, object][]) {
+        assert(validateConfigFile({ settings: {}, strategies: [{ type, enabled: true, quantity: 65, ...extra }] }).length === 0, `an enabled ${type} block with its required fields is accepted`);
+        assert(validateConfigFile({ settings: {}, strategies: [{ type, enabled: true, ...extra }] }).some((e) => e.includes('quantity')), `an enabled ${type} block without quantity is rejected (no hidden default size)`);
+        assert(validateConfigFile({ settings: {}, strategies: [{ type, enabled: false }] }).length === 0, `a disabled ${type} block is not required to carry them`);
+    }
     assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, eodCloseTime: '15:10' }] }).length === 0, "eodCloseTime '15:10' is accepted");
     assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, eodCloseTime: '3:10pm' }] }).some((e) => e.includes('eodCloseTime')), "eodCloseTime '3:10pm' is rejected (it would silently fall back to the default)");
     assert(validateConfigFile({ settings: { maxDailyDrawdownPercent: '0%' }, strategies: [] }).length > 0,

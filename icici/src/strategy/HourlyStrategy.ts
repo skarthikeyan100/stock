@@ -7,9 +7,11 @@ import OrderClient from '../processes/strategies/OrderClient';
 import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
 import SerialWriter from './SerialWriter';
-import { roundToTick } from '../kite/Kite';
+import { roundToTick } from '../util/tick';
 import { sleep } from '../util/sleep';
-import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
+import { fetchOpenTradesWithRetry } from './openTrades';
+import { recordExitReject, EXIT_REJECT_RETRY_DELAY_MS } from './exitRejectPolicy';
+import { BrokerName, configuredBrokersOf, normalizeBrokerName, normalizePersistedBrokers } from '../util/brokerName';
 
 // Hourly NIFTY support/resistance breakout, confirmed on a 10-minute candle,
 // traded independently and in FULL configured quantity on every configured
@@ -44,7 +46,7 @@ import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } f
 //  - The NIFTY-level invalidation check above (processNiftyQuote), which
 //    cancels the resting sell (cancelRestingLimitSells) and market-squares
 //    off whatever remains (chunkedSquareOff) the instant the breakout fails.
-// getMonitorConfig() returns null - self-monitored, no GTT/bracket (Breeze
+// self-monitored, no GTT/bracket (Breeze
 // doesn't support them anyway, same reason BulkPcrStrategy is self-monitored).
 //
 // Recurring, not single-shot: once every configured broker's position for a
@@ -63,18 +65,8 @@ import { normalizeBrokerName, normalizeBrokerList, normalizePersistedBrokers } f
 // open at the broker is flagged 'error' for manual review rather than
 // risking a second exit sell stacked on top of one that might already be
 // resting.
-type BrokerName = 'kite' | 'breeze' | 'ant' | 'prism';
 
 const STATE_COLLECTION = 'hourlyStrategyState';
-
-// Same reject-streak/backoff shape as BulkPcrStrategy's onOrderCancelled -
-// see that file's comments for the live incidents these constants guard
-// against (2026-10-15: unbounded retry of an identical rejected order;
-// a bare "insufficient"/"margin" match too broad for ordinary phrasing).
-const MAX_EXIT_REJECT_RETRIES = 5;
-const EXIT_REJECT_RETRY_DELAY_MS = 5000;
-const EXIT_REJECT_STREAK_RESET_MS = 120_000;
-const MARGIN_SHORTFALL_REASON_PATTERN = /margin.{0,30}(shortfall|insufficient|exceed|short)|(?:shortfall|insufficient|exceed|short|enough).{0,30}margin/i;
 
 const TEN_MIN_MS = 10 * 60 * 1000;
 
@@ -171,17 +163,12 @@ export default class HourlyStrategy extends Strategy {
 
     receive(oldStats: any, newStats: any) {}
 
-    getMonitorConfig() {
-        return null; // self-monitored, no GTT/bracket - see file header
-    }
 
     // `brokers: [kite, ant, breeze]` takes priority when present and
     // non-empty; falls back to the legacy single `broker:` field, same
     // convention as BulkPcrStrategy.configuredBrokers().
     private configuredBrokers(): BrokerName[] {
-        const cfg = this.cfg();
-        const list: string[] = normalizeBrokerList(Array.isArray(cfg.brokers) && cfg.brokers.length > 0 ? cfg.brokers : [cfg.broker ?? 'kite']);
-        return list as BrokerName[];
+        return configuredBrokersOf(this.cfg());
     }
 
     isTimeInRange(): boolean {
@@ -417,7 +404,7 @@ export default class HourlyStrategy extends Strategy {
         // headroom - same accepted gap BulkPcrStrategy's own enterOnBroker
         // documents, size maxInvestment (or trim `brokers`) with that in
         // mind.
-        const quantity = cfg.quantity ?? 65;
+        const quantity = cfg.quantity as number; // required by validateConfigFile: no default order size
         const brokers = this.configuredBrokers();
         Log.log(`[Hourly] Entering ${confirmation.direction} qty=${quantity} independently on: ${brokers.join(', ')}`);
         // allSettled, not all - one broker's entry failing must not abort a
@@ -617,18 +604,14 @@ export default class HourlyStrategy extends Strategy {
 
         const rejectReason: string | undefined = notification.rejectReason;
         if (notification.reason === 'REJECTED') {
-            const now = Date.now();
-            const withinStreak = pos.exitLastRejectAt != null && now - pos.exitLastRejectAt <= EXIT_REJECT_STREAK_RESET_MS;
-            pos.exitRejectCount = (withinStreak ? pos.exitRejectCount ?? 0 : 0) + 1;
-            pos.exitLastRejectAt = now;
-
-            if (rejectReason && MARGIN_SHORTFALL_REASON_PATTERN.test(rejectReason)) {
+            const verdict = recordExitReject(pos, rejectReason);
+            if (verdict === 'marginShortfall') {
                 Log.log(`[Hourly] [${broker}] Exit sell for ${notification.tradingSymbol} REJECTED (${rejectReason}) - looks like a margin/shortfall rejection, likely because the position is already closed at the broker. NOT re-placing - manual review required.`);
                 pos.phase = 'error';
                 this.persistState();
                 return;
             }
-            if (pos.exitRejectCount > MAX_EXIT_REJECT_RETRIES) {
+            if (verdict === 'tooMany') {
                 Log.log(`[Hourly] [${broker}] Exit sell for ${notification.tradingSymbol} REJECTED ${pos.exitRejectCount} times in a row (${rejectReason ?? 'no reason given'}) - giving up on auto re-placement. Manual review required.`);
                 pos.phase = 'error';
                 this.persistState();
@@ -698,26 +681,17 @@ export default class HourlyStrategy extends Strategy {
             Log.log(`[Hourly] reconcile: restored the live cycle's invalidation level ${this.activeInvalidationLevel} (${this.activeDirection})`);
         }
 
-        let openTrades: any[] | undefined;
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                openTrades = await OrderClient.getInstance().getOpenTrades(this.userId);
-                break;
-            } catch (e) {
-                Log.log(`[Hourly] reconcile: order query attempt ${attempt}/${maxAttempts} failed:`, e);
-                if (attempt === maxAttempts) {
-                    Log.log('[Hourly] reconcile: order query exhausted retries - flagging every restored position for manual review');
-                    for (const pos of this.positions.values()) pos.phase = 'error';
-                    this.persistState();
-                    return;
-                }
-                await sleep(retryDelayMs);
-            }
+        const fetched = await fetchOpenTradesWithRetry(this.userId, 'Hourly', maxAttempts, retryDelayMs);
+        if (!fetched) {
+            Log.log('[Hourly] reconcile: order query exhausted retries - flagging every restored position for manual review');
+            for (const pos of this.positions.values()) pos.phase = 'error';
+            this.persistState();
+            return;
         }
-
+        const openTrades: any[] = fetched;
         for (const pos of this.positions.values()) {
             // Only this slot's own broker counts: the same contract held on another broker is a different position.
-            const brokerTrades = openTrades!.filter((t) => !t.broker || normalizeBrokerName(t.broker) === pos.broker);
+            const brokerTrades = openTrades.filter((t) => !t.broker || normalizeBrokerName(t.broker) === pos.broker);
             if (pos.phase === 'buying' || !pos.heldTsym) {
                 // The entry was still in flight when the process went down: chunks may have filled under a
                 // contract this slot never recorded. Never assume flat - closed only if the broker holds nothing.

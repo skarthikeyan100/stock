@@ -89,9 +89,12 @@ export const AntExecutor: BrokerExecutor = {
         return { tsym: r.tradingSymbol, token: r.token, exchange: r.exch as Exch };
     },
     getContractByPriceRange: (underlyingLtp, optionType, index, minPremium, excludeStrikes) =>
-        pickContractByPremium(underlyingLtp, optionType, index === 'SENSEX' ? 'SENSEX' : 'NIFTY', minPremium, excludeStrikes, (strike) => {
-            const r = antContractFor(index, strike, optionType);
-            return { tradingSymbol: r.tradingSymbol, instrumentToken: Number(r.token), lotSize: Number(r.lotSize), exchange: r.exch as Exch };
+        pickContractByPremium(underlyingLtp, optionType, index === 'SENSEX' ? 'SENSEX' : 'NIFTY', minPremium, excludeStrikes, (strike, antToken) => {
+            // By the token the premium was read from, not by a nearest-expiry lookup: the two can disagree around an expiry roll (the
+            // 2026-10-19 wrong-expiry incident was exactly that, on Kite).
+            const r = AntContractMaster.getInstance().findByToken(antToken);
+            if (!r) throw new Error(`no ANT contract master entry for token ${antToken} (strike ${strike} ${optionType})`);
+            return { tradingSymbol: r.tradingSymbol, instrumentToken: Number(r.token), lotSize: Number(r.lotSize), exchange: (r.exch === 'BFO' ? 'BFO' : 'NFO') as Exch };
         }),
     findPendingOrders: (userId, tradingSymbol) => TRACKERS.ant.find(userId, tradingSymbol),
 };

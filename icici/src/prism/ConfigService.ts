@@ -86,6 +86,17 @@ class ConfigService {
     return `${s.type}|${s.userId || s.type}`;
   }
 
+  // The config block of ONE instance (type + userId, userId defaulting to the type), or undefined when config.yml has none.
+  // getStrategyConfig(type) below returns only the FIRST block of a type, which is wrong for a type configured several times.
+  public findInstanceConfig(type: string, userId: string): StrategyInstanceConfig | undefined {
+    return (this.config.strategies || []).find(s => s.type === type && (s.userId || s.type) === userId);
+  }
+
+  // Same, with a disabled stub for a missing block: what every strategy's cfg() used to spell out for itself.
+  public getInstanceConfig(type: string, userId: string): StrategyInstanceConfig {
+    return this.findInstanceConfig(type, userId) ?? { type, enabled: false };
+  }
+
   public getStrategyConfig(type: string): StrategyInstanceConfig {
     const strategies = this.config.strategies || [];
     return strategies.find(s => s.type === type) || { type, enabled: false };

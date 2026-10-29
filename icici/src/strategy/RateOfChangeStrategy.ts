@@ -122,10 +122,6 @@ export default class RateOfChangeStrategy extends Strategy {
 
     receive(oldStats: any, newStats: any) {}
 
-    getMonitorConfig() {
-        const config = this.instanceConfig();
-        return { targetPoints: config.targetPrice, stopLossPoints: config.stopLossPrice, trailingDistance: configService.getConfig().settings.trailingDistance };
-    }
 
     canHandleOptionQuote(quote: OptionQuote): boolean {
         return this.contract !== null && this.contract.token === quote.token;

@@ -1,6 +1,7 @@
 import Log from '../../util/Log';
 import { getSpotLtp } from './spotQuote';
-import Kite, { roundToTick } from '../../kite/Kite';
+import Kite from '../../kite/Kite';
+import { roundToTick } from '../../util/tick';
 import KiteContractMaster from '../../kite/KiteContractMaster';
 import AntContractMaster from '../../ant/AntContractMaster';
 import ANT from '../../ant/ANT';

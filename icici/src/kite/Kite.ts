@@ -5,6 +5,8 @@ import Log from '../util/Log';
 import fs from 'fs';
 import path from 'path';
 import { sleep } from '../util/sleep';
+import { SessionValidityCache } from '../util/SessionValidityCache';
+import { NFO_TICK_SIZE, roundToTick } from '../util/tick';
 
 // NFO/BFO options tick size - Kite rejects GTT trigger/order prices that
 // aren't an exact multiple of this (confirmed live: "Stoploss trigger price
@@ -14,14 +16,7 @@ import { sleep } from '../util/sleep';
 // of 0.05). Exported so callers (e.g. kiteExecutor.ts) can pre-round
 // values that end up in bookkeeping/exitMonitor comparisons too, so they stay
 // consistent with whatever the broker actually enforces.
-export const NFO_TICK_SIZE = 0.05;
-
-export function roundToTick(price: number, tick: number = NFO_TICK_SIZE): number {
-    // Round to the nearest tick, then fix up floating-point representation
-    // drift (e.g. 0.05*3 = 0.15000000000000002) by rounding to 2 decimals -
-    // safe since a 0.05 tick never needs more than 2 decimal places.
-    return Math.round(Math.round(price / tick) * tick * 100) / 100;
-}
+export { NFO_TICK_SIZE, roundToTick }; // moved to util/tick.ts; re-exported for existing importers
 
 // GTT stop leg limit sits this fraction below the trigger so the sell still fills on a gap-down
 // (a LIMIT at exactly the trigger can sit unfilled while price falls through it).
@@ -165,12 +160,17 @@ class Kite {
         }
     }
 
+    private sessionValidity = new SessionValidityCache();
+
     async hasValidSession(): Promise<boolean> {
         try {
             if (!this.accessToken) return false;
+            if (this.sessionValidity.isValid(this.accessToken)) return true;
             await this.kc.getProfile();
+            this.sessionValidity.markValid(this.accessToken);
             return true;
         } catch {
+            this.sessionValidity.invalidate();
             return false;
         }
     }

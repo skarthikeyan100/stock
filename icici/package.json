@@ -12,7 +12,6 @@
     "test": "node scripts/run-all-tests.js",
     "test:all": "node scripts/run-all-tests.js",
     "test:watch": "jest --watchAll",
-    "test:strategy": "tsc && node ./dist/test/strategyTest.js",
     "test:continuousStrategy": "tsc && MOCK_BROKER=true node ./dist/test/continuousStrategyTest.js",
     "backtest:continuousStrategy": "tsc && MOCK_BROKER=true node ./dist/tools/ContinuousStrategyBacktest.js",
     "backtest:supportResistanceStrategy": "tsc && MOCK_BROKER=true node ./dist/tools/SupportResistanceStrategyBacktest.js",

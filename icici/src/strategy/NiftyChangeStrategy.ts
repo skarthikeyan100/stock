@@ -3,7 +3,7 @@ import Log from '../util/Log';
 import { NiftyQuote } from '../model/model';
 import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
-import { roundToTick } from '../kite/Kite';
+import { roundToTick } from '../util/tick';
 import { localDayKey } from './dayKey';
 import { LimitEntryStrategy, Leg } from './LimitEntryStrategy';
 
@@ -35,9 +35,6 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
     private tradingDay: string | null = null;
     private seenToday = new Set<string>();
 
-    getMonitorConfig(): null {
-        return null;
-    }
 
     protected index(): 'NIFTY' {
         return 'NIFTY'; // the signal is Nifty's change

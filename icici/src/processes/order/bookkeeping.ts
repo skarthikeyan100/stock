@@ -7,7 +7,7 @@ import ANT from '../../ant/ANT';
 import Breeze from '../../breeze/Breeze';
 import { Trade } from '../../model/model';
 import { UserContext, closeUserAccount } from '../../user';
-import { PUT, CALL, UNKNOWN_USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT } from '../../constants';
+import { PUT, CALL, UNKNOWN_USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, INDEX_LOT_SIZE } from '../../constants';
 import * as exitMonitor from './exitMonitor';
 import { collapseFillsByOrderId, netFifoLots } from './fillNetting';
 import { recordOrderOwner, loadOrderOwners } from './orderOwners';
@@ -305,8 +305,8 @@ class OrderBookkeeping {
     getInstrumentLotSize(tsym: string): number {
         if (tsym.startsWith('BANKNIFTY')) return 15;
         if (tsym.startsWith('FINNIFTY')) return 25;
-        if (tsym.startsWith('SENSEX')) return 20;
-        return 65;
+        if (tsym.startsWith('SENSEX')) return INDEX_LOT_SIZE.SENSEX;
+        return INDEX_LOT_SIZE.NIFTY;
     }
 
     // Broker-agnostic manual-buy sizing: an explicit quantity always wins;

@@ -22,6 +22,11 @@ export const TDS_RATE_PERCENT = 10;
 // src/processes/order/chunkedOrder.ts) - any single order above this is
 // rejected by the exchange.
 export const NIFTY_FREEZE_QUANTITY = 1755;
+// One lot of each index option (the exchange sets these; update here when it revises them). Strategies that need a lot size to round a
+// quantity import this instead of keeping their own copy.
+// Strikes within this many points of spot (either side) are summed for the put/call open-interest ratio that picks the entry direction.
+export const PCR_WINDOW_POINTS = 300;
+export const INDEX_LOT_SIZE: Record<'NIFTY' | 'SENSEX', number> = { NIFTY: 65, SENSEX: 20 };
 
 // Exchange-mandated max quantity per single SENSEX (BFO) options order.
 // 1000 units per the NSE/BSE quantity-freeze-limit revision effective

@@ -231,6 +231,12 @@ export function validateConfigFile(parsed: any): string[] {
             }
             if (s.index !== 'NIFTY' && s.index !== 'SENSEX') errors.push(`${s.type}.index must be NIFTY or SENSEX (got ${JSON.stringify(s.index)})`);
         }
+        // Same reasoning for the other strategies that size a live order from their own config: a missing quantity used to fall back to a
+        // hidden 65 (a NIFTY lot) - wrong for a SENSEX Butterfly (lot 20) and for any size the operator never chose.
+        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'] };
+        for (const field of requiredByType[s.type] ?? []) {
+            if (!isNum(s[field])) errors.push(`${s.type}.${field} is required for an enabled strategy (got ${JSON.stringify(s[field])})`);
+        }
     }
     return errors;
 }

@@ -44,23 +44,6 @@ class AntContractMaster {
   private readonly BFO_PATH = path.join(__dirname, '../../data/ant/BFO_contract.json');
   private readonly NSE_PATH = path.join(__dirname, '../../data/ant/NSE_contract.json');
 
-  private readonly STALE_THRESHOLD_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
-  private warnedStale = new Set<string>();
-
-  private checkStaleness(filePath: string): void {
-    if (this.warnedStale.has(filePath)) return;
-    try {
-      const ageMs = Date.now() - fs.statSync(filePath).mtimeMs;
-      if (ageMs > this.STALE_THRESHOLD_MS) {
-        const days = Math.floor(ageMs / (24 * 60 * 60 * 1000));
-        console.warn(`[AntContractMaster] WARNING: ${filePath} is ${days} days old - re-download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md)`);
-      }
-      this.warnedStale.add(filePath);
-    } catch (e) {
-      // Non-fatal - staleness detection is a courtesy warning, not a load-blocking check.
-    }
-  }
-
   // Matches KiteContractMaster's strike-rounding table.
   static readonly STRIKE_STEP: Record<string, number> = {
     NIFTY: 50,
@@ -74,22 +57,17 @@ class AntContractMaster {
     return AntContractMaster.instance;
   }
 
-  // Fills the in-memory caches at process startup so the first lookup inside a trading window
-  // doesn't pay the JSON parse. Fail-soft: a failed load is logged and lookups stay lazy as before.
-  // NSE degrades to an empty table inside loadNSE itself (with its own ALERT).
+  // Fills the in-memory caches at process startup so the first lookup inside a trading window doesn't pay the JSON parse. A file that
+  // is missing or does not parse throws: the master files are required (see util/masterFiles.ts, which names missing ones first).
   preload(opts: { bfo?: boolean } = {}): void {
-    const tryLoad = (label: string, load: () => { length: number }) => {
+    const load = (label: string, fn: () => { length: number }) => {
       const t0 = Date.now();
-      try {
-        const rows = load().length;
-        Log.log(`[AntContractMaster] preload ${label}: ${rows} rows in ${Date.now() - t0}ms`);
-      } catch (e: any) {
-        Log.log(`[AntContractMaster] ALERT: preload ${label} failed - lookups will retry lazily: ${e?.message ?? e}`);
-      }
+      const rows = fn().length;
+      Log.log(`[AntContractMaster] preload ${label}: ${rows} rows in ${Date.now() - t0}ms`);
     };
-    tryLoad('NFO', () => this.loadNFO());
-    tryLoad('NSE', () => this.loadNSE());
-    if (opts.bfo) tryLoad('BFO', () => this.loadBFO());
+    load('NFO', () => this.loadNFO());
+    load('NSE', () => this.loadNSE());
+    if (opts.bfo) load('BFO', () => this.loadBFO());
   }
 
   // Long-lived processes never saw a re-downloaded master (scripts/download-all-masters.sh replaces
@@ -130,7 +108,6 @@ class AntContractMaster {
       }
     }
     if (!(key === 'NFO' ? this.nfoCache : this.bfoCache)) {
-      this.checkStaleness(path);
       store(read());
     }
     return (key === 'NFO' ? this.nfoCache : this.bfoCache)!;
@@ -139,42 +116,20 @@ class AntContractMaster {
   private loadNFO(): ContractRecord[] { return this.loadMaster('NFO'); }
   private loadBFO(): ContractRecord[] { return this.loadMaster('BFO'); }
 
-  private nseFailedAt = 0;
-
-  // NSE cash-segment (equity) contract master - unlike NFO/BFO, no expiry
-  // concept, so no staleness-driven missing-contract risk the way a stale
-  // options file silently routes into the wrong expiry (see checkStaleness's
-  // comment on that 2026-10-13 incident) - still warned the same way as a
-  // courtesy, since a delisted/renamed symbol could otherwise go unnoticed.
+  // NSE cash-segment (equity) contract master - unlike NFO/BFO, no expiry concept, so no stale-file wrong-expiry risk. A missing or
+  // unreadable file throws (it is required; util/masterFiles.ts reports it at start-up) instead of degrading to an empty table.
   private loadNSE(): EquityRecord[] {
-    // A failed load is retried after a cooldown instead of being cached as empty forever.
-    if (!this.nseCache && this.nseFailedAt && Date.now() - this.nseFailedAt < 5 * 60 * 1000) {
-      return [];
-    }
     if (!this.nseCache) {
-      // Missing/unreadable file (e.g. a fresh checkout - the NSE master is gitignored) degrades to an
-      // empty table, cached, with one ALERT. Otherwise every findEquityToken call re-throws, which
-      // aborts the whole universe loop instead of skipping the symbols.
-      try {
-        this.checkStaleness(this.NSE_PATH);
-        const data = JSON.parse(fs.readFileSync(this.NSE_PATH, 'utf-8'));
-        this.nseCache = data.NSE || [];
-      } catch (e: any) {
-        Log.log(`[AntContractMaster] ALERT: NSE equity contract master unavailable at ${this.NSE_PATH} (${e?.message ?? e}) - equity token lookups will return nothing until it is downloaded`);
-        this.nseFailedAt = Date.now();
-        this.nseBysymbol = new Map();
-        return [];
-      }
-      this.nseFailedAt = 0;
-      // Built once per process lifetime, not per lookup - ~9900 equity rows,
-      // a linear scan per symbol (as findNearestStrikeOption does for options)
-      // would be wasteful for a 100-symbol batch called once per trading day.
+      const data = JSON.parse(fs.readFileSync(this.NSE_PATH, 'utf-8'));
+      this.nseCache = data.NSE || [];
+      // Built once per process lifetime, not per lookup - ~9900 equity rows, a linear scan per symbol would be wasteful for a
+      // 100-symbol batch called once per trading day.
       this.nseBysymbol = new Map();
-      for (const r of this.nseCache) {
+      for (const r of this.nseCache!) {
         if (r['Group Name'] === 'EQ' && !this.nseBysymbol.has(r.Symbol)) this.nseBysymbol.set(r.Symbol, r);
       }
     }
-    return this.nseCache;
+    return this.nseCache!;
   }
 
   // Resolves a plain NSE equity symbol (e.g. 'RELIANCE') to its ANT-native
@@ -408,10 +363,12 @@ class AntContractMaster {
   // Deliberately a linear scan rather than a regex over the trading symbol -
   // the tsym format is ambiguous (expiry-code digits run into the strike,
   // e.g. NIFTY2690124200CE), so the cache is the only reliable source.
-  findByToken(token: string): { strike: number; optionType: string; exch: string; tradingSymbol: string } | undefined {
+  findByToken(token: string): { token: string; strike: number; optionType: string; exch: string; tradingSymbol: string; lotSize: string } | undefined {
     const record = this.loadNFO().find((r) => r.Token === token) || this.loadBFO().find((r) => r.Token === token);
     if (!record) return undefined;
     return {
+      token: record.Token,
+      lotSize: record['Lot Size'],
       strike: Number(record['Strike Price']),
       optionType: record['Option Type'],
       exch: record.Exch,

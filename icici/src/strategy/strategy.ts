@@ -107,14 +107,6 @@ export abstract class Strategy {
         return expanded ?? configService.getStrategyConfig(this.getClassName());
     }
 
-    getMonitorConfig(): { targetPoints: number; stopLossPoints: number; trailingDistance: number } | null {
-        return {
-            targetPoints: configService.getConfig().settings.targetPoints,
-            stopLossPoints: configService.getConfig().settings.stopLossPoints,
-            trailingDistance: configService.getConfig().settings.trailingDistance,
-        };
-    }
-
     recordOutcome(outcome: 'win' | 'loss' | 'timeout', pnl: number) {
         this.totalPnL += pnl;
         if (outcome === 'win') this.wins++;

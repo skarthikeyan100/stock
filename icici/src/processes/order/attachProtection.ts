@@ -1,5 +1,6 @@
 import Log from '../../util/Log';
-import Kite, { roundToTick } from '../../kite/Kite';
+import Kite from '../../kite/Kite';
+import { roundToTick } from '../../util/tick';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { exchangeForTsym } from '../../util/underlyings';

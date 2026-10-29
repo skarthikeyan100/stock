@@ -12,7 +12,7 @@ import { exchangeForTsym } from '../../util/underlyings';
 import { BuyRequest, OptionExchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, beginCancelOfBreezePendingLimitOrders, endCancelOfBreezePendingLimitOrders, silenceListenersOfBreezePendingLimitOrders } from './breezePendingLimitOrders';
-import { roundToTick } from '../../kite/Kite';
+import { roundToTick } from '../../util/tick';
 
 // ICICI Breeze execution, mirroring kiteExecutor.ts/antExecutor.ts's shape.
 // Structurally different from both in one way: Breeze identifies a contract

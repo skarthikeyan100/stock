@@ -6,6 +6,7 @@ import path from 'path';
 // Use a separate axios instance to avoid Shoonya interceptors
 import axiosModule from 'axios';
 import { sleep } from '../util/sleep';
+import { SessionValidityCache } from '../util/SessionValidityCache';
 // Default per-call timeout for every ANT broker HTTP call (order placement,
 // quotes, option chain, fill polling, etc). Applies automatically to every
 // axios.get/axios.post made through the shared instance below - previously
@@ -253,13 +254,18 @@ class ANT {
     // getPositions() instead. Added for BrokerExecutor parity - not
     // previously called anywhere, so its actual behavior against a real
     // stale/valid session is unverified. See ToDo.md.
+    private sessionValidity = new SessionValidityCache();
+
     async hasValidSession(): Promise<boolean> {
         if (!this.userSession) return false;
+        if (this.sessionValidity.isValid(this.userSession)) return true;
         try {
             // strict: a 200 carrying an error envelope (expired/invalid session) must not read as valid.
             await this.getPositions({ strict: true });
+            this.sessionValidity.markValid(this.userSession);
             return true;
         } catch {
+            this.sessionValidity.invalidate();
             return false;
         }
     }

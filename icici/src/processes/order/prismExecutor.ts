@@ -11,7 +11,7 @@ import * as exitMonitor from './exitMonitor';
 import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, emptyExitTrade } from './BrokerExecutor';
 import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol, beginCancelOfPendingPrismLimitOrders, endCancelOfPendingPrismLimitOrders, silenceListenersOfPendingPrismLimitOrders } from './pendingPrismLimitOrders';
 import { sleep } from '../../util/sleep';
-import { roundToTick } from '../../kite/Kite';
+import { roundToTick } from '../../util/tick';
 import { exchangeForTsym } from '../../util/underlyings';
 import { markNotPlaced } from '../../util/notPlaced';
 

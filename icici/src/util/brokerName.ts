@@ -26,6 +26,14 @@ export const USER_BROKERS_TEXT = USER_BROKERS.slice(0, -1).join(', ') + ' or ' +
 export const isBrokerName = (name: unknown): boolean => ALL_BROKERS.includes(normalizeBrokerName(name) as BrokerName);
 export const isUserBroker = (name: unknown): boolean => USER_BROKERS.includes(normalizeBrokerName(name) as BrokerName);
 
+// The brokers a strategy block trades on: `brokers: [...]` when present and non-empty, else the legacy single `broker:` key, else
+// `defaultBroker`; names normalised and de-duplicated. Six strategies each spelled this out for themselves.
+export function configuredBrokersOf(cfg: object | null | undefined, defaultBroker: BrokerName = 'kite'): BrokerName[] {
+    const c = (cfg ?? {}) as { brokers?: unknown; broker?: unknown };
+    const raw = Array.isArray(c.brokers) && c.brokers.length > 0 ? c.brokers : [c.broker ?? defaultBroker];
+    return Array.from(new Set(normalizeBrokerList(raw))) as BrokerName[];
+}
+
 export function normalizeBrokerList(list: unknown): string[] {
     return Array.isArray(list) ? list.map(normalizeBrokerName).filter(Boolean) : [];
 }

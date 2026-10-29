@@ -2,7 +2,7 @@ import Log from '../../util/Log';
 import { getSpotLtp } from './spotQuote';
 import ANT from '../../ant/ANT';
 import { cancelOrderWithFillRecheck, emptyExitTrade } from './BrokerExecutor';
-import { roundToTick } from '../../kite/Kite';
+import { roundToTick } from '../../util/tick';
 import AntOrderNotifyStream from '../../ant/AntOrderNotifyStream';
 import AntContractMaster from '../../ant/AntContractMaster';
 import configService from '../../prism/ConfigService';

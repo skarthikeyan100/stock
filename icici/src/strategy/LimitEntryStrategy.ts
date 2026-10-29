@@ -8,9 +8,9 @@ import { OrderCancelledNotification, NOT_PLACED_TAG } from '../ipc/orderProtocol
 import OrderClient from '../processes/strategies/OrderClient';
 import configService from '../prism/ConfigService';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
-import { roundToTick } from '../kite/Kite';
-import { NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY } from '../constants';
-import { normalizeBrokerList } from '../util/brokerName';
+import { roundToTick } from '../util/tick';
+import { NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY, INDEX_LOT_SIZE } from '../constants';
+import { configuredBrokersOf } from '../util/brokerName';
 import { isPastTime } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 
@@ -22,7 +22,7 @@ import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategie
 // Only ever one cycle (one set of legs) is live at a time: a new cycle is refused while any leg is still resting or holding a
 // position, because fills are attributed to a leg by (broker, tradingSymbol) and two cycles on one contract would be ambiguous.
 
-const LOT_SIZE: Record<string, number> = { NIFTY: 65, SENSEX: 20 };
+const LOT_SIZE: Record<string, number> = INDEX_LOT_SIZE;
 const FREEZE_QTY: Record<string, number> = { NIFTY: NIFTY_FREEZE_QUANTITY, SENSEX: SENSEX_FREEZE_QUANTITY };
 const HOUSEKEEPING_INTERVAL_MS = 1000;
 const RETRY_BACKOFF_MS = 30_000;
@@ -87,13 +87,11 @@ export abstract class LimitEntryStrategy extends Strategy {
     receive(oldStats: any, newStats: any) {}
 
     protected cfg(): StrategyInstanceConfig {
-        return configService.getConfig().strategies?.find((s) => s.type === this.strategyType && (s.userId || s.type) === this.userId)
-            ?? ({ type: this.strategyType, enabled: false } as StrategyInstanceConfig);
+        return configService.getInstanceConfig(this.strategyType, this.userId);
     }
 
     protected brokers(): string[] {
-        const c = this.cfg() as any;
-        return normalizeBrokerList(Array.isArray(c.brokers) ? c.brokers : [c.broker ?? 'kite']);
+        return configuredBrokersOf(this.cfg() as any);
     }
 
     protected index(): 'NIFTY' | 'SENSEX' {

@@ -8,7 +8,7 @@ import { Strategy } from './strategy';
 import SerialWriter from './SerialWriter';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { sleep } from '../util/sleep';
-import { normalizeBrokerList, normalizePersistedBrokers } from '../util/brokerName';
+import { BrokerName, configuredBrokersOf, normalizePersistedBrokers } from '../util/brokerName';
 import { isPastTime } from '../util/marketHours';
 
 // Iron Butterfly (standard, net credit) / Reverse Iron Butterfly (net debit) 4-leg combo on
@@ -20,7 +20,6 @@ import { isPastTime } from '../util/marketHours';
 // is the ONLY caller of: a butterfly intrinsically requires selling 2 of its 4 legs to open,
 // which this codebase otherwise refuses everywhere else.
 
-type BrokerName = 'kite' | 'breeze' | 'ant' | 'prism';
 type Mode = 'standard' | 'reverse';
 type LegRole = 'wingLower' | 'wingUpper' | 'centerCall' | 'centerPut';
 const ALL_LEG_ROLES: LegRole[] = ['wingLower', 'wingUpper', 'centerCall', 'centerPut'];
@@ -81,7 +80,6 @@ export default class ButterflyStrategy extends Strategy {
     private lastStaleAlertAt = 0;
 
     receive(_oldStats, _newStats) {}
-    getMonitorConfig() { return null; } // self-monitored net-combo-points exit, not GTT/bracket
 
     // ---- config readers ----
     // Not configService.getStrategyConfig(type) - see BulkPcrStrategy.cfg()'s own comment:
@@ -89,16 +87,14 @@ export default class ButterflyStrategy extends Strategy {
     // Butterfly-SENSEX) under distinct userId values, and each instance must read its OWN
     // block, not silently inherit whichever instance's block happens to be listed first.
     private cfg() {
-        return configService.getConfig().strategies?.find(
-            (s) => s.type === 'ButterflyStrategy' && (s.userId || s.type) === this.userId
-        ) ?? { type: 'ButterflyStrategy', enabled: false };
+        return configService.getInstanceConfig('ButterflyStrategy', this.userId);
     }
     private index(): 'NIFTY' | 'SENSEX' { return this.cfg().index === 'SENSEX' ? 'SENSEX' : 'NIFTY'; }
     private mode(): Mode { return this.cfg().mode === 'reverse' ? 'reverse' : 'standard'; }
     private wingStrikes(): number { return Math.max(1, Number(this.cfg().wingStrikes ?? 2)); }
-    private quantity(): number { return Number(this.cfg().quantity ?? 65); }
-    private targetPoints(): number { return Number(this.cfg().targetPoints ?? 10); }
-    private stopLossPoints(): number { return Number(this.cfg().stopLossPoints ?? 15); }
+    private quantity(): number { return Number(this.cfg().quantity); } // required by validateConfigFile: no default order size
+    private targetPoints(): number { return Number(this.cfg().targetPoints); }
+    private stopLossPoints(): number { return Number(this.cfg().stopLossPoints); }
     private strikeStep(): number { return this.index() === 'SENSEX' ? 100 : 50; }
     // Only kite/ant are verified for this strategy's broker path today. breeze/prism are
     // explicitly rejected here rather than silently run - found on review: this strategy
@@ -114,9 +110,7 @@ export default class ButterflyStrategy extends Strategy {
     // HourlyStrategy's own explicit broker/exchange rejections elsewhere in this codebase.
     private static readonly VERIFIED_BROKERS: BrokerName[] = ['kite', 'ant'];
     private configuredBrokers(): BrokerName[] {
-        const cfg = this.cfg();
-        const list: string[] = normalizeBrokerList(Array.isArray(cfg.brokers) && cfg.brokers.length > 0 ? cfg.brokers : [cfg.broker ?? 'kite']);
-        const requested = Array.from(new Set(list.map((b: string) => String(b).toLowerCase()))) as BrokerName[];
+        const requested = configuredBrokersOf(this.cfg());
         const unverified = requested.filter((b) => !ButterflyStrategy.VERIFIED_BROKERS.includes(b));
         if (unverified.length > 0) {
             Log.log(`[ButterflyStrategy:${this.userId}] ALERT: config lists unverified broker(s) [${unverified.join(',')}] - refusing to run them (only kite/ant are verified for this strategy's tick-subscription/token path; see configuredBrokers' own comment). Running only: ${requested.filter((b) => ButterflyStrategy.VERIFIED_BROKERS.includes(b)).join(',') || 'none'}`);

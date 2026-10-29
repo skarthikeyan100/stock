@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
 import { sleep } from '../util/sleep';
+import { SessionValidityCache } from '../util/SessionValidityCache';
 
 // breezeconnect ships no TypeScript types and is a plain CommonJS export
 // (exports.BreezeConnect = ...), so it's required untyped here rather than
@@ -366,13 +367,18 @@ class Breeze {
         Log.log('[Breeze] Session generated and saved');
     }
 
+    private sessionValidity = new SessionValidityCache();
+
     async hasValidSession(): Promise<boolean> {
         try {
             await this.ensureSessionRestored();
             if (!this.apiSession) return false;
+            if (this.sessionValidity.isValid(this.apiSession)) return true;
             await this.getCustomerDetails();
+            this.sessionValidity.markValid(this.apiSession);
             return true;
         } catch {
+            this.sessionValidity.invalidate();
             return false;
         }
     }

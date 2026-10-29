@@ -3,7 +3,7 @@ import { NiftyQuote, OptionQuote, Trade } from "../model/model";
 import { Strategy } from "./strategy";
 import { localDayKey } from './dayKey';
 import OrderClient from '../processes/strategies/OrderClient';
-import { CALL, PUT } from '../constants';
+import { CALL, PUT, PCR_WINDOW_POINTS } from '../constants';
 import configService from '../prism/ConfigService';
 import moment from 'moment';
 
@@ -12,7 +12,6 @@ const round = (num: number) => Math.round(num * 100) / 100;
 // Near-the-money window (points either side of spot) for PCR's OI summation -
 // matches ContinuousStrategy's PCR_WINDOW_POINTS (not config-driven, agreed
 // with the user).
-const PCR_WINDOW_POINTS = 300;
 
 class GapContract {
     contract: string = '';

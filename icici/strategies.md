@@ -3,37 +3,35 @@
 Every strategy under `src/strategy/` extends the abstract `Strategy` class
 (`src/strategy/strategy.ts`) and is instantiated by `StrategyFactory.ts` from
 a `config.yml` `strategies:` block (matched by `type`). `src/strategy/strategies.ts`
-is the runtime singleton that holds the live list, expands `RuleBasedStrategy`
-multi-indicator configs, and enforces the global trading window (force-disables,
-never auto-re-enables — see `strategies.ts:66-93`).
+is the runtime singleton that holds the live list and expands `RuleBasedStrategy`
+multi-indicator configs. A strategy only receives ticks, fills and cancellations
+when `Strategy.receivesEvents()` is true: `enabled` in `config.yml` (always
+mirrored, never cleared in memory), inside the 09:10-15:25 trading window (a clock
+test), and `stateLoaded` (set once the startup reconcile has run for it; see
+`strategiesProcess.startupReconcile`).
 
-**Only strategies with a `config.yml` block are actually armable today**:
-`SentimentStrategy`, `ContinuousStrategy`, `RateOfChangeStrategy`, `GapStrategy`,
+**Armable today** (a `config.yml` block exists; all `enabled: false` unless the
+operator turns one on): `SentimentStrategy`, `ContinuousStrategy` (three
+instances, one per broker), `RateOfChangeStrategy`, `GapStrategy`,
 `RuleBasedStrategy`, `GoodMorningStrategy`, `GoodMorningSensexStrategy`,
 `SupportResistanceStrategy`, `HourlyStrategy`, `TargetReachStrategy`,
-`BulkPcrStrategy`, `BulkPcrAutoStartStrategy` — all `enabled: false` except
-`BulkPcrAutoStartStrategy` (its job is to arm `BulkPcrStrategy` on a
-schedule — see below). The rest (`BiDirectionStrategy`, `DiffStrategy`,
-`PivotStrategy`, `HighLotStrategy`, `Minutes5Decision`, `TestStrategy`) are
-registered in `StrategyFactory.ts`'s `STRATEGY_REGISTRY` but have no config
-block, so they never get instantiated by `Strategies.initialize()` — legacy/
-early-prototype code, read them with that in mind (some use dead APIs, e.g.
-`isSentimentAligned` against `quote.buyQty/sellQty`, which ANT ticks never
-populate). `ORBPrevious.ts` isn't even in the factory registry — an
-unfinished stub (`process()` body fully commented out).
+`BulkPcrStrategy` (NIFTY and SENSEX), `BulkPcrAutoStartStrategy` (arms
+`BulkPcrStrategy` on a schedule by writing `enabled: true` into `config.yml`),
+`TopStockOptionsOpeningGapStrategy`, `ButterflyStrategy` (NIFTY and SENSEX),
+`RecommendationStrategy` and `NiftyChangeStrategy` (both on `LimitEntryStrategy`).
+The earlier prototypes (`BiDirectionStrategy`, `DiffStrategy`, `PivotStrategy`,
+`HighLotStrategy`, `Minutes5Decision`, `TestStrategy`, `ORBPrevious`) were deleted
+in commit `9765032`.
 
-**Gotcha:** a strategy's `broker:` key in `config.yml` (seen on
-`ContinuousStrategy`, `SupportResistanceStrategy`) is **not read by any
-strategy code** — grep confirms no `cfg.broker` reference for those two
-anywhere in `src/strategy/`. The actual broker used for a given user's orders
-is resolved per-user at order-placement time via
-`bookkeeping.getUserBroker(user)` (`src/processes/order/bookkeeping.ts:138-140`,
-defaults to `'kite'`). **`BulkPcrStrategy` is the one exception**: it does
-read its own `brokers`/`broker` config keys directly (`configuredBrokers()`)
-rather than going through per-user resolution, since it fans out to every
-configured broker independently rather than picking one. For every other
-strategy, don't infer which broker it will actually trade on from its config
-block alone — check the user's broker setting.
+**`broker:` keys.** `ContinuousStrategy` and `SupportResistanceStrategy` read their
+own `broker:` key (`brokerLegOps(() => cfg.broker)`): LegManager's orders, contract
+pick and sells then carry that broker explicitly. For a strategy with no
+`broker:` the user's configured broker is used (`bookkeeping.getUserBroker`,
+default `'kite'`). The order process also reads `broker:` for every strategy block,
+and `tokenRouter.resolveSource` uses it to pick the tick feed (LegManager
+strategies always use the ANT feed, since their legs carry ANT tokens:
+`Strategy.legTokenFeed`). `BulkPcr`, `Hourly`, `Butterfly`, `TopStock` and the
+`LimitEntry` family fan out over `brokers: [...]` (`configuredBrokersOf`).
 
 ## Shared infrastructure
 

@@ -274,7 +274,7 @@ async function main() {
     frontend.start();
     hotRestart('frontend', frontend, [
         path.join(DIST, 'server.js'), path.join(DIST, 'middleware'),
-        ...sharedDirs(), ...topLevel('user.js', 'payout.js', 'tax.js', 'constants.js', 'monitor.js', 'decision.js', 'candle.js', 'nse_index.js', 'orderList.js'),
+        ...sharedDirs(), ...topLevel('user.js', 'payout.js', 'tax.js', 'constants.js', 'nse_index.js', 'orderList.js'),
     ]);
 }
 

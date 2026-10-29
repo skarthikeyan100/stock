@@ -11,7 +11,7 @@ export async function pickContractByPremium<T extends object>(
     index: 'NIFTY' | 'SENSEX',
     minPremium: number,
     excludeStrikes: Set<number>,
-    resolve: (strike: number) => Promise<T> | T,
+    resolve: (strike: number, antToken: string) => Promise<T> | T,
 ): Promise<T & { strike: number; premium: number; antToken: string }> {
     const strikeStep = index === 'SENSEX' ? 100 : 50;
     const atmStrike = Math.round(underlyingLtp / strikeStep) * strikeStep;
@@ -32,7 +32,7 @@ export async function pickContractByPremium<T extends object>(
         const data = premiumData.get(`${strike}_${optionType}`);
         if (data == null || data.premium < minPremium) continue;
         try {
-            const contract = await resolve(strike);
+            const contract = await resolve(strike, data.antToken);
             return { ...contract, strike, premium: data.premium, antToken: data.antToken };
         } catch (e) {
             Log.log('[order] contract resolution failed for a priced-in strike:', strike, optionType, e);

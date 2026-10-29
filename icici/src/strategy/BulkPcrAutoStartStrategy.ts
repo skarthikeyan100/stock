@@ -87,9 +87,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
     // userId convention BulkPcrStrategy.cfg()/ButterflyStrategy.cfg() already
     // use for the identical type-vs-instance distinction.
     private cfg() {
-        return configService.getConfig().strategies?.find(
-            (s) => s.type === 'BulkPcrAutoStartStrategy' && (s.userId || s.type) === this.userId
-        ) ?? { type: 'BulkPcrAutoStartStrategy', enabled: false };
+        return configService.getInstanceConfig('BulkPcrAutoStartStrategy', this.userId);
     }
 
     // Which BulkPcrStrategy instance (its own config.yml `userId`) this
@@ -209,9 +207,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         // Not configService.getStrategyConfig(type) - see this.cfg()'s own comment above for
         // why: config.yml can configure multiple BulkPcrStrategy instances under distinct
         // userId values, and this must mutate ONLY the one this instance targets.
-        const bulkPcrCfg = configService.getConfig().strategies?.find(
-            (s) => s.type === 'BulkPcrStrategy' && (s.userId || s.type) === targetUserId
-        );
+        const bulkPcrCfg = configService.findInstanceConfig('BulkPcrStrategy', targetUserId);
         if (!bulkPcrCfg) {
             Log.log(`[BulkPcrAutoStart:${this.userId}] ALERT: '${targetUserId}' config.yml entry not found even though strategies.getByUserId resolved an instance - not arming.`);
             return;

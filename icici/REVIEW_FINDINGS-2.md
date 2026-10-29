@@ -18,6 +18,7 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 ## Area 2 and 3: impossible errors and unnecessary validation
 
 ### R2-1 Broker session checks repeated on every call [high]
+**Status: PARTIAL (Phase 5, 2026-10-29).** DONE: `hasValidSession()` of Kite, Breeze and ANT remembers a positive answer for 30 s per token (`SessionValidityCache`), so a burst of orders costs one broker round trip instead of one each; a failure is never cached and a new/reloaded token misses the cache. Test: `sessionValidityCache.test.ts`. NOT DONE: the orchestrator preflight that starts only `frontend` until all three brokers are logged in, and deleting the per-order checks. They are the only guard if a session dies mid-day (login elsewhere), and the all-or-nothing start would also need a frontend -> orchestrator signal to start the rest after login; `trading` already holds all strategies back until the brokers' positions can be read (`startupReconcile`).
 - `kite.hasValidSession()` does a `getProfile()` round trip, called 11 times in `src/processes/order/kiteExecutor.ts` (lines 200, 305, 470, 554, 609, 630, 650, 668, 693, 813, 912).
 - `breeze.hasValidSession()` (a `getCustomerDetails()` round trip) is called at `breezeExecutor.ts` 280, 677, 729, 786, 814, 859, 875, plus `bookkeeping.ts:1388`, `orderProcess.ts:139`, `breezePendingLimitOrders.ts:50`, `pendingLimitOrders.ts:33`, `BreezeDataStream.ts:55`.
 - Inside the clients: `Kite.ts` has 9 `No active session` guards (189, 204, 216, 239, 295, 511, 563, 578), `ANT.ts` has 5 (279, 310, 342, 471, 866), `Breeze.requireSession()` (about line 160) is a third copy.
@@ -26,7 +27,7 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 - **Also removable once the gate exists:** `reloadSession` IPC (`orderProcess.ts:1109-1120`), the 3-retry loop (`server.ts:1181-1195`), `connectAntOrderNotifyIfSessionValid` and `connectBreezeOrderNotifyIfSessionValid` (`orderProcess.ts:122-145`), `reloadSessionFns` (`dataProcess.ts:46-52`), and the throttled check in `pendingAntLimitOrders.ts:136-140`.
 
 ### R2-2 Config defaults applied at every read site [high]
-**Status: PARTIAL (Phase 1, 2026-10-29).** DONE: the `?? 13975` quantity default, the `slDistance ?? 10` / `targetPoints ?? 2` fallbacks and the NIFTY-for-unknown-index fallback are gone; `validateConfigFile` now requires `quantity`, `targetPoints`, `slDistance` and `index` (NIFTY or SENSEX) for an enabled BulkPcr block (test: `configValidation.test.ts`). OPEN: the single `resolveMaxExposure`, `configVocabulary.ts`/`percentConfig.ts` removal, grandfathering removal, `getStrategyConfig` helper (Phase 5, task 5.1).
+**Status: PARTIAL (Phase 1, 2026-10-29).** DONE: the `?? 13975` quantity default, the `slDistance ?? 10` / `targetPoints ?? 2` fallbacks and the NIFTY-for-unknown-index fallback are gone; `validateConfigFile` now requires `quantity`, `targetPoints`, `slDistance` and `index` (NIFTY or SENSEX) for an enabled BulkPcr block (test: `configValidation.test.ts`). DONE in Phase 5: `resolveMaxExposure` (LegManager x3, order process), `ConfigService.getInstanceConfig/findInstanceConfig` (five `cfg()` copies), Hourly/Butterfly required fields. NOT DONE, with the reason: deleting `configVocabulary.ts`/`percentConfig.ts` and the target/SL grandfathering needs `config.yml` edits (it still carries both `maxExposure` and `maxInvestment` and `"10%"` strings, and CLAUDE.md forbids deleting keys from it), so they stay.
 - `validateConfigFile` already runs at startup and fails closed (`ConfigService.loadConfig`, about line 113-125). Downstream code still re-validates and re-defaults:
   - `BulkPcrStrategy.ts:390-399` `Number.isFinite(n) && n > 0 ? n : 0` for `driftCancelPoints` and `hedgeTrailDistance`.
   - `BulkPcrStrategy.ts:943` `cfg.quantity ?? 13975`. **A hidden live-order size default.** `BulkPcrAutoStartStrategy.ts:227` already refuses to arm without a quantity because this default once bought about 215 lots.
@@ -45,12 +46,14 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
   - `configToFlat`/`flatToConfig` (`ConfigService.ts:47`) exist only for the admin UI. Keep them out of the startup path.
 
 ### R2-3 Contract-master file checks repeated everywhere [high]
+**Status: PARTIAL (Phase 5, 2026-10-29).** DONE: `verifyMasterFiles()` runs first in `startOrderProcess` and stops the start with one error naming every missing or empty required master (ANT NFO/BFO/NSE, Kite NFO/BFO, Prism NFO), as the user's 2026-10-16 instruction asks; a file older than its limit is an ALERT only (a weekend or holiday start legitimately finds yesterday's file). The fail-soft `preload` catches, the 'retry lazily' paths, ANT's NSE-degrades-to-empty-table cooldown, Kite's `existsSync` throw and the per-lookup `checkStaleness` copies are deleted. Test: `masterFiles.test.ts` (replaces `contractMasterStaleness.test.ts`). KEPT on purpose: ANT's mtime hot reload and Kite's daily refresh/async re-download (incident-driven: long-running processes served last week's expiries; 2026-10-19 wrong-expiry) and Breeze's own download. The orchestrator is not restarted daily in practice, so removing them would reintroduce those incidents.
 - Each master has a fail-soft preload that says "lookups will retry lazily" (`AntContractMaster.ts:80-90`, `KiteContractMaster.ts:118-127`, `PrismContractMaster.ts:28-35`).
 - Each lookup then re-checks the file. `KiteContractMaster.ts:150` throws if `!existsSync`. This is the "impossible error" the user described.
 - Staleness is checked per lookup: `checkStaleness`/`warnedStale` (`AntContractMaster.ts:41-53`, `KiteContractMaster.ts:36-50`), mtime hot reload (`AntContractMaster.ts:95-120`, throttled to once a minute), `refreshIfStale` and `isFileFromToday` (`KiteContractMaster.ts:56-70,~140`), and a third variant in Breeze (`BreezeContractMaster.ts:117-190`, with `downloading` dedupe).
 - **Action:** one startup step (in `orderProcess.main`, `strategiesProcess.main`, and `dataProcess` if it needs masters). It downloads or validates the masters, parses them, and fails hard if a file is missing or not from today. Delete the lazy retry, `existsSync` re-checks, mtime checks and per-lookup staleness. Daily restarts make mid-day hot reload unnecessary. Expected saving: roughly 150-250 LOC.
 
 ### R2-4 Session-file loading implemented three times [medium]
+**Status: NOT DONE (needs a decision, `open-review-items.md` #73).** The three session stores differ in what a missing file means (Kite clears, ANT/Breeze do not) and sit under three login flows; one `SessionStore` changes login behaviour for all of them and cannot be exercised without logging in to each broker.
 - `ANT.ts:115`, `Kite.ts:98`, `Breeze.ts:134`. `Kite.ts:100` also reads a legacy file.
 - `ANT.ts:121` deletes a stale file as a side effect of a read.
 - **Action:** one `SessionStore` (or the R2-1 preflight) for all three. The clear-on-missing behaviour differs (`Kite.ts:116` clears, `ANT.ts:106` and `Breeze.ts:134` do not). A logout in one process therefore leaves a stale token in another.
@@ -75,6 +78,7 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 - **Action:** a BulkPcr instance may enter only after its state is loaded (a `stateLoaded` flag set at the end of `reconcile`/`loadState`). Or require the R4-1 reconcile first.
 
 ### R4-3 Armed-slot state lives in repo-root files, not Mongo [medium]
+**Status: NOT DONE (#73).** The armed-slot file is the write-ahead guard against a duplicate BulkPcr entry (live duplicates at 11:06 and 13:37, 2026-10-29): it is written synchronously before the buy. Moving it to Mongo changes that guard to an async write whose failure must also refuse to buy, and the rewrite-of-config.yml half is the R5-16 decision.
 - `.bulkpcr_armed_slots.<userId>.json` (`BulkPcrAutoStartStrategy.ts:136-164`). There are also older `.bulkpcr_armed_slots.BulkPcrAutoStart-NIFTY.json` and `…-SENSEX.json` files in the repo root.
 - Also: arming rewrites the whole `config.yml` (`writeConfig(configService.getConfig())`, about line 246), so a hand edit inside the 200 ms debounce window is overwritten.
 - **Action:** store armed slots and BulkPcr `stateLoaded` in Mongo like the other state documents. Delete the repo-root files.
@@ -91,6 +95,7 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 - **Action:** either refuse to start with enabled strategies outside the window (a startup error), or let each strategy's own `isTimeInRange` decide. Do not disable in memory.
 
 ### R4-6 Retry loop for `getOpenTrades` copied into six strategies [medium]
+**Status: DONE (Phase 5, 2026-10-29).** `fetchOpenTradesWithRetry` (`strategy/openTrades.ts`) replaces the copies in Continuous, SupportResistance, Hourly and BulkPcr; each still decides its own fail-closed. NOT converted: Butterfly (its retry is per broker and interleaved with the reconcile) and RuleBased (a single check, not a retry loop). The BulkPcr 'KNOWN RACE' comment is replaced: the startup sequence (`startupReconcile`) closes that race. Test: `openTradesRetry.test.ts`.
 - 15 attempts, 2 s apart, then fail closed. Copies: `ContinuousStrategy.ts:149-175`, `SupportResistanceStrategy.ts:108-131`, `HourlyStrategy.ts:681-696`, `BulkPcrStrategy.ts:2230-2250` (`getOpenTradesOnce`), `ButterflyStrategy.ts:574-596` (a variant that retries `reconcileOneBroker`), `RuleBasedStrategy.ts:340`. `LimitEntryStrategy.ts:307-310` has no retry at all, which is inconsistent.
 - Continuous and SupportResistance are near-identical.
 - **Action:** fetch open trades once, in the orchestrator or `strategiesProcess`, and pass them to `reconcile(openTrades)`. Then the retry lives in one place, and strategies lose their `maxAttempts`/`retryDelayMs`/`sleep` parameters. Fold Continuous and SupportResistance into a shared base class. Expected saving: about 100 LOC.
@@ -102,6 +107,7 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 - **Action:** fix the comments. They mislead anyone reading the code.
 
 ### R4-8 BulkPcr reconcile body is about 500 lines of incident-driven branches [medium]
+**Status: NOT DONE (#73).** `reconcileBody` is about 400 lines of live incident branches; its only characterisation test (`bulkPcrStrategyReconcileAnt.test`) already fails 5 assertions on the untouched HEAD, so a refactor into a decision table has no safety net to prove it equivalent.
 - `reconcileBody` (`BulkPcrStrategy.ts:2209-2625`) has per-phase branches (`done`/`pending`, `resting`, `selling`, `error`, `buying`, never attempted), and about seven nested "live incident" explanations.
 - The `'selling'` branch repeats the closed-market, previous-day and same-day checks three ways.
 - **Action:** model it as a decision table `(persistedPhase, brokerOpenQty, restingSellQty, sameDay) -> {newPhase, action}` in one pure function, unit-tested, with the actions executed afterwards.
@@ -148,6 +154,7 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 - **Action:** one private builder. Drop `syncFromConfig` and the `syncFromConfig` IPC case (`strategiesProcess.ts:346`) if `onChange` already covers it.
 
 ### R1-6 Dead or probably dead code (needs confirmation before deletion) [medium]
+**Status: PARTIAL (Phase 5, 2026-10-29).** DONE: the dead in-process engine (`monitor.ts`, `decision.ts`, `candle.ts`, `ant/AntStream.ts`, `breeze/BreezeStream.ts`) and its two tests are deleted (see R6-8); `orderList.ts` stays because the kept Prism path uses it. NOT DONE, with the reason: the legacy strategies (`SentimentStrategy`, `RateOfChangeStrategy`, `GapStrategy`, `TargetReachStrategy`, `GoodMorning*`, `RuleBasedStrategy`) still have `config.yml` blocks and CLAUDE.md forbids deleting those, while a block whose `type` has no class fails the factory, so the code cannot go without the user also approving the config removal. Prism is kept (R6-9).
 - `src/monitor.ts` (584 LOC) and `decision.ts` (434), `prism.ts` (1287) and the `prism/` folder, `AntStream.ts` (274), `BreezeStream.ts`, and the `/breeze/connect` route (`server.ts:1262-1275`). CLAUDE.md calls `Monitor` and `AntStream` "legacy", so this is likely dead.
 - **UNVERIFIED:** whether Prism is unused. `orderProcess.ts:42,303` still imports `PrismContractMaster` for ATM estimates, so Prism is not fully dead yet.
 - Older strategies with `enabled: false` in `config.yml` (`SentimentStrategy`, `RateOfChangeStrategy`, `GapStrategy`, `TargetReachStrategy` and others). `strategies.md` lists which are armable. Per CLAUDE.md, remove the code only, never the `config.yml` block.
@@ -209,6 +216,7 @@ Keep: `/order/lock-profits` (1426). CLAUDE.md names it as the way to sell positi
 ## Area 6 (cont.): broker-layer overlap and dead code
 
 ### R6-7 Four broker layers with no shared interface for contract masters, sessions or streaming [medium]
+**Status: PARTIAL (Phase 5, 2026-10-29).** DONE: the duplicate streaming paths are deleted (`ant/AntStream.ts`, `breeze/BreezeStream.ts`; only the `data` process versions remain), the stale-file warning copies are folded into `verifyMasterFiles`, and the four contract-by-price lookups share `pickContractByPremium`. NOT DONE: one `SessionStore` (R2-4) and a common contract-master interface (four classes with four shapes; callers are many and per-broker).
 - `src/broker/BrokerClient.ts` gives login URL, `exchangeToken`, `getTrades` and `getPositions` to four adapters (`brokerClients.ts`). Only `server.ts` and `orderProcess.ts` use it.
 - **Contract masters:** four classes, four shapes. ANT is sync with an options-object `findNearestExpiryOption`. Kite is async and positional. Breeze is async with different records. Prism is `(symbol, strike, type, offset)`. Each repeats the stale-file warning, the freshness check and a `preload()`. Stale-file warning copies: `AntContractMaster.ts:50`, `KiteContractMaster.ts:38`, `BreezeContractMaster.ts:120`. Note that `ant-master-to-json.js` and `download-all-masters.sh` also exist for the same job.
 - **Sessions:** three file stores plus a fourth partial helper. `.kite_session.json` with legacy `.zerodha_session.json` (`Kite.ts:47-49`), `.ant_session.json` (`ANT.ts:43`), `.breeze_session.json` (`Breeze.ts:77`), `userToken.txt` for Prism, and `AntSession.ts`. **Action:** one `SessionStore` (also R2-4).
@@ -217,6 +225,7 @@ Keep: `/order/lock-profits` (1426). CLAUDE.md names it as the way to sell positi
 - **Executors:** `kite`/`ant`/`breeze`/`prismExecutor.ts` (959, 1232, 927, 455) repeat `squareOff`, `placeLimitSellBare`, `cancelOrder` and `buyIndex` three or four times each. Already listed in `REVIEW_FINDINGS.md` item 23 (partly done). The shared interface is only a dispatch layer.
 
 ### R6-8 Old in-process engine cluster with no production importer (about 1400 LOC) [high, verify then delete]
+**Status: DONE (Phase 5, 2026-10-29).** Deleted `monitor.ts`, `decision.ts`, `candle.ts`, `ant/AntStream.ts`, `breeze/BreezeStream.ts`, `test/strategyTest.ts`, `test/monitorPartialSell.test.ts`, the `test:strategy` script, the `/breeze/connect` and `/breeze/stream` routes and their emitter listener; verified by grep first (the only importers were each other, two tests and `server.ts`). `orderList.ts` stays: `prism.ts` (kept) uses it.
 - `src/monitor.ts` (584), `src/decision.ts` (434), `src/candle.ts` (167), `src/ant/AntStream.ts` (274) and `src/orderList.ts` (8) only import each other. The only outside importers are tests (`strategyTest.ts:9`, `monitorPartialSell.test.ts:8`) and `prism.ts:23` (for `orderList.ts`).
 - The `ant-quote`, `nifty`, `sensex` and `position` emitter events have no listeners. `server.ts` listens only to `breeze-quote` (1283) and `notification` (1937).
 - **Action:** delete the cluster and its two tests (`strategyTest.ts`, `monitorPartialSell.test.ts`), along with `test:strategy` in `package.json`. Confirm with a repo-wide grep first.
@@ -364,6 +373,7 @@ Live exit logic is spread over four places, with no single owner.
 - Five strategies call `configService.writeConfig` to change their own state: AutoStart, BulkPcr `durablyDisable`, GoodMorning (x2) and TopStock. Operator settings and strategy state then live in the same file. This also works against the "config is operator-owned" rule.
 
 ### R5-17 Dead path: `getMonitorConfig` [low]
+**Status: DONE (Phase 5, 2026-10-29).** `getMonitorConfig` is deleted from the base class and all 10 overrides (its only reader was the deleted `monitor.ts`).
 - `strategy.ts:76-82`, overridden in 10 files, is read only by the legacy `monitor.ts` (477, 496). The live `order` process never calls it, so the 10 overrides can go with the legacy cluster (R6-8).
 
 ### R5-18 Smaller items [low, verify before acting]
@@ -393,6 +403,7 @@ There are no `-ANT`, `-Breeze` or `-Kite` strategy files. The three `ContinuousS
 So the duplication is not per-broker files. It is broker branches **inside** each strategy, plus several copies of the same helpers.
 
 ### R7-1 Broker-specific branches still live inside strategies [high]
+**Status: PARTIAL (Phase 5, 2026-10-29).** DONE for LegManager (Continuous, SupportResistance): one `brokerLegOps(() => cfg.broker)` names the broker on every order call; the ANT-only ops (`antLegOps.ts`, option-chain strike pick, hard-coded 50-point step) and `legOps.ts` are deleted because ANT now has `getContractByPriceRange` on the order side, resolved from the token the premium was read from. Tests: `legBrokerOps.test.ts`, `priceRangeContract.test.ts`. NOT DONE: the broker branches inside BulkPcr, TopStock, Butterfly, Hourly and LimitEntry (feed tokens, margin-text parsing, per-broker contract masters); moving them behind a port is a rewrite of live entry logic that cannot be exercised here (#73).
 - `antLegOps.ts` (108 LOC) implements ANT strike choice from the option chain, a hard-coded `NIFTY_STRIKE_STEP = 50` (`:12`), chunked sell (`:91`) and unconfirmed-fill tagging.
 - `LegBrokerOps.ts:28` hard-codes `'NIFTY'`.
 - `BulkPcrStrategy.ts`: `parseAntMarginReject` (`:145`) parses ANT-only margin text. `feedTokenOf` (`:114`) handles Breeze's separate token. The broker dispatch throws for anything other than ant, kite or breeze (`:1964`). `watchTokenOnSource('ant', ...)` is hard-coded at `:1415, 1427, 2078`.
@@ -403,6 +414,7 @@ So the duplication is not per-broker files. It is broker branches **inside** eac
 - **Action:** all of these become calls to one broker port (R7-3). The strategy should never name a broker.
 
 ### R7-2 The same helpers are copied across strategies [medium]
+**Status: PARTIAL (Phase 5, 2026-10-29).** DONE: one `BrokerName` and `configuredBrokersOf` (BulkPcr, Hourly, Butterfly, LimitEntry; TopStock keeps its own narrower variant), `roundToTick` in `util/tick.ts` (no strategy imports Kite for it), `INDEX_LOT_SIZE` and `PCR_WINDOW_POINTS` in `constants.ts`, the exit-reject streak and margin regex in `strategy/exitRejectPolicy.ts` (BulkPcr + Hourly), `ConfigService.getInstanceConfig/findInstanceConfig` instead of five hand-written `cfg()` finds, `resolveMaxExposure`, and the hidden `?? 65` order-size defaults of Hourly and Butterfly are gone (required by `validateConfigFile`, like BulkPcr's). `resolveEntryRight` is NOT shared: the three copies differ (throttle, SENSEX window, momentum). NOT DONE (#73): `closePosition` and `sizeForBudget` in the order process, one capital-check authority, one `StateStore` for the four persistence styles; each changes live semantics.
 - `type BrokerName` is redeclared in `HourlyStrategy.ts:66`, `BulkPcrStrategy.ts:87`, `ButterflyStrategy.ts:22` and `TopStock...Strategy.ts:63`.
 - `configuredBrokers()` is copied at `BulkPcrStrategy.ts:459`, `HourlyStrategy.ts:177`, `ButterflyStrategy.ts:117`, `TopStock...:128`, `LimitEntryStrategy.ts:92` and `BulkPcrAutoStartStrategy.ts:220`.
 - `resolveEntryRight` is in `ContinuousStrategy.ts:206-256`, `BulkPcrStrategy.ts:838-856` and `GapStrategy.ts:204-215`. `PCR_WINDOW_POINTS = 300` is defined three times (`BulkPcrStrategy.ts:24`, `ContinuousStrategy.ts:19`, `GapStrategy.ts:15`).
@@ -416,11 +428,13 @@ So the duplication is not per-broker files. It is broker branches **inside** eac
 - Persistence is done four ways: per-strategy Mongo collections, repo-root dotfiles for LimitEntry (`LimitEntryStrategy.ts` about 100) and TopStock's fired-today file, `strategyLatches`, and config rewrites. Use one `StateStore`.
 
 ### R7-3 Shared strategy base is missing [medium]
+**Status: NOT DONE (#73).** The helpers above (`configuredBrokersOf`, `getInstanceConfig`, `brokerLegOps`) cover the duplication the base class was meant to remove; a `MultiBrokerStrategy` class on top of them would change every multi-broker strategy's inheritance for no further saving.
 - Use a single `MultiBrokerStrategy` base for `brokers()`, `BrokerName`, `cfg()` and per-broker state. This replaces the six copies. `Strategy.instanceConfig()` (`strategy.ts:59-70`) is the correct reader, but BulkPcr, Butterfly and LimitEntry each re-implement `cfg()`.
 - `LimitEntryStrategy` is the best-factored example. Use its pattern as the template.
 - The order process already has the right abstraction: `BrokerExecutor`, assembled in `brokerExecutors.ts`. Add a thin `BrokerPort` over `OrderClient` that always passes an explicit broker. It exposes `resolveContract`, `pickByPremium`, `buy`, `sell` (always chunked), `limitBuy`, `limitSell`, `cancel`, `attachProtection` and `cancelProtection`. All of these already exist as IPC calls.
 
 ### R7-4 Near-duplicate strategy groups [medium]
+**Status: PARTIAL (Phase 5, 2026-10-29).** Item 3 DONE: SupportResistance now passes `ops` (`brokerLegOps`), so `broker: ant` no longer throws at the contract pick. NOT DONE (#73): merging GoodMorning/GoodMorningSensex and ROC/Gap/RuleBased/Sentiment into shared classes. Those are disabled legacy strategies whose config blocks must stay (CLAUDE.md), so a merge carries regression risk and no operational benefit; deleting them is the user's call (see R1-6).
 1. **GoodMorning and GoodMorningSensex.** Near-copies, differing mainly by index and constants (`GoodMorningStrategy.ts` 248, `GoodMorningSensexStrategy.ts` 213). Both rewrite `config.yml` at runtime (`GoodMorningStrategy.ts:119, 149`, `GoodMorningSensexStrategy.ts:115`, `goodMorningRetry.ts:54`). Merge into one class with an `index` parameter.
 2. **ROC, Gap, RuleBased and Sentiment.** Each carries its own `Contract` class with `clear()`, a timeout sell and chunked-fill folding (for example `RateOfChangeStrategy.ts:14-110` and `GapStrategy.ts` about 14-100). Merge into one `BracketedEntryStrategy`, with the entry trigger, `maxHold` and bracket as plugins.
 3. **Continuous and SR.** Both sit on LegManager, but SR has diverged. It has no `ops`, no `isOrderingBlocked`, no `onSpawnBuyError` and no momentum veto, and SR does not pass `ops` to LegManager (`SupportResistanceStrategy.ts:48-55`). Its `broker: kite` key works only through per-user routing. `broker: ant` throws at `getContractByPriceRangeBare`, since ANT has `capabilities.getContractByPriceRange: false` (`brokerExecutors.ts:73`). EOD, `restoreLatches` and `reconcile` are copy-pasted (`ContinuousStrategy.ts:145-171` against `SupportResistanceStrategy.ts:104-130`). Fix by fixing SR to use `ops` and sharing the base.
@@ -428,6 +442,7 @@ So the duplication is not per-broker files. It is broker branches **inside** eac
 5. **Recommendation and NiftyChange** are already consolidated through `LimitEntryStrategy`. Use as the template.
 
 ### R7-5 Stale docs [low]
+**Status: DONE (Phase 5, 2026-10-29).** `strategies.md` rewritten for the armable list, the deleted prototypes, the `broker:` keys and the `receivesEvents()` gate.
 - `strategies.md:23-36` says `broker:` is "not read by any strategy", and lists seven legacy strategy files. Both are wrong: `ContinuousStrategy.ts:77` reads `cfg().broker`, `orderProcess.ts:1298-1299` reads it for every strategy block, and `tokenRouter.ts:30-33` reads it to pick the tick feed. Commit `9765032` already deleted BiDirection, Diff, HighLot, Minutes5Decision, ORBPrevious, Pivot and Test. Update `strategies.md`.
 
 ### Strategy inventory (all armable, all currently `enabled: false`)

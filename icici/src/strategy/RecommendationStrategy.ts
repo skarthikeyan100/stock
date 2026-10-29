@@ -1,7 +1,7 @@
 import Log from '../util/Log';
 import { NiftyQuote } from '../model/model';
 import OrderClient from '../processes/strategies/OrderClient';
-import { roundToTick } from '../kite/Kite';
+import { roundToTick } from '../util/tick';
 import { isPastTime } from '../util/marketHours';
 import { LimitEntryStrategy, Leg, ResolvedEntry } from './LimitEntryStrategy';
 
@@ -30,9 +30,6 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
     protected readonly strategyType = 'RecommendationStrategy';
     private invalidLogged = '';
 
-    getMonitorConfig(): null {
-        return null; // exits are managed here (and by the order process), not by the generic entry monitor
-    }
 
     static parseContract(contract: unknown): { strike: number; right: 'CE' | 'PE' } | null {
         const m = /^\s*(\d{3,6})\s*(CE|PE)\s*$/i.exec(String(contract ?? ''));

@@ -32,25 +32,7 @@ class KiteContractMaster {
     private readonly INDEX_EXCHANGE: Record<Index, Exchange> = { NIFTY: 'NFO', SENSEX: 'BFO' };
     private readonly STRIKE_STEP: Record<Index, number> = { NIFTY: 50, SENSEX: 100 };
 
-    private readonly STALE_THRESHOLD_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
-    private warnedStale = new Set<string>();
-
-    private checkStaleness(filePath: string): void {
-        if (this.warnedStale.has(filePath)) return;
-        try {
-            const ageMs = Date.now() - fs.statSync(filePath).mtimeMs;
-            if (ageMs > this.STALE_THRESHOLD_MS) {
-                const days = Math.floor(ageMs / (24 * 60 * 60 * 1000));
-                console.warn(`[KiteContractMaster] WARNING: ${filePath} is ${days} days old - run scripts/download-all-masters.sh to refresh`);
-            }
-            this.warnedStale.add(filePath);
-        } catch (e) {
-            // Non-fatal - staleness detection is a courtesy warning, not a load-blocking check.
-        }
-    }
-
     // Warms the NFO and BFO instrument caches at startup (see AntContractMaster.preload).
-    // Fail-soft per exchange: a missing BFO file must not block NFO.
     // The master changes every trading day (new weekly expiries are listed ahead of time) and nothing else
     // refreshes it: on 2026-10-19 a file dated Aug 20 had no 19-Oct weekly, so the Kite symbol resolved to the
     // 27-Oct monthly while the strike was priced on ANT's 19-Oct expiry. If the file was not written today, download
@@ -119,12 +101,8 @@ class KiteContractMaster {
         for (const exchange of ['NFO', 'BFO'] as Exchange[]) {
             this.refreshAtStartup(exchange);
             const t0 = Date.now();
-            try {
-                const rows = this.loadInstruments(exchange).length;
-                Log.log(`[KiteContractMaster] preload ${exchange}: ${rows} rows in ${Date.now() - t0}ms`);
-            } catch (e: any) {
-                Log.log(`[KiteContractMaster] ALERT: preload ${exchange} failed - lookups will retry lazily: ${e?.message ?? e}`);
-            }
+            const rows = this.loadInstruments(exchange).length; // a missing / unparsable file throws: both masters are required
+            Log.log(`[KiteContractMaster] preload ${exchange}: ${rows} rows in ${Date.now() - t0}ms`);
         }
     }
 
@@ -147,10 +125,6 @@ class KiteContractMaster {
         }
 
         const filePath = path.join(__dirname, '../../data/kite', `${exchange}_instruments.csv`);
-        if (!fs.existsSync(filePath)) {
-            throw new Error(`${filePath} not found - run scripts/download-all-masters.sh first`);
-        }
-        this.checkStaleness(filePath);
         const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
         const header = lines[0].split(',');
         const idx = (col: string) => header.indexOf(col);
