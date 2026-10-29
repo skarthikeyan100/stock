@@ -551,8 +551,10 @@ async function lockProfits(brokerArg: string | undefined, reprice: boolean): Pro
 }
 
 async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean): Promise<LockProfitsResult> {
-    // First, before anything is cancelled or sold: no strategy may buy behind the lock (see buysFrozenAt).
-    if (buysFrozenAt === null) buysFrozenAt = Date.now();
+    // Before anything is cancelled or sold: no strategy may buy behind the lock. The caller writes settings.freezeBuys to
+    // config.yml first; re-read it here so the lock never runs on a stale copy.
+    configService.reloadNow();
+    if (!buysFrozen()) throw new Error('lockProfits: settings.freezeBuys is not true in config.yml - refusing to sell while buys are open (use POST /order/lock-profits, which sets it)');
     await waitForReconcile();
     const requested = brokerArg ? [normalizeBrokerName(brokerArg)] : null;
     const brokersWithRows = Array.from(new Set(bookkeeping.trades.filter((t) => t.broker).map((t) => normalizeBrokerName(t.broker))));
@@ -719,24 +721,27 @@ function upgradeLegacyRequest(req: OrderRequest): OrderRequest {
     }
 }
 
-// Buy freeze (set by lock-profits, cleared by the 'setBuysFrozen' request or an order-process restart). Every request that can
-// open or add to a long is refused as definitively NOT placed, whichever strategy, broker or manual caller sent it: a disabled
+// Buy freeze: config.yml `settings.freezeBuys: true` (set by lock-profits, cleared by editing the file). Every request that can
+// open or add to a long is refused as definitely NOT placed, whichever strategy, broker or manual caller sent it: a disabled
 // strategy still hedges, averages and refills open legs on ticks, and only this process sees all of those requests. Sells,
-// cancels, buy-to-close and read-only requests are untouched, so the lock's own sells and every exit keep working.
-let buysFrozenAt: number | null = null;
+// cancels, buy-to-close and read-only requests are untouched, so the lock's own sells and every exit keep working. Read from
+// the config on every request (not held in memory), so it survives a restart and a restart cannot start unfrozen.
 const BUY_REQUEST_TYPES = new Set<string>([
     'buyContract', 'buyIndex', 'breezeBuyIndex', 'chunkedBuyIndex', 'manualBuy', 'buyContractBare', 'placeLimitBuyBare',
     'antPlaceCoverOrder', 'antBuyTargetOnly', 'butterflySellToOpen', 'butterflyBuyLeg',
 ]);
+function buysFrozen(): boolean {
+    return (configService.getConfig().settings as any)?.freezeBuys === true;
+}
 
 async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     req = upgradeLegacyRequest(req);
     try {
         // Accept legacy broker names (e.g. 'zerodha') from any caller before anything dispatches on them.
         if (req.payload && typeof (req.payload as any).broker === 'string') (req.payload as any).broker = normalizeBrokerName((req.payload as any).broker);
-        if (buysFrozenAt !== null && BUY_REQUEST_TYPES.has(req.type)) {
-            Log.log(`[order] buys frozen since ${new Date(buysFrozenAt).toLocaleTimeString()} - refused ${req.type} from ${req.userId}`);
-            return { kind: 'response', id: req.id, ok: false, error: `${NOT_PLACED_TAG} buys are frozen (lock-profits at ${new Date(buysFrozenAt).toLocaleTimeString()}); call /order/unfreeze-buys or restart the order process` };
+        if (BUY_REQUEST_TYPES.has(req.type) && buysFrozen()) {
+            Log.log(`[order] settings.freezeBuys is true - refused ${req.type} from ${req.userId}`);
+            return { kind: 'response', id: req.id, ok: false, error: `${NOT_PLACED_TAG} buys are frozen (settings.freezeBuys: true in config.yml)` };
         }
         switch (req.type) {
             case 'canPlaceOrder':
@@ -860,13 +865,6 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     req.payload.freezeQuantity
                 );
                 return { kind: 'response', id: req.id, ok: true, result };
-            }
-
-            case 'setBuysFrozen': {
-                const { frozen } = (req.payload ?? {}) as { frozen?: boolean };
-                buysFrozenAt = frozen === false ? null : (buysFrozenAt ?? Date.now());
-                Log.log(`[order] buys ${buysFrozenAt === null ? 'UNFROZEN' : 'frozen'} by request`);
-                return { kind: 'response', id: req.id, ok: true, result: { buysFrozen: buysFrozenAt !== null } };
             }
 
             case 'lockProfits': {

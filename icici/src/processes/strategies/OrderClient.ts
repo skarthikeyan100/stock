@@ -364,10 +364,6 @@ class OrderClient {
         return this.call('lockProfits', 'lock-profits', payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 
-    async setBuysFrozen(frozen: boolean): Promise<{ buysFrozen: boolean }> {
-        return this.call('setBuysFrozen', 'lock-profits', { frozen });
-    }
-
     // Live net quantity of a contract on a broker, read in the order process (throws when the broker cannot be read).
     async getLiveQuantity(userId: string, broker: string, tradingSymbol: string): Promise<number> {
         return this.call('getLiveQuantity', userId, { broker, tradingSymbol });
