@@ -506,6 +506,13 @@ class Kite {
         return response.trigger_id;
     }
 
+    // Deletes a GTT trigger (e.g. before the position it protects is closed by hand, so the trigger cannot fire later on a flat account).
+    async deleteGTT(triggerId: number): Promise<void> {
+        if (!this.accessToken) throw new Error('No active session. Please login first.');
+        Log.log(`[Kite] Deleting GTT ${triggerId}`);
+        await (this.kc as any).deleteGTT(triggerId); // in the SDK (lib/connect.js) but missing from its type defs
+    }
+
     // Kite's two-leg GTT requires stop trigger < last price < target trigger (all on the tick grid);
     // fail locally with a clear message instead of an opaque broker rejection.
     private static assertGttPrices(stopLoss: number, last: number, target: number): void {

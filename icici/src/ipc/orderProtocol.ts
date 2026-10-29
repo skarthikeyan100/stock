@@ -109,7 +109,13 @@ export type OrderRequestType =
     // `broker` field in the payload instead of a per-user default.
     | 'butterflyBuyLeg'
     | 'butterflyCloseLeg'
-    | 'resolveOptionContract';
+    | 'resolveOptionContract'
+    // Attaches an absolute target/stop-loss to an already-open (filled limit buy) position - kite GTT, ant in-app exitMonitor. payload: { broker, tradingSymbol, targetPrice, stopLossPrice }.
+    | 'attachProtection'
+    // Undoes attachProtection (deletes the Kite GTT, drops the exitMonitor watch) before a manual close. payload: { broker, tradingSymbol }.
+    | 'cancelProtection'
+    // Last traded price of one option contract from its broker's quote API. payload: { tradingSymbol, token, exchange }.
+    | 'getOptionLtp';
 
 export interface OrderRequest {
     kind: 'request';

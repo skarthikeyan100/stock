@@ -324,6 +324,19 @@ class OrderClient {
         return this.call('resolveOptionContract', userId, payload);
     }
 
+    // Attaches an absolute target/stop-loss to an already-open position (see order/attachProtection.ts).
+    async attachProtection(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; targetPrice: number; stopLossPrice: number }): Promise<{ mode: 'gtt' | 'exitMonitor'; gttTriggerId?: number }> {
+        return this.call('attachProtection', userId, payload);
+    }
+
+    async cancelProtection(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string }): Promise<{ gttDeleted: boolean }> {
+        return this.call('cancelProtection', userId, payload);
+    }
+
+    async getOptionLtp(userId: string, payload: { tradingSymbol: string; token: string; exchange: 'NFO' | 'BFO' }): Promise<number> {
+        return this.call('getOptionLtp', userId, payload);
+    }
+
     async reloadSession(userId = 'Default'): Promise<void> {
         const res = await this.request('reloadSession', userId, {});
         if (!res.ok) throw new Error(res.error);

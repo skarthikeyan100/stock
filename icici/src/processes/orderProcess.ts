@@ -33,6 +33,7 @@ import bookkeeping from './order/bookkeeping';
 import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells } from './order/kiteExecutor';
 import * as antExecutor from './order/antExecutor';
 import { buyIndexOnBreeze, squareOffOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
+import { attachProtection, cancelProtection } from './order/attachProtection';
 import { buyChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
 import Breeze from '../breeze/Breeze';
@@ -1022,6 +1023,25 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'resolveOptionContract': {
                 const { broker, index, strike, right } = req.payload;
                 const result = await resolveOptionContractForBroker(broker, index, strike, right);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'attachProtection': {
+                await waitForReconcile();
+                const { broker, tradingSymbol, targetPrice, stopLossPrice } = req.payload;
+                const result = await attachProtection(req.userId, normalizeBrokerName(broker) as any, tradingSymbol, targetPrice, stopLossPrice);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'cancelProtection': {
+                await waitForReconcile();
+                const result = await cancelProtection(req.userId, normalizeBrokerName(req.payload.broker) as any, req.payload.tradingSymbol);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            // ANT ScripDetails quote; the token is the ANT common token every broker's Trade.token carries.
+            case 'getOptionLtp': {
+                const result = await ANT.getInstance().getScripQuote(req.payload.exchange, req.payload.token);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
