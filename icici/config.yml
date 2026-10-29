@@ -201,14 +201,14 @@ strategies:
     slDistance: 30
     logEnabled: true
     brokers:
-      - zerodha
+      - kite
     index: SENSEX
     maxExposure: 100000
     lossCooldownSeconds: 300
     lossInvestmentCut: 10000
     maxExposureByBroker:
       ant: 100000
-      zerodha: 100000
+      kite: 100000
   - type: BulkPcrStrategy
     userId: BulkPcr-NIFTY
     enabled: true
@@ -256,7 +256,7 @@ strategies:
     index: SENSEX
     brokers:
       - ant
-      - zerodha
+      - kite
   - type: BulkPcrAutoStartStrategy
     userId: BulkPcrAutoStart-NIFTY
     targetUserId: BulkPcr-NIFTY
