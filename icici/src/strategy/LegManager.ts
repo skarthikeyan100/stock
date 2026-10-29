@@ -1014,6 +1014,11 @@ export class LegManager {
                     } catch (sellErr) {
                         Log.log(`[${this.deps.ownerType}] ALERT: could not sell back the filled superseded refill (${intent.tsym} qty=${filledQty}) - UNTRACKED POSITION, manual action required:`, sellErr);
                     }
+                } else if (/does not exist|not found/i.test(String(e?.message ?? e))) {
+                    // The broker never had the order resting - in practice it was REJECTED right after being placed (live 2026-10-29: Kite
+                    // reported "does not exist" for a refill the order tracker then marked REJECTED). It is already in supersededRefills
+                    // above, so a fill that somehow still lands is sold back; this is not a failure to alert on.
+                    Log.log(`[${this.deps.ownerType}] Child refill ${intent.orderId} (${intent.tsym}): broker reports the order does not exist - most likely rejected before it rested; kept as superseded, a late fill would be sold back`);
                 } else {
                     Log.log(`[${this.deps.ownerType}] Child refill cancel failed:`, e);
                 }
