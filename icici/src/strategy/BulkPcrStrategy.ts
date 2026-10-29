@@ -1441,7 +1441,7 @@ export default class BulkPcrStrategy extends Strategy {
     //    91 premium), so below ~100 the stop always fired before a 10-point hedge could open (live 2026-10-29).
     private hedgeRule(slot: BrokerPosition, ltp: number): 'points' | 'rupees' | null {
         if (ltp <= slot.entryAvg - this.slDistance()) return 'points';
-        const pct = Number(this.cfg().hedgeAtPercentOfStop ?? 80);
+        const pct = Number(this.cfg().hedgeAtPercentOfStop ?? 50);
         const stop = this.lossStopRupees(slot.broker);
         if (!(pct > 0) || stop === null) return null;
         return this.slotUnrealized(slot) <= -(pct / 100) * stop ? 'rupees' : null;
@@ -1463,7 +1463,7 @@ export default class BulkPcrStrategy extends Strategy {
             entryAvg: 0, targetQuantity: 0, soldQty: 0, soldValue: 0, entryQuantity: remaining, hedge: true,
         });
         const stopRupees = this.lossStopRupees(slot.broker);
-        Log.log(`[BulkPcrStrategy] [${slot.broker}] ${slot.heldTsym} ${rule === 'points' ? `is ${this.slDistance()} points below its entry ${slot.entryAvg}` : `open loss ${Math.round(-this.slotUnrealized(slot))} reached hedgeAtPercentOfStop=${this.cfg().hedgeAtPercentOfStop ?? 80}% of its ${Math.round(stopRupees ?? 0)} stop (entry ${slot.entryAvg})`} - opening ${right} qty=${remaining} against it`);
+        Log.log(`[BulkPcrStrategy] [${slot.broker}] ${slot.heldTsym} ${rule === 'points' ? `is ${this.slDistance()} points below its entry ${slot.entryAvg}` : `open loss ${Math.round(-this.slotUnrealized(slot))} reached hedgeAtPercentOfStop=${this.cfg().hedgeAtPercentOfStop ?? 50}% of its ${Math.round(stopRupees ?? 0)} stop (entry ${slot.entryAvg})`} - opening ${right} qty=${remaining} against it`);
         await this.buyAndExit(key);
     }
 
