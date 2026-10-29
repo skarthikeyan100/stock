@@ -26,7 +26,7 @@ strategies:
     sentiment: put
     loopCount: 1
   - type: ContinuousStrategy
-    enabled: false
+    enabled: true
     broker: kite
     initialQuantity: 65
     slDistance: 10
@@ -50,7 +50,7 @@ strategies:
     maxExposure: 200000
   - type: ContinuousStrategy
     userId: ContinuousStrategy-ANT
-    enabled: false
+    enabled: true
     broker: ant
     initialQuantity: 65
     slDistance: 10
@@ -75,7 +75,7 @@ strategies:
     maxExposure: 200000
   - type: ContinuousStrategy
     userId: ContinuousStrategy-Breeze
-    enabled: false
+    enabled: true
     broker: breeze
     initialQuantity: 65
     slDistance: 10
@@ -212,7 +212,7 @@ strategies:
       zerodha: 100000
   - type: BulkPcrStrategy
     userId: BulkPcr-NIFTY
-    enabled: false
+    enabled: true
     quantity: -1
     targetPoints: 3
     chunkDriftCancelPoints: 10
@@ -224,12 +224,16 @@ strategies:
     logEnabled: true
     brokers:
       - ant
+      - kite
+      - breeze
     index: NIFTY
     maxExposure: 100000
     lossCooldownSeconds: 300
     lossInvestmentCut: 10000
     maxExposureByBroker:
       ant: 100000
+      kite: 100000
+      breeze: 100000
   - type: BulkPcrAutoStartStrategy
     userId: BulkPcrAutoStart-SENSEX
     targetUserId: BulkPcr-SENSEX
@@ -283,6 +287,8 @@ strategies:
     index: NIFTY
     brokers:
       - ant
+      - kite
+      - breeze
   - type: TopStockOptionsOpeningGapStrategy
     enabled: false
     broker: ant
