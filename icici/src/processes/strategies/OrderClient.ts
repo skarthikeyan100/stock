@@ -219,9 +219,6 @@ class OrderClient {
         return this.call('getToken', userId, { contract });
     }
 
-    async getNiftyQuote(userId: string): Promise<any> {
-        return this.call('getNiftyQuote', userId, {});
-    }
 
     async buyContract(userId: string, contract: string, quantity: number, price?: number): Promise<any> {
         return this.call('buyContract', userId, { contract, quantity, price });
@@ -244,15 +241,7 @@ class OrderClient {
         if (!res.ok) throw new Error(res.error);
     }
 
-    // ANT (AliceBlue) order path - see src/processes/order/antExecutor.ts.
-    // ICICI Breeze order path - see src/processes/order/breezeExecutor.ts.
-    async breezeBuyIndex(userId: string, payload: { right: string; index?: 'NIFTY' | 'SENSEX'; quantity?: number; targetPoints?: number; stopLossPoints?: number }): Promise<any> {
-        return this.call('breezeBuyIndex', userId, payload);
-    }
 
-    async breezeSquareOff(userId: string, payload: { tradingSymbol: string; quantity: number }): Promise<any> {
-        return this.call('breezeSquareOff', userId, payload);
-    }
 
     // Broker-agnostic freeze-quantity-chunked buy/squareoff - see
     // src/processes/order/chunkedOrder.ts. BulkPcrStrategy's use case (13975
@@ -382,13 +371,7 @@ class OrderClient {
         return this.call('reconcileBrokerPositions', 'Default', {}, 180000);
     }
 
-    async refreshTradeList(userId = 'Default'): Promise<any> {
-        return this.call('refreshTradeList', userId, {});
-    }
 
-    async getOrders(userId = 'Default'): Promise<any> {
-        return this.call('getOrders', userId, {});
-    }
 
     async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; accountCapital?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; perOrderCap?: number; strategyCapital?: number; targetPoints?: number; stopLossPoints?: number; accountClosed?: boolean }): Promise<void> {
         const res = await this.request('updateUserSettings', userId, settings);
@@ -423,22 +406,9 @@ class OrderClient {
         return this.call('getLiveQuantity', userId, { broker, tradingSymbol });
     }
 
-    async findToken(userId: string, index: string, depth: number, right: string): Promise<string> {
-        return this.call('findToken', userId, { index, depth, right });
-    }
 
-    async connectPrism(userId = 'Default'): Promise<void> {
-        const res = await this.request('connectPrism', userId, {});
-        if (!res.ok) throw new Error(res.error);
-    }
 
-    async getIndexQuote(userId: string, index: 'NIFTY' | 'BANKNIFTY' | 'FINNIFTY'): Promise<any> {
-        return this.call('getIndexQuote', userId, { index });
-    }
 
-    async getStockQuote(userId: string, symbol: string): Promise<any> {
-        return this.call('getStockQuote', userId, { symbol });
-    }
 
     // Bare (unprotected, self-monitored) execution path used by LegManager
     // (ContinuousStrategy/SupportResistanceStrategy) - see
@@ -453,9 +423,6 @@ class OrderClient {
         return this.call('buyContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price, broker });
     }
 
-    async sellContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', broker?: BrokerName): Promise<any> {
-        return this.call('sellContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, broker });
-    }
 
     // Returns immediately with {orderId} - the fill arrives later as a normal
     // fill notification once pendingLimitOrders.ts's/breezePendingLimitOrders.ts's

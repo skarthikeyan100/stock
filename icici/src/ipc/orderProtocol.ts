@@ -14,23 +14,16 @@ export type OrderRequestType =
     | 'stats'
     | 'getContractByPriceRange'
     | 'getToken'
-    | 'getNiftyQuote'
     | 'manualBuy'
     | 'setTargetStopLoss'
     | 'antPlaceCoverOrder'
     | 'reloadSession'
     | 'reloadUserLimits'
     | 'reconcileBrokerPositions'
-    | 'refreshTradeList'
-    | 'getOrders'
     | 'updateUserSettings'
     // Runtime per-(user, broker) investment cap for the rest of the local day (BulkPcr loss-trip cut). payload: { broker, cap }.
     | 'setBrokerInvestmentCap'
     | 'openTrades'
-    | 'findToken'
-    | 'connectPrism'
-    | 'getIndexQuote'
-    | 'getStockQuote'
     // Bare (unprotected, self-monitored) execution path used by LegManager
     // (ContinuousStrategy/SupportResistanceStrategy) - broker-resolved per userId
     // via bookkeeping.getUserBroker in orderProcess.ts's handlers, the same
@@ -38,14 +31,11 @@ export type OrderRequestType =
     // broker-specific despite the historical "Kite" naming these replaced -
     // see orderProcess.ts's case 'buyContractBare' etc.
     | 'buyContractBare'
-    | 'sellContractBare'
     | 'placeLimitBuyBare'
     | 'cancelOrderBare'
     | 'getContractByPriceRangeBare'
     | 'getPCR'
     | 'getATMTokens'
-    | 'breezeBuyIndex'
-    | 'breezeSquareOff'
     // Broker-agnostic freeze-quantity-chunked buy/squareoff (see
     // src/processes/order/chunkedOrder.ts) - only Breeze is wired up today
     // (BulkPcrStrategy's use case), but the dispatch already branches on

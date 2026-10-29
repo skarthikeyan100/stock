@@ -3,7 +3,6 @@ import Log from '../util/Log';
 import { Strategy } from './strategy';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import configService from '../prism/ConfigService';
-import OrderClient from '../processes/strategies/OrderClient';
 import { CALL, PUT, MOCK_BROKER } from '../constants';
 import { LegManager, LegManagerConfig } from './LegManager';
 import { brokerLegOps } from './LegBrokerOps';

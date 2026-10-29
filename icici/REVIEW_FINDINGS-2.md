@@ -137,7 +137,7 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 - **Action:** `data` emits a "ready" line at startup, and `strategies` answers with `resubscribeAll`. No timers.
 
 ### R1-4 Two IPC protocols plus a fourth process [medium]
-**Status: PARTIAL (Phase 3, 2026-10-29).** DONE: `order` and `strategies` run as one `trading` process (`tradingProcess.ts`); strategy -> order calls are in-process (`OrderClient.useLocalServer`, JSON-cloned like the socket); the stdout tick pipes and the `console.log` redirect are gone; the startup order is one sequence. Frontend and data stay separate (decisions 3 and 4). `trading` still serves `ORDER_IPC_SOCKET` and `STRATEGIES_IPC_SOCKET` because the frontend uses them; `orderProcess.ts`/`strategiesProcess.ts` can still be started standalone for debugging. OPEN (Phase 6): splitting `server.ts` into route modules and moving `OrderClient` out of `processes/strategies/`.
+**Status: PARTIAL (Phase 3, 2026-10-29).** DONE: `order` and `strategies` run as one `trading` process (`tradingProcess.ts`); strategy -> order calls are in-process (`OrderClient.useLocalServer`, JSON-cloned like the socket); the stdout tick pipes and the `console.log` redirect are gone; the startup order is one sequence. Frontend and data stay separate (decisions 3 and 4). `trading` still serves `ORDER_IPC_SOCKET` and `STRATEGIES_IPC_SOCKET` because the frontend uses them; `orderProcess.ts`/`strategiesProcess.ts` can still be started standalone for debugging. `server.ts` is split into route modules (Phase 6: `src/routes/{auth,users,payouts,brokers,trading,streams,admin}.ts` over an `asyncRouter`, `session.ts` for the shared auth helpers; 2050 -> 206 lines in `server.ts`). OPEN: moving `OrderClient` out of `processes/strategies/` (it is the frontend's order client too); a rename touches every importer for no behavioural gain.
 - `order` socket (`orderProtocol.ts` 191 LOC, `OrderClient.ts` 456 LOC) and `strategies` socket (`strategiesProtocol.ts`, `StrategiesClient.ts` 136 LOC). `OrderClient` is used by the frontend and by `strategies`, but lives under `processes/strategies/`.
 - `server.ts` (2271 LOC) mixes the Express API, OAuth callbacks, payouts, KYC upload, OCR (`tesseract.js`), email, HTTPS on 443 and HTTP on 80. It is the hardest file in the project to reason about.
 - **Action:** split `server.ts` into route modules (payouts, users/KYC, broker, trading). Move `OrderClient` to a shared location. **DECIDED 2026-10-29 (user):** `order` and `strategies` merge into one process. Broker connections do not break on a merge, since they are already per user. The frontend can also be merged if useful. Consequences to plan for:
@@ -173,6 +173,7 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 Route inventory: `src/server.ts` (2271 lines) is the only route file, with about 100 routes and no router modules. Frontend callers were found by grepping `frontend/src`. Script and skill callers were found by grepping `scripts/` and `.claude/skills`.
 
 ### R6-1 Routes with no caller anywhere [high]
+**Status: DONE (Phase 6, 2026-10-29).** Every route listed here except `/ant/stream` is deleted after confirming no caller in `frontend/src`, `scripts/`, `.claude/skills` or tests (`/shoonya/callback` and `/strategyPnl`, `/order/lock-profits` stay: a broker-side registration and two scripts/CLAUDE.md callers). `/ant/stream` is kept as the raw SSE debug relay. `Prism`, `Kite`, `Breeze` and the `authorizationCode` plumbing left `server.ts` with them.
 Delete, after updating `API.md`:
 - `/openTrades` (`server.ts:1495`). Duplicates `/admin/trades/open`.
 - `/trades`, `/closedtrades` (1546, 1557). Session-scoped views of in-memory stats.
@@ -190,25 +191,30 @@ Delete, after updating `API.md`:
 Keep: `/order/lock-profits` (1426). CLAUDE.md names it as the way to sell positions held by a disabled strategy.
 
 ### R6-2 GET+POST twins, including state-changing GETs [high]
+**Status: DONE (Phase 6, 2026-10-29).** `getOrPost` is deleted: `/ant/connect`, `/order/buy`, `/order/lock-profits`, `/order/squareoff` and `/strategies/:type/reset` are POST-only (the global CSRF guard covers them), and `.claude/skills/monitor-strategies/SKILL.md` calls `/ant/connect` with `-X POST`.
 - `getOrPost` (`server.ts:169`) registers a legacy GET next to the POST for 12 routes (1234, 1248, 1267, 1333, 1397, 1426, 1445, 1483, 1644, 1654, 2031, 2090).
 - A GET that changes state is guarded only by the `X-Requested-With` header. That is a CSRF risk, and it contradicts the stated rule that state-changing routes use POST.
 - The frontend already uses POST (`apiPost`) for these. The one caller on GET is `.claude/skills/monitor-strategies/SKILL.md:73` (`/ant/connect` via curl).
 - **Action:** make them POST-only and update that skill line.
 
 ### R6-3 Per-broker twin routes beside the generic family [medium]
+**Status: PARTIAL (Phase 6, 2026-10-29).** `/prism/canPlaceOrder` became `/order/can-place` (frontend updated and rebuilt), the Prism OAuth trio and the Breeze manual-order and stream routes are gone. KEPT: `/ant/connect` and `/ant/stream` (frontend and skills call them; a generic `/data/reconnect` would need the AdminPage change for no saving), `/shoonya/callback` (registered at the broker).
 - `/prism/*`, `/breeze/order/*`, `/breeze/{connect,stream}`, `/ant/{connect,stream}` and `/shoonya/callback` sit next to `/:broker/login`, `/:broker/callback` and `/broker/:b/*`.
 - **Action:** collapse into the generic family. Keep `/ant/stream` only as a debug SSE if wanted.
 - `/prism/canPlaceOrder` is used by the frontend but is not Prism-specific. Rename to `/order/can-place`.
 
 ### R6-4 IPC commands with no caller or near-duplicates [medium]
+**Status: DONE (Phase 6, 2026-10-29).** Removed the IPC commands with no caller left: `breezeBuyIndex`, `breezeSquareOff`, `getNiftyQuote`, `refreshTradeList`, `getOrders`, `findToken`, `connectPrism`, `getIndexQuote`, `getStockQuote`, `sellContractBare` (server cases, client methods and protocol types) and the unused Prism executor wrappers behind them, plus the strategies IPC `getCandles` with `niftyCandleBuilder.ts`. KEPT: `antPlaceCoverOrder` (the gap-screener tool calls it), `buyContract`/`sellContract`/`getContractByPriceRange`/`getToken` (legacy strategies still use them), `syncFromConfig`. The near-duplicate `buyIndex` family and the `...Bare` variants were not merged: each is a distinct executor entry point used by a live strategy.
 - `orderProcess.ts` `handleRequest` (763-1241) has about 60 commands. Several are legacy names or near-duplicates that could merge: `buyIndex`/`breezeBuyIndex`/`chunkedBuyIndex`/`manualBuy`, `squareOff`/`breezeSquareOff`/`chunkedSquareOff`, `buyContract`/`buyContractBare`, `getContractByPriceRange`/`...Bare`, `antPlaceLimitSellBare`/`brokerPlaceLimitSellBare`.
 - Reachable only from the routes deleted in R6-1: `breezeBuyIndex`, `breezeSquareOff`, `manualBuy`, `connectPrism`, `findToken`, `getIndexQuote`, `getStockQuote`. Remove them with those routes.
 - Strategies IPC (`strategiesProcess.ts:298-354`): `getCandles` goes with `/candles`. `syncFromConfig` goes with R1-5. `setEnabled` goes with R4-4.
 
 ### R6-5 Vite dev proxy lists routes that no longer exist [low]
+**Status: DONE (Phase 6, 2026-10-29).** `frontend/vite.config.ts` proxies only prefixes that exist.
 - `frontend/vite.config.ts:6-12` proxies `/replay`, `/subscribe`, `/kite`, `/shoonya`. Prune to the live prefixes.
 
 ### R6-6 Target size [note]
+**Status: DONE (Phase 6, 2026-10-29).** 51 routes are registered now (it was about 100 including the twins and the Prism-era routes).
 - About 100 routes now. Deleting R6-1 and R6-3 leaves roughly 55, and the user and payout routes are most of what remains. Area 6 is a deletion job, not a redesign.
 
 ---

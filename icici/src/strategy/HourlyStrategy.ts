@@ -57,7 +57,7 @@ import { BrokerName, configuredBrokersOf, normalizeBrokerName, normalizePersiste
 //
 // Restart safety: deliberately conservative, not a full LegManager-style
 // rebuild. Candle-building/hourly-level state is process-local and NOT
-// persisted (same precedent as niftyQuoteHistory.ts/niftyCandleBuilder.ts) -
+// persisted (same precedent as niftyQuoteHistory.ts) -
 // a restart mid-hour costs at most that hour's remaining entries, never a
 // stuck position. Broker POSITION state (what's actually held/resting at
 // the broker) IS persisted to Mongo; reconcile() restores it but never

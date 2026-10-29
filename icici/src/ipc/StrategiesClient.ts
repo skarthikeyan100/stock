@@ -92,12 +92,6 @@ class StrategiesClient {
         return res.result;
     }
 
-    async getCandles(): Promise<any[]> {
-        const res = await this.request('getCandles', {});
-        if (!res.ok) throw new Error(res.error);
-        return res.result;
-    }
-
     async subscribeToken(token: string): Promise<void> {
         const res = await this.request('subscribeToken', { token });
         if (!res.ok) throw new Error(res.error);

@@ -29,7 +29,7 @@ import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, ORDER_MAY_BE_LIVE_TAG, OrderRequest,
 import bookkeeping from './order/bookkeeping';
 import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells } from './order/kiteExecutor';
 import * as antExecutor from './order/antExecutor';
-import { buyIndexOnBreeze, squareOffOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
+import { buyIndexOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
 import { attachProtection, cancelProtection } from './order/attachProtection';
 import { buyChunked, marketBuyBareChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster from '../breeze/BreezeContractMaster';
@@ -207,7 +207,6 @@ function resolveRequestBroker(req: OrderRequest): string {
         case 'antPlaceCoverOrder':
         case 'antBuyTargetOnly':
             return 'ant';
-        case 'breezeBuyIndex':
             return 'breeze';
         case 'buyContract':
             return 'prism';
@@ -218,7 +217,6 @@ function resolveRequestBroker(req: OrderRequest): string {
         // The generic Bare family: an explicit payload broker (a strategy running legs on a broker other than the user's default, e.g.
         // an ANT tree) wins, otherwise the user's own broker.
         case 'buyContractBare':
-        case 'sellContractBare':
         case 'placeLimitBuyBare':
         case 'cancelOrderBare':
         case 'getContractByPriceRangeBare':
@@ -811,25 +809,7 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result: trade };
             }
 
-            case 'breezeBuyIndex': {
-                return await placeOrderWithPendingGuard(req, undefined, () =>
-                    buyIndexOnBreeze({ userId: req.userId, ...req.payload }),
-                );
-            }
 
-            // Dedicated Breeze square-off, bypassing getBrokerExecutor's
-            // per-user broker lookup (see brokerExecutors.getBrokerExecutor) -
-            // used directly by the /breeze/order/squareoff debug route, which
-            // always knows it's closing a Breeze position regardless of
-            // whatever the caller's bookkeeping.getUserBroker setting says.
-            case 'breezeSquareOff': {
-                // See reconcileInFlight's comment on 'openTrades' below - same
-                // risk as 'squareOff'/'antSquareOff': squareOffOnBreeze
-                // resolves the position from bookkeeping.trades too.
-                if (reconcileInFlight) await reconcileInFlight;
-                const trade = await squareOffOnBreeze(req.userId, payloadTradingSymbol(req.payload), req.payload.quantity);
-                return { kind: 'response', id: req.id, ok: true, result: trade };
-            }
 
             // Broker-agnostic freeze-quantity-chunked buy/squareoff (see
             // chunkedOrder.ts) - BulkPcrStrategy's use case (13975 qty, over
@@ -1079,10 +1059,6 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
-            case 'getNiftyQuote': {
-                const result = await prismExecutor.getNiftyQuote();
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
 
             case 'stats':
                 return {
@@ -1145,15 +1121,7 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result: null };
             }
 
-            case 'refreshTradeList': {
-                const result = await prismExecutor.refreshTradeList();
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
 
-            case 'getOrders': {
-                const result = await prismExecutor.getOrders();
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
 
             case 'updateUserSettings': {
                 bookkeeping.updateUserSettings(req.userId, req.payload);
@@ -1184,25 +1152,9 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 if (reconcileInFlight) await reconcileInFlight;
                 return { kind: 'response', id: req.id, ok: true, result: bookkeeping.getOpenTrades(req.userId) };
 
-            case 'findToken': {
-                const result = await prismExecutor.findToken(req.payload.index, req.payload.depth, req.payload.right);
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
 
-            case 'connectPrism': {
-                await prismExecutor.connectPrism();
-                return { kind: 'response', id: req.id, ok: true };
-            }
 
-            case 'getIndexQuote': {
-                const result = await prismExecutor.getIndexQuote(req.payload.index);
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
 
-            case 'getStockQuote': {
-                const result = await prismExecutor.getStockQuote(req.payload.symbol);
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
 
             // Bare execution path shared by ContinuousStrategy/SupportResistanceStrategy's
             // LegManager - broker-resolved per userId (a strategy's pseudo-user id), the
@@ -1216,11 +1168,6 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 );
             }
 
-            case 'sellContractBare': {
-                await waitForReconcile();
-                const result = await getBrokerExecutor(req.userId, req.payload.broker).marketSell(req.userId, req.payload.tradingSymbol, req.payload.instrumentToken, req.payload.quantity, req.payload.exchange);
-                return { kind: 'response', id: req.id, ok: true, result };
-            }
 
             case 'placeLimitBuyBare': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;

@@ -211,7 +211,7 @@ see `src/constants.ts`.
 
 ### Key Files to Know
 
-- `src/server.ts` - Main Express server with all route definitions
+- `src/server.ts` - Express app setup, global guards, route mounting and boot; the routes themselves are in `src/routes/*.ts`
 - `src/user.ts` - User CRUD operations
 - `src/prism/index.ts` - Prism broker API client
 - `src/monitor.ts` - Risk management and trade tracking
@@ -222,7 +222,7 @@ see `src/constants.ts`.
 ## Common Tasks
 
 ### Adding a New API Endpoint
-1. Add route in `src/server.ts`
+1. Add the route to the matching module under `src/routes/` (`auth`, `users`, `payouts`, `brokers`, `trading`, `streams`, `admin`; shared auth helpers in `routes/session.ts`) and document it in `API.md`
 2. Use `resolveUser(req)` to get current user context
 3. Get Prism instance: `Prism.getInstance()`
 4. Get Monitor instance: `Monitor.getInstance()`

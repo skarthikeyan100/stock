@@ -5,7 +5,7 @@
 
 export const STRATEGIES_SOCKET_PATH = process.env.STRATEGIES_IPC_SOCKET || '/tmp/icici-strategies.sock';
 
-export type StrategiesRequestType = 'stats' | 'list' | 'reset' | 'getCandles' | 'subscribeToken' | 'unsubscribeToken' | 'syncFromConfig' | 'reconcile';
+export type StrategiesRequestType = 'stats' | 'list' | 'reset' | 'subscribeToken' | 'unsubscribeToken' | 'syncFromConfig' | 'reconcile';
 
 export interface StrategiesRequest {
     kind: 'request';

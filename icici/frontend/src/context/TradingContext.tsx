@@ -112,7 +112,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     const check = () => {
-      apiFetch('/prism/canPlaceOrder')
+      apiFetch('/order/can-place')
         .then(res => {
           // A 401/500 says nothing about the trading rules: keep the last known state instead of flipping to "blocked".
           if (!res.ok) throw new Error(`canPlaceOrder ${res.status}`);

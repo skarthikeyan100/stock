@@ -12,7 +12,6 @@ import OrderClient from './strategies/OrderClient';
 import { DataLink } from '../ipc/DataLink';
 import { registerTrade, unregisterTrade, optionTickTargets, deliverOptionTick, holdExternal, releaseExternal } from './strategies/tokenRouter';
 import * as niftyQuoteHistory from './strategies/niftyQuoteHistory';
-import * as niftyCandleBuilder from './strategies/niftyCandleBuilder';
 import * as niftyStatsBuilder from './strategies/niftyStatsBuilder';
 import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 import { FeedSource, DEFAULT_FEED_SOURCE, BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
@@ -288,7 +287,6 @@ async function onTick(tick: any) {
         // A zero/NaN price must not reach the history, candle builder, stats or any strategy.
         if (!(Number.isFinite(quote.ltp) && quote.ltp > 0)) return;
         niftyQuoteHistory.record(quote);
-        niftyCandleBuilder.record(quote);
         const statsUpdate = niftyStatsBuilder.record(quote.ltp, parseInt(quote.ltt as any));
         // One latest-wins slot per strategy: a strategy stuck awaiting a broker call only coalesces its own ticks, not everyone's.
         for (const strategy of strategies.getList()) {
@@ -337,8 +335,6 @@ async function handleStrategiesRequest(req: StrategiesRequest): Promise<Strategi
                 return { kind: 'response', id: req.id, ok: true, result: { type: req.payload.type, reset: matched.length } };
             }
 
-            case 'getCandles':
-                return { kind: 'response', id: req.id, ok: true, result: niftyCandleBuilder.getCandles() };
 
             // Demo-mode support: fires a real subscribe/unsubscribe command for
             // an arbitrary token on request, with no ref-counting against
