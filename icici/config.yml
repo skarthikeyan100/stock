@@ -149,7 +149,7 @@ strategies:
     minMovementPoints: 30
   - type: SupportResistanceStrategy
     enabled: false
-    broker: zerodha
+    broker: kite
     quantity: 1755
     logEnabled: true
     slDistance: 10
@@ -168,7 +168,7 @@ strategies:
   - type: HourlyStrategy
     enabled: false
     brokers:
-      - zerodha
+      - kite
       - ant
     quantity: 65
     maxInvestment: 100000
@@ -305,7 +305,7 @@ strategies:
     targetPoints: 10
     stopLossPoints: 15
     brokers:
-      - zerodha
+      - kite
     logEnabled: true
   - type: ButterflyStrategy
     enabled: false
