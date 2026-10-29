@@ -332,29 +332,35 @@ Live exit logic is spread over four places, with no single owner.
 - `strategiesProcess.ts:94-97` drops fills when `enabled` is false. A resting target sell that fills while the strategy is disabled is never booked, which is why a reconcile is needed afterwards. This matches the `enabled` rule in CLAUDE.md, so the behaviour is intended. The risk is real, and R4-1/R5-1 would be easier to reason about if the order process booked fills for disabled strategies too.
 
 ### R5-11 Max-loss and max-profit each have three meanings [medium]
+**Status: OPEN, needs a user decision (recorded in `open-review-items.md` #72).** The three meanings are deliberate and unifying them changes when live stops trip (LegManager: percent of exposure on summed unrealized; BulkPcr: per order and per broker, with a per-day profit floor). Which definition applies where is a risk-appetite call, so no semantics were changed. The shared persisted-latch mechanics (`PnlStop`) are already reused by BulkPcr only; folding LegManager onto them waits on that decision.
 - `maxLoss`: LegManager is a percent of `maxExposure`, measured on the summed unrealized P&L of all legs with no realized offset (`LegManager.ts:499-512`). BulkPcr `maxLossPerOrder` is per order, per broker (`PnlStop.ts:62-66`). Hourly, Recommendation, NiftyChange, TopStock, Butterfly and the legacy group have none.
 - `maxProfit`: LegManager is cumulative realized plus unrealized since reset (`LegManager.ts:393-395`). BulkPcr is `min(realized, realized+unrealized)` per broker per day (`BulkPcrStrategy.ts:815-820`). Nothing else has one.
 - `PnlStop.ts` is a standalone copy of the LegManager logic, which the comment says was deliberate.
 - **Action:** one definition each, in a shared latch, used by every strategy.
 
 ### R5-12 Target and stop naming is inconsistent [low]
+**Status: OPEN, needs a user decision (#72).** Renaming `targetPoints`/`targetPrice`/`slDistance` etc. changes the operator's `config.yml` contract (and CLAUDE.md forbids deleting keys from it); it is only worth doing with the user's list of new names and an alias window.
 - The same idea is `targetPoints`, `targetPrice`, `target` or `targetDistance`, and `stopLossPoints`, `stopLossPrice`, `stopLoss` or `slDistance`.
 - In Recommendation `stopLoss` is an absolute price. In GoodMorning it is points. In Continuous and BulkPcr `slDistance` is a hedge or level spacing, not a stop. This overlaps R-vocabulary item 32 in `REVIEW_FINDINGS.md`.
 
 ### R5-13 EOD cutoff behaves three ways [medium]
+**Status: PARTIAL (Phase 4, 2026-10-29).** DONE: BulkPcr and Butterfly read `eodCloseTime` ('HH:mm', validated at load) instead of a hard-coded 15:15, keeping 15:15 as their default so behaviour is unchanged until the key is set; EOD close labels fixed (R5-14). OPEN, needs a user decision (#72): TopStock, Sentiment, TargetReach, GoodMorning, Gap, ROC and RuleBased still have no end-of-day close, and TopStock disables itself right after its one trade, so by the `enabled` rule nothing manages the position. A per-user EOD sweep in the order process would close positions held by disabled strategies, which contradicts that rule unless the operator opts in.
 - `eodCloseTime`, default 15:10, in Continuous, SR, Hourly and LimitEntry (`marketHours.ts:81`).
 - Hard-coded 15:15 in BulkPcr (`BulkPcrStrategy.ts:872`) and Butterfly (`ButterflyStrategy.ts:523`).
 - None at all in TopStock, Sentiment, TargetReach or GoodMorning. Gap, ROC and RuleBased have only `maxHoldTime`.
 - **Action:** one EOD scheduler per user (see the proposed mechanism below), with one configurable time.
 
 ### R5-14 Exit pricing and log labels [low]
+**Status: DONE (Phase 4, 2026-10-29).** LegManager books target-hit, square-off and mass-close P&L at the sell's reported fill price (`sellLeg` returns it; the tick price is only the fallback), and the mass close logs `Max-profit`/`Max-loss`/`End-of-day` according to the trigger. Test: `legManagerPartialSell.test.ts`.
 - Target-hit P&L in LegManager is computed from the tick price, not the fill (`LegManager.ts:546, 720, 778`).
 - The log says "Max-profit close" for max-loss and EOD paths too (`LegManager.ts:543, 550`).
 
 ### R5-15 Hard-coded exit exclusions [low]
+**Status: KEPT AS IS, with a reason (Phase 4, 2026-10-29).** The type list in `exitMonitor` is the one choke point that protects against stale Mongo Trade docs (the 2026-09-24 incident): an `owner` flag stamped on new trades would not cover docs already stored, and deriving it from the strategy classes would make `exitMonitor` import the whole strategy graph. Revisit with the ExitManager.
 - `exitMonitor.ts` (about 137) excludes `['BulkPcrStrategy', 'TopStockOptionsOpeningGapStrategy']` by name. Replace with the owner field proposed below.
 
 ### R5-16 Configs rewritten at runtime, mixing operator config with strategy state [medium]
+**Status: OPEN, needs a user decision (#72).** The config writes ARE the `enabled` switch (AutoStart arms BulkPcr, `durablyDisable` turns a finished one off); moving them to Mongo would give the operator two places to look and breaks the 'config.yml is the single switch' rule.
 - Five strategies call `configService.writeConfig` to change their own state: AutoStart, BulkPcr `durablyDisable`, GoodMorning (x2) and TopStock. Operator settings and strategy state then live in the same file. This also works against the "config is operator-owned" rule.
 
 ### R5-17 Dead path: `getMonitorConfig` [low]
@@ -366,6 +372,7 @@ Live exit logic is spread over four places, with no single owner.
 - A second fill on the same tsym may overwrite the first GTT id, because `finalizeEntry` assigns `gttTriggerId` once per entry (unverified).
 
 ### Proposed single mechanism (area 5)
+**Status: NOT BUILT, needs a user decision (#72).** The ExitManager would replace the live exit logic in six strategies and `exitMonitor`; it cannot be exercised live from here and the exposures it was meant to fix (R5-1..R5-9) are fixed in place in Phase 1. Building it is a project of its own that should start from the decisions above (R5-11, R5-13, R5-16).
 One order-process **ExitManager**, persisted in Mongo and keyed by (user, broker, tsym), that owns every stop, target, trail, max-loss, profit-lock and EOD close. It replaces `exitMonitor.monitored` and `SELF_MANAGED_STRATEGY_TYPES`.
 - The strategy declares `{target, stop, trail, maxLoss, eodTime, owner}` at buy time, where `owner` is `broker | manager | strategy`. This replaces `getMonitorConfig()`.
 - Use Kite GTT where it exists. Everywhere else, the manager runs tick-driven exits. It is rebuilt from Mongo on start, so it does not depend on a strategy reconcile.

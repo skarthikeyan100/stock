@@ -569,6 +569,8 @@ export class LegManager {
     }
 
     private async closeAllLegsAndCancelReEntries(): Promise<void> {
+        // The same mass close serves three triggers; the log lines say which one (they all used to read "Max-profit").
+        const why = this.maxProfitTripped ? 'Max-profit' : this.maxLossTripped ? 'Max-loss' : 'End-of-day';
         for (const leg of Array.from(this.legsByToken.values())) {
             if (leg.status !== 'OPEN') continue; // already closing (this call, or a previous tick's)
             leg.status = 'CLOSING'; // synchronous, before any await
@@ -579,25 +581,26 @@ export class LegManager {
             // only after it resolves leaves a window where handleFillOrExternalSell sees
             // the leg still tracked and double-counts this same fill as an "external" sell.
             this.legsByToken.delete(leg.token);
+            let fillPrice: number | undefined;
             try {
-                await this.sellLeg(leg);
+                fillPrice = await this.sellLeg(leg);
             } catch (e) {
                 this.legsByToken.set(leg.token, leg); // still live at broker - put back for retry
                 leg.status = 'OPEN';
-                Log.log(`[${this.deps.ownerType}] Max-profit mass close sell failed, leg remains open for retry:`, e);
+                Log.log(`[${this.deps.ownerType}] ${why} mass close sell failed, leg remains open for retry:`, e);
                 continue;
             }
-            const pnl = (ltp - leg.avgPrice) * leg.totalQuantity;
+            const pnl = ((fillPrice ?? ltp) - leg.avgPrice) * leg.totalQuantity;
             // Per-leg sign, independent of the aggregate trigger - a hedge leg individually
             // at a loss is still correctly tagged 'loss' even during an aggregate-profit close.
             this.recordOutcome(pnl >= 0 ? 'win' : 'loss', pnl);
-            Log.log(`[${this.deps.ownerType}] Max-profit close (${leg.isRoot ? 'root' : 'nested'}): ${leg.tsym} pnl=${Math.round(pnl)}`);
+            Log.log(`[${this.deps.ownerType}] ${why} close (${leg.isRoot ? 'root' : 'nested'}): ${leg.tsym} pnl=${Math.round(pnl)}`);
         }
 
         for (const [token, intent] of Array.from(this.pendingReEntries.entries())) {
             this.pendingReEntries.delete(token); // synchronous, before any await
             unwatchToken(token, this.deps.strategyRef, intent.exchange);
-            await this.cancelIntentOrSellBack(intent, 'Mass close');
+            await this.cancelIntentOrSellBack(intent, `${why} mass close`);
         }
 
         this.deferredRootRefill = null; // never placed at the broker - just drop the intent
@@ -605,9 +608,13 @@ export class LegManager {
 
     // Sells the leg's whole remaining quantity. When only part was confirmed sold (PartialSellError) the leg shrinks by that part, and its
     // realized P&L is booked, before the error propagates - so the retry sells what is left instead of the original size.
-    private async sellLeg(leg: Leg): Promise<void> {
+    // Returns the volume-weighted fill price the sell reported (undefined when the broker path does not report one, e.g. a dry run), so
+    // the caller books P&L at what the position actually sold for rather than at the tick that triggered the sell.
+    private async sellLeg(leg: Leg): Promise<number | undefined> {
         try {
-            await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+            const res: any = await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+            const px = Number(res?.avgPrice);
+            return Number.isFinite(px) && px > 0 ? px : undefined;
         } catch (e) {
             if (e instanceof PartialSellError && e.soldQty > 0) {
                 const sold = Math.min(e.soldQty, leg.totalQuantity);
@@ -769,15 +776,16 @@ export class LegManager {
                 // Deleted BEFORE the sell await - see closeAllLegsAndCancelReEntries's
                 // identical comment for why (ANT fill-notify race with handleFillOrExternalSell).
                 this.legsByToken.delete(leg.token);
+                let fillPrice: number | undefined;
                 try {
-                    await this.sellLeg(leg);
+                    fillPrice = await this.sellLeg(leg);
                 } catch (e) {
                     this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
                     leg.status = 'OPEN';
                     Log.log(`[${this.deps.ownerType}] Target-hit sell failed, leg remains open for retry:`, e);
                     return;
                 }
-                const pnl = (ltp - leg.avgPrice) * leg.totalQuantity;
+                const pnl = ((fillPrice ?? ltp) - leg.avgPrice) * leg.totalQuantity;
                 this.recordOutcome('win', pnl);
                 Log.log(`[${this.deps.ownerType}] Target hit (${leg.isRoot ? 'root' : 'nested'}): ${leg.tsym} pnl=${Math.round(pnl)}`);
 
@@ -827,15 +835,16 @@ export class LegManager {
                 // Deleted BEFORE the sell await - see closeAllLegsAndCancelReEntries's
                 // identical comment for why (ANT fill-notify race with handleFillOrExternalSell).
                 this.legsByToken.delete(leg.token);
+                let fillPrice: number | undefined;
                 try {
-                    await this.sellLeg(leg);
+                    fillPrice = await this.sellLeg(leg);
                 } catch (e) {
                     this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
                     leg.status = 'OPEN';
                     Log.log(`[${this.deps.ownerType}] Square-off sell failed, leg remains open for retry:`, e);
                     return;
                 }
-                const pnl = (ltp - leg.avgPrice) * leg.totalQuantity;
+                const pnl = ((fillPrice ?? ltp) - leg.avgPrice) * leg.totalQuantity;
                 this.recordOutcome('loss', pnl);
                 Log.log(`[${this.deps.ownerType}] Square-off (${leg.isRoot ? 'root' : 'nested'}): ${leg.tsym} pnl=${Math.round(pnl)}`);
 

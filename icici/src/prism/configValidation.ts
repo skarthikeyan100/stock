@@ -164,6 +164,12 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
         errors.push(`${label}.maxLossPerOrder needs a usable maxInvestment (> 0) - the percent is taken of it`);
     }
 
+    // eodCloseTime is read as 'HH:mm'; isPastTime falls back to the strategy's default on anything else, which would silently move the
+    // end-of-day close to a time the operator did not write.
+    if (obj.eodCloseTime != null && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(obj.eodCloseTime))) {
+        errors.push(`${label}.eodCloseTime must be 'HH:mm' (24-hour), got ${JSON.stringify(obj.eodCloseTime)}`);
+    }
+
     if (isNum(obj.minPrice) && isNum(obj.maxPrice) && obj.minPrice > obj.maxPrice) {
         errors.push(`${label}.minPrice (${obj.minPrice}) must be <= ${label}.maxPrice (${obj.maxPrice})`);
     }

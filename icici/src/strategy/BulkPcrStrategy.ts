@@ -12,7 +12,7 @@ import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
 import { roundToTick } from '../kite/Kite';
 import MomentumSignal from './MomentumSignal';
-import { isPastMarketClose } from '../util/marketHours';
+import { isPastMarketClose, isPastTime } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { PnlStop } from './PnlStop';
 import { toPercentNumber } from '../prism/percentConfig';
@@ -868,9 +868,8 @@ export default class BulkPcrStrategy extends Strategy {
     private async eodCheck(): Promise<void> {
         if (this.eodDone && this.eodDay !== localDayKey()) this.eodDone = false;
         if (!this.eodDone && this.pairSlots().length > 0) {
-            const now = new Date();
-            const pastEodCutoff = now.getHours() > 15 || (now.getHours() === 15 && now.getMinutes() >= 15);
-            if (pastEodCutoff) {
+            // cfg.eodCloseTime ('HH:mm') like every other strategy; this one's own default stays 15:15.
+            if (isPastTime(this.cfg().eodCloseTime, '15:15')) {
                 this.eodDone = true;
                 this.eodDay = localDayKey();
                 Log.log('[BulkPcrStrategy] EOD cutoff reached - force-closing open pair slot(s)');

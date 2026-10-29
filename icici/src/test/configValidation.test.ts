@@ -129,6 +129,8 @@ async function main() {
     assert(validateConfigFile(bulk({ enabled: false, quantity: undefined, targetPoints: undefined, slDistance: undefined })).length === 0,
         'a disabled BulkPcr block is not required to carry them');
     assert(validateConfigFile(bulk({ index: 'BANKNIFTY' })).some((e) => e.includes('index')), 'an unknown BulkPcr index is rejected, not treated as NIFTY');
+    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, eodCloseTime: '15:10' }] }).length === 0, "eodCloseTime '15:10' is accepted");
+    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, eodCloseTime: '3:10pm' }] }).some((e) => e.includes('eodCloseTime')), "eodCloseTime '3:10pm' is rejected (it would silently fall back to the default)");
     assert(validateConfigFile({ settings: { maxDailyDrawdownPercent: '0%' }, strategies: [] }).length > 0,
         'a zero drawdown limit is rejected (would block every zero-P&L day)');
 
