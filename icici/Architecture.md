@@ -25,59 +25,55 @@ the vendor spelling: the `kiteconnect` package and its fields, `api.kite.trade`,
 
 ## Processes
 
+Three processes since 2026-10-29 (review decision 2 merged `order` and `strategies`; decisions 3 and 4 keep `frontend` and `data` apart).
+
 | Process | Entry | Owns |
 |---|---|---|
-| `data` | `src/processes/dataProcess.ts` | Broker tick WebSockets (ANT via `AntDataStream`, Breeze via `BreezeDataStream`). stdout = tick feed to the other three. stdin = subscribe / unsubscribe / reconnect commands. |
-| `order` | `src/processes/orderProcess.ts` | The only process that places, cancels and exits broker orders (ANT, Zerodha/Kite, Breeze, Prism executors in `processes/order/`). Per-user bookkeeping and P&L, chunked orders, pending limit orders, order-notify streams, and `exitMonitor.ts` (watches `useGTT=false` trades against live ticks). Unix socket `ORDER_IPC_SOCKET` (default `/tmp/icici-order.sock`). |
-| `strategies` | `src/processes/strategiesProcess.ts` | Strategy logic (`src/strategy/`), tick routing by token (`tokenRouter`), Nifty candle / stats / quote-history builders. Places orders through `OrderClient`; asks `data` for tokens through `DataClient`. Unix socket `STRATEGIES_IPC_SOCKET` (default `/tmp/icici-strategies.sock`) for control/admin calls. |
-| `frontend` | `src/server.ts` (`dist/server.js`) | Express REST + SSE API, auth, OAuth callbacks, config endpoints, serves the static React bundle from `public/`. Relays to `order` and `strategies` over IPC. |
+| `data` | `src/processes/dataProcess.ts` | Broker tick WebSockets (ANT via `AntDataStream`, Breeze via `BreezeDataStream`). Serves ticks, and takes subscribe / unsubscribe / reconnect commands, on `DATA_IPC_SOCKET` (default `/tmp/icici-data.sock`, `DataServer`). **Never restarted automatically** (decision 5): a crash raises an alert and an operator restarts the run outside market hours. |
+| `trading` | `src/processes/tradingProcess.ts` | `order` + `strategies` in one process. Order side (`orderProcess.ts`): the only code that places, cancels and exits broker orders (ANT, Kite, Breeze, Prism executors in `processes/order/`), per-user bookkeeping and P&L, chunked orders, pending limit orders, order-notify streams, `exitMonitor.ts`. Strategy side (`strategiesProcess.ts`): strategy logic (`src/strategy/`), tick routing (`tokenRouter`), candle / stats builders. Strategies call the order side in-process (`OrderClient.useLocalServer`); it still serves `ORDER_IPC_SOCKET` and `STRATEGIES_IPC_SOCKET` for `frontend`. On start it reconciles broker positions and every strategy before any tick is delivered (`startupReconcile`, `Strategy.stateLoaded`). |
+| `frontend` | `src/server.ts` (`dist/server.js`) | Express REST + SSE API, auth, OAuth callbacks, config endpoints, serves the static React bundle from `public/`. Relays to `trading` over its two sockets and takes ticks from `data`. |
+
+`orderProcess.ts` and `strategiesProcess.ts` still start standalone (`node dist/processes/orderProcess.js`) for debugging the old two-process topology; the orchestrator does not use that.
 
 ## Wiring
 
 ```
-                 data.stdout (tick feed)
-        ┌──────────────┼──────────────┐
-        ▼              ▼              ▼
-   strategies       frontend        order
-        │              │              │
-        └──────────────┴──────────────┘
-          each stdout -> data.stdin
-          (subscribe / unsubscribe / reconnect)
+   data  ── DATA_IPC_SOCKET ──►  trading   (ticks in; subscribe / unsubscribe out, via ipc/DataLink)
+                          └───►  frontend  (ticks in; reconnect out)
 
-   Unix sockets:  strategies / frontend  ──►  order (ORDER_IPC_SOCKET)
-                  frontend               ──►  strategies (STRATEGIES_IPC_SOCKET)
+   frontend ──► trading   ORDER_IPC_SOCKET, STRATEGIES_IPC_SOCKET
 ```
 
-`order`'s tick pipe exists only for `exitMonitor.ts`. Protocol helpers live in `src/ipc/` (`jsonLines.ts`, `orderProtocol.ts`, `strategiesProtocol.ts`, `feedSource.ts`).
+Subscriptions are reference-counted twice: per owner inside a process (`DataLink`: the strategy router and the exit monitor) and per client inside `data` (`DataServer`: a token stays subscribed while any client holds it, and a client's holds are released when its connection closes). A client replays what it holds whenever it (re)connects, so a restarted `data` needs no resync step. Protocol helpers live in `src/ipc/` (`jsonLines.ts`, `orderProtocol.ts`, `strategiesProtocol.ts`, `dataProtocol.ts`, `DataLink.ts`, `feedSource.ts`).
 
 ## Why they are separate
 
-- **Connections survive strategy edits.** `data` holds the tick WebSockets (including the ANT `createWsSess` session setup). `order` holds order-notify streams and in-flight state. Editing a strategy restarts only `strategies`.
-- **In-flight orders are never orphaned by a strategy restart.** A resting limit sell or a watched stop lives in `order`. A stuck limit sell caused a real loss on 2026-09-21, so this boundary matters.
-- **Failure isolation.** A bug, event-loop block or crash in strategy code cannot stall order placement or the tick feed.
-- **Network quirks are scoped per process.** Kite and ANT allow only IPv4 for order placement; Breeze's registered static IP is the IPv6 address. Forcing IPv4 process-wide broke Breeze (tried 2026-09-25), so `installIpv4OnlyHostOverride()` (`processes/order/kiteDns.ts`) is applied only in `order` and `data`, only for specific hostnames.
+- **`data` apart from `trading`.** `data` holds the tick WebSockets (including the ANT `createWsSess` session setup). A `trading` restart, which is routine in dev, never drops the feed, and a feed crash never takes order execution with it.
+- **`frontend` apart from `trading`.** It holds the Express API, OAuth callbacks, payouts, KYC and OCR, the most change-prone code. A UI or payout bug, or a restart of it, cannot stop trading.
+- **Orders and strategies together.** One startup sequence (preflight, reconcile, then ticks) and plain in-process calls instead of an IPC hop. The old reason for the split, "a strategy restart must not orphan an in-flight order", is now covered by the startup reconcile rather than by a process boundary, so restarting `trading` with open positions still needs care.
+- **Network quirks are scoped per process.** Kite and ANT allow only IPv4 for order placement; Breeze's registered static IP is the IPv6 address. Forcing IPv4 process-wide broke Breeze (tried 2026-09-25), so `installIpv4OnlyHostOverride()` (`processes/order/kiteDns.ts`) is applied only in `trading` and `data`, only for specific hostnames.
 
 ## Restart matrix
 
-Each child watches its own entry/dir plus shared dirs under `dist/` (`HOT_RESTART=false` disables all of this). Debounce 300 ms.
+Each child watches its own entry/dir plus shared dirs under `dist/` (`HOT_RESTART=false` disables all of this). Debounce 300 ms. `data` is not watched at all.
 
 | Child restarts when these change | Effect of the restart |
 |---|---|
-| `data`: `processes/data`, `dataProcess.js`, `ant`, `model`, `util`, `prism`, `tools`, `ipc` | Tick WS drops, then reconnects via exponential backoff using the persisted `.ant_session.json`. Fast and automatic. |
-| `order`: `processes/order`, `orderProcess.js`, `ant`, `zerodha`, `model`, `util`, `prism`, `tools`, `ipc` | Order-notify streams and exit monitor restart; per-user `sessionPnL` resets to 0 (not resynced from Mongo, see `Analysis.md`). **Avoid with open positions.** |
-| `strategies`: `strategy`, `processes/strategies`, `strategiesProcess.js`, `ant`, `model`, `util`, `prism`, `tools`, `ipc`, `lib` | Strategy state rebuilt; BulkPcr armed slots restored from `.bulkpcr_armed_slots*.json`. Broker connections untouched. |
-| `frontend`: `server.js`, `ant`, `zerodha`, `model`, `util`, `prism`, `tools`, `ipc` | API and SSE clients reconnect. Broker connections untouched. |
+| `trading`: `processes/order`, `orderProcess.js`, `strategy`, `processes/strategies`, `strategiesProcess.js`, `tradingProcess.js`, `ant`, `kite`, `breeze`, `model`, `util`, `prism`, `tools`, `ipc`, `lib` | Order-notify streams, exit monitor and all strategy state restart; the startup reconcile rebuilds legs from the brokers' open positions. Per-user `sessionPnL` resets to 0 (not resynced from Mongo, see `Analysis.md`). **Avoid with open positions.** |
+| `frontend`: `server.js`, `ant`, `kite`, `breeze`, `model`, `util`, `prism`, `tools`, `ipc`, `middleware`, `lib` | API and SSE clients reconnect. Broker connections untouched. |
 
-Shared dirs (`ant`, `model`, `util`, `prism`, `tools`, `ipc`) restart several children at once. Edit them with that in mind.
+Shared dirs (`ant`, `model`, `util`, `prism`, `tools`, `ipc`) restart `trading` and `frontend` together. Edit them with that in mind.
 
 ## Gotchas
 
-- **stdout is a protocol channel** in `data`, `order`, `strategies` and `frontend`. Each entry file sets `console.log = console.error` before any import, so logs go to stderr. A stray `process.stdout.write` corrupts the protocol.
-- **Unread `pipe` stdio deadlocks the child** once the OS buffer fills. Only stdout that is actually consumed is `pipe`; the rest is `inherit`.
+- **stdout/stderr are plain logs** in every process now (the stdout tick pipes and the `console.log = console.error` redirects are gone). Ticks and feed commands only travel over the sockets above.
 - **Frontend has two meanings.** The React app (`frontend/src/`) builds into `public/` with `cd frontend && npm run build` and needs no process restart. The `frontend` *process* is `server.ts`; backend edits there do need a restart.
 - `npm run server` starts only the frontend-equivalent process. It cannot exercise orders or streaming.
 
-## Decision record: merging into fewer processes (2026-10-25)
+## Decision record: merging into fewer processes (2026-10-25, superseded 2026-10-29)
+
+Superseded: on 2026-10-29 the user decided `order` and `strategies` merge into `trading`, `frontend` and `data` stay separate. The 2026-10-25 record follows for the reasoning behind keeping those two apart.
+
 
 Proposal: two processes, `strategies` and "others". Rejected as stated, because `frontend` would share a process with `data` and `order`, so every `server.ts` / route edit would drop the broker WebSockets and order monitors.
 

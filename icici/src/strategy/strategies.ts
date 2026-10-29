@@ -27,55 +27,48 @@ class Strategies {
         return this.expandedConfigs.get(userId);
     }
 
-    async initialize() {
+    // Rebuilds the broker->feed routing table (tokenRouter.ts's resolveSource reads it) from the current config, and, when asked, copies
+    // each existing strategy's `enabled` from it.
+    private loadExpandedConfigs(syncEnabled: boolean): number {
         const config = configService.getConfig();
-
         // Expand all configs (handles RuleBasedStrategy with multiple indicator rules)
         const expandedConfigArray = (config.strategies || []).flatMap(expandRuleBasedConfig);
-        Log.log('[] expandedConfigArray: ', expandedConfigArray)
-
-        // Store expanded configs in map for per-user limit lookups
         this.expandedConfigs.clear();
         for (const cfg of expandedConfigArray) {
             const userId = cfg.userId || cfg.type;
             this.expandedConfigs.set(userId, cfg);
+            if (syncEnabled) {
+                const strategy = this.list.find(s => s.userId === userId);
+                if (strategy) strategy.enabled = cfg.enabled;
+            }
         }
+        return this.expandedConfigs.size;
+    }
 
-        this.list = createStrategiesFromConfig(config.strategies || []);
-        // Per-user risk limits (loss/lot/investment) now live in the order
-        // process (it's the only one that gates/executes orders) - see
+    async initialize() {
+        this.loadExpandedConfigs(false);
+        this.list = createStrategiesFromConfig(configService.getConfig().strategies || []);
+        // Per-user risk limits (loss/lot/investment) live in the order process (it's the only one that gates/executes orders) - see
         // orderProcess.ts's loadUserLimits().
 
         Log.log(`[Strategies] Initialized ${this.list.length} strategies:`,
             this.list.map(s => `${s.getClassName()}(${s.userId}, enabled=${s.enabled})`));
-
     }
 
     // Live config-reload for an already-running process - unlike initialize()
     // above, this must NOT touch this.list (rebuilding it would discard live
     // per-position runtime state, e.g. BulkPcrStrategy's phase/heldTsym for an
     // open position). Refreshes only config-derived state: expandedConfigs
-    // (which tokenRouter.ts's resolveSource reads for broker->feed routing)
     // and each existing strategy's enabled flag. A strategy newly added
     // to config.yml while running still needs a restart to get an instance.
-    syncFromConfig() {
-        configService.reloadNow(); // reload now; its onChange listener also refreshes (idempotent)
-        this.refreshFromConfig();
+    refreshFromConfig() {
+        Log.log(`[Strategies] config reloaded: refreshed ${this.loadExpandedConfigs(true)} strategy configs`);
     }
 
-    // Hooked to ConfigService.onChange (see subscribeToConfig) so a hand edit
-    // of config.yml reaches enabled flags / expandedConfigs with no manual sync.
-    refreshFromConfig() {
-        const config = configService.getConfig();
-        const expandedConfigArray = (config.strategies || []).flatMap(expandRuleBasedConfig);
-        this.expandedConfigs.clear();
-        for (const cfg of expandedConfigArray) {
-            const userId = cfg.userId || cfg.type;
-            this.expandedConfigs.set(userId, cfg);
-            const strategy = this.list.find(s => s.userId === userId);
-            if (strategy) strategy.enabled = cfg.enabled;
-        }
-        Log.log(`[Strategies] syncFromConfig: refreshed ${this.expandedConfigs.size} strategy configs`);
+    // For a caller that has just written config.yml and must see the effect now rather than after the watcher's debounce. The reload's
+    // own onChange listener (the constructor below) does the refresh - calling refreshFromConfig() here as well ran it twice.
+    syncFromConfig() {
+        configService.reloadNow();
     }
 
     private constructor() {

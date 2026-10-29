@@ -1,8 +1,3 @@
-// stdout is reserved for the tick protocol (JSON lines out to strategies/frontend)
-// - Log.log (and anything else) writes via console.log, so redirect that to
-// stderr first, before any other module (which may log at import time) loads.
-console.log = console.error;
-
 // This host is dual-stack; Node's Happy-Eyeballs connection logic prefers
 // IPv6 when both are available, which bypasses AliceBlue/ANT's IPv4-only
 // allowlist for a3.aliceblueonline.com - AntDataStream.connect() ->
@@ -21,7 +16,7 @@ import BreezeDataStream from './data/BreezeDataStream';
 import { DataStream } from './data/DataStream';
 import ANT from '../ant/ANT';
 import Breeze from '../breeze/Breeze';
-import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
+import { DataServer } from './data/DataServer';
 import { FeedSource, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
 
 // Entry point for the `data` process. Owns every broker connection actually
@@ -30,18 +25,18 @@ import { FeedSource, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
 // not a rewrite of this dispatch logic. NIFTY + SENSEX are always subscribed
 // on ANT's connect only (index ticks stay ANT-sourced regardless of which
 // broker executes a trade - see the Breeze WS integration plan's scope note);
-// options are subscribed/unsubscribed on demand via stdin commands from
-// `strategies` (relayed by the orchestrator, which is the only process
-// holding both child handles). Ticks go out over stdout as newline-delimited
-// JSON - consumed by both `strategies` and `frontend` (the orchestrator pipes
-// this same stdout to both children's stdin).
+// options are subscribed/unsubscribed on demand by `trading` and `frontend`
+// over the data Unix socket (src/ipc/dataProtocol.ts, DataServer). Ticks go
+// out on that same socket as newline-delimited JSON to every connected client.
 
 async function main() {
     await Mongo.init().catch((e) => Log.log('[data] Mongo.init failed (continuing without persistence):', e));
 
+    // Ticks are broadcast to every connected client (the server is created below, before any stream connects).
+    let server: DataServer;
     const streams: Partial<Record<FeedSource, DataStream>> = {
-        ant: AntDataStream.getInstance((tick) => writeJsonLine(process.stdout, tick)),
-        breeze: BreezeDataStream.getInstance((tick) => writeJsonLine(process.stdout, tick)),
+        ant: AntDataStream.getInstance((tick) => server.broadcast(tick)),
+        breeze: BreezeDataStream.getInstance((tick) => server.broadcast(tick)),
     };
     const reloadSessionFns: Partial<Record<FeedSource, () => void>> = {
         // Re-read the session file first - the singleton's in-memory session may
@@ -51,40 +46,44 @@ async function main() {
         breeze: () => Breeze.getInstance().reloadSession(),
     };
 
-    readJsonLines(
-        process.stdin,
-        (cmd) => {
-            const source: FeedSource = cmd.source ?? DEFAULT_FEED_SOURCE;
-            const stream = streams[source];
-            if (!stream) {
-                Log.log('[data] Unknown feed source:', source);
-                return;
-            }
-            // cmd.exchange ('NFO'/'BFO') passed through from DataClient.ts/tokenRouter.ts -
-            // defaults to 'NFO' inside each DataStream implementation when omitted.
-            if (cmd.cmd === 'subscribe' && cmd.token) {
-                stream.subscribeOption(cmd.token, cmd.exchange);
-            } else if (cmd.cmd === 'unsubscribe' && cmd.token) {
-                stream.unsubscribeOption(cmd.token, cmd.exchange);
-            } else if (cmd.cmd === 'subscribeDepth' && cmd.token) {
-                if (stream.subscribeOptionDepth) stream.subscribeOptionDepth(cmd.token, cmd.exchange);
-                else Log.log(`[data] subscribeDepth: ${source} stream does not support depth mode`);
-            } else if (cmd.cmd === 'unsubscribeDepth' && cmd.token) {
-                if (stream.unsubscribeOptionDepth) stream.unsubscribeOptionDepth(cmd.token, cmd.exchange);
-                else Log.log(`[data] unsubscribeDepth: ${source} stream does not support depth mode`);
-            } else if (cmd.cmd === 'reconnect') {
-                reloadSessionFns[source]?.();
-                stream.reconnect().catch((e) => Log.log(`[data] Manual reconnect (${source}) failed:`, e));
+    const withStream = (source: string | undefined, op: (stream: DataStream, source: FeedSource) => void): void => {
+        const feed: FeedSource = (source as FeedSource | undefined) ?? DEFAULT_FEED_SOURCE;
+        const stream = streams[feed];
+        if (!stream) {
+            Log.log('[data] Unknown feed source:', feed);
+            return;
+        }
+        op(stream, feed);
+    };
+    // The exchange ('NFO'/'BFO') comes from DataLink callers (tokenRouter / exitMonitor); each DataStream defaults to 'NFO' when omitted.
+    server = new DataServer({
+        subscribe: (kind, token, source, exchange) => withStream(source, (stream, feed) => {
+            if (kind === 'subscribe') stream.subscribeOption(token, exchange);
+            else if (stream.subscribeOptionDepth) stream.subscribeOptionDepth(token, exchange);
+            else Log.log(`[data] subscribeDepth: ${feed} stream does not support depth mode`);
+        }),
+        unsubscribe: (kind, token, source, exchange) => withStream(source, (stream, feed) => {
+            if (kind === 'subscribe') stream.unsubscribeOption(token, exchange);
+            else if (stream.unsubscribeOptionDepth) stream.unsubscribeOptionDepth(token, exchange);
+            else Log.log(`[data] unsubscribeDepth: ${feed} stream does not support depth mode`);
+        }),
+        other: (cmd) => {
+            if (cmd.cmd === 'reconnect') {
+                withStream(cmd.source, (stream, feed) => {
+                    reloadSessionFns[feed]?.();
+                    stream.reconnect().catch((e) => Log.log(`[data] Manual reconnect (${feed}) failed:`, e));
+                });
             } else {
-                Log.log('[data] Unknown stdin command:', cmd);
+                Log.log('[data] Unknown command:', cmd);
             }
         },
-        (line, err) => Log.log('[data] Failed to parse stdin command:', line, err)
-    );
+    });
+    server.start();
+    process.on('SIGTERM', () => { server.stop(); process.exit(0); });
 
     // Not fatal if any of these fail (e.g. no session yet for that broker -
-    // `data` typically starts before login completes): the stdin command
-    // listener above is already registered, so a later 'reconnect' (from
+    // `data` typically starts before login completes): the command server
+    // above is already listening, so a later 'reconnect' (from
     // /ant/callback, /breeze/callback, /ant/connect, etc. once authorized)
     // still reaches a live process instead of one that already exited. A
     // same-day session already on disk connects here immediately, same as
@@ -95,7 +94,7 @@ async function main() {
             .then(() => Log.log(`[data] ${source} stream ready`))
             .catch((e) => Log.log(`[data] Initial ${source} connect failed (will retry via reconnect):`, e));
     }
-    Log.log('[data] Ready - NIFTY/SENSEX always subscribed (ANT), streaming to stdout.');
+    Log.log('[data] Ready - NIFTY/SENSEX always subscribed (ANT), streaming on the data socket.');
 }
 
 main().catch((e) => {
@@ -103,9 +102,9 @@ main().catch((e) => {
     process.exit(1);
 });
 
-process.on('SIGTERM', () => process.exit(0));
 process.on('unhandledRejection', (reason) => {
     Log.log('[data] Unhandled promise rejection (process kept alive):', reason);
 });
-// No uncaughtException handler on purpose: an uncaught error here means the feed may be half-dead, and exiting lets the orchestrator
-// respawn the process and have strategies replay their subscriptions ('resync'). Staying up would leave every position tick-starved.
+// No uncaughtException handler on purpose: an uncaught error here means the feed may be half-dead, and exiting makes that loud - the
+// clients see the socket close and raise a feed-down alert (the orchestrator does not restart `data`, review decision 5; an operator
+// restarts it outside market hours). Staying up would leave every position tick-starved with nothing to say so.

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Kills any already-running orchestrator instance (and its data/order/strategies/frontend
+# Kills any already-running orchestrator instance (and its data/trading/frontend
 # children, via process-group signal) before a new one starts. Prevents two live trading
 # processes running concurrently. No-op if nothing is running.
 #

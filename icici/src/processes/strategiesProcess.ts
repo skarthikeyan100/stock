@@ -1,8 +1,3 @@
-// stdout is reserved for the subscribe/unsubscribe protocol back to `data` -
-// redirect console.log to stderr before any other module loads (mirrors
-// dataProcess.ts).
-console.log = console.error;
-
 import '../util/tz'; // pin TZ=Asia/Kolkata before any other module reads the clock
 import { ownSocketTracker } from '../ipc/ownSocket';
 import net from 'net';
@@ -14,7 +9,8 @@ import { readJsonLines, writeJsonLine } from '../ipc/jsonLines';
 import { STRATEGIES_SOCKET_PATH, StrategiesRequest, StrategiesResponse } from '../ipc/strategiesProtocol';
 import strategies from '../strategy/strategies';
 import OrderClient from './strategies/OrderClient';
-import { registerTrade, unregisterTrade, optionTickTargets, deliverOptionTick, resubscribeAll, holdExternal, releaseExternal } from './strategies/tokenRouter';
+import { DataLink } from '../ipc/DataLink';
+import { registerTrade, unregisterTrade, optionTickTargets, deliverOptionTick, holdExternal, releaseExternal } from './strategies/tokenRouter';
 import * as niftyQuoteHistory from './strategies/niftyQuoteHistory';
 import * as niftyCandleBuilder from './strategies/niftyCandleBuilder';
 import * as niftyStatsBuilder from './strategies/niftyStatsBuilder';
@@ -24,7 +20,7 @@ import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import { exchangeForTsym } from '../util/underlyings';
 
 // Entry point for the `strategies` process. No Prism/Kite dependency at all -
-// ticks arrive over stdin (piped from `data` by the orchestrator), orders go out
+// ticks arrive over the DataLink socket from `data`, orders go out
 // over OrderClient's IPC socket to `order`, fills come back the same way. This is
 // the process meant to be killed and respawned on every strategy code change,
 // without ever touching `data`'s or `order`'s live broker connections.
@@ -283,21 +279,9 @@ function enqueueLatest(key: string, quote: OptionQuote, job: (q: OptionQuote) =>
 let feedDown = false;
 
 async function onTick(tick: any) {
-    // Control line from the orchestrator after the data process was restarted: replay every live token subscription.
-    if (tick.cmd === 'resync') {
-        Log.log(`[strategies] data process restarted - resubscribed ${resubscribeAll()} token feed(s)`);
-        return;
-    }
-    // The orchestrator does not restart `data` (review decision 5). Entries are tick-driven, so no ticks means no new entries;
-    // this only makes the outage loud, and the first tick afterwards logs the recovery.
-    if (tick.cmd === 'feedDown') {
-        feedDown = true;
-        Log.log(`[strategies] ALERT: ${tick.source ?? 'data'} feed is DOWN - no ticks will arrive, so no new entries; open positions are not being tick-monitored`);
-        return;
-    }
     if (feedDown && tick.type) {
         feedDown = false;
-        Log.log('[strategies] feed is delivering ticks again');
+        Log.log('[strategies] the data feed is delivering ticks again');
     }
     if (tick.type === 'nifty') {
         const quote = Object.assign(new NiftyQuote(), tick.quote) as NiftyQuote;
@@ -420,7 +404,7 @@ function startStrategiesServer() {
 
 const ownSocket = ownSocketTracker(); // see ipc/ownSocket.ts
 
-async function main() {
+export async function startStrategiesProcess() {
     // TopStock (and antLegOps) resolve ANT contracts in this process - warm the NFO/NSE caches
     // before strategies.initialize() so the first in-window lookup is an in-memory read.
     AntContractMaster.getInstance().preload();
@@ -442,13 +426,19 @@ async function main() {
     }
     startStrategiesServer();
 
-    readJsonLines(
-        process.stdin,
-        (tick) => {
-            onTick(tick).catch((e) => Log.log('[strategies] onTick handler failed:', e));
-        },
-        (line, err) => Log.log('[strategies] Failed to parse stdin tick:', line, err)
-    );
+    // Ticks come over the data socket. The link tells us when `data` goes away (it is never restarted automatically - decision 5):
+    // entries are tick-driven, so none can happen until it is back, and open positions are not being tick-monitored meanwhile.
+    const dataLink = DataLink.getInstance();
+    dataLink.onStatus((up) => {
+        if (!up) {
+            feedDown = true;
+            Log.log('[strategies] ALERT: the data feed is DOWN - no ticks will arrive, so no new entries; open positions are not being tick-monitored');
+        }
+    });
+    dataLink.onTick((tick) => {
+        onTick(tick).catch((e) => Log.log('[strategies] onTick handler failed:', e));
+    });
+    dataLink.connect();
 
     await strategies.initialize();
 
@@ -480,12 +470,20 @@ process.on('uncaughtException', (e) => {
     Log.log('[strategies] Uncaught exception (process kept alive):', e);
 });
 
-main().catch((e) => {
-    Log.log('[strategies] Fatal startup error:', e);
-    process.exit(1);
-});
-
-process.on('SIGTERM', () => {
+export function stopStrategiesProcess(): void {
     ownSocket.unlink(STRATEGIES_SOCKET_PATH);
-    process.exit(0);
-});
+}
+
+// Standalone entry (the old two-process topology: connects to a separate `order` process over its socket). The merged process
+// starts it from tradingProcess.ts instead.
+if (require.main === module) {
+    startStrategiesProcess().catch((e) => {
+        Log.log('[strategies] Fatal startup error:', e);
+        process.exit(1);
+    });
+
+    process.on('SIGTERM', () => {
+        stopStrategiesProcess();
+        process.exit(0);
+    });
+}

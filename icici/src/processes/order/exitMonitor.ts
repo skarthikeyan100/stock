@@ -1,5 +1,5 @@
 import Log from '../../util/Log';
-import { writeJsonLine } from '../../ipc/jsonLines';
+import { DataLink } from '../../ipc/DataLink';
 import { OptionQuote, Trade } from '../../model/model';
 import configService from '../../prism/ConfigService';
 import { BROKER_TO_FEED_SOURCE, DEFAULT_FEED_SOURCE } from '../../ipc/feedSource';
@@ -8,9 +8,8 @@ import { exchangeForTsym } from '../../util/underlyings';
 // In-app target/SL exit monitoring, for trades placed with useGTT=false (see
 // bookkeeping.getUserUseGTT / kiteExecutor.finalizeEntry, antExecutor.finalizeEntry).
 // Mirrors strategies' tokenRouter.ts+DataClient.ts pattern one level up:
-// subscribe/unsubscribe commands go out on `order`'s own stdout, which the
-// orchestrator relays into `data`'s stdin, and ticks come back in on `order`'s
-// stdin (see orderProcess.ts). The actual squareoff call is injected per-broker
+// subscribe/unsubscribe commands go to `data` over the DataLink socket
+// (owner 'exit'), and ticks come back on the same link (see orderProcess.ts). The actual squareoff call is injected per-broker
 // via onExit() rather than imported directly, to avoid a circular dependency
 // with kiteExecutor.ts/antExecutor.ts.
 
@@ -170,7 +169,7 @@ export function registerTrade(trade: Trade, exchange: 'NFO' | 'BFO', broker: Bro
     if (!alreadySubscribed) {
         // exchange + source must be explicit: a SENSEX (BFO) token subscribed without
         // the exchange is requested as NFO and never ticks.
-        writeJsonLine(process.stdout, { cmd: 'subscribe', token: trade.token, source: BROKER_TO_FEED_SOURCE[broker] ?? DEFAULT_FEED_SOURCE, exchange });
+        DataLink.getInstance().subscribe('exit', { cmd: 'subscribe', token: trade.token, source: BROKER_TO_FEED_SOURCE[broker] ?? DEFAULT_FEED_SOURCE, exchange });
     }
     Log.log(`[order] exitMonitor watching ${trade.tsym} (token ${trade.token}, ${broker}) for ${trade.user}: target=${trade.targetPrice} stopLoss=${trade.stopLossPrice}${watchOnly ? ' (watch-only, broker owns exit)' : ''}`);
 }
@@ -190,7 +189,7 @@ export function unregisterTrade(user: string, token: string, broker?: Broker): v
     // position in the same contract.
     for (const entry of removed) {
         if (!isTokenWatched(token, entry.exchange, feedSourceOf(entry.broker))) {
-            writeJsonLine(process.stdout, { cmd: 'unsubscribe', token, source: BROKER_TO_FEED_SOURCE[entry.broker] ?? DEFAULT_FEED_SOURCE, exchange: entry.exchange });
+            DataLink.getInstance().subscribe('exit', { cmd: 'unsubscribe', token, source: BROKER_TO_FEED_SOURCE[entry.broker] ?? DEFAULT_FEED_SOURCE, exchange: entry.exchange });
         }
     }
 }

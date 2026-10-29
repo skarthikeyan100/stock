@@ -40,7 +40,7 @@ function key(source: FeedSource, token: string): string {
 const watchers = new Map<string, Set<Strategy>>();
 const tradeHolders = new Map<string, Set<Strategy>>();
 // What the data process was last told to subscribe, per feed key. An unsubscribe that omits the exchange reuses the one recorded here
-// (a BFO token must be unsubscribed as BFO), and resubscribeAll() replays these after the data process restarts.
+// (a BFO token must be unsubscribed as BFO). A restarted data process gets them back from DataLink's own replay.
 const subscribed = new Map<string, { token: string; source: FeedSource; exchange?: 'NFO' | 'BFO' }>();
 
 function subscribeFeed(token: string, source: FeedSource, exchange?: 'NFO' | 'BFO'): void {
@@ -54,16 +54,6 @@ function unsubscribeFeed(token: string, source: FeedSource, exchange?: 'NFO' | '
     const ex = exchange ?? subscribed.get(k)?.exchange;
     subscribed.delete(k);
     unsubscribeToken(token, source, ex);
-}
-
-// The data process comes back from a crash or hot restart with an empty subscription map, while the refcounts here still say its
-// tokens are subscribed - so open legs/slots would silently get no ticks. Re-sends every live subscription (subscribe is idempotent).
-export function resubscribeAll(): number {
-    let n = 0;
-    for (const [k, sub] of subscribed) {
-        if (refCount(k) > 0) { subscribeToken(sub.token, sub.source, sub.exchange); n++; }
-    }
-    return n;
 }
 
 // Keys an external (non-strategy) client holds, e.g. the anonymous demo page's subscriptions. They take part in the ref-count, so

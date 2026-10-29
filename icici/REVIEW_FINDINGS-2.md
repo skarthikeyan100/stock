@@ -114,20 +114,24 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 ## Area 1: orchestrator and IPC
 
 ### R1-1 `orchestrator.ts` is 400 lines, about 150 of them dev hot-reload machinery [medium]
+**Status: DONE (Phase 3, 2026-10-29).** The dev hot-restart stays (it is how the trading code gets reloaded during development; the user did not ask to drop it) but the four near-identical start/restart/respawn triples are one `makeRole`/`hotRestart` factory, the stdio re-wiring is gone with the pipes, and `data` has no restart machinery at all. `orchestrator.ts` lost about 120 lines. Verified by booting it and hot-restarting `trading` while `data` and `frontend` stayed up.
 - `hashTree`/`sameHashes`, `watchAndRestart` (sha1 snapshots, 90 s grace, debounce, lines 160-200), `makeRespawner` with backoff and `MAX_FAILED_RESTARTS`, `serial()` restart chains, `replacementAlreadyRunning`, four near-identical `start`/`restart`/`respawn` triples, and four path lists for watchers.
 - The stdio pipes are re-wired by hand in each restart function.
 - **Action:** drop the hot restart (a manual restart or `nodemon` per process is enough for a single developer). Make `makeChild(name, script, env)` data-driven with a role table and one `restart(role)`. About 150 LOC less.
 
 ### R1-2 Processes communicate through stdout, which forces a `console.log` redirect [medium]
+**Status: DONE (Phase 3, 2026-10-29).** Ticks and feed commands travel over a `data` Unix socket (`DataServer` in `data`, `ipc/DataLink` in `trading` and `frontend`); stdout/stderr are plain logs and every `console.log = console.error` redirect is gone. The `useGTT=false` tick feed to the order side is kept (the merged process reads the same link). Subscriptions are reference-counted per owner inside a process and per client inside `data`, which also closes the old hazard of one process's unsubscribe cutting off another's token. Tests: `dataLink.test.ts`; verified by booting the orchestrator against the live (market-closed) ANT/Breeze feeds and killing `data`.
 - `data` pipes its ticks to `order` and `strategies` via stdout. Each child sends commands back on stdout. Every entry point then does `console.log = console.error` (`server.ts:6`, `strategiesProcess.ts:4`, `orderProcess.ts:4`, `dataProcess.ts:4`). The orchestrator notes say this has already bitten the project.
 - **Action:** use Unix sockets for ticks and commands (both already exist for `order`/`strategies` IPC). Keep stdout as plain logs, and remove the redirect.
 - **Unverified:** the tick feed to `order` (for `exitMonitor`'s `useGTT=false` trades). If `useGTT=false` is no longer used, the feed can go. Confirm before deleting.
 
 ### R1-3 `resync` timers hack [low]
+**Status: DONE (Phase 3, 2026-10-29).** `DataLink` replays its held subscriptions on every (re)connect, so no `resync` command, timers or `resubscribeAll` are needed and they are deleted.
 - `orchestrator.ts` (about 257-263) sends resync after 5 s and 20 s, which are timing guesses. `strategiesProcess.ts:257` handles it.
 - **Action:** `data` emits a "ready" line at startup, and `strategies` answers with `resubscribeAll`. No timers.
 
 ### R1-4 Two IPC protocols plus a fourth process [medium]
+**Status: PARTIAL (Phase 3, 2026-10-29).** DONE: `order` and `strategies` run as one `trading` process (`tradingProcess.ts`); strategy -> order calls are in-process (`OrderClient.useLocalServer`, JSON-cloned like the socket); the stdout tick pipes and the `console.log` redirect are gone; the startup order is one sequence. Frontend and data stay separate (decisions 3 and 4). `trading` still serves `ORDER_IPC_SOCKET` and `STRATEGIES_IPC_SOCKET` because the frontend uses them; `orderProcess.ts`/`strategiesProcess.ts` can still be started standalone for debugging. OPEN (Phase 6): splitting `server.ts` into route modules and moving `OrderClient` out of `processes/strategies/`.
 - `order` socket (`orderProtocol.ts` 191 LOC, `OrderClient.ts` 456 LOC) and `strategies` socket (`strategiesProtocol.ts`, `StrategiesClient.ts` 136 LOC). `OrderClient` is used by the frontend and by `strategies`, but lives under `processes/strategies/`.
 - `server.ts` (2271 LOC) mixes the Express API, OAuth callbacks, payouts, KYC upload, OCR (`tesseract.js`), email, HTTPS on 443 and HTTP on 80. It is the hardest file in the project to reason about.
 - **Action:** split `server.ts` into route modules (payouts, users/KYC, broker, trading). Move `OrderClient` to a shared location. **DECIDED 2026-10-29 (user):** `order` and `strategies` merge into one process. Broker connections do not break on a merge, since they are already per user. The frontend can also be merged if useful. Consequences to plan for:
@@ -138,6 +142,7 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 - Frontend merge: optional and not decided. It is a separate question from the order/strategies merge.
 
 ### R1-5 `Strategies` class duplicates its expanded-config build and refreshes twice [low]
+**Status: DONE (Phase 3, 2026-10-29).** One private builder (`loadExpandedConfigs`); `syncFromConfig` is just `reloadNow()` (the reload's own listener refreshes, it used to refresh twice); the debug log is gone. The `syncFromConfig` IPC case stays (the frontend and BulkPcrAutoStart use it to apply a config write at once).
 - `strategies.ts` builds `expandedConfigs` identically in `initialize()` and `refreshFromConfig()` (lines 45-55 and 105-115). `syncFromConfig()` calls `configService.reloadNow()`, which fires `onChange`, which calls `refreshFromConfig()`, so the refresh happens twice.
 - `Log.log('[] expandedConfigArray: ', ...)` (about line 41) is a debug leftover.
 - **Action:** one private builder. Drop `syncFromConfig` and the `syncFromConfig` IPC case (`strategiesProcess.ts:346`) if `onChange` already covers it.
@@ -149,6 +154,7 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 - **Action:** grep each module for importers, then delete the unreferenced ones in one change.
 
 ### R1-7 Unhandled-error policy differs by process [note]
+**Status: CONFIRMED and left (Phase 3, 2026-10-29).** `data` deliberately has no `uncaughtException` handler: with no automatic restart (decision 5) an exit is now the loud failure (clients raise feed-down alerts); the comment in `dataProcess.ts` says so. `trading` keeps both handlers (log and stay up), which is the policy `strategies` already had; it is a slightly weaker policy for the order side, which used to crash on an uncaught exception and be respawned, but a respawn dropped every in-memory exit state.
 - `main().catch` in each process, and `unhandledRejection`/`uncaughtException` handlers that keep running (`strategiesProcess.ts:452-457`, bottom of `orchestrator.ts`). `dataProcess.ts:577` deliberately has no `uncaughtException` handler. The difference is documented, so it looks intentional. Confirm, then leave.
 
 ---

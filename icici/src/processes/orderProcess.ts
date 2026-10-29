@@ -1,8 +1,3 @@
-// stdout now doubles as the subscribe/unsubscribe protocol channel back to
-// `data` (see exitMonitor.ts) - redirect console.log to stderr before any
-// other module loads, mirroring strategiesProcess.ts/dataProcess.ts.
-console.log = console.error;
-
 // This host is dual-stack and Node's Happy-Eyeballs connection logic prefers
 // IPv6 when both are available, which bypasses Kite's AND AliceBlue/ANT's
 // IPv4-only order-placement allowlists. dns.setDefaultResultOrder('ipv4first')
@@ -21,6 +16,7 @@ installIpv4OnlyHostOverride();
 import { TRACKERS, TRACKER_BROKERS } from './order/pendingTrackers';
 import { BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
 import { ownSocketTracker } from '../ipc/ownSocket';
+import { DataLink } from '../ipc/DataLink';
 import net from 'net';
 import fs from 'fs';
 import Log from '../util/Log';
@@ -73,14 +69,23 @@ process.on('unhandledRejection', (reason) => {
 // use Node's fork()-only IPC directly, and `order` is the stable side on purpose:
 // when `strategies` gets killed/respawned for a code change, it just reconnects -
 // `order`'s live broker sessions and GTTs are never touched). Its stdin/stdout
-// are also wired (by the orchestrator) into the same tick-feed pipe used by
-// `strategies`/`frontend`, solely so exitMonitor.ts can watch useGTT=false
-// trades against live option ticks (see orderProcess.ts's onTick below).
+// also take ticks over the data socket, solely so exitMonitor.ts can watch
+// useGTT=false trades against live option ticks (see orderProcess.ts's onTick below).
 
 const clients = new Set<net.Socket>();
 
-function broadcast(msg: FillNotification | PositionsChangedNotification | OrderCancelledNotification) {
+type OrderNotification = FillNotification | PositionsChangedNotification | OrderCancelledNotification;
+const notificationListeners: Array<(msg: OrderNotification) => void> = [];
+// In-process subscribers (the merged trading process's strategies side) get every push the socket clients get.
+export function onNotification(listener: (msg: OrderNotification) => void): void {
+    notificationListeners.push(listener);
+}
+
+function broadcast(msg: OrderNotification) {
     for (const c of clients) writeJsonLine(c, msg);
+    for (const l of notificationListeners) {
+        try { l(msg); } catch (e) { Log.log('[order] in-process notification listener threw:', e); }
+    }
 }
 
 bookkeeping.onFill((userId, trade) => {
@@ -758,7 +763,7 @@ function upgradeLegacyRequest(req: OrderRequest): OrderRequest {
     }
 }
 
-async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
+export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     req = upgradeLegacyRequest(req);
     try {
         // Accept legacy broker names (e.g. 'zerodha') from any caller before anything dispatches on them.
@@ -1418,7 +1423,7 @@ async function onTick(tick: any) {
 
 const ownSocket = ownSocketTracker(); // see ipc/ownSocket.ts
 
-async function main() {
+export async function startOrderProcess() {
     // Warm every broker's contract master before the IPC socket accepts requests, so the first
     // order inside a trading window doesn't pay the file parse. Breeze's daily refresh runs
     // in the background (void) so a slow download can't delay startup.
@@ -1564,11 +1569,11 @@ async function main() {
         }
     }, 60_000);
 
-    readJsonLines(
-        process.stdin,
-        onTick,
-        (line, err) => Log.log('[order] Failed to parse stdin tick:', line, err)
-    );
+    // Ticks for exitMonitor's useGTT=false watches arrive over the data socket (the same link the strategies side uses).
+    DataLink.getInstance().onTick((tick) => {
+        onTick(tick).catch((e) => Log.log('[order] Failed to handle a tick:', e));
+    });
+    DataLink.getInstance().connect();
 
     if (fs.existsSync(ORDER_SOCKET_PATH)) fs.unlinkSync(ORDER_SOCKET_PATH);
 
@@ -1600,12 +1605,20 @@ async function main() {
     });
 }
 
-main().catch((e) => {
-    Log.log('[order] Fatal startup error:', e);
-    process.exit(1);
-});
-
-process.on('SIGTERM', () => {
+export function stopOrderProcess(): void {
     ownSocket.unlink(ORDER_SOCKET_PATH);
-    process.exit(0);
-});
+}
+
+// Standalone entry (the old two-process topology, still useful for debugging `order` alone). The merged process starts it from
+// tradingProcess.ts instead.
+if (require.main === module) {
+    startOrderProcess().catch((e) => {
+        Log.log('[order] Fatal startup error:', e);
+        process.exit(1);
+    });
+
+    process.on('SIGTERM', () => {
+        stopOrderProcess();
+        process.exit(0);
+    });
+}

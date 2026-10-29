@@ -88,7 +88,44 @@ class OrderClient {
         return true;
     }
 
+    // One incoming message from the order process: a response to a pending request, or a pushed notification.
+    private dispatch(msg: any): void {
+        if (msg.kind === 'response') {
+            const waiter = this.pending.get(msg.id);
+            if (waiter) {
+                this.pending.delete(msg.id);
+                waiter.resolve(msg as OrderResponse);
+            }
+        } else if (msg.kind === 'fill') {
+            const fill = msg as FillNotification;
+            for (const h of this.fillHandlers) h(fill.userId, fill.trade, fill.openQuantity);
+        } else if (msg.kind === 'positionsChanged') {
+            for (const h of this.positionsChangedHandlers) h();
+        } else if (msg.kind === 'cancelled') {
+            const cancelled = msg as OrderCancelledNotification;
+            for (const h of this.cancelledHandlers) h(cancelled.userId, cancelled);
+        }
+    }
+
+    // In-process mode (the merged trading process): requests go straight to the order handler instead of over the Unix socket, and
+    // the order side pushes notifications through deliverLocal. Everything is JSON-cloned both ways - the same isolation the socket gave,
+    // so a strategy can never mutate bookkeeping's own objects through a returned Trade.
+    private local: ((req: OrderRequest) => Promise<OrderResponse>) | null = null;
+
+    useLocalServer(handler: (req: OrderRequest) => Promise<OrderResponse>): void {
+        this.local = handler;
+        this.connected = true;
+        Log.log('[strategies] Using the in-process order handler');
+    }
+
+    deliverLocal(msg: unknown): void {
+        if (!this.local) return;
+        this.dispatch(JSON.parse(JSON.stringify(msg)));
+    }
+
     connect(): void {
+        if (this.local) return; // nothing to connect: the order handler lives in this process
+
         this.socket = net.createConnection(ORDER_SOCKET_PATH);
 
         this.socket.on('connect', () => {
@@ -98,23 +135,7 @@ class OrderClient {
 
         readJsonLines(
             this.socket,
-            (msg) => {
-                if (msg.kind === 'response') {
-                    const waiter = this.pending.get(msg.id);
-                    if (waiter) {
-                        this.pending.delete(msg.id);
-                        waiter.resolve(msg as OrderResponse);
-                    }
-                } else if (msg.kind === 'fill') {
-                    const fill = msg as FillNotification;
-                    for (const h of this.fillHandlers) h(fill.userId, fill.trade, fill.openQuantity);
-                } else if (msg.kind === 'positionsChanged') {
-                    for (const h of this.positionsChangedHandlers) h();
-                } else if (msg.kind === 'cancelled') {
-                    const cancelled = msg as OrderCancelledNotification;
-                    for (const h of this.cancelledHandlers) h(cancelled.userId, cancelled);
-                }
-            },
+            (msg) => this.dispatch(msg),
             (line, err) => Log.log('[strategies] Failed to parse order-process message:', line, err)
         );
 
@@ -136,7 +157,7 @@ class OrderClient {
 
     private request(type: OrderRequestType, userId: string, payload: any, timeoutMs: number = OrderClient.REQUEST_TIMEOUT_MS): Promise<OrderResponse> {
         return new Promise((resolve, reject) => {
-            if (!this.socket || !this.connected) return reject(new Error(`${NOT_PLACED_TAG} Not connected to order process`));
+            if (!this.local && (!this.socket || !this.connected)) return reject(new Error(`${NOT_PLACED_TAG} Not connected to order process`));
             const id = String(this.nextId++);
             // If `order` never replies (hung broker call inside it, a
             // dropped/malformed response, a wedged process that's still
@@ -155,7 +176,15 @@ class OrderClient {
                 reject: (e: Error) => { clearTimeout(timer); reject(e); },
             });
             const req: OrderRequest = { kind: 'request', id, type, userId, payload };
-            writeJsonLine(this.socket, req);
+            if (this.local) {
+                const handler = this.local;
+                // Same 'response' path as a socket reply, so the timeout and pending bookkeeping above apply unchanged.
+                handler(JSON.parse(JSON.stringify(req)) as OrderRequest)
+                    .then((res) => this.dispatch(JSON.parse(JSON.stringify(res))))
+                    .catch((e) => this.dispatch({ kind: 'response', id, ok: false, error: e?.message ?? String(e) }));
+                return;
+            }
+            writeJsonLine(this.socket!, req);
         });
     }
 

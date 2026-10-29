@@ -95,7 +95,7 @@ This is a Node.js/TypeScript-based options trading platform built for automated 
 - Manages OAuth flow and session management
 - Provides methods for order placement, quote retrieval
 
-**Note:** the live trading path runs in the separate `order` process (`src/processes/orderProcess.ts`, risk/state in `src/processes/order/bookkeeping.ts`), `data` (`AntDataStream`) and `strategies` processes. `Monitor` and `AntStream` below are the older in-process implementations, kept for tests/legacy tools.
+**Note:** the live trading path runs in the merged `trading` process (`src/processes/tradingProcess.ts` = the order side `orderProcess.ts`, risk/state in `src/processes/order/bookkeeping.ts`, plus the strategy side `strategiesProcess.ts`) next to the separate `data` (`AntDataStream`) and `frontend` processes; see `Architecture.md`. `Monitor` and `AntStream` below are the older in-process implementations, kept for tests/legacy tools.
 
 **Monitor** - Risk Management & State Tracking
 - Location: `src/monitor.ts`
@@ -167,7 +167,7 @@ npx tsc  # one-time TypeScript compilation (there is no `npm run build` at the r
 ```bash
 npm run processes
 ```
-**Use this, not `npm run server`, for anything involving live trading, order placement, or broker WebSocket streaming (ANT/Breeze market-data ticks, order-notify pushes).** It's the full orchestrator: spawns `order`/`data`/`strategies`/`frontend` as child processes (`orchestrator.ts`), watches/rebuilds via `tsc -w`, and logs to `orchestrator.log`. `npm run server` only starts the standalone `frontend`-equivalent process (`server.ts` directly) with no `order`/`data`/`strategies` processes behind it — broker order execution and stream auto-connect (e.g. `BreezeOrderNotifyStream`, `AntStream`'s order side) live in those other processes, so `npm run server` alone can't exercise them. Reach for plain `npm run server` only for UI/API-only work that doesn't touch orders or streaming.
+**Use this, not `npm run server`, for anything involving live trading, order placement, or broker WebSocket streaming (ANT/Breeze market-data ticks, order-notify pushes).** It's the full orchestrator: spawns `data`/`trading`/`frontend` as child processes (`orchestrator.ts`), watches/rebuilds via `tsc -w`, and logs to `orchestrator.log`. `npm run server` only starts the standalone `frontend`-equivalent process (`server.ts` directly) with no `data`/`trading` processes behind it — broker order execution and stream auto-connect (e.g. `BreezeOrderNotifyStream`, `AntStream`'s order side) live in those other processes, so `npm run server` alone can't exercise them. Reach for plain `npm run server` only for UI/API-only work that doesn't touch orders or streaming.
 
 Both listen on port 3000 (or `process.env.PORT`) and serve the trading platform API and UI; `npm run processes` additionally tries to listen on 80/443 (443 only if key.pem/cert.pem exist).
 
@@ -193,8 +193,9 @@ order/data/strategies/frontend as children that inherit its already-populated `p
 
 **Infra/dev (defaults are fine for a normal single-machine setup):**
 - `CONFIG_PATH` - path to the strategy/risk config YAML. Default: `./config.yml`.
-- `ORDER_IPC_SOCKET`, `STRATEGIES_IPC_SOCKET` - Unix domain socket paths for the order/strategies
-  IPC channels. Defaults: `/tmp/icici-order.sock`, `/tmp/icici-strategies.sock`.
+- `ORDER_IPC_SOCKET`, `STRATEGIES_IPC_SOCKET`, `DATA_IPC_SOCKET` - Unix domain socket paths for the order, strategies
+  (both served by the `trading` process) and tick-feed (`data`) channels. Defaults: `/tmp/icici-order.sock`,
+  `/tmp/icici-strategies.sock`, `/tmp/icici-data.sock`.
 - `ORDER_IPC_TIMEOUT_MS` - timeout (ms) for a single order-process IPC request. Default: `90000`.
 - `HOT_RESTART` - `orchestrator.ts` dev convenience; set to `'false'` to disable auto-restarting a
   child process when its compiled output changes. Default: on. It restarts a child only when a watched

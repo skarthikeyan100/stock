@@ -1,10 +1,3 @@
-// stdout is reserved for the control-command protocol back to `data` (e.g.
-// 'reconnect' for /ant/connect) - redirect console.log to stderr before any
-// other module (which may log at import time) loads, same as dataProcess.ts
-// and strategiesProcess.ts. Forgetting this corrupts data's stdin JSON parser
-// with ordinary log lines.
-console.log = console.error;
-
 // Load .env into process.env before any other module - several modules read
 // process.env at import time (e.g. src/constants.ts's MOCK_BROKER/MOCK_QUOTES/
 // MOCK_DATE), so this must be the very first import. See .env.example for the
@@ -58,7 +51,7 @@ import Breeze from './breeze/Breeze';
 import BreezeStream from './breeze/BreezeStream';
 import OrderClient from './processes/strategies/OrderClient';
 import StrategiesClient from './ipc/StrategiesClient';
-import { readJsonLines, writeJsonLine } from './ipc/jsonLines';
+import { DataLink } from './ipc/DataLink';
 import { cloudflareOnly, isLoopback } from './middleware/cloudflareOnly';
 import { OAuth2Client } from 'google-auth-library';
 import { BROKER_CLIENTS, brokerClientFor } from './broker/brokerClients';
@@ -1177,7 +1170,7 @@ const brokerCallback = (name: BrokerName) => async function (req: express.Reques
         await entry.exchangeToken(params);
         // Only a code that was actually exchanged is kept (served by /prism/authcode): a failed or replayed callback leaves none.
         route.remember?.(params);
-        if (route.reconnectCmd) writeJsonLine(process.stdout, route.reconnectCmd);
+        if (route.reconnectCmd) DataLink.getInstance().send(route.reconnectCmd);
         // `order` loaded whatever (possibly stale/absent) session was on disk when it started; reloadSession re-reads it (and
         // reconnects the order-notify stream where there is one).
         let reloaded = false;
@@ -1327,12 +1320,10 @@ app.get('/broker/:broker/positions', requireAdmin, async function (req, res) {
 // ============================== ANT connect / raw stream ==============================
 // `data` auto-connects and auto-reconnects on its own now (see AntDataStream's
 // backoff logic), so /ant/connect is a manual trigger for parity rather than
-// the only way to get connected - it writes a control command on frontend's
-// own stdout, which the orchestrator pipes into `data`'s stdin (mirroring how
-// `strategies` talks to `data`).
+// the only way to get connected - it sends a reconnect command to `data` over its socket.
 getOrPost('/ant/connect', requireAdmin, async function (req, res) {
     try {
-        writeJsonLine(process.stdout, { cmd: 'reconnect' });
+        DataLink.getInstance().send({ cmd: 'reconnect' });
         res.json({ status: 'connected' });
     } catch (e: any) {
         Log.log('ANT connect error:', e);
@@ -2208,25 +2199,21 @@ async function main() {
     orderClient.connect();
     strategiesClient.connect();
 
-    // stdin: ticks piped in from `data` (relayed by the orchestrator) - feeds
-    // /niftystream, /optionstream, /ant/stream.
-    readJsonLines(
-        process.stdin,
-        (tick) => {
-            if (tick.type === 'nifty') {
-                lastNiftyQuote = tick.quote;
-                const payload = `data: ${JSON.stringify({ nifty: tick.quote })}\n\n`;
-                for (const res of niftyStreamClients) res.write(payload);
-            } else if (tick.type === 'option') {
-                const payload = `data: ${JSON.stringify(tick.quote)}\n\n`;
-                for (const res of optionStreamClients) res.write(payload);
-            }
-            // Raw relay for /ant/stream, matching its old "verbatim ant-quote" shape.
-            const rawPayload = `data: ${JSON.stringify(tick)}\n\n`;
-            for (const res of antStreamClients) res.write(rawPayload);
-        },
-        (line, err) => Log.log('[frontend] Failed to parse stdin tick:', line, err)
-    );
+    // Ticks from `data` (over its socket) feed /niftystream, /optionstream, /ant/stream.
+    DataLink.getInstance().onTick((tick) => {
+        if (tick.type === 'nifty') {
+            lastNiftyQuote = tick.quote;
+            const payload = `data: ${JSON.stringify({ nifty: tick.quote })}\n\n`;
+            for (const res of niftyStreamClients) res.write(payload);
+        } else if (tick.type === 'option') {
+            const payload = `data: ${JSON.stringify(tick.quote)}\n\n`;
+            for (const res of optionStreamClients) res.write(payload);
+        }
+        // Raw relay for /ant/stream, matching its old "verbatim ant-quote" shape.
+        const rawPayload = `data: ${JSON.stringify(tick)}\n\n`;
+        for (const res of antStreamClients) res.write(rawPayload);
+    });
+    DataLink.getInstance().connect();
 
     const port = Number(process.env.PORT) || 3000;
     const mainServer = app.listen(port, () => Log.log(`[frontend] Listening on ${port}`));

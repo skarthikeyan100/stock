@@ -1,6 +1,6 @@
 // Load .env into process.env before anything else - every child this spawns
 // below inherits process.env at spawn time (see spawnChild's `{ ...process.env,
-// ...extraEnv }`), so loading it here covers order/data/strategies/frontend
+// ...extraEnv }`), so loading it here covers data/trading/frontend
 // too without each needing its own dotenv call. See .env.example for the full
 // variable list and CLAUDE.md's Environment section for which are required.
 import './util/tz'; // pin TZ=Asia/Kolkata before any other module reads the clock
@@ -25,21 +25,15 @@ import { shouldAutoRestart } from './orchestratorPolicy';
 // Kite's hostname - see src/processes/order/kiteDns.ts, applied in
 // orderProcess.ts (the only process that calls api.kite.trade).
 
-// The parent. Spawns data/order/strategies/frontend as sibling processes and
-// wires their transports:
-//   - data.stdout  -> strategies.stdin AND frontend.stdin AND order.stdin  (tick feed)
-//   - strategies.stdout -> data.stdin AND order.stdout -> data.stdin       (subscribe/unsubscribe)
-//   - order/strategies/frontend all get ORDER_IPC_SOCKET to find each other
+// The parent. Spawns data/trading/frontend as sibling processes (`trading` = order + strategies merged, review decision 2). They find
+// each other through Unix sockets, not through the orchestrator:
+//   - data serves ticks and takes feed commands on DATA_IPC_SOCKET (ipc/DataLink is the client in trading and frontend)
+//   - trading serves ORDER_IPC_SOCKET and STRATEGIES_IPC_SOCKET to frontend
 //
-// order's tick pipe exists solely for exitMonitor.ts (per-user useGTT=false
-// trades watched in-app instead of via a broker GTT) - it's otherwise unused.
-//
-// Each child is watched and restarted independently (dev mode) - editing
-// order code restarts only `order`, editing strategy code restarts only
-// `strategies`, etc. The orchestrator itself is never restarted by tsc-watch;
-// run it as a long-lived process alongside `tsc -w` (see package.json's
-// "processes" script) so a save never tears down every child at once - that's
-// the actual point of this split.
+// Each child is watched and restarted independently (dev mode), except `data`, which is never restarted automatically (review
+// decision 5): editing trading code restarts only `trading`, editing the API restarts only `frontend`. The orchestrator itself is
+// never restarted by tsc-watch; run it as a long-lived process alongside `tsc -w` (see package.json's "processes" script) so a save
+// never tears down every child at once - that's the actual point of this split.
 
 const DIST = path.join(__dirname); // this file itself runs from dist/orchestrator.js
 const REPO_ROOT = path.join(DIST, '..'); // dist/ mirrors src/ 1:1, so this is the repo root
@@ -51,15 +45,7 @@ function log(tag: string, ...args: any[]) {
     console.log(`[orchestrator] [${tag}]`, ...args);
 }
 
-// stdio must be set deliberately per role: a 'pipe' stream that nobody ever
-// reads fills its OS buffer and blocks the child's writes once full (this bit
-// order/frontend in testing - their stdout was 'pipe' with no consumer, and
-// normal Log.log output eventually deadlocked them). Only stdout that's
-// actually piped somewhere (data, strategies, frontend, and now order - see
-// exitMonitor.ts) should be 'pipe'; everything else goes straight to the
-// terminal via 'inherit'. order/strategies/frontend redirect console.log to
-// stderr at the very top of their entry files for exactly this reason - their
-// stdout is a reserved protocol channel, not for logging.
+// stdout/stderr of every child are inherited, so their logs land in the orchestrator's own output (orchestrator.log); stdin is unused.
 // cwd is explicit (not inherited) so every child resolves repo-root-relative
 // files (userToken.txt, .ant_session.json, config.yml, ...) the same way
 // regardless of where `npm run processes` was invoked from.
@@ -205,143 +191,91 @@ function watchAndRestart(name: string, watchPaths: string[], onChange: () => voi
 // Top-level compiled modules (dist/*.js) that several processes import directly.
 const topLevel = (...files: string[]) => files.map((f) => path.join(DIST, f));
 
+// Restarts of one role are serialised so a crash respawn and a hot restart can never overlap.
+const restartChains = new Map<string, Promise<void>>();
+// Resolves 'started' (a new child is running), 'skipped' (a live replacement already was) or 'failed' (logged).
+function serial(role: string, fn: () => Promise<'started' | 'skipped'>): Promise<RestartOutcome> {
+    const next: Promise<RestartOutcome> = (restartChains.get(role) ?? Promise.resolve()).then(fn).catch((e): RestartOutcome => {
+        log(role, 'restart failed:', e);
+        return 'failed';
+    });
+    restartChains.set(role, next.then(() => undefined));
+    return next;
+}
+
+// No child's stdio is a protocol channel: ticks and feed commands travel over the data Unix socket (ipc/DataLink), so stdout and stderr
+// are plain logs (inherited) and stdin is unused.
+const CHILD_STDIO: ('pipe' | 'inherit' | 'ignore')[] = ['ignore', 'inherit', 'inherit'];
+
+// A restartable child: one `start` used for the first boot, a hot restart on a code change AND a crash respawn (the restart stops the
+// old process, waiting for it to be really gone, then spawns the new one).
+interface Role {
+    child: ChildProcessWithoutNullStreams;
+    start(): void;
+    restart(opts?: { onlyIfDead?: boolean }): Promise<RestartOutcome>;
+    respawn(): void;
+}
+function makeRole(name: string, script: string, env: Record<string, string>): Role {
+    const role: Role = {
+        child: undefined as unknown as ChildProcessWithoutNullStreams,
+        start: () => { role.child = spawnChild(name, script, CHILD_STDIO, env, role.respawn); },
+        restart: (opts) => serial(name, async () => {
+            if (replacementAlreadyRunning(name, role.child, opts)) return 'skipped';
+            await stopChild(role.child);
+            role.start();
+            return 'started';
+        }),
+        respawn: () => { /* replaced just below: it needs role.restart */ },
+    };
+    role.respawn = makeRespawner(name, role.restart);
+    return role;
+}
+
+// Restart `role` when a watched dist/ path changes (dev hot restart).
+function hotRestart(name: string, role: Role, watchPaths: string[]): void {
+    watchAndRestart(name, watchPaths, () => {
+        log('dev', `Restarting ${name} (the other children untouched)...`);
+        void role.restart().then((outcome) => { if (outcome === 'failed') role.respawn(); });
+    });
+}
+
+// dist/ directories every child imports from; a change in one restarts each child that watches it.
+const sharedDirs = (...extra: string[]) => [...['ant', 'kite', 'breeze', 'model', 'util', 'prism', 'tools', 'ipc', 'lib', ...extra].map((d) => path.join(DIST, d))];
+
 async function main() {
-    // Each role is (re)started by one routine used for the first boot, a hot restart on a code change AND a crash
-    // respawn: it stops the old process (waiting for it to be really gone), spawns the new one and re-pipes it.
-    let data!: ChildProcessWithoutNullStreams;
-    let order!: ChildProcessWithoutNullStreams;
-    let frontend!: ChildProcessWithoutNullStreams;
-    let strategies!: ChildProcessWithoutNullStreams;
-
-    // Restarts of one role are serialised so a crash respawn and a hot restart can never overlap.
-    const chains = new Map<string, Promise<void>>();
-    // Resolves 'started' (a new child is running), 'skipped' (a live replacement already was) or 'failed' (logged).
-    const serial = (role: string, fn: () => Promise<'started' | 'skipped'>): Promise<RestartOutcome> => {
-        const next: Promise<RestartOutcome> = (chains.get(role) ?? Promise.resolve()).then(fn).catch((e): RestartOutcome => {
-            log(role, 'restart failed:', e);
-            return 'failed';
-        });
-        chains.set(role, next.then(() => undefined));
-        return next;
-    };
-
-    // --- data (stdin: commands from strategies; stdout: tick feed - both real protocol channels) ---
-    const startData = () => {
-        data = spawnChild('data', 'processes/dataProcess.js', ['pipe', 'pipe', 'inherit'], {}, onDataCrash);
-        if (order) { data.stdout.pipe(order.stdin, { end: false }); order.stdout.pipe(data.stdin, { end: false }); }
-        if (frontend) { data.stdout.pipe(frontend.stdin, { end: false }); frontend.stdout.pipe(data.stdin, { end: false }); }
-        if (strategies) { data.stdout.pipe(strategies.stdin, { end: false }); strategies.stdout.pipe(data.stdin, { end: false }); }
-    };
-    // `data` is never restarted automatically (review decision 5): a crash raises an alert and tells strategies the feed is down,
-    // and the operator restarts the whole run outside market hours. A rebuilt dist/ file does not restart it either.
-    const onDataCrash = () => {
+    // --- data: owns the broker websockets and serves ticks on its socket. Never restarted automatically (review decision 5): a crash
+    // raises an alert, `trading` and `frontend` notice the closed socket and raise their own feed-down alerts, and an operator restarts
+    // the run outside market hours. A rebuilt dist/ file does not restart it either, so it has no role/restart machinery. ---
+    log('boot', 'Starting data...');
+    spawnChild('data', 'processes/dataProcess.js', CHILD_STDIO, {}, () => {
         if (shouldAutoRestart('data', 'crash')) return;
         log('data', 'ALERT: data process exited - NOT restarting it automatically. Ticks have stopped; restart the orchestrator when it is safe.');
-        if (strategies && !strategies.killed && strategies.stdin.writable) strategies.stdin.write(JSON.stringify({ cmd: 'feedDown', source: 'data' }) + '\n');
-    };
-
-    // --- order: the Unix-socket IPC server (strategies/frontend place orders through it) is the main reason it
-    // exists, but its stdin/stdout are also wired into the tick-feed pipe like strategies/frontend, solely so
-    // exitMonitor.ts can watch useGTT=false trades against live option ticks. ---
-    const startOrder = () => {
-        order = spawnChild('order', 'processes/orderProcess.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV, respawnOrder);
-        data.stdout.pipe(order.stdin, { end: false });
-        order.stdout.pipe(data.stdin, { end: false });
-    };
-    const restartOrder = (opts?: { onlyIfDead?: boolean }) => serial('order', async () => {
-        const old = order;
-        if (replacementAlreadyRunning('order', old, opts)) return 'skipped';
-        data.stdout.unpipe(old.stdin);
-        old.stdout.unpipe(data.stdin);
-        await stopChild(old);
-        startOrder();
-        return 'started';
     });
-    const respawnOrder = makeRespawner('order', restartOrder);
 
-    const startFrontend = () => {
-        frontend = spawnChild('frontend', 'server.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV, respawnFrontend);
-        data.stdout.pipe(frontend.stdin, { end: false });
-        frontend.stdout.pipe(data.stdin, { end: false });
-    };
-    const restartFrontend = (opts?: { onlyIfDead?: boolean }) => serial('frontend', async () => {
-        const old = frontend;
-        if (replacementAlreadyRunning('frontend', old, opts)) return 'skipped';
-        data.stdout.unpipe(old.stdin);
-        old.stdout.unpipe(data.stdin);
-        await stopChild(old);
-        startFrontend();
-        return 'started';
-    });
-    const respawnFrontend = makeRespawner('frontend', restartFrontend);
-
-    const startStrategies = () => {
-        strategies = spawnChild('strategies', 'processes/strategiesProcess.js', ['pipe', 'pipe', 'inherit'], COMMON_ENV, respawnStrategies);
-        data.stdout.pipe(strategies.stdin, { end: false });
-        strategies.stdout.pipe(data.stdin, { end: false });
-    };
-    const restartStrategies = (opts?: { onlyIfDead?: boolean }) => serial('strategies', async () => {
-        const old = strategies;
-        if (replacementAlreadyRunning('strategies', old, opts)) return 'skipped';
-        data.stdout.unpipe(old.stdin);
-        old.stdout.unpipe(data.stdin);
-        await stopChild(old);
-        startStrategies();
-        return 'started';
-    });
-    const respawnStrategies = makeRespawner('strategies', restartStrategies);
-
-    log('boot', 'Starting data...');
-    startData();
-    log('boot', 'Starting order...');
-    startOrder();
-    watchAndRestart('order', [
+    // --- trading (orders + strategies in one process, review decision 2): serves the order and strategies Unix-socket IPC to
+    // `frontend`. ---
+    const trading = makeRole('trading', 'processes/tradingProcess.js', COMMON_ENV);
+    log('boot', 'Starting trading (order + strategies)...');
+    trading.start();
+    hotRestart('trading', trading, [
         path.join(DIST, 'processes', 'order'), path.join(DIST, 'processes', 'orderProcess.js'),
-        path.join(DIST, 'ant'), path.join(DIST, 'kite'), path.join(DIST, 'breeze'), path.join(DIST, 'model'),
-        path.join(DIST, 'util'), path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'), path.join(DIST, 'lib'),
-        ...topLevel('constants.js', 'orderList.js', 'nse_index.js'),
-    ], () => {
-        log('dev', 'Restarting order (data/strategies/frontend untouched)...');
-        void restartOrder().then((outcome) => { if (outcome === 'failed') respawnOrder(); });
-    });
+        path.join(DIST, 'strategy'), path.join(DIST, 'processes', 'strategiesProcess.js'), path.join(DIST, 'processes', 'strategies'),
+        path.join(DIST, 'processes', 'tradingProcess.js'),
+        ...sharedDirs(), ...topLevel('constants.js', 'orderList.js', 'nse_index.js'),
+    ]);
 
-    // Give order a moment to bind its socket before strategies/frontend try to
-    // connect (both reconnect-on-drop anyway, so this is an optimization).
+    // Give trading a moment to bind its sockets before the frontend tries to connect (it reconnects on drop anyway, so this is an
+    // optimization).
     await sleep(500);
 
-    // --- frontend (server.ts): stdin = tick feed from data; stdout = control
-    // commands back to data (e.g. 'reconnect' for /ant/connect), mirroring how
-    // strategies talks to data. Both directions are real protocol channels now.
+    // --- frontend (server.ts): ticks from data and its control commands (e.g. 'reconnect' for /ant/connect) go over the data socket. ---
+    const frontend = makeRole('frontend', 'server.js', COMMON_ENV);
     log('boot', 'Starting frontend (server.ts)...');
-    startFrontend();
-    watchAndRestart('frontend', [
-        path.join(DIST, 'server.js'),
-        path.join(DIST, 'ant'), path.join(DIST, 'kite'), path.join(DIST, 'breeze'), path.join(DIST, 'model'),
-        path.join(DIST, 'util'), path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'),
-        path.join(DIST, 'middleware'), path.join(DIST, 'lib'),
-        ...topLevel('user.js', 'payout.js', 'tax.js', 'constants.js', 'monitor.js', 'decision.js', 'candle.js', 'nse_index.js', 'orderList.js'),
-    ], () => {
-        log('dev', 'Restarting frontend (data/order/strategies untouched)...');
-        void restartFrontend().then((outcome) => { if (outcome === 'failed') respawnFrontend(); });
-    });
-
-    // --- strategies (the one meant to change most often) ---
-    log('boot', 'Starting strategies...');
-    startStrategies();
-    watchAndRestart(
-        'strategies',
-        [
-            path.join(DIST, 'strategy'), path.join(DIST, 'processes', 'strategiesProcess.js'), path.join(DIST, 'processes', 'strategies'),
-            path.join(DIST, 'ant'), path.join(DIST, 'model'), path.join(DIST, 'util'),
-            path.join(DIST, 'prism'), path.join(DIST, 'tools'), path.join(DIST, 'ipc'), path.join(DIST, 'lib'),
-            path.join(DIST, 'kite'), path.join(DIST, 'breeze'),
-            ...topLevel('constants.js', 'nse_index.js', 'orderList.js'),
-        ],
-        () => {
-            log('dev', 'Restarting strategies (data/order untouched)...');
-            void restartStrategies().then((outcome) => { if (outcome === 'failed') respawnStrategies(); });
-        }
-    );
+    frontend.start();
+    hotRestart('frontend', frontend, [
+        path.join(DIST, 'server.js'), path.join(DIST, 'middleware'),
+        ...sharedDirs(), ...topLevel('user.js', 'payout.js', 'tax.js', 'constants.js', 'monitor.js', 'decision.js', 'candle.js', 'nse_index.js', 'orderList.js'),
+    ]);
 }
 
 main().catch((e) => {
