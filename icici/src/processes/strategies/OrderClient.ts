@@ -76,6 +76,18 @@ class OrderClient {
         return this.connected;
     }
 
+    // Resolves true once connected, false after `timeoutMs`. For process start-up: the strategies process begins handling ticks and
+    // slots right away, and a request made before the order process is reachable fails closed with "Not connected to order process"
+    // (live 2026-10-29: the PCR check, the investment-cap push and the first entry attempts all hit it). Never rejects.
+    async waitUntilConnected(timeoutMs: number): Promise<boolean> {
+        const deadline = Date.now() + timeoutMs;
+        while (!this.connected) {
+            if (Date.now() >= deadline) return false;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return true;
+    }
+
     connect(): void {
         this.socket = net.createConnection(ORDER_SOCKET_PATH);
 

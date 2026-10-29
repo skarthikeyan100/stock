@@ -406,6 +406,10 @@ async function main() {
         enqueueFifo(`cancel:${userId}`, () => onOrderCancelled(userId, notification));
     });
     OrderClient.getInstance().connect();
+    // Nothing below handles a tick, slot or fill until the order process answers: any request sent before then fails closed.
+    if (!(await OrderClient.getInstance().waitUntilConnected(60_000))) {
+        Log.log('[strategies] ALERT: order process not reachable after 60s - continuing; every order request fails closed ([NOT_PLACED]) until it connects');
+    }
     startStrategiesServer();
 
     readJsonLines(
