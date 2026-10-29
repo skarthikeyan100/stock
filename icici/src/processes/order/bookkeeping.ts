@@ -1328,7 +1328,7 @@ class OrderBookkeeping {
             const positions = await Kite.getInstance().getPositions();
             const open = (positions?.net || []).filter((p: any) => p.quantity !== 0 && OrderBookkeeping.isOptionContract(p.tradingsymbol));
             for (const p of open) {
-                restored.push(...(await this.restoreOpenTradesForTsym(p.tradingsymbol, p.quantity, p.instrument_token != null ? String(p.instrument_token) : undefined, 'kite')));
+                restored.push(...(await this.restoreOpenTradesForTsym(p.tradingsymbol, p.quantity, p.instrument_token != null ? String(p.instrument_token) : undefined, 'kite', { avg: p.average_price, ltp: p.last_price })));
             }
         } catch (e) {
             Log.log('[order] reconcileKitePositions: Kite getPositions failed (continuing without restore):', e);
@@ -1360,7 +1360,7 @@ class OrderBookkeeping {
                 const tsym = p.tradingSymbol;
                 const qty = Number(p.netQuantity);
                 const token = p.instrumentId != null ? String(p.instrumentId) : undefined;
-                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, token, 'ant')));
+                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, token, 'ant', { avg: p.netAveragePrice, ltp: p.ltp })));
             }
         } catch (e) {
             Log.log('[order] reconcileAntPositions: ANT getPositions failed (continuing without restore):', e);
@@ -1394,7 +1394,7 @@ class OrderBookkeeping {
                 const tsym = `${p.stock_code}${p.strike_price}${optionType}`;
                 const qty = Number(p.quantity ?? 0);
                 if (qty === 0 || !OrderBookkeeping.isOptionContract(tsym)) continue;
-                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, undefined, 'breeze')));
+                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, undefined, 'breeze', { avg: p.average_price, ltp: p.ltp })));
             }
         } catch (e) {
             Log.log('[order] reconcileBreezePositions: Breeze getPortfolioPositions failed (continuing without restore):', e);
@@ -1425,7 +1425,7 @@ class OrderBookkeeping {
     // brokers' Mongo Buy/Sell docs into one blended restored position on
     // restart, corrupting quantity/avgPrice and losing which broker a
     // resting exit order belongs to.
-    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number, brokerToken: string | undefined, broker: 'kite' | 'ant' | 'breeze' | 'prism'): Promise<Trade[]> {
+    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number, brokerToken: string | undefined, broker: 'kite' | 'ant' | 'breeze' | 'prism', brokerView?: { avg?: unknown; ltp?: unknown }): Promise<Trade[]> {
         const db = Mongo.getInstance()?.db;
         if (!db || !tsym) return [];
 
@@ -1515,7 +1515,11 @@ class OrderBookkeeping {
             trade.right = row.right;
             trade.quantity = totalQty; // this user's own portion, not the broker's aggregate total
             trade.price = blendedPrice;
-            trade.lastTradePrice = blendedPrice;
+            // The broker's last price, not the cost: nothing refreshes lastTradePrice for a row restored here until a tick arrives (and
+            // none arrives while its strategy is disabled), so seeding it with the cost made every stop and P&L read "flat" (live
+            // 2026-10-29: restored puts showed no loss while the market was 15 points under them).
+            const brokerLtp = Number(brokerView?.ltp);
+            trade.lastTradePrice = brokerLtp > 0 ? brokerLtp : blendedPrice;
             trade.originalEntryPrice = firstFill.price;
             trade.originalEntryQuantity = firstFill.originalQuantity ?? firstFill.quantity;
             trade.action = 'Buy';
@@ -1534,6 +1538,19 @@ class OrderBookkeeping {
 
             restored.push(trade);
             totalRestoredQty += totalQty;
+        }
+
+        // Cost cross-check. The cost above is a FIFO net of Mongo buys and sells, which assumes exits consume the oldest lots; when an
+        // exit sold the newest lot instead (a restart-orphaned older lot, live 2026-10-29: puts bought near 105-108 restored at 91) the
+        // surviving lot gets the wrong cost and every stop and P&L built on it is wrong. The broker's own average is a different
+        // blend, but it is independent of that assumption: when the two differ by more than 5%, say so and use the HIGHER of the two
+        // (the cautious one for a long's loss stop). Only for a single owner - the broker average spans every owner's lots.
+        const brokerAvg = Number(brokerView?.avg);
+        if (restored.length === 1 && brokerAvg > 0 && Math.abs(restored[0].price - brokerAvg) / brokerAvg > 0.05) {
+            const fifoCost = restored[0].price;
+            const used = Math.max(fifoCost, brokerAvg);
+            Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) cost basis uncertain: Mongo FIFO says ${fifoCost.toFixed(2)}, broker average ${brokerAvg.toFixed(2)} - using ${used.toFixed(2)}; stops and realized P&L for this position are measured from it`);
+            restored[0].price = used;
         }
 
         if (totalRestoredQty > brokerQuantity) {
