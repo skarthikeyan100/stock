@@ -48,56 +48,6 @@ strategies:
     momentumEnabled: false
     momentumTimeoutMs: 3000
     maxExposure: 200000
-  - type: ContinuousStrategy
-    userId: ContinuousStrategy-ANT
-    enabled: true
-    broker: ant
-    initialQuantity: 65
-    slDistance: 10
-    targetDistance: 5
-    squareOffDistance: 500
-    postAverageTargetDistance: 2
-    minPremium: 50
-    maxInvestment: 200000
-    maxProfit: 4%
-    maxLoss: 6%
-    spawnQuantityMode: '1'
-    averageQuantityMode: same
-    right: none
-    marketSentiment: none
-    maxLevels: 4
-    refillEnabled: false
-    cooldownSeconds: 60
-    refillCancelDistance: 50
-    logEnabled: true
-    momentumEnabled: false
-    momentumTimeoutMs: 3000
-    maxExposure: 200000
-  - type: ContinuousStrategy
-    userId: ContinuousStrategy-Breeze
-    enabled: true
-    broker: breeze
-    initialQuantity: 65
-    slDistance: 10
-    targetDistance: 5
-    squareOffDistance: 500
-    postAverageTargetDistance: 2
-    minPremium: 50
-    maxInvestment: 200000
-    maxProfit: 4%
-    maxLoss: 6%
-    spawnQuantityMode: '1'
-    averageQuantityMode: same
-    right: none
-    marketSentiment: none
-    maxLevels: 4
-    refillEnabled: false
-    cooldownSeconds: 60
-    refillCancelDistance: 50
-    logEnabled: true
-    momentumEnabled: false
-    momentumTimeoutMs: 3000
-    maxExposure: 200000
   - type: RateOfChangeStrategy
     enabled: false
     pointsThreshold: 30
