@@ -1,5 +1,5 @@
 // Strike choice by days-to-expiry: the further the expiry, the further OTM the entry strike
-// (one strike step per trading day left; 0 on expiry day = pure ATM).
+// (ceil(trading days left / 2) strike steps; 0 on expiry day = pure ATM).
 
 const DAY_MS = 86400000;
 
@@ -22,4 +22,9 @@ export function tradingDaysToExpiry(expiryEpochMs: number, nowMs: number = Date.
 // ATM strike shifted OTM by `daysLeft` steps: CE goes up, PE goes down.
 export function shiftedStrike(atmStrike: number, optionType: string, step: number, daysLeft: number): number {
     return optionType === 'CE' ? atmStrike + daysLeft * step : atmStrike - daysLeft * step;
+}
+
+// OTM strike steps for the entry: half the trading days left, rounded up (4 -> 2, 3 -> 2, 2 -> 1, 1 -> 1, 0 -> 0).
+export function otmSteps(daysLeft: number): number {
+    return Math.ceil(daysLeft / 2);
 }

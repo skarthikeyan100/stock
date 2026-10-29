@@ -642,8 +642,8 @@ timeout, or CE/PE disagreement.
 
 ## Entry strike selection (index buys)
 Spot-based index entries (BulkPcr `chunkedBuyIndex`, `buyIndexOnAnt`/Kite/Breeze buys, `/demo/resolve`) no longer buy pure ATM.
-`AntContractMaster.entryStrike()` shifts ATM OTM by the trading days left to the nearest expiry (`src/util/expiryOffset.ts`),
-one strike step per day: CE up, PE down; pure ATM on expiry day. Nifty (Tuesday expiry): Wed 4, Thu 3, Fri 2, Mon 1, Tue 0 steps
+`AntContractMaster.entryStrike()` shifts ATM OTM by half the trading days left to the nearest expiry, rounded up (`otmSteps` in `src/util/expiryOffset.ts`):
+CE up, PE down; pure ATM on expiry day. Nifty (Tuesday expiry): Wed 2, Thu 2, Fri 1, Mon 1, Tue 0 steps
 (SENSEX uses its own expiry and a 100 step). The expiry comes from the contract master, so a holiday-shifted expiry counts as day 0;
 mid-week NSE holidays are not subtracted. A strike missing from the chain steps back toward ATM. Exact-strike buys, ContinuousStrategy's
 `pickStrikeFromChain` and MomentumSignal's ATM veto lookup are unchanged.

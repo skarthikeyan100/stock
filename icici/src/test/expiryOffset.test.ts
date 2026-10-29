@@ -3,7 +3,7 @@
  * Run: npx tsc, then: node ./dist/test/expiryOffset.test.js
  */
 
-import { tradingDaysToExpiry, shiftedStrike } from '../util/expiryOffset';
+import { tradingDaysToExpiry, shiftedStrike, otmSteps } from '../util/expiryOffset';
 
 function assert(condition: boolean, message: string) {
     if (condition) {
@@ -18,6 +18,7 @@ const expiry = Date.UTC(2026, 10, 3); // Tue 2026-11-03, midnight UTC as in the 
 const at = (y: number, m: number, d: number) => new Date(y, m, d, 11, 0).getTime();
 
 console.log('Days to the Tuesday expiry');
+assert([4, 3, 2, 1, 0].map(otmSteps).join() === '2,2,1,1,0', 'otmSteps = ceil(days/2)');
 assert(tradingDaysToExpiry(expiry, at(2026, 9, 28)) === 4, 'Wed 28 Oct -> 4');
 assert(tradingDaysToExpiry(expiry, at(2026, 9, 29)) === 3, 'Thu 29 Oct -> 3');
 assert(tradingDaysToExpiry(expiry, at(2026, 9, 30)) === 2, 'Fri 30 Oct -> 2');
