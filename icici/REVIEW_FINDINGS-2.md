@@ -11,7 +11,7 @@
 6. Too many API endpoints
 7. Strategies duplicated per broker
 
-Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validation, area 3 contract masters, area 1 orchestrator/IPC). Areas 5-7 and the API inventory (area 6) are pending their agents and will be appended below.
+Status of this file (updated 2026-10-29 after the fix pass; per-item `Status:` lines below, open decisions in `open-review-items.md` #72-#74, #67): **part 1 of 3** (area 4 restarts/reconcile, area 2 validation, area 3 contract masters, area 1 orchestrator/IPC). Areas 5-7 and the API inventory (area 6) are pending their agents and will be appended below.
 
 ---
 
@@ -113,6 +113,7 @@ Status of this file: **part 1 of 3** (area 4 restarts/reconcile, area 2 validati
 - **Action:** model it as a decision table `(persistedPhase, brokerOpenQty, restingSellQty, sameDay) -> {newPhase, action}` in one pure function, unit-tested, with the actions executed afterwards.
 
 ### R4-9 Reconcile still hands open legs to enabled strategies without any gate [note]
+**Status: DONE with R4-1 (Phase 1, 2026-10-29).** The startup reconcile is now the intended way legs are handed back; CLAUDE.md's reconcile paragraphs were rewritten to say so, and a disabled strategy still only restores state and places nothing.
 - Per CLAUDE.md, `/reconcile` returns 409 if any broker fails and otherwise calls `strategiesClient.reconcile()` (`strategiesProcess.ts:354`), which loops over all strategies, including disabled ones. Disabled strategies are skipped for order placement by design, but the reconcile still rebuilds their legs, and that is the rule in CLAUDE.md. Once R4-1 is in place this is the intended behaviour, not a bug. Recorded so the rule is reconsidered together with R4-1.
 
 ---
@@ -254,11 +255,13 @@ Original analysis, kept for reference:
 - **Question for the user:** is Shoonya/Prism retired for good? I have not treated this as a fact.
 
 ### R6-10 Dead dependencies and scripts [low]
+**Status: PARTIAL (Phase 7, 2026-10-29).** Removed with `npm uninstall` (660 packages gone with jest 24's tree): `json-socket`, `nodemon`, `async`, `async-await-queue`, `cheerio`, `pdf.js-extract`, `selenium-webdriver`, `jest`, `@quantiply/finvasia-nodejs-sdk` (Prism uses its own REST client, so it was unused although Prism stays) and their `@types`; each had zero imports in `src/`, `scripts/` and `frontend/src`. `request` was never a dependency (only its `@types`). The broken `test:watch` script (`jest --watchAll` over tests that are plain assert scripts) is gone. The overlapping `analyze:*`, `pipeline:*`, `sentiment:slow`, `tradeTree`/`orderTree` scripts are KEPT: they are the user's analysis tools, not dead code.
 - `package.json` dependencies with no import found: `@quantiply/finvasia-nodejs-sdk` (if Prism goes), `json-socket`, `nodemon`, `async`, `async-await-queue`, `cheerio`, `pdf.js-extract`, `selenium-webdriver` (only a comment in `niftyCandleBuilder.ts:5` remains), and `jest` v24. `request` gave loose hits only, so it is not confirmed.
 - `test:watch` runs `jest --watchAll`, but the tests are standalone assert scripts. `scripts/run-all-tests.js:2-3` reports "jest reported 0 tests".
 - Overlapping scripts: `analyze:scan`, `analyze:focused` and `analyze:check` alongside `analyze`; four `pipeline:*` variants; `sentiment:slow` as a variant of `sentiment`; `tradeTree`, `orderTree` and `orderTree:supportResistance` (niche tools).
 
 ### R6-11 Repo clutter and tracked generated data [medium]
+**Status: NOT RUN, waiting for your confirmation (`open-review-items.md` #74).** The exact `git rm --cached` list (generated data, build output, root CSV/JSON dumps, personal settings), the `.gitignore` additions and the doc-consolidation candidates are written out there; nothing was untracked or deleted. `ngrok.json` is 4 bytes (no token). `.claude/settings.local.json` still needs untracking and whatever it exposed needs rotating. The Shoonya credentials that used to sit in source are the other rotation (#67).
 - **Tracked and large:** `data/breeze/FONSEScripMaster.txt` (21.6 MB), the other Breeze masters, `data/breeze/SecurityMaster.zip`, `data/prism/*_symbols.txt` (9.4 MB), `data/kite/*_instruments.csv`. The masters are downloaded daily, so they should be untracked. `.gitignore` covers only `data/ant/*_contract.json*`.
 - `analysis/output/` (about 150 MB of CSV, including `__pycache__/*.pyc`) is tracked despite `.gitignore` having `*.csv`.
 - Root data and output files: `optionquote.csv`, `realtime.csv`, `niftyquote.csv`, `nifty.csv`, `stocks.csv`, `stats.csv`, `sentiment_results.csv`, `output.csv`, `Wednesday.json`, `temp.json`, `status.json`, `source.html`, `view` and `stocks.ods`.
@@ -383,6 +386,7 @@ Live exit logic is spread over four places, with no single owner.
 - `strategy.ts:76-82`, overridden in 10 files, is read only by the legacy `monitor.ts` (477, 496). The live `order` process never calls it, so the 10 overrides can go with the legacy cluster (R6-8).
 
 ### R5-18 Smaller items [low, verify before acting]
+**Status: PARTIAL (Phase 7, 2026-10-29).** (1) `restoreFromOpenTrades` now seeds `averagedLevels` for `1..maxLevels` instead of a fixed 1-4: DONE. (3) A second buy with its own GTT on the same contract used to lose that GTT id when the rows merged (the trigger stayed live and nothing deleted it): the merged row now keeps it in `extraGttTriggerIds` and a sell releases every id; DONE, test in `gttCleanupOnExit.test.ts` (the extras are in memory only, so a restart in between forgets them: the startup log cannot recover them, check Kite's GTT list). (2) BulkPcr-SENSEX has `maxLossPerOrder: 0%` in `config.yml`, which means no loss cap, so only its 30-point hedge limits the loss: a risk setting for you, not changed (`open-review-items.md` #75).
 - `restoreFromOpenTrades` seeds `averagedLevels` as `{1,2,3,4}` regardless of `maxLevels` (`LegManager.ts:1251`). `wasAveraged` depends on `cfg.initialQuantity` (`:1225`).
 - BulkPcr-SENSEX has `maxLossPerOrder: 0%` in `config.yml`, which means no loss cap, so only its 30-point hedge protects it.
 - A second fill on the same tsym may overwrite the first GTT id, because `finalizeEntry` assigns `gttTriggerId` once per entry (unverified).

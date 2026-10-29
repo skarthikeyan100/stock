@@ -61,6 +61,18 @@ async function main() {
     await bookkeeping.whenGttReleased();
     assert(rowOf('NIFTYD') === undefined, 'the sell is still booked when the GTT delete fails');
 
+    // Two buys on one contract, each with its own GTT: the merged row keeps the first as primary and the second as an extra, and a sell
+    // releases both (the second used to be lost, leaving a live trigger nothing deleted).
+    deleted.length = 0; failDelete = false;
+    const b1 = fill('Buy', 'NIFTYE', 65, 100, 'b6'); (b1 as any).gttTriggerId = 501;
+    const b2 = fill('Buy', 'NIFTYE', 65, 102, 'b7'); (b2 as any).gttTriggerId = 502;
+    await bookkeeping.recordFill(b1);
+    await bookkeeping.recordFill(b2);
+    assert(rowOf('NIFTYE')!.gttTriggerId === 501 && (rowOf('NIFTYE')!.extraGttTriggerIds ?? []).join() === '502', 'a second buy\'s GTT is kept as an extra on the merged row');
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYE', 130, 101, 's6'));
+    await bookkeeping.whenGttReleased();
+    assert(deleted.sort().join() === '501,502', `closing the merged position deletes both GTTs (deleted ${deleted.join()})`);
+
     console.log(process.exitCode === 1 ? 'SOME TESTS FAILED' : 'ALL TESTS PASSED');
     process.exit(process.exitCode ?? 0);
 }

@@ -25,6 +25,7 @@ export function requiredMasterFiles(): MasterFile[] {
         { file: path.join(DATA, 'kite/NFO_instruments.csv'), maxAgeDays: 14, howToGet: KITE_HOW },
         { file: path.join(DATA, 'kite/BFO_instruments.csv'), maxAgeDays: 14, howToGet: KITE_HOW },
         { file: path.join(DATA, 'prism/NFO_symbols.txt'), maxAgeDays: 30, howToGet: KITE_HOW },
+        { file: path.join(DATA, 'nifty100_symbols.txt'), maxAgeDays: 3650, howToGet: 'restore data/nifty100_symbols.txt from git (a plain list of NSE symbols, one per line)' },
     ];
 }
 

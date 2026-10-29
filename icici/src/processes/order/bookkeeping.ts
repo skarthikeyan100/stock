@@ -1137,6 +1137,12 @@ class OrderBookkeeping {
                 const newTraded = tradeEvent.quantity * tradeEvent.price;
                 trade.quantity += tradeEvent.quantity;
                 trade.price = (traded + newTraded) / trade.quantity;
+                // A later buy that brought its own GTT: the merged row can hold only one primary id, and dropping the other would leave
+                // that trigger live with nothing ever deleting it (it sells without the never-short guard).
+                if (tradeEvent.gttTriggerId != null) {
+                    if (trade.gttTriggerId == null) trade.gttTriggerId = tradeEvent.gttTriggerId;
+                    else if (trade.gttTriggerId !== tradeEvent.gttTriggerId) trade.extraGttTriggerIds = [...(trade.extraGttTriggerIds ?? []), tradeEvent.gttTriggerId];
+                }
             }
             // A buy that fills after a breach (a pending order) must not stay open
             // uncovered: the same check that runs on sells liquidates it.
@@ -1190,10 +1196,11 @@ class OrderBookkeeping {
                 buyTrade.quantity -= sellQty;
                 // A Kite GTT bypasses the never-short guard: left live after this exit it could sell a flat (or smaller) account short, and a
                 // GTT sized for the old quantity is wrong for what remains. The GTT's own fill (pollGttFills) clears the id before booking.
-                const gttToRelease = buyTrade.gttTriggerId;
-                if (gttToRelease != null) {
+                const gttsToRelease = [buyTrade.gttTriggerId, ...(buyTrade.extraGttTriggerIds ?? [])].filter((id): id is number => id != null);
+                if (gttsToRelease.length > 0) {
                     buyTrade.gttTriggerId = undefined as any;
-                    this.trackGttRelease(this.releaseGtt(buyTrade, gttToRelease));
+                    buyTrade.extraGttTriggerIds = undefined;
+                    this.trackGttRelease(this.releaseGtt(buyTrade, gttsToRelease));
                 }
                 if (buyTrade.quantity <= 0) {
                     this.trades.splice(index, 1);
@@ -1220,18 +1227,20 @@ class OrderBookkeeping {
     }
 
     // Deletes the GTT of a position that has just been sold from, then hands what is left (if anything) to the in-app exit monitor.
-    private async releaseGtt(trade: Trade, gttTriggerId: number): Promise<void> {
-        try {
-            await Kite.getInstance().deleteGTT(gttTriggerId);
-            Log.log(`[order] GTT ${gttTriggerId} for ${trade.tsym} (${trade.user}) deleted - the position was sold from outside the GTT`);
-        } catch (e) {
-            // A GTT that already fired (its own sell is the fill being booked) cannot be deleted: only an ACTIVE one is a danger.
-            let stillActive = true;
+    private async releaseGtt(trade: Trade, gttTriggerIds: number[]): Promise<void> {
+        for (const gttTriggerId of gttTriggerIds) {
             try {
-                const live: any[] = await Kite.getInstance().getGTTs();
-                stillActive = live.some((g) => g.id === gttTriggerId && g.status === 'active');
-            } catch { /* cannot tell: assume it is live */ }
-            if (stillActive) Log.log(`[order] ALERT: GTT ${gttTriggerId} for ${trade.tsym} (${trade.user}) could NOT be deleted after a sell and may still be live - delete it by hand in Kite:`, e);
+                await Kite.getInstance().deleteGTT(gttTriggerId);
+                Log.log(`[order] GTT ${gttTriggerId} for ${trade.tsym} (${trade.user}) deleted - the position was sold from outside the GTT`);
+            } catch (e) {
+                // A GTT that already fired (its own sell is the fill being booked) cannot be deleted: only an ACTIVE one is a danger.
+                let stillActive = true;
+                try {
+                    const live: any[] = await Kite.getInstance().getGTTs();
+                    stillActive = live.some((g) => g.id === gttTriggerId && g.status === 'active');
+                } catch { /* cannot tell: assume it is live */ }
+                if (stillActive) Log.log(`[order] ALERT: GTT ${gttTriggerId} for ${trade.tsym} (${trade.user}) could NOT be deleted after a sell and may still be live - delete it by hand in Kite:`, e);
+            }
         }
         if (trade.quantity > 0 && trade.token && (trade.targetPrice != null || trade.stopLossPrice != null)) {
             exitMonitor.registerTrade(trade, exchangeForTsym(trade.tsym), 'kite'); // replaces the watch-only entry: the in-app monitor now owns the exit

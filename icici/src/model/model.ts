@@ -145,6 +145,7 @@ export class Trade {
     realizedPnL: number
     unrealizedPnL: number // live mark-to-market on an open position - distinct from realizedPnL, which is only ever set once, at close
     gttTriggerId: number // Kite GTT trigger id, if a bracket was placed at entry (setTargetStopLoss modifies it later)
+    extraGttTriggerIds?: number[] // GTTs placed by LATER buys merged into this row (in memory only): the row keeps one primary id, the rest are released with it
     antOrderNo?: string // AliceBlue BO order number, if a bracket was placed at entry
     prismCoverOrderNo?: string // Shoonya/Noren cover-order (prd 'H') entry order number, if a cover order was placed at entry - see prism.ts's placeCoverOrder/exitCoverOrder
     product?: 'INTRADAY' | 'LONGTERM' // ANT only: the product the entry was placed under, so exits are placed under the same one (a mismatched product would open a new position instead of closing). Unset = INTRADAY.

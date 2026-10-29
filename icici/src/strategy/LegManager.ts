@@ -1318,7 +1318,7 @@ export class LegManager {
                 parentLevel: lineage?.parentLevel ?? null,
                 childByLevel: new Map(), status: 'OPEN',
                 avgPrice: trade.price, totalQuantity: trade.quantity,
-                averagedLevels: wasAveraged ? new Set([1, 2, 3, 4]) : new Set(),
+                averagedLevels: wasAveraged ? new Set(Array.from({ length: cfg.maxLevels ?? 4 }, (_, i) => i + 1)) : new Set(),
                 legRef: lineage?.legRef ?? crypto.randomUUID(),
                 parentLegRef: lineage?.parentLegRef ?? null,
             };
