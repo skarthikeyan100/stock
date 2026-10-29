@@ -1417,6 +1417,49 @@ getOrPost('/order/buy', requireAuth, async function (req: express.Request, res) 
     }
 });
 
+// Lock profits: (1) turns every enabled strategy off - in config.yml (so a later reload cannot re-arm it) and live in the
+// strategies process - so nothing re-enters or refills behind the sells, then (2) has the order process cancel resting
+// buys and limit-sell every open long at its current price (orderProcess.ts's lockProfits), so realized P&L ends >= the
+// open P&L at the call. Query: ?broker=kite|breeze|ant (omitted = every broker with an open position), ?reprice=true to
+// re-price a lock that is still resting. Strategies stay off until enabled: true is set again in config.yml.
+getOrPost('/order/lock-profits', requireAdmin, async function (req, res) {
+    try {
+        const broker = typeof req.query.broker === 'string' && req.query.broker.trim() ? req.query.broker.trim() : undefined;
+        const reprice = req.query.reprice === 'true';
+        // Freeze buys in the order process before anything else, so no strategy can buy between the steps below. If the order
+        // process cannot be reached nothing has changed yet and the call fails here.
+        await orderClient.setBuysFrozen(true);
+        // Then disable, and refuse to sell if that cannot be persisted: a strategy left armed would re-enter the moment the
+        // lock closes its position.
+        const cfg = configService.getConfig();
+        const toDisable = (cfg.strategies || []).filter((s: any) => s.enabled);
+        const disabledStrategies = toDisable.map((s: any) => s.userId || s.type);
+        if (toDisable.length > 0) {
+            toDisable.forEach((s: any) => { s.enabled = false; });
+            configService.writeConfig(cfg);
+            configService.reloadNow();
+        }
+        // Immediate, in memory: the config file watcher reaches the strategies process a moment later.
+        const live = await Promise.allSettled(disabledStrategies.map((id) => strategiesClient.setEnabled(id, false)));
+        const liveFailed = disabledStrategies.filter((_, i) => live[i].status === 'rejected');
+        const lock = await orderClient.lockProfits({ broker, reprice });
+        res.json({ disabledStrategies, liveDisableFailed: liveFailed, lock });
+    } catch (e: any) {
+        Log.log('lock-profits failed:', e);
+        res.status(500).json({ error: e?.message ?? String(e) });
+    }
+});
+
+// Lifts the buy freeze lock-profits turns on in the order process. Does not re-enable any strategy (set enabled: true in config.yml).
+getOrPost('/order/unfreeze-buys', requireAdmin, async function (_req, res) {
+    try {
+        res.json(await orderClient.setBuysFrozen(false));
+    } catch (e: any) {
+        Log.log('unfreeze-buys failed:', e);
+        res.status(500).json({ error: e?.message ?? String(e) });
+    }
+});
+
 getOrPost('/order/squareoff', requireAuth, async function (req, res) {
     try {
         const { token, qty, tsym } = req.query;

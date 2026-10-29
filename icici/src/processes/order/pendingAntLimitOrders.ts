@@ -206,6 +206,7 @@ const tracker = new PendingOrderTracker<PendingAntLimitOrder, null, 'ant'>({
 
 export const onCancelled = tracker.onCancelled;
 export const findPendingOrdersForSymbol = tracker.find;
+export const allPendingOrders = tracker.all;
 export const trackPendingAntLimitOrder = tracker.track;
 export const untrackPendingAntLimitOrder = tracker.untrack;
 export const beginCancelOfPendingAntLimitOrders = tracker.beginCancel;

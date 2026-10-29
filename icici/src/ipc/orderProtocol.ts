@@ -56,6 +56,10 @@ export type OrderRequestType =
     // a caller-chosen price instead of squareOffChunked's immediate market/
     // current-bid exit (see chunkedOrder.ts's squareOffLimitChunked).
     | 'chunkedSquareOffLimit'
+    // POST /order/lock-profits: limit-sell every open long at its current price (see orderProcess.ts's lockProfits). payload: { broker?, reprice? }.
+    | 'lockProfits'
+    // Clears (or sets) the order process's buy freeze that lock-profits turns on. payload: { frozen: boolean }.
+    | 'setBuysFrozen'
     // Broker-uniform query of this app's own pending-order trackers (pendingAntLimitOrders.ts
     // and its kite/breeze/prism siblings - all four share the same {quantity, action, ...}
     // shape) for a given tsym, filtered to SELL orders only. Added for BulkPcrStrategy.reconcile()

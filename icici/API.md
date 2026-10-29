@@ -710,6 +710,18 @@ Broker-position and strategy reconciliation is **on-demand only**: it is not run
 
 ---
 
+### POST /order/lock-profits
+Locks the current open P&L. Admin only (loopback callers skip auth). Query: `broker` (`kite`|`breeze`|`ant`; omitted = every broker with an open position), `reprice=true` (re-price a lock that is still resting).
+
+In order: (1) freezes every buy-type request in the `order` process (hedges, averages, refills, re-buys, entries, manual buys - all strategies and brokers), (2) sets `enabled: false` on every enabled strategy in `config.yml` and live in the `strategies` process, (3) cancels resting buy orders, then per (owning user, broker, contract) cancels the resting sells once and places one chunked LIMIT sell for the whole remaining quantity at the trade's live price rounded up to the tick. A fill can therefore only be at that price or better, so realized P&L ends at or above the open P&L read at the call. Sells are placed under the position's owning strategy user, so fills book through the normal path and update that strategy.
+
+Response: `{ disabledStrategies, liveDisableFailed, lock: { buysFrozen, brokers, positions: [{ user, broker, tsym, quantity, entryAvg, ltp, limitPrice, lockedPnl, orderIds, status, note }], cancelledBuys, totalLockedPnl } }`. `status` is `locked`, `partial`, `skipped` (already locked within 10 minutes), `filled-during-cancel` or `failed`.
+
+Notes: only positions in the `order` process's bookkeeping are sold (a broker position with no matching Mongo buy is not). A limit at the current price may not fill if the market falls; it stays resting. A buy that filled before its cancel landed is reported under `cancelledBuys[].filledQty`; call again to lock it. The freeze is in memory and also ends on an order-process restart. Strategies stay disabled until `enabled: true` is set again in `config.yml`.
+
+### POST /order/unfreeze-buys
+Admin only. Lifts the buy freeze set by `/order/lock-profits`. Does not re-enable strategies.
+
 ## User Context Resolution
 
 The API uses a priority-based system to identify the user making requests:

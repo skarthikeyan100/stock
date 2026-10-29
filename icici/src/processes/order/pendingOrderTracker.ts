@@ -107,6 +107,8 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
 
     find = (userId: string, tradingSymbol: string): T[] =>
         Array.from(this.pending.values()).filter((o) => o.userId === userId && o.tradingSymbol === tradingSymbol);
+    // Every order this tracker is watching, any user and symbol (lock-profits cancels resting refill buys it cannot name by symbol).
+    all = (): T[] => Array.from(this.pending.values());
 
     track = (order: T): void => {
         recordOrderOwner(order.orderId, order.userId, this.adapter.broker);

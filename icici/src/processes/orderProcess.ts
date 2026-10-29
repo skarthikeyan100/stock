@@ -504,6 +504,141 @@ async function forceCloseTrade(trade: Trade): Promise<boolean> {
     }
 }
 
+// Lock-profits (POST /order/lock-profits): freezes each broker's current open P&L by selling every open long at its current
+// price as a resting LIMIT sell, so a fill can only be at that price or better and realized P&L ends >= the open P&L read
+// now. Sells go out under the position's OWNING user (the strategy's pseudo-user), so each fill books through the normal
+// recordFill -> onFill -> strategy.updateTrade path and the respective strategy's orders/state update with it.
+// Order of work per broker: (1) cancel every resting BUY (a refill/re-buy that fills after the lock would reopen exposure),
+// (2) per (user, tsym), cancel the resting sells ONCE and then place one chunked limit sell for the whole remaining
+// quantity (rows of a chunked position share a tsym - cancelling per row would cancel the sell just placed for the row
+// before it), (3) price = the trade's live lastTradePrice rounded UP to the tick, never down, so the lock cannot be worse
+// than the P&L it was computed from. A repeat call for a still-open lock is skipped (re-pricing at a lower LTP would give
+// back locked profit) unless `reprice` is set.
+const LOCK_PROFITS_TICK = 0.05;
+const LOCK_PROFITS_COOLDOWN_MS = 10 * 60_000;
+const lockProfitsPlaced = new Map<string, { limitPrice: number; at: number }>();
+
+interface LockProfitsEntry {
+    user: string;
+    broker: string;
+    tsym: string;
+    quantity: number;
+    entryAvg: number;
+    ltp: number | null;
+    limitPrice: number | null;
+    lockedPnl: number | null;
+    orderIds: string[];
+    status: 'locked' | 'partial' | 'skipped' | 'filled-during-cancel' | 'failed';
+    note?: string;
+}
+interface LockProfitsResult {
+    buysFrozen: boolean;
+    brokers: string[];
+    positions: LockProfitsEntry[];
+    cancelledBuys: { broker: string; user: string; tsym: string; orderId: string; filledQty?: number; error?: string }[];
+    totalLockedPnl: number;
+}
+
+// One lock at a time: a call made while another is still placing waits for it, then runs its own - by then the first call's
+// positions are recorded as locked and are reported as skipped, instead of being sold twice (the already-locked mark is only
+// written after a sell is placed).
+let lockProfitsInFlight: Promise<LockProfitsResult> | null = null;
+async function lockProfits(brokerArg: string | undefined, reprice: boolean): Promise<LockProfitsResult> {
+    while (lockProfitsInFlight) await lockProfitsInFlight.catch(() => undefined);
+    const run = lockProfitsOnce(brokerArg, reprice).finally(() => { if (lockProfitsInFlight === run) lockProfitsInFlight = null; });
+    lockProfitsInFlight = run;
+    return run;
+}
+
+async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean): Promise<LockProfitsResult> {
+    // First, before anything is cancelled or sold: no strategy may buy behind the lock (see buysFrozenAt).
+    if (buysFrozenAt === null) buysFrozenAt = Date.now();
+    await waitForReconcile();
+    const requested = brokerArg ? [normalizeBrokerName(brokerArg)] : null;
+    const brokersWithRows = Array.from(new Set(bookkeeping.trades.filter((t) => t.broker).map((t) => normalizeBrokerName(t.broker))));
+    const brokers = requested ?? brokersWithRows;
+    for (const b of brokers) {
+        if (!TRACKER_BROKERS.includes(b as any)) throw new Error(`lockProfits: unsupported broker '${b}'`);
+    }
+    const result: LockProfitsResult = { buysFrozen: true, brokers, positions: [], cancelledBuys: [], totalLockedPnl: 0 };
+
+    // (1) Resting buys first. A buy that filled before its cancel landed is a new position: its fill is booked by the poller,
+    // so it is reported and a repeat call locks it.
+    for (const b of brokers) {
+        for (const order of TRACKERS[b as keyof typeof TRACKERS].all().filter((o) => o.action === 'Buy')) {
+            const entry: LockProfitsResult['cancelledBuys'][number] = { broker: b, user: order.userId, tsym: order.tradingSymbol, orderId: order.orderId };
+            try {
+                await getBrokerExecutor(order.userId, b).cancelOrder(order.orderId, order.exchange);
+            } catch (e: any) {
+                if (e instanceof OrderAlreadyFilledError) entry.filledQty = e.filledQuantity;
+                else entry.error = e?.message ?? String(e);
+            }
+            result.cancelledBuys.push(entry);
+        }
+    }
+
+    // (2)+(3) Group by owning user + broker + contract. Rows are read AFTER the buy cancels (a fill booked meanwhile is included).
+    const groups = new Map<string, Trade[]>();
+    for (const t of bookkeeping.trades) {
+        if (!t.broker || !(t.quantity > 0)) continue;
+        const b = normalizeBrokerName(t.broker);
+        if (!brokers.includes(b)) continue;
+        const key = `${t.user}|${b}|${t.tsym}`;
+        groups.set(key, [...(groups.get(key) ?? []), t]);
+    }
+    for (const [key, rows] of Array.from(groups.entries())) {
+        const [user, broker, tsym] = key.split('|');
+        const quantityBefore = rows.reduce((sum, t) => sum + t.quantity, 0);
+        const entryAvg = rows.reduce((sum, t) => sum + t.price * t.quantity, 0) / quantityBefore;
+        const entry: LockProfitsEntry = { user, broker, tsym, quantity: quantityBefore, entryAvg, ltp: null, limitPrice: null, lockedPnl: null, orderIds: [], status: 'failed' };
+        result.positions.push(entry);
+        try {
+            const prior = lockProfitsPlaced.get(key);
+            if (!reprice && prior && Date.now() - prior.at < LOCK_PROFITS_COOLDOWN_MS) {
+                entry.limitPrice = prior.limitPrice;
+                entry.status = 'skipped';
+                entry.note = `already locked at ${prior.limitPrice} ${Math.round((Date.now() - prior.at) / 1000)}s ago and still open - pass reprice=true to re-price`;
+                continue;
+            }
+            // The newest tick across the rows (a chunked position's rows are all refreshed by the same token's ticks).
+            const ltp = rows.map((t) => Number(t.lastTradePrice)).find((p) => Number.isFinite(p) && p > 0);
+            if (ltp === undefined) {
+                entry.note = 'no live price on the trade (no tick seen yet) - not sold';
+                continue;
+            }
+            const limitPrice = Math.round(Math.ceil(ltp / LOCK_PROFITS_TICK - 1e-9) * LOCK_PROFITS_TICK * 100) / 100;
+            entry.ltp = ltp;
+            entry.limitPrice = limitPrice;
+
+            const executor = getBrokerExecutor(user, broker);
+            const { filledQty } = await cancelAnyRestingLimitSell(executor, user, tsym);
+            // Same two-view minimum as forceCloseTrade: a fill booked mid-cancel shrinks the rows, and filledQty would count it twice.
+            const quantityNow = rows.filter((t) => bookkeeping.trades.includes(t)).reduce((sum, t) => sum + t.quantity, 0);
+            const remaining = Math.min(quantityNow, quantityBefore - filledQty);
+            if (remaining <= 0) {
+                entry.status = 'filled-during-cancel';
+                entry.note = 'a resting sell filled while being cancelled - nothing left to sell';
+                continue;
+            }
+            const placed = await squareOffLimitChunked(executor, user, tsym, rows[0].token, remaining, exchangeForTsym(tsym), limitPrice);
+            entry.orderIds = placed.orderIds;
+            entry.quantity = placed.placedQuantity;
+            entry.lockedPnl = Math.round((limitPrice - entryAvg) * placed.placedQuantity * 100) / 100;
+            entry.status = placed.placedQuantity >= remaining ? 'locked' : 'partial';
+            if (entry.status === 'partial') entry.note = `only ${placed.placedQuantity}/${remaining} placed (never-short guard clamped it)`;
+            result.totalLockedPnl += entry.lockedPnl;
+            lockProfitsPlaced.set(key, { limitPrice, at: Date.now() });
+        } catch (e: any) {
+            entry.status = 'failed';
+            entry.note = e?.message ?? String(e);
+            Log.log(`[order] lockProfits: ${tsym} (${user}, ${broker}) failed:`, e);
+        }
+    }
+    result.totalLockedPnl = Math.round(result.totalLockedPnl * 100) / 100;
+    Log.log(`[order] lockProfits: ${result.positions.filter((p) => p.status === 'locked').length}/${result.positions.length} position(s) locked on ${brokers.join(',') || 'no broker'}, total locked P&L ${result.totalLockedPnl}`);
+    return result;
+}
+
 // Read-only strike+right -> contract lookup, dispatched per-broker to each broker's own
 // contract master. Used by ButterflyStrategy to resolve all 4 of its legs before placing
 // anything. ant's findNearestExpiryOption returns `exch` (renamed to `exchange` here for a
@@ -584,11 +719,25 @@ function upgradeLegacyRequest(req: OrderRequest): OrderRequest {
     }
 }
 
+// Buy freeze (set by lock-profits, cleared by the 'setBuysFrozen' request or an order-process restart). Every request that can
+// open or add to a long is refused as definitively NOT placed, whichever strategy, broker or manual caller sent it: a disabled
+// strategy still hedges, averages and refills open legs on ticks, and only this process sees all of those requests. Sells,
+// cancels, buy-to-close and read-only requests are untouched, so the lock's own sells and every exit keep working.
+let buysFrozenAt: number | null = null;
+const BUY_REQUEST_TYPES = new Set<string>([
+    'buyContract', 'buyIndex', 'breezeBuyIndex', 'chunkedBuyIndex', 'manualBuy', 'buyContractBare', 'placeLimitBuyBare',
+    'antPlaceCoverOrder', 'antBuyTargetOnly', 'butterflySellToOpen', 'butterflyBuyLeg',
+]);
+
 async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
     req = upgradeLegacyRequest(req);
     try {
         // Accept legacy broker names (e.g. 'zerodha') from any caller before anything dispatches on them.
         if (req.payload && typeof (req.payload as any).broker === 'string') (req.payload as any).broker = normalizeBrokerName((req.payload as any).broker);
+        if (buysFrozenAt !== null && BUY_REQUEST_TYPES.has(req.type)) {
+            Log.log(`[order] buys frozen since ${new Date(buysFrozenAt).toLocaleTimeString()} - refused ${req.type} from ${req.userId}`);
+            return { kind: 'response', id: req.id, ok: false, error: `${NOT_PLACED_TAG} buys are frozen (lock-profits at ${new Date(buysFrozenAt).toLocaleTimeString()}); call /order/unfreeze-buys or restart the order process` };
+        }
         switch (req.type) {
             case 'canPlaceOrder':
                 // See reconcileInFlight's comment on 'openTrades' below - a
@@ -710,6 +859,19 @@ async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     req.payload.price,
                     req.payload.freezeQuantity
                 );
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'setBuysFrozen': {
+                const { frozen } = (req.payload ?? {}) as { frozen?: boolean };
+                buysFrozenAt = frozen === false ? null : (buysFrozenAt ?? Date.now());
+                Log.log(`[order] buys ${buysFrozenAt === null ? 'UNFROZEN' : 'frozen'} by request`);
+                return { kind: 'response', id: req.id, ok: true, result: { buysFrozen: buysFrozenAt !== null } };
+            }
+
+            case 'lockProfits': {
+                const { broker, reprice } = (req.payload ?? {}) as { broker?: string; reprice?: boolean };
+                const result = await lockProfits(broker, reprice === true);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 

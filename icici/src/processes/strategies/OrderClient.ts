@@ -359,6 +359,15 @@ class OrderClient {
         return this.call('getPendingSells', userId, { broker, tradingSymbol });
     }
 
+    // Limit-sells every open long on `broker` (all brokers when omitted) at its current price to lock the open P&L; see orderProcess.ts's lockProfits.
+    async lockProfits(payload: { broker?: string; reprice?: boolean } = {}): Promise<any> {
+        return this.call('lockProfits', 'lock-profits', payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
+    }
+
+    async setBuysFrozen(frozen: boolean): Promise<{ buysFrozen: boolean }> {
+        return this.call('setBuysFrozen', 'lock-profits', { frozen });
+    }
+
     // Live net quantity of a contract on a broker, read in the order process (throws when the broker cannot be read).
     async getLiveQuantity(userId: string, broker: string, tradingSymbol: string): Promise<number> {
         return this.call('getLiveQuantity', userId, { broker, tradingSymbol });

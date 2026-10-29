@@ -76,6 +76,7 @@ export const onCancelled = tracker.onCancelled;
 // Used to cancel a resting SELL leg before a force-close path (EOD expiry-day squareoff, drawdown-breach auto-squareoff -
 // both in orderProcess.ts) also market-sells the same still-open quantity, which would otherwise double-sell it.
 export const findPendingOrdersForSymbol = tracker.find;
+export const allPendingOrders = tracker.all;
 // True while this order is tracked for its owner's fill booking (restored from Mongo after a restart).
 export const isTrackedPendingOrder = (orderId: string): boolean => tracker.get(orderId) !== undefined;
 export const trackPendingLimitOrder = tracker.track;
