@@ -53,6 +53,7 @@ import { getUser, getAllUsers } from '../user';
 import { OptionQuote, Trade } from '../model/model';
 import { isPastExpirySquareOffTime, isPastReconcileTime } from '../util/marketHours';
 import { normalizeBrokerName } from '../util/brokerName';
+import { brokerClientFor } from '../broker/brokerClients';
 import { exchangeForIndex, exchangeForTsym } from '../util/underlyings';
 
 // Defense-in-depth: an unhandled promise rejection anywhere in this process
@@ -511,12 +512,35 @@ async function forceCloseTrade(trade: Trade): Promise<boolean> {
 // Order of work per broker: (1) cancel every resting BUY (a refill/re-buy that fills after the lock would reopen exposure),
 // (2) per (user, tsym), cancel the resting sells ONCE and then place one chunked limit sell for the whole remaining
 // quantity (rows of a chunked position share a tsym - cancelling per row would cancel the sell just placed for the row
-// before it), (3) price = the trade's live lastTradePrice rounded UP to the tick, never down, so the lock cannot be worse
+// before it), (3) price = the broker's live last price for the contract (read from its positions at call time) rounded UP to the tick, never down, so the lock cannot be worse
 // than the P&L it was computed from. A repeat call for a still-open lock is skipped (re-pricing at a lower LTP would give
 // back locked profit) unless `reprice` is set.
 const LOCK_PROFITS_TICK = 0.05;
 const LOCK_PROFITS_COOLDOWN_MS = 10 * 60_000;
 const lockProfitsPlaced = new Map<string, { limitPrice: number; at: number }>();
+
+// Last traded price per contract, read from the broker's own positions at call time. Not trade.lastTradePrice: that is only
+// refreshed by live ticks for watched trades, and a row restored by reconcile (or any unwatched row) still holds its COST
+// there - a lock priced off it would rest sells at the entry price, above the market, and never fill. Keyed by the tsym
+// bookkeeping uses for that broker. Throws when the broker's positions cannot be read.
+async function brokerLastPrices(broker: string): Promise<Map<string, number>> {
+    const client = brokerClientFor(broker);
+    if (!client) throw new Error(`lockProfits: no client for broker '${broker}'`);
+    const raw: any = await client.getPositions();
+    const prices = new Map<string, number>();
+    const add = (tsym: unknown, price: unknown) => {
+        const p = Number(price);
+        if (typeof tsym === 'string' && Number.isFinite(p) && p > 0) prices.set(tsym, p);
+    };
+    if (broker === 'kite') {
+        for (const r of raw?.net ?? []) add(r.tradingsymbol, r.last_price);
+    } else if (broker === 'breeze') {
+        for (const r of Array.isArray(raw) ? raw : []) add(`${r.stock_code}${r.strike_price}${String(r.right).toLowerCase().startsWith('p') ? 'PE' : 'CE'}`, r.ltp);
+    } else {
+        for (const r of Array.isArray(raw) ? raw : []) add(r.tradingSymbol ?? r.tradingsymbol, r.ltp ?? r.last_price);
+    }
+    return prices;
+}
 
 interface LockProfitsEntry {
     user: string;
@@ -588,6 +612,10 @@ async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean):
         const key = `${t.user}|${b}|${t.tsym}`;
         groups.set(key, [...(groups.get(key) ?? []), t]);
     }
+    const pricesByBroker = new Map<string, Map<string, number> | Error>();
+    for (const b of new Set(Array.from(groups.keys()).map((k) => k.split('|')[1]))) {
+        pricesByBroker.set(b, await brokerLastPrices(b).catch((e: any) => (e instanceof Error ? e : new Error(String(e)))));
+    }
     for (const [key, rows] of Array.from(groups.entries())) {
         const [user, broker, tsym] = key.split('|');
         const quantityBefore = rows.reduce((sum, t) => sum + t.quantity, 0);
@@ -602,10 +630,14 @@ async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean):
                 entry.note = `already locked at ${prior.limitPrice} ${Math.round((Date.now() - prior.at) / 1000)}s ago and still open - pass reprice=true to re-price`;
                 continue;
             }
-            // The newest tick across the rows (a chunked position's rows are all refreshed by the same token's ticks).
-            const ltp = rows.map((t) => Number(t.lastTradePrice)).find((p) => Number.isFinite(p) && p > 0);
+            const brokerPrices = pricesByBroker.get(broker);
+            if (brokerPrices instanceof Error) {
+                entry.note = `broker positions could not be read for a live price - not sold: ${brokerPrices.message}`;
+                continue;
+            }
+            const ltp = brokerPrices?.get(tsym);
             if (ltp === undefined) {
-                entry.note = 'no live price on the trade (no tick seen yet) - not sold';
+                entry.note = 'no live price for this contract in the broker positions - not sold';
                 continue;
             }
             const limitPrice = Math.round(Math.ceil(ltp / LOCK_PROFITS_TICK - 1e-9) * LOCK_PROFITS_TICK * 100) / 100;
