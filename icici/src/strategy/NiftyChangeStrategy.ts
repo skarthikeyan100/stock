@@ -15,7 +15,8 @@ import { LimitEntryStrategy, Leg } from './LimitEntryStrategy';
 //
 // Slot rules are BulkPcrAutoStartStrategy's: each slot fires at most once a day (persisted), a slot earlier than this process's start
 // is never fired (a restart must not buy "the slot a minute ago"), and a slot more than 5 minutes old is missed. A slot is also
-// skipped while the previous slot's position is still open - one trade at a time.
+// skipped while the previous slot's position is still open (isRunning(), like BulkPcrAutoStartStrategy's check of BulkPcrStrategy) -
+// one trade at a time; that slot is consumed, not retried later.
 //
 // Config (config.yml):
 //   times: ['10:40', '11:40', '12:30', '13:40', '14:30']
@@ -38,6 +39,11 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
 
     protected index(): 'NIFTY' {
         return 'NIFTY'; // the signal is Nifty's change
+    }
+
+    // True while any leg is placing, resting an entry, or still holding unsold quantity: the next slot must not start.
+    isRunning(): boolean {
+        return this.hasActiveLeg();
     }
 
     reset(): void {
@@ -63,6 +69,7 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
             this.markCycle(key);
             if (slotTime.isBefore(NiftyChangeStrategy.processStartedAt)) { Log.log(`[${this.logTag}] ${timeStr} slot skipped - process started at ${NiftyChangeStrategy.processStartedAt.format('HH:mm:ss')}, after it`); continue; }
             if (now.diff(slotTime, 'minutes') > LATE_WINDOW_MINUTES) { Log.log(`[${this.logTag}] Missed ${timeStr} slot (now ${now.format('HH:mm:ss')}) - skipping`); continue; }
+            if (this.isRunning()) { Log.log(`[${this.logTag}] ${timeStr} slot: previous slot's position already running - skipping`); continue; }
             await this.fireSlot(timeStr, key, quote);
         }
     }
@@ -81,7 +88,6 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
             Log.log(`[${this.logTag}] ALERT: ${timeStr}: maxInvestment (${cfg.maxInvestment}), limitOffset (${cfg.limitOffset}) or targetPoints (${cfg.targetPoints}) invalid - not trading`);
             return;
         }
-        if (this.hasActiveLeg()) { Log.log(`[${this.logTag}] ${timeStr}: previous slot's position is still open - skipping`); return; }
         const right: 'CE' | 'PE' = change > 0 ? 'CE' : 'PE';
         const strike = AntContractMaster.getInstance().entryStrike(ltp, right, 'NIFTY');
         Log.log(`[${this.logTag}] ${timeStr}: Nifty ${ltp} vs prev close ${prevClose} (${change > 0 ? '+' : ''}${change.toFixed(2)}) -> ${right} ${strike}`);

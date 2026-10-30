@@ -5,8 +5,8 @@
 # MAX PROFIT / MAX LOSS trips, ALERTs). Routine buy/sell/fill/spawn/target events and BulkPcr's normal
 # "Cycle complete" are dropped. Use scripts/strategy-status.sh for the P&L picture.
 #
-# Also emits one "=== PAIR FILLED" line per completed buy+sell pair (the order process's
-# "User '<x>' closed. P&L" line) for BulkPcr / Continuous users - a one-sided order never produces it.
+# Also emits one "=== SLOT MISSED" line per slot that BulkPcrAutoStart / NiftyChange did not trade, with the reason.
+# A filled buy+sell pair is routine and is NOT notified.
 #
 # Usage: scripts/monitor-strategies-alerts.sh [--all|--once]   (passed through to both feeds)
 
@@ -22,6 +22,7 @@ READER=(tail -n0 -F "$LOG_FILE")
         wait
     } | grep -E --line-buffered '!!!' | grep -E --line-buffered -v 'Cycle complete' &
     "${READER[@]}" 2>/dev/null \
-        | sed -nuE "s/^\[([0-9:]+)\].*User '((BulkPcr|Continuous)[^']*)' closed\. P&L: ([-0-9.]+), Cumulative: ([-0-9.]+).*/=== PAIR FILLED \1 \2: buy+sell closed, P\&L \4 (cumulative \5)/p" &
+        | sed -nuE -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange):([^]]*)\] (Missed ([0-9:]{5}) slot.*)/=== SLOT MISSED \1 \2 \3 \5: late - \4/p;t" \
+                   -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange):([^]]*)\] ([0-9:]{5}):? ?(slot[: ]*)?(.*(skipp|not arming|not trading|not starting|already attempted|already handled).*)/=== SLOT MISSED \1 \2 \3 \4: \6/p" &
     wait
 }
