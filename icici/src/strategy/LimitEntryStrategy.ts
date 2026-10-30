@@ -297,6 +297,10 @@ export abstract class LimitEntryStrategy extends Strategy {
         const qty = Number(trade.quantity) || 0;
         const price = Number(trade.price) || 0;
         if (trade.action === 'Buy') {
+            if (this.foreignEntryOrder(leg, trade.brokerOrderId)) {
+                Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: Buy fill of ${qty} from order ${trade.brokerOrderId} is not this leg's entry order ${leg.orderId} - ignored (POST /reconcile adopts it if it really is ours)`);
+                return;
+            }
             leg.filledQty += qty;
             leg.boughtValue += qty * price;
             if (leg.status === 'resting' || leg.status === 'placing') leg.status = 'filled';
@@ -320,6 +324,10 @@ export abstract class LimitEntryStrategy extends Strategy {
         if (!this.enabled || n.action !== 'Buy') return;
         const leg = this.legFor(n.tradingSymbol, n.broker);
         if (!leg || leg.entryCancelled) return;
+        if (this.foreignEntryOrder(leg, n.orderId)) {
+            Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: ${n.reason} of order ${n.orderId} is not this leg's entry order ${leg.orderId} - ignored`);
+            return;
+        }
         leg.entryCancelled = true;
         Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: entry order ${n.reason}${n.rejectReason ? ' (' + n.rejectReason + ')' : ''} - filled ${leg.filledQty} of ${leg.qty}`);
         await this.afterEntryClosed(leg);
@@ -359,6 +367,14 @@ export abstract class LimitEntryStrategy extends Strategy {
         const b = broker ? String(broker).toLowerCase() : undefined;
         return this.legs().find((l) => l.tsym === tsym && (!b || l.broker === b) && l.status !== 'closed' && l.status !== 'failed' && l.status !== 'cancelled')
             ?? this.legs().find((l) => l.tsym === tsym && (!b || l.broker === b));
+    }
+
+    // A Buy fill or Buy cancellation belongs to a leg only if it comes from the leg's own entry order. A leg is found by (broker, tsym),
+    // which alone cannot tell the entry order from another buy on the same contract. Not decidable (so accepted) when either id is
+    // missing: the leg is still 'placing' (a fill can land before placeLimitBuyBare returns its id) or the event carries no order id.
+    // Sell fills are not checked: the exits (GTT trigger, exitMonitor, chunked square-off) place sells whose ids this strategy never sees.
+    private foreignEntryOrder(leg: Leg, orderId?: string): boolean {
+        return !!leg.orderId && !!orderId && String(orderId) !== String(leg.orderId);
     }
 
     private recordOutcomeOnce(leg: Leg): void {
