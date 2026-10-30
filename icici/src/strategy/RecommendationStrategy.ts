@@ -1,6 +1,7 @@
 import Log from '../util/Log';
 import { NiftyQuote } from '../model/model';
 import OrderClient from '../processes/strategies/OrderClient';
+import configService from '../prism/ConfigService';
 import { roundToTick } from '../util/tick';
 import { isPastTime } from '../util/marketHours';
 import { LimitEntryStrategy, Leg, ResolvedEntry } from './LimitEntryStrategy';
@@ -14,6 +15,8 @@ import { LimitEntryStrategy, Leg, ResolvedEntry } from './LimitEntryStrategy';
 // An unfilled entry is cancelled at the end of day (and after entryTimeoutMinutes when set); a held position is closed at eodCloseTime.
 // One recommendation per config block (add another block, with its own userId, for another one). Changing the contract/prices of a
 // block is a new recommendation and is placed once more; the same recommendation is never placed twice on a day, even across restarts.
+// A recommendation arriving while a trade is still open (order or position) is dropped, not held for later. When the trade is finished
+// (both buy and sell, or nothing filled and cancelled) the block is set to enabled: false in config.yml.
 //
 // Config (config.yml):
 //   contract: '22750 CE'          - strike and CE/PE
@@ -30,6 +33,12 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
     protected readonly strategyType = 'RecommendationStrategy';
     private invalidLogged = '';
 
+
+    // Identifies one recommendation (its contract, prices, budget and offset). Persisted per day, so the same one is never placed twice.
+    static keyOf(cfg: any): string {
+        const offset = cfg.entryOffset == null ? 5 : Number(cfg.entryOffset);
+        return `${cfg.contract}|${Number(cfg.entryPrice)}|${Number(cfg.targetPrice)}|${Number(cfg.stopLoss)}|${Number(cfg.maxInvestment)}|${offset}`;
+    }
 
     static parseContract(contract: unknown): { strike: number; right: 'CE' | 'PE' } | null {
         const m = /^\s*(\d{3,6})\s*(CE|PE)\s*$/i.exec(String(contract ?? ''));
@@ -50,14 +59,42 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
             : !(entryPrice > 0 && target > 0 && stop > 0 && budget > 0 && Number.isFinite(offset) && offset >= 0) ? 'entryPrice, targetPrice, stopLoss and maxInvestment must be positive numbers'
             : !(stop < orderPrice && orderPrice < target) ? `need stopLoss (${stop}) < order price (${orderPrice} = entryPrice - entryOffset) < targetPrice (${target})`
             : null;
-        const key = `${cfg.contract}|${entryPrice}|${target}|${stop}|${budget}|${offset}`;
+        const key = RecommendationStrategy.keyOf(cfg);
         if (problem || !parsed) {
             if (this.invalidLogged !== key) { this.invalidLogged = key; Log.log(`[${this.logTag}] ALERT: invalid recommendation, not placed: ${problem}`); }
             return;
         }
-        if (this.cycleStarted(key) || this.hasActiveLeg()) return;
+        if (this.cycleStarted(key)) return;
+        if (this.hasActiveLeg()) {
+            // A trade is still in progress (open order or position): this recommendation is dropped, not held for later. The key is
+            // marked used so it is never picked up after that trade ends either.
+            this.markCycle(key);
+            Log.log(`[${this.logTag}] ALERT: ${cfg.contract} not started - a trade is still in progress; this recommendation is dropped`);
+            return;
+        }
         const entry: ResolvedEntry = { index: this.index(), strike: parsed.strike, right: parsed.right };
         await this.startCycle(key, entry, budget, async () => orderPrice);
+    }
+
+    // The recommendation is finished (bought and sold, or never filled and cancelled, or refused): its config block is set to
+    // enabled: false, so nothing trades it again - not tomorrow, and not a later same-day re-entry. config.yml is the switch: written here
+    // and hot-reloaded. Runs only while enabled (a disabled block takes no action).
+    protected async onCycleEnded(): Promise<void> {
+        if (!this.enabled) return;
+        try {
+            const cfg = configService.getConfig();
+            const block = (cfg.strategies || []).find((s) => s.type === this.strategyType && (s.userId || s.type) === this.userId);
+            if (!block || !block.enabled) return;
+            // Only the recommendation this block holds: a block re-enabled with a new recommendation after an earlier one traded today
+            // has not been started yet, and must not be switched off before it is.
+            if (!this.cycleStarted(RecommendationStrategy.keyOf(block))) return;
+            block.enabled = false;
+            configService.writeConfig(cfg);
+            configService.reloadNow();
+            Log.log(`[${this.logTag}] recommendation finished - set enabled: false in config.yml`);
+        } catch (e: any) {
+            Log.log(`[${this.logTag}] ALERT: recommendation finished but could not set enabled: false in config.yml - set it by hand: ${e?.message ?? e}`);
+        }
     }
 
     protected async topUpExit(leg: Leg, delta: number): Promise<void> {

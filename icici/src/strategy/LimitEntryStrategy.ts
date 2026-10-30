@@ -83,6 +83,9 @@ export abstract class LimitEntryStrategy extends Strategy {
     protected abstract topUpExit(leg: Leg, delta: number): Promise<void>;
     // The subclass's own per-tick work (slot firing / one-shot placement). Runs only while enabled.
     protected abstract onNiftyTick(quote: NiftyQuote): Promise<void>;
+    // Called once the cycle is over: no leg holds or rests and no entry is still open (sold out, cancelled with nothing filled, or every
+    // broker's entry refused). Nothing by default; RecommendationStrategy disables its block in config.yml here.
+    protected async onCycleEnded(): Promise<void> {}
 
     receive(oldStats: any, newStats: any) {}
 
@@ -148,6 +151,20 @@ export abstract class LimitEntryStrategy extends Strategy {
 
     protected hasActiveLeg(): boolean {
         return this.legs().some((l) => this.isActive(l));
+    }
+
+    // An entry order still open at the broker: not cancelled, not refused, and not every share filled. Its leg can already be
+    // 'closed' (the part that filled was sold) while the rest of the entry can still fill, so it keeps the cycle alive.
+    private entryOpen(leg: Leg): boolean {
+        return !leg.entryCancelled && leg.status !== 'failed' && leg.status !== 'cancelled' && leg.filledQty < leg.qty;
+    }
+
+    // Fires onCycleEnded once nothing is live. Called from the paths where a cycle can end, and from housekeeping so a restart that finds
+    // the last leg already closed still ends the cycle. Guarded by a started cycle: a block that has not traded yet is never "ended".
+    private async endIfIdle(): Promise<void> {
+        if (this.state.keys.length === 0) return;
+        if (this.legs().some((l) => this.isActive(l) || this.entryOpen(l))) return;
+        await this.onCycleEnded();
     }
 
     protected cycleStarted(key: string): boolean {
@@ -236,6 +253,8 @@ export abstract class LimitEntryStrategy extends Strategy {
                     Log.log(`[${this.logTag}] ${key} ${broker}: could not start entry: ${e?.message ?? e}`);
                 }
             }
+            // Nothing live after the pass (every broker skipped or refused): the cycle is already over.
+            await this.endIfIdle();
         } finally {
             this.placing = false;
         }
@@ -293,6 +312,7 @@ export abstract class LimitEntryStrategy extends Strategy {
                 this.recordOutcomeOnce(leg);
             }
             this.save();
+            await this.endIfIdle();
         }
     };
 
@@ -407,6 +427,7 @@ export abstract class LimitEntryStrategy extends Strategy {
         if (leg.filledQty <= 0) {
             leg.status = 'cancelled';
             this.save();
+            await this.endIfIdle();
             return;
         }
         leg.qty = leg.filledQty; // nothing more will fill
@@ -428,7 +449,7 @@ export abstract class LimitEntryStrategy extends Strategy {
             leg.entryCancelled = true;
             leg.qty = leg.filledQty + (res.filledQty || 0);
             Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: entry cancelled (${why}); filled ${leg.filledQty}${res.filledQty ? ' + ' + res.filledQty + ' in the cancel window' : ''}`);
-            if (leg.qty <= 0) { leg.status = 'cancelled'; this.save(); return; }
+            if (leg.qty <= 0) { leg.status = 'cancelled'; this.save(); await this.endIfIdle(); return; }
             this.save();
             if (leg.filledQty >= leg.qty) { leg.status = 'filled'; await this.entryComplete(leg); }
         } catch (e: any) {
@@ -466,6 +487,7 @@ export abstract class LimitEntryStrategy extends Strategy {
         const eod = isPastTime(cfg.eodCloseTime, '15:10');
         const timeoutMs = Number(cfg.entryTimeoutMinutes) > 0 ? Number(cfg.entryTimeoutMinutes) * 60_000 : 0;
         const now = Date.now();
+        await this.endIfIdle();
         for (const leg of this.legs()) {
             // The entry order is still open (possibly part-filled, in which case status is already 'filled').
             const entryOpen = (leg.status === 'resting' || leg.status === 'filled') && !leg.entryCancelled && leg.filledQty < leg.qty;

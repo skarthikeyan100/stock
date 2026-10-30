@@ -6,6 +6,9 @@ Remove an item from this file when it is fixed.
 
 ## Awaiting a decision
 
+## Awaiting a decision (RecommendationStrategy, 2026-10-30)
+- [SEV: med] A recommendation whose trade did not finish on its day (a leg still open at the day rollover: ensureLoaded logs ALERT and drops it) leaves its block enabled, so the next day's first tick places the same recommendation again (the day's keys reset). Decision needed: should a block that traded yesterday be disabled automatically at the rollover, or should yesterday's unfinished trade simply never re-fire? Not changed yet because it decides what a leftover recommendation means.
+
 ## Post-fix review (unfixed)
 30. [SEV: med] REVIEW NEEDED (stopped on request 2026-10-28, review deferred to the next day): commits 2dbe1f4..HEAD (`git log 5ae5efa..HEAD`) - the vocabulary migration: user fields lotLimit/accountCapital/strategyCapital (User, updateUserSettings, createUser, withCanonicalFields, backfillVocabularyFields, server settings/create routes, pushUserToOrderProcess, bookkeeping/monitor UserSettings, UserContext), frontend AuthContext/AdminPage/ProfilePage/TradingPage/RulesPage, config.yml reads (configVocabulary.ts, ConfigService.loadConfig, configValidation, AppConfig, LegManager/BulkPcr/orderProcess readers, admin UI keys), pending-order docs storing `token`, Trade.realizedPnl/unrealizedPnl accessors. Also not re-reviewed after their last fixes: the legacy-request translation (upgradeLegacyRequest), Breeze resolveOrderExchange, the ANT Bare-duplicate removal.
 31. [SEV: med] TESTS NOT RUN (no test scripts were run this session, by instruction): src/test/pendingOrderTrackerAndFillState.test.ts is new and has never executed; bulkPcrStrategyReconcileAnt.test.ts and bulkPcrTrailAndOrderStop.test.ts were edited for the tradingSymbol payload key; orderAreaFixes.test.ts for BuyRequest.brokerToken; strategyTest.ts's MockMonitor for the pending-mark API. Run `npm run test:all` first.
