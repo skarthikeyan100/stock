@@ -1082,7 +1082,12 @@ export class LegManager {
                     try {
                         await this.currentOps().sell(this.deps.userId, intent.tsym, intent.token, filledQty, intent.exchange);
                     } catch (sellErr) {
-                        Log.log(`[${this.deps.ownerType}] ALERT: could not sell back the filled superseded refill (${intent.tsym} qty=${filledQty}) - UNTRACKED POSITION, manual action required:`, sellErr);
+                        // The cancel race can report the fill before the order process has booked it, so the sell finds no trade to
+                        // sell against (live 2026-10-30: 130 CE left untracked). Hand it back to the fill echo, which arrives once the
+                        // fill is booked and sells it back through the superseded-refill path in handleFillOrExternalSell.
+                        this.handledBuyOrderIds.delete(intent.orderId);
+                        this.supersededRefills.set(intent.orderId, { tsym: intent.tsym, token, exchange: intent.exchange });
+                        Log.log(`[${this.deps.ownerType}] ALERT: could not sell back the filled superseded refill (${intent.tsym} qty=${filledQty}) yet - it will be sold back when its fill is booked; if no such line follows, it is an UNTRACKED POSITION, manual action required:`, sellErr);
                     }
                 } else if (/does not exist|not found/i.test(String(e?.message ?? e))) {
                     // The broker never had the order resting - in practice it was REJECTED right after being placed (live 2026-10-29: Kite
