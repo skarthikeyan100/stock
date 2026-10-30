@@ -770,7 +770,9 @@ class OrderBookkeeping {
     // already no-ops for strategy pseudo-users (see this function's own
     // exemption comment) or are deliberately meant to bound the user as a
     // whole regardless of which broker a given leg happens to run on.
-    async canPlaceOrder(user: string, estimatedOrderValue?: number, broker?: string): Promise<{ allowed: boolean; reason?: string }> {
+    // skipInvestmentCap: honoured only for the capital-only-exempt strategy pseudo-users below (BulkPcr's hedge re-buy, which re-opens a slot the
+    // cap already counted: live 2026-10-30 a cap refusal left a put naked). Every other gate, and every other user, is unchanged.
+    async canPlaceOrder(user: string, estimatedOrderValue?: number, broker?: string, skipInvestmentCap = false): Promise<{ allowed: boolean; reason?: string }> {
         // ContinuousStrategy manages its own risk (per-leg averaging/hedging,
         // its own allottedCapital gate in ContinuousStrategy.capitalCheck())
         // and was hitting the shared daily-trade-count limit on ordinary
@@ -797,6 +799,10 @@ class OrderBookkeeping {
             const currentInvestment = this.getCurrentInvestment(user, broker) + this.pendingValue(user, broker);
             const maxInvestment = this.getUserMaxInvestment(user, broker);
             if (currentInvestment >= maxInvestment) {
+                if (skipInvestmentCap) {
+                    Log.log(`[order] hedge re-buy for '${user}'${broker ? ` (${broker})` : ''} allowed over the max-investment cap (${currentInvestment}/${maxInvestment}): it re-opens a slot the cap already counted`);
+                    return { allowed: true };
+                }
                 return { allowed: false, reason: `User '${user}'${broker ? ` (${broker})` : ''} has reached max investment (${currentInvestment}/${maxInvestment}).` };
             }
             return { allowed: true };

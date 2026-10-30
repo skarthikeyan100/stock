@@ -419,16 +419,19 @@ class OrderClient {
     // userId (a strategy's pseudo-user id) via bookkeeping.getUserBroker - the
     // same per-user convention buyIndex/manualBuy/squareOff already use for
     // real users, so this class stays entirely broker-agnostic.
-    async buyContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number, broker?: BrokerName): Promise<any> {
-        return this.call('buyContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price, broker });
+    // opts.hedgeRebuy: see placeLimitBuyBare (BulkPcr's hedge top-up buys lots of a slot the cap already counted).
+    async buyContractBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, exchange: 'NFO' | 'BFO', price?: number, broker?: BrokerName, opts?: { hedgeRebuy?: boolean }): Promise<any> {
+        return this.call('buyContractBare', userId, { tradingSymbol, instrumentToken, quantity, exchange, price, broker, ...(opts?.hedgeRebuy ? { hedgeRebuy: true } : {}) });
     }
 
 
     // Returns immediately with {orderId} - the fill arrives later as a normal
     // fill notification once pendingLimitOrders.ts's/breezePendingLimitOrders.ts's
     // poller sees it complete.
-    async placeLimitBuyBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO', broker?: BrokerName): Promise<{ orderId: string }> {
-        return this.call('placeLimitBuyBare', userId, { tradingSymbol, instrumentToken, quantity, price, exchange, broker });
+    // hedgeRebuy: a re-buy of a slot the investment cap already counted (BulkPcr's resting re-buy after a +2 target hit). The order process then skips
+    // ONLY the max-investment gate for it (strategy pseudo-users only); every other gate still applies.
+    async placeLimitBuyBare(userId: string, tradingSymbol: string, instrumentToken: string, quantity: number, price: number, exchange: 'NFO' | 'BFO', broker?: BrokerName, opts?: { hedgeRebuy?: boolean }): Promise<{ orderId: string }> {
+        return this.call('placeLimitBuyBare', userId, { tradingSymbol, instrumentToken, quantity, price, exchange, broker, ...(opts?.hedgeRebuy ? { hedgeRebuy: true } : {}) });
     }
 
     async cancelOrderBare(userId: string, orderId: string, exchange?: 'NFO' | 'BFO', broker?: BrokerName): Promise<void> {

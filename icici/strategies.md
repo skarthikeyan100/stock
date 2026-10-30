@@ -249,8 +249,9 @@ The lockout survives restarts: it is written to both the `strategyLatches` docs 
 (`stoppedSlots`, plus `stoppedBrokers`), and reconcile re-applies it (a state doc from before per-order stops has no
 `stoppedSlots`; its `stoppedBrokers` then locks both orders). A restored lockout also closes the tripped order and any
 pending slot of that broker. If the lockout state cannot be read at all, the broker stays closed (fail-closed) until it can.
-Only the admin `GET /strategies/BulkPcrStrategy/reset` clears it, or the local day rollover. The auto-start
-re-arm (`reset({ keepStops: true })`) keeps the lockout.
+Only the admin `POST /strategies/BulkPcrStrategy/reset` clears it, or the local day rollover. The auto-start
+re-arm (`reset({ keepStops: true })`) keeps the lockout. The admin reset takes `?userId=BulkPcr-NIFTY` to reset one instance
+(default: every instance of the type) and keeps the day's realized P&L unless `?clearPnl=true` (2026-10-30).
 No `maxLossPerOrder` (or 0) = off. A `maxLossPerOrder` without a usable `maxInvestment` fails config validation.
 **Cooldown and per-broker investment (mandatory BulkPcr keys, added 2026-10-29)**: `maxExposureByBroker` (map broker -> rupees; keys may use
 an alias such as `zerodha`) is each broker's investment cap, enforced per (strategy, broker) in the order process (`bookkeeping.getUserMaxInvestment(user, broker)`)
@@ -296,8 +297,8 @@ skipped.
 
 ### RecommendationStrategy / NiftyChangeStrategy (`RecommendationStrategy.ts`, `NiftyChangeStrategy.ts`, shared engine `LimitEntryStrategy.ts`) — config: `enabled: false`
 Two simple limit-entry strategies. Both place a LIMIT buy (`placeLimitBuyBare`) on **every** broker in `brokers:` (the budget is split evenly), size whole lots from the rupee budget (capped at one freeze-size order), persist their state to `.<Type>.<userId>.json` (a restart never places the same entry twice), cancel an unfilled entry at `eodCloseTime` (and after `entryTimeoutMinutes` when set) and close a held position at `eodCloseTime` (default 15:10).
-- **RecommendationStrategy** — one analyst recommendation per config block: `contract: '22750 CE'`, `entryPrice`, `targetPrice`, `stopLoss` (absolute option prices), `maxInvestment`, `entryOffset` (default 5). Order goes in at `entryPrice - entryOffset`; after the fill the target/stop are attached via the `attachProtection` order-process call (`order/attachProtection.ts`): **kite** = two-leg GTT (falls back to the in-app exitMonitor if the GTT call fails), **ant** = in-app exitMonitor (a bracket/cover order must be the entry order itself, it cannot be attached to a filled one), **breeze/other** = resting limit sell at the target + a tick-driven market stop in the strategy. Changing the contract/prices of a block is a new recommendation; the same one is never placed twice in a day. Breeze's REST API does have GTT (`POST /breezeapi/api/v1/gttorder`, `gtt_type: cover_oco`) but it is not wired in yet.
-- **NiftyChangeStrategy** — at each `times` slot (BulkPcrAutoStart's rules: once per slot per day, never a slot before process start, 5-minute late window), Nifty's change on the day is `ltp - prevClose` from the live tick: up → CE, down → PE, flat → skip. Strike from `AntContractMaster.entryStrike`; limit = option LTP (ANT quote) − `limitOffset` (default 3); on the fill a resting limit sell at fill + `targetPoints` (default 5 in config). No stop loss. Skips a slot while the previous slot's position is still open. Config: `times`, `maxInvestment`, `limitOffset`, `targetPoints`, `entryTimeoutMinutes`.
+- **RecommendationStrategy** — one analyst recommendation per config block: `contract: '22750 CE'`, `entryPrice`, `targetPrice`, `stopLoss` (absolute option prices), `maxInvestment`, `entryOffset` (default 5). Order goes in at `entryPrice - entryOffset`; after the fill the target/stop are attached via the `attachProtection` order-process call (`order/attachProtection.ts`): **kite** = two-leg GTT (falls back to the in-app exitMonitor if the GTT call fails), **ant** = in-app exitMonitor (a bracket/cover order must be the entry order itself, it cannot be attached to a filled one), **breeze/other** = resting limit sell at the target + a tick-driven market stop in the strategy. Changing the contract/prices of a block is a new recommendation; the same one is never placed twice in a day. A recommendation that arrives while a trade is still open (order or position) is dropped and never picked up later. When the cycle ends (bought and sold, or the entry cancelled with nothing filled) the block is written `enabled: false` to config.yml, so nothing trades it again. Set a new one with the `recommend` skill (`.claude/skills/recommend/SKILL.md`: `recommend [INDEX] <strike> <CE|PE> <entry> <target> <stop>`). Breeze's REST API does have GTT (`POST /breezeapi/api/v1/gttorder`, `gtt_type: cover_oco`) but it is not wired in yet.
+- **NiftyChangeStrategy** — at each `times` slot (BulkPcrAutoStart's rules: once per slot per day, never a slot before process start, 5-minute late window), Nifty's move is `ltp` at this slot − the reference from the live tick: the LTP seen at the previous slot today (held in memory, lost on restart), or the previous close for the day's first slot. A slot with no reference (earlier slot today not recorded) is skipped with an ALERT. The reference is kept in the strategy's state file for the day, so it survives a restart (2026-10-30). With `catchUpMissedSlot: true` the latest slot that came due before a restart (within the 5-minute window) still fires, subject to the same running-position and reference checks; older missed slots are skipped. Up → CE, down → PE, flat → skip. Strike from `AntContractMaster.entryStrike`; limit = option LTP (ANT quote) − `limitOffset` (default 3); on the fill a resting limit sell at fill + `targetPoints` (default 5 in config). No stop loss. Skips a slot while the previous slot's position is still open. Config: `times`, `maxInvestment`, `limitOffset`, `targetPoints`, `entryTimeoutMinutes`.
 Test: `node dist/test/limitEntryStrategies.test.js` (stubbed OrderClient).
 
 ### BulkPcrAutoStartStrategy (`BulkPcrAutoStartStrategy.ts`) — config: active, `enabled: true`
@@ -321,7 +322,20 @@ orders itself, only flips `BulkPcrStrategy`'s own `config.yml` block and
    block — only `quantity`/`brokers`/`enabled` are overwritten.
 **Config keys** (`config.yml`): `enabled`, `times` (array of `HH:mm`
 strings), `quantity`, `brokers` (array, written onto `BulkPcrStrategy`'s own
-config when armed).
+config when armed), `catchUpMissedSlot` (default off).
+**Restart catch-up** (`catchUpMissedSlot: true`, added 2026-10-30): a slot earlier than the process start is normally skipped. With the
+flag, the single LATEST slot that came due before the start, and only if it is within 5 minutes, is armed through the normal
+`attemptStart` guards: the durable armed-slots record (a slot that already ran is never redone), the target not running or in a broker
+error (so no earlier slot is still open), the loss-stop / latched-broker filter, and `enabled`. Older missed slots are skipped for good.
+Log line: `CATCH-UP: <slot> slot came due at ...`.
+**Stuck error state**: before reporting `STUCK`, an auto-start calls `target.recoverFlatErrors()` - an `error` slot whose contract is flat at
+the broker (live quantity 0, no pending sell) is cleared, a possibly-live-remainder latch is not. A `[NOT_PLACED]` refusal (investment cap,
+not connected) of a buy is a definite refusal and no longer latches `error`. The STUCK alert is logged once per cause.
+**Hedge re-buy and the investment cap**: a BulkPcr re-buy after a +2 target hit (and a hedge top-up) is sent with `hedgeRebuy`, so the order
+process skips only the max-investment gate for it (`bookkeeping.canPlaceOrder(..., skipInvestmentCap)`, strategy pseudo-users only).
+**Margin-shrunk hedge top-up**: when ANT rejects a hedge buy for margin and the one smaller retry fills, the missing lots are remembered
+(`topUpQty`) and bought later on the SAME contract (`topUpSlot`, every 30 s, at most 3 attempts) while the sibling is open: the resting sell
+is cancelled (fills booked), the lots bought, and ONE resting sell re-placed for the blended entry. Trailing hedges are not topped up.
 **Requires** `BulkPcrStrategy` to be present (even if `enabled: false`) in
 `config.yml` — this wrapper only arms an existing instance, it never creates
 one.

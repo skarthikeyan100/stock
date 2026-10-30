@@ -117,7 +117,8 @@ export abstract class Strategy {
         Log.log(`[${this.userId}] Outcome=${outcome} PnL=${Math.round(pnl)} | W=${this.wins} L=${this.losses} T=${this.timeouts} WinRate=${winRate}% TotalPnL=${Math.round(this.totalPnL)}`);
     }
 
-    reset(): void {
+    // _opts.clearPnl: an admin reset also clearing the day's realized P&L (only strategies that keep one, e.g. BulkPcr, read it).
+    reset(_opts?: { clearPnl?: boolean }): void {
         this.lastTriggerTime = 0;
         Log.log(`[${this.userId}] Reset via admin request`);
     }

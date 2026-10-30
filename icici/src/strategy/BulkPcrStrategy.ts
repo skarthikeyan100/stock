@@ -1,5 +1,5 @@
 import GateLogger from '../util/GateLogger';
-import { ORDER_MAY_BE_LIVE_TAG } from '../ipc/orderProtocol';
+import { ORDER_MAY_BE_LIVE_TAG, NOT_PLACED_TAG } from '../ipc/orderProtocol';
 import Log from '../util/Log';
 import { localDayKey } from './dayKey';
 import SerialWriter from './SerialWriter';
@@ -40,6 +40,9 @@ const REBUY_RETRY_THROTTLE_MS = 10_000;
 // A buy that was rejected or unfilled is retried at most this many times (transient failures only; a margin
 // rejection is never retried as-is - see onBuyNotFilled). Live 2026-10-22: ANT's hedge buy was retried 18 times.
 const MAX_BUY_RETRIES = 3;
+// Hedge top-up after a margin-shrunk buy (see topUpSlot): attempts per slot cycle and the gap between them.
+const MAX_TOPUP_ATTEMPTS = 3;
+const TOPUP_RETRY_MS = 30_000;
 // Headroom kept when shrinking a hedge to fit margin: the premium moves between attempts.
 const MARGIN_RESIZE_BUFFER = 0.05;
 // Lot sizes needed to round a reduced quantity down to a whole lot.
@@ -108,7 +111,11 @@ function isNothingBought(e: any): boolean {
     const message = typeof e?.message === 'string' ? e.message : '';
     // [ORDER_MAY_BE_LIVE]: a fill wait could not settle the order (e.g. its cancel failed) - it may still be resting or filled.
     if (message.includes('fill status unresolved') || message.includes(ORDER_MAY_BE_LIVE_TAG)) return false;
+    // [NOT_PLACED]: the order process refused it before anything reached the broker (investment cap, loss limit, not
+    // connected, validation...). Live 2026-10-30: a cap refusal of a re-buy was treated as "outcome unconfirmed" and latched
+    // the slot in 'error', which blocked every later slot with a flat book.
     return message.includes('no available investment headroom to size an order from')
+        || message.includes(NOT_PLACED_TAG)
         || /failed after filling 0\//.test(message);
 }
 
@@ -174,6 +181,11 @@ interface BrokerPosition {
     buyAttempts?: number;
     // True once this slot's buy was shrunk after a margin rejection (only one resize per slot).
     marginResized?: boolean;
+    // Lots the margin-shrunk buy left out (original size - resized size). The slot's cycle tops them up later while the sibling is open
+    // (topUpSlot); cleared when done, given up, or the sibling closed. Attempts/last attempt throttle it.
+    topUpQty?: number;
+    topUpAttempts?: number;
+    lastTopUpAt?: number;
     // True when this slot's buy was given up for this cycle (margin, or retry cap). Blocks reopening the hedge.
     abandoned?: boolean;
     // True for the side opened by openOppositeSide (the hedge). Stays with the slot across its re-buys.
@@ -1336,6 +1348,7 @@ export default class BulkPcrStrategy extends Strategy {
         await Promise.all(tripped.map((b) => this.lockOutBroker(b, 'maxLossPerOrder or maxProfit breached on a tick')));
 
         this.retryPendingRebuys();
+        this.maybeTopUpHedges();
 
         // Trailing hedges run on their own ticks, whether or not their broker is stopped (a surviving leg still exits).
         for (const slot of matches) {
@@ -1558,7 +1571,7 @@ export default class BulkPcrStrategy extends Strategy {
         for (let i = 0; i < chunks.length; i++) {
             if (i > 0) await sleep(1000); // order-rate spacing, same reason as the order process's chunk throttle
             try {
-                const { orderId } = await OrderClient.getInstance().placeLimitBuyBare(this.userId, tsym, token, chunks[i], price, exchange, broker);
+                const { orderId } = await OrderClient.getInstance().placeLimitBuyBare(this.userId, tsym, token, chunks[i], price, exchange, broker, { hedgeRebuy: true });
                 orderIds.push(orderId);
                 placedQty += chunks[i];
             } catch (e) {
@@ -1763,6 +1776,8 @@ export default class BulkPcrStrategy extends Strategy {
             const reduced = pos.marginResized ? null : this.marginReducedQuantity(pos, message);
             if (reduced !== null) {
                 Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: ${pos.right} buy rejected for margin - retrying ONCE with reduced qty ${pos.entryQuantity} -> ${reduced}`);
+                pos.topUpQty = (pos.entryQuantity ?? reduced) - reduced; // topped up later, see topUpSlot
+                pos.topUpAttempts = 0;
                 pos.entryQuantity = reduced;
                 pos.marginResized = true;
                 pos.phase = 'pending';
@@ -1784,14 +1799,148 @@ export default class BulkPcrStrategy extends Strategy {
     // Quantity that fits the margin the broker implied, rounded down to a whole lot, or null if none fits.
     // usable = price x qty - shortfall (what the rejection says WAS affordable); keep a 5% buffer.
     private marginReducedQuantity(pos: BrokerPosition, message: string): number | null {
+        return this.marginReducedFor(pos.entryQuantity, message);
+    }
+
+    private marginReducedFor(quantity: number | undefined, message: string): number | null {
         const parsed = parseAntMarginReject(message);
         if (!parsed) return null;
         const lot = LOT_SIZE[this.index()];
-        if (!(pos.entryQuantity && pos.entryQuantity % lot === 0)) return null; // unexpected size: do not guess
+        if (!(quantity && quantity % lot === 0)) return null; // unexpected size: do not guess
         const usable = parsed.price * parsed.quantity - parsed.shortfall;
         const units = Math.floor((usable * (1 - MARGIN_RESIZE_BUFFER)) / parsed.price);
         const reduced = Math.floor(units / lot) * lot;
-        return reduced >= lot && reduced < pos.entryQuantity ? reduced : null;
+        return reduced >= lot && reduced < quantity ? reduced : null;
+    }
+
+    // Tick hook: starts a top-up for a margin-shrunk hedge whose sibling is still open (one at a time per slot, throttled, capped).
+    private maybeTopUpHedges(): void {
+        if (this.eodDone || this.reconciling) return;
+        for (const pos of this.pairSlots()) {
+            if (!(pos.topUpQty && pos.topUpQty > 0)) continue;
+            const key = this.keyOf(pos);
+            const sibling = this.slotsOf(pos.broker).find((p) => p.right !== pos.right);
+            if (pos.phase === 'done' || !sibling || !this.holdsOrIsBuying(sibling) || this.isBrokerStopped(pos.broker) || pos.abandoned) {
+                Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} hedge top-up of ${pos.topUpQty} dropped: the hedge or its sibling is no longer open`);
+                pos.topUpQty = 0;
+                this.persistState();
+                continue;
+            }
+            if (pos.phase !== 'selling' || pos.squaringOff || pos.trailBusy || this.placingKeys.has(key)) continue;
+            if (this.isTrailSlot(pos)) {
+                Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: ${pos.right} hedge is a trailing hedge - ${pos.topUpQty} lots of its margin-shrunk size are NOT topped up (no resting sell to merge into)`);
+                pos.topUpQty = 0;
+                this.persistState();
+                continue;
+            }
+            if (this.liveRemainder.has(pos.broker) || !pos.heldTsym || !pos.heldToken) continue;
+            if (Date.now() - (pos.lastTopUpAt ?? 0) < TOPUP_RETRY_MS) continue;
+            this.topUpSlot(key).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] hedge top-up failed:`, e));
+        }
+    }
+
+    // Buys the lots a margin rejection left out of a hedge, on the SAME contract, and merges them into the slot's one exit. The order
+    // mirrors repriceTrailExit: cancel the resting sell first (fills during the cancel are booked, updateTrade ignores fills meanwhile),
+    // buy, then re-place ONE resting sell for everything still open at the blended entry. A buy that fails changes nothing but the
+    // attempt count (the original exit is re-placed as it was).
+    private async topUpSlot(key: string): Promise<void> {
+        const pos = this.positions.get(key);
+        if (!pos || !(pos.topUpQty && pos.topUpQty > 0) || !pos.heldTsym || !pos.heldToken) return;
+        const broker = pos.broker;
+        const tsym = pos.heldTsym;
+        const client = OrderClient.getInstance();
+        pos.topUpAttempts = (pos.topUpAttempts ?? 0) + 1;
+        pos.lastTopUpAt = Date.now();
+        const oldPrice = pos.exitLimitPrice ?? roundToTick(pos.entryAvg + this.targetPointsFor(pos));
+        pos.squaringOff = true; // held across the cancel only, like eodSquareOff / repriceTrailExit
+        this.placingKeys.add(key);
+        let soldOut = false;
+        try {
+            let cancelResult: { filledQty: number; cancelFailed: boolean };
+            try {
+                cancelResult = await client.cancelRestingLimitSells(this.userId, { tradingSymbol: tsym, broker });
+            } catch (e) {
+                cancelResult = { filledQty: 0, cancelFailed: true };
+                Log.log(`[BulkPcrStrategy] [${broker}] hedge top-up cancel request failed for ${tsym}:`, e);
+            }
+            pos.soldQty += cancelResult.filledQty;
+            pos.soldValue += cancelResult.filledQty * oldPrice;
+            pos.repriceCancelAt = Date.now();
+            pos.squaringOff = false;
+            this.persistState();
+            if (pos.soldQty >= pos.targetQuantity) {
+                soldOut = true; // the whole exit filled before/while the cancel went through: nothing left to hedge up
+                pos.topUpQty = 0;
+            } else if (cancelResult.cancelFailed) {
+                pos.phase = 'error';
+                pos.topUpQty = 0;
+                Log.log(`[BulkPcrStrategy] [${broker}] ALERT: hedge top-up of ${tsym} aborted, resting sell cancel failed - manual review required`);
+                this.persistState();
+            } else {
+                await this.buyTopUp(pos, tsym);
+                // Whatever happened, the slot's exit is re-placed for everything still open (original size if the buy bought nothing).
+                const remaining = pos.targetQuantity - pos.soldQty;
+                if (remaining > 0) await this.placeExitSellAtTargetPrice(key, remaining, false);
+            }
+        } finally {
+            pos.squaringOff = false;
+            this.placingKeys.delete(key);
+        }
+        if (soldOut) {
+            Log.log(`[BulkPcrStrategy] [${broker}] Exit complete: ${tsym} qty=${pos.soldQty} (filled during the hedge top-up cancel)`);
+            this.onSlotSoldOut(pos);
+        }
+    }
+
+    // The buy half of topUpSlot: one attempt at the missing lots, and one smaller attempt when ANT's margin rejection shows what fits.
+    private async buyTopUp(pos: BrokerPosition, tsym: string): Promise<void> {
+        const broker = pos.broker;
+        const exchange = exchangeForTsym(tsym);
+        let qty = pos.topUpQty!;
+        let resized = false;
+        for (;;) {
+            try {
+                const trade = await OrderClient.getInstance().buyContractBare(this.userId, tsym, pos.heldToken!, qty, exchange, undefined, broker, { hedgeRebuy: true });
+                const bought = Number(trade?.quantity) || 0;
+                const price = Number(trade?.price) || 0;
+                if (!(bought > 0) || !(price > 0)) throw new Error(`top-up buy returned no fill (${JSON.stringify(trade)})`);
+                const total = pos.targetQuantity + bought;
+                pos.entryAvg = (pos.targetQuantity * pos.entryAvg + bought * price) / total;
+                pos.targetQuantity = total;
+                pos.topUpQty = Math.max(0, pos.topUpQty! - bought);
+                if (pos.topUpQty < LOT_SIZE[this.index()]) pos.topUpQty = 0;
+                Log.log(`[BulkPcrStrategy] [${broker}] ${pos.right} hedge topped up: +${bought} ${tsym} @ ${price} - now ${total} lots, entry avg ${pos.entryAvg.toFixed(2)}${pos.topUpQty ? `, ${pos.topUpQty} still to add` : ''}`);
+                this.persistState();
+                return;
+            } catch (e: any) {
+                const message = typeof e?.message === 'string' ? e.message : String(e);
+                if (isNothingBought(e) && MARGIN_SHORTFALL_REASON_PATTERN.test(message) && !resized) {
+                    const reduced = this.marginReducedFor(qty, message);
+                    if (reduced !== null) {
+                        resized = true;
+                        Log.log(`[BulkPcrStrategy] [${broker}] ${pos.right} hedge top-up rejected for margin - retrying with ${qty} -> ${reduced}`);
+                        qty = reduced;
+                        continue;
+                    }
+                }
+                if (!isNothingBought(e)) {
+                    // Possibly part-filled or unconfirmed: an unknown quantity may be held that this slot does not track.
+                    // The slot stays 'selling' (the exit for the known lots is re-placed and its fills must still count); the broker is
+                    // latched for manual review through the live-remainder latch instead.
+                    pos.topUpQty = 0;
+                    this.ensureToday();
+                    this.liveRemainder.add(broker);
+                    Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${pos.right} hedge top-up outcome unconfirmed - extra lots may be LIVE and UNPROTECTED, manual review required: ${message}`);
+                } else if ((pos.topUpAttempts ?? 0) >= MAX_TOPUP_ATTEMPTS) {
+                    Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${pos.right} hedge top-up gave up after ${pos.topUpAttempts} attempts - ${pos.topUpQty} lots stay unhedged: ${message.slice(0, 200)}`);
+                    pos.topUpQty = 0;
+                } else {
+                    Log.log(`[BulkPcrStrategy] [${broker}] ${pos.right} hedge top-up attempt ${pos.topUpAttempts}/${MAX_TOPUP_ATTEMPTS} bought nothing - retrying in ${TOPUP_RETRY_MS / 1000}s: ${message.slice(0, 200)}`);
+                }
+                this.persistState();
+                return;
+            }
+        }
     }
 
     // Gives up this side's buy for the rest of the cycle. 'done' + abandoned: nothing is held, the other side's
@@ -2209,9 +2358,14 @@ export default class BulkPcrStrategy extends Strategy {
         }
         for (const k of Object.keys(persistedPositions)) keys.add(k);
 
+        // A finished slot (done/pending) saved on an earlier day is a closed cycle: restoring it left allBrokersFinished() false forever
+        // for any configured broker with no slot (e.g. 'ant'), so the strategy sat in phase 'running' and every scheduled slot skipped
+        // (2026-10-30 10:35-10:45). Unfinished slots from an earlier day are still restored, since they may be live at a broker.
+        const persistedIsToday = persisted?.realizedDay === localDayKey();
         for (const key of keys) {
             const broker = brokerOfKey(key);
-            const persistedPos = persistedPositions[key];
+            const savedPos = persistedPositions[key];
+            const persistedPos = !persistedIsToday && (savedPos?.phase === 'done' || savedPos?.phase === 'pending') ? undefined : savedPos;
 
             // Which side (CALL/PUT) this key represents, if any - derived from the key's own
             // structure (see slotKey() above), not from the broker's name. Every branch below is
@@ -2602,9 +2756,49 @@ export default class BulkPcrStrategy extends Strategy {
         return Array.from(this.liveRemainder).some((b) => used.includes(b)) || Array.from(this.positions.values()).some((p) => p.phase === 'error');
     }
 
+    // Brokers that have a slot in 'error' or a possibly-live-remainder latch (the ones an auto-start must not arm).
+    erroredBrokers(): BrokerName[] {
+        const out = new Set<BrokerName>(this.liveRemainder);
+        for (const p of this.positions.values()) if (p.phase === 'error') out.add(p.broker);
+        return Array.from(out);
+    }
+
+    // Clears 'error' slots that provably hold nothing: the broker's live quantity of the slot's contract is 0 and this app tracks
+    // no pending sell for it (live 2026-10-30: a flat book stayed latched for 11 slots until an admin reset). A slot whose contract
+    // was never resolved (heldTsym null), a broker with a possibly-live-remainder latch, or any read failure stays latched - that is
+    // the manual-review case. Returns true when no errored slot is left.
+    async recoverFlatErrors(): Promise<boolean> {
+        const client = OrderClient.getInstance();
+        let changed = false;
+        for (const [key, pos] of Array.from(this.positions.entries())) {
+            if (pos.phase !== 'error' || !pos.heldTsym || this.liveRemainder.has(pos.broker)) continue;
+            try {
+                const [live, pendingSells] = await Promise.all([
+                    client.getLiveQuantity(this.userId, pos.broker, pos.heldTsym),
+                    client.getPendingSells(this.userId, pos.broker, pos.heldTsym),
+                ]);
+                if (live !== 0 || pendingSells.length > 0) continue;
+            } catch (e: any) {
+                Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.heldTsym} error slot kept: could not confirm it is flat: ${e?.message ?? e}`);
+                continue;
+            }
+            Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.heldTsym} error slot ${key} is flat at the broker with no pending sell - cleared to done`);
+            pos.phase = 'done';
+            pos.abandoned = true;
+            pos.rebuyLimit = undefined;
+            changed = true;
+        }
+        if (changed) {
+            this.persistState();
+            this.finishIfFlat();
+        }
+        return !this.hasBrokerError();
+    }
+
     // keepStops: the auto-start re-arm path. It keeps today's loss-stop latches and realized P&L (the stop
-    // must survive a re-arm). Without it (admin reset) the stops and the day's realized P&L are cleared too.
-    reset(opts?: { keepStops?: boolean }): void {
+    // must survive a re-arm). Without it (admin reset) the stops and latches are cleared; the day's realized P&L is kept too
+    // (maxProfit / maxLoss keep measuring the real day) unless clearPnl is set.
+    reset(opts?: { keepStops?: boolean; clearPnl?: boolean }): void {
         // The day's realized P&L (maxProfit) is not touched by a re-arm - it is cleared only by the admin reset below.
         this.phase = 'idle';
         // Stop tick routing for every held token before the slots are forgotten, or the tokens stay subscribed
@@ -2632,11 +2826,15 @@ export default class BulkPcrStrategy extends Strategy {
         for (const stop of this.profitStops.values()) void stop.clear();
         this.stops.clear();
         this.profitStops.clear();
-        this.dayRealizedByBroker.clear();
+        if (opts?.clearPnl) this.dayRealizedByBroker.clear();
         this.clearLossCooldowns();
         for (const broker of this.configuredBrokers()) if (isPairBroker(broker)) this.pushCap(broker); // back to the configured cap
         this.liveRemainder.clear();
-        this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION).deleteOne({ userId: this.userId }));
-        Log.log(`[${this.userId}] Reset via admin request`);
+        if (opts?.clearPnl) {
+            this.writer.enqueue(() => Mongo.getInstance()?.db.collection(STATE_COLLECTION).deleteOne({ userId: this.userId }));
+        } else {
+            void this.persistState(); // the state doc without positions or latches, still carrying the day's realized P&L
+        }
+        Log.log(`[${this.userId}] Reset via admin request${opts?.clearPnl ? ' (day P&L cleared too)' : ' (day P&L kept)'}`);
     }
 }

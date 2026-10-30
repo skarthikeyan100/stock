@@ -59,6 +59,8 @@ export interface State {
     day: string;
     keys: string[]; // cycle keys already started today (a restart must not repeat one)
     legs: Record<string, Leg>;
+    // NiftyChangeStrategy only: Nifty's LTP at the last slot evaluated today, kept here so a restart still has the reference.
+    slotPrice?: number | null;
 }
 
 export interface ResolvedEntry {
@@ -165,6 +167,19 @@ export abstract class LimitEntryStrategy extends Strategy {
         if (this.state.keys.length === 0) return;
         if (this.legs().some((l) => this.isActive(l) || this.entryOpen(l))) return;
         await this.onCycleEnded();
+    }
+
+    // Durable per-day value used by NiftyChangeStrategy as the previous slot's Nifty price (null = none recorded today).
+    protected getSlotPrice(): number | null {
+        this.ensureLoaded();
+        return this.state.slotPrice ?? null;
+    }
+
+    protected setSlotPrice(price: number | null): void {
+        this.ensureLoaded();
+        if ((this.state.slotPrice ?? null) === price) return;
+        this.state.slotPrice = price;
+        this.save();
     }
 
     protected cycleStarted(key: string): boolean {

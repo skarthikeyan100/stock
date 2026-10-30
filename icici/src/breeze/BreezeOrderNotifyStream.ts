@@ -31,6 +31,28 @@ import PendingFillRegistry from '../util/PendingFillRegistry';
 // Needs live confirmation before being trusted as the primary fill path -
 // see ToDo.md.
 
+// Average fill price of an Executed order-notification push, or null when no plausible value is found.
+// averageExecutedRate is tried first (it is right in some payloads); when it is zero or outside [minPrice, maxPrice]
+// the price in cancelFlag (paise) is used. A limit order's fill can never be on the wrong side of its limit
+// (buy <= limitRate, sell >= limitRate, limitRate in paise), which rejects a misparsed number that happens to fall in range.
+export function pushFillPrice(data: any, minPrice: number, maxPrice: number): number | null {
+    const limit = Number(data?.limitRate) / 100;
+    const flow = String(data?.orderFlow ?? '').toLowerCase();
+    const plausible = (p: number): boolean => {
+        if (!(p > 0) || p < minPrice || p > maxPrice) return false;
+        if (limit > 0) {
+            if (flow === 'buy' && p > limit + 0.005) return false;
+            if (flow === 'sell' && p < limit - 0.005) return false;
+        }
+        return true;
+    };
+    const avg = Number(data?.averageExecutedRate);
+    if (plausible(avg)) return avg;
+    // Truncated to whole paise, like the REST fill price it replaces (89.0676 -> 89.06, not 89.07).
+    const fromCancelFlag = Math.floor(Number(data?.cancelFlag)) / 100;
+    return plausible(fromCancelFlag) ? fromCancelFlag : null;
+}
+
 class BreezeOrderNotifyStream {
     private static instance: BreezeOrderNotifyStream;
     private connected = false;
@@ -107,26 +129,20 @@ class BreezeOrderNotifyStream {
         // when the remainder is eventually cancelled instead of completing.
         let outcome: { fillPrice?: number; error?: Error } | null = null;
         if (status === 'Executed') {
-            const fillPrice = Number(data.averageExecutedRate);
-            // Confirmed live 2026-09-18: a real "Executed" push resolved with
-            // averageExecutedRate=117705646 - the field name is right (matches
-            // parseData's decode), but the value on this real payload was
-            // garbage (REST getOrderDetail confirmed the true fill was 84).
-            // Rather than trust an unbounded push value for money-affecting
-            // P&L, sanity-bound it against this app's own configured option
-            // price range (config.yml settings.minPrice/maxPrice) and reject
-            // (not resolve) on an implausible value - the caller
-            // (breezeExecutor.ts's waitForBreezeFill) already falls back to
-            // the confirmed-correct Breeze.getFillPrice() REST poll on any
-            // rejection, so this only trades push speed for REST reliability
-            // on the rare bad payload, never silently records a wrong price.
+            // Confirmed live 2026-09-18 and 2026-10-30: on a real "Executed" push averageExecutedRate is 0 or garbage
+            // (117705646, 2843100, 48600000 ...). The real average fill price is carried in cancelFlag, in paise
+            // (all 7 REST-confirmed Breeze fills on 2026-10-30 equalled cancelFlag / 100; a limit sell's cancelFlag
+            // equals its limitRate). pushFillPrice() takes averageExecutedRate when it is plausible and cancelFlag / 100
+            // otherwise, and still sanity-bounds the result against this app's own configured option price range
+            // (config.yml settings.minPrice/maxPrice) and the order's limit side. On an implausible value we reject
+            // (not resolve) - the caller (breezeExecutor.ts's waitForBreezeFill) falls back to the confirmed-correct
+            // Breeze.getFillPrice() REST poll, so a bad payload never records a wrong price.
             const cfg = configService.getConfig().settings;
-            const minPrice = cfg?.minPrice ?? 0;
-            const maxPrice = cfg?.maxPrice ?? Number.MAX_SAFE_INTEGER;
-            if (fillPrice > 0 && fillPrice >= minPrice && fillPrice <= maxPrice) {
+            const fillPrice = pushFillPrice(data, cfg?.minPrice ?? 0, cfg?.maxPrice ?? Number.MAX_SAFE_INTEGER);
+            if (fillPrice !== null) {
                 outcome = { fillPrice };
             } else {
-                Log.log(`[BreezeOrderNotifyStream] Executed push for order ${orderId} carried an implausible averageExecutedRate (${data.averageExecutedRate}) - rejecting to force the REST fallback instead of recording a wrong price.`);
+                Log.log(`[BreezeOrderNotifyStream] Executed push for order ${orderId} carried no plausible fill price (averageExecutedRate=${data.averageExecutedRate}, cancelFlag=${data.cancelFlag}, limitRate=${data.limitRate}) - rejecting to force the REST fallback instead of recording a wrong price.`);
                 outcome = { error: new Error(`Breeze order ${orderId} push carried an implausible fill price (${data.averageExecutedRate})`) };
             }
         } else if (status === 'Partially Executed') {
@@ -134,6 +150,10 @@ class BreezeOrderNotifyStream {
             return;
         } else if (status === 'Rejected' || status === 'Cancelled' || status === 'Expired') {
             outcome = { error: new Error(`Breeze order ${orderId} ${status}`) };
+        } else if (status === 'Ordered' || status === 'Requested' || status === 'Queued') {
+            // Non-terminal acknowledgement of a placed (resting) order, e.g. "Ordered" right after placeOrder:
+            // nothing to settle, the terminal push (Executed/Cancelled/...) comes later.
+            return;
         } else {
             // Found on review: restructuring to classify status before the pending-waiter lookup
             // silently dropped the old diagnostic log for this combination (unrecognized status,

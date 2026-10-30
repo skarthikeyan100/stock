@@ -30,7 +30,9 @@ router.post('/strategies', requireAdmin, strategiesRoute);
 router.post('/strategies/:type/reset', requireAdmin, async function (req: express.Request, res) {
     try {
         const { type } = req.params;
-        res.json(await strategiesClient.reset(type));
+        // ?userId=BulkPcr-NIFTY resets only that instance (default: every strategy of the type); ?clearPnl=true also clears the day's realized P&L.
+        const userId = typeof req.query.userId === 'string' && req.query.userId ? req.query.userId : undefined;
+        res.json(await strategiesClient.reset(type, { userId, clearPnl: req.query.clearPnl === 'true' }));
     } catch (e) {
         Log.log(e);
         res.sendStatus(500);

@@ -330,9 +330,10 @@ async function handleStrategiesRequest(req: StrategiesRequest): Promise<Strategi
                 };
 
             case 'reset': {
-                const matched = strategies.getList().filter((s) => s.getClassName() === req.payload.type);
-                matched.forEach((s) => { s.reset(); clearOpenQtyFor(s); });
-                return { kind: 'response', id: req.id, ok: true, result: { type: req.payload.type, reset: matched.length } };
+                // userId (optional) narrows the reset to one instance: several strategies share a type (BulkPcr-NIFTY / BulkPcr-SENSEX).
+                const matched = strategies.getList().filter((s) => s.getClassName() === req.payload.type && (!req.payload.userId || s.userId === req.payload.userId));
+                matched.forEach((s) => { s.reset({ clearPnl: req.payload.clearPnl === true }); clearOpenQtyFor(s); });
+                return { kind: 'response', id: req.id, ok: true, result: { type: req.payload.type, reset: matched.length, userIds: matched.map((s) => s.userId) } };
             }
 
 

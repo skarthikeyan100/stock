@@ -58,6 +58,8 @@ const PROCESS_STARTED_AT = moment();
 export default class BulkPcrAutoStartStrategy extends Strategy {
     private tradingDay: string | null = null;
     private firedToday = new Set<string>();
+    // The errored-broker list of the last STUCK alert, so the same cause is not re-alerted on every later slot.
+    private lastStuckCause = '';
 
     receive(oldStats: any, newStats: any) {}
     async processOptionQuote(quote: OptionQuote) {}
@@ -105,17 +107,29 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         this.resetIfNewDay();
 
         const times: string[] = Array.isArray(this.cfg().times) ? this.cfg().times : [];
+        // Restart catch-up (config `catchUpMissedSlot: true`): of the slots that came due before this process started, only the LATEST
+        // one may still be armed, and only within LATE_WINDOW_MINUTES. attemptStart then applies the guards that make it a valid slot:
+        // the durable armed-slots record (a slot that already ran is never redone), the target not running or in error (no other slot
+        // still open), the loss-stopped / latched broker filter, and `enabled`. Older missed slots are skipped for good.
+        const slotMoment = (t: string) => { const [h, m] = String(t).split(':').map(Number); return moment().hour(h).minute(m).second(0); };
+        const catchUpSlot = this.cfg().catchUpMissedSlot === true
+            ? times.filter((t) => !this.firedToday.has(t) && !now.isBefore(slotMoment(t))).sort((a, b) => slotMoment(b).valueOf() - slotMoment(a).valueOf())[0]
+            : undefined;
         for (const timeStr of times) {
             if (this.firedToday.has(timeStr)) continue;
 
-            const [h, m] = String(timeStr).split(':').map(Number);
-            const slotTime = moment().hour(h).minute(m).second(0);
+            const slotTime = slotMoment(timeStr);
             if (now.isBefore(slotTime)) continue;
 
             this.firedToday.add(timeStr); // each configured slot fires at most once per day, whether it starts, skips, or is too late
 
             if (slotTime.isBefore(PROCESS_STARTED_AT)) {
-                Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot skipped - process started at ${PROCESS_STARTED_AT.format('HH:mm:ss')}, after it`);
+                if (timeStr === catchUpSlot && now.diff(slotTime, 'minutes') <= LATE_WINDOW_MINUTES) {
+                    Log.log(`[BulkPcrAutoStart:${this.userId}] CATCH-UP: ${timeStr} slot came due at ${slotTime.format('HH:mm:ss')}, before this process started at ${PROCESS_STARTED_AT.format('HH:mm:ss')} (now ${now.format('HH:mm:ss')}) - arming it if no other slot is still open`);
+                    await this.attemptStart(timeStr);
+                    continue;
+                }
+                Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot skipped - process started at ${PROCESS_STARTED_AT.format('HH:mm:ss')}, after it${timeStr === catchUpSlot ? ` and more than ${LATE_WINDOW_MINUTES} min ago, too late to catch up` : ''}`);
                 continue;
             }
 
@@ -180,6 +194,14 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
             return;
         }
 
+        // An 'error' slot that provably holds nothing (flat at the broker, no pending sell) is cleared here instead of waiting for an
+        // admin reset (live 2026-10-30: 11 slots skipped on a flat book). If that was the only thing keeping the cycle open it
+        // finishes, and this slot arms normally below.
+        if (target.isRunning() && target.hasBrokerError() && await target.recoverFlatErrors()) {
+            Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: '${targetUserId}' had only flat error slots - cleared, continuing`);
+            this.lastStuckCause = '';
+        }
+
         if (target.isRunning()) {
             if (target.hasBrokerError()) {
                 // isRunning() stays true indefinitely once any broker's
@@ -191,7 +213,14 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
                 // on every slot until a human resolves it (same manual-
                 // review bar BulkPcrStrategy's own error-phase logging
                 // already requires) - this strategy does not auto-clear it.
-                Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: '${targetUserId}' STUCK in a broker error state - manual review and reset() required before any further slot can arm. Skipping.`);
+                // The alert is raised once per distinct cause; later slots with the same cause log a plain skip line.
+                const cause = target.erroredBrokers().sort().join(',');
+                if (cause !== this.lastStuckCause) {
+                    this.lastStuckCause = cause;
+                    Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: '${targetUserId}' STUCK in a broker error state (${cause || 'unknown broker'}) - manual review and reset() required before any further slot can arm. Skipping.`);
+                } else {
+                    Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: '${targetUserId}' still in the broker error state (${cause}) - skipping`);
+                }
             } else {
                 Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: '${targetUserId}' already running - skipping`);
             }

@@ -92,3 +92,69 @@ Order-time target/SL inputs now cover the reported case. **Still open:**
   `kiteExecutor.ts` `setTargetStopLoss()`) is unreachable in practice: `hasTargetSet` is already
   `true` on first render because `finalizeEntry` sets both synchronously at fill time, so only the
   read-only text is shown.
+
+## Discrepancies seen in live logs on 2026-10-30
+
+**Breeze order-notify push reports `averageExecutedRate` 0.000000 on Executed pushes. [FIXED 2026-10-30, not yet seen live]**
+`src/breeze/BreezeOrderNotifyStream.ts` (`handleMessage`). Seen at least 12 times on 2026-10-30
+(e.g. orders 202610303800003666, 202610303800003669). The stream rejects the push and the REST
+fill check confirms the price, so no wrong price is booked, but every such fill waits on REST.
+Also seen: an implausible fill price of 2843100.000000 on order 202610303800004030, again
+recovered by REST at 99.9.
+Root cause: on `Executed` pushes `averageExecutedRate` is zero/garbage and the real average fill price is in `cancelFlag`, in paise (all 7 REST-confirmed
+fills that day equalled `cancelFlag / 100`, truncated to paise; a limit sell's `cancelFlag` equals its `limitRate`). Fix: `pushFillPrice()` in
+`BreezeOrderNotifyStream.ts` takes `averageExecutedRate` if plausible, else `cancelFlag / 100`, bounded by min/max price and the limit side;
+the REST fallback stays as the safety net. Verify live: no "implausible" lines for a normal Executed push.
+
+**`Ordered` status is logged as "unrecognized status". [FIXED 2026-10-30]** `BreezeOrderNotifyStream.handleMessage`
+treats a freshly placed, resting order (`orderStatus: Ordered`) as unknown. It is a non-terminal
+state, so it is now accepted silently (`Ordered`, `Requested`, `Queued`). Misleading log noise only.
+
+**BulkPcr ANT pair sized unequal after a margin retry. [FIXED 2026-10-30 (top-up), margin figure still open]** 2026-10-30 12:00:47, put buy of 975 on
+ANT was rejected for margin (`RED:Margin Shortfall`). `BulkPcrStrategy.onBuyNotFilled` retried
+once at 780 and filled. The call leg stayed at 975, so 195 lots of the ANT call are unhedged.
+Fix: the lots the resize left out (`topUpQty`) are bought later on the same contract (`topUpSlot`, every 30 s, at most 3 attempts) while the
+sibling is open and merged into one resting sell at the blended entry; trailing hedges are not topped up and say so. Still open: the rejection text reports "Available INR 193604" next to a shortfall of
+INR 12916, which does not add up for the same account; check the margin figure we send or read. Also: the hedge re-buy was refused by the
+max-investment cap (112931/100000) on kite at 11:01 and 12:04, leaving the put naked - fixed by exempting hedge re-buys / top-ups from that one gate
+(`hedgeRebuy` through `OrderClient` -> `canPlaceOrder(skipInvestmentCap)`).
+
+**Admin strategy reset is type-wide. [FIXED 2026-10-30]** `POST /strategies/:type/reset` (`src/routes/admin.ts`,
+`strategiesProcess.ts` case `reset`) resets every strategy of that type. Resetting
+`BulkPcrStrategy` to clear the NIFTY lockout also reset `BulkPcr-SENSEX` (disabled). Reset also
+clears the day's realized P&L (`dayRealizedByBroker`), so after a reset the max-profit and
+max-loss limits measure from zero, not from the day's actual P&L. Fix: `POST /strategies/:type/reset?userId=<instance>` resets one instance, and
+BulkPcr keeps the day's realized P&L unless `?clearPnl=true`.
+
+**`durablyDisable` writes `enabled: false`, and the next arm needs a manual flip. [NOT A BUG - corrected 2026-10-30]** After the
+cycle completed at 11:56:52, `BulkPcr-NIFTY` was set to `enabled: false` in `config.yml`, which
+stopped the strategy at the next slot. Checked in the log: every `durablyDisable` (10:50, 10:55, 11:56) was followed by the next auto-start slot arming
+the strategy again (10:55, 11:00, 12:00), because `attemptStart` writes `enabled: true`. The manual flip was only needed while the strategy was stuck in
+the error state below. No code change.
+
+**BulkPcr stuck in broker-error state with no open positions, blocking every slot until a reset. [FIXED 2026-10-30, per-broker scoping not done]**
+On 2026-10-30 `BulkPcr-NIFTY` latched `hasBrokerError()` from 11:01 onward and every auto-start
+slot from 11:05 to 11:45 was skipped with "STUCK in a broker error state - manual review and
+reset() required". The reset was needed even though the book was flat. Chain of events:
+- 11:00:38 ANT put rejected for margin (`RED:Margin Shortfall`); the chunked buy failed and set the
+  slot to `phase = 'error'`.
+- 11:01:44 kite and breeze call re-buys were `[NOT_PLACED]` for max investment (105885/100000,
+  106415/100000). `placeRestingRebuy` still logged "outcome unconfirmed - an order may be LIVE",
+  so the message says a live order might exist when the code path says none was placed.
+- 11:02 `closeBroker` skipped both brokers with "call slot is in error - skipped, manual review
+  required", so the error stayed set and nothing closed it.
+
+Problems:
+1. The `error` phase is never cleared by a flat check. A slot with no quantity and no live order
+   should return to `done` or `idle` on its own. Instead it stays until an admin reset.
+2. The "outcome unconfirmed" alert fires for `[NOT_PLACED]`, which is a definite refusal (cap).
+   It should say "not placed" and not raise a manual-review error.
+3. Auto-start treats any error as a stop for the whole strategy, so one margin-rejected buy blocks
+   all later slots, not just that slot.
+4. The admin reset also cleared realized P&L and the other brokers' state (see the reset item above),
+   which is a heavy fix for a flat book.
+
+Fix: `isNothingBought` now treats `[NOT_PLACED]` as a definite refusal (no `error` latch); `BulkPcrStrategy.recoverFlatErrors()` clears an `error` slot that
+is flat at the broker with no pending sell (auto-start calls it before reporting STUCK); the STUCK alert is logged once per cause.
+Not done: arming only the healthy brokers while one is errored - a running cycle cannot be armed again concurrently, and `reset({keepStops})` would
+drop the errored slot's state. A slot with an unresolved contract or a possibly-live remainder stays latched on purpose (manual review).

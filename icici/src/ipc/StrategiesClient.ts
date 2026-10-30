@@ -86,8 +86,9 @@ class StrategiesClient {
         return res.result;
     }
 
-    async reset(type: string): Promise<{ type: string; reset: number }> {
-        const res = await this.request('reset', { type });
+    // userId: reset only that instance (without it, every strategy of the type). clearPnl: also clear the day's realized P&L (BulkPcr).
+    async reset(type: string, opts: { userId?: string; clearPnl?: boolean } = {}): Promise<{ type: string; reset: number; userIds: string[] }> {
+        const res = await this.request('reset', { type, userId: opts.userId, clearPnl: opts.clearPnl === true });
         if (!res.ok) throw new Error(res.error);
         return res.result;
     }
