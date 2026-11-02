@@ -138,6 +138,15 @@ index($0, "[ContinuousStrategy] ") == 0 { next }
         type = "5x SQUARE-OFF"; tsym = w[4]
         detail = "pnl=" val(w[5]) " (" kindOf(w[3]) ")"
         legOpen[tsym] = 0
+    } else if (msg ~ /^(Max-profit|Max-loss|End-of-day) close \(/) {
+        # Mass close (max-profit / max-loss / EOD): the leg is gone, whatever else the log says about it afterwards.
+        type = "MASS CLOSE (" w[1] ")"; tsym = w[4]
+        detail = w[5] " (" kindOf(w[3]) ")"
+        legOpen[tsym] = 0
+    } else if (msg ~ /mass close: pending re-entry cancelled: /) {
+        # The resting refill was cancelled by the mass close (it used to stay listed as open for the rest of the session).
+        type = "OTHER"; detail = msg
+        pendOpen[w[nw]] = 0
     } else if (index(msg, "Refill placed (") == 1) {
         type = "REFILL PLACED"; tsym = w[4]
         detail = "qty=" val(w[5]) " price=" val(w[6]) " (" kindOf(w[3]) ")"

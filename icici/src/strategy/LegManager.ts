@@ -114,6 +114,11 @@ export interface LegManagerConfig {
     maxInvestment?: number;
     maxProfit?: number | null; // null/undefined disables the feature
     maxLoss?: number | null; // % of maxInvestment, mirrors maxProfit on the loss side; null/undefined disables the feature
+    // Loss-trip cut and cooldown (BulkPcr's lossInvestmentCut / lossCooldownSeconds, same meaning here). Each max-loss trip
+    // cuts the investment cap by lossInvestmentCut for the rest of the day; the lockout is released lossCooldownSeconds after
+    // the trip (0/unset: locked for the day). The cut applies even when no cooldown is set.
+    lossInvestmentCut?: number | null;
+    lossCooldownSeconds?: number | null;
     // Used only by restoreFromOpenTrades's wasAveraged heuristic - optional
     // since not every owning strategy has an "initial entry size" config key
     // (e.g. SupportResistanceStrategy has none; restored legs there simply
@@ -195,11 +200,20 @@ export class LegManager {
     // Loss-side mirror of maxProfitTripped: cumulative (realized + unrealized) P&L <= -threshold. Same close-all, same
     // same-day Mongo latch, cleared by reset().
     private maxLossTripped = false;
+    // Today's cumulative cut off the investment cap (lossInvestmentCut per max-loss trip). Persisted with the latch (persistLossState).
+    private lossInvestmentCutTotal = 0;
+    // Epoch ms when the max-loss lockout may be released; null = locked for the day. Persisted with the latch.
+    private lossCooldownUntil: number | null = null;
+    private lossCooldownTimer: ReturnType<typeof setTimeout> | null = null;
     // Target-hit / square-off closes delete the leg from legsByToken BEFORE their sell await, and a target-hit root
     // registers its refill only after that await. Without this counter isIdle() is true for that whole window, so
     // the owning strategy's T1 gate re-enters (real 2026-10-27 09:51 bug: a fresh T1 entry stacked on the refill,
     // leaving an untracked 65-qty position). Held until the refill is registered (or the close failed/finished).
     private closesInFlight = 0;
+    // A mass close (max-profit / max-loss / EOD) is running: its legs are already deleted from legsByToken before their sell await, so
+    // without this a spawn/average/entry queued behind it saw an idle manager and bought mid-close (2026-11-02 10:24:47: 520 CE bought
+    // while everything was being sold). Blocks new orders from the moment the close starts.
+    private massClosesInFlight = 0;
     // End-of-day force close latch: once set, onOptionTick keeps closing every leg (retrying a failed sell on the
     // next tick) and nothing new is opened. Not persisted - the trading day is over either way.
     private eodClosing = false;
@@ -271,14 +285,32 @@ export class LegManager {
     // max-loss or EOD trip that happened while it waited.
     private newOrdersBlocked(): boolean {
         this.rollDayIfNeeded();
-        return this.maxProfitTripped || this.maxLossTripped || this.eodClosing || (this.deps.isOrderingBlocked?.() ?? false);
+        return this.maxProfitTripped || this.maxLossTripped || this.eodClosing || this.massClosesInFlight > 0 || (this.deps.isOrderingBlocked?.() ?? false);
+    }
+
+    // Cancel of a resting refill, retried twice (1 s, 2 s) on a transient broker error: Kite answered "An internal error occurred" to a
+    // cancel sent 0.3 s after the order was placed, the order stayed resting and later filled (2026-11-02). "Already filled" and "does not
+    // exist" are answers, not transient errors, and are thrown at once for the caller's own handling.
+    private async cancelWithRetry(intent: PendingReEntry): Promise<void> {
+        for (let attempt = 0; ; attempt++) {
+            try {
+                await this.currentOps().cancel(this.deps.userId, intent.orderId, intent.exchange);
+                return;
+            } catch (e: any) {
+                const answered = alreadyFilledQty(e) > 0 || /does not exist|not found/i.test(String(e?.message ?? e));
+                if (answered || attempt >= 2) throw e;
+                const waitMs = 1000 * (attempt + 1);
+                Log.log(`[${this.deps.ownerType}] cancel of refill ${intent.orderId} (${intent.tsym}) failed (${String(e?.message ?? e).slice(0, 120)}) - retrying in ${waitMs / 1000}s`);
+                await new Promise((resolve) => setTimeout(resolve, waitMs));
+            }
+        }
     }
 
     // Cancels a resting refill and, if it had already (partly) filled, sells that quantity straight back so no
     // untracked position remains. Used by every path that has already deleted the intent.
     private async cancelIntentOrSellBack(intent: PendingReEntry, label: string): Promise<void> {
         try {
-            await this.currentOps().cancel(this.deps.userId, intent.orderId, intent.exchange);
+            await this.cancelWithRetry(intent);
             Log.log(`[${this.deps.ownerType}] ${label}: pending re-entry cancelled: ${intent.tsym}`);
         } catch (e: any) {
             const filledQty = alreadyFilledQty(e);
@@ -410,6 +442,11 @@ export class LegManager {
         return false;
     }
 
+    // The investment cap in force today: the configured one less every max-loss cut so far (lossInvestmentCut).
+    private effectiveMaxExposure(cfg: LegManagerConfig): number {
+        return resolveMaxExposure(cfg) - this.lossInvestmentCutTotal;
+    }
+
     // sum(qty * entryPrice) over open legs + pending re-entries, plus the new
     // order's own projected cost, must stay under maxInvestment. A skip IS
     // sticky: the first time this returns false for ANY caller,
@@ -422,7 +459,7 @@ export class LegManager {
         this.rollDayIfNeeded();
         if (this.capitalGateTripped) return false; // latched permanently - see field comment
         const cfg = this.deps.getConfig();
-        const maxInvestment = resolveMaxExposure(cfg);
+        const maxInvestment = this.effectiveMaxExposure(cfg);
         let total = 0;
         for (const leg of this.legsByToken.values()) total += leg.totalQuantity * leg.avgPrice;
         for (const pending of this.pendingReEntries.values()) total += pending.quantity * pending.limitPrice;
@@ -488,6 +525,9 @@ export class LegManager {
         this.capitalGateTripped = false;
         this.maxProfitTripped = false;
         this.maxLossTripped = false;
+        this.lossInvestmentCutTotal = 0;
+        this.lossCooldownUntil = null;
+        this.clearLossCooldownTimer();
         this.eodClosing = false;
         this.maxProfitBaseline = this.realizedPnL;
     }
@@ -519,7 +559,11 @@ export class LegManager {
             }
             if (doc?.maxLossTripped) {
                 this.maxLossTripped = true;
-                Log.log(`[${this.deps.ownerType}] max-loss stop was already tripped earlier today - staying stopped after the restart (reset the strategy to trade again)`);
+                this.lossInvestmentCutTotal = Number(doc.lossInvestmentCutTotal) || 0;
+                this.lossCooldownUntil = doc.lossCooldownUntil != null ? Number(doc.lossCooldownUntil) : null;
+                if (this.lossCooldownUntil != null) this.armLossCooldownTimer(this.lossCooldownUntil - Date.now());
+                const lockout = this.lossCooldownUntil != null ? `lockout releases once its cooldown has passed and the strategy is flat` : 'staying stopped after the restart (reset the strategy to trade again)';
+                Log.log(`[${this.deps.ownerType}] max-loss stop was already tripped earlier today - ${lockout}; investment cap cut so far ${this.lossInvestmentCutTotal}`);
             }
         } catch (e) {
             Log.log(`[${this.deps.ownerType}] could not read strategyLatches (continuing with the stop untripped):`, e);
@@ -547,13 +591,71 @@ export class LegManager {
         if (cfg.maxLoss == null) return;
         const maxLossPct = toPercentNumber(cfg.maxLoss);
         if (maxLossPct === null) { this.logUnparseablePercent('maxLoss', cfg.maxLoss); return; }
-        const maxInvestment = resolveMaxExposure(cfg);
+        const maxInvestment = this.effectiveMaxExposure(cfg);
         const threshold = (maxLossPct / 100) * maxInvestment;
         const openUnrealized = this.computeOpenUnrealized();
         if (!(openUnrealized <= -threshold)) return; // NaN-safe: a NaN P&L must not trip it
         this.maxLossTripped = true;
-        this.persistLatch('maxLossTripped');
-        Log.log(`[${this.deps.ownerType}] MAX LOSS TRIPPED - open-position P&L=${Math.round(openUnrealized)} threshold=-${Math.round(threshold)} (maxLoss=${maxLossPct}% of maxInvestment=${maxInvestment}) - closing every open leg and blocking new entries`);
+        const cut = Number(cfg.lossInvestmentCut ?? 0);
+        if (Number.isFinite(cut) && cut > 0) this.lossInvestmentCutTotal += cut;
+        const cooldownSec = Number(cfg.lossCooldownSeconds ?? 0);
+        this.lossCooldownUntil = Number.isFinite(cooldownSec) && cooldownSec > 0 ? Date.now() + cooldownSec * 1000 : null;
+        this.persistLossState();
+        if (this.lossCooldownUntil != null) this.armLossCooldownTimer(this.lossCooldownUntil - Date.now());
+        const after = this.effectiveMaxExposure(cfg);
+        const lockout = this.lossCooldownUntil != null ? `lockout released after ${cooldownSec}s once flat` : 'locked out for the rest of the day (no cooldown)';
+        Log.log(`[${this.deps.ownerType}] MAX LOSS TRIPPED - open-position P&L=${Math.round(openUnrealized)} threshold=-${Math.round(threshold)} (maxLoss=${maxLossPct}% of maxInvestment=${maxInvestment}) - closing every open leg and blocking new entries; investment cap cut ${maxInvestment} -> ${after}, ${lockout}`);
+    }
+
+    // Persists the max-loss latch with its cut and cooldown end (same per-day doc as persistLatch).
+    private persistLossState(): void {
+        const col = Mongo.getInstance()?.db.collection('strategyLatches');
+        if (!col) return;
+        const key = { ownerType: this.deps.ownerType, userId: this.deps.userId, day: LegManager.latchDay() };
+        col.updateOne(key, { $set: {
+            maxLossTripped: this.maxLossTripped,
+            lossInvestmentCutTotal: this.lossInvestmentCutTotal,
+            lossCooldownUntil: this.lossCooldownUntil,
+            updatedAt: new Date(),
+        } }, { upsert: true })
+            .catch((e) => Log.log(`[${this.deps.ownerType}] strategyLatches loss-state write failed (continuing):`, e));
+    }
+
+    private armLossCooldownTimer(delayMs: number): void {
+        this.clearLossCooldownTimer();
+        this.lossCooldownTimer = setTimeout(() => {
+            this.lossCooldownTimer = null;
+            this.maybeReleaseMaxLoss().catch((e) => Log.log(`[${this.deps.ownerType}] max-loss cooldown release failed:`, e));
+        }, Math.max(0, delayMs));
+    }
+
+    private clearLossCooldownTimer(): void {
+        if (this.lossCooldownTimer) clearTimeout(this.lossCooldownTimer);
+        this.lossCooldownTimer = null;
+    }
+
+    // Releases the max-loss lockout once its cooldown has passed and the strategy is flat (no leg, refill or close in flight).
+    // Re-checks every 5 s while legs are still closing. If the cuts have used up the whole cap, it stays locked for the day.
+    private async maybeReleaseMaxLoss(): Promise<void> {
+        if (!this.maxLossTripped || this.lossCooldownUntil == null) return;
+        const remaining = this.lossCooldownUntil - Date.now();
+        if (remaining > 0) { this.armLossCooldownTimer(remaining); return; }
+        if (!this.isIdle()) { this.armLossCooldownTimer(5000); return; }
+        await this.withOpLock(async () => {
+            if (!this.maxLossTripped || this.lossCooldownUntil == null || !this.isIdle()) return;
+            const cfg = this.deps.getConfig();
+            const cap = this.effectiveMaxExposure(cfg);
+            if (!(cap > 0)) {
+                Log.log(`[${this.deps.ownerType}] max-loss cooldown over but the investment cap is ${cap} after the cuts - staying locked for the day`);
+                this.lossCooldownUntil = null;
+                this.persistLossState();
+                return;
+            }
+            this.maxLossTripped = false;
+            this.lossCooldownUntil = null;
+            this.persistLossState();
+            Log.log(`[${this.deps.ownerType}] max-loss cooldown over - lockout released, investment cap ${cap}`);
+        });
     }
 
     isMaxLossTripped(): boolean {
@@ -570,6 +672,17 @@ export class LegManager {
     }
 
     private async closeAllLegsAndCancelReEntries(): Promise<void> {
+        this.massClosesInFlight++;
+        this.closesInFlight++; // not idle while it runs (also holds back a max-loss lockout release)
+        try {
+            await this.closeAllLegsAndCancelReEntriesInner();
+        } finally {
+            this.closesInFlight--;
+            this.massClosesInFlight--;
+        }
+    }
+
+    private async closeAllLegsAndCancelReEntriesInner(): Promise<void> {
         // The same mass close serves three triggers; the log lines say which one (they all used to read "Max-profit").
         const why = this.maxProfitTripped ? 'Max-profit' : this.maxLossTripped ? 'Max-loss' : 'End-of-day';
         for (const leg of Array.from(this.legsByToken.values())) {
@@ -1066,7 +1179,7 @@ export class LegManager {
             unwatchToken(token, this.deps.strategyRef, intent.exchange);
             if (intent.orderId) this.supersededRefills.set(intent.orderId, { tsym: intent.tsym, token, exchange: intent.exchange });
             try {
-                await this.currentOps().cancel(this.deps.userId, intent.orderId, intent.exchange);
+                await this.cancelWithRetry(intent);
                 Log.log(`[${this.deps.ownerType}] Pending refill at level ${intent.parentLevel} cancelled (parent ${leg.tsym}): ${intent.tsym}`);
             } catch (e: any) {
                 // The refill filled before the cancel landed (OrderAlreadyFilledError carries the real filled
@@ -1368,6 +1481,9 @@ export class LegManager {
         this.capitalGateTripped = false;
         this.maxProfitTripped = false;
         this.maxLossTripped = false;
+        this.lossInvestmentCutTotal = 0;
+        this.lossCooldownUntil = null;
+        this.clearLossCooldownTimer();
         this.persistLatch(null);
         this.eodClosing = false;
         this.supersededRefills.clear();

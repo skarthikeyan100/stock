@@ -1597,7 +1597,9 @@ class OrderBookkeeping {
         // blend, but it is independent of that assumption: when the two differ by more than 5%, say so and use the HIGHER of the two
         // (the cautious one for a long's loss stop). Only for a single owner - the broker average spans every owner's lots.
         const brokerAvg = Number(brokerView?.avg);
-        if (restored.length === 1 && brokerAvg > 0 && Math.abs(restored[0].price - brokerAvg) / brokerAvg > 0.05) {
+        // Only when this owner holds the broker's WHOLE position: if the broker holds more (another strategy's lots on the same contract), its
+        // average blends their fills and says nothing about this owner's cost (2026-11-02: 85.85 FIFO vs 73.44 broker average, a false alert).
+        if (restored.length === 1 && totalRestoredQty === brokerQuantity && brokerAvg > 0 && Math.abs(restored[0].price - brokerAvg) / brokerAvg > 0.05) {
             const fifoCost = restored[0].price;
             const used = Math.max(fifoCost, brokerAvg);
             Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) cost basis uncertain: Mongo FIFO says ${fifoCost.toFixed(2)}, broker average ${brokerAvg.toFixed(2)} - using ${used.toFixed(2)}; stops and realized P&L for this position are measured from it`);
