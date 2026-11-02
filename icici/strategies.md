@@ -230,7 +230,7 @@ none) was added alongside `BulkPcrAutoStartStrategy` below.
 **Config keys** (`config.yml`): `enabled`, `broker` (legacy single-broker
 fallback), `brokers` (preferred, multi-broker array), `quantity`,
 `targetPoints`, `chunkDriftCancelPoints`, `right` (`call`/`put`/`none`),
-`maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10), `maxLossPerOrder`, `maxProfit`, `hedgeTrailDistance`.
+`maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10), `maxLossPerOrder`, `maxProfit`, `hedgeTrailDistance`, `hedgeTargetFraction`.
 (`maxLossPerDay` was removed on 2026-10-22, `maxLoss` before it, and `maxLossPerTrade` was replaced by
 `maxLossPerOrder` on 2026-10-27. A config still carrying any of them is ignored, with a one-time WARN in the log.)
 
@@ -264,7 +264,7 @@ is still opening/closing (checked every 5 s). `lossCooldownSeconds: 0` keeps the
 
 **Hedge trail exit (`hedgeTrailDistance`, points, optional, ships unset = off)**: applies to the hedge leg (the side
 opened by the `slDistance` trigger) only; the root leg keeps its fixed `targetPoints` resting sell. With it set, the hedge
-has **no resting sell**. Its target is `ceil(d / 2)` points above its entry, where `d` is how far the other leg was below its entry when the hedge buy started (CE bought at 100, hedge opened at 90 -> 5; after that hedge closes, a new one opened with CE at 80 -> 10); `slDistance` is the fallback if that price is unknown. Reaching the target
+has **no resting sell**. Its target is `ceil(d * hedgeTargetFraction)` points above its entry (`hedgeTargetFraction` defaults to 0.5, i.e. `ceil(d / 2)`; 1 = the full loss of the leg it covers), where `d` is how far the other leg was below its entry when the hedge buy started (CE bought at 100, hedge opened at 90 -> 5; after that hedge closes, a new one opened with CE at 80 -> 10); `slDistance` is the fallback if that price is unknown. Reaching the target
 only **arms** the trail (`TrailStop.ts`, one instance per slot; nothing is sold). Once armed, the exit level is
 `max(entry + target, peak - hedgeTrailDistance)`: it follows the highest tick and never sits below the target. A tick at
 or below it fires the exit: a **limit** sell for the open quantity, priced at that tick (so it is marketable) and never

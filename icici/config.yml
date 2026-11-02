@@ -31,23 +31,26 @@ strategies:
     initialQuantity: 65
     slDistance: 10
     targetDistance: 5
-    squareOffDistance: 500
+    squareOffDistance: 40
     postAverageTargetDistance: 2
     minPremium: 50
-    maxInvestment: 200000
+    maxInvestment: 100000
     maxProfit: 4%
     maxLoss: 6%
+    lossInvestmentCut: 10000
+    lossCooldownSeconds: 1800
     spawnQuantityMode: '1'
     averageQuantityMode: same
     right: none
     marketSentiment: none
-    maxLevels: 4
+    maxLevels: 2
+    hedgeStartLevel: 2
     cooldownSeconds: 60
     refillCancelDistance: 20
     logEnabled: true
     momentumEnabled: false
     momentumTimeoutMs: 3000
-    maxExposure: 200000
+    maxExposure: 100000
   - type: ContinuousStrategy
     userId: ContinuousStrategy-ANT
     enabled: false
@@ -190,15 +193,16 @@ strategies:
     logEnabled: true
   - type: BulkPcrStrategy
     userId: BulkPcr-SENSEX
-    enabled: true
+    enabled: false
     quantity: -1
     targetPoints: 10
     chunkDriftCancelPoints: 10
     right: none
     maxInvestment: 100000
-    maxLossPerOrder: 0
-    maxProfit: 10%
+    maxLossPerOrder: 0%
+    maxProfit: 30%
     slDistance: 30
+    hedgeAtPercentOfStop: 50
     logEnabled: true
     brokers:
       - kite
@@ -213,18 +217,19 @@ strategies:
     userId: BulkPcr-NIFTY
     enabled: true
     quantity: -1
-    targetPoints: 3
+    targetPoints: 4
     chunkDriftCancelPoints: 10
     right: none
     maxInvestment: 100000
-    maxLossPerOrder: 10%
+    maxLossPerOrder: 8%
     maxProfit: 10%
     slDistance: 10
+    hedgeAtPercentOfStop: 70
+    hedgeTrailDistance: 2
+    hedgeTargetFraction: 1
     logEnabled: true
     brokers:
-      - ant
       - kite
-      - breeze
     index: NIFTY
     maxExposure: 100000
     lossCooldownSeconds: 300
@@ -255,39 +260,55 @@ strategies:
     targetPoints: 10
     index: SENSEX
     brokers:
-      - ant
       - kite
   - type: BulkPcrAutoStartStrategy
     userId: BulkPcrAutoStart-NIFTY
     targetUserId: BulkPcr-NIFTY
-    enabled: false
+    enabled: true
+    catchUpMissedSlot: true
     times:
       - '10:35'
+      - '10:40'
       - '10:45'
+      - '10:50'
       - '10:55'
+      - '11:00'
       - '11:05'
+      - '11:10'
       - '11:15'
+      - '11:20'
       - '11:25'
+      - '11:30'
       - '11:35'
+      - '11:40'
       - '11:45'
+      - '11:50'
       - '11:55'
+      - '12:00'
       - '12:05'
+      - '12:10'
       - '12:15'
+      - '12:20'
       - '12:25'
+      - '12:30'
       - '12:35'
+      - '12:40'
       - '12:45'
+      - '12:50'
       - '12:55'
+      - '13:00'
       - '13:05'
+      - '13:10'
       - '13:15'
+      - '13:20'
       - '13:25'
+      - '13:30'
       - '13:35'
     quantity: -1
-    targetPoints: 3
+    targetPoints: 4
     index: NIFTY
     brokers:
-      - ant
       - kite
-      - breeze
   - type: TopStockOptionsOpeningGapStrategy
     enabled: false
     broker: ant
@@ -319,3 +340,38 @@ strategies:
     brokers:
       - ant
     logEnabled: true
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Recommendation-1
+    contract: 23300 PE
+    entryPrice: 110
+    targetPrice: 172
+    stopLoss: 50
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+    eodCloseTime: '15:10'
+    maxExposure: 100000
+  - type: NiftyChangeStrategy
+    enabled: true
+    userId: NiftyChange-NIFTY
+    times:
+      - '10:40'
+      - '11:40'
+      - '12:30'
+      - '13:40'
+      - '14:30'
+    maxInvestment: 100000
+    limitOffset: 3
+    targetPoints: 5
+    entryTimeoutMinutes: 5
+    eodCloseTime: '15:10'
+    index: NIFTY
+    brokers:
+      - kite
+      - breeze
+      - ant
+    maxExposure: 100000

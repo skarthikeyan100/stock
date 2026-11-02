@@ -384,11 +384,17 @@ export default class BulkPcrStrategy extends Strategy {
         return Number.isFinite(n) && n > 0 ? n : 0;
     }
 
-    // Target of a trailing hedge: half the points the opposite leg is below its entry, rounded up (CE bought 100, at 90 -> 5;
-    // at 80 -> 10). Falls back to slDistance when that leg's price is unknown. It arms the trail.
+    // Config `hedgeTargetFraction` (default 0.5): the share of the opposite leg's loss a trailing hedge aims to win back.
+    private hedgeTargetFraction(): number {
+        const n = Number(this.cfg().hedgeTargetFraction);
+        return Number.isFinite(n) && n > 0 ? n : 0.5;
+    }
+
+    // Target of a trailing hedge: hedgeTargetFraction (default half) of the points the opposite leg is below its entry, rounded up
+    // (CE bought 100, at 90 -> 5; at 80 -> 10 with the default). Falls back to slDistance when that leg's price is unknown. It arms the trail.
     private hedgeTarget(pos?: BrokerPosition): number {
         const adverse = pos?.hedgeAdverse;
-        return Math.ceil((adverse !== undefined && adverse > 0 ? adverse : this.slDistance()) / 2);
+        return Math.ceil((adverse !== undefined && adverse > 0 ? adverse : this.slDistance()) * this.hedgeTargetFraction());
     }
 
     // How far the broker's other open leg is below its entry right now (0 when unknown or not below).

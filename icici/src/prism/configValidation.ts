@@ -17,7 +17,7 @@ const NON_NEGATIVE_FIELDS: string[] = [
     'targetPoints', 'stopLossPoints', 'targetPrice', 'stopLossPrice', 'target', 'stopLoss',
     'minPrice', 'maxPrice', 'targetPriceDiff', 'stopLossPriceDiff', 'trailingDistance',
     'cooldownSeconds', 'safetyBufferAmount', 'maxTradesPerDay',
-    'slDistance', 'hedgeTrailDistance', 'postAverageTargetDistance', 'minPremium', 'refillCancelDistance',
+    'slDistance', 'hedgeTrailDistance', 'hedgeTargetFraction', 'postAverageTargetDistance', 'minPremium', 'refillCancelDistance',
     'pointsThreshold', 'accelerationThreshold', 'numberOfDatapointsReceived',
     'maxHoldTimeMinutes', 'gapReversalThreshold',
     'averageThreshold', 'threshold', 'loopCount', 'activateIntermittentCount',
