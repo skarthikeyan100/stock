@@ -44,8 +44,6 @@ interface DecisionLogEntry {
   detail: {
     day?: string;
     dayPnL?: number;
-    consistencyPercent?: number;
-    consistencyLimit?: number;
     cumulativePnL?: number;
     trades?: { tsym: string; entryPrice: number; exitPrice: number; quantity: number; realizedPnL: number }[];
   };
@@ -593,8 +591,8 @@ export default function ProfilePage() {
 
         {/* Payouts */}
         <Alert variant="info" className="small py-2 mt-3">
-          Payouts are processed periodically, subject to a minimum profit cushion (safety buffer) on your first payout
-          and a consistency rule limiting how much a single day may contribute to a payout period.
+          Payouts are processed periodically on the profit of each period. A period with no profit, or one that breaches the
+          daily or weekly loss limit, pays nothing.
         </Alert>
 
         <Card className="mb-3">
@@ -715,9 +713,6 @@ export default function ProfilePage() {
                                   {entry.detail?.day && (
                                     <div className="text-muted">
                                       Day: {entry.detail.day} — P&amp;L ₹{entry.detail.dayPnL?.toFixed(2)}
-                                      {entry.detail.consistencyPercent !== undefined && (
-                                        <> ({entry.detail.consistencyPercent.toFixed(0)}% of period profit, limit {entry.detail.consistencyLimit}%)</>
-                                      )}
                                     </div>
                                   )}
                                   {entry.detail?.trades && entry.detail.trades.length > 0 && (

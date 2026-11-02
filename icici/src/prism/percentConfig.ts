@@ -4,7 +4,6 @@
 // through toPercentNumber() (or receive values already normalised by
 // ConfigService.loadConfig()).
 export const PERCENT_KEYS: ReadonlySet<string> = new Set([
-    'consistencyLimitPercent',
     'maxDailyDrawdownPercent',
     'maxWeeklyDrawdownPercent',
     'maxProfit',

@@ -73,7 +73,7 @@ async function main() {
 
     // --- validateFlatConfig: a fully valid full-payload update passes cleanly ---
     const validFullFlat = {
-        settings: { minPrice: 20, maxPrice: 30000, consistencyLimitPercent: 40 },
+        settings: { minPrice: 20, maxPrice: 30000, maxDailyDrawdownPercent: 40 },
         goodMorningStrategy: { type: 'GoodMorningStrategy', enabled: true, quantity: 65, targetPoints: 10, stopLossPoints: 5 },
     };
     const validFullErrors = validateFlatConfig(validFullFlat, currentFlat);
@@ -92,20 +92,20 @@ async function main() {
         'formatPercentFields writes percent keys with % and leaves others alone');
 
     const okPercentErrors = validateFlatConfig(
-        { settings: { consistencyLimitPercent: '40%', maxDailyDrawdownPercent: 25 }, continuousStrategy: { type: 'ContinuousStrategy', maxProfit: '4%', maxLoss: 6 } },
+        { settings: { maxWeeklyDrawdownPercent: '40%', maxDailyDrawdownPercent: 25 }, continuousStrategy: { type: 'ContinuousStrategy', maxProfit: '4%', maxLoss: 6 } },
         {});
     assert(okPercentErrors.length === 0, `valid "N" and "N%" percent values pass (errors: ${JSON.stringify(okPercentErrors)})`);
 
     const badPercentErrors = validateFlatConfig(
-        { settings: { consistencyLimitPercent: 'abc%' }, continuousStrategy: { type: 'ContinuousStrategy', maxLoss: '-3%' } },
+        { settings: { maxDailyDrawdownPercent: 'abc%' }, continuousStrategy: { type: 'ContinuousStrategy', maxLoss: '-3%' } },
         {});
     assert(badPercentErrors.length === 2, `an unparseable and a negative percent are both rejected (errors: ${JSON.stringify(badPercentErrors)})`);
 
     const zeroStopErrors = validateNumericRanges('continuousStrategy', { maxProfit: 0 });
     assert(zeroStopErrors.length === 1, `maxProfit of 0 is rejected - it would trip on the first tick (errors: ${JSON.stringify(zeroStopErrors)})`);
 
-    const outOfRangeErrors = validateNumericRanges('settings', { consistencyLimitPercent: '150%' });
-    assert(outOfRangeErrors.length === 1, `consistencyLimitPercent above 100 is rejected (errors: ${JSON.stringify(outOfRangeErrors)})`);
+    const outOfRangeErrors = validateNumericRanges('settings', { maxDailyDrawdownPercent: '150%' });
+    assert(outOfRangeErrors.length === 1, `maxDailyDrawdownPercent above 100 is rejected (errors: ${JSON.stringify(outOfRangeErrors)})`);
 
     // --- validateConfigFile: whole-file checks used by the loader and POST /config ---
     assert(validateConfigFile(null).length > 0 && validateConfigFile('x').length > 0,
@@ -156,18 +156,18 @@ async function main() {
     // --- ConfigService.loadConfig: a live reload keeps the previous config when the file is bad ---
     const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-test-'));
     const cfgPath = path.join(cfgDir, 'config.yml');
-    fs.writeFileSync(cfgPath, 'settings:\n  consistencyLimitPercent: 40%\nstrategies: []\n');
+    fs.writeFileSync(cfgPath, 'settings:\n  maxDailyDrawdownPercent: 40%\nstrategies: []\n');
     process.env.CONFIG_PATH = cfgPath; // read by ConfigService at import time
     const { default: configService } = await import('../prism/ConfigService');
-    assert(configService.getConfig().settings.consistencyLimitPercent === 40, 'loadConfig normalises "40%" to 40');
+    assert((configService.getConfig().settings as any).maxDailyDrawdownPercent === 40, 'loadConfig normalises "40%" to 40');
 
     fs.writeFileSync(cfgPath, 'a: [1');
     configService.reloadNow();
-    assert(configService.getConfig().settings.consistencyLimitPercent === 40, 'a malformed file on reload keeps the previous config');
+    assert((configService.getConfig().settings as any).maxDailyDrawdownPercent === 40, 'a malformed file on reload keeps the previous config');
 
     fs.writeFileSync(cfgPath, 'settings:\n  maxDailyDrawdownPercent: 0%\n');
     configService.reloadNow();
-    assert(configService.getConfig().settings.consistencyLimitPercent === 40, 'an invalid file on reload keeps the previous config');
+    assert((configService.getConfig().settings as any).maxDailyDrawdownPercent === 40, 'an invalid file on reload keeps the previous config');
 
     fs.rmSync(cfgDir, { recursive: true, force: true });
 

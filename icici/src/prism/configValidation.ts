@@ -17,7 +17,7 @@ const NON_NEGATIVE_FIELDS: string[] = [
     'lossLimit', 'lotLimit', 'maxInvestment', 'maxExposure',
     'targetPoints', 'stopLossPoints', 'targetPrice', 'stopLossPrice', 'target', 'stopLoss',
     'minPrice', 'maxPrice', 'targetPriceDiff', 'stopLossPriceDiff', 'trailingDistance',
-    'cooldownSeconds', 'safetyBufferAmount', 'maxTradesPerDay',
+    'cooldownSeconds',
     'slDistance', 'hedgeTrailDistance', 'hedgeTargetFraction', 'postAverageTargetDistance', 'minPremium', 'refillCancelDistance',
     'pointsThreshold', 'accelerationThreshold', 'numberOfDatapointsReceived',
     'maxHoldTimeMinutes', 'gapReversalThreshold',
@@ -51,7 +51,7 @@ const QUANTITY_SENTINEL_TYPES = ['BulkPcrStrategy', 'BulkPcrAutoStartStrategy', 
 
 // Percent-of-profit / drawdown fields, constrained to a sane 0-100 range.
 const PERCENT_FIELDS: string[] = [
-    'consistencyLimitPercent', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
+    'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
 ];
 
 // Stop levels that must be strictly positive. 0 for maxProfit/maxLoss would

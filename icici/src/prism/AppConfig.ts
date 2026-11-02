@@ -28,11 +28,6 @@ export class Settings {
     trailingDistance = 3
     cooldownSeconds = 60
     logQuotes = false
-    // Payout rules (src/payout.ts) - minimum all-time profit before a user's
-    // first-ever payout, and the max % of a payout period's profit any single
-    // day may contribute before the payout is blocked outright.
-    safetyBufferAmount = 5000
-    consistencyLimitPercent = 40
     gapScreenerCoverOrderEnabled = false
     gapScreenerCoverOrderUserEmail = ''
     gapScreenerCoverOrderQuantity = 0

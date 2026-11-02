@@ -14,8 +14,6 @@ export interface PayoutDecisionDetail {
     cumulativePnL?: number;
     lossLimitThreshold?: number;
     tradeIds?: any[];
-    consistencyPercent?: number;
-    consistencyLimit?: number;
 }
 
 export interface PayoutComputation {
@@ -42,29 +40,6 @@ export function isNonPositiveProfitBlocked(grossProfit: number): boolean {
     return grossProfit <= 0;
 }
 
-// Measures a period's worst-day concentration against gross winnings (sum of
-// positive days only), not net profit - net profit can be deflated below any
-// single winning day's own total by an unrelated loss elsewhere in the
-// period, which previously let worstPercent exceed 100% and over-block
-// legitimate payouts. Gross-winnings-based percent is mathematically capped
-// at 100% (a day can be at most the sum of all winning days).
-export function computeConsistencyBreach(
-    periodTrades: Array<{ exitTime: any; realizedPnL?: number }>,
-    consistencyLimitPercent: number
-): { worstDay?: string; worstPnL: number; worstPercent: number; tradeIds: any[]; breached: boolean } {
-    const byDay = groupByDay(periodTrades);
-    let worstDay: string | undefined;
-    let worstPnL = -Infinity;
-    let grossWinnings = 0;
-    for (const [day, entry] of byDay) {
-        if (entry.pnl > worstPnL) { worstPnL = entry.pnl; worstDay = day; }
-        if (entry.pnl > 0) grossWinnings += entry.pnl;
-    }
-    const worstPercent = worstDay && grossWinnings > 0 ? (worstPnL / grossWinnings) * 100 : 0;
-    const breached = !!worstDay && worstPercent > consistencyLimitPercent;
-    return { worstDay, worstPnL, worstPercent, tradeIds: worstDay ? byDay.get(worstDay)!.tradeIds : [], breached };
-}
-
 function payoutsCollection() {
     return Mongo.getInstance().db.collection('payouts');
 }
@@ -78,7 +53,7 @@ function closedTradesCollection() {
 }
 
 // Groups a period's closed trades by exitTime's calendar date (IST, see istDayKey) and sums
-// realizedPnL per day - used by both the consistency-rule check and the
+// realizedPnL per day - used by the drawdown-forfeiture check and the
 // trader-facing "why was my payout blocked" breakdown.
 function istDayKey(d: Date): string {
     return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
@@ -158,7 +133,7 @@ export function computeDrawdownForfeiture(
 
 // Computes (without persisting) what a payout for this user/period would be:
 // gross profit from persisted closedTrades, the profit-split amount, TDS/GST
-// via src/tax.ts, and whether the safety-buffer or consistency rules block it
+// via src/tax.ts, and whether the drawdown or no-profit rules block it
 // outright. Recommendation from the plan: block entirely on a breach rather
 // than partially reduce - simpler to explain, no redistribution formula to invent.
 export async function computePayout(user: string, periodStart: Date, periodEnd: Date): Promise<PayoutComputation> {
@@ -173,49 +148,15 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
     const splitAmount = Math.round(grossProfit * (profitSplitPercent / 100) * 100) / 100;
 
     const settings = configService.getConfig().settings as any;
-    // Missing/garbled settings must not disable the rules (comparisons against undefined are always false): fall back
-    // to the AppConfig defaults.
-    const safetyBufferAmount: number = Number.isFinite(Number(settings.safetyBufferAmount)) ? Number(settings.safetyBufferAmount) : 5000;
-    const consistencyLimitPercent: number = Number.isFinite(Number(settings.consistencyLimitPercent)) ? Number(settings.consistencyLimitPercent) : 40;
 
     let blocked = false;
     let blockReason: string | undefined;
     let blockDetail: PayoutDecisionDetail | undefined;
 
-    // Safety buffer applies only to the user's first-ever payout (no prior
-    // 'paid' record) - matches the "cushion before first withdrawal" framing.
-    const priorPaidPayout = await payoutsCollection().findOne({ user, status: 'paid' });
-    if (!priorPaidPayout) {
-        const allTimeTrades = await closedTradesCollection().find({ user }).toArray();
-        const allTimeProfit = allTimeTrades.reduce((sum, t) => sum + (t.realizedPnL || 0), 0);
-        if (allTimeProfit < safetyBufferAmount) {
-            blocked = true;
-            blockReason = `First payout requires an all-time profit cushion of ₹${safetyBufferAmount} (currently ₹${allTimeProfit.toFixed(2)}).`;
-            blockDetail = { cumulativePnL: allTimeProfit };
-        }
-    }
-
     if (!blocked && isNonPositiveProfitBlocked(grossProfit)) {
         blocked = true;
         blockReason = `This period has no profit to pay out (gross ₹${grossProfit.toFixed(2)}).`;
         blockDetail = { cumulativePnL: grossProfit };
-    }
-
-    // Consistency rule: no single day may contribute more than
-    // consistencyLimitPercent of the period's gross winnings.
-    if (!blocked) {
-        const consistency = computeConsistencyBreach(periodTrades, consistencyLimitPercent);
-        if (consistency.breached) {
-            blocked = true;
-            blockReason = `${consistency.worstDay} contributed ${consistency.worstPercent.toFixed(0)}% of this period's winning days (limit ${consistencyLimitPercent}%).`;
-            blockDetail = {
-                day: consistency.worstDay,
-                dayPnL: consistency.worstPnL,
-                consistencyPercent: consistency.worstPercent,
-                consistencyLimit: consistencyLimitPercent,
-                tradeIds: consistency.tradeIds,
-            };
-        }
     }
 
     // Drawdown forfeiture: a single day (or a single week) losing more than
@@ -275,7 +216,7 @@ export interface PnlSummary {
 
 // Trades-tab "eligible P/L" view: like computePayout's drawdown-forfeiture
 // check, but for an arbitrary display range rather than a payout period, and
-// without the safety-buffer/consistency/non-positive-profit payout rules
+// without the non-positive-profit payout rule
 // (those are payout-specific, not relevant to a plain P/L summary). A
 // forfeited period/week contributes only its loss, never its gross profit -
 // "do not include forfeited profit" in the eligible total.

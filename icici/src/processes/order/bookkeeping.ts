@@ -719,25 +719,6 @@ class OrderBookkeeping {
         this.drawdownRecheckTimers.set(user, timer);
     }
 
-    // Counts trades opened today: closed trades (from Mongo, by entryTime)
-    // plus currently-open trades (from in-memory state, also by entryTime) -
-    // a trade opened today counts toward the cap whether or not it's closed
-    // yet.
-    async hasReachedDailyTradeLimit(user: string): Promise<boolean> {
-        const settings = configService.getConfig().settings as any;
-        const maxTradesPerDay = settings.maxTradesPerDay ?? 10;
-        const since = OrderBookkeeping.startOfDay();
-        let closedToday = 0;
-        try {
-            const db = Mongo.getInstance()?.db;
-            if (db) closedToday = await db.collection('closedTrades').countDocuments({ user, entryTime: { $gte: since } });
-        } catch (e) {
-            Log.log('[order] hasReachedDailyTradeLimit count failed (not blocking on this):', e);
-        }
-        const openToday = this.trades.filter((t) => t.user === user && t.entryTime && t.entryTime >= since).length;
-        return closedToday + openToday >= maxTradesPerDay;
-    }
-
     // estimatedOrderValue is necessarily approximate for index-based buys
     // (niftyLtp * quantity - the real option premium isn't known until
     // contract selection) but exact for buyContract's price * quantity.
@@ -781,10 +762,8 @@ class OrderBookkeeping {
         // breach, and the trade-count limit are skipped entirely.
         //
         // BulkPcrStrategy gets the same exemption, at the user's request
-        // 2026-09-23 - it hit the same shared trade-count limit purely from
-        // live testing (each resting-sell chunk fill writes its own
-        // closedTrades doc, so a handful of full buy->sell cycles exhausts
-        // maxTradesPerDay fast), and it already self-manages via its own
+        // 2026-09-23 - it hit the (since removed) shared trade-count limit
+        // purely from live testing, and it already self-manages via its own
         // `maxInvestment` config field, same as ContinuousStrategy. Lot
         // limit is a non-issue for it anyway (getTradedLots only counts
         // currently-open trades, which reset to 0 every time a cycle fully
@@ -842,9 +821,6 @@ class OrderBookkeeping {
                 : `User '${user}' weekly drawdown could not be verified (trade ledger unreadable) - buys blocked.`;
             this.logOrderRejection(user, reason);
             return { allowed: false, reason };
-        }
-        if (await this.hasReachedDailyTradeLimit(user)) {
-            return { allowed: false, reason: `User '${user}' has reached the maximum number of trades for today.` };
         }
         return { allowed: true };
     }
