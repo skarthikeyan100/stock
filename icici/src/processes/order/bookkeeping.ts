@@ -253,7 +253,7 @@ class OrderBookkeeping {
     // (config's broker overriding a human's own setting with no log/error
     // would be a silent, surprising precedence hazard otherwise).
     private getStrategyConfigBroker(user: string): 'kite' | 'ant' | 'breeze' | undefined {
-        const strategy = configService.getConfig().strategies?.find((s) => (s.userId || s.type) === user);
+        const strategy = configService.getInstances().find((s) => (s.userId || s.type) === user);
         return strategy?.broker ? (normalizeBrokerName(strategy.broker) as 'kite' | 'ant' | 'breeze') : undefined;
     }
 
@@ -754,7 +754,7 @@ class OrderBookkeeping {
     private static readonly CAPITAL_ONLY_EXEMPT_TYPES = ['ContinuousStrategy', 'BulkPcrStrategy', 'HourlyStrategy'];
 
     private isCapitalOnlyExemptUser(user: string): boolean {
-        const cfg = configService.getConfig().strategies?.find((s) => (s.userId || s.type) === user);
+        const cfg = configService.getInstances().find((s) => (s.userId || s.type) === user);
         return !!cfg && OrderBookkeeping.CAPITAL_ONLY_EXEMPT_TYPES.includes(cfg.type);
     }
 

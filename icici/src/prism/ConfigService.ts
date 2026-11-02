@@ -5,6 +5,7 @@ import { load, dump } from 'js-yaml';
 import AppConfig, { StrategyInstanceConfig } from './AppConfig';
 import { normalizePercentFields, formatPercentFields } from './percentConfig';
 import { validateConfigFile, coerceMaxInvestment } from './configValidation';
+import { expandStrategyInstances } from '../util/strategyInstances';
 import { withCanonicalSettings, withCanonicalStrategy } from './configVocabulary';
 
 class ConfigService {
@@ -97,9 +98,32 @@ class ConfigService {
     return this.findInstanceConfig(type, userId) ?? { type, enabled: false };
   }
 
+  // The runnable instances (RuleBased rules and per-broker children expanded, see util/strategyInstances.ts), for lookups by the
+  // instance userId; findInstanceConfig/getStrategyConfig below address the raw config.yml blocks.
+  public getInstances(): StrategyInstanceConfig[] {
+    return expandStrategyInstances(this.config.strategies || []);
+  }
+
   public getStrategyConfig(type: string): StrategyInstanceConfig {
     const strategies = this.config.strategies || [];
     return strategies.find(s => s.type === type) || { type, enabled: false };
+  }
+
+  // One warning per distinct problem per process, not one per reload.
+  private warnedKeys = new Set<string>();
+  private warnOnce(msg: string) {
+    if (this.warnedKeys.has(msg)) return;
+    this.warnedKeys.add(msg);
+    Log.log(`[ConfigService] WARNING: ${msg}`);
+  }
+  private warnConfigKeys(parsed: any) {
+    for (const s of parsed.strategies || []) {
+      const id = `${s?.type}${s?.userId ? ':' + s.userId : ''}`;
+      if (s && s.broker !== undefined) this.warnOnce(`${id}: config key broker is REMOVED, use brokers: [...] - it is ignored (the strategy trades on ${Array.isArray(s.brokers) && s.brokers.length ? s.brokers.join(', ') : 'kite'})`);
+      if (s && s.maxExposure != null && s.maxInvestment != null && Number(s.maxExposure) !== Number(s.maxInvestment)) {
+        this.warnOnce(`${id}: maxExposure (${s.maxExposure}) and maxInvestment (${s.maxInvestment}) differ - maxExposure wins`);
+      }
+    }
   }
 
   private loadConfig() {
@@ -122,6 +146,7 @@ class ConfigService {
       Log.log(`[ConfigService] ${msg} - keeping previous config`);
       return;
     }
+    this.warnConfigKeys(parsed);
     // Percent fields may be written as "2" or "2%"; normalise to numbers so
     // every consumer does arithmetic on a number.
     // maxInvestment/maxExposure may be quoted in YAML ("100000"): coerced to a number, and both names kept in step (the canonical one

@@ -151,7 +151,7 @@ function isSelfManagedTradeUser(userId: string): boolean {
     // leaving a second instance's trades wrongly actively watched - racing
     // its own resting exit order exactly like the 2026-09-24 gap this list
     // exists to prevent. Scan every config.yml entry of a listed type instead.
-    const strategies = configService.getConfig().strategies ?? [];
+    const strategies = configService.getInstances();
     return strategies.some((cfg) => SELF_MANAGED_STRATEGY_TYPES.includes(cfg.type) && (cfg.userId || cfg.type) === userId);
 }
 

@@ -27,7 +27,8 @@ strategies:
     loopCount: 1
   - type: ContinuousStrategy
     enabled: true
-    broker: kite
+    brokers:
+      - kite
     initialQuantity: 65
     slDistance: 10
     targetDistance: 5
@@ -51,56 +52,6 @@ strategies:
     momentumEnabled: false
     momentumTimeoutMs: 3000
     maxExposure: 100000
-  - type: ContinuousStrategy
-    userId: ContinuousStrategy-ANT
-    enabled: false
-    broker: ant
-    initialQuantity: 65
-    slDistance: 10
-    targetDistance: 5
-    squareOffDistance: 500
-    postAverageTargetDistance: 2
-    minPremium: 50
-    maxInvestment: 200000
-    maxProfit: 4%
-    maxLoss: 6%
-    spawnQuantityMode: '1'
-    averageQuantityMode: same
-    right: none
-    marketSentiment: none
-    maxLevels: 4
-    refillEnabled: false
-    cooldownSeconds: 60
-    refillCancelDistance: 50
-    logEnabled: true
-    momentumEnabled: false
-    momentumTimeoutMs: 3000
-    maxExposure: 200000
-  - type: ContinuousStrategy
-    userId: ContinuousStrategy-Breeze
-    enabled: false
-    broker: breeze
-    initialQuantity: 65
-    slDistance: 10
-    targetDistance: 5
-    squareOffDistance: 500
-    postAverageTargetDistance: 2
-    minPremium: 50
-    maxInvestment: 200000
-    maxProfit: 4%
-    maxLoss: 6%
-    spawnQuantityMode: '1'
-    averageQuantityMode: same
-    right: none
-    marketSentiment: none
-    maxLevels: 4
-    refillEnabled: false
-    cooldownSeconds: 60
-    refillCancelDistance: 50
-    logEnabled: true
-    momentumEnabled: false
-    momentumTimeoutMs: 3000
-    maxExposure: 200000
   - type: RateOfChangeStrategy
     enabled: false
     pointsThreshold: 30
@@ -152,7 +103,8 @@ strategies:
     minMovementPoints: 30
   - type: SupportResistanceStrategy
     enabled: false
-    broker: kite
+    brokers:
+      - kite
     quantity: 1755
     logEnabled: true
     slDistance: 10
@@ -311,7 +263,8 @@ strategies:
       - kite
   - type: TopStockOptionsOpeningGapStrategy
     enabled: false
-    broker: ant
+    brokers:
+      - ant
     rankStart: 3
     rankCount: 3
     lots: 1
@@ -365,7 +318,7 @@ strategies:
       - '12:40'
       - '13:40'
       - '14:30'
-    maxInvestment: 300000
+    maxInvestment: 100000
     limitOffset: 3
     targetPoints: 5
     entryTimeoutMinutes: 5
@@ -375,4 +328,4 @@ strategies:
       - kite
       - breeze
       - ant
-    maxExposure: 300000
+    maxExposure: 100000

@@ -4,6 +4,7 @@
 // behavior in validateFlatConfig.
 
 import { PERCENT_KEYS, toPercentNumber } from './percentConfig';
+import { isBrokerName } from '../util/brokerName';
 
 function isNum(v: any): v is number {
     return typeof v === 'number' && Number.isFinite(v);
@@ -145,6 +146,19 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     const maxInv = coerceMaxInvestment(rawExposure);
     if (rawExposure != null && !(isNum(maxInv) && maxInv > 0)) {
         errors.push(`${label}.${obj.maxExposure != null ? 'maxExposure' : 'maxInvestment'} must be a number > 0 (got ${JSON.stringify(rawExposure)})`);
+    }
+    // Per-broker amount override (any strategy): a map of known broker -> number > 0.
+    if (obj.maxExposureByBroker != null) {
+        const m = obj.maxExposureByBroker;
+        if (typeof m !== 'object' || Array.isArray(m)) {
+            errors.push(`${label}.maxExposureByBroker must be a mapping of broker -> amount`);
+        } else {
+            for (const [name, cap] of Object.entries(m)) {
+                if (!isBrokerName(name)) errors.push(`${label}.maxExposureByBroker has an unknown broker '${name}'`);
+                const n = coerceMaxInvestment(cap);
+                if (!(isNum(n) && n > 0)) errors.push(`${label}.maxExposureByBroker.${name} must be a number > 0 (got ${JSON.stringify(cap)})`);
+            }
+        }
     }
     // A BulkPcr loss stop is a percent of maxInvestment: with no usable base it could never trip, so refuse the file.
     // Scoped to BulkPcr only - other strategies fall back to a default base and must keep loading as they do today.

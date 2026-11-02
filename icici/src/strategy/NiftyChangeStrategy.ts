@@ -5,12 +5,13 @@ import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
 import { roundToTick } from '../util/tick';
 import { localDayKey } from './dayKey';
+import { exposureForBroker, resolveMaxExposure } from '../prism/configVocabulary';
 import { LimitEntryStrategy, Leg } from './LimitEntryStrategy';
 
 // At each configured HH:mm slot, buys the option in the direction of Nifty's move since the previous slot (Nifty LTP at this slot minus
 // its LTP at the previous slot today, from the live tick; the first slot of the day compares with the previous day's close): up -> CE,
 // down -> PE, flat -> nothing. The LTP seen at each slot is kept in memory as the reference for the next one. The order is a LIMIT buy at (the option's LTP - limitOffset) on every
-// configured broker, sized from maxInvestment (split evenly across the brokers). When it fills, a resting limit sell goes in at
+// configured broker, sized from maxExposure (the amount PER broker, see exposureForBroker; maxExposureByBroker overrides one broker). When it fills, a resting limit sell goes in at
 // (fill price + targetPoints). No stop loss: an unfilled entry is cancelled after entryTimeoutMinutes, and a position still held at
 // eodCloseTime is closed at market.
 //
@@ -25,7 +26,7 @@ import { LimitEntryStrategy, Leg } from './LimitEntryStrategy';
 //
 // Config (config.yml):
 //   times: ['10:40', '11:40', '12:30', '13:40', '14:30']
-//   maxInvestment: 100000
+//   maxExposure: 100000     - the amount PER broker
 //   limitOffset: 3          - entry limit = option LTP - limitOffset
 //   targetPoints: 5
 //   entryTimeoutMinutes: 5  - cancel an unfilled entry after this long
@@ -116,17 +117,17 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
         if (!(ltp > 0) || !(reference > 0)) { Log.log(`[${this.logTag}] ${timeStr}: Nifty ltp/reference unusable (${ltp}/${reference}) - skipping`); return; }
         const change = ltp - reference;
         if (change === 0) { Log.log(`[${this.logTag}] ${timeStr}: Nifty is flat vs ${referenceLabel} - skipping`); return; }
-        const budget = Number(cfg.maxInvestment);
+        const budget = resolveMaxExposure(cfg);
         const offset = cfg.limitOffset == null ? 3 : Number(cfg.limitOffset);
         const targetPoints = Number(cfg.targetPoints);
         if (!(budget > 0) || !Number.isFinite(offset) || offset < 0 || !(targetPoints > 0)) {
-            Log.log(`[${this.logTag}] ALERT: ${timeStr}: maxInvestment (${cfg.maxInvestment}), limitOffset (${cfg.limitOffset}) or targetPoints (${cfg.targetPoints}) invalid - not trading`);
+            Log.log(`[${this.logTag}] ALERT: ${timeStr}: maxExposure (${budget}), limitOffset (${cfg.limitOffset}) or targetPoints (${cfg.targetPoints}) invalid - not trading`);
             return;
         }
         const right: 'CE' | 'PE' = change > 0 ? 'CE' : 'PE';
         const strike = AntContractMaster.getInstance().entryStrike(ltp, right, 'NIFTY');
         Log.log(`[${this.logTag}] ${timeStr}: Nifty ${ltp} vs ${referenceLabel} ${reference}: difference ${change > 0 ? '+' : ''}${change.toFixed(2)} points -> direction ${change > 0 ? 'up' : 'down'} -> ${right} ${strike}`);
-        await this.startCycle(key, { index: 'NIFTY', strike, right }, budget, async (c) => {
+        await this.startCycle(key, { index: 'NIFTY', strike, right }, (b) => exposureForBroker(cfg, b), async (c) => {
             const optionLtp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
             return roundToTick(optionLtp - offset);
         });

@@ -14,7 +14,7 @@ import { configuredBrokersOf } from '../util/brokerName';
 import { isPastTime } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 
-// Shared engine of RecommendationStrategy and NiftyChangeStrategy: one LIMIT buy per configured broker, sized from a rupee budget,
+// Shared engine of RecommendationStrategy and NiftyChangeStrategy: one LIMIT buy per configured broker, sized from a rupee budget (per broker: every broker gets its own full amount),
 // then an exit the subclass chooses once the entry has filled. Owns everything that is the same for both: per-broker legs, state
 // persisted to disk (a restart must never place the same entry twice), fill and cancel accounting, the entry timeout, the
 // end-of-day cancel/close and the retry of a failed exit placement.
@@ -223,7 +223,7 @@ export abstract class LimitEntryStrategy extends Strategy {
     // Starts a cycle: one limit buy per configured broker. `priceFor` is asked once per broker for that broker's limit price.
     // The cycle key and every leg are persisted BEFORE the order goes out, so a crash or restart mid-way can never place it twice;
     // an order whose outcome is unknown is left as a leg and never retried blind.
-    protected async startCycle(key: string, entry: ResolvedEntry, budget: number, priceFor: (c: { tsym: string; token: string; exchange: 'NFO' | 'BFO' }) => Promise<number>): Promise<void> {
+    protected async startCycle(key: string, entry: ResolvedEntry, budgetOf: (broker: string) => number, priceFor: (c: { tsym: string; token: string; exchange: 'NFO' | 'BFO' }) => Promise<number>): Promise<void> {
         this.ensureLoaded();
         if (this.placing) return; // callers check cycleStarted(key) first and may have marked the key already
         if (this.hasActiveLeg()) {
@@ -238,9 +238,9 @@ export abstract class LimitEntryStrategy extends Strategy {
             this.state.legs = {};
             if (!this.save()) { return; }
             const brokers = this.brokers();
-            const perBroker = budget / Math.max(1, brokers.length);
             for (const broker of brokers) {
                 try {
+                    const perBroker = budgetOf(broker); // the amount is PER broker: each one buys with its own full budget
                     const contract = await OrderClient.getInstance().resolveOptionContract(this.userId, { broker: broker as any, index: entry.index, strike: entry.strike, right: entry.right });
                     const price = roundToTick(await priceFor(contract));
                     const qty = this.sizeOrder(perBroker, price, entry.index);

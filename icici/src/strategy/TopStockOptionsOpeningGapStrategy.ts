@@ -114,8 +114,8 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
         return s.replace(/[^a-zA-Z0-9_-]/g, '_');
     }
 
-    // config.yml's `brokers: [kite, breeze, ant]` (or the legacy single
-    // `broker: ant` field, kept as a fallback for a not-yet-migrated config)
+    // config.yml's `brokers: [kite, breeze, ant]` (the single
+    // `broker:` key is removed)
     // normalized to the canonical broker names (legacy 'zerodha' is accepted
     // as an alias for 'kite' via normalizeBrokerName), unknown names are dropped (logged, not thrown - one bad
     // entry must not block the other configured brokers), and an empty/
@@ -124,7 +124,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
     private configuredBrokers(config: any): BrokerName[] {
         const raw: string[] = Array.isArray(config.brokers) && config.brokers.length > 0
             ? config.brokers
-            : (config.broker ? [config.broker] : []);
+            : [];
         const normalized = normalizeBrokerList(raw);
         const deduped = Array.from(new Set(normalized));
         const valid: BrokerName[] = deduped.filter((b): b is BrokerName => b === 'kite' || b === 'breeze' || b === 'ant');

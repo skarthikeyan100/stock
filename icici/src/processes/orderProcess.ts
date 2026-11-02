@@ -47,11 +47,11 @@ import Kite from '../kite/Kite';
 import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
 import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, CALL } from '../constants';
-import { resolveMaxExposure } from '../prism/configVocabulary';
+import { resolveMaxExposure, exposureForBroker } from '../prism/configVocabulary';
 import { getUser, getAllUsers } from '../user';
 import { OptionQuote, Trade } from '../model/model';
 import { isPastExpirySquareOffTime, isPastReconcileTime } from '../util/marketHours';
-import { normalizeBrokerName } from '../util/brokerName';
+import { normalizeBrokerName, configuredBrokersOf } from '../util/brokerName';
 import { brokerClientFor } from '../broker/brokerClients';
 import { exchangeForIndex, exchangeForTsym } from '../util/underlyings';
 
@@ -1242,17 +1242,15 @@ async function applyConfigStrategyLimits(): Promise<void> {
 }
 
 async function applyConfigStrategyLimitsOnce() {
-    const config = configService.getConfig();
-    for (const cfg of config.strategies || []) {
+    for (const cfg of configService.getInstances()) {
         const userId = cfg.userId || cfg.type;
         const mongoUser = await getUser(userId).catch(() => null);
         bookkeeping.updateUserSettings(userId, {
             lossLimit: mongoUser?.lossLimit ?? USER_LOSS_LIMIT,
             lotLimit: mongoUser?.lotLimit ?? mongoUser?.lotCount ?? DEFAULT_LOT_LIMIT,
             maxInvestment: resolveMaxExposure(cfg as any),
-            maxInvestmentByBroker: (cfg as any).maxExposureByBroker
-                ? Object.fromEntries(Object.entries((cfg as any).maxExposureByBroker).map(([b, v]) => [normalizeBrokerName(b), Number(v)]))
-                : undefined,
+            // Per broker (own amount for each configured broker), not one pooled cap: see exposureForBroker.
+            maxInvestmentByBroker: Object.fromEntries(configuredBrokersOf(cfg).map((b) => [b, exposureForBroker(cfg as any, b)])),
             useGTT: cfg.useGTT ?? mongoUser?.useGTT ?? true,
             broker: normalizeBrokerName((cfg as any).broker ?? (mongoUser as any)?.broker ?? 'kite') as any,
         });

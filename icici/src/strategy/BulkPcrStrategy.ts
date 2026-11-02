@@ -20,6 +20,7 @@ import { TrailStop } from './TrailStop';
 import { sleep } from '../util/sleep';
 import { fetchOpenTradesWithRetry } from './openTrades';
 import { recordExitReject, MARGIN_SHORTFALL_REASON_PATTERN, EXIT_REJECT_RETRY_DELAY_MS } from './exitRejectPolicy';
+import { exposureForBroker } from '../prism/configVocabulary';
 import { BrokerName, configuredBrokersOf, normalizeBrokerName, normalizePersistedBrokers } from '../util/brokerName';
 import { exchangeForTsym } from '../util/underlyings';
 
@@ -576,10 +577,7 @@ export default class BulkPcrStrategy extends Strategy {
 
     // The broker's configured investment cap (config `maxExposureByBroker`; keys may use a broker alias such as zerodha).
     private baseCap(broker: BrokerName): number {
-        for (const [name, cap] of Object.entries(this.cfg().maxExposureByBroker)) {
-            if (normalizeBrokerName(name) === broker) return Number(cap);
-        }
-        return NaN;
+        return exposureForBroker(this.cfg(), broker);
     }
 
     // The cap in force today: the configured one less every loss-trip cut so far. The loss and profit percentages are taken of it.

@@ -23,15 +23,24 @@ The earlier prototypes (`BiDirectionStrategy`, `DiffStrategy`, `PivotStrategy`,
 `HighLotStrategy`, `Minutes5Decision`, `TestStrategy`, `ORBPrevious`) were deleted
 in commit `9765032`.
 
-**`broker:` keys.** `ContinuousStrategy` and `SupportResistanceStrategy` read their
-own `broker:` key (`brokerLegOps(() => cfg.broker)`): LegManager's orders, contract
-pick and sells then carry that broker explicitly. For a strategy with no
-`broker:` the user's configured broker is used (`bookkeeping.getUserBroker`,
-default `'kite'`). The order process also reads `broker:` for every strategy block,
-and `tokenRouter.resolveSource` uses it to pick the tick feed (LegManager
-strategies always use the ANT feed, since their legs carry ANT tokens:
-`Strategy.legTokenFeed`). `BulkPcr`, `Hourly`, `Butterfly`, `TopStock` and the
-`LimitEntry` family fan out over `brokers: [...]` (`configuredBrokersOf`).
+**Brokers and the per-broker amount (2026-11-02).** Every strategy block takes `brokers: [kite, ant, breeze]`
+(default `[kite]`); the single `broker:` key is REMOVED (ConfigService logs a one-time warning and ignores it).
+**The amount is per broker:** `maxExposure` (legacy `maxInvestment`) is what EACH listed broker trades with, and
+`maxExposureByBroker: {ant: 70000}` overrides one broker (helper `exposureForBroker`, `prism/configVocabulary.ts`).
+Two ways a block fans out over its brokers:
+- `BulkPcr`, `BulkPcrAutoStart`, `Hourly`, `Butterfly`, `TopStock`, `Recommendation`, `NiftyChange` fan out inside one
+  instance (`configuredBrokersOf`); the order-side cap is per (user, broker) (`maxInvestmentByBroker`).
+- Every other type (Continuous, SupportResistance, Sentiment, RateOfChange, Gap, RuleBased, GoodMorning*, TargetReach) is
+  expanded in memory into ONE INSTANCE PER BROKER (`util/strategyInstances.ts`, `expandBrokerInstances`): kite keeps the
+  base `userId`, the others get `<base>-ANT` / `<base>-Breeze` (so existing Mongo state and trade history carry over;
+  RuleBased composes: `Rule-<ind>`, `Rule-<ind>-ANT`). Each child gets a derived internal `broker` (never written to
+  config.yml) and `maxExposure` = its broker's amount, so each broker has its own legs, maxProfit/maxLoss and cooldown.
+  Children are independent signal evaluators, so entries on different brokers can differ by seconds. Changing `brokers:`
+  needs a restart (a config reload refreshes configs but creates no new instances). Look instances up through
+  `configService.getInstances()`, not `getConfig().strategies`, when keying by `userId`.
+`ContinuousStrategy`/`SupportResistanceStrategy` pass the derived broker to `brokerLegOps(() => cfg.broker)`; the
+`tokenRouter.resolveSource` feed choice reads it too (LegManager strategies always use the ANT feed, since their legs carry
+ANT tokens: `Strategy.legTokenFeed`).
 
 ## Shared infrastructure
 
@@ -296,9 +305,9 @@ close are the backstop). A root entry rejected for margin is not retried; its sl
 skipped.
 
 ### RecommendationStrategy / NiftyChangeStrategy (`RecommendationStrategy.ts`, `NiftyChangeStrategy.ts`, shared engine `LimitEntryStrategy.ts`) — config: `enabled: false`
-Two simple limit-entry strategies. Both place a LIMIT buy (`placeLimitBuyBare`) on **every** broker in `brokers:` (the budget is split evenly), size whole lots from the rupee budget (capped at one freeze-size order), persist their state to `.<Type>.<userId>.json` (a restart never places the same entry twice), cancel an unfilled entry at `eodCloseTime` (and after `entryTimeoutMinutes` when set) and close a held position at `eodCloseTime` (default 15:10).
-- **RecommendationStrategy** — one analyst recommendation per config block: `contract: '22750 CE'`, `entryPrice`, `targetPrice`, `stopLoss` (absolute option prices), `maxInvestment`, `entryOffset` (default 5). Order goes in at `entryPrice - entryOffset`; after the fill the target/stop are attached via the `attachProtection` order-process call (`order/attachProtection.ts`): **kite** = two-leg GTT (falls back to the in-app exitMonitor if the GTT call fails), **ant** = in-app exitMonitor (a bracket/cover order must be the entry order itself, it cannot be attached to a filled one), **breeze/other** = resting limit sell at the target + a tick-driven market stop in the strategy. Changing the contract/prices of a block is a new recommendation; the same one is never placed twice in a day. A recommendation that arrives while a trade is still open (order or position) is dropped and never picked up later. When the cycle ends (bought and sold, or the entry cancelled with nothing filled) the block is written `enabled: false` to config.yml, so nothing trades it again. Set a new one with the `recommend` skill (`.claude/skills/recommend/SKILL.md`: `recommend [INDEX] <strike> <CE|PE> <entry> <target> <stop>`). Breeze's REST API does have GTT (`POST /breezeapi/api/v1/gttorder`, `gtt_type: cover_oco`) but it is not wired in yet.
-- **NiftyChangeStrategy** — at each `times` slot (BulkPcrAutoStart's rules: once per slot per day, never a slot before process start, 5-minute late window), Nifty's move is `ltp` at this slot − the reference from the live tick: the LTP seen at the previous slot today (held in memory, lost on restart), or the previous close for the day's first slot. A slot with no reference (earlier slot today not recorded) is skipped with an ALERT. The reference is kept in the strategy's state file for the day, so it survives a restart (2026-10-30). With `catchUpMissedSlot: true` the latest slot that came due before a restart (within the 5-minute window) still fires, subject to the same running-position and reference checks; older missed slots are skipped. Up → CE, down → PE, flat → skip. Strike from `AntContractMaster.entryStrike`; limit = option LTP (ANT quote) − `limitOffset` (default 3); on the fill a resting limit sell at fill + `targetPoints` (default 5 in config). No stop loss. Skips a slot while the previous slot's position is still open. Config: `times`, `maxInvestment`, `limitOffset`, `targetPoints`, `entryTimeoutMinutes`.
+Two simple limit-entry strategies. Both place a LIMIT buy (`placeLimitBuyBare`) on **every** broker in `brokers:` (each broker buys with its own full `maxExposure`, not a split), size whole lots from the rupee budget (capped at one freeze-size order), persist their state to `.<Type>.<userId>.json` (a restart never places the same entry twice), cancel an unfilled entry at `eodCloseTime` (and after `entryTimeoutMinutes` when set) and close a held position at `eodCloseTime` (default 15:10).
+- **RecommendationStrategy** — one analyst recommendation per config block: `contract: '22750 CE'`, `entryPrice`, `targetPrice`, `stopLoss` (absolute option prices), `maxExposure` (per broker), `entryOffset` (default 5). Order goes in at `entryPrice - entryOffset`; after the fill the target/stop are attached via the `attachProtection` order-process call (`order/attachProtection.ts`): **kite** = two-leg GTT (falls back to the in-app exitMonitor if the GTT call fails), **ant** = in-app exitMonitor (a bracket/cover order must be the entry order itself, it cannot be attached to a filled one), **breeze/other** = resting limit sell at the target + a tick-driven market stop in the strategy. Changing the contract/prices of a block is a new recommendation; the same one is never placed twice in a day. A recommendation that arrives while a trade is still open (order or position) is dropped and never picked up later. When the cycle ends (bought and sold, or the entry cancelled with nothing filled) the block is written `enabled: false` to config.yml, so nothing trades it again. Set a new one with the `recommend` skill (`.claude/skills/recommend/SKILL.md`: `recommend [INDEX] <strike> <CE|PE> <entry> <target> <stop>`). Breeze's REST API does have GTT (`POST /breezeapi/api/v1/gttorder`, `gtt_type: cover_oco`) but it is not wired in yet.
+- **NiftyChangeStrategy** — at each `times` slot (BulkPcrAutoStart's rules: once per slot per day, never a slot before process start, 5-minute late window), Nifty's move is `ltp` at this slot − the reference from the live tick: the LTP seen at the previous slot today (held in memory, lost on restart), or the previous close for the day's first slot. A slot with no reference (earlier slot today not recorded) is skipped with an ALERT. The reference is kept in the strategy's state file for the day, so it survives a restart (2026-10-30). With `catchUpMissedSlot: true` the latest slot that came due before a restart (within the 5-minute window) still fires, subject to the same running-position and reference checks; older missed slots are skipped. Up → CE, down → PE, flat → skip. Strike from `AntContractMaster.entryStrike`; limit = option LTP (ANT quote) − `limitOffset` (default 3); on the fill a resting limit sell at fill + `targetPoints` (default 5 in config). No stop loss. Skips a slot while the previous slot's position is still open. Config: `times`, `maxExposure` (per broker), `limitOffset`, `targetPoints`, `entryTimeoutMinutes`.
 Test: `node dist/test/limitEntryStrategies.test.js` (stubbed OrderClient).
 
 ### BulkPcrAutoStartStrategy (`BulkPcrAutoStartStrategy.ts`) — config: active, `enabled: true`

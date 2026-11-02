@@ -1,7 +1,8 @@
 import Log from '../util/Log';
 import { Strategy } from "./strategy";
 import configService from '../prism/ConfigService';
-import { createStrategiesFromConfig, expandRuleBasedConfig } from './StrategyFactory';
+import { createStrategiesFromConfig } from './StrategyFactory';
+import { expandStrategyInstances } from '../util/strategyInstances';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 
 
@@ -31,8 +32,8 @@ class Strategies {
     // each existing strategy's `enabled` from it.
     private loadExpandedConfigs(syncEnabled: boolean): number {
         const config = configService.getConfig();
-        // Expand all configs (handles RuleBasedStrategy with multiple indicator rules)
-        const expandedConfigArray = (config.strategies || []).flatMap(expandRuleBasedConfig);
+        // Expand all configs (RuleBasedStrategy indicator rules, and one instance per broker for single-broker types)
+        const expandedConfigArray = expandStrategyInstances(config.strategies || []);
         this.expandedConfigs.clear();
         for (const cfg of expandedConfigArray) {
             const userId = cfg.userId || cfg.type;

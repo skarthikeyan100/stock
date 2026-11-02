@@ -4,6 +4,7 @@
 // Both names are accepted on read (the canonical one wins) and BOTH are kept on the loaded object, so any reader of either works and
 // a file is written with both until the old names are dropped in a later release.
 import { DEFAULT_MAX_INVESTMENT } from '../constants';
+import { normalizeBrokerName } from '../util/brokerName';
 
 const SETTINGS_PAIRS: [canonical: string, legacy: string][] = [['targetPoints', 'targetPriceDiff'], ['stopLossPoints', 'stopLossPriceDiff']];
 const STRATEGY_PAIRS: [canonical: string, legacy: string][] = [['maxExposure', 'maxInvestment']];
@@ -25,4 +26,14 @@ export const withCanonicalStrategy = <T extends Record<string, any>>(strategy: T
 // expression for what LegManager (3x) and the order process each spelled out on their own.
 export function resolveMaxExposure(cfg: { maxExposure?: number; maxInvestment?: number } | null | undefined): number {
     return cfg?.maxExposure ?? cfg?.maxInvestment ?? DEFAULT_MAX_INVESTMENT;
+}
+
+// The amount ONE broker trades with: `maxExposureByBroker[broker]` (broker aliases such as zerodha accepted) else the block's
+// maxExposure/maxInvestment, which means "per broker" for every strategy.
+export function exposureForBroker(cfg: { maxExposure?: number; maxInvestment?: number; maxExposureByBroker?: Record<string, number> } | null | undefined, broker: string): number {
+    const wanted = normalizeBrokerName(broker);
+    for (const [name, cap] of Object.entries(cfg?.maxExposureByBroker ?? {})) {
+        if (normalizeBrokerName(name) === wanted && Number.isFinite(Number(cap)) && Number(cap) > 0) return Number(cap);
+    }
+    return resolveMaxExposure(cfg);
 }

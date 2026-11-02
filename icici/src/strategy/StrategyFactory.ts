@@ -17,6 +17,7 @@ import ButterflyStrategy from './ButterflyStrategy';
 import RecommendationStrategy from './RecommendationStrategy';
 import NiftyChangeStrategy from './NiftyChangeStrategy';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
+import { expandRuleBasedConfig, expandStrategyInstances } from '../util/strategyInstances';
 
 const STRATEGY_REGISTRY = new Map<string, new (userId?: string) => Strategy>();
 STRATEGY_REGISTRY.set('SentimentStrategy', SentimentStrategy);
@@ -48,67 +49,10 @@ export function createStrategy(config: StrategyInstanceConfig): Strategy | null 
     return strategy;
 }
 
-/**
- * Expand RuleBasedStrategy config with multiple indicator rules into separate configs
- *
- * Input:
- * {
- *   type: 'RuleBasedStrategy',
- *   enabled: true,
- *   indicators: ['RSI_5_80_20, EMA_5_13', 'MACD_12_26_9'],
- *   quantity: 65
- * }
- *
- * Output:
- * [
- *   { type: 'RuleBasedStrategy', userId: 'Rule-RSI_5_80_20, EMA_5_13', enabled: true,
- *     indicators: ['RSI_5_80_20', 'EMA_5_13'], quantity: 65 },
- *   { type: 'RuleBasedStrategy', userId: 'Rule-MACD_12_26_9', enabled: true,
- *     indicators: ['MACD_12_26_9'], quantity: 65 }
- * ]
- */
-export function expandRuleBasedConfig(config: StrategyInstanceConfig): StrategyInstanceConfig[] {
-    // Only expand RuleBasedStrategy with indicators array
-    if (config.type !== 'RuleBasedStrategy' || !config.indicators || !Array.isArray(config.indicators)) {
-        return [config];  // Return as-is (single-element array)
-    }
-
-    const expanded: StrategyInstanceConfig[] = [];
-
-    for (let i = 0; i < config.indicators.length; i++) {
-        const indicatorRule = config.indicators[i];
-
-        // Split by comma and trim whitespace
-        const indicatorArray = indicatorRule
-            .split(',')
-            .map((ind: string) => ind.trim())
-            .filter((ind: string) => ind.length > 0);
-
-        if (indicatorArray.length === 0) {
-            console.warn(`[StrategyFactory] Skipping empty indicator rule at index ${i}`);
-            continue;
-        }
-
-        // Create userId from indicator names
-        const userId = `Rule-${indicatorRule}`;  // e.g., "Rule-RSI_5_80_20, EMA_5_13"
-
-        // Create expanded config for this rule
-        const expandedConfig: StrategyInstanceConfig = {
-            ...config,  // Clone all properties (enabled, quantity, targetProfitPercent, etc.)
-            userId,
-            indicators: indicatorArray  // Replace with parsed array
-        };
-
-        expanded.push(expandedConfig);
-    }
-
-    Log.log(`[StrategyFactory] Expanded RuleBasedStrategy into ${expanded.length} instances`);
-    return expanded;
-}
+export { expandRuleBasedConfig };
 
 export function createStrategiesFromConfig(configs: StrategyInstanceConfig[]): Strategy[] {
-    return configs
-        .flatMap(expandRuleBasedConfig)   // Expand RuleBasedStrategy → multiple configs
+    return expandStrategyInstances(configs)   // RuleBasedStrategy → one config per rule, single-broker types → one per broker
         .map((config) => {                  // Instantiate each config → Strategy
             // One bad constructor must not abort the whole map: strategiesProcess would start with zero strategies, and every
             // other (live-position-managing) strategy would be gone with it.
