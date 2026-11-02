@@ -119,6 +119,9 @@ export interface LegManagerConfig {
     // the trip (0/unset: locked for the day). The cut applies even when no cooldown is set.
     lossInvestmentCut?: number | null;
     lossCooldownSeconds?: number | null;
+    // Max-profit lockout release: profitCooldownSeconds after the trip, once flat, trading resumes and the profit target restarts from
+    // that point (the P&L made so far is not counted again). 0/unset: locked for the day, as before.
+    profitCooldownSeconds?: number | null;
     // Used only by restoreFromOpenTrades's wasAveraged heuristic - optional
     // since not every owning strategy has an "initial entry size" config key
     // (e.g. SupportResistanceStrategy has none; restored legs there simply
@@ -205,6 +208,9 @@ export class LegManager {
     // Epoch ms when the max-loss lockout may be released; null = locked for the day. Persisted with the latch.
     private lossCooldownUntil: number | null = null;
     private lossCooldownTimer: ReturnType<typeof setTimeout> | null = null;
+    // Epoch ms when the max-profit lockout may be released; null = locked for the day. Persisted with the latch.
+    private profitCooldownUntil: number | null = null;
+    private profitCooldownTimer: ReturnType<typeof setTimeout> | null = null;
     // Target-hit / square-off closes delete the leg from legsByToken BEFORE their sell await, and a target-hit root
     // registers its refill only after that await. Without this counter isIdle() is true for that whole window, so
     // the owning strategy's T1 gate re-enters (real 2026-10-27 09:51 bug: a fresh T1 entry stacked on the refill,
@@ -501,8 +507,12 @@ export class LegManager {
         const cumulative = this.computeCumulativeProfit();
         if (!(cumulative >= threshold)) return; // NaN-safe: a NaN cumulative must not trip it
         this.maxProfitTripped = true;
-        this.persistLatch('maxProfitTripped');
-        Log.log(`[${this.deps.ownerType}] MAX PROFIT TRIPPED - cumulative=${Math.round(cumulative)} threshold=${Math.round(threshold)} (maxProfit=${maxProfitPct}% of maxInvestment=${maxInvestment}) - closing all legs, cancelling all pending re-entries, and permanently blocking new entries for the rest of this session`);
+        const cooldownSec = Number(cfg.profitCooldownSeconds ?? 0);
+        this.profitCooldownUntil = Number.isFinite(cooldownSec) && cooldownSec > 0 ? Date.now() + cooldownSec * 1000 : null;
+        this.persistProfitState();
+        if (this.profitCooldownUntil != null) this.armProfitCooldownTimer(this.profitCooldownUntil - Date.now());
+        const lockout = this.profitCooldownUntil != null ? `blocking new entries for ${cooldownSec}s (released once flat, the target then restarts from there)` : 'permanently blocking new entries for the rest of this session';
+        Log.log(`[${this.deps.ownerType}] MAX PROFIT TRIPPED - cumulative=${Math.round(cumulative)} threshold=${Math.round(threshold)} (maxProfit=${maxProfitPct}% of maxInvestment=${maxInvestment}) - closing all legs, cancelling all pending re-entries, and ${lockout}`);
     }
 
     // Invoked once maxProfitTripped latches - idempotent/safe to call
@@ -528,6 +538,8 @@ export class LegManager {
         this.lossInvestmentCutTotal = 0;
         this.lossCooldownUntil = null;
         this.clearLossCooldownTimer();
+        this.profitCooldownUntil = null;
+        this.clearProfitCooldownTimer();
         this.eodClosing = false;
         this.maxProfitBaseline = this.realizedPnL;
     }
@@ -555,7 +567,10 @@ export class LegManager {
             const doc = await col.findOne({ ownerType: this.deps.ownerType, userId: this.deps.userId, day: LegManager.latchDay() });
             if (doc?.maxProfitTripped) {
                 this.maxProfitTripped = true;
-                Log.log(`[${this.deps.ownerType}] max-profit stop was already tripped earlier today - staying stopped after the restart (reset the strategy to trade again)`);
+                this.profitCooldownUntil = doc.profitCooldownUntil != null ? Number(doc.profitCooldownUntil) : null;
+                if (this.profitCooldownUntil != null) this.armProfitCooldownTimer(this.profitCooldownUntil - Date.now());
+                const lockout = this.profitCooldownUntil != null ? 'lockout releases once its cooldown has passed and the strategy is flat' : 'staying stopped after the restart (reset the strategy to trade again)';
+                Log.log(`[${this.deps.ownerType}] max-profit stop was already tripped earlier today - ${lockout}`);
             }
             if (doc?.maxLossTripped) {
                 this.maxLossTripped = true;
@@ -605,6 +620,46 @@ export class LegManager {
         const after = this.effectiveMaxExposure(cfg);
         const lockout = this.lossCooldownUntil != null ? `lockout released after ${cooldownSec}s once flat` : 'locked out for the rest of the day (no cooldown)';
         Log.log(`[${this.deps.ownerType}] MAX LOSS TRIPPED - open-position P&L=${Math.round(openUnrealized)} threshold=-${Math.round(threshold)} (maxLoss=${maxLossPct}% of maxInvestment=${maxInvestment}) - closing every open leg and blocking new entries; investment cap cut ${maxInvestment} -> ${after}, ${lockout}`);
+    }
+
+    // Persists the max-profit latch with its cooldown end (same per-day doc as persistLatch).
+    private persistProfitState(): void {
+        const col = Mongo.getInstance()?.db.collection('strategyLatches');
+        if (!col) return;
+        const key = { ownerType: this.deps.ownerType, userId: this.deps.userId, day: LegManager.latchDay() };
+        col.updateOne(key, { $set: { maxProfitTripped: this.maxProfitTripped, profitCooldownUntil: this.profitCooldownUntil, updatedAt: new Date() } }, { upsert: true })
+            .catch((e) => Log.log(`[${this.deps.ownerType}] strategyLatches profit-state write failed (continuing):`, e));
+    }
+
+    private armProfitCooldownTimer(delayMs: number): void {
+        this.clearProfitCooldownTimer();
+        this.profitCooldownTimer = setTimeout(() => {
+            this.profitCooldownTimer = null;
+            this.maybeReleaseMaxProfit().catch((e) => Log.log(`[${this.deps.ownerType}] max-profit cooldown release failed:`, e));
+        }, Math.max(0, delayMs));
+    }
+
+    private clearProfitCooldownTimer(): void {
+        if (this.profitCooldownTimer) clearTimeout(this.profitCooldownTimer);
+        this.profitCooldownTimer = null;
+    }
+
+    // Releases the max-profit lockout once its cooldown has passed and the strategy is flat (no leg, refill or close in flight); re-checks
+    // every 5 s while legs are still closing. The baseline moves to the realized P&L so far, so the target restarts from here instead of
+    // tripping again at once on the profit that caused the lockout.
+    private async maybeReleaseMaxProfit(): Promise<void> {
+        if (!this.maxProfitTripped || this.profitCooldownUntil == null) return;
+        const remaining = this.profitCooldownUntil - Date.now();
+        if (remaining > 0) { this.armProfitCooldownTimer(remaining); return; }
+        if (!this.isIdle()) { this.armProfitCooldownTimer(5000); return; }
+        await this.withOpLock(async () => {
+            if (!this.maxProfitTripped || this.profitCooldownUntil == null || !this.isIdle()) return;
+            this.maxProfitTripped = false;
+            this.profitCooldownUntil = null;
+            this.maxProfitBaseline = this.realizedPnL;
+            this.persistProfitState();
+            Log.log(`[${this.deps.ownerType}] max-profit cooldown over - lockout released, the profit target restarts from realized P&L ${Math.round(this.realizedPnL)}`);
+        });
     }
 
     // Persists the max-loss latch with its cut and cooldown end (same per-day doc as persistLatch).
@@ -1484,6 +1539,8 @@ export class LegManager {
         this.lossInvestmentCutTotal = 0;
         this.lossCooldownUntil = null;
         this.clearLossCooldownTimer();
+        this.profitCooldownUntil = null;
+        this.clearProfitCooldownTimer();
         this.persistLatch(null);
         this.eodClosing = false;
         this.supersededRefills.clear();

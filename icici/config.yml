@@ -34,6 +34,7 @@ strategies:
     maxLoss: 6%
     lossInvestmentCut: 10000
     lossCooldownSeconds: 1800
+    profitCooldownSeconds: 0
     spawnQuantityMode: '1'
     averageQuantityMode: same
     right: none
@@ -158,6 +159,7 @@ strategies:
     index: SENSEX
     maxExposure: 100000
     lossCooldownSeconds: 300
+    profitCooldownSeconds: 0
     lossInvestmentCut: 10000
     maxExposureByBroker:
       ant: 100000
@@ -181,6 +183,7 @@ strategies:
     index: NIFTY
     maxExposure: 100000
     lossCooldownSeconds: 300
+    profitCooldownSeconds: 0
     lossInvestmentCut: 10000
     maxExposureByBroker:
       ant: 100000
