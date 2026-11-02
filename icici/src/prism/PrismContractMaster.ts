@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { effectiveExpiryOffset } from '../util/expirySkip';
 import path from 'path';
 import Log from '../util/Log';
 
@@ -76,7 +77,7 @@ class PrismContractMaster {
             .filter((r) => r.symbol === symbol && r.strike === strike && r.optionType === optionType && Date.parse(r.expiry) >= now)
             .sort((a, b) => Date.parse(a.expiry) - Date.parse(b.expiry));
 
-        const row = candidates[expiryOffset];
+        const row = candidates[effectiveExpiryOffset(candidates.map((r) => Date.parse(r.expiry)), expiryOffset)];
         if (!row) {
             throw new Error(`No ${symbol} ${optionType} contract found for strike ${strike} (expiryOffset=${expiryOffset})`);
         }

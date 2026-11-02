@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { effectiveExpiryOffset } from '../util/expirySkip';
 import path from 'path';
 import { execFile, execFileSync } from 'child_process';
 import Log from '../util/Log';
@@ -258,7 +259,7 @@ class KiteContractMaster {
             .filter((i) => i.name === symbol && i.instrument_type === optionType && i.strike === strike && new Date(i.expiry) >= today)
             .sort((a, b) => new Date(a.expiry).getTime() - new Date(b.expiry).getTime());
 
-        const contract = candidates[expiryOffset];
+        const contract = candidates[effectiveExpiryOffset(candidates.map((i) => new Date(i.expiry).getTime()), expiryOffset)];
         if (!contract) {
             throw new Error(`No ${symbol} ${optionType} contract found for strike ${strike} (expiryOffset=${expiryOffset})`);
         }

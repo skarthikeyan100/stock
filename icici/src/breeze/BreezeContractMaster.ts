@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { effectiveExpiryOffset } from '../util/expirySkip';
 import path from 'path';
 import axios from 'axios';
 import { execFileSync } from 'child_process';
@@ -319,7 +320,8 @@ class BreezeContractMaster {
         if (candidates.length === 0) {
             throw new Error(`No ${shortName} option contracts found in Security Master`);
         }
-        const nearestExpiryMs = Math.min(...candidates.map((r) => expiryMs(r.expiryDate)));
+        const expiriesMs = Array.from(new Set(candidates.map((r) => expiryMs(r.expiryDate)))).sort((a, b) => a - b);
+        const nearestExpiryMs = expiriesMs[effectiveExpiryOffset(expiriesMs, 0)];
 
         const match = candidates.find(
             (r) => expiryMs(r.expiryDate) === nearestExpiryMs && Number(r.strikePrice) === atmStrike && r.optionType === optionType
@@ -352,7 +354,7 @@ class BreezeContractMaster {
             throw new Error(`No ${shortName} ${strike}${optionType} contract found for any upcoming expiry`);
         }
         candidates.sort((a, b) => expiryMs(a.expiryDate) - expiryMs(b.expiryDate));
-        return candidates[0];
+        return candidates[effectiveExpiryOffset(candidates.map((r) => expiryMs(r.expiryDate)), 0)] ?? candidates[0];
     }
 
     // Any one live option contract of an underlying, nearest expiry - only used to read the

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import Log from '../util/Log';
 import { exchangeForIndex } from '../util/underlyings';
+import { effectiveExpiryOffset } from '../util/expirySkip';
 import { tradingDaysToExpiry, shiftedStrike, otmSteps } from '../util/expiryOffset';
 
 // A row's trading symbol: the master files spell the column "Trading Symbol" in one format and "Trading" in another.
@@ -202,7 +203,8 @@ class AntContractMaster {
     const todayStart = todayStartUtc();
     const rows = cache.filter((r) => r.Symbol === symbol && r.Exch === exch && r['Option Type'] === optionType && parseInt(r['Expiry Date']) >= todayStart);
     if (rows.length === 0) return atm;
-    const nearestExpiry = Math.min(...rows.map((r) => parseInt(r['Expiry Date'])));
+    const expiries = Array.from(new Set(rows.map((r) => parseInt(r['Expiry Date'])))).sort((a, b) => a - b);
+    const nearestExpiry = expiries[effectiveExpiryOffset(expiries, 0)];
     const listed = new Set(rows.filter((r) => parseInt(r['Expiry Date']) === nearestExpiry).map((r) => Number(r['Strike Price'])));
     for (let steps = otmSteps(tradingDaysToExpiry(nearestExpiry)); steps > 0; steps--) {
       const strike = shiftedStrike(atm, optionType, step, steps);
@@ -300,7 +302,7 @@ class AntContractMaster {
       )
       .sort((a, b) => parseInt(a['Expiry Date']) - parseInt(b['Expiry Date']));
 
-    const record = candidates[expiryOffset];
+    const record = candidates[effectiveExpiryOffset(candidates.map((r) => parseInt(r['Expiry Date'])), expiryOffset)];
     if (!record) {
       throw new Error(`No ${symbol} ${exch} ${optionType} contract found for strike ${strike} (expiryOffset=${expiryOffset})`);
     }

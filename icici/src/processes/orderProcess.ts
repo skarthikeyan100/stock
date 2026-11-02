@@ -340,7 +340,7 @@ async function placeOrderWithPendingGuard(
     // requests could otherwise both pass against the same not-yet-reserved headroom.
     const gate = await withUserGate(req.userId, async () => {
         // A hedge re-buy / top-up (BulkPcr, placeLimitBuyBare / buyContractBare) re-opens a slot the investment cap already counted, so only that gate is skipped.
-        const skipInvestmentCap = (req.type === 'placeLimitBuyBare' || req.type === 'buyContractBare') && req.payload?.hedgeRebuy === true;
+        const skipInvestmentCap = (req.type === 'placeLimitBuyBare' || req.type === 'buyContractBare' || req.type === 'chunkedBuyIndex') && req.payload?.hedgeRebuy === true;
         const validation = await bookkeeping.canPlaceOrder(req.userId, estimatedOrderValue, broker, skipInvestmentCap);
         if (!validation.allowed) return { reason: validation.reason } as const;
         return { entry: bookkeeping.markPending(req.userId, estimatedOrderValue, broker) } as const;

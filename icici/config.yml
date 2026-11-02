@@ -17,6 +17,7 @@ settings:
   gapScreenerCoverOrderStopLossPoints: 0
   targetPoints: 2
   stopLossPoints: 11
+  skipNearestExpiryOnEve: false
 strategies:
   - type: SentimentStrategy
     enabled: false

@@ -43,6 +43,7 @@ const REBUY_RETRY_THROTTLE_MS = 10_000;
 const MAX_BUY_RETRIES = 3;
 // Hedge top-up after a margin-shrunk buy (see topUpSlot): attempts per slot cycle and the gap between them.
 const MAX_TOPUP_ATTEMPTS = 3;
+const MAX_TOPUP_RESIZES = 3;
 const TOPUP_RETRY_MS = 30_000;
 // Headroom kept when shrinking a hedge to fit margin: the premium moves between attempts.
 const MARGIN_RESIZE_BUFFER = 0.05;
@@ -155,6 +156,8 @@ interface BrokerPosition {
     // Pair brokers only: quantity each buy of this side uses. The root's entry quantity; the opposite side
     // inherits the root's still-open quantity when it is opened. Re-buys reuse it.
     entryQuantity?: number;
+    // Re-buys of this side after a +N fill so far this cycle (capped by the optional config key maxRebuysPerSlot).
+    rebuys?: number;
     // Epoch ms of the last buy attempt - throttles retries of a 'pending' buy.
     lastBuyAttemptAt?: number;
     // Epoch ms when phase last transitioned to 'selling' - lets reconcile()
@@ -568,7 +571,9 @@ export default class BulkPcrStrategy extends Strategy {
                 scope: key,
                 kind: 'loss',
                 getCapPct: () => this.cfg().maxLossPerOrder,
-                getMaxInvestment: () => this.effectiveCap(brokerOfKey(key)),
+                // The configured cap, not the cut one: a loss-trip cut shrinks what may be bought, but the stop of the next order must not
+                // tighten with it (live 2026-11-02: 10k -> 8k -> 6.4k -> 5.6k, later cycles stopped out sooner).
+                getMaxInvestment: () => this.baseCap(brokerOfKey(key)),
             });
             this.stops.set(key, stop);
         }
@@ -1416,7 +1421,7 @@ export default class BulkPcrStrategy extends Strategy {
     // The order's loss stop in rupees (maxLossPerOrder % of the broker's cap in force), or null when the stop is off.
     private lossStopRupees(broker: BrokerName): number | null {
         const pct = toPercentNumber(this.cfg().maxLossPerOrder);
-        const cap = this.effectiveCap(broker);
+        const cap = this.baseCap(broker); // the configured cap: see stopFor
         return pct !== null && pct > 0 && cap > 0 ? (pct / 100) * cap : null;
     }
 
@@ -1500,6 +1505,8 @@ export default class BulkPcrStrategy extends Strategy {
             const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, {
                 right: pos.right, quantity: pos.entryQuantity, niftyLtp, broker: pos.broker, index: this.index(),
                 driftCancelPoints: this.cfg().chunkDriftCancelPoints ?? 10,
+                // The opposite-side hedge may take the broker over its cap (the root already cost most of it): the hedge is what limits the loss.
+                ...(pos.hedge === true ? { hedgeRebuy: true } : {}),
             });
             // Re-buy rolled to a new contract: stop watching the old token (if no other slot still
             // holds it). Exchange is the OLD heldTsym's, which the unwatch needs.
@@ -1901,7 +1908,7 @@ export default class BulkPcrStrategy extends Strategy {
         const broker = pos.broker;
         const exchange = exchangeForTsym(tsym);
         let qty = pos.topUpQty!;
-        let resized = false;
+        let resizes = 0; // each rejection states what the broker could afford: re-size from it (up to MAX_TOPUP_RESIZES) instead of giving up after one
         for (;;) {
             try {
                 const trade = await OrderClient.getInstance().buyContractBare(this.userId, tsym, pos.heldToken!, qty, exchange, undefined, broker, { hedgeRebuy: true });
@@ -1911,6 +1918,7 @@ export default class BulkPcrStrategy extends Strategy {
                 const total = pos.targetQuantity + bought;
                 pos.entryAvg = (pos.targetQuantity * pos.entryAvg + bought * price) / total;
                 pos.targetQuantity = total;
+                pos.entryQuantity = total; // the slot now holds the topped-up size (a stale value sized the later re-buy/exit wrongly)
                 pos.topUpQty = Math.max(0, pos.topUpQty! - bought);
                 if (pos.topUpQty < LOT_SIZE[this.index()]) pos.topUpQty = 0;
                 Log.log(`[BulkPcrStrategy] [${broker}] ${pos.right} hedge topped up: +${bought} ${tsym} @ ${price} - now ${total} lots, entry avg ${pos.entryAvg.toFixed(2)}${pos.topUpQty ? `, ${pos.topUpQty} still to add` : ''}`);
@@ -1918,10 +1926,10 @@ export default class BulkPcrStrategy extends Strategy {
                 return;
             } catch (e: any) {
                 const message = typeof e?.message === 'string' ? e.message : String(e);
-                if (isNothingBought(e) && MARGIN_SHORTFALL_REASON_PATTERN.test(message) && !resized) {
+                if (isNothingBought(e) && MARGIN_SHORTFALL_REASON_PATTERN.test(message) && resizes < MAX_TOPUP_RESIZES) {
                     const reduced = this.marginReducedFor(qty, message);
                     if (reduced !== null) {
-                        resized = true;
+                        resizes++;
                         Log.log(`[BulkPcrStrategy] [${broker}] ${pos.right} hedge top-up rejected for margin - retrying with ${qty} -> ${reduced}`);
                         qty = reduced;
                         continue;
@@ -1936,7 +1944,7 @@ export default class BulkPcrStrategy extends Strategy {
                     this.liveRemainder.add(broker);
                     Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${pos.right} hedge top-up outcome unconfirmed - extra lots may be LIVE and UNPROTECTED, manual review required: ${message}`);
                 } else if ((pos.topUpAttempts ?? 0) >= MAX_TOPUP_ATTEMPTS) {
-                    Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${pos.right} hedge top-up gave up after ${pos.topUpAttempts} attempts - ${pos.topUpQty} lots stay unhedged: ${message.slice(0, 200)}`);
+                    Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${pos.right} hedge top-up gave up after ${pos.topUpAttempts} attempts - UNHEDGED quantity ${pos.topUpQty} (hedge holds ${pos.targetQuantity}): ${message.slice(0, 200)}`);
                     pos.topUpQty = 0;
                 } else {
                     Log.log(`[BulkPcrStrategy] [${broker}] ${pos.right} hedge top-up attempt ${pos.topUpAttempts}/${MAX_TOPUP_ATTEMPTS} bought nothing - retrying in ${TOPUP_RETRY_MS / 1000}s: ${message.slice(0, 200)}`);
@@ -1987,7 +1995,11 @@ export default class BulkPcrStrategy extends Strategy {
         const tripped = this.tripIfBreached(pos.broker);
         if (isPairBroker(pos.broker) && !this.eodDone) {
             const sibling = this.slotsOf(pos.broker).find((p) => p.right !== pos.right);
-            if (sibling && this.holdsOrIsBuying(sibling) && !this.isBrokerStopped(pos.broker)) {
+            const maxRebuys = Number((this.cfg() as any).maxRebuysPerSlot);
+            if (sibling && this.holdsOrIsBuying(sibling) && !this.isBrokerStopped(pos.broker) && maxRebuys > 0 && (pos.rebuys ?? 0) >= maxRebuys) {
+                Log.log(`[BulkPcrStrategy] [${pos.broker}] ${pos.right} +N filled but it was already re-bought ${pos.rebuys} time(s) (maxRebuysPerSlot=${maxRebuys}) - not re-buying; ${sibling.right} stays open`);
+            } else if (sibling && this.holdsOrIsBuying(sibling) && !this.isBrokerStopped(pos.broker)) {
+                pos.rebuys = (pos.rebuys ?? 0) + 1;
                 // Re-buy the SAME contract with a limit at the price it just sold at (average exit price).
                 const soldAvg = pos.soldQty > 0 ? roundToTick(pos.soldValue / pos.soldQty) : 0;
                 if (pos.heldTsym && pos.heldToken && soldAvg > 0) pos.rebuyLimit = { tsym: pos.heldTsym, token: pos.heldToken, price: soldAvg };
