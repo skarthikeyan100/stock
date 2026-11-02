@@ -29,7 +29,44 @@ class ConfigService {
 
   // Percent fields are written with a '%' suffix (e.g. 40 -> "40%") so the
   // unit is visible in config.yml. loadConfig() accepts both forms.
-  public writeConfig(config: AppConfig) {
+  // A copy of this.config as last loaded (normalised). writeConfig diffs the in-memory config against it to find what a caller changed.
+  private loadedSnapshot: AppConfig | null = null;
+
+  // Strategies mutate their block of the in-memory config and write the WHOLE object back. If config.yml was edited meanwhile and the
+  // watcher had not reloaded yet, that write put the old values back over the operator's edit (2026-11-02: maxInvestment 300000 set at
+  // 12:34 was 100000 again at 12:40:00, when BulkPcrAutoStart wrote the file). So when the object being written IS the in-memory config,
+  // only the keys that differ from the snapshot taken at load are applied onto a fresh read of the file; everything else in the file,
+  // including an edit this process has not loaded yet, stays as it is.
+  private mergeIntoFile(config: AppConfig): AppConfig {
+    if (config !== this.config || !this.loadedSnapshot) return config;
+    let fresh: any;
+    try {
+      fresh = load(readFileSync(this.configPath, 'utf8'));
+    } catch {
+      return config;
+    }
+    if (!fresh || typeof fresh !== 'object') return config;
+    const same = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b);
+    const applyDelta = (cur: any, snap: any, target: any) => {
+      for (const k of Object.keys(cur || {})) if (!same(cur[k], snap?.[k])) target[k] = cur[k];
+      for (const k of Object.keys(snap || {})) if (!(cur && k in cur)) delete target[k];
+    };
+    fresh.settings = fresh.settings || {};
+    applyDelta(config.settings, this.loadedSnapshot.settings, fresh.settings);
+    fresh.strategies = Array.isArray(fresh.strategies) ? fresh.strategies : [];
+    const snapByKey = new Map((this.loadedSnapshot.strategies || []).map((s) => [this.instanceKey(s), s]));
+    for (const cur of config.strategies || []) {
+      const key = this.instanceKey(cur);
+      const block = fresh.strategies.find((s: any) => s && this.instanceKey(s) === key);
+      const snap = snapByKey.get(key);
+      if (!block) { if (!snap) fresh.strategies.push(cur); continue; } // a block the operator removed meanwhile is not resurrected
+      applyDelta(cur, snap, block);
+    }
+    return fresh as AppConfig;
+  }
+
+  public writeConfig(configIn: AppConfig) {
+    const config = this.mergeIntoFile(configIn);
     const shaped: AppConfig = {
       ...config,
       settings: formatPercentFields(config.settings as any),
@@ -51,6 +88,10 @@ class ConfigService {
     } catch (e) {
       try { fs.unlinkSync(tmp); } catch { /* best effort */ }
       throw e;
+    }
+    // Memory follows the file at once, so the next write diffs against what was just written (the watcher's reload comes later).
+    if (configIn === this.config) {
+      try { this.loadConfig(); } catch (e) { Log.log(`[ConfigService] reload after write failed (the watcher retries): ${(e as Error).message}`); }
     }
   }
 
@@ -161,6 +202,7 @@ class ConfigService {
       parsed.strategies = parsed.strategies.map((s: any) => withCanonicalStrategy(normalizeBlock(s)));
     }
     this.config = parsed as AppConfig;
+    this.loadedSnapshot = JSON.parse(JSON.stringify(this.config));
     Log.log(`Config Updated: ${(this.config.strategies || []).length} strategies (${(this.config.strategies || []).map((s: any) => `${s.type}${s.userId ? ':' + s.userId : ''}${s.enabled ? '' : '(off)'}`).join(', ')})`);
     for (const cb of this.listeners) {
       try { cb(); } catch (e) { Log.log(`[ConfigService] onChange listener failed: ${(e as Error).message}`); }
