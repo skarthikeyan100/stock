@@ -66,7 +66,14 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
     protected async onNiftyTick(quote: NiftyQuote): Promise<void> {
         const cfg = this.cfg() as any;
         const today = localDayKey();
-        if (this.tradingDay !== today) { this.tradingDay = today; this.seenToday.clear(); this.setSlotPrice(null); }
+        if (this.tradingDay !== today) {
+            // The first tick after a (re)start has no previous day: the persisted slot price is already this day's (the state file is
+            // per-day), so only a real rollover in a running process clears it. Clearing it here dropped the reference on every restart.
+            const rolledOver = this.tradingDay !== null;
+            this.tradingDay = today;
+            this.seenToday.clear();
+            if (rolledOver) this.setSlotPrice(null);
+        }
         const now = moment();
         const times: string[] = Array.isArray(cfg.times) ? cfg.times : [];
         // Restart catch-up (config `catchUpMissedSlot: true`): of the slots due before this process started, only the LATEST one may still

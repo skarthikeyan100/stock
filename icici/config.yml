@@ -215,7 +215,7 @@ strategies:
       kite: 100000
   - type: BulkPcrStrategy
     userId: BulkPcr-NIFTY
-    enabled: true
+    enabled: false
     quantity: -1
     targetPoints: 4
     chunkDriftCancelPoints: 10
