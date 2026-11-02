@@ -264,7 +264,7 @@ strategies:
   - type: BulkPcrAutoStartStrategy
     userId: BulkPcrAutoStart-NIFTY
     targetUserId: BulkPcr-NIFTY
-    enabled: true
+    enabled: false
     catchUpMissedSlot: true
     times:
       - '10:35'
@@ -362,9 +362,10 @@ strategies:
       - '10:40'
       - '11:40'
       - '12:30'
+      - '12:40'
       - '13:40'
       - '14:30'
-    maxInvestment: 100000
+    maxInvestment: 300000
     limitOffset: 3
     targetPoints: 5
     entryTimeoutMinutes: 5
@@ -374,4 +375,4 @@ strategies:
       - kite
       - breeze
       - ant
-    maxExposure: 100000
+    maxExposure: 300000
