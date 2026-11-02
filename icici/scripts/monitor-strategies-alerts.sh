@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Attention-only feed for the Claude Code Monitor tool, covering BulkPcr and ContinuousStrategy together.
+# Attention-only feed for the Claude Code Monitor tool, covering BulkPcr, ContinuousStrategy, NiftyChange and Recommendation.
 #
 # Runs both compact event feeds and keeps only their "!!!" lines (errors, failures, fail-closed blocks,
 # MAX PROFIT / MAX LOSS trips, ALERTs). Routine buy/sell/fill/spawn/target events and BulkPcr's normal
 # "Cycle complete" are dropped. Use scripts/strategy-status.sh for the P&L picture.
 #
+# NiftyChange / Recommendation are low-volume, so ALL their lifecycle lines (fills, protection attached, stop/target, cancels, ALERTs)
+# are kept (scripts/monitor-limitentry-events.sh).
 # Also emits one "=== SLOT MISSED" line per slot that BulkPcrAutoStart / NiftyChange did not trade, with the reason.
 # A filled buy+sell pair is routine and is NOT notified.
 #
@@ -21,8 +23,10 @@ READER=(tail -n0 -F "$LOG_FILE")
         "$DIR/monitor-continuous-events.sh" "$@" &
         wait
     } | grep -E --line-buffered '!!!' | grep -E --line-buffered -v 'Cycle complete' &
+    "$DIR/monitor-limitentry-events.sh" "$@" &
     "${READER[@]}" 2>/dev/null \
         | sed -nuE -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange):([^]]*)\] (Missed ([0-9:]{5}) slot.*)/=== SLOT MISSED \1 \2 \3 \5: late - \4/p;t" \
-                   -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange):([^]]*)\] ([0-9:]{5}):? ?(slot[: ]*)?(.*(skipp|not arming|not trading|not starting|already attempted|already handled).*)/=== SLOT MISSED \1 \2 \3 \4: \6/p" &
+                   -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange):([^]]*)\] ([0-9:]{5}):? ?(slot[: ]*)?(.*(skipp|not arming|not trading|not starting|already attempted|already handled).*)/=== SLOT MISSED \1 \2 \3 \4: \6/p" \
+        | awk '{ if ($0 ~ /already handled earlier today/) next; if ($0 ~ /process started after it/) { split($4, a, ":"); split($7, b, ":"); if ((a[1]*60 + a[2]) - (b[1]*60 + b[2]) > 10) next } print; fflush() }' &
     wait
 }
