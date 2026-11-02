@@ -128,23 +128,6 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
             await this.closeLeg(leg, 'fill outside stop/target band');
             return;
         }
-        try {
-            const res = await OrderClient.getInstance().attachProtection(this.userId, { broker: leg.broker as any, tradingSymbol: leg.tsym, targetPrice: target, stopLossPrice: stop });
-            leg.exit = res.mode;
-            Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym} qty=${leg.filledQty} avg=${avg.toFixed(2)}: target ${target} / stop ${stop} protected via ${res.mode}${res.gttTriggerId ? ' (GTT ' + res.gttTriggerId + ')' : ''}`);
-            return;
-        } catch (e: any) {
-            Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: no broker-side protection (${e?.message ?? e}) - using a resting target sell + tick-driven stop here`);
-        }
-        // Self-managed: the stop is armed first (it needs only ticks), then the target sell. If the sell cannot be placed the stop
-        // still protects the downside and the error is thrown so the sell is retried.
-        leg.stop = stop;
-        this.save();
-        this.armSelfStop(leg);
-        await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
-            broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: leg.filledQty, price: target, exchange: leg.exchange,
-        });
-        leg.exit = 'self';
-        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: resting sell ${leg.filledQty} @ ${target}, stop ${stop} watched on ticks`);
+        await this.protectLeg(leg, target, stop);
     }
 }

@@ -12,7 +12,8 @@ import { LimitEntryStrategy, Leg } from './LimitEntryStrategy';
 // its LTP at the previous slot today, from the live tick; the first slot of the day compares with the previous day's close): up -> CE,
 // down -> PE, flat -> nothing. The LTP seen at each slot is kept in memory as the reference for the next one. The order is a LIMIT buy at (the option's LTP - limitOffset) on every
 // configured broker, sized from maxExposure (the amount PER broker, see exposureForBroker; maxExposureByBroker overrides one broker). When it fills, a resting limit sell goes in at
-// (fill price + targetPoints). No stop loss: an unfilled entry is cancelled after entryTimeoutMinutes, and a position still held at
+// (fill price + targetPoints), and when stopLossPoints (and/or maxLossPerLeg, rupees per leg) is set a stop below the fill is attached with it
+// (attachProtection: Kite GTT, ANT in-app exitMonitor, Breeze resting sell + tick stop). An unfilled entry is cancelled after entryTimeoutMinutes, and a position still held at
 // eodCloseTime is closed at market.
 //
 // Slot rules are BulkPcrAutoStartStrategy's: each slot fires at most once a day (persisted), a slot earlier than this process's start
@@ -29,6 +30,8 @@ import { LimitEntryStrategy, Leg } from './LimitEntryStrategy';
 //   maxExposure: 100000     - the amount PER broker
 //   limitOffset: 3          - entry limit = option LTP - limitOffset
 //   targetPoints: 5
+//   stopLossPoints: 8       - stop = fill - stopLossPoints (omit for no stop)
+//   maxLossPerLeg: 15000    - optional rupee cap per leg: the stop is never further than this loss
 //   entryTimeoutMinutes: 5  - cancel an unfilled entry after this long
 //   eodCloseTime: '15:10'
 //   brokers: [kite]
@@ -133,9 +136,32 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
         });
     }
 
+    // Stop price for a filled leg: stopLossPoints below the average fill, tightened to maxLossPerLeg (rupees) when that is nearer.
+    // undefined = no stop configured (the old behaviour: a resting target sell only).
+    private stopFor(leg: Leg): number | undefined {
+        const cfg = this.cfg() as any;
+        const points = Number(cfg.stopLossPoints);
+        const cap = Number(cfg.maxLossPerLeg);
+        if (!(points > 0) && !(cap > 0)) return undefined;
+        const avg = this.avgPrice(leg);
+        let stop = points > 0 ? avg - points : 0;
+        if (cap > 0 && leg.filledQty > 0) stop = Math.max(stop, avg - cap / leg.filledQty);
+        return Math.max(roundToTick(stop), 0.05);
+    }
+
     protected async topUpExit(leg: Leg, delta: number): Promise<void> {
         const targetPoints = Number((this.cfg() as any).targetPoints);
         if (!(targetPoints > 0)) throw new Error(`targetPoints (${(this.cfg() as any).targetPoints}) invalid`);
+        if (leg.exit === 'exitMonitor' || leg.exit === 'none') return; // sized off the position when it triggers: later fills are covered already
+        if (leg.exit === 'gtt') {
+            // A GTT is sized when placed: drop it and attach a new one over the whole filled quantity. If the re-attach throws, exit is
+            // cleared so the housekeeping retry places a fresh exit.
+            await OrderClient.getInstance().cancelProtection(this.userId, { broker: leg.broker as any, tradingSymbol: leg.tsym });
+            leg.exit = undefined;
+            leg.exitQty = 0;
+            await this.placeExit(leg);
+            return;
+        }
         const target = roundToTick(this.avgPrice(leg) + targetPoints);
         await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
             broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: delta, price: target, exchange: leg.exchange,
@@ -147,10 +173,16 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
         const targetPoints = Number((this.cfg() as any).targetPoints);
         if (!(targetPoints > 0)) throw new Error(`targetPoints (${(this.cfg() as any).targetPoints}) invalid`);
         const target = roundToTick(this.avgPrice(leg) + targetPoints);
+        const stop = this.stopFor(leg);
+        if (stop !== undefined) {
+            // Target + stop on every broker (Kite GTT, ANT in-app exitMonitor, Breeze resting sell + tick stop), as Recommendation does.
+            await this.protectLeg(leg, target, stop);
+            return;
+        }
         await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
             broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: leg.filledQty, price: target, exchange: leg.exchange,
         });
         leg.exit = 'resting';
-        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: bought ${leg.filledQty} @ avg ${this.avgPrice(leg).toFixed(2)} - resting sell @ ${target}`);
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: bought ${leg.filledQty} @ avg ${this.avgPrice(leg).toFixed(2)} - resting sell @ ${target} (no stop configured)`);
     }
 }

@@ -211,6 +211,31 @@ export abstract class LimitEntryStrategy extends Strategy {
         if (leg.stop && leg.status === 'filled' && leg.soldQty < leg.filledQty) this.armSelfStop(leg);
     }
 
+    // Target + stop on a filled leg: the broker-side protection (Kite GTT, ANT in-app exitMonitor) when attachProtection can place it,
+    // else a resting limit sell at the target plus a tick-driven stop here. The stop is armed first (it needs only ticks), so if the
+    // sell cannot be placed the downside is still covered and the error is thrown so the sell is retried.
+    protected async protectLeg(leg: Leg, target: number, stop: number): Promise<void> {
+        const avg = this.avgPrice(leg);
+        try {
+            const res = await OrderClient.getInstance().attachProtection(this.userId, { broker: leg.broker as any, tradingSymbol: leg.tsym, targetPrice: target, stopLossPrice: stop });
+            leg.exit = res.mode;
+            Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym} qty=${leg.filledQty} avg=${avg.toFixed(2)}: target ${target} / stop ${stop} protected via ${res.mode}${res.gttTriggerId ? ' (GTT ' + res.gttTriggerId + ')' : ''}`);
+            return;
+        } catch (e: any) {
+            Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: no broker-side protection (${e?.message ?? e}) - using a resting target sell + tick-driven stop here`);
+        }
+        // Self-managed: the stop is armed first (it needs only ticks), then the target sell. If the sell cannot be placed the stop
+        // still protects the downside and the error is thrown so the sell is retried.
+        leg.stop = stop;
+        this.save();
+        this.armSelfStop(leg);
+        await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
+            broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: leg.filledQty, price: target, exchange: leg.exchange,
+        });
+        leg.exit = 'self';
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: resting sell ${leg.filledQty} @ ${target}, stop ${stop} watched on ticks`);
+    }
+
     // Starts the tick feed a tick-driven stop (leg.stop) needs. Ticks for every broker's contract come from the ANT feed.
     protected armSelfStop(leg: Leg): void {
         watchTokenOnSource('ant', leg.token, this, leg.exchange);

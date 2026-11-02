@@ -321,6 +321,7 @@ strategies:
     maxInvestment: 100000
     limitOffset: 3
     targetPoints: 5
+    stopLossPoints: 8
     entryTimeoutMinutes: 5
     eodCloseTime: '15:10'
     index: NIFTY
