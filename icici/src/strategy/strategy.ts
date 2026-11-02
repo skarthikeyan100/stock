@@ -2,6 +2,7 @@ import { NOT_PLACED_TAG } from '../ipc/orderProtocol';
 import Log from '../util/Log';
 import { MOCK_BROKER } from "../constants";
 import configService from '../prism/ConfigService';
+import { settingFor } from '../prism/configVocabulary';
 import { NiftyQuote, OptionQuote, OrderInfo, SensexQuote, Trade } from "../model/model";
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import moment from "moment";
@@ -54,6 +55,11 @@ export abstract class Strategy {
 
     // Cooldown tracking (shared across all strategies)
     protected lastTriggerTime: number = 0
+
+    // A global config.yml setting that this strategy's own block may override (same key on the block wins, else settings.<key>).
+    protected setting<T = any>(key: string): T | undefined {
+        return settingFor<T>(this.instanceConfig(), configService.getConfig().settings as any, key);
+    }
 
     protected isCooldownElapsed(cooldownSeconds: number): boolean {
         if (cooldownSeconds <= 0) return true;

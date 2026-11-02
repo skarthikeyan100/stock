@@ -28,8 +28,4 @@ export class Settings {
     trailingDistance = 3
     cooldownSeconds = 60
     logQuotes = false
-    gapScreenerCoverOrderEnabled = false
-    gapScreenerCoverOrderUserEmail = ''
-    gapScreenerCoverOrderQuantity = 0
-    gapScreenerCoverOrderStopLossPoints = 0
 }

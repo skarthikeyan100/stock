@@ -37,3 +37,10 @@ export function exposureForBroker(cfg: { maxExposure?: number; maxInvestment?: n
     }
     return resolveMaxExposure(cfg);
 }
+
+// A global setting that a strategy may override: the strategy block's own value when it sets the key, else settings[key] from config.yml,
+// else undefined. `settings` is passed in (not imported) so this stays free of the ConfigService import cycle.
+export function settingFor<T = any>(block: Record<string, any> | null | undefined, settings: Record<string, any> | null | undefined, key: string): T | undefined {
+    const own = block?.[key];
+    return (own !== undefined && own !== null ? own : settings?.[key]) as T | undefined;
+}

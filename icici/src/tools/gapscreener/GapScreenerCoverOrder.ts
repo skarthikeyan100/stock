@@ -6,14 +6,14 @@
  * (written by gapscreener:start) and places an ANT cover order for each
  * resolved contract, via the `order` process's IPC socket (OrderClient).
  *
- * Safe no-op unless settings.gapScreenerCoverOrderEnabled is true in
+ * Safe no-op unless the GapStrategy block's coverOrderEnabled is true in
  * config.yml - this is what lets gapscreener-morning.sh call
  * `npm run gapscreener:coverorder` unconditionally.
  *
  * WARNING: ANT.placeCoverOrder has never been confirmed against a live
  * AliceBlue response (see ANT.ts's placeCoverOrder comment and the
  * gap-screener cover-order plan's verification section). Do not enable
- * gapScreenerCoverOrderEnabled against a real account without first
+ * coverOrderEnabled (GapStrategy block) against a real account without first
  * live-testing it in isolation.
  *
  * Usage:
@@ -103,19 +103,21 @@ async function waitUntilConnected(client: OrderClient, timeoutMs: number): Promi
 
 async function main(): Promise<void> {
     console.log('=== Gap-Screener Cover Order ===');
-    const settings = configService.getConfig().settings as any;
+    // Strategy-specific, so it lives on the GapStrategy block (not in the global settings). The block's `enabled` is the Gap strategy's own
+    // switch and does not gate this separate tool; coverOrderEnabled does.
+    const settings = configService.getStrategyConfig('GapStrategy') as any;
 
-    if (settings.gapScreenerCoverOrderEnabled !== true) {
-        console.log('[gapScreenerCoverOrder] gapScreenerCoverOrderEnabled is not true - nothing to do.');
+    if (settings.coverOrderEnabled !== true) {
+        console.log('[gapScreenerCoverOrder] coverOrderEnabled is not true on the GapStrategy block - nothing to do.');
         return;
     }
 
-    const userEmail: string = settings.gapScreenerCoverOrderUserEmail;
-    const quantity: number = settings.gapScreenerCoverOrderQuantity;
-    const stopLossPoints: number = settings.gapScreenerCoverOrderStopLossPoints;
+    const userEmail: string = settings.coverOrderUserEmail;
+    const quantity: number = settings.coverOrderQuantity;
+    const stopLossPoints: number = settings.coverOrderStopLossPoints;
 
     if (!userEmail || !quantity || !stopLossPoints) {
-        throw new Error('gapScreenerCoverOrderEnabled is true but gapScreenerCoverOrderUserEmail/Quantity/StopLossPoints are not fully configured in config.yml.');
+        throw new Error('coverOrderEnabled is true but coverOrderUserEmail/Quantity/StopLossPoints are not fully configured on the GapStrategy block in config.yml.');
     }
 
     // Safety gates (this places REAL orders from a file): trading day + market hours in IST, and a CSV written today.

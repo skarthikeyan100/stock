@@ -8,10 +8,6 @@ settings:
   logQuotes: false
   maxDailyDrawdownPercent: 25%
   maxWeeklyDrawdownPercent: 50%
-  gapScreenerCoverOrderEnabled: false
-  gapScreenerCoverOrderUserEmail: ''
-  gapScreenerCoverOrderQuantity: 0
-  gapScreenerCoverOrderStopLossPoints: 0
   targetPoints: 2
   stopLossPoints: 11
   skipNearestExpiryOnEve: false
@@ -62,6 +58,10 @@ strategies:
     logEnabled: true
   - type: GapStrategy
     enabled: false
+    coverOrderEnabled: false
+    coverOrderUserEmail: ''
+    coverOrderQuantity: 0
+    coverOrderStopLossPoints: 0
     pointsThreshold: 20
     numberOfDatapointsReceived: 50
     quantity: 65

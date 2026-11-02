@@ -148,7 +148,7 @@ export default class GapStrategy extends Strategy {
 
         if (this.contract !== null) return;
 
-        if (!this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) return;
+        if (!this.isCooldownElapsed(this.setting<number>('cooldownSeconds') ?? 0)) return;
 
         // Single-point read against the broker's own live prevClose - no
         // rolling window. This is the strategy's one decision for the day:

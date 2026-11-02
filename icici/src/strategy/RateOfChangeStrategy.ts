@@ -139,7 +139,7 @@ export default class RateOfChangeStrategy extends Strategy {
 
         if (this.contract !== null) return;
 
-        if (!this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) return;
+        if (!this.isCooldownElapsed(this.setting<number>('cooldownSeconds') ?? 0)) return;
 
         const velocity = this.calculatePointsChange(config.numberOfDatapointsReceived);
         const acceleration = this.calculateAcceleration(config.numberOfDatapointsReceived);

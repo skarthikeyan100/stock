@@ -206,7 +206,7 @@ export default class SentimentStrategy extends Strategy {
         const enabled = this.instanceConfig().enabled;
         const loopCount = this.instanceConfig().loopCount;
         if (enabled) {
-            if (this.iterationCount < loopCount && this.isTimeInRange() && !this.ordered && this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) {
+            if (this.iterationCount < loopCount && this.isTimeInRange() && !this.ordered && this.isCooldownElapsed(this.setting<number>('cooldownSeconds') ?? 0)) {
                 this.ordered = true;
                 Log.log('Initiate buy index for NIFTY at ', quote.ltp, ' with initial quantity: ', orderQuantity, ' iterationCount: ', this.iterationCount);
                 let response;

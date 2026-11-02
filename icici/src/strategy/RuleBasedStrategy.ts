@@ -169,7 +169,7 @@ export default class RuleBasedStrategy extends Strategy {
         if (this.contract !== null) return;  // position already open
 
         const config = this.getConfig();
-        if (!this.isCooldownElapsed(configService.getConfig().settings.cooldownSeconds)) return;
+        if (!this.isCooldownElapsed(this.setting<number>('cooldownSeconds') ?? 0)) return;
 
         const signals: Record<string, string | null> = {};
         for (const name of this.indicators) {
