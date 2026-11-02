@@ -1382,7 +1382,7 @@ class OrderBookkeeping {
                 restored.push(...(await this.restoreOpenTradesForTsym(p.tradingsymbol, p.quantity, p.instrument_token != null ? String(p.instrument_token) : undefined, 'kite', { avg: p.average_price, ltp: p.last_price })));
             }
         } catch (e) {
-            Log.log('[order] reconcileKitePositions: Kite getPositions failed (continuing without restore):', e);
+            Log.log('[order] reconcileKitePositions: Kite getPositions failed (continuing without restore):', e?.message ?? e);
             return false;
         }
         this.mergeRestored(restored);
@@ -1414,7 +1414,7 @@ class OrderBookkeeping {
                 restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, token, 'ant', { avg: p.netAveragePrice, ltp: p.ltp })));
             }
         } catch (e) {
-            Log.log('[order] reconcileAntPositions: ANT getPositions failed (continuing without restore):', e);
+            Log.log('[order] reconcileAntPositions: ANT getPositions failed (continuing without restore):', e?.message ?? e);
             return false;
         }
         this.mergeRestored(restored);
@@ -1448,7 +1448,7 @@ class OrderBookkeeping {
                 restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, undefined, 'breeze', { avg: p.average_price, ltp: p.ltp })));
             }
         } catch (e) {
-            Log.log('[order] reconcileBreezePositions: Breeze getPortfolioPositions failed (continuing without restore):', e);
+            Log.log('[order] reconcileBreezePositions: Breeze getPortfolioPositions failed (continuing without restore):', e?.message ?? e);
             return false;
         }
         this.mergeRestored(restored);

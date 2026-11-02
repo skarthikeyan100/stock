@@ -172,10 +172,15 @@ async function reconcileStrategies(): Promise<void> {
     Log.log(`[strategies] Reconciled - ${strategies.getList().length} strategies.`);
 }
 
-const STARTUP_RECONCILE_RETRY_MS = 30_000;
+// A blocked attempt is cheap (a missing session fails locally), and the wait after the last broker login is pure dead time, so retry fast;
+// the ALERT line is throttled below so this does not flood the log.
+const STARTUP_RECONCILE_RETRY_MS = 5_000;
+const STARTUP_RECONCILE_ALERT_EVERY_MS = 30_000;
 
 // Brings every strategy to a reconciled state after a (re)start. Fails closed: until it succeeds, strategies receive nothing.
 async function startupReconcile(): Promise<void> {
+    let lastAlertKey = '';
+    let lastAlertAt = 0;
     for (let attempt = 1; ; attempt++) {
         if (strategies.getList().every((s) => s.stateLoaded)) return; // a manual POST /reconcile got there first
         try {
@@ -190,7 +195,12 @@ async function startupReconcile(): Promise<void> {
                 }
                 Log.log(`[strategies] ALERT: startup reconcile left ${pending.map((s) => s.userId).join(', ')} unreconciled (attempt ${attempt}) - retrying in ${STARTUP_RECONCILE_RETRY_MS / 1000}s`);
             } else {
-                Log.log(`[strategies] ALERT: startup reconcile blocked - broker positions could not be read for: ${failed.join(', ')} (attempt ${attempt}). No strategy receives ticks until this clears; log in to that broker. Retrying in ${STARTUP_RECONCILE_RETRY_MS / 1000}s`);
+                const key = failed.join(',');
+                if (key !== lastAlertKey || Date.now() - lastAlertAt >= STARTUP_RECONCILE_ALERT_EVERY_MS) {
+                    lastAlertKey = key;
+                    lastAlertAt = Date.now();
+                    Log.log(`[strategies] ALERT: startup reconcile blocked - broker positions could not be read for: ${failed.join(', ')} (attempt ${attempt}). No strategy receives ticks until this clears; log in to that broker. Retrying every ${STARTUP_RECONCILE_RETRY_MS / 1000}s`);
+                }
             }
         } catch (e) {
             Log.log(`[strategies] ALERT: startup reconcile attempt ${attempt} failed (retrying in ${STARTUP_RECONCILE_RETRY_MS / 1000}s):`, e);
