@@ -41,6 +41,33 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         return `${cfg.contract}|${Number(cfg.entryPrice)}|${Number(cfg.targetPrice)}|${Number(cfg.stopLoss)}|${Number(cfg.maxInvestment)}|${offset}`;
     }
 
+    // The recommendation without its target and stop: what stays the same when the operator only moves the exits of an open trade.
+    static baseKeyOf(cfg: any): string {
+        const offset = cfg.entryOffset == null ? 5 : Number(cfg.entryOffset);
+        return `${cfg.contract}|${Number(cfg.entryPrice)}|${Number(cfg.maxInvestment)}|${offset}`;
+    }
+
+    // A hand edit of targetPrice/stopLoss while the trade of the SAME recommendation is open moves its protection (it is not a new
+    // recommendation, which would be dropped while a trade is open). Every filled leg's exit is removed and housekeeping places a new one
+    // from the edited config. Refused (nothing touched) when the new levels do not bracket a leg's average fill: that would close it at market.
+    private async adjustOpenTrade(cfg: any, key: string, target: number, stop: number): Promise<boolean> {
+        if (!this.state.baseKey || this.state.baseKey !== RecommendationStrategy.baseKeyOf(cfg)) return false;
+        const legs = this.legs().filter((l) => l.status === 'filled' && !l.closing && l.exit && l.exit !== 'none');
+        for (const leg of legs) {
+            const avg = this.avgPrice(leg);
+            if (!(stop < avg && avg < target)) {
+                Log.log(`[${this.logTag}] ALERT: new stop ${stop} / target ${target} do not bracket ${leg.broker} ${leg.tsym} avg fill ${avg.toFixed(2)} - exits NOT moved`);
+                this.markCycle(key);
+                return true;
+            }
+        }
+        for (const leg of legs) {
+            if (await this.dropExit(leg)) Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: exits moved to target ${target} / stop ${stop} (config edit of an open trade)`);
+        }
+        this.markCycle(key);
+        return true;
+    }
+
     static parseContract(contract: unknown): { strike: number; right: 'CE' | 'PE' } | null {
         const m = /^\s*(\d{3,6})\s*(CE|PE)\s*$/i.exec(String(contract ?? ''));
         return m ? { strike: Number(m[1]), right: m[2].toUpperCase() as 'CE' | 'PE' } : null;
@@ -66,6 +93,7 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
             return;
         }
         if (this.cycleStarted(key)) return;
+        if (this.hasActiveLeg() && await this.adjustOpenTrade(cfg, key, target, stop)) return;
         if (this.hasActiveLeg()) {
             // A trade is still in progress (open order or position): this recommendation is dropped, not held for later. The key is
             // marked used so it is never picked up after that trade ends either.
@@ -74,7 +102,22 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
             return;
         }
         const entry: ResolvedEntry = { index: this.index(), strike: parsed.strike, right: parsed.right };
-        await this.startCycle(key, entry, (b) => exposureForBroker(cfg, b), async () => orderPrice);
+        this.state.baseKey = RecommendationStrategy.baseKeyOf(cfg);
+        await this.startCycle(key, entry, (b) => exposureForBroker(cfg, b), async (c) => {
+            // Logged with the order: a limit buy ABOVE the market fills at the market, and the supplied target/stop were meant for the
+            // entry price (2026-11-02: entry 110 vs LTP 80 filled at 78.85, so target 172 / stop 50 became +93 / -29 from the real cost).
+            try {
+                const ltp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
+                if (ltp > 0 && orderPrice > ltp) {
+                    Log.log(`[${this.logTag}] ALERT: ${c.tsym} LTP ${ltp} is BELOW the order price ${orderPrice}: the buy will fill at about the LTP, not at ${orderPrice}, so target ${target} / stop ${stop} are measured from the real fill - rebase them (edit targetPrice/stopLoss) if they assumed ${entryPrice}`);
+                } else if (ltp > 0) {
+                    Log.log(`[${this.logTag}] ${c.tsym} LTP ${ltp}, order price ${orderPrice}`);
+                }
+            } catch (e: any) {
+                Log.log(`[${this.logTag}] could not read ${c.tsym} LTP for the entry check: ${e?.message ?? e}`);
+            }
+            return orderPrice;
+        });
     }
 
     // The recommendation is finished (bought and sold, or never filled and cancelled, or refused): its config block is set to
@@ -82,6 +125,11 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
     // and hot-reloaded. Runs only while enabled (a disabled block takes no action).
     protected async onCycleEnded(): Promise<void> {
         if (!this.enabled) return;
+        if (this.priceBandRefusal && !this.hasActiveLeg()) {
+            this.priceBandRefusal = false;
+            Log.log(`[${this.logTag}] ALERT: the entry was refused for its price (outside the broker's allowed range); the block stays enabled - change entryPrice/entryOffset to a price near the contract's LTP (a changed price is a new recommendation)`);
+            return;
+        }
         try {
             const cfg = configService.getConfig();
             const block = (cfg.strategies || []).find((s) => s.type === this.strategyType && (s.userId || s.type) === this.userId);

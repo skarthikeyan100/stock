@@ -20,3 +20,6 @@ export function markNotPlaced(e: unknown): Error & { notPlaced: true; orderNotPl
 export function isNotPlaced(e: any): boolean {
     return !!(e?.notPlaced || e?.orderNotPlaced);
 }
+
+// Kite's synchronous price-band refusals (limit price protection, circuit/price range): the order was never placed.
+export const PRICE_BAND_REJECTION = /limit price protection|price (is )?(higher|lower) than|outside (of )?(the )?(price|circuit) (range|limit)/i;

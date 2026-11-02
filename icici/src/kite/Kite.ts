@@ -1,4 +1,4 @@
-import { markNotPlaced } from '../util/notPlaced';
+import { markNotPlaced, PRICE_BAND_REJECTION } from '../util/notPlaced';
 import { cancelThenRecheck, fillStateUnknownError } from '../util/fillWait';
 import { KiteConnect } from 'kiteconnect';
 import Log from '../util/Log';
@@ -25,6 +25,7 @@ export const GTT_STOP_LIMIT_BUFFER = 0.03;
 export function stopLimitPrice(stopTrigger: number): number {
     return Math.max(NFO_TICK_SIZE, roundToTick(stopTrigger * (1 - GTT_STOP_LIMIT_BUFFER)));
 }
+
 
 class Kite {
     private static instance: Kite;
@@ -255,6 +256,9 @@ class Kite {
             return { orderId: response.order_id };
         } catch (e) {
             this.haltBuysOnDebitBalance(e);
+            // Kite refuses a limit buy outside its price band synchronously ("order price is higher than the current limit price
+            // protection of 108.65"): nothing was placed, so it is a definite refusal, not an unknown outcome.
+            if (PRICE_BAND_REJECTION.test(String((e as any)?.message ?? e))) throw markNotPlaced(e);
             throw e;
         }
     }

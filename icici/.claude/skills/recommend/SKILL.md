@@ -23,6 +23,8 @@ The target block is `type: RecommendationStrategy` with `userId: Recommendation-
    - The order price `entry - entryOffset` must be above the stop: `entry - entryOffset > stop`. The strategy refuses otherwise.
    - All prices are positive.
 
+2b. **Check the entry against the market.** If the contract's live LTP is known (the user states it, or it is readable from the running app's option ticks), compare it with the order price `entry - entryOffset`. If the order price is ABOVE the LTP, the limit buy fills at about the LTP, not at the entry, and the supplied target and stop (meant for the entry) become mis-sized (2026-11-02: entry 110 against an LTP of 80 filled at 78.85, so target 172 / stop 50 turned into +93 / -29). Say so and ask whether to rebase target and stop by the same distance from the LTP, or keep them as given; do not set `enabled: true` until they answer. If the LTP is not obtainable, say that, and note the strategy logs an ALERT with the LTP when it places the order.
+
 3. **Refuse if a trade is in progress.** Both checks, and refuse if either finds something:
    - `curl -s "localhost:3000/strategyPnl?match=Recommendation"`: any row with `open > 0` means a position is open.
    - Read `.RecommendationStrategy.Recommendation-1.json` in the repo root (the strategy's state file). Any leg with status `placing` or `resting`, or `filled` with `soldQty < filledQty`, or an entry still open (`entryCancelled` not set, status not `failed`/`cancelled`, `filledQty < qty`) means a trade is in progress. A missing file means none.
@@ -36,7 +38,7 @@ The target block is `type: RecommendationStrategy` with `userId: Recommendation-
    - `contract: 24150 CE`
    - `entryPrice: 140`, `targetPrice: 160`, `stopLoss: 120`
    - `index: NIFTY` (or the index given)
-   - Keep `maxInvestment`, `entryOffset`, `brokers`, `startTime`, `eodCloseTime`, `maxExposure` as they are. Never delete a key or a block.
+   - Keep `maxExposure` (the amount per broker), `maxInvestment`, `entryOffset`, `brokers`, `startTime`, `eodCloseTime`, `maxExposure` as they are. Never delete a key or a block.
 
 6. **Check the result.** Re-read the block and confirm the values. Note the time: a recommendation given after `eodCloseTime` (15:10) or before `startTime` (09:20) is not placed until the next window. The strategy hot-reloads config.yml, so a running `npm run processes` picks it up with no restart.
 

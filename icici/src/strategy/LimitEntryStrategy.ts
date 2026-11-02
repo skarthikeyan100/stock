@@ -6,6 +6,7 @@ import { localDayKey } from './dayKey';
 import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import { OrderCancelledNotification, NOT_PLACED_TAG } from '../ipc/orderProtocol';
 import OrderClient from '../processes/strategies/OrderClient';
+import { PRICE_BAND_REJECTION } from '../util/notPlaced';
 import configService from '../prism/ConfigService';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 import { roundToTick } from '../util/tick';
@@ -61,6 +62,9 @@ export interface State {
     legs: Record<string, Leg>;
     // NiftyChangeStrategy only: Nifty's LTP at the last slot evaluated today, kept here so a restart still has the reference.
     slotPrice?: number | null;
+    // RecommendationStrategy only: the recommendation's identity apart from target/stop (contract, entry, offset, amount). Lets a later edit of
+    // target/stop on the SAME open trade be told apart from a new recommendation (see adjustOpenTrade).
+    baseKey?: string;
 }
 
 export interface ResolvedEntry {
@@ -88,6 +92,9 @@ export abstract class LimitEntryStrategy extends Strategy {
     // Called once the cycle is over: no leg holds or rests and no entry is still open (sold out, cancelled with nothing filled, or every
     // broker's entry refused). Nothing by default; RecommendationStrategy disables its block in config.yml here.
     protected async onCycleEnded(): Promise<void> {}
+    // The last startCycle was refused by a broker's price band (definite, nothing placed). The key stays used for the day (no blind retry on
+    // every tick), but a subclass that disables its block when a cycle ends should not: fixing the prices makes a new key.
+    protected priceBandRefusal = false;
 
     receive(oldStats: any, newStats: any) {}
 
@@ -258,6 +265,7 @@ export abstract class LimitEntryStrategy extends Strategy {
             return;
         }
         this.placing = true;
+        this.priceBandRefusal = false;
         try {
             if (!this.state.keys.includes(key)) this.state.keys.push(key);
             this.state.legs = {};
@@ -284,6 +292,10 @@ export abstract class LimitEntryStrategy extends Strategy {
                     } catch (e: any) {
                         const msg = String(e?.message ?? e);
                         leg.status = 'failed';
+                        if (msg.includes(NOT_PLACED_TAG) && PRICE_BAND_REJECTION.test(msg)) {
+                            this.priceBandRefusal = true;
+                            Log.log(`[${this.logTag}] ALERT: ${key} ${broker}: entry price ${price} is above/below the broker's allowed price range for ${contract.tsym} (${msg}) - nothing placed; lower entryPrice/entryOffset to a price near the contract's LTP`);
+                        } else
                         Log.log(msg.includes(NOT_PLACED_TAG)
                             ? `[${this.logTag}] ${key} ${broker}: entry refused (${msg}) - nothing placed`
                             : `[${this.logTag}] ALERT: ${key} ${broker} ${contract.tsym}: entry order outcome UNKNOWN (${msg}) - it may be live at the broker; NOT retried, check by hand`);
@@ -511,6 +523,33 @@ export abstract class LimitEntryStrategy extends Strategy {
         } catch (e: any) {
             Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: cancel of the entry (${why}) errored, retrying: ${e?.message ?? e}`);
         }
+    }
+
+    // Removes a filled leg's current exit (broker protection, resting target sell, tick stop) so housekeeping places a fresh one from the
+    // current config. Returns false, leaving everything as it was, when the exit could not be removed cleanly (cancel failed, or part of it
+    // filled meanwhile: the normal fill accounting then takes over and no new exit is placed over a changed quantity).
+    protected async dropExit(leg: Leg): Promise<boolean> {
+        if (leg.closing || leg.status !== 'filled' || !leg.exit || leg.exit === 'none') return true;
+        try {
+            if (leg.exit === 'gtt' || leg.exit === 'exitMonitor') {
+                await OrderClient.getInstance().cancelProtection(this.userId, { broker: leg.broker as any, tradingSymbol: leg.tsym });
+            }
+            const c = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: leg.broker as any });
+            if (c.cancelFailed || (c.filledQty || 0) > 0) {
+                Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: could not replace the exit cleanly (${c.cancelFailed ? 'cancel failed' : c.filledQty + ' filled during the cancel'}) - left as it is, check by hand`);
+                return false;
+            }
+        } catch (e: any) {
+            Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: removing the old exit failed (${e?.message ?? e}) - left as it is`);
+            return false;
+        }
+        leg.exit = undefined;
+        leg.exitQty = 0;
+        leg.exitRetryAt = undefined;
+        leg.exitAttempts = 0;
+        leg.stop = undefined;
+        this.save();
+        return true;
     }
 
     // Takes a held leg off the book at market: removes the protection first (a surviving GTT could sell a flat account later), then
