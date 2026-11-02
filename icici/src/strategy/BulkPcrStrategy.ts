@@ -374,8 +374,9 @@ export default class BulkPcrStrategy extends Strategy {
         return this.cfg().slDistance;
     }
 
-    // Config `driftCancelPoints` (default 10, 0 = off): how far above its limit a resting re-buy's contract may trade before the
-    // limit is cancelled and, while the hedge is still needed, re-placed at the new price (checkRebuyDrift).
+    // Config `driftCancelPoints` (default 10, 0 = off): how far price may run from a limit order of ours before the strategy acts. One key
+    // for the one purpose: a chunked entry cancels its remaining chunks, a resting re-buy's limit is cancelled and, while the hedge is
+    // still needed, re-placed at the new price (checkRebuyDrift).
     private driftCancelPoints(): number {
         const n = Number(this.cfg().driftCancelPoints ?? 10);
         return Number.isFinite(n) && n > 0 ? n : 0;
@@ -987,8 +988,7 @@ export default class BulkPcrStrategy extends Strategy {
         });
 
         try {
-            const chunkDriftCancelPoints = this.cfg().chunkDriftCancelPoints ?? 10;
-            const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, { right, quantity, niftyLtp, broker, driftCancelPoints: chunkDriftCancelPoints, index: this.index() });
+            const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, { right, quantity, niftyLtp, broker, driftCancelPoints: this.driftCancelPoints(), index: this.index() });
             const pos = this.positions.get(key)!;
             pos.heldTsym = result.tsym;
             pos.heldToken = feedTokenOf(result);
@@ -1504,7 +1504,7 @@ export default class BulkPcrStrategy extends Strategy {
             // returns only once every chunk has filled.
             const result = await OrderClient.getInstance().chunkedBuyIndex(this.userId, {
                 right: pos.right, quantity: pos.entryQuantity, niftyLtp, broker: pos.broker, index: this.index(),
-                driftCancelPoints: this.cfg().chunkDriftCancelPoints ?? 10,
+                driftCancelPoints: this.driftCancelPoints(),
                 // The opposite-side hedge may take the broker over its cap (the root already cost most of it): the hedge is what limits the loss.
                 ...(pos.hedge === true ? { hedgeRebuy: true } : {}),
             });

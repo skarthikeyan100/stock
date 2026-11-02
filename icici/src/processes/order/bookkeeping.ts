@@ -546,7 +546,15 @@ class OrderBookkeeping {
     // 'unknown' means the ledger could not be read. New buys are blocked on
     // anything other than 'ok'; the sell-side liquidation trigger acts only on
     // a definite 'breached' - an unreadable ledger must never close positions.
+    // True when `user` is a configured strategy instance (a pseudo-user), not a real account.
+    isStrategyUser(user: string): boolean {
+        return configService.getInstances().some((s) => (s.userId || s.type) === user);
+    }
+
     async drawdownState(user: string, window: 'daily' | 'weekly'): Promise<'ok' | 'breached' | 'unknown'> {
+        // The account drawdown limits are for real users only. A strategy runs under its own loss stops (maxLoss, maxLossPerOrder, ...), and a
+        // strategy instance must never be blocked or liquidated by them, whatever accountCapital happens to be cached for its id.
+        if (this.isStrategyUser(user)) return 'ok';
         const accountCapital = this.userSettingsCache.get(user)?.accountCapital;
         if (!accountCapital) return 'ok';
         // Once today's daily breach is latched it stays breached for the day, even if the position that caused it closed at a better price.
@@ -640,7 +648,7 @@ class OrderBookkeeping {
     async evaluateOpenDrawdowns(): Promise<void> {
         const users = new Set([...this.trades, ...this.shortTrades].map((t) => t.user));
         for (const user of users) {
-            if (!this.userSettingsCache.get(user)?.accountCapital) continue; // strategy pseudo-users are skipped by design
+            if (this.isStrategyUser(user) || !this.userSettingsCache.get(user)?.accountCapital) continue; // strategy pseudo-users are skipped by design
             if (this.drawdownEvalInFlight.has(user)) continue;
             this.drawdownEvalInFlight.add(user);
             try {

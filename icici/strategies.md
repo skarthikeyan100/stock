@@ -218,7 +218,7 @@ the broker and exits that part (nothing filled = the side stays out for the cycl
 `sweepRestingRebuys` (run from `finishIfFlat`) triggers that. `reconcile()` settles a
 persisted `'resting'` slot the same way on restart.
 **Drift re-place**: each tick of the resting contract (`checkRebuyDrift`) compares its LTP with the limit; once it is more than
-`driftCancelPoints` (BulkPcrStrategy config, default 10, 0 = off; separate from `chunkDriftCancelPoints`) above it, the limit
+`driftCancelPoints` (BulkPcrStrategy config, default 10, 0 = off; the same key also cancels the rest of a chunked entry buy that price runs away from, as in Hourly) above it, the limit
 would never fill. If the hedge is still needed (the other side is held and its last tick is still below its entry, no stop/EOD)
 the limit is cancelled and a new one is rested at the current price for the still-unbought quantity (`replaceRestingRebuy`;
 what already filled is carried, not re-bought). No cap on re-places. If the hedge is no longer needed the re-buy is cancelled
@@ -242,7 +242,7 @@ real `squareOffLimit` implementation added for Prism, which previously had
 none) was added alongside `BulkPcrAutoStartStrategy` below.
 **Config keys** (`config.yml`): `enabled`, `broker` (legacy single-broker
 fallback), `brokers` (preferred, multi-broker array), `quantity`,
-`targetPoints`, `chunkDriftCancelPoints`, `right` (`call`/`put`/`none`),
+`targetPoints`, `driftCancelPoints`, `right` (`call`/`put`/`none`),
 `maxInvestment`, `logEnabled`, `slDistance` (ANT pair trigger, default 10), `maxLossPerOrder`, `maxProfit`, `hedgeTrailDistance`, `hedgeTargetFraction`.
 (`maxLossPerDay` was removed on 2026-10-22, `maxLoss` before it, and `maxLossPerTrade` was replaced by
 `maxLossPerOrder` on 2026-10-27. A config still carrying any of them is ignored, with a one-time WARN in the log.)
@@ -330,7 +330,7 @@ orders itself, only flips `BulkPcrStrategy`'s own `config.yml` block and
    `brokers` onto `BulkPcrStrategy`'s `config.yml` block along with
    `enabled: true`, and calls `strategies.syncFromConfig()` so the live
    instance picks up `enabled` immediately. Every other `BulkPcrStrategy`
-   config key (`targetPoints`, `chunkDriftCancelPoints`, `right`,
+   config key (`targetPoints`, `driftCancelPoints`, `right`,
    `maxInvestment`, `logEnabled`) is left exactly as already set in its own
    block — only `quantity`/`brokers`/`enabled` are overwritten.
 **Config keys** (`config.yml`): `enabled`, `times` (array of `HH:mm`
