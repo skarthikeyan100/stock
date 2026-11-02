@@ -201,7 +201,7 @@ order/data/strategies/frontend as children that inherit its already-populated `p
   `/tmp/icici-strategies.sock`, `/tmp/icici-data.sock`.
 - `ORDER_IPC_TIMEOUT_MS` - timeout (ms) for a single order-process IPC request. Default: `90000`.
 - `HOT_RESTART` - `orchestrator.ts` dev convenience; set to `'false'` to disable auto-restarting a
-  child process when its compiled output changes. Default: on. It restarts a child only when a watched
+  child process when its compiled output changes. Default: on outside market hours; between 09:00 and 15:35 on a weekday a code change is NOT applied (logged) unless `HOT_RESTART=true` (a restart with open legs is what the 2026-11-02 edits caused twice). It restarts a child only when a watched
   `dist/` file's CONTENT changed (a re-emit with identical content is ignored), and a change seen in the
   first 90 s after start is deferred to the end of that grace, not applied mid-start. It does not watch
   `config.yml`: every process hot-reads that itself, so strategy settings change at runtime with or without it.

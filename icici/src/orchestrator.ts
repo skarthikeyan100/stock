@@ -157,6 +157,12 @@ function sameHashes(a: Map<string, string>, b: Map<string, string>): boolean {
     return true;
 }
 
+function duringMarketHours(now: Date = new Date()): boolean {
+    const day = now.getDay();
+    const minutes = now.getHours() * 60 + now.getMinutes();
+    return day >= 1 && day <= 5 && minutes >= 9 * 60 && minutes <= 15 * 60 + 35;
+}
+
 // A change seen this soon after the watch was set up is applied only once the grace has passed, never in the middle of a start.
 const HOT_RESTART_BOOT_GRACE_MS = 90_000;
 
@@ -177,7 +183,14 @@ function watchAndRestart(name: string, watchPaths: string[], onChange: () => voi
             const now = hashTree(t);
             if (!sameHashes(snapshots.get(t)!, now)) { snapshots.set(t, now); changed = true; }
         }
-        if (changed) onChange();
+        if (!changed) return;
+        // Editing src/ during market hours used to hot-restart the trading process with open legs (twice on 2026-11-02). Unless
+        // HOT_RESTART=true is set explicitly, a change seen between 09:00 and 15:35 on a weekday is NOT applied: restart by hand when flat.
+        if (process.env.HOT_RESTART !== 'true' && duringMarketHours()) {
+            console.log(`[orchestrator] ${name}: code changed during market hours - NOT restarting it (set HOT_RESTART=true to allow, or restart by hand when flat)`);
+            return;
+        }
+        onChange();
     };
     for (const target of existing) {
         fs.watch(target, { recursive: true }, () => {
