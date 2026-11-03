@@ -87,7 +87,7 @@ export default function NotificationBell() {
       </button>
       {open && (
         <div
-          className="position-absolute end-0 mt-1 bg-white border rounded shadow-sm"
+          className="position-absolute end-0 mt-1 bg-body border rounded shadow-sm"
           style={{ width: 320, zIndex: 1000, maxHeight: 360, overflowY: 'auto' }}
         >
           {notifications.length === 0 ? (

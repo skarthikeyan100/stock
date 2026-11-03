@@ -3,6 +3,7 @@ import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { TradingProvider } from './context/TradingContext';
 import { DemoTradingProvider } from './context/DemoTradingContext';
+import { ThemeProvider } from './context/ThemeContext';
 import LoginPage from './pages/LoginPage';
 import RulesPage from './pages/RulesPage';
 import TradingPage from './pages/TradingPage';
@@ -34,45 +35,47 @@ function RequireAdmin({ children }: { children: React.ReactElement }) {
 export default function App() {
   return (
     <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-      <AuthProvider>
-        <BrowserRouter>
-          <Routes>
-            <Route path="/" element={<LoginPage />} />
-            <Route path="/rules" element={<RequireAuth><RulesPage /></RequireAuth>} />
-            <Route
-              path="/trade"
-              element={
-                <RequireAuth>
-                  <TradingProvider>
-                    <TradingPage />
-                  </TradingProvider>
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/demo"
-              element={
-                <DemoTradingProvider>
-                  <DemoTradingPage />
-                </DemoTradingProvider>
-              }
-            />
-            <Route path="/profile" element={<RequireAuth><ProfilePage /></RequireAuth>} />
-            <Route
-              path="/admin"
-              element={
-                <RequireAdmin>
-                  <AdminPage />
-                </RequireAdmin>
-              }
-            />
-            <Route path="/admin/payouts/:id" element={<RequireAdmin><PayoutPaymentPage /></RequireAdmin>} />
-            <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
-            <Route path="/terms-and-conditions" element={<TermsAndConditionsPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </BrowserRouter>
-      </AuthProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <BrowserRouter>
+            <Routes>
+              <Route path="/" element={<LoginPage />} />
+              <Route path="/rules" element={<RequireAuth><RulesPage /></RequireAuth>} />
+              <Route
+                path="/trade"
+                element={
+                  <RequireAuth>
+                    <TradingProvider>
+                      <TradingPage />
+                    </TradingProvider>
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/demo"
+                element={
+                  <DemoTradingProvider>
+                    <DemoTradingPage />
+                  </DemoTradingProvider>
+                }
+              />
+              <Route path="/profile" element={<RequireAuth><ProfilePage /></RequireAuth>} />
+              <Route
+                path="/admin"
+                element={
+                  <RequireAdmin>
+                    <AdminPage />
+                  </RequireAdmin>
+                }
+              />
+              <Route path="/admin/payouts/:id" element={<RequireAdmin><PayoutPaymentPage /></RequireAdmin>} />
+              <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
+              <Route path="/terms-and-conditions" element={<TermsAndConditionsPage />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </BrowserRouter>
+        </AuthProvider>
+      </ThemeProvider>
     </GoogleOAuthProvider>
   );
 }

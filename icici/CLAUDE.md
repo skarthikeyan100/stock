@@ -294,6 +294,7 @@ Common settings:
 - **Broker:** ICICI Direct API (Prism client)
 - **Frontend:** React app served from / (root)
 - **Frontend build is NOT hot-reloaded:** unlike the backend (`tsc-watch` auto-restarts on save), the frontend is a static pre-built bundle at `public/`, built from `frontend/` via `npm run build` (vite outputs directly into `../public`, per `frontend/vite.config.ts`). Any edit under `frontend/src/` is inert on the running server until you `cd frontend && npm run build` — always do this after frontend changes, or the user will see stale UI with no visible error.
+- **Frontend theme (light/dark):** the choice is browser-only, never sent to the backend. `frontend/src/context/ThemeContext.tsx` stores it in `localStorage['theme']` (`'light'|'dark'`; no saved choice = follow the OS `prefers-color-scheme`) and sets `data-bs-theme` on `<html>`. Bootstrap 5.3 flips its own `--bs-*` colours from that attribute; app-specific colours are CSS variables on `:root` with `[data-bs-theme="dark"]` overrides in `frontend/src/App.css` (landing `--landing-*`) and `LegalPages.css`. `frontend/index.html` runs a small inline script that sets the attribute before first paint, so it must read the same key and default. Toggle: `components/ThemeToggle.tsx`. New UI should use `var(--bs-*)` or Bootstrap theme-aware classes (`bg-body`, `bg-body-tertiary`, `text-body-emphasis`), not hard-coded light-only colours.
 
 ## Debugging
 

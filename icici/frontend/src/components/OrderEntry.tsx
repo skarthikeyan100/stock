@@ -127,7 +127,7 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
   return (
     <div>
       {/* Section A: Flash Trade */}
-      <fieldset style={{ border: '1px solid #dee2e6', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
+      <fieldset style={{ border: '1px solid var(--bs-border-color)', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
         <legend
           className="fw-bold text-muted d-inline-flex align-items-center"
           style={{ width: 'auto', float: 'none', padding: '0 6px', fontSize: '1rem', marginBottom: 8 }}
@@ -157,7 +157,7 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
       </fieldset>
 
       {/* Section B: Symbol Search */}
-      <fieldset style={{ border: '1px solid #dee2e6', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
+      <fieldset style={{ border: '1px solid var(--bs-border-color)', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
         <legend
           className="fw-bold text-muted d-inline-flex align-items-center"
           style={{ width: 'auto', float: 'none', padding: '0 6px', fontSize: '1rem', marginBottom: 8 }}

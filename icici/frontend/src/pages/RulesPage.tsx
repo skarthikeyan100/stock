@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { Container, Card, Button, ListGroup } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
+import ThemeToggle from '../components/ThemeToggle';
 
 const DAILY_DRAWDOWN_PERCENT = 25;
 const WEEKLY_LOSS_PERCENT = 50;
@@ -33,7 +34,10 @@ export default function RulesPage() {
   ];
 
   return (
-    <div className="rules-bg d-flex align-items-center justify-content-center">
+    <div className="rules-bg d-flex align-items-center justify-content-center position-relative">
+      <div className="position-absolute top-0 end-0 m-3">
+        <ThemeToggle />
+      </div>
       <Container style={{ maxWidth: 600 }}>
         <Card className="shadow-lg border-0">
           <Card.Body className="p-4">

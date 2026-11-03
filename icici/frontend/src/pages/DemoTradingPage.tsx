@@ -6,6 +6,7 @@ import { DEMO_MAX_LOSS } from '../context/DemoTradingContext';
 import OrderEntry from '../components/OrderEntry';
 import NiftyTicker from '../components/NiftyTicker';
 import PositionCard from '../components/PositionCard';
+import ThemeToggle from '../components/ThemeToggle';
 
 // Standalone copy of TradingPage.tsx for anonymous/demo visitors - no
 // useAuth(), no Profile/Admin/Logout/NotificationBell. Kept as a separate
@@ -32,6 +33,7 @@ export default function DemoTradingPage() {
             <div className="d-flex align-items-center gap-2">
               <span className="fw-bold">Demo User</span>
               <Button variant="outline-secondary" size="sm" onClick={() => navigate('/')}>Exit Demo</Button>
+              <ThemeToggle />
             </div>
             <div className={`pnl-center text-center text-${openColor}`}>
               <div className="small">Current P&amp;L</div>
@@ -47,7 +49,7 @@ export default function DemoTradingPage() {
         </div>
 
         {/* Available / Used bar */}
-        <div className="border-bottom bg-light">
+        <div className="border-bottom bg-body-tertiary">
           <Container className="py-1 d-flex justify-content-center gap-4">
             <small>
               <span className="text-muted">Available: </span>

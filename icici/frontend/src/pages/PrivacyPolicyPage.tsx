@@ -1,5 +1,6 @@
 import { Container } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
+import ThemeToggle from '../components/ThemeToggle';
 import './LegalPages.css';
 
 export default function PrivacyPolicyPage() {
@@ -11,6 +12,7 @@ export default function PrivacyPolicyPage() {
         <span className="legal-nav-brand" onClick={() => navigate('/')} style={{ cursor: 'pointer' }}>
           PropFirm
         </span>
+        <ThemeToggle />
       </nav>
 
       <Container className="legal-content">

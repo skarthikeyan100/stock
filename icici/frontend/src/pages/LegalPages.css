@@ -27,7 +27,7 @@
 }
 
 .legal-content {
-  background: white;
+  background: var(--bs-body-bg);
   border-radius: 12px;
   padding: 3rem;
   margin-top: 2rem;
@@ -37,7 +37,7 @@
 }
 
 .legal-content h1 {
-  color: #333;
+  color: var(--bs-heading-color);
   font-size: 2.5rem;
   margin-bottom: 0.5rem;
   font-weight: 700;
@@ -54,7 +54,7 @@
 }
 
 .legal-content h3 {
-  color: #555;
+  color: var(--bs-body-color);
   font-size: 1.3rem;
   margin-top: 1.5rem;
   margin-bottom: 0.8rem;
@@ -66,7 +66,7 @@
 }
 
 .legal-content p {
-  color: #555;
+  color: var(--bs-body-color);
   font-size: 1rem;
   margin-bottom: 1rem;
 }
@@ -77,13 +77,13 @@
 }
 
 .legal-content li {
-  color: #555;
+  color: var(--bs-body-color);
   margin-bottom: 0.7rem;
   font-size: 0.95rem;
 }
 
 .legal-content strong {
-  color: #333;
+  color: var(--bs-emphasis-color);
   font-weight: 600;
 }
 
@@ -95,11 +95,11 @@
 }
 
 .policy-footer {
-  background-color: #f5f5f5;
+  background-color: var(--bs-tertiary-bg);
   padding: 1.5rem;
   border-radius: 8px;
   border-left: 4px solid #667eea;
-  color: #666;
+  color: var(--bs-secondary-color);
   font-size: 0.9rem;
   margin-top: 3rem;
 }

@@ -3,9 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="color-scheme" content="light dark" />
     <title>PropFirm Trading Platform</title>
-    <script type="module" crossorigin src="/assets/index-BK6SeQxJ.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-7ajBcVao.css">
+    <!-- Set the theme before first paint (no light flash). Must match ThemeContext.tsx: the saved
+         choice in localStorage 'theme', else the OS preference. -->
+    <script>
+      (function () {
+        var t = null;
+        try { t = localStorage.getItem('theme'); } catch (e) {}
+        if (t !== 'light' && t !== 'dark') {
+          t = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-bs-theme', t);
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-BELyiik-.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BTERqseZ.css">
   </head>
   <body>
     <div id="root"></div>

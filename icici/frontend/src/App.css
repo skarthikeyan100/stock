@@ -1,8 +1,56 @@
+/* ─── Theme tokens ─────────────────────────────────────────────
+   Light values live on :root; [data-bs-theme="dark"] (set on <html> by ThemeContext
+   / index.html) overrides them. Bootstrap's own --bs-* variables flip automatically.
+   The dark values reproduce the original hard-coded landing-page look. */
+:root {
+  --landing-bg: #f8fafc;
+  --landing-heading: #0f172a;
+  --landing-strong: #0f172a;
+  --landing-text: #334155;
+  --landing-muted: #475569;
+  --landing-faint: #64748b;
+  --landing-accent-text: #1d4ed8;
+  --landing-hairline: rgba(15, 23, 42, 0.08);
+  --landing-card-bg: rgba(15, 23, 42, 0.03);
+  --landing-card-border: rgba(15, 23, 42, 0.08);
+  --landing-stat-bg: rgba(15, 23, 42, 0.04);
+  --landing-stat-border: rgba(15, 23, 42, 0.1);
+  --landing-section-alt-bg: rgba(15, 23, 42, 0.02);
+  --landing-connector: rgba(15, 23, 42, 0.12);
+  --landing-nav-bg: rgba(248, 250, 252, 0.92);
+  --landing-ok-heading: #047857;
+  --landing-ok-strong: #065f46;
+  --landing-bad-heading: #b91c1c;
+  --landing-bad-strong: #7f1d1d;
+}
+
+[data-bs-theme="dark"] {
+  --landing-bg: #0d0f1a;
+  --landing-heading: #fff;
+  --landing-strong: #e2e8f0;
+  --landing-text: #e2e8f0;
+  --landing-muted: #94a3b8;
+  --landing-faint: #64748b;
+  --landing-accent-text: #60a5fa;
+  --landing-hairline: rgba(255, 255, 255, 0.06);
+  --landing-card-bg: rgba(255, 255, 255, 0.03);
+  --landing-card-border: rgba(255, 255, 255, 0.07);
+  --landing-stat-bg: rgba(255, 255, 255, 0.04);
+  --landing-stat-border: rgba(255, 255, 255, 0.08);
+  --landing-section-alt-bg: rgba(255, 255, 255, 0.02);
+  --landing-connector: rgba(255, 255, 255, 0.1);
+  --landing-nav-bg: rgba(13, 15, 26, 0.92);
+  --landing-ok-heading: #6ee7b7;
+  --landing-ok-strong: #d1fae5;
+  --landing-bad-heading: #fca5a5;
+  --landing-bad-strong: #fee2e2;
+}
+
 /* ─── Landing Page ─────────────────────────────────────────── */
 .landing-page {
   min-height: 100vh;
-  background: #0d0f1a;
-  color: #e2e8f0;
+  background: var(--landing-bg);
+  color: var(--landing-text);
   font-family: 'Inter', 'Segoe UI', sans-serif;
 }
 
@@ -12,18 +60,18 @@
   justify-content: space-between;
   align-items: center;
   padding: 18px 40px;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid var(--landing-hairline);
   position: sticky;
   top: 0;
   z-index: 200;
-  background: rgba(13, 15, 26, 0.92);
+  background: var(--landing-nav-bg);
   backdrop-filter: blur(8px);
 }
 .landing-nav-brand {
   font-size: 1.3rem;
   font-weight: 700;
   letter-spacing: 0.5px;
-  color: #fff;
+  color: var(--landing-heading);
 }
 .landing-nav-brand::after {
   content: '™';
@@ -50,7 +98,7 @@
 .landing-badge {
   display: inline-block;
   background: rgba(0, 102, 255, 0.15);
-  color: #60a5fa;
+  color: var(--landing-accent-text);
   border: 1px solid rgba(96, 165, 250, 0.3);
   border-radius: 999px;
   padding: 4px 14px;
@@ -64,7 +112,7 @@
   font-size: 3rem;
   font-weight: 800;
   line-height: 1.15;
-  color: #fff;
+  color: var(--landing-heading);
   margin-bottom: 20px;
 }
 .landing-title-accent {
@@ -76,7 +124,7 @@
 .landing-subtitle {
   font-size: 1.1rem;
   line-height: 1.7;
-  color: #cbd5e1;
+  color: var(--landing-text);
   margin-bottom: 36px;
   max-width: 480px;
 }
@@ -92,8 +140,8 @@
   gap: 16px;
 }
 .stat-card {
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
+  background: var(--landing-stat-bg);
+  border: 1px solid var(--landing-stat-border);
   border-radius: 14px;
   padding: 20px 28px;
   min-width: 180px;
@@ -106,12 +154,12 @@
 .stat-value {
   font-size: 1.9rem;
   font-weight: 800;
-  color: #fff;
+  color: var(--landing-heading);
   line-height: 1.1;
 }
 .stat-label {
   font-size: 0.78rem;
-  color: #94a3b8;
+  color: var(--landing-muted);
   margin-top: 4px;
   font-weight: 500;
   text-transform: uppercase;
@@ -123,9 +171,9 @@
   padding: 80px 40px;
 }
 .landing-section-dark {
-  background: rgba(255,255,255,0.02);
-  border-top: 1px solid rgba(255,255,255,0.05);
-  border-bottom: 1px solid rgba(255,255,255,0.05);
+  background: var(--landing-section-alt-bg);
+  border-top: 1px solid var(--landing-hairline);
+  border-bottom: 1px solid var(--landing-hairline);
 }
 .landing-section-inner {
   max-width: 1000px;
@@ -134,13 +182,13 @@
 .landing-section-title {
   font-size: 1.9rem;
   font-weight: 700;
-  color: #fff;
+  color: var(--landing-heading);
   text-align: center;
   margin-bottom: 8px;
 }
 .landing-section-sub {
   text-align: center;
-  color: #94a3b8;
+  color: var(--landing-muted);
   margin-bottom: 52px;
   font-size: 1rem;
 }
@@ -153,20 +201,20 @@
 }
 .step-card {
   flex: 1;
-  background: rgba(255,255,255,0.03);
-  border: 1px solid rgba(255,255,255,0.07);
+  background: var(--landing-card-bg);
+  border: 1px solid var(--landing-card-border);
   border-radius: 14px;
   padding: 30px 28px;
 }
 .step-card h4 {
   font-size: 1rem;
   font-weight: 600;
-  color: #e2e8f0;
+  color: var(--landing-strong);
   margin-bottom: 10px;
 }
 .step-card p {
   font-size: 0.9rem;
-  color: #94a3b8;
+  color: var(--landing-muted);
   line-height: 1.6;
   margin: 0;
 }
@@ -181,7 +229,7 @@
   flex-shrink: 0;
   width: 40px;
   height: 1px;
-  background: rgba(255,255,255,0.1);
+  background: var(--landing-connector);
   margin-top: 46px;
   align-self: flex-start;
 }
@@ -193,25 +241,25 @@
   gap: 24px;
 }
 .rule-card {
-  background: rgba(255,255,255,0.03);
-  border: 1px solid rgba(255,255,255,0.07);
+  background: var(--landing-card-bg);
+  border: 1px solid var(--landing-card-border);
   border-radius: 14px;
   padding: 30px 26px;
 }
 .rule-card h4 {
   font-size: 1rem;
   font-weight: 600;
-  color: #e2e8f0;
+  color: var(--landing-strong);
   margin-bottom: 12px;
 }
 .rule-card p {
   font-size: 0.88rem;
-  color: #94a3b8;
+  color: var(--landing-muted);
   line-height: 1.65;
   margin: 0;
 }
 .rule-card strong {
-  color: #e2e8f0;
+  color: var(--landing-strong);
 }
 .rule-icon {
   width: 42px;
@@ -228,13 +276,13 @@
 .rule-icon-red   { background: rgba(239, 68, 68, 0.15);  color: #ef4444; border: 1px solid rgba(239,68,68,0.25); }
 .rule-icon-blue  { background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59,130,246,0.25); font-size: 1.1rem; }
 .rule-card-success { border-color: rgba(16,185,129,0.4) !important; background: rgba(16,185,129,0.07) !important; }
-.rule-card-success h4 { color: #6ee7b7; }
-.rule-card-success p { color: #94a3b8; }
-.rule-card-success strong { color: #d1fae5; }
+.rule-card-success h4 { color: var(--landing-ok-heading); }
+.rule-card-success p { color: var(--landing-muted); }
+.rule-card-success strong { color: var(--landing-ok-strong); }
 .rule-card-danger  { border-color: rgba(239,68,68,0.4) !important; background: rgba(239,68,68,0.07) !important; }
-.rule-card-danger h4 { color: #fca5a5; }
-.rule-card-danger p { color: #94a3b8; }
-.rule-card-danger strong { color: #fee2e2; }
+.rule-card-danger h4 { color: var(--landing-bad-heading); }
+.rule-card-danger p { color: var(--landing-muted); }
+.rule-card-danger strong { color: var(--landing-bad-strong); }
 
 /* CTA section */
 .landing-cta-section {
@@ -244,11 +292,11 @@
 .landing-cta-section h2 {
   font-size: 1.9rem;
   font-weight: 700;
-  color: #fff;
+  color: var(--landing-heading);
   margin-bottom: 10px;
 }
 .landing-cta-section p {
-  color: #94a3b8;
+  color: var(--landing-muted);
   margin-bottom: 32px;
 }
 .landing-cta-btn {
@@ -258,11 +306,11 @@
 
 /* Footer */
 .landing-footer {
-  border-top: 1px solid rgba(255,255,255,0.06);
+  border-top: 1px solid var(--landing-hairline);
   padding: 24px 40px;
   text-align: center;
   font-size: 0.8rem;
-  color: #64748b;
+  color: var(--landing-faint);
 }
 
 .landing-footer-content {
@@ -282,19 +330,19 @@
 }
 
 .landing-footer-links a {
-  color: #64748b;
+  color: var(--landing-faint);
   text-decoration: none;
   transition: color 0.2s ease;
   cursor: pointer;
 }
 
 .landing-footer-links a:hover {
-  color: #94a3b8;
+  color: var(--landing-muted);
   text-decoration: underline;
 }
 
 .landing-footer-links .divider {
-  color: #64748b;
+  color: var(--landing-faint);
   margin: 0 4px;
 }
 
@@ -326,7 +374,7 @@
 /* Rules Page */
 .rules-bg {
   min-height: 100vh;
-  background: #1a1a2e;
+  background: var(--bs-tertiary-bg);
 }
 
 .rule-number {
@@ -355,7 +403,7 @@
 
 /* Trading Page */
 .trading-bg {
-  background: #f8f9fa;
+  background: var(--bs-tertiary-bg);
 }
 
 /* Wraps the P&L bar and the Available/Used bar so they stick to the top of
@@ -370,7 +418,7 @@
 }
 
 .pnl-bar {
-  background: #fff;
+  background: var(--bs-body-bg);
 }
 
 .pnl-center {
@@ -381,8 +429,8 @@
 
 /* Nifty live ticker strip */
 .nifty-ticker {
-  background: #f8f9fa;
-  border-bottom: 1px solid #dee2e6;
+  background: var(--bs-tertiary-bg);
+  border-bottom: 1px solid var(--bs-border-color);
   padding: 6px 20px;
   display: flex;
   align-items: center;
@@ -390,7 +438,7 @@
   font-size: 14px;
 }
 .ticker-label {
-  color: #6c757d;
+  color: var(--bs-secondary-color);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.5px;
@@ -403,7 +451,7 @@
 .ticker-up   { color: #198754; }
 .ticker-down { color: #dc3545; }
 .ticker-change, .ticker-pct { font-size: 13px; font-weight: 500; }
-.ticker-time  { margin-left: auto; font-size: 11px; color: #adb5bd; }
+.ticker-time  { margin-left: auto; font-size: 11px; color: var(--bs-tertiary-color); }
 
 /* Trading UI - mobile */
 @media (max-width: 576px) {
@@ -426,4 +474,4 @@
     margin-left: 0;
   }
 }
-.ticker-loading { color: #adb5bd; font-size: 13px; }
+.ticker-loading { color: var(--bs-tertiary-color); font-size: 13px; }

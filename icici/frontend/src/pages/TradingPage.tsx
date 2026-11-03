@@ -7,6 +7,7 @@ import OrderEntry from '../components/OrderEntry';
 import NiftyTicker from '../components/NiftyTicker';
 import PositionCard from '../components/PositionCard';
 import NotificationBell from '../components/NotificationBell';
+import ThemeToggle from '../components/ThemeToggle';
 
 export default function TradingPage() {
   const { trades, closedTrades, openPnL, totalPnL, usedAmount, tradingBlocked, blockReason } = useTrading();
@@ -41,6 +42,7 @@ export default function TradingPage() {
                 {user?.picture && <img src={user.picture} alt="" width={28} height={28} className="rounded-circle" />}
                 <span className="fw-bold">{user?.name || 'PropFirm Trading'}</span>
               </div>
+              <ThemeToggle />
               <NotificationBell />
               <Button variant="outline-secondary" size="sm" onClick={() => navigate('/profile')}>Profile</Button>
               {isAdmin && (
@@ -62,7 +64,7 @@ export default function TradingPage() {
         </div>
 
         {/* Available / Used bar */}
-        <div className="border-bottom bg-light">
+        <div className="border-bottom bg-body-tertiary">
           <Container className="py-1 d-flex justify-content-center gap-4">
             <small>
               <span className="text-muted">Available: </span>

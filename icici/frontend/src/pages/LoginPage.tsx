@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { GoogleLogin, CredentialResponse } from '@react-oauth/google';
 import { useAuth } from '../context/AuthContext';
 import { isMarketHours } from '../utils/marketHours';
+import ThemeToggle from '../components/ThemeToggle';
 
 export default function LoginPage() {
   const { login, isLoggedIn, termsAccepted } = useAuth();
@@ -43,6 +44,7 @@ export default function LoginPage() {
               Try Demo
             </span>
           )}
+          <ThemeToggle />
         </div>
       </nav>
 

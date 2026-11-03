@@ -5,6 +5,7 @@ import { useAuth, AuthUser } from '../context/AuthContext';
 import DateRangeFilter, { DateRange, resolveDateRange, formatRangeLabel } from '../components/DateRangeFilter';
 import { apiFetch, apiPost, readError } from '../utils/api';
 import { periodEndShown } from '../utils/period';
+import ThemeToggle from '../components/ThemeToggle';
 
 interface UserRow extends AuthUser {
   sessionPnL: number;
@@ -77,7 +78,7 @@ function setIn(target: any, path: string[], value: any) {
 const stickyActionsStyle: CSSProperties = {
   position: 'sticky',
   right: 0,
-  background: '#fff',
+  background: 'var(--bs-body-bg)',
   boxShadow: '-2px 0 4px rgba(0, 0, 0, 0.1)',
 };
 
@@ -799,8 +800,8 @@ export default function AdminPage() {
     if (!help) return label;
     return (
       <OverlayTrigger placement="top" overlay={<Tooltip>{help.description} Possible values: {help.values}</Tooltip>}>
-        <span style={{ cursor: 'help', borderBottom: '1px dotted #6c757d' }}>
-          {label} <span style={{ color: '#6c757d' }}>&#9432;</span>
+        <span style={{ cursor: 'help', borderBottom: '1px dotted var(--bs-secondary-color)' }}>
+          {label} <span style={{ color: 'var(--bs-secondary-color)' }}>&#9432;</span>
         </span>
       </OverlayTrigger>
     );
@@ -867,11 +868,12 @@ export default function AdminPage() {
   // Shared table renderers for open/closed trades - used by both the Trades
 
   return (
-    <div className="min-vh-100 bg-light">
+    <div className="min-vh-100 bg-body-tertiary">
       <div className="bg-dark bg-opacity-10 border-bottom">
         <Container className="py-2 d-flex justify-content-between align-items-center">
           <span className="fw-bold">Admin Dashboard</span>
           <div className="d-flex align-items-center gap-3">
+            <ThemeToggle />
             <Button variant="outline-secondary" size="sm" onClick={() => navigate('/trade')}>← Trading</Button>
             <span className="text-muted small">{user?.email}</span>
           </div>
@@ -1746,7 +1748,7 @@ export default function AdminPage() {
                 {computeError && <Alert variant="danger" dismissible onClose={() => setComputeError(null)}>{computeError}</Alert>}
 
                 {computed && (
-                  <div className="border rounded p-3 bg-light">
+                  <div className="border rounded p-3 bg-body-tertiary">
                     <div className="d-flex justify-content-between"><span>Gross Profit</span><span>&#8377;{computed.grossProfit.toFixed(2)}</span></div>
                     <div className="d-flex justify-content-between">
                       <span>Profit Split ({computed.profitSplitPercent}%)</span><span>&#8377;{computed.splitAmount.toFixed(2)}</span>

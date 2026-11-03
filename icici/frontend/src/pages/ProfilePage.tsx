@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Container, Card, Form, Button, Badge, Alert, Spinner, Row, Col, Table } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
 import NotificationBell from '../components/NotificationBell';
+import ThemeToggle from '../components/ThemeToggle';
 import { readError, apiFetch } from '../utils/api';
 import { periodEndShown } from '../utils/period';
 
@@ -394,11 +395,12 @@ export default function ProfilePage() {
   );
 
   return (
-    <div className="min-vh-100 bg-light">
+    <div className="min-vh-100 bg-body-tertiary">
       <div className="bg-dark bg-opacity-10 border-bottom">
         <Container className="py-2 d-flex justify-content-between align-items-center">
           <span className="fw-bold">My Profile</span>
           <div className="d-flex align-items-center gap-3">
+            <ThemeToggle />
             <NotificationBell />
             <Button variant="outline-secondary" size="sm" onClick={() => navigate('/rules')}>Rules</Button>
             <Button variant="outline-secondary" size="sm" onClick={() => navigate('/trade')}>← Trading</Button>
@@ -427,7 +429,7 @@ export default function ProfilePage() {
             <Form.Group className="mb-3">
               <Form.Label>Email</Form.Label>
               <div className="d-flex align-items-center gap-2">
-                <Form.Control type="email" value={user?.email ?? ''} readOnly className="bg-light" />
+                <Form.Control type="email" value={user?.email ?? ''} readOnly className="bg-body-tertiary" />
                 <VerifiedBadge verified={user?.emailVerified ?? false} hasValue={!!user?.email} />
               </div>
             </Form.Group>
@@ -701,7 +703,7 @@ export default function ProfilePage() {
                       </tr>
                       {expandedPayoutId === p._id && (
                         <tr>
-                          <td colSpan={6} className="bg-light">
+                          <td colSpan={6} className="bg-body-tertiary">
                             {!decisionLogs[p._id] ? (
                               <Spinner animation="border" size="sm" />
                             ) : decisionLogs[p._id].length === 0 ? (
