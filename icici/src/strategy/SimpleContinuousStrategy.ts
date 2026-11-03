@@ -18,17 +18,18 @@ import { NOT_PLACED_TAG } from '../ipc/orderProtocol';
 import { MOCK_BROKER, PCR_WINDOW_POINTS } from '../constants';
 
 // SimpleContinuousStrategy (config keys: initialQuantity, maxInvestment, priceDiff, plus enabled/brokers):
-//   1. PCR gives the direction of a ROOT entry (PCR > 1 -> PE, else CE), `initialQuantity` at market.
+//   1. PCR gives the direction of the ROOT entry (PCR > 1 -> PE, else CE), `initialQuantity` at market. There is ONE root per day;
+//      every later order is a hedge or a double-up.
 //   2. Right after the fill a resting limit sell is placed at entry + priceDiff.
-//   3. A leg is hedged exactly once, by buying the opposite option for the same quantity, either when its price falls to
-//      entry - priceDiff (adverse) or when its resting sell fills (target met, at the then-current price). The hedge buy is a leg
-//      of its own: it is flagged hedged from the start, gets its own resting sell at its entry + priceDiff and never hedges again.
+//   3. EVERY leg (root or hedge) is hedged exactly once, by buying the opposite option for the same quantity, either when its price
+//      falls to entry - priceDiff (adverse) or when its resting sell fills (target met, at the then-current price). The hedge buy is a
+//      leg of its own with its own resting sell at its entry + priceDiff, and it is hedged once in turn, so the chain is unlimited.
 //   4. There is no stop loss: a leg ends only through its resting sell (or the EOD close).
-//   5. When a hedge leg's sell fills at a profit and its original leg is still open, the original is doubled ONCE (the same
-//      contract is bought again for the original's quantity, its resting sell is re-placed for the new total at the new average
-//      + priceDiff). It is skipped when it would exceed maxInvestment.
-//   6. Roots keep flowing while invested capital + the next root fits in maxInvestment (per broker). Hedge buys ignore the cap
-//      (a hedge refused by the cap would leave a leg unprotected); the double-up respects it.
+//   5. When a hedge leg's sell fills at a profit and the leg that caused it (its parent) is still open, the parent is doubled ONCE
+//      per leg (the same contract is bought again for the parent's quantity, its resting sell is re-placed for the new total at the
+//      new average + priceDiff). It is skipped when it would exceed maxInvestment.
+//   6. maxInvestment (per broker) gates the root and the double-up. Hedge buys ignore it (a hedge refused by the cap would leave a
+//      leg unprotected).
 // State (hedged / doubled / quantities) is kept per day in a JSON file and checked against the broker's open trades at reconcile.
 
 const PCR_RECHECK_MS = 5 * 60 * 1000;
@@ -284,7 +285,8 @@ export default class SimpleContinuousStrategy extends Strategy {
         const qty = Number(cfg.initialQuantity);
         const maxInvestment = Number(cfg.maxInvestment);
         if (!(qty > 0) || !(maxInvestment > 0) || !(this.priceDiff() > 0)) { this.gateLog.log('initialQuantity / maxInvestment / priceDiff not set'); return; }
-        if (this.invested() + ROOT_MIN_PREMIUM * qty > maxInvestment) { this.gateLog.log('maxInvestment reached'); return; }
+        // One root per day: after it, every order is a hedge (or a double-up). Adopted legs count (reconcile gives them role 'root').
+        if (Object.values(this.state.legs).some((l) => l.role === 'root')) { this.gateLog.log('root already opened today'); return; }
 
         this.entering = true; // synchronous, before any await
         try {
@@ -304,7 +306,7 @@ export default class SimpleContinuousStrategy extends Strategy {
 
     private async openRoot(right: Right, ltp: number, qty: number, maxInvestment: number): Promise<void> {
         const ops = brokerLegOps(() => this.cfg()?.broker);
-        const contract = await ops.pickContract(this.userId, ltp, right, ROOT_MIN_PREMIUM, this.excludeStrikes(right));
+        const contract = await ops.pickContract(this.userId, ltp, right, ROOT_MIN_PREMIUM, []);
         if (this.invested() + contract.premium * qty > maxInvestment) {
             this.gateLog.log(`root ${contract.tradingSymbol} @${contract.premium} x${qty} would exceed maxInvestment`);
             return;
@@ -328,7 +330,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         const price = Number(trade.price) > 0 ? Number(trade.price) : contract.premium;
         const leg: SimpleLeg = {
             id: this.newLegId(), tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, role,
-            parentId, entry: price, qty: filled, soldQty: 0, soldValue: 0, hedged, doubled: role === 'hedge', status: 'open', sellQty: 0, sellPrice: 0,
+            parentId, entry: price, qty: filled, soldQty: 0, soldValue: 0, hedged, doubled: false, status: 'open', sellQty: 0, sellPrice: 0,
         };
         this.state.legs[leg.id] = leg;
         this.watch(leg);
@@ -397,7 +399,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 this.save();
                 return;
             }
-            const hedgeLeg = this.addLeg(trade, contract, right, 'hedge', true, leg.id);
+            const hedgeLeg = this.addLeg(trade, contract, right, 'hedge', false, leg.id);
             Log.log(`[SimpleContinuousStrategy] hedged ${leg.tsym} (${reason}) with ${hedgeLeg.tsym} qty=${hedgeLeg.qty} @${hedgeLeg.entry}`);
             await this.placeSell(hedgeLeg);
         } catch (e) {
