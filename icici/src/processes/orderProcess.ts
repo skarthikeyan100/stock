@@ -1133,6 +1133,16 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 bookkeeping.setBrokerInvestmentCap(req.userId, normalizeBrokerName(req.payload.broker), Number(req.payload.cap));
                 return { kind: 'response', id: req.id, ok: true };
             }
+            case 'brokerSessions': {
+                const valid = (check: () => Promise<boolean>) => check().then((v) => v === true).catch(() => false);
+                const [kite, ant, breeze] = await Promise.all([
+                    valid(() => Kite.getInstance().hasValidSession()),
+                    valid(() => ANT.getInstance().hasValidSession()),
+                    valid(() => Breeze.getInstance().hasValidSession()),
+                ]);
+                return { kind: 'response', id: req.id, ok: true, result: { kite, ant, breeze } };
+            }
+
             // Explicit broker-position reconcile - POST /reconcile in server.ts
             // invokes this first, then `strategies`' reconcile (which depends on
             // the restored bookkeeping.trades). Refused before 09:10.

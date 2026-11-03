@@ -9,6 +9,8 @@ import { readJsonLines, writeJsonLine } from '../ipc/jsonLines';
 import { STRATEGIES_SOCKET_PATH, StrategiesRequest, StrategiesResponse } from '../ipc/strategiesProtocol';
 import strategies from '../strategy/strategies';
 import OrderClient from './strategies/OrderClient';
+import configService from '../prism/ConfigService';
+import { configuredBrokersOf } from '../util/brokerName';
 import { DataLink } from '../ipc/DataLink';
 import { registerTrade, unregisterTrade, optionTickTargets, deliverOptionTick, holdExternal, releaseExternal } from './strategies/tokenRouter';
 import * as niftyQuoteHistory from './strategies/niftyQuoteHistory';
@@ -172,40 +174,62 @@ async function reconcileStrategies(): Promise<void> {
     Log.log(`[strategies] Reconciled - ${strategies.getList().length} strategies.`);
 }
 
-// A blocked attempt is cheap (a missing session fails locally), and the wait after the last broker login is pure dead time, so retry fast;
-// the ALERT line is throttled below so this does not flood the log.
-const STARTUP_RECONCILE_RETRY_MS = 5_000;
-const STARTUP_RECONCILE_ALERT_EVERY_MS = 30_000;
+// Brings every strategy to a reconciled state after a (re)start, but only once the brokers the enabled strategies trade on have a
+// valid session: nothing is asked of a broker that is not logged in (that is what flooded the log with failures while the user was
+// still logging in). Waits quietly - one INFO line when it starts waiting and one every 5 minutes - and polls cheaply.
+// Fails closed: until it succeeds, strategies receive nothing. With no enabled strategy there is nothing to wait for or to protect:
+// they are marked loaded at once and the broker positions are left to POST /reconcile.
+const STARTUP_RECONCILE_POLL_MS = 10_000;
+const STARTUP_RECONCILE_NOTE_EVERY_MS = 5 * 60_000;
 
-// Brings every strategy to a reconciled state after a (re)start. Fails closed: until it succeeds, strategies receive nothing.
+function brokersNeededByEnabledStrategies(): string[] {
+    const needed = new Set<string>();
+    for (const entry of configService.getConfig().strategies ?? []) {
+        if ((entry as any)?.enabled === true) for (const b of configuredBrokersOf(entry as any)) needed.add(b);
+    }
+    return Array.from(needed);
+}
+
 async function startupReconcile(): Promise<void> {
-    let lastAlertKey = '';
-    let lastAlertAt = 0;
+    let lastNoteKey = '';
+    let lastNoteAt = 0;
     for (let attempt = 1; ; attempt++) {
         if (strategies.getList().every((s) => s.stateLoaded)) return; // a manual POST /reconcile got there first
         try {
-            const brokers = await OrderClient.getInstance().reconcileBrokerPositions();
-            const failed = Object.entries(brokers).filter(([, ok]) => !ok).map(([broker]) => broker);
-            if (failed.length === 0) {
-                await runReconcile();
-                const pending = strategies.getList().filter((s) => !s.stateLoaded);
-                if (pending.length === 0) {
-                    Log.log('[strategies] Startup reconcile complete - ticks and fills are now delivered');
-                    return;
+            const needed = brokersNeededByEnabledStrategies();
+            if (needed.length === 0) {
+                for (const strategy of strategies.getList()) strategy.stateLoaded = true;
+                Log.log('[strategies] Startup reconcile skipped - no strategy is enabled (run POST /reconcile before enabling one)');
+                return;
+            }
+            const sessions = await OrderClient.getInstance().brokerSessions();
+            const waiting = needed.filter((b) => !sessions[b]);
+            if (waiting.length === 0) {
+                const brokers = await OrderClient.getInstance().reconcileBrokerPositions();
+                const failed = needed.filter((b) => !brokers[b]);
+                if (failed.length === 0) {
+                    await runReconcile();
+                    const pending = strategies.getList().filter((s) => !s.stateLoaded);
+                    if (pending.length === 0) {
+                        Log.log('[strategies] Startup reconcile complete - ticks and fills are now delivered');
+                        return;
+                    }
+                    Log.log(`[strategies] ALERT: startup reconcile left ${pending.map((s) => s.userId).join(', ')} unreconciled (attempt ${attempt}) - retrying`);
+                } else {
+                    Log.log(`[strategies] ALERT: startup reconcile: positions could not be read for ${failed.join(', ')} although the session looked valid (attempt ${attempt}) - retrying`);
                 }
-                Log.log(`[strategies] ALERT: startup reconcile left ${pending.map((s) => s.userId).join(', ')} unreconciled (attempt ${attempt}) - retrying in ${STARTUP_RECONCILE_RETRY_MS / 1000}s`);
             } else {
-                const key = failed.join(',');
-                if (key !== lastAlertKey || Date.now() - lastAlertAt >= STARTUP_RECONCILE_ALERT_EVERY_MS) {
-                    lastAlertKey = key;
-                    lastAlertAt = Date.now();
-                    Log.log(`[strategies] ALERT: startup reconcile blocked - broker positions could not be read for: ${failed.join(', ')} (attempt ${attempt}). No strategy receives ticks until this clears; log in to that broker. Retrying every ${STARTUP_RECONCILE_RETRY_MS / 1000}s`);
+                const key = waiting.join(',');
+                if (key !== lastNoteKey || Date.now() - lastNoteAt >= STARTUP_RECONCILE_NOTE_EVERY_MS) {
+                    lastNoteKey = key;
+                    lastNoteAt = Date.now();
+                    Log.log(`[strategies] Startup reconcile waiting for a valid login on: ${waiting.join(', ')}. No strategy receives ticks until then; nothing is asked of those brokers meanwhile.`);
                 }
             }
         } catch (e) {
-            Log.log(`[strategies] ALERT: startup reconcile attempt ${attempt} failed (retrying in ${STARTUP_RECONCILE_RETRY_MS / 1000}s):`, e);
+            Log.log(`[strategies] ALERT: startup reconcile attempt ${attempt} failed (retrying):`, e);
         }
-        await new Promise((r) => setTimeout(r, STARTUP_RECONCILE_RETRY_MS));
+        await new Promise((r) => setTimeout(r, STARTUP_RECONCILE_POLL_MS));
     }
 }
 
@@ -461,15 +485,11 @@ export async function startStrategiesProcess() {
     // Ticks, fills and cancellations reach a strategy only once it is reconciled (Strategy.stateLoaded): broker positions first (the
     // `order` process), then every strategy's reconcile(). Runs in the background and retries until it succeeds, so a broker that is
     // not logged in yet holds trading back rather than letting a restarted strategy open a duplicate. POST /reconcile also satisfies it.
-    // DISABLED (user, 2026-11-03): no startup reconcile. Strategies are marked loaded straight away so they receive events; nothing
-    // restores open positions or strategy state on a restart (and the order process's bookkeeping starts empty), so run POST /reconcile
-    // after a restart before enabling any strategy, and never restart with open positions that a strategy must manage.
-    // void startupReconcile();
-    for (const s of strategies.getList()) s.stateLoaded = true;
+    void startupReconcile();
 
     // The trading window is enforced at dispatch (Strategy.receivesEvents), not by clearing `enabled` in memory.
 
-    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. Startup reconcile is disabled (POST /reconcile restores state).`);
+    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. Startup reconcile running (waits for valid broker logins).`);
 }
 
 // A throw in any strategy callback (or a stray rejected promise) must not kill the process mid-position:

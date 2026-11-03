@@ -20,6 +20,8 @@ export type OrderRequestType =
     | 'reloadSession'
     | 'reloadUserLimits'
     | 'reconcileBrokerPositions'
+    // Whether each broker's saved session is valid right now (read-only). The strategies process waits on this before its startup reconcile.
+    | 'brokerSessions'
     | 'updateUserSettings'
     // Runtime per-(user, broker) investment cap for the rest of the local day (BulkPcr loss-trip cut). payload: { broker, cap }.
     | 'setBrokerInvestmentCap'

@@ -371,6 +371,11 @@ class OrderClient {
         return this.call('reconcileBrokerPositions', 'Default', {}, 180000);
     }
 
+    // Per-broker session validity (kite / ant / breeze), read-only; a broker whose check throws counts as invalid.
+    async brokerSessions(): Promise<Record<string, boolean>> {
+        return this.call('brokerSessions', 'Default', {}, 30000);
+    }
+
 
 
     async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; accountCapital?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; perOrderCap?: number; strategyCapital?: number; targetPoints?: number; stopLossPoints?: number; accountClosed?: boolean }): Promise<void> {
