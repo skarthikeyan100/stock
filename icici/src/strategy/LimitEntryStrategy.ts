@@ -12,6 +12,7 @@ import { StrategyInstanceConfig } from '../prism/AppConfig';
 import { roundToTick } from '../util/tick';
 import { NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY, INDEX_LOT_SIZE } from '../constants';
 import { configuredBrokersOf } from '../util/brokerName';
+import { splitIntoFreezeQtyChunks } from '../util/quantityChunks';
 import { isPastTime } from '../util/marketHours';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 
@@ -40,7 +41,10 @@ export interface Leg {
     exchange: 'NFO' | 'BFO';
     qty: number; // quantity ordered; shrunk to what actually filled once the entry order is cancelled
     price: number; // limit price of the entry order
-    orderId?: string;
+    orderId?: string; // the first entry order (kept for state files written before `chunks` existed)
+    // One resting limit buy per freeze-quantity chunk of the entry (an entry above the exchange freeze quantity is split, each order at the
+    // same price). `filled` is attributed by the fill's order id; `cancelled` is set when the broker cancels/rejects that one order.
+    chunks?: { id: string; qty: number; filled: number; cancelled?: boolean }[];
     status: LegStatus;
     placedAt: number;
     filledQty: number;
@@ -84,6 +88,7 @@ export abstract class LimitEntryStrategy extends Strategy {
     private busy = false;
     private lastHousekeeping = 0;
     private placing = false;
+    private placingLegs = new Set<Leg>(); // legs whose entry orders are still being placed: a fill can land before its order id is recorded
 
     protected abstract readonly logTag: string;
     protected abstract readonly strategyType: string;
@@ -209,14 +214,11 @@ export abstract class LimitEntryStrategy extends Strategy {
         return leg.filledQty > 0 ? leg.boughtValue / leg.filledQty : leg.price;
     }
 
-    // Quantity for one order: whole lots that fit the rupee budget at `price`, capped at one freeze-quantity order.
+    // Total entry quantity: whole lots that fit the rupee budget at `price`. Above one freeze quantity it is placed as several orders.
     protected sizeOrder(budget: number, price: number, index: 'NIFTY' | 'SENSEX'): number {
         const lot = LOT_SIZE[index];
         if (!(price > 0) || !(budget > 0)) return 0;
-        const lots = Math.floor(budget / (price * lot));
-        const cap = Math.floor(FREEZE_QTY[index] / lot);
-        if (lots > cap) Log.log(`[${this.logTag}] budget ${budget} would buy ${lots} lots at ${price}; capped at one freeze-size order (${cap} lots)`);
-        return Math.min(lots, cap) * lot;
+        return Math.floor(budget / (price * lot)) * lot;
     }
 
     private rewatch(leg: Leg): void {
@@ -350,24 +352,46 @@ export abstract class LimitEntryStrategy extends Strategy {
                         Log.log(`[${this.logTag}] ${key} ${broker} ${contract.tsym}: nothing to buy (price=${price}, budget=${perBroker}) - skipped`);
                         continue;
                     }
-                    const leg: Leg = { broker, tsym: contract.tsym, token: contract.token, exchange: contract.exchange, qty, price, status: 'placing', placedAt: Date.now(), filledQty: 0, boughtValue: 0, soldQty: 0, soldValue: 0 };
+                    const sizes = splitIntoFreezeQtyChunks(qty, FREEZE_QTY[entry.index]);
+                    const leg: Leg = { broker, tsym: contract.tsym, token: contract.token, exchange: contract.exchange, qty: sizes[0], price, status: 'placing', placedAt: Date.now(), filledQty: 0, boughtValue: 0, soldQty: 0, soldValue: 0, chunks: [] };
                     this.state.legs[broker] = leg;
                     if (!this.save()) { delete this.state.legs[broker]; continue; }
+                    if (sizes.length > 1) Log.log(`[${this.logTag}] ${key} ${broker}: ${qty} is above one freeze quantity (${FREEZE_QTY[entry.index]}) - placed as ${sizes.length} orders: ${sizes.join(' + ')}`);
+                    this.placingLegs.add(leg);
                     try {
-                        const { orderId } = await OrderClient.getInstance().placeLimitBuyBare(this.userId, contract.tsym, contract.token, qty, price, contract.exchange, broker as any);
-                        leg.orderId = orderId;
-                        leg.status = 'resting';
-                        Log.log(`[${this.logTag}] ${key} ${broker}: limit BUY ${contract.tsym} qty=${qty} @ ${price} placed (order ${orderId})`);
-                    } catch (e: any) {
-                        const msg = String(e?.message ?? e);
-                        leg.status = 'failed';
-                        if (msg.includes(NOT_PLACED_TAG) && PRICE_BAND_REJECTION.test(msg)) {
-                            this.priceBandRefusal = true;
-                            Log.log(`[${this.logTag}] ALERT: ${key} ${broker}: entry price ${price} is above/below the broker's allowed price range for ${contract.tsym} (${msg}) - nothing placed; lower entryPrice/entryOffset to a price near the contract's LTP`);
-                        } else
-                        Log.log(msg.includes(NOT_PLACED_TAG)
-                            ? `[${this.logTag}] ${key} ${broker}: entry refused (${msg}) - nothing placed`
-                            : `[${this.logTag}] ALERT: ${key} ${broker} ${contract.tsym}: entry order outcome UNKNOWN (${msg}) - it may be live at the broker; NOT retried, check by hand`);
+                        for (let i = 0; i < sizes.length; i++) {
+                            const chunkQty = sizes[i];
+                            if (i > 0) { leg.qty += chunkQty; this.save(); } // counted before the order goes out: a fill can land before the call returns
+                            try {
+                                const { orderId } = await OrderClient.getInstance().placeLimitBuyBare(this.userId, contract.tsym, contract.token, chunkQty, price, contract.exchange, broker as any);
+                                leg.chunks!.push({ id: String(orderId), qty: chunkQty, filled: 0 });
+                                if (i === 0) leg.orderId = orderId;
+                                if (leg.status === 'placing') leg.status = 'resting';
+                                this.save();
+                                Log.log(`[${this.logTag}] ${key} ${broker}: limit BUY ${contract.tsym} qty=${chunkQty} @ ${price} placed (order ${orderId})${sizes.length > 1 ? ` [part ${i + 1}/${sizes.length}]` : ''}`);
+                            } catch (e: any) {
+                                const msg = String(e?.message ?? e);
+                                const refused = msg.includes(NOT_PLACED_TAG);
+                                if (i === 0) {
+                                    leg.status = 'failed';
+                                    if (refused && PRICE_BAND_REJECTION.test(msg)) {
+                                        this.priceBandRefusal = true;
+                                        Log.log(`[${this.logTag}] ALERT: ${key} ${broker}: entry price ${price} is above/below the broker's allowed price range for ${contract.tsym} (${msg}) - nothing placed; lower entryPrice/entryOffset to a price near the contract's LTP`);
+                                    } else
+                                    Log.log(refused
+                                        ? `[${this.logTag}] ${key} ${broker}: entry refused (${msg}) - nothing placed`
+                                        : `[${this.logTag}] ALERT: ${key} ${broker} ${contract.tsym}: entry order outcome UNKNOWN (${msg}) - it may be live at the broker; NOT retried, check by hand`);
+                                } else if (refused) {
+                                    leg.qty -= chunkQty; // definitely not placed: the entry is just smaller than sized
+                                    Log.log(`[${this.logTag}] ALERT: ${key} ${broker} ${contract.tsym}: part ${i + 1}/${sizes.length} (${chunkQty}) refused (${msg}) - the entry is ${leg.qty} instead of ${qty}; the remaining parts were not placed`);
+                                } else {
+                                    Log.log(`[${this.logTag}] ALERT: ${key} ${broker} ${contract.tsym}: part ${i + 1}/${sizes.length} (${chunkQty}) outcome UNKNOWN (${msg}) - it may be live at the broker; NOT retried, the remaining parts were not placed, check by hand`);
+                                }
+                                break;
+                            }
+                        }
+                    } finally {
+                        this.placingLegs.delete(leg);
                     }
                     this.save();
                 } catch (e: any) {
@@ -427,6 +451,8 @@ export abstract class LimitEntryStrategy extends Strategy {
                 Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: Buy fill of ${qty} from order ${trade.brokerOrderId} is not this leg's entry order ${leg.orderId} - ignored (POST /reconcile adopts it if it really is ours)`);
                 return;
             }
+            const chunk = leg.chunks?.find((c) => c.id === String(trade.brokerOrderId));
+            if (chunk) chunk.filled += qty;
             leg.filledQty += qty;
             leg.boughtValue += qty * price;
             if (leg.status === 'resting' || leg.status === 'placing') leg.status = 'filled';
@@ -453,6 +479,15 @@ export abstract class LimitEntryStrategy extends Strategy {
         if (this.foreignEntryOrder(leg, n.orderId)) {
             Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: ${n.reason} of order ${n.orderId} is not this leg's entry order ${leg.orderId} - ignored`);
             return;
+        }
+        const chunk = leg.chunks?.find((c) => c.id === String(n.orderId));
+        if (chunk && leg.chunks!.length > 1) {
+            // One of several entry orders ended: the entry shrinks by what that order never filled; it is over only when every order has ended.
+            if (chunk.cancelled) return;
+            chunk.cancelled = true;
+            leg.qty = Math.max(leg.filledQty, leg.qty - Math.max(0, chunk.qty - chunk.filled));
+            Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: entry order ${n.orderId} ${n.reason}${n.rejectReason ? ' (' + n.rejectReason + ')' : ''} - it filled ${chunk.filled} of ${chunk.qty}; entry now ${leg.qty} (filled ${leg.filledQty})`);
+            if (!leg.chunks!.every((c) => c.cancelled)) { this.save(); return; }
         }
         leg.entryCancelled = true;
         Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: entry order ${n.reason}${n.rejectReason ? ' (' + n.rejectReason + ')' : ''} - filled ${leg.filledQty} of ${leg.qty}`);
@@ -500,7 +535,9 @@ export abstract class LimitEntryStrategy extends Strategy {
     // missing: the leg is still 'placing' (a fill can land before placeLimitBuyBare returns its id) or the event carries no order id.
     // Sell fills are not checked: the exits (GTT trigger, exitMonitor, chunked square-off) place sells whose ids this strategy never sees.
     private foreignEntryOrder(leg: Leg, orderId?: string): boolean {
-        return !!leg.orderId && !!orderId && String(orderId) !== String(leg.orderId);
+        if (!orderId) return false;
+        if (leg.chunks && leg.chunks.length > 0) return !this.placingLegs.has(leg) && !leg.chunks.some((c) => c.id === String(orderId));
+        return !!leg.orderId && String(orderId) !== String(leg.orderId);
     }
 
     private recordOutcomeOnce(leg: Leg): void {
