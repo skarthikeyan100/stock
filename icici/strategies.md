@@ -564,11 +564,11 @@ slot, never a slot before process start, 5-minute late window, no catch-up), it 
 Entry: one LIMIT buy per broker at the option's prevailing LTP (`getOptionLtp`, no offset). Quantity is computed at runtime from `maxInvestment`
 (per broker, `exposureForBroker`) in whole lots, capped at one freeze-size order. There is no `quantity` key (the validator rejects one).
 
-Exit: nothing is placed on fill. The leg is watched on ticks (`deferTargetExit`, exit kind `target`); the first option tick at or above
-fill average + `targetPrice` places ONE limit sell at that tick's price for the whole filled quantity (`onTargetTick`). A fill that lands later is
-sold at the same price (`topUpTargetSell`). A refused target sell (`NOT_PLACED`) is retried on a later tick; an unknown outcome is not retried
-(ALERT). **No stop loss**: a position leaves only by the target sell or the EOD close at `eodCloseTime` (`closeLeg`). An unfilled entry is cancelled
-after `entryTimeoutMinutes`.
+Exit: a resting LIMIT sell at fill average + `targetPrice` for the whole filled quantity is placed as soon as the entry fills (`placeExit`, exit
+kind `resting`); a fill that lands later is sold by an extra resting sell at the same rule (`topUpExit`). If the placement fails, the housekeeping
+retry places it again. **No stop loss**: a position leaves only by that sell or the EOD close at `eodCloseTime` (`closeLeg`). An unfilled entry is
+cancelled after `entryTimeoutMinutes`. (Until 2026-11-03 the sell was deferred until a tick reached the target; `deferTargetExit` stays in
+`LimitEntryStrategy` and a leg saved with exit kind `target` still follows that path.)
 
 One position at a time: a slot is skipped while any leg is open (`isRunning()`), and that slot is consumed.
 

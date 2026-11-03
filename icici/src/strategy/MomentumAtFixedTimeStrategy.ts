@@ -14,8 +14,8 @@ import MomentumSignal from './MomentumSignal';
 //   2. Price check: Nifty now minus Nifty at the previous slot today must match that direction (CE needs a rise, PE a fall). Otherwise
 //      no trade. The first slot of the day has no previous slot and never trades.
 //   3. Entry: one LIMIT buy per broker at the option's prevailing LTP, sized from maxInvestment (per broker) at runtime.
-//   4. Exit: no sell is placed on fill. The leg is watched on ticks; the first tick at or above fill + targetPrice places ONE limit sell
-//      at that tick's price. There is no stop loss: a position is closed only by that target sell or by the EOD close (eodCloseTime).
+//   4. Exit: a resting LIMIT sell at fill average + targetPrice is placed as soon as the entry fills. There is no stop loss: a
+//      position is closed only by that sell or by the EOD close (eodCloseTime).
 //
 // Only one position at a time (a slot is skipped while the previous slot's position is still open; that slot is consumed).
 // Slot rules: each slot fires at most once a day (persisted); a slot earlier than this process's start is never fired (no catch-up);
@@ -27,7 +27,7 @@ import MomentumSignal from './MomentumSignal';
 // Config (config.yml):
 //   times: ['10:40', '11:40', '12:30', '13:40', '14:30']
 //   maxInvestment: 100000   - per broker; the lot count is computed at runtime (no quantity key)
-//   targetPrice: 3          - limit sell at fill average + targetPrice, placed on the tick that reaches it
+//   targetPrice: 3          - resting limit sell at fill average + targetPrice, placed on fill
 //   entryTimeoutMinutes: 5  - cancel an unfilled entry after this long
 //   eodCloseTime: '15:10'
 //   index: NIFTY
@@ -191,16 +191,27 @@ export default class MomentumAtFixedTimeStrategy extends LimitEntryStrategy {
         await super.processOptionQuote(quote);
     }
 
-    // The target sell goes in once the option's LTP reaches the trigger: its own trigger uses the average fill, so a later fill moves it.
+    // A resting limit sell at fill average + targetPrice goes in as soon as the entry fills. There is no stop loss.
     protected async placeExit(leg: Leg): Promise<void> {
         const targetPoints = Number((this.cfg() as any).targetPrice);
         if (!(targetPoints > 0)) throw new Error(`targetPrice (${(this.cfg() as any).targetPrice}) invalid`);
-        this.deferTargetExit(leg, roundToTick(this.avgPrice(leg) + targetPoints));
+        const target = roundToTick(this.avgPrice(leg) + targetPoints);
+        await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
+            broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: leg.filledQty, price: target, exchange: leg.exchange,
+        });
+        leg.exit = 'resting';
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: bought ${leg.filledQty} @ avg ${this.avgPrice(leg).toFixed(2)} - resting sell @ ${target} (no stop)`);
     }
 
-    protected async topUpExit(leg: Leg, _delta: number): Promise<void> {
+    // A later partial fill is sold by an extra resting sell at the same rule (a leg saved by the older deferred-target version still follows that path).
+    protected async topUpExit(leg: Leg, delta: number): Promise<void> {
         const targetPoints = Number((this.cfg() as any).targetPrice);
         if (!(targetPoints > 0)) throw new Error(`targetPrice (${(this.cfg() as any).targetPrice}) invalid`);
-        await this.topUpTargetSell(leg, targetPoints);
+        if (leg.exit === 'target') { await this.topUpTargetSell(leg, targetPoints); return; }
+        const target = roundToTick(this.avgPrice(leg) + targetPoints);
+        await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
+            broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: delta, price: target, exchange: leg.exchange,
+        });
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: extra resting sell ${delta} @ ${target} for the later fill`);
     }
 }
