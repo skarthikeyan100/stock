@@ -247,7 +247,13 @@ export function validateConfigFile(parsed: any): string[] {
         }
         // Same reasoning for the other strategies that size a live order from their own config: a missing quantity used to fall back to a
         // hidden 65 (a NIFTY lot) - wrong for a SENSEX Butterfly (lot 20) and for any size the operator never chose.
-        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'] };
+        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], MomentumAtFixedTimeStrategy: ['targetPrice'] };
+        if (s.type === 'MomentumAtFixedTimeStrategy') {
+            // Sized at runtime from maxInvestment (per broker); a quantity key is not read and must not be set.
+            if (s.quantity !== undefined) errors.push(`${s.type}.quantity is not used - size with maxInvestment (per broker)`);
+            if (!isNum(s.maxInvestment)) errors.push(`${s.type}.maxInvestment is required for an enabled strategy`);
+            if (!Array.isArray(s.times) || s.times.some((t: any) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(t)))) errors.push(`${s.type}.times must be a list of HH:mm times`);
+        }
         for (const field of requiredByType[s.type] ?? []) {
             if (!isNum(s[field])) errors.push(`${s.type}.${field} is required for an enabled strategy (got ${JSON.stringify(s[field])})`);
         }

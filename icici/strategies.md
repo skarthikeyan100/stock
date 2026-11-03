@@ -18,10 +18,10 @@ instances, one per broker), `RateOfChangeStrategy`, `GapStrategy`,
 `BulkPcrStrategy` (NIFTY and SENSEX), `BulkPcrAutoStartStrategy` (arms
 `BulkPcrStrategy` on a schedule by writing `enabled: true` into `config.yml`),
 `TopStockOptionsOpeningGapStrategy`, `ButterflyStrategy` (NIFTY and SENSEX),
-`RecommendationStrategy` and `NiftyChangeStrategy` (both on `LimitEntryStrategy`).
+`RecommendationStrategy`, `NiftyChangeStrategy` and `MomentumAtFixedTimeStrategy` (all on `LimitEntryStrategy`).
 The earlier prototypes (`BiDirectionStrategy`, `DiffStrategy`, `PivotStrategy`,
-`HighLotStrategy`, `Minutes5Decision`, `TestStrategy`, `ORBPrevious`) were deleted
-in commit `9765032`.
+`HighLotStrategy`, `TestStrategy`, `ORBPrevious`) were deleted in commit `9765032`. `Minutes5Decision` was deleted there too and revived
+as `MomentumAtFixedTimeStrategy` (see its section).
 
 **Global settings and per-strategy overrides.** `settings` in config.yml holds only strategy-agnostic values (`minPrice`, `maxPrice`, `targetPoints`, `stopLossPoints`, `trailingDistance`, `cooldownSeconds`, `logQuotes`, `maxDailyDrawdownPercent`, `maxWeeklyDrawdownPercent`, `skipNearestExpiryOnEve`). A strategy overrides one by setting the same key on its own block; absent there, the global value is used (`settingFor`, `Strategy.setting(key)`; the legacy strategies' `cooldownSeconds` and the order executors' target/stop points follow this). `maxDailyDrawdownPercent` / `maxWeeklyDrawdownPercent` are account limits for real users only, never applied to a strategy instance (`bookkeeping.isStrategyUser`); strategies have their own stops. The gap-screener cover order keys live on the `GapStrategy` block (`coverOrderEnabled`, `coverOrderUserEmail`, `coverOrderQuantity`, `coverOrderStopLossPoints`).
 
@@ -36,7 +36,7 @@ in commit `9765032`.
 **The amount is per broker:** `maxExposure` (legacy `maxInvestment`) is what EACH listed broker trades with, and
 `maxExposureByBroker: {ant: 70000}` overrides one broker (helper `exposureForBroker`, `prism/configVocabulary.ts`).
 Two ways a block fans out over its brokers:
-- `BulkPcr`, `BulkPcrAutoStart`, `Hourly`, `Butterfly`, `TopStock`, `Recommendation`, `NiftyChange` fan out inside one
+- `BulkPcr`, `BulkPcrAutoStart`, `Hourly`, `Butterfly`, `TopStock`, `Recommendation`, `NiftyChange`, `MomentumAtFixedTime` fan out inside one
   instance (`configuredBrokersOf`); the order-side cap is per (user, broker) (`maxInvestmentByBroker`).
 - Every other type (Continuous, SupportResistance, Sentiment, RateOfChange, Gap, RuleBased, GoodMorning*, TargetReach) is
   expanded in memory into ONE INSTANCE PER BROKER (`util/strategyInstances.ts`, `expandBrokerInstances`): kite keeps the
@@ -544,18 +544,31 @@ stays open indefinitely.
 **Config keys**: `enabled`, `averageThreshold`, `targetPrice`,
 `orderQuantity`, `sentiment` (`call`/`put`), `loopCount`.
 
-### Minutes5Decision (`Minutes5Decision.ts`)
-No `config.yml` block — always `enabled = true` in its constructor
-regardless of factory config (`:73`), driven entirely by `receive()`'s
-`oldStats.results.eventName === 'priceUpdate_60'` gate, not by `enabled`/
-`isTimeInRange`. Picks a contract by order-book imbalance
-(`getTradersDirection`, buy/sell qty diff over an `interestThreshold`) among
-near-the-money CE/PE, buys `orderQuantity` (hardcoded 300), and immediately
-places a **fixed-offset limit sell** at `buyPrice + targetPrice` (hardcoded
-3) right after the buy (`_executeTrade`, `:76-88`, `await sleep(2000)` then
-sell — no fill confirmation). Explicit code comment: "no stop loss - monitor
-manually". Caps concurrent trades at `tradesCount` (10). Legacy/prototype —
-not part of the current live strategy set.
+### MomentumAtFixedTimeStrategy (`MomentumAtFixedTimeStrategy.ts`, on `LimitEntryStrategy`) — config: `enabled: false`, multi-broker
+Revived from the deleted `Minutes5Decision` prototype (commit `9765032`). At each `times` slot (same slot rules as NiftyChange: once a day per
+slot, never a slot before process start, 5-minute late window, no catch-up), it trades only when two signals agree:
+1. **Order-book surplus**: `tbq - tsq` (ANT depth ticks, read with `MomentumSignal.readDepth`) on the CE at `ceil(spot/50)*50` and the PE at
+   `floor(spot/50)*50`. The contract with the larger surplus must be positive; its side gives the direction (CE = up, PE = down). A tie, a missing
+   reading or no positive surplus means no trade.
+2. **Price move** since the previous slot today (Nifty LTP now minus the LTP recorded at the previous slot) must match the direction: a rise for CE,
+   a fall for PE. The first slot of the day has no previous slot and never trades.
+
+Entry: one LIMIT buy per broker at the option's prevailing LTP (`getOptionLtp`, no offset). Quantity is computed at runtime from `maxInvestment`
+(per broker, `exposureForBroker`) in whole lots, capped at one freeze-size order. There is no `quantity` key (the validator rejects one).
+
+Exit: nothing is placed on fill. The leg is watched on ticks (`deferTargetExit`, exit kind `target`); the first option tick at or above
+fill average + `targetPrice` places ONE limit sell at that tick's price for the whole filled quantity (`onTargetTick`). A fill that lands later is
+sold at the same price (`topUpTargetSell`). A refused target sell (`NOT_PLACED`) is retried on a later tick; an unknown outcome is not retried
+(ALERT). **No stop loss**: a position leaves only by the target sell or the EOD close at `eodCloseTime` (`closeLeg`). An unfilled entry is cancelled
+after `entryTimeoutMinutes`.
+
+One position at a time: a slot is skipped while any leg is open (`isRunning()`), and that slot is consumed.
+
+Logging: Nifty's up and down tick counts since the previous slot are logged at every slot (delivered, coalesced ticks, so they undercount
+exchange ticks). They are in memory only and are not used for any decision.
+
+Config keys: `times`, `maxInvestment`, `targetPrice`, `entryTimeoutMinutes`, `eodCloseTime`, `index` (NIFTY), `brokers`.
+Test: `node dist/test/momentumAtFixedTime.test.js` (stubbed OrderClient and depth read).
 
 ### TopStockOptionsOpeningGapStrategy (`TopStockOptionsOpeningGapStrategy.ts`) — config: `enabled: true`, multi-broker
 **Entry**: one-shot per day, fires once within a short morning window

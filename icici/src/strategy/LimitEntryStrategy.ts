@@ -30,7 +30,8 @@ const RETRY_BACKOFF_MS = 30_000;
 const MAX_EXIT_ATTEMPTS = 10;
 
 export type LegStatus = 'placing' | 'resting' | 'filled' | 'closed' | 'cancelled' | 'failed';
-export type ExitKind = 'gtt' | 'exitMonitor' | 'resting' | 'self' | 'none';
+// 'target': no sell is resting; the leg is watched on ticks and a limit sell goes in only once the option reaches `targetTrigger` (see deferTargetExit).
+export type ExitKind = 'gtt' | 'exitMonitor' | 'resting' | 'self' | 'target' | 'none';
 
 export interface Leg {
     broker: string;
@@ -52,6 +53,10 @@ export interface Leg {
     exitRetryAt?: number;
     exitQty?: number; // quantity the exit currently covers; below filledQty while later partial fills still need protecting
     stop?: number; // tick-driven stop: market out when the option's LTP falls to this (set only for a self-managed exit)
+    targetTrigger?: number; // exit 'target': the option's LTP at which the limit sell is placed
+    targetSellQty?: number; // exit 'target': quantity the target sell covers; set BEFORE the order goes out, so a later fill is topped up and a retry never doubles it
+    targetSellPrice?: number; // exit 'target': the limit price of that sell
+    targetRetryAt?: number; // exit 'target': earliest time a refused (definitely not placed) target sell is tried again
     closing?: boolean; // an EOD/stop close is in flight or done - never started twice
     outcomeRecorded?: boolean;
 }
@@ -216,6 +221,70 @@ export abstract class LimitEntryStrategy extends Strategy {
 
     private rewatch(leg: Leg): void {
         if (leg.stop && leg.status === 'filled' && leg.soldQty < leg.filledQty) this.armSelfStop(leg);
+        if (leg.exit === 'target' && leg.targetSellQty === undefined && leg.status === 'filled' && leg.soldQty < leg.filledQty) this.armSelfStop(leg);
+    }
+
+    // ---- deferred target exit (opt-in: a subclass's placeExit calls deferTargetExit) ----
+    // No sell rests at the broker. The leg is watched on ticks and the first tick at or above `trigger` places ONE limit sell at that
+    // tick's price (the prevailing price). A fill that lands later is sold by topUpTargetSell. EOD closeLeg cancels a resting target sell.
+    protected deferTargetExit(leg: Leg, trigger: number): void {
+        leg.exit = 'target';
+        leg.targetTrigger = trigger;
+        leg.targetSellQty = undefined;
+        this.save();
+        this.armSelfStop(leg);
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: bought ${leg.filledQty} @ avg ${this.avgPrice(leg).toFixed(2)} - limit sell goes in once the price reaches ${trigger} (no stop)`);
+    }
+
+    // topUpExit for a 'target' leg. Before the target is reached, only the trigger follows the new average fill. After the sell was placed
+    // (or is in flight), the extra quantity is sold at the same price.
+    protected async topUpTargetSell(leg: Leg, targetPoints: number): Promise<void> {
+        if (leg.targetSellQty === undefined) {
+            leg.targetTrigger = roundToTick(this.avgPrice(leg) + targetPoints);
+            this.save();
+            return;
+        }
+        const extra = leg.filledQty - leg.targetSellQty;
+        if (extra <= 0 || leg.targetSellPrice === undefined) return;
+        leg.targetSellQty = leg.filledQty; // before the await: a second top-up pass must not sell the same extra again
+        this.save();
+        try {
+            await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
+                broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: extra, price: leg.targetSellPrice, exchange: leg.exchange,
+            });
+        } catch (e) {
+            leg.targetSellQty = leg.filledQty - extra;
+            this.save();
+            throw e;
+        }
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: extra limit sell ${extra} @ ${leg.targetSellPrice} for the later fill`);
+    }
+
+    private async onTargetTick(leg: Leg, ltp: number): Promise<void> {
+        if (leg.targetSellQty !== undefined || (leg.targetRetryAt ?? 0) > Date.now()) return;
+        const qty = leg.filledQty - leg.soldQty;
+        if (qty <= 0) return;
+        const price = roundToTick(ltp);
+        leg.targetSellQty = leg.filledQty; // claimed before the await: ticks arriving meanwhile cannot place a second sell
+        leg.targetSellPrice = price;
+        this.save();
+        Log.log(`[${this.logTag}] TARGET reached on ${leg.broker} ${leg.tsym}: ltp ${ltp} >= ${leg.targetTrigger} - limit sell ${qty} @ ${price}`);
+        try {
+            await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
+                broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: qty, price, exchange: leg.exchange,
+            });
+        } catch (e: any) {
+            const msg = String(e?.message ?? e);
+            if (msg.includes(NOT_PLACED_TAG)) {
+                leg.targetSellQty = undefined; // definitely nothing placed: try again on a later tick
+                leg.targetSellPrice = undefined;
+                leg.targetRetryAt = Date.now() + 5000;
+                this.save();
+                Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: target sell refused (${msg}) - retrying`);
+            } else {
+                Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: target sell outcome UNKNOWN (${msg}) - it may be live at the broker; NOT retried, check by hand`);
+            }
+        }
     }
 
     // Target + stop on a filled leg: the broker-side protection (Kite GTT, ANT in-app exitMonitor) when attachProtection can place it,
@@ -326,14 +395,19 @@ export abstract class LimitEntryStrategy extends Strategy {
     }
 
     canHandleOptionQuote(quote: OptionQuote): boolean {
-        return this.legs().some((l) => l.token === String(quote.token) && !!l.stop && l.status === 'filled');
+        return this.legs().some((l) => l.token === String(quote.token) && l.status === 'filled' && (!!l.stop || (l.exit === 'target' && l.targetSellQty === undefined)));
     }
 
     // Tick-driven stop for a 'self' exit (used when a broker has no post-fill protection, or attaching it failed).
     async processOptionQuote(quote: OptionQuote): Promise<void> {
         if (!this.enabled) return;
         for (const leg of this.legs()) {
-            if (leg.token !== String(quote.token) || !leg.stop || leg.status !== 'filled' || leg.closing) continue;
+            if (leg.token !== String(quote.token) || leg.status !== 'filled' || leg.closing) continue;
+            if (leg.exit === 'target' && leg.targetTrigger !== undefined && quote.ltp > 0 && quote.ltp >= leg.targetTrigger) {
+                await this.onTargetTick(leg, quote.ltp);
+                continue;
+            }
+            if (!leg.stop) continue;
             if (quote.ltp > 0 && quote.ltp <= leg.stop) {
                 Log.log(`[${this.logTag}] STOP hit on ${leg.broker} ${leg.tsym}: ltp ${quote.ltp} <= ${leg.stop}`);
                 await this.closeLeg(leg, 'stop loss');

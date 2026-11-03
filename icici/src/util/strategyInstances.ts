@@ -9,7 +9,7 @@ import { exposureForBroker } from '../prism/configVocabulary';
 // Types that already fan out over `brokers:` inside one instance (their state is keyed per broker): never expanded.
 export const MULTI_BROKER_TYPES: readonly string[] = [
     'BulkPcrStrategy', 'BulkPcrAutoStartStrategy', 'HourlyStrategy', 'ButterflyStrategy',
-    'TopStockOptionsOpeningGapStrategy', 'RecommendationStrategy', 'NiftyChangeStrategy',
+    'TopStockOptionsOpeningGapStrategy', 'RecommendationStrategy', 'NiftyChangeStrategy', 'MomentumAtFixedTimeStrategy',
 ];
 
 // Kite keeps the base id (state, latches and trade history carry over); the others get a suffix, as the hand-made copies did.

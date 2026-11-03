@@ -16,6 +16,7 @@ import HourlyStrategy from './HourlyStrategy';
 import ButterflyStrategy from './ButterflyStrategy';
 import RecommendationStrategy from './RecommendationStrategy';
 import NiftyChangeStrategy from './NiftyChangeStrategy';
+import MomentumAtFixedTimeStrategy from './MomentumAtFixedTimeStrategy';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 import { expandRuleBasedConfig, expandStrategyInstances } from '../util/strategyInstances';
 
@@ -36,6 +37,7 @@ STRATEGY_REGISTRY.set('HourlyStrategy', HourlyStrategy);
 STRATEGY_REGISTRY.set('ButterflyStrategy', ButterflyStrategy);
 STRATEGY_REGISTRY.set('RecommendationStrategy', RecommendationStrategy);
 STRATEGY_REGISTRY.set('NiftyChangeStrategy', NiftyChangeStrategy);
+STRATEGY_REGISTRY.set('MomentumAtFixedTimeStrategy', MomentumAtFixedTimeStrategy);
 
 export function createStrategy(config: StrategyInstanceConfig): Strategy | null {
     const StrategyClass = STRATEGY_REGISTRY.get(config.type);

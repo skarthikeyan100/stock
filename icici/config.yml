@@ -329,3 +329,18 @@ strategies:
       - breeze
       - ant
     maxExposure: 100000
+  - type: MomentumAtFixedTimeStrategy
+    enabled: false              # placeholder: set times before arming
+    userId: MomentumAtFixedTime-NIFTY
+    times:
+      - '10:40'
+      - '11:40'
+      - '12:40'
+      - '13:40'
+    maxInvestment: 100000       # per broker; lots computed at runtime
+    targetPrice: 3              # limit sell at fill average + targetPrice, placed on the tick that reaches it (no stop)
+    entryTimeoutMinutes: 5
+    eodCloseTime: '15:10'
+    index: NIFTY
+    brokers:
+      - kite

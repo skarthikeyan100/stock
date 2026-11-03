@@ -40,6 +40,45 @@ export default class MomentumSignal {
         if (quote.tsq !== undefined) leg.tsq = quote.tsq;
     }
 
+    // One-shot read of tbq/tsq for the given ANT tokens (any contracts, not just ATM). Resolves to token -> {tbq, tsq} once every token
+    // has both, or null on timeout. Same lease/depth-subscription handling and shared pending entries as getDirection.
+    async readDepth(strategy: Strategy, tokens: string[], exchange: 'NFO' | 'BFO', timeoutMs: number): Promise<Map<string, { tbq: number; tsq: number }> | null> {
+        const joined: string[] = [];
+        for (const token of new Set(tokens)) {
+            const existing = this.pending.get(token);
+            if (existing) {
+                existing.refs++;
+            } else {
+                this.pending.set(token, { refs: 1, release: leaseTokenOnSource('ant', token, strategy, exchange) });
+                subscribeTokenDepth(token, 'ant', exchange);
+            }
+            joined.push(token);
+        }
+        try {
+            const deadline = Date.now() + timeoutMs;
+            while (Date.now() < deadline) {
+                const out = new Map<string, { tbq: number; tsq: number }>();
+                for (const token of joined) {
+                    const e = this.pending.get(token);
+                    if (e?.tbq !== undefined && e?.tsq !== undefined) out.set(token, { tbq: e.tbq, tsq: e.tsq });
+                }
+                if (out.size === joined.length) return out;
+                await sleep(100);
+            }
+            Log.log(`[MomentumSignal] Timed out after ${timeoutMs}ms waiting for depth ticks on ${joined.join(', ')}`);
+            return null;
+        } finally {
+            for (const token of joined) {
+                const entry = this.pending.get(token);
+                if (!entry) continue;
+                if (--entry.refs > 0) continue;
+                this.pending.delete(token);
+                entry.release();
+                unsubscribeTokenDepth(token, 'ant', exchange);
+            }
+        }
+    }
+
     // Resolves to CALL/PUT once both ATM legs' tbq/tsq favor the same
     // direction, or null if the ATM lookup fails, the wait times out, or the
     // two legs' order-book imbalance is inconclusive (doesn't agree with each
