@@ -250,7 +250,10 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
                 return;
             }
             if (!(price > 0)) Log.log(`[order] ALERT: ${label} order ${orderId} (${order.tradingSymbol}, ${order.userId}) COMPLETE with no usable fill price - booked at 0, manual review required`);
-            await bookFill(order.quantity, price > 0 ? price : 0);
+            // The broker's filled quantity when it reports one (an order is booked for what filled, not what was asked); the ordered
+            // quantity otherwise.
+            const completeQty = Number(filledQuantity ?? 0) > 0 ? Math.min(order.quantity, Number(filledQuantity)) : order.quantity;
+            await bookFill(completeQty, price > 0 ? price : 0);
             this.noPriceAlerted.delete(orderId);
             this.untrack(orderId);
         } else if (status === 'REJECTED' || status === 'CANCELLED' || status === 'CANCELED') {

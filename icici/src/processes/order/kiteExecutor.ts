@@ -16,6 +16,7 @@ import { estimateOptionPrice, estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForSymbol, isTrackedPendingOrder, beginCancelOfPendingLimitOrders, endCancelOfPendingLimitOrders, silenceListenersOfPendingLimitOrders } from './pendingLimitOrders';
 import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { exchangeForTsym } from '../../util/underlyings';
+import { loadOrderOwners } from './orderOwners';
 
 // Kite is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -891,6 +892,14 @@ export async function reconcileManualSells(): Promise<void> {
     }
 }
 
+// Orders placed in the Kite app (or anywhere else outside this platform) are NOT this platform's: they are never booked, never stored in
+// Mongo and never attributed to a strategy (user's rule, 2026-11-03). Before this, a foreign sell on a contract a strategy held was
+// booked under that strategy's user by contract name alone: it fabricated an orderOwners row, closed the strategy's leg at the foreign
+// price and distorted its P&L. All that remains is a log ALERT, once per order, when a foreign sell touches a contract a tracked leg
+// holds - the strategy's own view of that leg may then be stale.
+const FOREIGN_SELL_GRACE_MS = 2 * 60_000; // a GTT-triggered exit is booked by pollGttFills shortly after it fills; give that time to claim it
+const foreignSellAlerted = new Set<string>();
+
 async function reconcileManualSellsOnce(): Promise<void> {
     const kite = Kite.getInstance();
     if (!(await kite.hasValidSession())) return;
@@ -904,40 +913,20 @@ async function reconcileManualSellsOnce(): Promise<void> {
         return;
     }
 
-    // Each broker order is attributed to at most one tracked trade per pass: two rows for the same tsym (different
-    // users on this one Kite account) must not both claim the same sell.
-    const claimed = new Set<string>();
-    for (const trade of bookkeeping.trades.slice()) {
-        // These are Kite orders - another broker's row for the same tsym must never absorb them.
-        if ((trade.broker ?? 'kite') !== 'kite') continue;
-        const entryTimeMs = trade.entryTime ? new Date(trade.entryTime).getTime() : 0;
-        const sellFills = orders.filter((o: any) =>
-            o.tradingsymbol === trade.tsym && o.transaction_type === 'SELL' && o.status === 'COMPLETE' &&
-            new Date(o.order_timestamp).getTime() >= entryTimeMs
-        );
-
-        for (const fill of sellFills) {
-            if (claimed.has(fill.order_id)) continue;
-            // Matched by order id, not by contract: an order this system placed is booked by its owner's own path (fill
-            // booking or the pending-order poller) under the owner's user. Only a sell nobody here placed is "manual".
-            if (kite.isOwnOrder(fill.order_id) || isTrackedPendingOrder(fill.order_id)) continue;
-            claimed.add(fill.order_id);
-            try {
-                const sellTrade = new Trade();
-                sellTrade.tsym = trade.tsym;
-                sellTrade.token = trade.token;
-                sellTrade.quantity = fill.filled_quantity;
-                sellTrade.price = fill.average_price;
-                sellTrade.action = 'Sell';
-                sellTrade.status = 'COMPLETE';
-                sellTrade.user = trade.user;
-                sellTrade.broker = 'kite';
-                sellTrade.brokerOrderId = fill.order_id;
-
-                await bookkeeping.recordFill(sellTrade);
-            } catch (e) {
-                Log.log('[order] reconcileManualSells: failed to record fill for', trade.tsym, fill.order_id, e);
-            }
-        }
+    const heldTsyms = new Set(bookkeeping.trades.filter((t) => (t.broker ?? 'kite') === 'kite').map((t) => t.tsym));
+    const candidates = orders.filter((o: any) =>
+        o.transaction_type === 'SELL' && o.status === 'COMPLETE' && heldTsyms.has(o.tradingsymbol) &&
+        !foreignSellAlerted.has(String(o.order_id)) &&
+        Date.now() - new Date(o.order_timestamp).getTime() >= FOREIGN_SELL_GRACE_MS &&
+        !kite.isOwnOrder(o.order_id) && !isTrackedPendingOrder(o.order_id)
+    );
+    if (candidates.length === 0) return;
+    // The persistent ownership ledger (written when this platform places or books an order) survives a restart, unlike isOwnOrder.
+    const owners = await loadOrderOwners(candidates.map((o: any) => String(o.order_id)));
+    for (const o of candidates) {
+        const id = String(o.order_id);
+        if (owners.has(id)) continue;
+        foreignSellAlerted.add(id);
+        Log.log(`[order] ALERT: Kite SELL ${o.tradingsymbol} qty=${o.filled_quantity} @ ${o.average_price} (order ${id}) was not placed by this platform - NOT booked or stored; a tracked leg on this contract may now be stale`);
     }
 }

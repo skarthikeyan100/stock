@@ -461,11 +461,15 @@ export async function startStrategiesProcess() {
     // Ticks, fills and cancellations reach a strategy only once it is reconciled (Strategy.stateLoaded): broker positions first (the
     // `order` process), then every strategy's reconcile(). Runs in the background and retries until it succeeds, so a broker that is
     // not logged in yet holds trading back rather than letting a restarted strategy open a duplicate. POST /reconcile also satisfies it.
-    void startupReconcile();
+    // DISABLED (user, 2026-11-03): no startup reconcile. Strategies are marked loaded straight away so they receive events; nothing
+    // restores open positions or strategy state on a restart (and the order process's bookkeeping starts empty), so run POST /reconcile
+    // after a restart before enabling any strategy, and never restart with open positions that a strategy must manage.
+    // void startupReconcile();
+    for (const s of strategies.getList()) s.stateLoaded = true;
 
     // The trading window is enforced at dispatch (Strategy.receivesEvents), not by clearing `enabled` in memory.
 
-    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. Startup reconcile running.`);
+    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. Startup reconcile is disabled (POST /reconcile restores state).`);
 }
 
 // A throw in any strategy callback (or a stray rejected promise) must not kill the process mid-position:
