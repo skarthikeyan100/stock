@@ -21,7 +21,7 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS } from '../constants';
 //   1. PCR gives the direction of the ROOT entry (PCR > 1 -> PE, else CE), `initialQuantity` at market. There is ONE root per day;
 //      every later order is a hedge or a double-up.
 //   2. Right after the fill a resting limit sell is placed at entry + priceDiff.
-//   3. EVERY leg (root or hedge) is hedged exactly once, by buying the opposite option for the same quantity, either when its price
+//   3. EVERY leg (root or hedge) is hedged exactly once, by buying the opposite option at the strike nearest the money for the same quantity, either when its price
 //      falls to entry - priceDiff (adverse) or when its resting sell fills (target met, at the then-current price). The hedge buy is a
 //      leg of its own with its own resting sell at its entry + priceDiff, and it is hedged once in turn, so the chain is unlimited.
 //   4. There is no stop loss: a leg ends only through its resting sell (or the EOD close).
@@ -386,9 +386,9 @@ export default class SimpleContinuousStrategy extends Strategy {
         try {
             const right = opposite(leg.right);
             const ops = brokerLegOps(() => this.cfg()?.broker);
-            // The hedge is picked at a premium comparable to the leg it protects (first strike at or above the leg's entry premium).
-            const minPremium = Math.max(Math.floor(leg.entry), 1);
-            const contract = await ops.pickContract(this.userId, this.lastNiftyLtp, right, minPremium, this.excludeStrikes(right));
+            // The hedge is the opposite option at the strike nearest the money (pickContract walks ATM first, then out of / in the money). The
+            // premium floor of 1 only skips a strike with no price. A strike already held on that side is skipped (one position per contract).
+            const contract = await ops.pickContract(this.userId, this.lastNiftyLtp, right, 1, this.excludeStrikes(right));
             let trade: Trade;
             try {
                 trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, leg.qty, contract.exchange, contract.premium, this.broker(), { hedgeRebuy: true });
