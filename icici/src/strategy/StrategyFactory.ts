@@ -9,6 +9,7 @@ import GoodMorningSensexStrategy from './GoodMorningSensexStrategy';
 import SupportResistanceStrategy from './SupportResistanceStrategy';
 import TargetReachStrategy from './TargetReachStrategy';
 import ContinuousStrategy from './ContinuousStrategy';
+import SimpleContinuousStrategy from './SimpleContinuousStrategy';
 import BulkPcrStrategy from './BulkPcrStrategy';
 import BulkPcrAutoStartStrategy from './BulkPcrAutoStartStrategy';
 import TopStockOptionsOpeningGapStrategy from './TopStockOptionsOpeningGapStrategy';
@@ -38,6 +39,7 @@ STRATEGY_REGISTRY.set('ButterflyStrategy', ButterflyStrategy);
 STRATEGY_REGISTRY.set('RecommendationStrategy', RecommendationStrategy);
 STRATEGY_REGISTRY.set('NiftyChangeStrategy', NiftyChangeStrategy);
 STRATEGY_REGISTRY.set('MomentumAtFixedTimeStrategy', MomentumAtFixedTimeStrategy);
+STRATEGY_REGISTRY.set('SimpleContinuousStrategy', SimpleContinuousStrategy);
 
 export function createStrategy(config: StrategyInstanceConfig): Strategy | null {
     const StrategyClass = STRATEGY_REGISTRY.get(config.type);

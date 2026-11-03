@@ -60,3 +60,10 @@ strategies:
     stopLoss: 20
     maxHoldTimeMinutes: 30
     logEnabled: true
+  - type: SimpleContinuousStrategy
+    enabled: false
+    brokers:
+      - kite
+    initialQuantity: 65
+    maxInvestment: 100000       # per broker
+    priceDiff: 5                # resting sell at entry + priceDiff; hedge when a leg falls priceDiff

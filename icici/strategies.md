@@ -381,6 +381,14 @@ trades via `legManager.restoreFromOpenTrades`.
 `right`, `marketSentiment`, `maxLevels`, `cooldownSeconds`,
 `refillCancelDistance`, `logEnabled`, `momentumEnabled`, `momentumTimeoutMs`.
 
+### SimpleContinuousStrategy (`SimpleContinuousStrategy.ts`)
+**Entry**: PCR direction (>1 PE, else CE; re-fetched every 5 min), `initialQuantity` at market, repeated while invested capital + the next root fits `maxInvestment` (per broker).
+**Exit**: right after each fill a resting limit sell at entry + `priceDiff`. No stop loss.
+**Hedge (once per leg)**: buy the opposite option for the same quantity when the leg falls to entry - `priceDiff`, or when its sell fills (target met). The hedge leg is flagged `hedged`, gets its own resting sell and never hedges again. Hedge buys ignore `maxInvestment`.
+**Double-up (once)**: when a hedge leg's sell fills at a profit and its original leg is still open, the original's contract is bought again for the original quantity (skipped if over `maxInvestment`) and its sell re-placed for the new total at the new average + `priceDiff`.
+**State**: `.SimpleContinuousStrategy.<userId>.json` (per day); `reconcile()` checks it against the broker's open trades and pending sells and adopts unknown positions (never doubled). EOD close at `eodCloseTime`.
+**Config keys**: `enabled`, `brokers`, `initialQuantity`, `maxInvestment`, `priceDiff`. The root premium floor (100) is a constant in the file.
+
 ### SupportResistanceStrategy (`SupportResistanceStrategy.ts`)
 **Entry**: driven by `src/lib/supportResistance.ts`'s SEEKING/LOCKED/BREACH
 detector (`processTick`, called from `processNiftyQuote`, `:116`) — a

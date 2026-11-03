@@ -18,7 +18,7 @@ const NON_NEGATIVE_FIELDS: string[] = [
     'targetPoints', 'stopLossPoints', 'targetPrice', 'stopLossPrice', 'target', 'stopLoss',
     'minPrice', 'maxPrice', 'targetPriceDiff', 'stopLossPriceDiff', 'trailingDistance',
     'cooldownSeconds', 'lossCooldownSeconds', 'profitCooldownSeconds',
-    'slDistance', 'hedgeTrailDistance', 'hedgeTargetFraction', 'postAverageTargetDistance', 'minPremium', 'refillCancelDistance',
+    'slDistance', 'priceDiff', 'hedgeTrailDistance', 'hedgeTargetFraction', 'postAverageTargetDistance', 'minPremium', 'refillCancelDistance',
     'pointsThreshold', 'accelerationThreshold', 'numberOfDatapointsReceived',
     'maxHoldTimeMinutes', 'gapReversalThreshold',
     'averageThreshold', 'threshold', 'loopCount', 'activateIntermittentCount',
@@ -247,7 +247,7 @@ export function validateConfigFile(parsed: any): string[] {
         }
         // Same reasoning for the other strategies that size a live order from their own config: a missing quantity used to fall back to a
         // hidden 65 (a NIFTY lot) - wrong for a SENSEX Butterfly (lot 20) and for any size the operator never chose.
-        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], MomentumAtFixedTimeStrategy: ['targetPrice'] };
+        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], MomentumAtFixedTimeStrategy: ['targetPrice'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'] };
         if (s.type === 'MomentumAtFixedTimeStrategy') {
             // Sized at runtime from maxInvestment (per broker); a quantity key is not read and must not be set.
             if (s.quantity !== undefined) errors.push(`${s.type}.quantity is not used - size with maxInvestment (per broker)`);

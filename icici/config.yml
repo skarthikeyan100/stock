@@ -344,3 +344,10 @@ strategies:
     index: NIFTY
     brokers:
       - kite
+  - type: SimpleContinuousStrategy
+    enabled: false
+    brokers:
+      - kite
+    initialQuantity: 65
+    maxInvestment: 100000       # per broker
+    priceDiff: 5                # resting sell at entry + priceDiff; hedge when a leg falls priceDiff

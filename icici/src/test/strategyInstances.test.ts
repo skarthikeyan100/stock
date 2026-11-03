@@ -39,3 +39,6 @@ assert(rule.map((c) => c.userId).join() === 'Rule-RSI_5_80_20,Rule-RSI_5_80_20-A
 assert(exposureForBroker({ maxExposure: 5 }, 'breeze') === 5, 'exposureForBroker falls back to maxExposure');
 assert(exposureForBroker({ maxExposureByBroker: { icici: 9 }, maxExposure: 5 }, 'breeze') === 9, 'exposureForBroker normalises aliases (icici -> breeze)');
 assert(configuredBrokersOf({ broker: 'ant' }).join() === 'kite', 'configuredBrokersOf no longer reads broker:');
+
+const simple = expandBrokerInstances({ type: 'SimpleContinuousStrategy', enabled: true, brokers: ['kite', 'ant'], maxInvestment: 100000 });
+assert(simple.map((c) => c.userId).join() === 'SimpleContinuousStrategy,SimpleContinuousStrategy-ANT', 'SimpleContinuousStrategy is a single-broker type: one instance per broker');

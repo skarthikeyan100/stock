@@ -740,7 +740,7 @@ class OrderBookkeeping {
     // already guard against for their OWN config reads; this is the same
     // mistake, just inside the shared risk gate instead of a strategy's own
     // config lookup.
-    private static readonly CAPITAL_ONLY_EXEMPT_TYPES = ['ContinuousStrategy', 'BulkPcrStrategy', 'HourlyStrategy'];
+    private static readonly CAPITAL_ONLY_EXEMPT_TYPES = ['ContinuousStrategy', 'SimpleContinuousStrategy', 'BulkPcrStrategy', 'HourlyStrategy'];
 
     private isCapitalOnlyExemptUser(user: string): boolean {
         const cfg = configService.getInstances().find((s) => (s.userId || s.type) === user);

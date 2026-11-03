@@ -16,6 +16,7 @@ build/
 *token*.json
 *.token
 *credentials*.json
+!broker-credentials.example.json
 
 # Log files
 *.log
@@ -59,3 +60,4 @@ requestOtp*
 src/tools/gapscreener/*.csv
 .RecommendationStrategy.*.json
 .NiftyChangeStrategy.*.json
+.SimpleContinuousStrategy.*.json
