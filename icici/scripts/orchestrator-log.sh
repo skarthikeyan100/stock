@@ -8,8 +8,6 @@
 # Day boundary is Asia/Kolkata (the app's TZ). A process that runs across midnight keeps writing
 # the previous day's file; the roll happens on the next restart, as intended.
 #
-# Migration: a pre-existing regular orchestrator.log (written by the old `tee orchestrator.log`)
-# is appended into logs/orchestrator-<its mtime date>.log and removed, so nothing is lost.
 
 set -u
 export TZ=Asia/Kolkata
@@ -23,13 +21,6 @@ mkdir -p "$LOG_DIR"
 
 TODAY="$(date +%F)"
 TODAY_FILE="$LOG_DIR/orchestrator-$TODAY.log"
-
-# One-time migration of the old truncating file.
-if [ -f "$LOG_LINK" ] && [ ! -L "$LOG_LINK" ]; then
-    OLD_DAY="$(date -r "$LOG_LINK" +%F)"
-    cat "$LOG_LINK" >> "$LOG_DIR/orchestrator-$OLD_DAY.log"
-    rm -f "$LOG_LINK"
-fi
 
 touch "$TODAY_FILE"
 ln -sfn "$LOG_DIR/orchestrator-$TODAY.log" "$LOG_LINK"
