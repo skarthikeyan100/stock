@@ -8,7 +8,7 @@
 # For the full tree / open contracts / capital view use scripts/continuous-strategy-trades.sh.
 #
 # Usage: scripts/monitor-continuous-events.sh [--all|--once]   (--all replays the log then follows; --once dumps it and exits)
-# tail -F follows across the truncate-in-place orchestrator.log gets on restart.
+# tail -F follows the symlink retarget that scripts/orchestrator-log.sh makes on restart/new day.
 
 LOG_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/orchestrator.log"
 TAIL_OPTS="-F -n0"

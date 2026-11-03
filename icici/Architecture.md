@@ -4,7 +4,7 @@ Kept out of `CLAUDE.md` on purpose (that file is loaded on every prompt). Read t
 
 ## Overview
 
-`npm run processes` runs `tsc -w` and `dist/orchestrator.js` side by side (`package.json`). The orchestrator spawns four sibling processes, wires their stdio, and restarts **only the child whose compiled output changed**. The orchestrator itself is never restarted by `tsc -w`, so a save never tears down every child at once. That is the point of the split. Logs go to `orchestrator.log`.
+`npm run processes` runs `tsc -w` and `dist/orchestrator.js` side by side (`package.json`). The orchestrator spawns four sibling processes, wires their stdio, and restarts **only the child whose compiled output changed**. The orchestrator itself is never restarted by `tsc -w`, so a save never tears down every child at once. That is the point of the split. Logs go to `logs/orchestrator-YYYY-MM-DD.log` (per day, append-only across restarts; `orchestrator.log` is a symlink to today's file) via `scripts/orchestrator-log.sh`.
 
 ## Broker naming
 

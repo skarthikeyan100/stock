@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "server": "tsc-watch --onSuccess \"sh -c 'node ./dist/server.js 2>&1 | tee server.log'\"",
-    "processes": "scripts/kill-stale-orchestrator.sh && tsc && concurrently -n tsc,orchestrator \"tsc -w --preserveWatchOutput\" \"sh -c 'node ./dist/orchestrator.js 2>&1 | tee orchestrator.log'\"",
+    "processes": "scripts/kill-stale-orchestrator.sh && tsc && concurrently -n tsc,orchestrator \"tsc -w --preserveWatchOutput\" \"sh -c 'node ./dist/orchestrator.js 2>&1 | scripts/orchestrator-log.sh'\"",
     "processes:once": "scripts/kill-stale-orchestrator.sh && tsc && node ./dist/orchestrator.js",
     "server:mock": "PORT=3001 MOCK_DATE=2026-02-24 MOCK_BROKER=true MOCK_QUOTES=true CONFIG_PATH=./config.mock.yml node ./dist/server.js 2>&1 | tee server.log",
     "server:mock:run": "PORT=3001 MOCK_BROKER=true MOCK_QUOTES=true CONFIG_PATH=./config.mock.yml node ./dist/server.js 2>&1 | tee server.log",

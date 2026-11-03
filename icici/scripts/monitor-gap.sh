@@ -42,10 +42,10 @@ if [ "${1:-}" = "--all" ] || [ "${1:-}" = "-a" ] || [ "${1:-}" = "-all" ]; then
 else
     echo "Watching $LOG_FILE for GapStrategy activity... (Ctrl-C to stop)"
 fi
-echo "(orchestrator.log is truncated on every process restart - this keeps following it)"
+echo "(orchestrator.log is a symlink to today's logs/orchestrator-<date>.log; restarts append, this keeps following it)"
 echo
 
-# -F: keep following across the truncate-in-place that 'tee orchestrator.log'
+# -F: keep following across the symlink retarget that scripts/orchestrator-log.sh
 # (no -a) does on every orchestrator restart. -n0: only new lines from now on
 # (-n +1 with --all: replay the whole file first).
 # -W interactive (mawk-specific, matches the box's default /usr/bin/awk): without

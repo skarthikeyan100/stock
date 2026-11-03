@@ -61,3 +61,4 @@ src/tools/gapscreener/*.csv
 .RecommendationStrategy.*.json
 .NiftyChangeStrategy.*.json
 .SimpleContinuousStrategy.*.json
+logs/

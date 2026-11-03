@@ -7,7 +7,7 @@
 # (scripts/monitor-bulkpcr.sh is the verbose human-terminal narrator; this one is for the Monitor tool.)
 #
 # Usage: scripts/monitor-bulkpcr-events.sh [--all|--once]   (--all replays the log then follows; --once dumps it and exits)
-# GNU sed (\U) and tail -F: follows across the truncate-in-place orchestrator.log gets on restart.
+# GNU sed (\U) and tail -F: follows the symlink retarget that scripts/orchestrator-log.sh makes on restart/new day.
 
 LOG_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/orchestrator.log"
 TAIL_OPTS="-F -n0"
