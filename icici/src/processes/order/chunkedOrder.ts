@@ -1,6 +1,7 @@
 import { BrokerExecutor, BuyRequest, Exchange } from './BrokerExecutor';
 import { NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY } from '../../constants';
 import { splitIntoFreezeQtyChunks } from '../../util/quantityChunks';
+import { isIndexTsym } from '../../util/underlyings';
 import Log from '../../util/Log';
 import { sleep } from '../../util/sleep';
 import { markNotPlaced, isNotPlaced } from '../../util/notPlaced';
@@ -72,6 +73,15 @@ function wrapChunkError(
     return i === 0 && isNotPlaced(cause) ? markNotPlaced(err) : err;
 }
 
+// The freeze quantity an order is split at when the caller gives none. NIFTY/SENSEX options use their exchange limit. A stock option has its
+// own lot size and freeze limit (neither known here), so it is NOT split: cutting an ADANIGREEN 1800 sell at NIFTY's 1755 made 1755 + 45, and
+// the exchange rejected the first with "quantity should be multiple of 600" (live 2026-11-04, lock-profits). One order either fills or is
+// refused by the exchange with a clear message; a wrong split is always refused.
+function defaultFreezeQty(tradingSymbol: string, exchange: string): number {
+    if (!isIndexTsym(tradingSymbol)) return Number.MAX_SAFE_INTEGER;
+    return exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY;
+}
+
 export async function buyChunked(
     executor: BrokerExecutor,
     request: BuyRequest,
@@ -79,7 +89,7 @@ export async function buyChunked(
     // this used to always default to NIFTY's (much larger) limit regardless
     // of exchange, which for an un-chunked BFO (SENSEX) order above 1000
     // would get rejected by the exchange outright instead of being split.
-    freezeQty: number = request.exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY
+    freezeQty: number = defaultFreezeQty(request.tradingSymbol, request.exchange)
 ): Promise<ChunkedFillResult> {
     const chunks = splitIntoFreezeQtyChunks(request.quantity, freezeQty);
     let filledQty = 0;
@@ -133,7 +143,7 @@ export async function marketBuyBareChunked(
     instrumentToken: string,
     quantity: number,
     exchange: 'NFO' | 'BFO',
-    freezeQty: number = exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY
+    freezeQty: number = defaultFreezeQty(tradingSymbol, exchange)
 ): Promise<Trade> {
     const chunks = splitIntoFreezeQtyChunks(quantity, freezeQty);
     let filledQty = 0;
@@ -167,7 +177,7 @@ export async function squareOffChunked(
     quantity: number,
     exchange: Exchange,
     // Same exchange-aware default as buyChunked above.
-    freezeQty: number = exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY
+    freezeQty: number = defaultFreezeQty(tradingSymbol, exchange)
 ): Promise<ChunkedFillResult> {
     const chunks = splitIntoFreezeQtyChunks(quantity, freezeQty);
     let filledQty = 0;
@@ -220,7 +230,7 @@ export async function squareOffLimitChunked(
     exchange: Exchange,
     limitPrice: number,
     // Same exchange-aware default as buyChunked above.
-    freezeQty: number = exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY
+    freezeQty: number = defaultFreezeQty(tradingSymbol, exchange)
 ): Promise<{ orderIds: string[]; placedQuantity: number }> {
     const chunks = splitIntoFreezeQtyChunks(quantity, freezeQty);
     const orderIds: string[] = [];

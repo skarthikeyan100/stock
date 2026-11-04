@@ -549,6 +549,10 @@ async function brokerLastPrices(broker: string): Promise<Map<string, number>> {
         for (const r of raw?.net ?? []) add(r.tradingsymbol, r.last_price);
     } else if (broker === 'breeze') {
         for (const r of Array.isArray(raw) ? raw : []) add(`${r.stock_code}${r.strike_price}${String(r.right).toLowerCase().startsWith('p') ? 'PE' : 'CE'}`, r.ltp);
+    } else if (broker === 'prism') {
+        // Shoonya position-book rows: tsym / lp (last price). The generic branch below reads tradingSymbol / ltp and never matched them,
+        // so every prism position came back "no live price for this contract in the broker positions - not sold".
+        for (const r of Array.isArray(raw) ? raw : []) add(r.tsym, r.lp);
     } else {
         for (const r of Array.isArray(raw) ? raw : []) add(r.tradingSymbol ?? r.tradingsymbol, r.ltp ?? r.last_price);
     }
