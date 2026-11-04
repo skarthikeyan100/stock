@@ -14,7 +14,7 @@ import { localDayKey } from './dayKey';
 import { roundToTick } from '../util/tick';
 import { isPastTime } from '../util/marketHours';
 import { BrokerName, normalizeBrokerName } from '../util/brokerName';
-import { NOT_PLACED_TAG } from '../ipc/orderProtocol';
+import { NOT_PLACED_TAG, OrderCancelledNotification } from '../ipc/orderProtocol';
 import { MOCK_BROKER, PCR_WINDOW_POINTS } from '../constants';
 
 // SimpleContinuousStrategy (config keys: initialQuantity, maxInvestment, priceDiff, plus enabled/brokers):
@@ -440,9 +440,16 @@ export default class SimpleContinuousStrategy extends Strategy {
         }
     };
 
-    onOrderCancelled = async (): Promise<void> => {
+    onOrderCancelled = async (n: OrderCancelledNotification): Promise<void> => {
         // A resting sell that was cancelled outside this strategy is re-placed by the tick retry (sellQty is reset here).
-        for (const leg of this.openLegs()) if (leg.sellQty > 0 && !this.busy.has(leg.id)) leg.sellQty = 0;
+        // Only a cancelled SELL on that leg's own contract counts: a cancelled/unfilled hedge or double-up BUY (or a sell on
+        // another contract) leaves every other leg's resting sell live, and resetting them made the tick retry try to
+        // place a duplicate sell every 10 s (refused by the never-short guard, but an ALERT each time).
+        if (n.action !== 'Sell') return;
+        for (const leg of this.openLegs()) {
+            if (leg.tsym !== n.tradingSymbol || leg.sellQty <= 0 || this.busy.has(leg.id)) continue;
+            leg.sellQty = 0;
+        }
     };
 
     // ---- double-up ----
