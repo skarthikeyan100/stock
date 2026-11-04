@@ -64,7 +64,7 @@ Base URL: `http://localhost:3000` (also listens on 80, and 443 when `key.pem`/`c
 | `POST /order/settarget` | auth | Body `{ token, targetPoints, stopLossPoints }` (numbers >= 0): set target / stop-loss points on an open position. |
 | `GET /order/can-place` | auth | `{ allowed, reason? }` from the risk gate (loss limit, lot limit, accountClosed). |
 | `POST /order/lock-profits` | admin | See below. |
-| `GET /strategyPnl` | admin | Realized and unrealized P&L per strategy (`?match=` regex); used by `scripts/strategy-status.sh`. |
+| `GET /strategyPnl` | admin | Realized and unrealized P&L per strategy (`?match=` regex; `?by=broker` groups by broker instead); used by `scripts/strategy-status.sh`. |
 | `GET /admin/trades/open`, `/admin/trades/closed`, `/admin/trades/pnl-summary` | admin | Open trades, closed trades, P&L summary across users. |
 
 ### POST /order/lock-profits
