@@ -1439,6 +1439,29 @@ class OrderBookkeeping {
         return true;
     }
 
+    // Mirrors reconcileAntPositions: without it a restart leaves bookkeeping.trades empty for an open prism leg and the owning
+    // strategy's own reconcile() concludes "no longer held by the broker" and closes the leg in its state. Prism position rows
+    // (Shoonya position book): tsym, netqty, netavgprc, token, lp (ltp).
+    async reconcilePrismPositions(): Promise<boolean> {
+        const restored: Trade[] = [];
+        try {
+            // Lazy import: prism.ts imports this module, so a top-level import here would be a cycle.
+            const Prism = (await import('../../prism')).default;
+            // No valid session = positions can't be read, so this is NOT reconciled (log in to Shoonya first).
+            if (!(await withTimeout(Prism.getInstance().hasValidSession(), 15000, 'Prism hasValidSession'))) return false;
+            const list = await withTimeout(Prism.getInstance().getPositions({ strict: true }), 15000, 'Prism getPositions');
+            const open = list.filter((p: any) => Number(p.netqty ?? 0) !== 0 && OrderBookkeeping.isOptionContract(p.tsym));
+            for (const p of open) {
+                restored.push(...(await this.restoreOpenTradesForTsym(p.tsym, Number(p.netqty), p.token != null ? String(p.token) : undefined, 'prism', { avg: p.netavgprc, ltp: p.lp })));
+            }
+        } catch (e: any) {
+            Log.log('[order] reconcilePrismPositions: Prism getPositions failed (continuing without restore):', e?.message ?? e);
+            return false;
+        }
+        this.mergeRestored(restored);
+        return true;
+    }
+
     // Recovers the app-only fields (user/target/stopLoss/gttTriggerId/strategy)
     // for one broker-reported open position, from the most recent Buy fill(s)
     // in Mongo's raw `Trade` collection - one restored Trade PER distinct

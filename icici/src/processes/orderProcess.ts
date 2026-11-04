@@ -37,6 +37,7 @@ import Breeze from '../breeze/Breeze';
 import KiteContractMaster from '../kite/KiteContractMaster';
 import AntContractMaster from '../ant/AntContractMaster';
 import PrismContractMaster from '../prism/PrismContractMaster';
+import Prism from '../prism';
 import BreezeOrderNotifyStream from '../breeze/BreezeOrderNotifyStream';
 import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
@@ -1135,12 +1136,13 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             }
             case 'brokerSessions': {
                 const valid = (check: () => Promise<boolean>) => check().then((v) => v === true).catch(() => false);
-                const [kite, ant, breeze] = await Promise.all([
+                const [kite, ant, breeze, prism] = await Promise.all([
                     valid(() => Kite.getInstance().hasValidSession()),
                     valid(() => ANT.getInstance().hasValidSession()),
                     valid(() => Breeze.getInstance().hasValidSession()),
+                    valid(() => Prism.getInstance().hasValidSession()),
                 ]);
-                return { kind: 'response', id: req.id, ok: true, result: { kite, ant, breeze } };
+                return { kind: 'response', id: req.id, ok: true, result: { kite, ant, breeze, prism } };
             }
 
             // Explicit broker-position reconcile - POST /reconcile in server.ts
@@ -1312,23 +1314,32 @@ let reconcileQueued = false;
 // Per-broker outcome of the most recent completed reconcile, returned to the
 // POST /reconcile caller. true only when that broker's positions were actually
 // fetched and restored. Informational only - nothing is gated on it.
-type ReconcilableBroker = 'kite' | 'ant' | 'breeze';
-const lastReconcileResult: Record<ReconcilableBroker, boolean> = { kite: false, ant: false, breeze: false };
+type ReconcilableBroker = 'kite' | 'ant' | 'breeze' | 'prism';
+const lastReconcileResult: Record<ReconcilableBroker, boolean> = { kite: false, ant: false, breeze: false, prism: false };
+
+// A Shoonya (prism) login is only required when an enabled strategy trades on prism; otherwise prism counts as reconciled (nothing to restore).
+function prismInUse(): boolean {
+    return (configService.getConfig().strategies ?? []).some((e: any) => e?.enabled === true && configuredBrokersOf(e).includes('prism'));
+}
 
 async function reconcileAllBrokersOnce(logContext: string): Promise<void> {
     Log.log(`[order] Running broker-position reconciliation (${logContext})`);
-    const [kite, ant, breeze] = await Promise.all([
+    const [kite, ant, breeze, prism] = await Promise.all([
         bookkeeping.reconcileKitePositions().catch((e) => { Log.log('[order] reconcileKitePositions failed:', e); return false; }),
         bookkeeping.reconcileAntPositions().catch((e) => { Log.log('[order] reconcileAntPositions failed:', e); return false; }),
         bookkeeping.reconcileBreezePositions().catch((e) => { Log.log('[order] reconcileBreezePositions failed:', e); return false; }),
+        prismInUse()
+            ? bookkeeping.reconcilePrismPositions().catch((e) => { Log.log('[order] reconcilePrismPositions failed:', e); return false; })
+            : Promise.resolve(true),
     ]);
     lastReconcileResult.kite = kite;
     lastReconcileResult.ant = ant;
     lastReconcileResult.breeze = breeze;
+    lastReconcileResult.prism = prism;
     exitMonitor.reconcileFromTrades(bookkeeping.trades);
 }
 
-// Runs all three broker reconciles and tracks them via reconcileInFlight.
+// Runs all the broker reconciles (kite, ant, breeze, and prism when a strategy uses it) and tracks them via reconcileInFlight.
 // Coalesces overlapping triggers: a call that arrives while one is already in
 // flight can't start its own Promise.all (whichever finished first would null
 // reconcileInFlight while the other is still running). Instead exactly one

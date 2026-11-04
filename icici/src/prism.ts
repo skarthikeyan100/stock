@@ -950,6 +950,12 @@ export default class Prism {
         return Array.isArray(raw) ? raw : [];
     }
 
+    // Per-broker session probe (brokerSessions / position reconcile): a Shoonya token is loaded AND a strict positions read works.
+    hasValidSession = async (): Promise<boolean> => {
+        if (!NorenRestApi.userToken) return false;
+        try { await this.getPositions({ strict: true }); return true; } catch { return false; }
+    }
+
     buyIndex = async({ userContext, index, ltp, right, qty }: { userContext?: UserContext, index: string, ltp?: number, right?: string, qty?: number }) => {
         Log.log('Buy Index ', index, ' ltp: ', ltp, ' right: ', right, ' qty: ', qty)
         const nseIndex = indexMap.get(index as string);

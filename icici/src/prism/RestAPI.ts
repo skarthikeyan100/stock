@@ -490,17 +490,23 @@ class NorenRestApi {
        * @param no params
        */
 
-  get_positions = () => {
+  get_positions = async () => {
     if (MOCK_BROKER) {
-      return Promise.resolve([]);
+      return [];
     }
 
     let values = {};
     values["uid"] = this.userId;
     values["actid"] = this.userId;
 
-    let reply = this.post_request("positions", values);
-    return reply;
+    const reply: any = await this.post_request("positions", values);
+    // Shoonya answers an empty book with an object ({stat:'Not_Ok', emsg:'no data'}), not []. Only a genuine "no data" reply means a
+    // flat account; any other Not_Ok (e.g. an expired session) must surface rather than read as "no positions".
+    if (Array.isArray(reply)) return reply;
+    if (reply && reply.stat === 'Not_Ok' && !/no data/i.test(String(reply.emsg ?? ''))) {
+      throw new Error(`Prism positions not Ok: ${reply.emsg ?? JSON.stringify(reply)}`);
+    }
+    return [];
   };
   /**
        * Description

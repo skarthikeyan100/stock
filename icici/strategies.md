@@ -46,6 +46,16 @@ Two ways a block fans out over its brokers:
   Children are independent signal evaluators, so entries on different brokers can differ by seconds. Changing `brokers:`
   needs a restart (a config reload refreshes configs but creates no new instances). Look instances up through
   `configService.getInstances()`, not `getConfig().strategies`, when keying by `userId`.
+
+**`prism` (Shoonya) as a broker (2026-11-04).** `prism` is accepted in `brokers: [...]` of the strategies that trade through the generic
+order family: `SimpleContinuousStrategy` (instance id suffix `-Prism`), `NiftyChange`, `MomentumAtFixedTime`, `Recommendation`. Not
+`TopStockOptionsOpeningGapStrategy` (its broker union is kite/breeze/ant only; it drops `prism` with an ALERT). Needs a Shoonya login
+(`scripts/login.sh prism`) BEFORE the post-login restart: `brokerSessions` now reports `prism`, and one enabled strategy listing it keeps
+every strategy idle at startup until that login is valid, same as ant/breeze. Positions are restored by `reconcilePrismPositions`
+(only when an enabled strategy lists prism, so a missing Shoonya login does not make `POST /reconcile` 409 otherwise). Bare buys
+(`marketBuy`) go through `buyOnPrism`: a limit at the option LTP with a polled, cancel-and-recheck fill. Prism has no post-fill
+target/stop primitive (`attachProtection` refuses it), so NiftyChange falls back to a resting target sell plus a tick-driven stop.
+`PrismContractMaster` carries no lot size, so sizing from a rupee budget uses the NIFTY lot size (65).
 `ContinuousStrategy`/`SupportResistanceStrategy` pass the derived broker to `brokerLegOps(() => cfg.broker)`; the
 `tokenRouter.resolveSource` feed choice reads it too (LegManager strategies always use the ANT feed, since their legs carry
 ANT tokens: `Strategy.legTokenFeed`).

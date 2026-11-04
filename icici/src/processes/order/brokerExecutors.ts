@@ -114,7 +114,11 @@ export const PrismExecutor: BrokerExecutor = {
 
     enterShort: prismExecutor.enterShortOnPrism,
     buyToClose: prismExecutor.buyToClosePrism,
-    marketBuy: (userId, tradingSymbol, _instrumentToken, quantity) => prismExecutor.buyContract(userId, tradingSymbol, quantity),
+    // The verified path: a limit order at the option LTP whose fill is polled (cancel + re-check on timeout), booking the real fill and
+    // returning a Trade. prismExecutor.buyContract (kept for the legacy 'buyContract' action) returns Prism's raw response and books COMPLETE
+    // on acceptance, which the Bare family (marketBuyBareChunked) cannot use.
+    marketBuy: (userId, tradingSymbol, instrumentToken, quantity, exchange) =>
+        prismExecutor.buyOnPrism({ userId, tradingSymbol, brokerToken: instrumentToken, quantity, exchange }),
     marketSell: (userId, tradingSymbol, _instrumentToken, quantity) => prismExecutor.sellContract(userId, tradingSymbol, quantity),
     placeLimitBuy: prismExecutor.placeLimitBuyBareOnPrism,
     getLiveQuantity: async (tradingSymbol) => Number((await prismExecutor.getPositionsOnPrism()).find((p) => p.tradingSymbol === tradingSymbol)?.quantity ?? 0),
