@@ -166,7 +166,9 @@ function assert(condition: boolean, message: string) {
 }
 
 function newStrategy(): any {
-    return new SupportResistanceStrategy('TestSupportResistance') as any;
+    const s = new SupportResistanceStrategy('TestSupportResistance') as any;
+    s.enabled = true; s.stateLoaded = true; // a disabled strategy takes no action (2026-10-29 rule); these tests exercise the enabled path
+    return s;
 }
 
 function legs(strategy: any): Map<string, any> {

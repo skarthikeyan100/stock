@@ -1,10 +1,10 @@
 // One config block, one instance per broker. A block of a single-broker strategy type with `brokers: [kite, ant, breeze]` is expanded
 // in memory into one config per broker (what the operator used to copy by hand as ContinuousStrategy / -ANT / -Breeze). Each child gets
-// its own userId, an internal derived `broker` (never written to config.yml) and `maxExposure` = that broker's amount, so every reader of
+// its own userId, an internal derived `broker` (never written to config.yml) and `maxInvestment` = that broker's amount, so every reader of
 // the per-instance config (LegManager caps, tokenRouter, order-side caps) keeps working unchanged. Pure: no imports of strategies/config.
 import Log from './Log';
 import { BrokerName, configuredBrokersOf, normalizeBrokerName } from './brokerName';
-import { exposureForBroker } from '../prism/configVocabulary';
+import { investmentForBroker } from '../prism/configVocabulary';
 
 // Types that already fan out over `brokers:` inside one instance (their state is keyed per broker): never expanded.
 export const MULTI_BROKER_TYPES: readonly string[] = [
@@ -24,8 +24,8 @@ export function expandBrokerInstances<T extends { type: string; userId?: string;
     const brokers = configuredBrokersOf(cfg);
     const baseId = cfg.userId || cfg.type;
     return brokers.map((broker: BrokerName) => {
-        const amount = exposureForBroker(cfg as any, broker);
-        return { ...cfg, userId: instanceUserIdFor(baseId, broker), broker, brokers: [broker], maxExposure: amount, maxInvestment: amount };
+        const amount = investmentForBroker(cfg as any, broker);
+        return { ...cfg, userId: instanceUserIdFor(baseId, broker), broker, brokers: [broker], maxInvestment: amount };
     });
 }
 
@@ -35,61 +35,20 @@ export const expandAllBrokerInstances = <T extends { type: string; userId?: stri
 type RuleCfg = { type: string; userId?: string; [k: string]: any };
 
 /**
- * Expand RuleBasedStrategy config with multiple indicator rules into separate configs
+ * A RuleBasedStrategy block is ONE strategy instance. `indicators` is a list of rules: each item is a rule, commas inside an item join the
+ * indicators that must agree within that rule. The instance id is the block's userId, or "RuleBased" when none is given.
  *
- * Input:
- * {
- *   type: 'RuleBasedStrategy',
- *   enabled: true,
- *   indicators: ['RSI_5_80_20, EMA_5_13', 'MACD_12_26_9'],
- *   quantity: 65
- * }
- *
- * Output:
- * [
- *   { type: 'RuleBasedStrategy', userId: 'Rule-RSI_5_80_20, EMA_5_13', enabled: true,
- *     indicators: ['RSI_5_80_20', 'EMA_5_13'], quantity: 65 },
- *   { type: 'RuleBasedStrategy', userId: 'Rule-MACD_12_26_9', enabled: true,
- *     indicators: ['MACD_12_26_9'], quantity: 65 }
- * ]
+ * Input:  { type: 'RuleBasedStrategy', indicators: ['Bollinger_25_1.5', 'MACD_4_8_3, MACD_16_32_12'], quantity: 65 }
+ * Output: [ { ...same, userId: 'RuleBased' } ]
  */
 export function expandRuleBasedConfig(config: RuleCfg): RuleCfg[] {
-    // Only expand RuleBasedStrategy with indicators array
-    if (config.type !== 'RuleBasedStrategy' || !config.indicators || !Array.isArray(config.indicators)) {
+    if (config.type !== 'RuleBasedStrategy') {
         return [config];  // Return as-is (single-element array)
     }
-
-    const expanded: RuleCfg[] = [];
-
-    for (let i = 0; i < config.indicators.length; i++) {
-        const indicatorRule = config.indicators[i];
-
-        // Split by comma and trim whitespace
-        const indicatorArray = indicatorRule
-            .split(',')
-            .map((ind: string) => ind.trim())
-            .filter((ind: string) => ind.length > 0);
-
-        if (indicatorArray.length === 0) {
-            console.warn(`[StrategyFactory] Skipping empty indicator rule at index ${i}`);
-            continue;
-        }
-
-        // Create userId from indicator names
-        const userId = `Rule-${indicatorRule}`;  // e.g., "Rule-RSI_5_80_20, EMA_5_13"
-
-        // Create expanded config for this rule
-        const expandedConfig: RuleCfg = {
-            ...config,  // Clone all properties (enabled, quantity, targetProfitPercent, etc.)
-            userId,
-            indicators: indicatorArray  // Replace with parsed array
-        };
-
-        expanded.push(expandedConfig);
+    if (!config.indicators || (Array.isArray(config.indicators) && config.indicators.length === 0)) {
+        console.warn(`[StrategyFactory] RuleBasedStrategy block has no rules - it will not trade`);
     }
-
-    Log.log(`[StrategyFactory] Expanded RuleBasedStrategy into ${expanded.length} instances`);
-    return expanded;
+    return [{ ...config, userId: config.userId || 'RuleBased' }];
 }
 
 // Every runnable instance of the configured blocks: RuleBased rules first, then the per-broker split.

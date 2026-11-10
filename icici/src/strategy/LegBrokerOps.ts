@@ -22,7 +22,7 @@ export interface LegContract {
 }
 
 export interface LegBrokerOps {
-    pickContract(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, excludeStrikes: number[]): Promise<LegContract>;
+    pickContract(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, excludeStrikes: number[], skipNearestExpiryDay?: boolean): Promise<LegContract>;
     buy(userId: string, tradingSymbol: string, token: string, quantity: number, exchange: 'NFO' | 'BFO', premiumHint: number): Promise<Trade>;
     sell(userId: string, tradingSymbol: string, token: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<unknown>;
     cancel(userId: string, orderId: string, exchange?: 'NFO' | 'BFO'): Promise<void>;
@@ -58,8 +58,8 @@ export async function chunkedLegSell(userId: string, tradingSymbol: string, quan
 export function brokerLegOps(brokerOf: () => unknown = () => undefined): LegBrokerOps {
     const broker = (): BrokerName | undefined => (normalizeBrokerName(brokerOf()) || undefined) as BrokerName | undefined;
     return {
-        async pickContract(userId, underlyingLtp, optionType, minPremium, excludeStrikes) {
-            const c = await OrderClient.getInstance().getContractByPriceRangeBare(userId, underlyingLtp, optionType, minPremium, 'NIFTY', excludeStrikes, broker());
+        async pickContract(userId, underlyingLtp, optionType, minPremium, excludeStrikes, skipNearestExpiryDay) {
+            const c = await OrderClient.getInstance().getContractByPriceRangeBare(userId, underlyingLtp, optionType, minPremium, 'NIFTY', excludeStrikes, broker(), skipNearestExpiryDay);
             return { tradingSymbol: c.tradingSymbol, token: String(c.antToken), exchange: c.exchange, strike: c.strike, premium: c.premium };
         },
         async buy(userId, tradingSymbol, token, quantity, exchange, premiumHint) {

@@ -418,14 +418,15 @@ export async function getContractByPriceRangeOnPrism(
     optionType: 'CE' | 'PE',
     index: 'NIFTY' | 'SENSEX' = 'NIFTY',
     minPremium = 100,
-    excludeStrikes: Set<number> = new Set()
+    excludeStrikes: Set<number> = new Set(),
+    skipNearestExpiryDay?: boolean
 ): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
     assertPrismExchange('getContractByPriceRangeOnPrism', index === 'SENSEX' ? 'BFO' : 'NFO');
     return pickContractByPremium(underlyingLtp, optionType, index, minPremium, excludeStrikes, (strike) => {
-        const prismRow = PrismContractMaster.getInstance().findNearestExpiryOption(index, strike, optionType, 0);
-        const antRow = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch: 'NFO', strike, optionType, expiryOffset: 0 });
+        const prismRow = PrismContractMaster.getInstance().findNearestExpiryOption(index, strike, optionType, 0, skipNearestExpiryDay);
+        const antRow = AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch: 'NFO', strike, optionType, expiryOffset: 0, skipNearestExpiryDay });
         return { tradingSymbol: prismRow.tradingSymbol, instrumentToken: Number(prismRow.token), lotSize: Number(antRow.lotSize), exchange: 'NFO' as const };
-    });
+    }, skipNearestExpiryDay);
 }
 
 // Cancels and untracks - mirrors kiteExecutor.cancelOrderOnKite.

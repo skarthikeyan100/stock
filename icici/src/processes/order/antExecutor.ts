@@ -675,11 +675,12 @@ export function getATMTokens(niftyLtp: number, index: string = 'NIFTY'): AtmToke
 // in a token space the leg's own map can never match.
 export async function estimateOptionPricesBatch(
     symbol: string,
-    candidates: { strike: number; optionType: string }[]
+    candidates: { strike: number; optionType: string }[],
+    skipNearestExpiryDay?: boolean
 ): Promise<Map<string, { premium: number; antToken: string }>> {
     const byKey = new Map<string, { premium: number; antToken: string }>();
     try {
-        const chain = await ANT.getInstance().getOptionChain(symbol);
+        const chain = await ANT.getInstance().getOptionChain(symbol, skipNearestExpiryDay);
         const byStrike = new Map(chain.map((row) => [row.strike, row]));
         for (const c of candidates) {
             const row = byStrike.get(c.strike);

@@ -59,6 +59,8 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
   padding: 18px 40px;
   border-bottom: 1px solid var(--landing-hairline);
   position: sticky;

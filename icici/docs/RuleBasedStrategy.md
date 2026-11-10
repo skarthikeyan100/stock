@@ -2,510 +2,183 @@
 
 ## Overview
 
-The **RuleBasedStrategy** executes trades when multiple technical indicators agree on market direction. Unlike traditional strategies that use a single indicator, rule-based strategies combine multiple signals to increase confidence and reduce false positives.
-
-## Architecture
+`RuleBasedStrategy` is one strategy. Its block in `config.yml` lists **rules**, one per line. A rule fires when its indicators agree on
+the direction of NIFTY, and then the strategy buys the option for that direction. Code: `src/strategy/RuleBasedStrategy.ts`; indicator
+names and rule parsing in `src/strategy/ruleIndicators.ts`; exits in `src/strategy/exitRules.ts`.
 
 ```
-NIFTY Quote Stream
+5-minute NIFTY candles (processes/strategies/niftyStatsBuilder.ts)
+      ↓  receive(oldStats, newStats)
+Each rule: its indicators → UP / DOWN / none (all must agree, or a majority with requireAllIndicators: false)
       ↓
-IndicatorSignals (maintains quote history)
+Combine the rules:
+  - any rule UP and another rule DOWN on the same candle → no trade (conflict)
+  - otherwise, any rule that fired → buy CALL (UP) or PUT (DOWN)
       ↓
-Calculate all indicators in rule
-      ↓
-Check consensus (all agree / majority)
-      ↓
-Execute trade if direction confirmed
-      ↓
-Monitor position (target/stop-loss/timeout)
+One position at a time → exits: timeout → target → stop-loss (on option ticks)
 ```
 
-## Key Features
+## Rules
 
-- ✅ **Multiple Instances**: Register 5, 10, or 100 different rules as separate strategy instances
-- ✅ **Live Indicator Calculation**: Computes RSI, MACD, EMA, Bollinger, ADX, Stochastic in real-time
-- ✅ **Flexible Consensus**: Require ALL indicators to agree, or use MAJORITY voting
-- ✅ **Risk Management**: Built-in target profit, stop loss, and max hold time
-- ✅ **Per-User Limits**: Loss limits and lot limits per strategy instance
-- ✅ **Cooldown Periods**: Prevent overtrading with configurable cooldowns
+Each item of `indicators` is one rule. Commas inside an item join indicators that must **all** agree within that rule (for a
+majority vote, set `requireAllIndicators: false` on the block).
 
-## Supported Indicators
+```yaml
+- type: RuleBasedStrategy
+  enabled: true
+  indicators:
+    - Bollinger_25_1.5              # rule 1: this indicator alone
+    - MACD_4_8_3, MACD_16_32_12     # rule 2: both must agree
+    - RSI_5_80_20, EMA_5_13         # rule 3: both must agree
+  quantity: 65
+  target: 15
+  stopLoss: 10
+  maxHoldTimeMinutes: 60
+```
 
-| Indicator | Format | Example | Description |
-|-----------|--------|---------|-------------|
-| **RSI** | `RSI_{period}_{overbought}_{oversold}` | `RSI_5_80_20` | Relative Strength Index<br>Overbought (>80) → DOWN<br>Oversold (<20) → UP |
-| **Reversed RSI** | `RSI_{period}_{overbought}_{oversold}_REV` | `RSI_5_80_20_REV` | Contrarian RSI<br>Overbought → UP<br>Oversold → DOWN |
-| **MACD** | `MACD_{fast}_{slow}_{signal}` | `MACD_12_26_9` | Moving Average Convergence Divergence<br>MACD > Signal → UP<br>MACD < Signal → DOWN |
-| **EMA Crossover** | `EMA_{short}_{long}` | `EMA_5_13` | Exponential Moving Average<br>Short crosses above → UP<br>Short crosses below → DOWN |
-| **Bollinger Bands** | `Bollinger_{period}_{stdDev}` | `Bollinger_20_2` | Price > Upper → UP<br>Price < Lower → DOWN |
-| **ADX** | `ADX_{period}` | `ADX_14` | Average Directional Index<br>+DI > -DI → UP<br>-DI > +DI → DOWN |
-| **Stochastic** | `Stochastic_{k}_{d}` | `Stochastic_14_3` | Stochastic Oscillator<br>%K < 20 → UP (oversold)<br>%K > 80 → DOWN (overbought) |
+| Situation on one candle | Result |
+|---|---|
+| Rule 1 says UP, rules 2 and 3 say nothing | Buy CE |
+| Rule 2 says UP, rule 3 says DOWN | No trade (rules disagree) |
+| Rule 2 says UP and rule 3 says UP | Buy CE (one trade, not two) |
+| Rule 2's MACD says UP and EMA says DOWN | Rule 2 says nothing; rule 2 cannot disagree with itself |
+| No rule fires | Nothing |
+
+A rule is evaluated only on the candle that closes. A position already open blocks new signals until it closes.
+
+## Indicators
+
+A name must be one the live builder computes (the parameter sets in `src/lib/indicator-config.ts`). An unknown name, or a
+combination the builder does not compute, stops the whole block from trading (ALERT in the log), and config validation rejects it.
+
+| Name | Example | Signal |
+|---|---|---|
+| `RSI_p_ob_os` | `RSI_5_80_20` | Above overbought → DOWN; below oversold → UP |
+| `RSI_p_ob_os_REV` | `RSI_5_80_20_REV` | Contrarian RSI (same parameters): trend inverted, so overbought → UP, oversold → DOWN |
+| `MACD_f_s_sig` | `MACD_12_26_9` | MACD above signal → UP; below → DOWN |
+| `EMA_s_l` | `EMA_5_13` | Short EMA crossover above long → UP; below → DOWN |
+| `Bollinger_p_dev` | `Bollinger_20_2` | Close above upper band → UP; below lower → DOWN |
+| `ADX_p` | `ADX_14` | +DI above −DI → UP; −DI above +DI → DOWN; ADX below 20 → NEUTRAL |
+| `Stochastic_k_d` | `Stochastic_14_3` | %K below 20 and above %D → UP; %K above 80 and below %D → DOWN (`Stoch_k_d` is accepted too) |
+
+Live parameters: RSI periods 5/10/14/15/20/25/30 with thresholds 70/30, 80/20 or 90/10; MACD 4/8/3 … 24/48/18 (seven sets);
+EMA 5/13 … 30/70 (nine pairs); Bollinger periods 5–30 with deviations 1, 1.5 or 2; ADX 14 and 20; Stochastic 14/3 and 14/5.
 
 ## Configuration
 
-### YAML Configuration (config.yml)
-
-Add rule-based strategies to the `strategies` array:
-
 ```yaml
-strategies:
-  # Example 1: Conservative rule (both must agree)
-  - type: RuleBasedStrategy
-    userId: Rule_RSI_EMA          # Unique identifier
-    enabled: true                  # Enable/disable this rule
-    indicators:                    # List of indicators to check
-      - RSI_5_80_20
-      - EMA_5_13
-    quantity: 65                   # Lot size (NIFTY lot = 65)
-    targetProfitPercent: 10        # Exit at +10% profit
-    stopLossPercent: 5             # Exit at -5% loss
-    maxHoldTimeMinutes: 30         # Max hold: 30 minutes
-    cooldownSeconds: 300           # Wait 5 min before next trade
-    requireAllIndicators: true     # ALL must agree (vs majority)
-    logEnabled: true               # Debug logging
-    lossLimit: 15000               # Max loss for this strategy (optional)
-    lotLimit: 1800                 # Max quantity per trade (optional)
+settings:
+  target: 10            # global exit: 10 points above the entry; "5%" or none also allowed
+  stopLoss: 20          # global exit: 20 points below the entry; "10%" or none also allowed
+  maxHoldTimeMinutes: 60  # global timeout: minutes held, winners and losers alike; 'none' = no timeout
 
-  # Example 2: Aggressive rule (majority vote)
+strategies:
   - type: RuleBasedStrategy
-    userId: Rule_Triple_Majority
     enabled: true
-    indicators:
-      - RSI_10_90_10
-      - MACD_12_26_9
-      - EMA_18_42
-    quantity: 130
-    targetProfitPercent: 15
-    stopLossPercent: 7
-    requireAllIndicators: false    # 2 out of 3 is enough
-    cooldownSeconds: 600
+    indicators:                   # one line per rule
+      - RSI_5_80_20, EMA_5_13
+      - Bollinger_25_1.5
+    quantity: 65                  # contracts per trade (NIFTY lot = 65)
+    maxHoldTimeMinutes: 30        # 0 = no timeout
+    cooldownSeconds: 300
+    requireAllIndicators: true    # false = a majority of each rule's indicators
+    target: "10%"                 # optional override of settings.target
+    stopLoss: none                # optional override: no stop-loss
     logEnabled: true
 ```
 
-### Configuration Parameters
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Off = the block takes no action (see the project guide on `enabled`) |
+| `indicators` | required | List of rules. Each item is a rule; commas inside an item join indicators that must agree |
+| `quantity` | 65 | Contracts per trade |
+| `target` | `settings.target` | Points or `N%` above the entry, or `none`. Required, from the block or from settings |
+| `stopLoss` | `settings.stopLoss` | Points or `N%` below the entry, or `none`. Required, from the block or from settings |
+| `maxHoldTimeMinutes` | `settings.maxHoldTimeMinutes` | Minutes a position is held, whatever its P&L. `none` (or 0) = no timeout. Required, from the block or from settings |
+| `requireAllIndicators` | `true` | `true`: all of a rule's indicators must agree. `false`: a majority; NEUTRAL or no value casts no vote |
+| `cooldownSeconds` | 0 | Wait after a trigger before the next one |
+| `logEnabled` | `true` | Debug logging |
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | string | - | Must be "RuleBasedStrategy" |
-| `userId` | string | - | Unique identifier (e.g., "Rule_RSI_EMA") |
-| `enabled` | boolean | false | Enable/disable this rule |
-| `indicators` | string[] | [] | List of indicator names to check |
-| `quantity` | number | 65 | Order quantity (NIFTY lot = 65) |
-| `targetProfitPercent` | number | 10 | Exit at +N% profit |
-| `stopLossPercent` | number | 5 | Exit at -N% loss (0 = disabled) |
-| `maxHoldTimeMinutes` | number | 30 | Max hold time (0 = disabled) |
-| `cooldownSeconds` | number | 300 | Wait N seconds before next trade |
-| `requireAllIndicators` | boolean | true | true = ALL must agree, false = MAJORITY |
-| `logEnabled` | boolean | true | Enable debug logging |
-| `lossLimit` | number | 15000 | Max loss per strategy (optional) |
-| `lotLimit` | number | 1800 | Max lots per trade (optional) |
-| `maxInvestment` | number | - | Max investment per trade (optional) |
+The block's id is its `userId`, or `RuleBased` when none is given. Legacy keys `targetProfitPercent`, `stopLossPercent`,
+`targetPoints`, `stopLossPoints` are ignored (an ALERT is logged at startup).
 
-## Usage Examples
+## Exits
 
-### Example 1: Single Rule (2 Indicators)
+Target and stop-loss come from `settings.target` / `settings.stopLoss` and can be overridden on the block with the same formats
+(points, `"N%"` of the entry price, or `none`). They are checked on each option tick of the held contract, in this order:
 
-**Scenario**: Trade when RSI and EMA both signal the same direction.
+1. **Timeout**: `maxHoldTimeMinutes` after the entry, for winners and losers alike (sold as `timeout`). It is not a loss-only exit.
+2. **Target**: option price at or above entry + target (sold as `win`).
+3. **Stop-loss**: option price at or below entry − stop (sold as `loss`).
 
-```yaml
-strategies:
-  - type: RuleBasedStrategy
-    userId: Rule_RSI_EMA
-    enabled: true
-    indicators:
-      - RSI_5_80_20
-      - EMA_5_13
-    quantity: 65
-    targetProfitPercent: 10
-    stopLossPercent: 5
-    cooldownSeconds: 300
-    requireAllIndicators: true
-```
+The levels are fixed when the buy fills and are recomputed if a freeze-split chunk changes the average price. Exits are sold
+by the strategy at the tick price; no resting broker order is placed for them. The exit depends on option ticks reaching
+the strategy, the same as the timeout.
 
-**Trade Logic**:
-1. Both RSI=UP AND EMA=UP → Buy CALL
-2. Both RSI=DOWN AND EMA=DOWN → Buy PUT
-3. Otherwise → Wait
+## Monitoring
 
-### Example 2: Multiple Rules (5 Instances)
-
-**Scenario**: Run 5 different rules simultaneously, each with different indicators.
-
-```yaml
-strategies:
-  # Rule 1: Fast scalping (RSI + EMA)
-  - type: RuleBasedStrategy
-    userId: Rule_Fast_Scalp
-    enabled: true
-    indicators: [RSI_5_80_20, EMA_5_13]
-    targetProfitPercent: 5
-    maxHoldTimeMinutes: 10
-    quantity: 65
-
-  # Rule 2: Medium momentum (MACD + BB)
-  - type: RuleBasedStrategy
-    userId: Rule_Medium_Mom
-    enabled: true
-    indicators: [MACD_12_26_9, Bollinger_20_2]
-    targetProfitPercent: 10
-    maxHoldTimeMinutes: 30
-    quantity: 130
-
-  # Rule 3: Trend following (ADX + EMA)
-  - type: RuleBasedStrategy
-    userId: Rule_Trend_Follow
-    enabled: true
-    indicators: [ADX_14, EMA_12_28]
-    targetProfitPercent: 15
-    maxHoldTimeMinutes: 60
-    quantity: 195
-
-  # Rule 4: Contrarian (Reversed RSI)
-  - type: RuleBasedStrategy
-    userId: Rule_Contrarian
-    enabled: true
-    indicators: [RSI_5_80_20_REV, Stochastic_14_3]
-    targetProfitPercent: 8
-    maxHoldTimeMinutes: 20
-    quantity: 65
-
-  # Rule 5: Triple confirmation (all must agree)
-  - type: RuleBasedStrategy
-    userId: Rule_Triple_Confirm
-    enabled: true
-    indicators: [RSI_14_80_20, MACD_12_26_9, EMA_12_28]
-    targetProfitPercent: 20
-    maxHoldTimeMinutes: 90
-    quantity: 260
-    requireAllIndicators: true
-```
-
-### Example 3: Majority Voting
-
-**Scenario**: Trade when 2 out of 3 indicators agree (less strict).
-
-```yaml
-strategies:
-  - type: RuleBasedStrategy
-    userId: Rule_Majority_Vote
-    enabled: true
-    indicators:
-      - RSI_10_90_10
-      - MACD_12_26_9
-      - EMA_18_42
-    requireAllIndicators: false    # MAJORITY mode
-    quantity: 65
-    targetProfitPercent: 10
-```
-
-**Trade Logic**:
-- 3/3 agree → Trade
-- 2/3 agree → Trade
-- 1/3 agree → Wait
-
-## Finding Top Indicators (Using Analysis Project)
-
-The analysis project (`icici/analysis/`) generates performance metrics for 3,240+ indicators. Use these to create high-performing rules.
-
-### Step 1: Generate Indicator Analysis
-
-```bash
-cd /home/karthikeyan/work/icici/analysis
-
-# Run full analysis (takes ~15-20 minutes)
-python3 main.py \
-  --thresholds 2,4,6,8,10,12,14,16,18,20 \
-  --reverse-rsi \
-  --include-combinations \
-  --skip-ml \
-  --parallel
-```
-
-This generates `output/threshold_comparison.csv` with 32,401 rows (10 thresholds × 3,240 indicators).
-
-### Step 2: Find Top Performers
-
-```bash
-cd /home/karthikeyan/work/icici/analysis/output
-
-# Top 20 indicators at threshold=10 (10-point target)
-awk -F, '$1 == 10 && $2 <= 20 {print}' threshold_comparison.csv | column -t -s,
-
-# Example output:
-# threshold  rank  indicator                      good_count  bad_count  success_rate  total  oscillating  overall_success_rate
-# 10         1     RSI_5_80_20__AND__EMA_5_13     25          2          92.59         27     5            57.93
-# 10         2     MACD_12_26_9__AND__BB_20_2     22          3          88.00         25     8            57.93
-# 10         3     EMA_12_28__AND__ADX_14         20          4          83.33         24     10           57.93
-```
-
-### Step 3: Extract Indicators from Combinations
-
-For combination indicators like `RSI_5_80_20__AND__EMA_5_13`, split by `__AND__`:
-
-```yaml
-strategies:
-  - type: RuleBasedStrategy
-    userId: Rule_Top_Performer_1
-    enabled: true
-    indicators:
-      - RSI_5_80_20
-      - EMA_5_13
-    # ... rest of config
-```
-
-### Step 4: Filter by Criteria
-
-```bash
-# High success rate (>80%) with enough signals (>15 trades)
-awk -F, '$6 > 80 && ($4 + $5) > 15 {print}' threshold_comparison.csv | \
-  sort -t, -k6 -rn | head -20
-
-# Consistent across thresholds (appears in top 50 for 5+ thresholds)
-awk -F, '$2 <= 50 {count[$3]++} END {for(i in count) if(count[i]>=5) print count[i],i}' \
-  threshold_comparison.csv | sort -rn
-```
-
-## REST API Endpoints
-
-### Enable/Disable Rules
-
-```bash
-# Enable a rule
-curl "http://localhost:3000/strategies?strategy=Rule_RSI_EMA&enable=true"
-
-# Disable a rule
-curl "http://localhost:3000/strategies?strategy=Rule_RSI_EMA&enable=false"
-```
-
-### Check Active Strategies
-
-```bash
-# View all strategies
-curl "http://localhost:3000/trades"
-```
-
-Response includes trades grouped by userId (strategy instance).
-
-## Monitoring & Logs
-
-### Console Logs
+Log lines (with `logEnabled: true`):
 
 ```
-[Rule:Rule_RSI_EMA] Signals: RSI_5_80_20=UP, EMA_5_13=UP
-[Rule:Rule_RSI_EMA] TRIGGERED: call at NIFTY=24500
-[Rule:Rule_RSI_EMA] Buying NIFTY06FEB25C24550 qty=65
-[Rule:Rule_RSI_EMA] Buy confirmed: NIFTY06FEB25C24550 qty=65 price=85.5
-[Rule:Rule_RSI_EMA] NIFTY06FEB25C24550 P&L=325 (5.0%)
-[Rule:Rule_RSI_EMA] Selling NIFTY06FEB25C24550: TARGET P&L=855 (10.0%)
-[Rule:Rule_RSI_EMA] Sell confirmed: NIFTY06FEB25C24550
-```
-
-### SSE Stream (Real-Time Positions)
-
-```javascript
-// Subscribe to position updates
-const eventSource = new EventSource('http://localhost:3000/positionstream');
-eventSource.addEventListener('position', (e) => {
-  const positions = JSON.parse(e.data);
-  console.log('Active trades:', positions);
-});
-```
-
-## Trading Flow
-
-```mermaid
-graph TD
-    A[NIFTY Quote] --> B[Add to History]
-    B --> C[Calculate All Indicators]
-    C --> D{All Agree?}
-    D -->|Yes - UP| E[Buy CALL]
-    D -->|Yes - DOWN| F[Buy PUT]
-    D -->|No| G[Wait]
-    E --> H[Monitor Position]
-    F --> H
-    H --> I{Exit Condition?}
-    I -->|Target Hit| J[Sell - Profit]
-    I -->|Stop Loss| K[Sell - Loss]
-    I -->|Timeout| L[Sell - Neutral]
-    I -->|Continue| H
-```
-
-## Best Practices
-
-### 1. Start with High-Quality Rules
-
-Use analysis project to find indicators with:
-- Success rate > 75%
-- Total trades > 20 (statistically significant)
-- Low oscillating count (decisive signals)
-
-### 2. Diversify Rules
-
-Don't use the same indicators across all rules. Examples:
-- Rule 1: Fast scalping (RSI_5 + EMA_5)
-- Rule 2: Medium momentum (MACD + BB)
-- Rule 3: Trend following (ADX + EMA_long)
-
-### 3. Set Realistic Targets
-
-| Strategy Type | Target % | Stop Loss % | Hold Time |
-|---------------|----------|-------------|-----------|
-| Scalping      | 5-8%     | 3-4%        | 10-20 min |
-| Day Trading   | 10-15%   | 5-7%        | 30-60 min |
-| Swing         | 15-25%   | 7-10%       | 60-120 min |
-
-### 4. Use Loss Limits
-
-Set per-strategy loss limits to protect capital:
-
-```yaml
-strategies:
-  - type: RuleBasedStrategy
-    userId: Rule_Aggressive
-    lossLimit: 5000     # Stop after ₹5,000 loss
-    lotLimit: 900       # Max 900 qty per trade
-```
-
-### 5. Monitor Performance
-
-Track which rules are profitable:
-
-```bash
-# View MongoDB trades by strategy
-use stocks
-db.Trade.aggregate([
-  { $match: { user: /^Rule_/ } },
-  { $group: {
-      _id: "$user",
-      totalProfit: { $sum: "$realizedPnL" },
-      tradeCount: { $sum: 1 }
-  }},
-  { $sort: { totalProfit: -1 }}
-])
+[Rule:RuleBased] Rules: [RSI_5_80_20,EMA_5_13]=UP [Bollinger_25_1.5]=none
+[Rule:RuleBased] Consensus: call
+[Rule:RuleBased] TRIGGERED: call, buying NIFTY06FEB25C24550 qty=65
+[Rule:RuleBased] Buy confirmed: NIFTY06FEB25C24550 qty=65 price=85.5 target=8.55 stop=17.1 (points)
+[Rule:RuleBased] Selling NIFTY06FEB25C24550: WIN P&L=...
 ```
 
 ## Troubleshooting
 
-### No Trades Executing
+**No trades.**
+1. `enabled: true` on the block, and the time is 10:00–15:00.
+2. An `ALERT` in the log: an unknown indicator name, or a `target`/`stopLoss` that is missing or invalid (in the block and in settings).
+3. `Rules disagree` in the log: a conflict on that candle.
+4. Cooldown still running, or a position already open.
+5. Each indicator needs enough history. The live builder starts from the first tick after the process starts, so after a
+   restart long periods (for example MACD 24/48/18 or EMA 30/70) return no value and the rule waits.
 
-**Check:**
-1. Strategy enabled? `enabled: true` in config.yml
-2. Indicators valid? Check console for warnings
-3. Market hours? 10:00-15:00 IST
-4. Cooldown active? Wait for cooldown period to expire
-5. Active trade? Only one trade per rule at a time
+**Order failed.** Check the price range (`settings.minPrice` / `maxPrice`), the balance and the lot size (65 for NIFTY).
 
-**Debug:**
-```yaml
-logEnabled: true    # Enable verbose logging
-```
+## Backtest over the backup days
 
-### Indicators Not Agreeing
-
-**Check:**
-- Are indicators compatible? (e.g., RSI + EMA works well, but RSI + RSI_REV may conflict)
-- Try `requireAllIndicators: false` for majority voting
-- Check quote history size (needs 100+ quotes for longer-period indicators)
-
-### Order Placement Failed
-
-**Check:**
-1. Contract price within range? (config.yml: minPrice/maxPrice)
-2. Sufficient balance?
-3. Lot size valid? (NIFTY lot = 65, max = 1800)
-4. User loss limit reached? (Monitor.USER_LOSS_LIMIT)
-
-## Performance Tips
-
-### Optimize Indicator Count
-
-- 2-3 indicators: Fast, good for scalping
-- 4-5 indicators: Slower, fewer trades, higher confidence
-- Avoid >6 indicators: Too restrictive, rarely all agree
-
-### Optimize Periods
-
-Use analysis project to find optimal periods:
+`npm run backtest:ruleBased` scores RuleBased rules on the recorded days (default `~/later/data/backups/<Mon-DD>/csv`). It is in
+`src/tools/RuleBasedBacktest.ts` and `src/tools/ruleBacktest/`.
 
 ```bash
-# Find best RSI period for threshold=10
-grep "^10," threshold_comparison.csv | grep "^RSI_" | \
-  awk -F, '{print $3,$6}' | sort -t' ' -k2 -rn | head -10
+npm run backtest:ruleBased -- --maxSize 2 --intervals 300,900,1800 --verifyTop 10 --out backtest-results/run1
 ```
 
-### Parallel Execution
+| Flag | Default | Meaning |
+|---|---|---|
+| `--allDays` | `~/later/data/backups` | Folder of `<Mon-DD>/csv/` day folders |
+| `--intervals` | `300,900,1800` | Candle lengths in seconds |
+| `--maxSize` | `2` | Largest rule (number of indicators); singles and pairs all-agree, triples and above also majority |
+| `--verifyTop` | `5` | Top rules replayed through the real `RuleBasedStrategy` and compared trade by trade |
+| `--costPerTrade`, `--slippagePoints` | `0` | Rupees per trade; points per side |
+| `--maxStrikeDistance` | `100` | Skip a signal when the nearest recorded strike is farther than this from ATM |
+| `--out` | `backtest-results/rulebased-<time>` | Output folder (gitignored) |
 
-Run multiple rules in parallel — each strategy instance operates independently.
+**What is simulated.** The same consensus, exits and order of checks as the live strategy: a signal at a candle close in 10:00–15:00
+buys the ATM CE (UP) or PE (DOWN) at the first option tick after it; the exit is timeout, target or stop on each option tick; one position
+per rule. Every rule is run against 105 exit cells (targets none/5/10/15/20 points, 10/20%; stops none/10/20 points, 10/20%; timeouts
+15/30/60 min). The cell reported for a rule is the one with the best median total over itself and its one-step neighbours.
 
-```yaml
-strategies:
-  - type: RuleBasedStrategy
-    userId: Rule_1
-    # ...
-  - type: RuleBasedStrategy
-    userId: Rule_2
-    # ...
-  - type: RuleBasedStrategy
-    userId: Rule_3
-    # ...
-```
+**Outputs.** `summary.md` is the first file to read: data coverage, a warning when every day moved the same way, the robust and gate-passing
+rules, and the verification result. `rules.csv` has one row per rule and interval at its reported cell. `trades-top.csv` lists the top rule's
+trades. `run.json` records the flags and the input files, so a rerun can be compared.
 
-All 3 can trade simultaneously (different contracts, different users).
+**Baselines.** The summary also scores always-CALL and always-PUT on the same candles and exit cells. Read the rules against them: in a
+one-way market the always-CALL baseline can pass the gate on its own. The per-interval table counts how many robust rules make more net
+P&L than always-CALL.
 
-## Example: Production Configuration
+**The consistency test.** A rule passes the gate when: at least 20 signals with a direction hit rate above 55% at 15 points; at least 8
+trades; net P&L above zero; positive on at least 3 of the days; profit factor above 1.2. It is robust when it also makes money in the
+leave-one-day-out test (the best exit on the other days, scored on the day left out). A passing rule on a few days is a shortlist to test
+further, not proof: the data is a few days, the market moved one way on every recorded day, and many rules and exit cells are compared.
 
-```yaml
-# Production setup: 3 rules, balanced risk
-settings:
-  minPrice: 20
-  maxPrice: 150
+**Checks.** The verification step drives the real `RuleBasedStrategy` class (order client stubbed, clock set to the tick times) and fails
+the report if its trades differ from the sweep. Zero mismatches on the verified rules is the evidence that the sweep matches the live code.
 
-strategies:
-  # Conservative: High success rate, low risk
-  - type: RuleBasedStrategy
-    userId: Rule_Conservative
-    enabled: true
-    indicators: [RSI_5_80_20, EMA_5_13]
-    quantity: 65
-    targetProfitPercent: 8
-    stopLossPercent: 4
-    maxHoldTimeMinutes: 20
-    cooldownSeconds: 600
-    lossLimit: 5000
-
-  # Balanced: Medium risk/reward
-  - type: RuleBasedStrategy
-    userId: Rule_Balanced
-    enabled: true
-    indicators: [MACD_12_26_9, Bollinger_20_2]
-    quantity: 130
-    targetProfitPercent: 12
-    stopLossPercent: 6
-    maxHoldTimeMinutes: 40
-    cooldownSeconds: 900
-    lossLimit: 10000
-
-  # Aggressive: Higher targets, stricter rules
-  - type: RuleBasedStrategy
-    userId: Rule_Aggressive
-    enabled: true
-    indicators: [RSI_14_80_20, MACD_12_26_9, EMA_12_28]
-    quantity: 195
-    targetProfitPercent: 20
-    stopLossPercent: 10
-    maxHoldTimeMinutes: 90
-    cooldownSeconds: 1800
-    requireAllIndicators: true
-    lossLimit: 15000
-```
-
-## Summary
-
-The RuleBasedStrategy enables data-driven trading by combining multiple technical indicators. Use the analysis project to discover high-performing indicator combinations, then configure them as separate strategy instances in config.yml. Each rule operates independently with its own risk management (target, stop loss, timeout, cooldown).
-
-**Key Advantages:**
-- ✅ Systematic, rule-based decisions (no emotions)
-- ✅ Backtested indicators from analysis project
-- ✅ Multiple strategies running in parallel
-- ✅ Built-in risk management per strategy
-- ✅ Real-time monitoring via SSE streams
+Limits: 15- and 30-minute candles are built by the backtest's own builder; the live pipeline is still 5-minute only. Highs and lows are
+closes, as in the live builder, so ADX and Stochastic are approximate. The recorded option strikes are fixed per day, so an ATM strike that
+was not recorded is skipped (or uses the nearest recorded strike within the distance limit).

@@ -6,7 +6,7 @@ import { toPercentNumber } from '../prism/percentConfig';
 import AntContractMaster from '../ant/AntContractMaster';
 import ANT from '../ant/ANT';
 import KiteContractMaster from '../kite/KiteContractMaster';
-import BreezeContractMaster from '../breeze/BreezeContractMaster';
+import BreezeContractMaster, { breezeTsym } from '../breeze/BreezeContractMaster';
 import { roundToTick } from '../util/tick';
 import OrderClient from '../processes/strategies/OrderClient';
 import { Strategy } from './strategy';
@@ -400,7 +400,7 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
                         }
                         resolvedLegs.push({
                             stock, optionType, broker,
-                            tradingSymbol: `${shortName}${antContract.strike}${optionType}`,
+                            tradingSymbol: breezeTsym(record.shortName, record.expiryDate, record.strikePrice, record.optionType as 'CE' | 'PE'),
                             instrumentToken: antContract.token, // ANT common token - see BrokerLeg's own comment
                             exchange,
                             lotSize: Number(record.lotSize),

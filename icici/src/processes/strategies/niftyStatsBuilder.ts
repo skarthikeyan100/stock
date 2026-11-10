@@ -2,7 +2,7 @@ import { localDayKey } from '../../strategy/dayKey';
 import regression from 'regression';
 import { PeriodicStats } from '../../model/model';
 import { buildCandle } from '../../lib/candle-builder';
-import { calcRSI, calcEMACrossover, calcMACD, calcBollinger, calcADX, calcStochastic } from '../../lib/indicators';
+import { calcRSI, calcRSIReversed, calcEMACrossover, calcMACD, calcBollinger, calcADX, calcStochastic } from '../../lib/indicators';
 import { RSI_PARAMS, MACD_PARAMS, EMA_PARAMS, BOLLINGER_PARAMS, ADX_PARAMS, STOCHASTIC_PARAMS } from '../../lib/indicator-config';
 
 // Live-pipeline port of decision.ts's _emitPrice/_computeAndEmitStats (the
@@ -12,13 +12,11 @@ import { RSI_PARAMS, MACD_PARAMS, EMA_PARAMS, BOLLINGER_PARAMS, ADX_PARAMS, STOC
 // instantiated inside GET /replay with replayMode forced true). This module
 // has none of decision.ts's Prism/Mongo/child_process baggage - matches
 // strategiesProcess.ts's own "no Prism/Kite dependency at all" design.
+//
+// createStatsBuilder(bucketSeconds) gives an independent builder for any interval (the backtest uses 300/900/1800). The module-level
+// record()/reset() are the live 300-second builder and are unchanged.
 
-const BUCKET_SECONDS = 300;
-
-let startTime: number | null = null;
-let bucket: number[] = [];
-const closes: number[] = []; // one entry per completed bucket, grows for the session (matches decision.ts's candlesMap-derived `prices` array)
-let previousStats: PeriodicStats | null = null;
+const LIVE_BUCKET_SECONDS = 300;
 
 function determineTrend(prices: number[]): string {
     const data = prices.map((price, index) => [index, price]);
@@ -29,77 +27,97 @@ function determineTrend(prices: number[]): string {
     return 'Sideways';
 }
 
-// Call on every live NIFTY tick. `ltt` is epoch seconds (matches decision.ts's
-// parseInt(quote.ltt) usage). Returns a stats update only when this tick
-// closes a 300s bucket, otherwise null.
+// `ltt` is epoch seconds (matches decision.ts's parseInt(quote.ltt) usage).
 function dayOf(epochSeconds: number): string {
     return localDayKey(new Date(epochSeconds * 1000));
 }
 
-// Test/rollover hook: forget every bucket, close and previous-stats so the next tick starts fresh.
-export function reset(): void {
-    startTime = null;
-    bucket = [];
-    closes.length = 0;
-    previousStats = null;
+export interface StatsBuilder {
+    record(ltp: number, ltt: number): { oldStats: PeriodicStats | null; newStats: PeriodicStats } | null;
+    reset(): void;
 }
 
-export function record(ltp: number, ltt: number): { oldStats: PeriodicStats | null; newStats: PeriodicStats } | null {
-    // A bad tick (NaN ltt from parseInt of a missing/garbled field, zero/NaN ltp) must never reach the bucket:
-    // a NaN startTime would make every later `diff >= BUCKET_SECONDS` comparison false and freeze stats for the session.
-    if (!Number.isFinite(ltp) || ltp <= 0 || !Number.isFinite(ltt) || ltt <= 0) return null;
-    // Day rollover (process left running overnight): yesterday's closes/bucket must not feed today's indicators.
-    if (startTime !== null && dayOf(ltt) !== dayOf(startTime)) reset();
-    // A tick older than the bucket start (out-of-order/replayed) would corrupt the bucket's time base.
-    if (startTime !== null && ltt < startTime) return null;
-    if (startTime === null) {
+// Returns a builder with its own state. record() returns a stats update only when a tick closes a bucket, otherwise null.
+export function createStatsBuilder(bucketSeconds: number): StatsBuilder {
+    let startTime: number | null = null;
+    let bucket: number[] = [];
+    const closes: number[] = []; // one entry per completed bucket, grows for the session (matches decision.ts's candlesMap-derived `prices` array)
+    let previousStats: PeriodicStats | null = null;
+
+    // Test/rollover hook: forget every bucket, close and previous-stats so the next tick starts fresh.
+    function reset(): void {
+        startTime = null;
+        bucket = [];
+        closes.length = 0;
+        previousStats = null;
+    }
+
+    function record(ltp: number, ltt: number): { oldStats: PeriodicStats | null; newStats: PeriodicStats } | null {
+        // A bad tick (NaN ltt from parseInt of a missing/garbled field, zero/NaN ltp) must never reach the bucket:
+        // a NaN startTime would make every later `diff >= bucketSeconds` comparison false and freeze stats for the session.
+        if (!Number.isFinite(ltp) || ltp <= 0 || !Number.isFinite(ltt) || ltt <= 0) return null;
+        // Day rollover (process left running overnight): yesterday's closes/bucket must not feed today's indicators.
+        if (startTime !== null && dayOf(ltt) !== dayOf(startTime)) reset();
+        // A tick older than the bucket start (out-of-order/replayed) would corrupt the bucket's time base.
+        if (startTime !== null && ltt < startTime) return null;
+        if (startTime === null) {
+            startTime = ltt;
+        }
+
+        bucket.push(ltp);
+        const diff = ltt - startTime;
+        if (!(diff >= bucketSeconds && bucket.length >= 2)) {
+            return null;
+        }
+
+        const candle = buildCandle(bucket, startTime);
+        closes.push(candle.close);
+
+        // decision.ts:520-521 builds highs/lows from each completed candle's own
+        // high/low, not from closes - this port uses closes for highs/lows too as
+        // a deliberate simplification (only affects ADX/Stochastic; RSI/MACD/EMA/
+        // Bollinger, what RuleBasedStrategy actually configures per config.yml's
+        // indicators: field today, only ever consume closes).
+        const highs = closes;
+        const lows = closes;
+
+        const rsiResults = RSI_PARAMS.map(p => calcRSI(closes, p.period, p.overbought, p.oversold)).filter(Boolean);
+        // Contrarian RSI (RSI_p_ob_os_REV): same periods, trend inverted by calcRSIReversed. Read by RuleBasedStrategy only.
+        const rsiReversedResults = RSI_PARAMS.map(p => calcRSIReversed(closes, p.period, p.overbought, p.oversold)).filter(Boolean);
+        const macdResults = MACD_PARAMS.map(p => calcMACD(closes, p.shortPeriod, p.longPeriod, p.signalPeriod)).filter(Boolean);
+        const bollingerResults = BOLLINGER_PARAMS.map(p => calcBollinger(closes, p.period, p.numDeviations)).filter(Boolean);
+        const emaResults = EMA_PARAMS.map(p => calcEMACrossover(closes, p.shortPeriod, p.longPeriod)).filter(Boolean);
+        const adxResults = ADX_PARAMS.map(p => calcADX(highs, lows, closes, p.period)).filter(Boolean);
+        const stochasticResults = STOCHASTIC_PARAMS.map(p => calcStochastic(highs, lows, closes, p.kPeriod, p.dPeriod)).filter(Boolean);
+
+        const pivot = { S1: candle.S1 ?? 0, R1: candle.R1 ?? 0, S2: candle.S2 ?? 0, R2: candle.R2 ?? 0 };
+
+        const results = {
+            eventName: `priceUpdate_${bucketSeconds}`,
+            macd: macdResults, rsi: rsiResults, rsiReversed: rsiReversedResults, bollinger: bollingerResults,
+            ema: emaResults, adx: adxResults, stochastic: stochasticResults,
+            pivot,
+        };
+
+        const newStats = new PeriodicStats(
+            candle.open, candle.high, candle.low, candle.close,
+            candle.average, candle.median, candle.stddev, candle.mad,
+            determineTrend(closes), results
+        );
+
+        const oldStats = previousStats;
+        previousStats = newStats;
+
         startTime = ltt;
+        bucket = [];
+
+        return { oldStats, newStats };
     }
 
-    bucket.push(ltp);
-    const diff = ltt - startTime;
-    if (!(diff >= BUCKET_SECONDS && bucket.length >= 2)) {
-        return null;
-    }
-
-    const candle = buildCandle(bucket, startTime);
-    closes.push(candle.close);
-
-    // decision.ts:520-521 builds highs/lows from each completed candle's own
-    // high/low, not from closes - this port uses closes for highs/lows too as
-    // a deliberate simplification (only affects ADX/Stochastic; RSI/MACD/EMA/
-    // Bollinger, what RuleBasedStrategy actually configures per config.yml's
-    // indicators: field today, only ever consume closes).
-    const highs = closes;
-    const lows = closes;
-
-    const rsiResults = RSI_PARAMS.map(p => calcRSI(closes, p.period, p.overbought, p.oversold)).filter(Boolean);
-    const macdResults = MACD_PARAMS.map(p => calcMACD(closes, p.shortPeriod, p.longPeriod, p.signalPeriod)).filter(Boolean);
-    const bollingerResults = BOLLINGER_PARAMS.map(p => calcBollinger(closes, p.period, p.numDeviations)).filter(Boolean);
-    const emaResults = EMA_PARAMS.map(p => calcEMACrossover(closes, p.shortPeriod, p.longPeriod)).filter(Boolean);
-    const adxResults = ADX_PARAMS.map(p => calcADX(highs, lows, closes, p.period)).filter(Boolean);
-    const stochasticResults = STOCHASTIC_PARAMS.map(p => calcStochastic(highs, lows, closes, p.kPeriod, p.dPeriod)).filter(Boolean);
-
-    const pivot = { S1: candle.S1 ?? 0, R1: candle.R1 ?? 0, S2: candle.S2 ?? 0, R2: candle.R2 ?? 0 };
-
-    const results = {
-        eventName: 'priceUpdate_300',
-        macd: macdResults, rsi: rsiResults, bollinger: bollingerResults,
-        ema: emaResults, adx: adxResults, stochastic: stochasticResults,
-        pivot,
-    };
-
-    const newStats = new PeriodicStats(
-        candle.open, candle.high, candle.low, candle.close,
-        candle.average, candle.median, candle.stddev, candle.mad,
-        determineTrend(closes), results
-    );
-
-    const oldStats = previousStats;
-    previousStats = newStats;
-
-    startTime = ltt;
-    bucket = [];
-
-    return { oldStats, newStats };
+    return { record, reset };
 }
+
+// The live 5-minute builder (used by strategiesProcess.ts).
+const liveBuilder = createStatsBuilder(LIVE_BUCKET_SECONDS);
+export const reset = liveBuilder.reset;
+export const record = liveBuilder.record;

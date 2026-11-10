@@ -23,26 +23,34 @@ The earlier prototypes (`BiDirectionStrategy`, `DiffStrategy`, `PivotStrategy`,
 `HighLotStrategy`, `TestStrategy`, `ORBPrevious`) were deleted in commit `9765032`. `Minutes5Decision` was deleted there too and revived
 as `MomentumAtFixedTimeStrategy` (see its section).
 
-**Global settings and per-strategy overrides.** `settings` in config.yml holds only strategy-agnostic values (`minPrice`, `maxPrice`, `targetPoints`, `stopLossPoints`, `trailingDistance`, `cooldownSeconds`, `logQuotes`, `maxDailyDrawdownPercent`, `maxWeeklyDrawdownPercent`, `skipNearestExpiryOnEve`). A strategy overrides one by setting the same key on its own block; absent there, the global value is used (`settingFor`, `Strategy.setting(key)`; the legacy strategies' `cooldownSeconds` and the order executors' target/stop points follow this). `maxDailyDrawdownPercent` / `maxWeeklyDrawdownPercent` are account limits for real users only, never applied to a strategy instance (`bookkeeping.isStrategyUser`); strategies have their own stops. The gap-screener cover order keys live on the `GapStrategy` block (`coverOrderEnabled`, `coverOrderUserEmail`, `coverOrderQuantity`, `coverOrderStopLossPoints`).
+**Global settings and per-strategy overrides.** `settings` in config.yml holds only strategy-agnostic values (`minPrice`, `maxPrice`, `targetPoints`, `stopLossPoints`, `trailingDistance`, `cooldownSeconds`, `logQuotes`, `maxDailyDrawdownPercent`, `maxWeeklyDrawdownPercent`, `skipNearestExpiryOnEve`, `skipNearestExpiryOnExpiryDay`, `eodCloseTime`). A strategy overrides one by setting the same key on its own block; absent there, the global value is used (`settingFor`, `Strategy.setting(key)`; the legacy strategies' `cooldownSeconds` and the order executors' target/stop points follow this). `maxDailyDrawdownPercent` / `maxWeeklyDrawdownPercent` are account limits for real users only, never applied to a strategy instance (`bookkeeping.isStrategyUser`); strategies have their own stops. The gap-screener cover order keys live on the `GapStrategy` block (`coverOrderEnabled`, `coverOrderUserEmail`, `coverOrderQuantity`, `coverOrderStopLossPoints`).
+
+**End-of-day close time.** `settings.eodCloseTime` (`'HH:mm'`, config ships `'15:50'`) is the one end-of-day close for every strategy (Continuous, SupportResistance, Hourly, SimpleContinuous, Butterfly, BulkPcr, and NiftyChange / MomentumAtFixedTime / Recommendation via `LimitEntryStrategy`), read through `util/eodClose.ts`. Unlike the other global settings it is NOT overridable per strategy: a strategy block that carries `eodCloseTime` is rejected by `configValidation`. When the setting is missing or invalid each strategy falls back to its own default (15:10; BulkPcr and Butterfly 15:15). A time after the trading window (~15:25-15:30) means no end-of-day close happens at all: positions are carried overnight and, outside the window, no strategy is delivered ticks or fills, so they are unmanaged (resting day sells lapse; Kite GTTs persist).
 
 **Profit cooldown.** `profitCooldownSeconds` (Continuous, SupportResistance, BulkPcr; default 0 = locked for the day, the old behaviour) mirrors `lossCooldownSeconds`: after a `maxProfit` trip the lockout is released that many seconds later, once the strategy (or the broker, for BulkPcr) is flat, and the profit target restarts from the P&L at that moment, so the profit that tripped it is not counted again. It survives a restart (Mongo `strategyLatches` for LegManager, the BulkPcr state doc). A BulkPcr loss lockout waits for a pending profit release instead of giving up for the day.
 
-**Expiry-eve filter.** `settings.skipNearestExpiryOnEve: true` (default false) makes every contract master resolve the NEXT expiry on the trading day before the nearest one (`util/expirySkip.ts`); entries and strike-based sell re-resolution both follow it, so one day never mixes two expiries. An explicit expiry/offset is never changed.
+**Target and stop-loss (global, overridable).** `settings.target` and `settings.stopLoss` in config.yml are the default exits for every strategy
+that uses them (today RuleBasedStrategy and MomentumAtFixedTimeStrategy; the others keep their own, see `open-review-items.md`). Each takes
+points (`10`), a percentage of the entry price (`"5%"`), or `none`. A strategy block can set the same key to override the global value, with the
+same formats (`stopLoss: none` gives a strategy no stop). `settings.maxHoldTimeMinutes` is the same kind of global setting for the timeout (minutes, or `none`), applied to RuleBasedStrategy; it closes winning and losing positions alike. A value absent in both places stops that strategy from trading, with an ALERT: an
+unset stop is never read as "no stop". Helper: `src/strategy/exitRules.ts`; validation: `src/prism/configValidation.ts`.
+
+**Expiry-eve filter.** `settings.skipNearestExpiryOnEve: true` (default false) makes every contract master resolve the NEXT expiry on the trading day before the nearest one (`util/expirySkip.ts`); entries and strike-based sell re-resolution both follow it, so one day never mixes two expiries. An explicit expiry/offset is never changed. `settings.skipNearestExpiryOnExpiryDay: true` does the same ON the nearest expiry's own day (ANT's option chain follows it too, via `AntContractMaster.nearestExpiryIndex`); added 2026-11-09 so SimpleContinuous and MomentumAtFixedTime trade next week's contract on expiry day. The setting is the default for every strategy; a strategy block may set the same key (`skipNearestExpiryOnExpiryDay: true|false`) to override it for its own lookups. Underneath, every contract lookup takes an optional `skipNearestExpiryDay` argument (contract masters, `pickContractByPremium`, `BrokerExecutor.resolveContract/getContractByPriceRange`, the `getContractByPriceRangeBare` / `resolveOptionContract` IPCs, `LegBrokerOps.pickContract`): true = next expiry on expiry day, false = never, undefined = the setting; `expiryDayOverrideOf(block)` reads it from a block. Wired in SimpleContinuous, MomentumAtFixedTime (via LimitEntry) and every LegManager strategy; other strategies follow the setting until they pass it. **Breeze honours the argument too, and its tsym carries the expiry (2026-11-09).** A Breeze trading symbol used to be `NIFTY24950CE` with no expiry, so the 09-Nov and the 17-Nov contract of one strike were one key (a restart reconcile mixed them and a strategy bought a second CE). It is now `NIFTY09NOV2624950CE` (`breezeTsym` / `parseBreezeTsym` / `breezeLegacyTsym` in `src/breeze/BreezeContractMaster.ts`; DDMMMYY, upper case; SENSEX stays `SENSEX...`). Every Breeze order path resolves the contract from the tsym's own expiry (`resolveBreezeContract` in `breezeExecutor.ts`); the pick (`getContractByPriceRangeOnBreeze`, `resolveContract`) prices from the ANT chain of the requested expiry (the per-block `skipNearestExpiryOnExpiryDay`). The old expiry-less form is still read everywhere (state and Mongo rows written before the change): it resolves through the leg's ANT token, and the restart reconcile (`reconcileBreezePositions`) matches fills under either spelling and splits them by the position's contract tokens. `getLiveNetQuantity`, `squareOffOnBreeze`, the lock-profits price map and the pending-order trackers are keyed by the exact tsym. Deploy note: restart only when Breeze is flat or the open legs were opened after the change; a leg opened under the old spelling and still open at the restart gets its sell fill booked under the old tsym while the restored row carries the new one.
 
 **BulkPcr 2026-11-02 additions.** `maxRebuysPerSlot` (optional, default unlimited) caps re-buys of a side per cycle; `maxLossPerOrder` is taken of the CONFIGURED cap, not the loss-trip-cut one; the first hedge buy is exempt from the investment cap (as a hedge re-buy is); a hedge top-up re-sizes from the broker's margin message up to 3 times and updates `entryQuantity`.
 
 **Brokers and the per-broker amount (2026-11-02).** Every strategy block takes `brokers: [kite, ant, breeze]`
 (default `[kite]`); the single `broker:` key is REMOVED (ConfigService logs a one-time warning and ignores it).
-**The amount is per broker:** `maxExposure` (legacy `maxInvestment`) is what EACH listed broker trades with, and
-`maxExposureByBroker: {ant: 70000}` overrides one broker (helper `exposureForBroker`, `prism/configVocabulary.ts`).
+**The amount is per broker:** `maxInvestment` is what EACH listed broker trades with, and
+`maxInvestmentByBroker: {ant: 70000}` overrides one broker (helper `investmentForBroker`, `prism/configVocabulary.ts`).
 Two ways a block fans out over its brokers:
 - `BulkPcr`, `BulkPcrAutoStart`, `Hourly`, `Butterfly`, `TopStock`, `Recommendation`, `NiftyChange`, `MomentumAtFixedTime` fan out inside one
   instance (`configuredBrokersOf`); the order-side cap is per (user, broker) (`maxInvestmentByBroker`).
 - Every other type (Continuous, SupportResistance, Sentiment, RateOfChange, Gap, RuleBased, GoodMorning*, TargetReach) is
   expanded in memory into ONE INSTANCE PER BROKER (`util/strategyInstances.ts`, `expandBrokerInstances`): kite keeps the
   base `userId`, the others get `<base>-ANT` / `<base>-Breeze` (so existing Mongo state and trade history carry over;
-  RuleBased composes: `Rule-<ind>`, `Rule-<ind>-ANT`). Each child gets a derived internal `broker` (never written to
-  config.yml) and `maxExposure` = its broker's amount, so each broker has its own legs, maxProfit/maxLoss and cooldown.
+  RuleBased composes: `RuleBased`, `RuleBased-ANT`). Each child gets a derived internal `broker` (never written to
+  config.yml) and `maxInvestment` = its broker's amount, so each broker has its own legs, maxProfit/maxLoss and cooldown.
   Children are independent signal evaluators, so entries on different brokers can differ by seconds. Changing `brokers:`
   needs a restart (a config reload refreshes configs but creates no new instances). Look instances up through
   `configService.getInstances()`, not `getConfig().strategies`, when keying by `userId`.
@@ -280,7 +288,7 @@ Only the admin `POST /strategies/BulkPcrStrategy/reset` clears it, or the local 
 re-arm (`reset({ keepStops: true })`) keeps the lockout. The admin reset takes `?userId=BulkPcr-NIFTY` to reset one instance
 (default: every instance of the type) and keeps the day's realized P&L unless `?clearPnl=true` (2026-10-30).
 No `maxLossPerOrder` (or 0) = off. A `maxLossPerOrder` without a usable `maxInvestment` fails config validation.
-**Cooldown and per-broker investment (mandatory BulkPcr keys, added 2026-10-29)**: `maxExposureByBroker` (map broker -> rupees; keys may use
+**Cooldown and per-broker investment (mandatory BulkPcr keys, added 2026-10-29)**: `maxInvestmentByBroker` (map broker -> rupees; keys may use
 an alias such as `zerodha`) is each broker's investment cap, enforced per (strategy, broker) in the order process (`bookkeeping.getUserMaxInvestment(user, broker)`)
 and the base of that broker's `maxLossPerOrder`/`maxProfit` percentages. Each `maxLossPerOrder` trip cuts the tripped broker's cap by
 `lossInvestmentCut` (cumulative for the day, pushed to the order process by `setBrokerInvestmentCap`, reset at the day rollover or an admin reset) and,
@@ -323,9 +331,9 @@ close are the backstop). A root entry rejected for margin is not retried; its sl
 skipped.
 
 ### RecommendationStrategy / NiftyChangeStrategy (`RecommendationStrategy.ts`, `NiftyChangeStrategy.ts`, shared engine `LimitEntryStrategy.ts`) — config: `enabled: false`
-Two simple limit-entry strategies. Both place a LIMIT buy (`placeLimitBuyBare`) on **every** broker in `brokers:` (each broker buys with its own full `maxExposure`, not a split), size whole lots from the rupee budget (above one freeze quantity the entry is split into several resting limit buys at the same price, one per freeze-size chunk, tracked per order id), persist their state to `.<Type>.<userId>.json` (a restart never places the same entry twice), cancel an unfilled entry at `eodCloseTime` (and after `entryTimeoutMinutes` when set) and close a held position at `eodCloseTime` (default 15:10).
-- **RecommendationStrategy** — one analyst recommendation per config block: `contract: '22750 CE'`, `entryPrice`, `targetPrice`, `stopLoss` (absolute option prices), `maxExposure` (per broker), `entryOffset` (default 5). Order goes in at `entryPrice - entryOffset`; after the fill the target/stop are attached via the `attachProtection` order-process call (`order/attachProtection.ts`): **kite** = two-leg GTT (falls back to the in-app exitMonitor if the GTT call fails), **ant** = in-app exitMonitor (a bracket/cover order must be the entry order itself, it cannot be attached to a filled one), **breeze/other** = resting limit sell at the target + a tick-driven market stop in the strategy. Changing the contract/prices of a block is a new recommendation; the same one is never placed twice in a day. A recommendation that arrives while a trade is still open (order or position) is dropped and never picked up later. When the cycle ends (bought and sold, or the entry cancelled with nothing filled) the block is written `enabled: false` to config.yml, so nothing trades it again. Set a new one with the `recommend` skill (`.claude/skills/recommend/SKILL.md`: `recommend [INDEX] <strike> <CE|PE> <entry> <target> <stop>`). Breeze's REST API does have GTT (`POST /breezeapi/api/v1/gttorder`, `gtt_type: cover_oco`) but it is not wired in yet.
-- **NiftyChangeStrategy** — at each `times` slot (BulkPcrAutoStart's rules: once per slot per day, never a slot before process start, 5-minute late window), Nifty's move is `ltp` at this slot − the reference from the live tick: the LTP seen at the previous slot today (held in memory, lost on restart), or the previous close for the day's first slot. A slot with no reference (earlier slot today not recorded) is skipped with an ALERT. The reference is kept in the strategy's state file for the day, so it survives a restart (2026-10-30). With `catchUpMissedSlot: true` the latest slot that came due before a restart (within the 5-minute window) still fires, subject to the same running-position and reference checks; older missed slots are skipped. Up → CE, down → PE, flat → skip. Strike from `AntContractMaster.entryStrike`; limit = option LTP (ANT quote) − `limitOffset` (default 3); on the fill a resting limit sell at fill + `targetPoints` (default 5 in config). Stop loss: `stopLossPoints` (config ships 8; optional `maxLossPerLeg` rupee cap) is attached after the fill with the target via `attachProtection` (kite GTT, ant exitMonitor, breeze resting sell + tick stop); without it only the target sell and the eodCloseTime close exist. Skips a slot while the previous slot's position is still open. Config: `times`, `maxExposure` (per broker), `limitOffset`, `targetPoints`, `entryTimeoutMinutes`.
+Two simple limit-entry strategies. Both place a LIMIT buy (`placeLimitBuyBare`) on **every** broker in `brokers:` (each broker buys with its own full `maxInvestment`, not a split), size whole lots from the rupee budget (above one freeze quantity the entry is split into several resting limit buys at the same price, one per freeze-size chunk, tracked per order id), persist their state to `.<Type>.<userId>.json` (a restart never places the same entry twice), cancel an unfilled entry at `settings.eodCloseTime` (and after `entryTimeoutMinutes` when set) and close a held position at `eodCloseTime` (default 15:10).
+- **RecommendationStrategy** — one analyst recommendation per config block: `contract: '22750 CE'`, `entryPrice`, `targetPrice`, `stopLoss` (absolute option prices), `maxInvestment` (per broker), `entryOffset` (default 5). Order goes in at `entryPrice - entryOffset`; after the fill the target/stop are attached via the `attachProtection` order-process call (`order/attachProtection.ts`): **kite** = two-leg GTT (falls back to the in-app exitMonitor if the GTT call fails), **ant** = in-app exitMonitor (a bracket/cover order must be the entry order itself, it cannot be attached to a filled one), **breeze/other** = resting limit sell at the target + a tick-driven market stop in the strategy. Changing the contract/prices of a block is a new recommendation; the same one is never placed twice in a day. A recommendation that arrives while a trade is still open (order or position) is dropped and never picked up later. When the cycle ends (bought and sold, or the entry cancelled with nothing filled) the block is written `enabled: false` to config.yml, so nothing trades it again. Set a new one with the `recommend` skill (`.claude/skills/recommend/SKILL.md`: `recommend [INDEX] <strike> <CE|PE> <entry> <target> <stop>`). Breeze's REST API does have GTT (`POST /breezeapi/api/v1/gttorder`, `gtt_type: cover_oco`) but it is not wired in yet.
+- **NiftyChangeStrategy** — at each `times` slot (BulkPcrAutoStart's rules: once per slot per day, never a slot before process start, 5-minute late window), Nifty's move is `ltp` at this slot − the reference from the live tick: the LTP seen at the previous slot today (held in memory, lost on restart), or the previous close for the day's first slot. A slot with no reference (earlier slot today not recorded) is skipped with an ALERT. The reference is kept in the strategy's state file for the day, so it survives a restart (2026-10-30). With `catchUpMissedSlot: true` the latest slot that came due before a restart (within the 5-minute window) still fires, subject to the same running-position and reference checks; older missed slots are skipped. Up → CE, down → PE, flat → skip. A move smaller than `minMovePoints` (config ships 10; 0/unset = any non-zero move) is skipped, like a flat one (2026-11-04: the 1.95-point 12:40 entry lost). Strike from `AntContractMaster.entryStrike`; limit = option LTP (ANT quote) − `limitOffset` (default 0, i.e. the LTP itself; config ships 0 - a limit below the market filled only on a dip, and all four of 2026-11-04's fills reversed to the stop); on the fill a resting limit sell at fill + `targetPoints` (default 5 in config). Stop loss: `stopLossPercent` (config ships 10%; `none` or omitted = no percentage stop: stop = fill × (1 − 10%) when set) wins over `stopLossPoints` (kept in config, used only when no percent is set; optional `maxLossPerLeg` rupee cap; helper `entryStop.ts`) is attached after the fill with the target via `attachProtection` (kite GTT, ant exitMonitor, breeze resting sell + tick stop); without it only the target sell and the `settings.eodCloseTime` close exist. Skips a slot while the previous slot's position is still open. Config: `times`, `maxInvestment` (per broker), `minMovePoints`, `limitOffset`, `targetPoints`, `stopLossPercent` / `stopLossPoints`, `entryTimeoutMinutes`.
 Test: `node dist/test/limitEntryStrategies.test.js` (stubbed OrderClient).
 
 ### BulkPcrAutoStartStrategy (`BulkPcrAutoStartStrategy.ts`) — config: active, `enabled: true`
@@ -392,12 +400,16 @@ trades via `legManager.restoreFromOpenTrades`.
 `refillCancelDistance`, `logEnabled`, `momentumEnabled`, `momentumTimeoutMs`.
 
 ### SimpleContinuousStrategy (`SimpleContinuousStrategy.ts`)
-**Entry**: ONE root per day: PCR direction (>1 PE, else CE; re-fetched every 5 min), `initialQuantity` at market, gated by `maxInvestment` (per broker). After it every order is a hedge or a double-up.
+**Entry**: ONE root per day: PCR direction (>1 PE, else CE; re-fetched every 5 min), `initialQuantity` at market, gated by `maxInvestment` (per broker). With `onePositionPerSide: true` `initialQuantity` is ignored: the root buys as many whole lots (65) as `maxInvestment` pays for at the picked premium, capped at the NIFTY freeze quantity (1755); the hedge still buys the root's quantity. After it every order is a hedge or a double-up.
 **Exit**: right after each fill a resting limit sell at entry + `priceDiff`. No stop loss.
 **Hedge (once per leg, unlimited chain)**: every leg, root or hedge, is hedged once by buying the opposite option at the strike nearest the money (ATM) for the same quantity when the leg falls to entry - `priceDiff`, or when its sell fills (target met). The hedge leg gets its own resting sell and is hedged once in turn (root CE -> hedge PE -> hedge of that PE = CE -> ...). Hedge buys ignore `maxInvestment`.
-**Double-up (once per leg)**: when a hedge leg's sell fills at a profit and the leg that caused it (its parent) is still open, the parent's contract is bought again for the parent's quantity (skipped if over `maxInvestment`) and its sell re-placed for the new total at the new average + `priceDiff`.
-**State**: `.SimpleContinuousStrategy.<userId>.json` (per day); `reconcile()` checks it against the broker's open trades and pending sells and adopts unknown positions (never doubled). EOD close at `eodCloseTime`.
-**Config keys**: `enabled`, `brokers`, `initialQuantity`, `maxInvestment`, `priceDiff`. The root premium floor (100) is a constant in the file.
+**Double-up (once per leg)**: when a hedge leg's sell fills at a profit and the leg that caused it (its parent) is still open, the parent's contract is bought again for the parent's quantity (skipped if over `maxInvestment`) and its sell re-placed for the new total at the new average + `priceDiff`. The `doubled` flag is set only when the double-up really happens (2026-11-04): a skip (cap, failed cancel of the resting sell, refused buy) leaves the parent `doubleDue` and its own option ticks retry it every 30 s while it is open; the cap skip is logged once. A double-up buy that may be live is never retried (flag set, manual review).
+**maxProfit (2026-11-09).** When this broker's total P&L, CE and PE legs together (realized fills since counting started + each open leg valued from its reference price at its last tick), reaches `maxProfit` rupees, the log prints `MAX PROFIT TRIPPED` (a `!!!` line in the alerts feed), every open leg is cancelled-and-sold (same routine as the EOD close, retried from Nifty ticks) and no new root, hedge, double-up or resting sell is placed for the rest of the day; the trip is persisted in the state file (`profitTripped`, `realizedPnl`), so a restart stays idle. Counting starts at the first load of a state file that has no `pnlStarted` field, or at `reset()`; a leg that was open then is valued from its first tick after it (`pnlRef`), so earlier P&L does not count. Re-arm: `POST /strategies/SimpleContinuousStrategy/reset` (or delete the day's state file when flat).
+
+**Stacking limits (two modes)**: (1) `onePositionPerSide: true` (flag, default off, ships ON in config.yml, added 2026-11-09): at most one open CE and one open PE at a time (they may coexist). A hedge for a side that already has an open leg (or a hedge buy in flight on it) is not placed: the leg stays un-hedged (`hedgeWaiting`) and is retried from Nifty ticks every 5 s until that side is free, open legs and closed ones alike. The double-up adds to the SAME contract, so it is unaffected. `maxLegsPerSide` is ignored in this mode. (2) Without the flag, the older stacking guard (`maxLegsPerSide`, optional, config ships 5): a new leg (hedge) on a side that already has `maxLegsPerSide` open legs waits until Nifty has moved back toward the root by `stackRecoveryPoints` (default 20) from the most adverse Nifty level at which an open leg on that side was bought (`niftyAt`: CE side needs Nifty that far above its lowest, PE side that far below its highest). The leg stays un-hedged (`hedgeWaiting`); an open leg is retried by its own ticks, a closed one from Nifty ticks every 5 s. Adopted legs have no `niftyAt` and never block. Unset = no limit.
+**Unconfirmed hedge buy**: a hedge buy that times out is resolved against the broker instead of latching manual review at once: the resting buy is cancelled (`cancelRestingLimitBuys`) and the live quantity read (`getLiveQuantity`). Nothing held -> the hedge flag is cleared and the hedge retried on the next tick; held -> adopted as the hedge leg (price from the broker's open trades) with its resting sell; cancel failed or broker unreadable -> manual review as before. A refused (`[NOT_PLACED]`) buy simply retries.
+**State**: `.SimpleContinuousStrategy.<userId>.json` (per day); `reconcile()` checks it against the broker's open trades and pending sells and adopts unknown positions (never doubled). EOD close at `settings.eodCloseTime`.
+**Config keys**: `enabled`, `brokers`, `initialQuantity`, `maxInvestment`, `priceDiff`, **`maxProfit`** (REQUIRED, an amount in rupees, per broker; no default in code, a missing / non-positive / `%` value is rejected by the config validator and blocks entries), optional `onePositionPerSide`, `maxLegsPerSide`, `stackRecoveryPoints`; a leg whose sell fills at a profit is always followed by the SAME right (root and hedge legs), an adverse-move hedge or a sell at a loss buys the opposite right (fixed, not configurable). The root premium floor (100) is a constant in the file.
 
 ### SupportResistanceStrategy (`SupportResistanceStrategy.ts`)
 **Entry**: driven by `src/lib/supportResistance.ts`'s SEEKING/LOCKED/BREACH
@@ -524,26 +536,23 @@ order at the executor level, not a raw market order).
 `targetPrice`, `stopLossPrice`, `maxHoldTimeMinutes`, `gapReversalMode`,
 `gapReversalThreshold`, `logEnabled`.
 
-### RuleBasedStrategy (`RuleBasedStrategy.ts`)
-**Entry**: driven by `receive(oldStats, newStats)` (periodic technical-
-indicator stats snapshots from `decision.ts`), not quote ticks —
-`processNiftyQuote` is a no-op (`:253`). Every indicator in the configured
-`indicators` list (e.g. `RSI_5_70_30`, `MACD_12_26_9`, `EMA_5_13`,
-`Bollinger_20_2`, `ADX_14`, `Stoch_14_3`) must independently resolve to the
-**same** UP/DOWN trend (`consensus`, `:182`) — a single NEUTRAL or missing
-signal blocks the trade entirely. Multiple indicator-group configs under one
-`type: RuleBasedStrategy` block get expanded into separate strategy
-instances by `StrategyFactory.expandRuleBasedConfig` (userId
-`Rule-<indicators>`), each with its own config looked up via
-`Strategies.getExpandedConfig(userId)` (`getConfig()`, `:120`).
-**Sizing**: fixed `quantity` per expanded config.
-**Exit**: `getMonitorConfig()` returns `{targetPoints: config.target,
-stopLossPoints: config.stopLoss, ...}` (`:115`) — GTT/bracket or
-`exitMonitor.ts`; strategy itself only forces a timeout exit
-(`maxHoldTimeMinutes`).
-**Config keys** (per indicator-group, under one `type: RuleBasedStrategy`
-block): `enabled`, `indicators` (array, one entry per spawned instance),
-`quantity`, `target`, `stopLoss`, `maxHoldTimeMinutes`, `logEnabled`.
+### RuleBasedStrategy (`RuleBasedStrategy.ts`, indicator names in `ruleIndicators.ts`)
+**Entry**: driven by `receive(oldStats, newStats)` on the live 5-minute NIFTY candle stats (`processes/strategies/niftyStatsBuilder.ts`), not
+quote ticks; `processNiftyQuote` is a no-op. One `type: RuleBasedStrategy` block is ONE strategy. Its `indicators` list holds rules, one per
+item: commas inside an item join indicators that must all agree (or a majority with `requireAllIndicators: false`). Any rule that fires
+buys; rules that disagree on the same candle (one UP, one DOWN) give no trade. One position at a time. Trades only 10:00-15:00.
+**Indicators** (a name must be one the live builder computes, see `lib/indicator-config.ts`; an unknown or uncomputed name makes the rule
+refuse to trade with an ALERT, and config validation rejects it):
+- `RSI_p_ob_os`: above overbought → DOWN, below oversold → UP
+- `RSI_p_ob_os_REV`: contrarian RSI with the same parameters, trend inverted (`calcRSIReversed`, stats key `rsiReversed`)
+- `MACD_f_s_sig`, `EMA_s_l` (crossover), `Bollinger_p_dev`, `ADX_p` (NEUTRAL under ADX 20), `Stochastic_k_d` (`Stoch_k_d` also accepted)
+**Exit**: `target` and `stopLoss` from the global settings or the block's override (see "Target and stop-loss" above), in points or as a percent
+of the average entry price, checked on the option ticks of the held contract. On each tick: timeout first (`maxHoldTimeMinutes`, 0 = off), then
+target (sold as `win`), then stop (sold as `loss`). The levels are fixed when the buy fills and recomputed if a freeze-split chunk changes the
+average. The strategy sells at the tick price (`sellContract`); no resting broker order is placed for either exit.
+**Sizing**: fixed `quantity` per rule.
+**Config keys**: `enabled`, `indicators`, `quantity`, `target`, `stopLoss`, `maxHoldTimeMinutes`, `requireAllIndicators`, `cooldownSeconds`,
+`logEnabled`. The old `targetProfitPercent`, `stopLossPercent`, `targetPoints`, `stopLossPoints` keys are ignored (ALERT at startup).
 
 ### SentimentStrategy (`SentimentStrategy.ts`) — config: active, `enabled: false`
 **Entry**: fires up to `loopCount` times total (across the process lifetime,
@@ -569,23 +578,30 @@ slot, never a slot before process start, 5-minute late window, no catch-up), it 
    `floor(spot/50)*50`. The contract with the larger surplus must be positive; its side gives the direction (CE = up, PE = down). A tie, a missing
    reading or no positive surplus means no trade.
 2. **Price move** since the previous slot today (Nifty LTP now minus the LTP recorded at the previous slot) must match the direction: a rise for CE,
-   a fall for PE. The first slot of the day has no previous slot and never trades.
+   a fall for PE, and its size must reach `minMovePoints` (config ships 10; 0/unset = any move; 2026-11-04: all six winners followed moves of 14-59
+   points, the one loser 1.95). The first slot of the day has no previous slot and never trades.
 
 Entry: one LIMIT buy per broker at the option's prevailing LTP (`getOptionLtp`, no offset). Quantity is computed at runtime from `maxInvestment`
-(per broker, `exposureForBroker`) in whole lots, split into freeze-size limit buys when above one freeze quantity. There is no `quantity` key (the validator rejects one).
+(per broker, `investmentForBroker`) in whole lots, split into freeze-size limit buys when above one freeze quantity. There is no `quantity` key (the validator rejects one).
 
-Exit: a resting LIMIT sell at fill average + `targetPrice` for the whole filled quantity is placed as soon as the entry fills (`placeExit`, exit
-kind `resting`); a fill that lands later is sold by an extra resting sell at the same rule (`topUpExit`). If the placement fails, the housekeeping
-retry places it again. **No stop loss**: a position leaves only by that sell or the EOD close at `eodCloseTime` (`closeLeg`). An unfilled entry is
+Exit: `target` (global or block override: points above the fill, `N%` of the fill, or `none`) sets a resting LIMIT sell at fill average +
+target for the whole filled quantity, placed as soon as the entry fills (`placeExit`, exit kind `resting`); a fill that lands later is sold by an
+extra resting sell at the same level (`topUpExit`). `stopLoss` (points below the fill, `N%`, or `none`) adds a stop: with a target, the stop goes
+in together with it via `protectLeg` (Kite GTT, ANT exitMonitor, Breeze/Prism resting sell + tick stop); with no target, the stop is watched on
+ticks alone (exit kind `self`). With neither, the position leaves only at the EOD close at `settings.eodCloseTime` (exit kind `none`). The
+shipped config sets `target: 5` and `stopLoss: none` on the block (the behaviour before the global exits). If a placement fails, the housekeeping
+retry places it again. For reference, 2026-11-04's winners' worst dip below entry was 21%, the loser's 37%. An unfilled entry is
 cancelled after `entryTimeoutMinutes`. (Until 2026-11-03 the sell was deferred until a tick reached the target; `deferTargetExit` stays in
 `LimitEntryStrategy` and a leg saved with exit kind `target` still follows that path.)
 
 One position at a time: a slot is skipped while any leg is open (`isRunning()`), and that slot is consumed.
 
-Logging: Nifty's up and down tick counts since the previous slot are logged at every slot (delivered, coalesced ticks, so they undercount
-exchange ticks). They are in memory only and are not used for any decision.
+Logging: Nifty's up / down / flat counts since the previous slot are logged at every slot. They are **sampled** once per `upDownSampleMinutes`
+(default 1): the current LTP against the previous sample, so a 10-minute slot holds about 10 samples (since 2026-11-04). Counting every delivered
+tick (the old way) gave ~5,400 per slot because ups + downs is essentially the tick count (5,466 against 5,482 ticks stored for 10:00-10:10; only
+flat ticks and a few at the slot edges are missing), with a near-constant 51-54% downs share. They are in memory only and are not used for any decision.
 
-Config keys: `times`, `maxInvestment`, `targetPrice`, `entryTimeoutMinutes`, `eodCloseTime`, `index` (NIFTY), `brokers`.
+Config keys: `times`, `maxInvestment`, `minMovePoints`, `target`, `stopLoss` (block overrides of the global exits), `upDownSampleMinutes`, `entryTimeoutMinutes`, `index` (NIFTY), `brokers`. The old `targetPoints`, `stopLossPercent`, `stopLossPoints` and `maxLossPerLeg` keys are ignored (ALERT at startup).
 Test: `node dist/test/momentumAtFixedTime.test.js` (stubbed OrderClient and depth read).
 
 ### TopStockOptionsOpeningGapStrategy (`TopStockOptionsOpeningGapStrategy.ts`) — config: `enabled: true`, multi-broker

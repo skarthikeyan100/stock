@@ -53,7 +53,7 @@ async function main() {
     breeze.getOrderDetail = async () => { throw new Error('net down'); };
     let msg = '';
     try { await breeze.getFillPrice('NFO', '1', 2, 1, true); } catch (e: any) { msg = e.message; }
-    assert(cancelled === 1 && /did not fill/.test(msg), 'poll errors still reach the timeout cancel');
+    assert(cancelled === 1 && /fill state UNKNOWN/.test(msg), `poll errors still reach the timeout cancel, and a failed re-check is reported as fill state UNKNOWN, never as "did not fill" (got: ${msg})`);
 
     breeze.getOrderDetail = async () => ({ Success: [{ average_price: '50', pending_quantity: '0', cancelled_quantity: '30', quantity: '65', status: 'Cancelled' }] });
     msg = '';

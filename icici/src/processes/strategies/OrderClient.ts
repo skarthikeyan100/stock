@@ -338,7 +338,7 @@ class OrderClient {
         return this.call('butterflyBuyToClose', userId, payload);
     }
 
-    async resolveOptionContract(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE' }): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
+    async resolveOptionContract(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE'; skipNearestExpiryDay?: boolean }): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
         return this.call('resolveOptionContract', userId, payload);
     }
 
@@ -444,8 +444,8 @@ class OrderClient {
         if (!res.ok) throw new Error(res.error);
     }
 
-    async getContractByPriceRangeBare(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, index: 'NIFTY' | 'SENSEX' = 'NIFTY', excludeStrikes: number[] = [], broker?: BrokerName): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
-        return this.call('getContractByPriceRangeBare', userId, { underlyingLtp, optionType, minPremium, index, excludeStrikes, broker });
+    async getContractByPriceRangeBare(userId: string, underlyingLtp: number, optionType: 'CE' | 'PE', minPremium: number, index: 'NIFTY' | 'SENSEX' = 'NIFTY', excludeStrikes: number[] = [], broker?: BrokerName, skipNearestExpiryDay?: boolean): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
+        return this.call('getContractByPriceRangeBare', userId, { underlyingLtp, optionType, minPremium, index, excludeStrikes, broker, skipNearestExpiryDay });
     }
 
     async getPCR(userId: string, underlying: string, spot: number, window: number): Promise<number> {

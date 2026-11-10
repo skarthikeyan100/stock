@@ -35,7 +35,7 @@ export default function RulesPage() {
 
   return (
     <div className="rules-bg d-flex align-items-center justify-content-center position-relative">
-      <div className="position-absolute top-0 end-0 m-3">
+      <div className="position-absolute top-0 start-0 m-3">
         <ThemeToggle />
       </div>
       <Container style={{ maxWidth: 600 }}>

@@ -1,7 +1,7 @@
 import Log from '../../util/Log';
 import Breeze from '../../breeze/Breeze';
 import ANT from '../../ant/ANT';
-import BreezeContractMaster, { FnoRecord, BreezeExchange, breezeShortNameFor, indexNameFor, strikeStepFor } from '../../breeze/BreezeContractMaster';
+import BreezeContractMaster, { FnoRecord, BreezeExchange, breezeShortNameFor, indexNameFor, strikeStepFor, breezeTsym, breezeLegacyTsym, parseBreezeTsym } from '../../breeze/BreezeContractMaster';
 import AntContractMaster from '../../ant/AntContractMaster';
 import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
@@ -13,6 +13,7 @@ import { BuyRequest, OptionExchange, cancelOrderWithFillRecheck, cancelRestingSe
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, beginCancelOfBreezePendingLimitOrders, endCancelOfBreezePendingLimitOrders, silenceListenersOfBreezePendingLimitOrders } from './breezePendingLimitOrders';
 import { roundToTick } from '../../util/tick';
+import { calendarDayUtc } from '../../util/expirySkip';
 
 // ICICI Breeze execution, mirroring kiteExecutor.ts/antExecutor.ts's shape.
 // Structurally different from both in one way: Breeze identifies a contract
@@ -118,12 +119,17 @@ async function probeOrderExchange(orderId: string): Promise<BreezeExchange> {
 // so every tsym-keyed path in the app (bookkeeping lot size, BFO-vs-NFO inference via
 // startsWith('SENSEX'), ANT-style tsyms) treats them the same as the ANT/Kite SENSEX legs.
 export function tsymFor(record: FnoRecord): string {
-    return `${indexNameFor(record.shortName)}${record.strikePrice}${record.optionType}`;
+    return breezeTsym(record.shortName, record.expiryDate, record.strikePrice, record.optionType as 'CE' | 'PE');
 }
 
 // The tsym a live Breeze position reports (ICICI stock_code 'BSESEN' -> 'SENSEX' prefix).
 function tsymFromPosition(p: any, optionType: 'CE' | 'PE'): string {
-    return `${indexNameFor(String(p.stock_code))}${p.strike_price}${optionType}`;
+    return breezeTsym(String(p.stock_code), String(p.expiry_date), p.strike_price, optionType);
+}
+
+// A position row answers to its own tsym and, for state written before the tsym carried the expiry, to the old expiry-less one.
+function positionMatchesTsym(p: any, optionType: 'CE' | 'PE', tsym: string): boolean {
+    return tsymFromPosition(p, optionType) === tsym || breezeLegacyTsym(String(p.stock_code), p.strike_price, optionType) === tsym;
 }
 
 // Breeze's expiryDate wire format is an ISO string anchored at 06:00 UTC for
@@ -341,8 +347,7 @@ async function resolveOpenBreezeContract(tsym: string, existingToken: string | u
     for (const p of rows) {
         const optionType = p.right === 'Call' ? 'CE' : p.right === 'Put' ? 'PE' : undefined;
         if (!optionType) continue;
-        const candidateTsym = tsymFromPosition(p, optionType);
-        if (candidateTsym === tsym) {
+        if (positionMatchesTsym(p, optionType, tsym)) {
             const contract = await BreezeContractMaster.getInstance().findOption(p.stock_code, p.expiry_date, Number(p.strike_price), optionType);
             if (contract) return contract;
         }
@@ -722,10 +727,31 @@ export async function buyResolvedOnBreeze(request: BuyRequest): Promise<Trade> {
 // is actually a LIMIT at the current best bid/ask (see file header) - ICICI rejects
 // true MARKET orders on options.
 
-function parseTsym(tradingSymbol: string): { shortName: string; strike: number; optionType: 'CE' | 'PE' } {
-    const m = tradingSymbol.match(/^([A-Za-z]+?)(\d+)(CE|PE)$/);
-    if (!m) throw new Error(`Cannot parse Breeze tsym: ${tradingSymbol}`);
-    return { shortName: m[1], strike: Number(m[2]), optionType: m[3] as 'CE' | 'PE' };
+// The contract a Breeze tsym + ANT token name. The tsym carries no expiry, the ANT token does: when it is a contract of the same strike and
+// right, its expiry picks the Breeze contract (so a leg bought on a per-strategy expiry is sold on the same one); otherwise the nearest-expiry
+// rule (with the global skip setting) applies, as before.
+async function resolveBreezeContract(tradingSymbol: string, antToken?: string): Promise<FnoRecord> {
+    const { shortName, strike, optionType, expiryDate } = parseTsym(tradingSymbol);
+    // A tsym that carries its expiry names the contract outright.
+    if (expiryDate) {
+        const exact = await BreezeContractMaster.getInstance().findOption(shortName, expiryDate, strike, optionType);
+        if (exact) return exact;
+        throw new Error(`No Breeze contract for ${tradingSymbol} (${shortName} ${expiryDate} ${strike}${optionType})`);
+    }
+    let exactDay: number | undefined;
+    if (antToken) {
+        try {
+            const a = AntContractMaster.getInstance().findByToken(String(antToken));
+            if (a && a.strike === strike && a.optionType === optionType && Number.isFinite(a.expiryMs)) exactDay = calendarDayUtc(a.expiryMs);
+        } catch { /* ANT master unreadable: fall back to the nearest-expiry rule */ }
+    }
+    return BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName, undefined, exactDay);
+}
+
+function parseTsym(tradingSymbol: string): { shortName: string; expiryDate?: string; strike: number; optionType: 'CE' | 'PE' } {
+    const parsed = parseBreezeTsym(tradingSymbol);
+    if (!parsed) throw new Error(`Cannot parse Breeze tsym: ${tradingSymbol}`);
+    return parsed;
 }
 
 // tradingSymbol/antToken here match the shape LegManager already threads through the
@@ -735,8 +761,7 @@ function parseTsym(tradingSymbol: string): { shortName: string; strike: number; 
 export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
-    const { shortName, strike, optionType } = parseTsym(tradingSymbol);
-    const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
+    const contract = await resolveBreezeContract(tradingSymbol, antToken);
     const { bestAsk } = await getOptionQuote(contract);
     Log.log(`[order] Bare Breeze limit buy (at best ask) ${tradingSymbol} qty=${quantity} @ ${bestAsk} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, bestAsk);
@@ -761,8 +786,7 @@ export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: strin
 }
 
 export async function marketSellBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
-    const { shortName, strike, optionType } = parseTsym(tradingSymbol);
-    const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
+    const contract = await resolveBreezeContract(tradingSymbol, antToken);
     const { bestBid } = await getOptionQuote(contract);
     Log.log(`[order] Bare Breeze limit sell (at best bid) ${tradingSymbol} qty=${quantity} @ ${bestBid} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, bestBid);
@@ -792,8 +816,7 @@ export async function marketSellBareOnBreeze(userId: string, tradingSymbol: stri
 export async function enterShortOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
-    const { shortName, strike, optionType } = parseTsym(tradingSymbol);
-    const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
+    const contract = await resolveBreezeContract(tradingSymbol, antToken);
     const { bestBid } = await getOptionQuote(contract);
     Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) ${tradingSymbol} qty=${quantity} @ ${bestBid} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, bestBid);
@@ -820,8 +843,7 @@ export async function enterShortOnBreeze(userId: string, tradingSymbol: string, 
 export async function buyToCloseOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
-    const { shortName, strike, optionType } = parseTsym(tradingSymbol);
-    const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
+    const contract = await resolveBreezeContract(tradingSymbol, antToken);
     const { bestAsk } = await getOptionQuote(contract);
     Log.log(`[order] [BUTTERFLY] Buy-to-close ${tradingSymbol} qty=${quantity} @ ${bestAsk} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, bestAsk);
@@ -851,7 +873,7 @@ export async function getLiveNetQuantity(tradingSymbol: string): Promise<number>
     for (const p of rows) {
         const optionType = p.right === 'Call' ? 'CE' : p.right === 'Put' ? 'PE' : undefined;
         if (!optionType) continue;
-        if (tsymFromPosition(p, optionType) === tradingSymbol) return Number(p.quantity ?? 0);
+        if (positionMatchesTsym(p, optionType, tradingSymbol)) return Number(p.quantity ?? 0);
     }
     return 0;
 }
@@ -865,8 +887,7 @@ export async function getLiveNetQuantity(tradingSymbol: string): Promise<number>
 export async function placeLimitBuyBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, price: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
-    const { shortName, strike, optionType } = parseTsym(tradingSymbol);
-    const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
+    const contract = await resolveBreezeContract(tradingSymbol, antToken);
     Log.log(`[order] Bare Breeze limit buy ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, price);
     trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange: contract.exchange, action: 'Buy' });
@@ -881,8 +902,7 @@ export async function placeLimitBuyBareOnBreeze(userId: string, tradingSymbol: s
 export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, price: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
-    const { shortName, strike, optionType } = parseTsym(tradingSymbol);
-    const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, shortName);
+    const contract = await resolveBreezeContract(tradingSymbol, antToken);
     quantity = await neverShortSellable({
         label: `${tradingSymbol} (${userId}, Breeze)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),
         restingSellQuantity: findPendingBreezeOrdersForSymbol(userId, tradingSymbol).filter((o) => o.action === 'Sell').reduce((sum, o) => sum + o.quantity, 0), recheckIfFlat: true,
@@ -903,7 +923,8 @@ export async function getContractByPriceRangeOnBreeze(
     optionType: 'CE' | 'PE',
     index: 'NIFTY' | 'SENSEX' = 'NIFTY',
     minPremium = 100,
-    excludeStrikes: Set<number> = new Set()
+    excludeStrikes: Set<number> = new Set(),
+    skipNearestExpiryDay?: boolean
 ): Promise<{ tradingSymbol: string; instrumentToken: string; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
     const strikeStep = strikeStepFor(breezeShortNameFor(index));
     const atmStrike = Math.round(underlyingLtp / strikeStep) * strikeStep;
@@ -918,13 +939,15 @@ export async function getContractByPriceRangeOnBreeze(
         if (!excludeStrikes.has(strike)) candidateStrikes.push(strike);
     }
 
-    const premiumData = await estimateOptionPricesBatch(index, candidateStrikes.map((strike) => ({ strike, optionType })));
+    const premiumData = await estimateOptionPricesBatch(index, candidateStrikes.map((strike) => ({ strike, optionType })), skipNearestExpiryDay);
 
     for (const strike of candidateStrikes) {
         const data = premiumData.get(`${strike}_${optionType}`);
         if (data == null || data.premium < minPremium) continue;
         try {
-            const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, index);
+            // The expiry of the ANT chain the premium came from (same skip argument), so the priced contract and the bought one are one.
+            const a = AntContractMaster.getInstance().findByToken(String(data.antToken));
+            const contract = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, optionType, index, skipNearestExpiryDay, a && a.strike === strike ? calendarDayUtc(a.expiryMs) : undefined);
             return { tradingSymbol: tsymFor(contract), instrumentToken: contract.token, lotSize: contract.lotSize, exchange: contract.exchange, strike, premium: data.premium, antToken: data.antToken };
         } catch (e) {
             Log.log('[order] Breeze contract resolution failed for a priced-in strike:', strike, optionType, e);

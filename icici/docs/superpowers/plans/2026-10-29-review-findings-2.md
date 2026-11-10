@@ -60,13 +60,13 @@
 
 **Files:**
 - Modify: `src/strategy/BulkPcrStrategy.ts:943` (`cfg.quantity ?? 13975`), `:378,380,427` (NIFTY fallback, `slDistance ?? 10`, `targetPoints ?? 2`), `:390-399`
-- Modify: `src/prism/configValidation.ts` (make `quantity`, `targetPoints`, `maxExposure`/`maxInvestment` required for **enabled** BulkPcr blocks)
+- Modify: `src/prism/configValidation.ts` (make `quantity`, `targetPoints`, `maxInvestment`/`maxInvestment` required for **enabled** BulkPcr blocks)
 - Test: `src/test/configValidation.test.ts` (extend)
 
 - [ ] Add failing cases: an enabled BulkPcr block without `quantity` is rejected; the same block with `enabled: false` is accepted (disabled blocks keep loading).
 - [ ] Implement validation, then delete the `?? 13975`, `?? 10`, `?? 2` fallbacks and the index-not-SENSEX-means-NIFTY fallback (unknown index becomes a validation error).
 - [ ] Check the current `config.yml` BulkPcr blocks still validate (`node -e` loading `validateConfigFile` on it, no process start). If a disabled block would now fail, fix the validator, not the config.
-- [ ] The rest of R2-2 (single `resolveMaxExposure`, delete `configVocabulary.ts`/`percentConfig.ts`/grandfathering) moves to Phase 5 Task 5.1.
+- [ ] The rest of R2-2 (single `resolveMaxInvestment`, delete `configVocabulary.ts`/`percentConfig.ts`/grandfathering) moves to Phase 5 Task 5.1.
 
 ### Task 1.3: Delete in-memory `enabled` controls (R4-4, R4-5)
 
@@ -159,7 +159,7 @@
 
 ## Phase 5: Simplification
 
-- [ ] **5.1** R2-2 rest: one `resolveMaxExposure(cfg)`, resolve defaults once in `loadConfig`, delete `configVocabulary.ts`, percent-string parsing, grandfathering (after a `config.yml` value cleanup; values only, no deletions). Move `ConfigService`, `AppConfig`, `configValidation` to `src/config/`.
+- [ ] **5.1** R2-2 rest: one `resolveMaxInvestment(cfg)`, resolve defaults once in `loadConfig`, delete `configVocabulary.ts`, percent-string parsing, grandfathering (after a `config.yml` value cleanup; values only, no deletions). Move `ConfigService`, `AppConfig`, `configValidation` to `src/config/`.
 - [ ] **5.2** R2-1 preflight: one session check per broker before children start; delete per-order `hasValidSession` calls, `reloadSession` IPC, 3-retry loop. R2-4/R6-7 `SessionStore`.
 - [ ] **5.3** R2-3 contract masters: one startup load, fail hard if missing/not from today; delete lazy retry and per-lookup checks. Update `contractMasterStaleness.test.ts`.
 - [ ] **5.4** R4-3 armed slots to Mongo; R4-6 one `getOpenTrades` retry in the trading process, strategies receive `reconcile(openTrades)`; R4-8 BulkPcr reconcile decision table as a pure function with a test per row.

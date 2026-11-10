@@ -8,9 +8,11 @@ import NiftyTicker from '../components/NiftyTicker';
 import PositionCard from '../components/PositionCard';
 import NotificationBell from '../components/NotificationBell';
 import ThemeToggle from '../components/ThemeToggle';
+import { useMarketHours } from '../utils/marketHours';
 
 export default function TradingPage() {
   const { trades, closedTrades, openPnL, totalPnL, usedAmount, tradingBlocked, blockReason } = useTrading();
+  const marketOpen = useMarketHours();
   const { user, logout, isAdmin } = useAuth();
   const handleLogout = async () => {
     if (!(await logout())) window.alert('Logout could not be completed - please try again.');
@@ -97,6 +99,11 @@ export default function TradingPage() {
           </Alert>
         ) : (
           <>
+            {!marketOpen && (
+              <Alert variant="info" className="text-center py-2 mb-3">
+                <strong>Market is closed.</strong> Orders can be placed only on trading days, Monday to Friday, 9:15 AM to 3:30 PM IST.
+              </Alert>
+            )}
             <h6 className="text-muted mb-2">Place Order</h6>
             <OrderEntry />
           </>

@@ -5,6 +5,8 @@
 
 import { PERCENT_KEYS, toPercentNumber } from './percentConfig';
 import { isBrokerName } from '../util/brokerName';
+import { exitValueError, timeoutValueError } from '../strategy/exitRules';
+import { parseRuleIndicator } from '../strategy/ruleIndicators';
 
 function isNum(v: any): v is number {
     return typeof v === 'number' && Number.isFinite(v);
@@ -14,7 +16,7 @@ function isNum(v: any): v is number {
 // in any single strategy's flat block). See the plan's field table for the
 // evidence behind each one.
 const NON_NEGATIVE_FIELDS: string[] = [
-    'lossLimit', 'lotLimit', 'maxInvestment', 'maxExposure',
+    'lossLimit', 'lotLimit', 'maxInvestment',
     'targetPoints', 'stopLossPoints', 'targetPrice', 'stopLossPrice', 'target', 'stopLoss',
     'minPrice', 'maxPrice', 'targetPriceDiff', 'stopLossPriceDiff', 'trailingDistance',
     'cooldownSeconds', 'lossCooldownSeconds', 'profitCooldownSeconds',
@@ -22,7 +24,7 @@ const NON_NEGATIVE_FIELDS: string[] = [
     'pointsThreshold', 'accelerationThreshold', 'numberOfDatapointsReceived',
     'maxHoldTimeMinutes', 'gapReversalThreshold',
     'averageThreshold', 'threshold', 'loopCount', 'activateIntermittentCount',
-    'maxIterationCount', 'minMovementPoints',
+    'maxIterationCount', 'minMovementPoints', 'minMovePoints', 'maxLegsPerSide', 'stackRecoveryPoints', 'skipNearestExpiryOnExpiryDay', 'onePositionPerSide', 'upDownSampleMinutes',
 ];
 
 // Order/lot-size fields - zero or negative is meaningless as an order quantity.
@@ -51,14 +53,14 @@ const QUANTITY_SENTINEL_TYPES = ['BulkPcrStrategy', 'BulkPcrAutoStartStrategy', 
 
 // Percent-of-profit / drawdown fields, constrained to a sane 0-100 range.
 const PERCENT_FIELDS: string[] = [
-    'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
+    'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent', 'stopLossPercent',
 ];
 
 // Stop levels that must be strictly positive. 0 for maxProfit/maxLoss would
 // trip on the first tick; 0 for a drawdown limit would block every zero-P&L
 // day. "Disabled" is expressed by removing the key instead.
 const PERCENT_POSITIVE_FIELDS: string[] = [
-    'maxProfit', 'maxLoss', 'maxLossPerDay', 'maxLossPerTrade', 'maxLossPerOrder', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent',
+    'maxProfit', 'maxLoss', 'maxLossPerDay', 'maxLossPerTrade', 'maxLossPerOrder', 'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent', 'stopLossPercent',
 ];
 
 // Must be non-negative (0 is allowed).
@@ -68,10 +70,11 @@ const PERCENT_NON_NEGATIVE_FIELDS: string[] = ['marketProtectionPercent'];
 // same "distance from entry price" concept. Within a single object, if both
 // members of a pair are present, the stop-loss distance must be strictly
 // less than the target distance.
+// `target` / `stopLoss` are NOT a pair here: they are global exits that take points, "N%" or 'none' (strategies/exitRules.ts), and a
+// stop wider than the target is a legitimate choice.
 const TARGET_STOPLOSS_PAIRS: [string, string][] = [
     ['targetPoints', 'stopLossPoints'],
     ['targetPrice', 'stopLossPrice'],
-    ['target', 'stopLoss'],
 ];
 
 // maxInvestment may be quoted in YAML ("100000"): a plain numeric string is
@@ -92,6 +95,26 @@ export function coerceMaxInvestment(v: unknown): unknown {
 export function validateNumericRanges(label: string, obj: Record<string, any>): string[] {
     const errors: string[] = [];
     if (!obj || typeof obj !== 'object') return errors;
+
+    // Global exits (settings) and per-strategy overrides share the same value format; an absent key is not an error here.
+    for (const which of ['target', 'stopLoss'] as const) {
+        const err = exitValueError(label, which, obj[which]);
+        if (err) errors.push(err);
+    }
+    // RuleBased only: the timeout is a global setting too (settings.maxHoldTimeMinutes, 'none' = no timeout). Other strategies keep their own.
+    if (label === 'RuleBasedStrategy' || label === 'settings') {
+        const terr = timeoutValueError(label, obj.maxHoldTimeMinutes);
+        if (terr) errors.push(terr);
+    }
+    // RuleBased: every listed indicator must be one the live stats builder computes, else the rule could never agree.
+    if (label === 'RuleBasedStrategy' && obj.indicators !== undefined) {
+        const names = (Array.isArray(obj.indicators) ? obj.indicators : [obj.indicators])
+            .flatMap((item: unknown) => String(item).split(',')).map((n: string) => n.trim()).filter((n: string) => n.length > 0);
+        if (names.length === 0) errors.push(`${label}.indicators must list at least one indicator`);
+        for (const name of names) {
+            try { parseRuleIndicator(name); } catch (e: any) { errors.push(`${label}.indicators: ${e?.message ?? e}`); }
+        }
+    }
 
     for (const field of NON_NEGATIVE_FIELDS) {
         if (isNum(obj[field]) && obj[field] < 0) {
@@ -141,22 +164,23 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     // maxInvestment is the base every % stop is computed against. A non-numeric
     // value (e.g. "1,00,000") would make the thresholds NaN and silently
     // disable them, so it must be a positive number when present.
-    // (maxExposure is the canonical name, maxInvestment the legacy one; the canonical wins when both are present.)
-    const rawExposure = obj.maxExposure ?? obj.maxInvestment;
-    const maxInv = coerceMaxInvestment(rawExposure);
-    if (rawExposure != null && !(isNum(maxInv) && maxInv > 0)) {
-        errors.push(`${label}.${obj.maxExposure != null ? 'maxExposure' : 'maxInvestment'} must be a number > 0 (got ${JSON.stringify(rawExposure)})`);
+    // The old names were renamed to maxInvestment (2026-11-04): refuse a file that still carries them rather than ignore the cap.
+    if (obj.maxExposure !== undefined) errors.push(`${label}.maxExposure was renamed to maxInvestment - rename the key (same meaning: per broker)`);
+    if (obj.maxExposureByBroker !== undefined) errors.push(`${label}.maxExposureByBroker was renamed to maxInvestmentByBroker - rename the key`);
+    const maxInv = coerceMaxInvestment(obj.maxInvestment);
+    if (obj.maxInvestment != null && !(isNum(maxInv) && maxInv > 0)) {
+        errors.push(`${label}.maxInvestment must be a number > 0 (got ${JSON.stringify(obj.maxInvestment)})`);
     }
     // Per-broker amount override (any strategy): a map of known broker -> number > 0.
-    if (obj.maxExposureByBroker != null) {
-        const m = obj.maxExposureByBroker;
+    if (obj.maxInvestmentByBroker != null) {
+        const m = obj.maxInvestmentByBroker;
         if (typeof m !== 'object' || Array.isArray(m)) {
-            errors.push(`${label}.maxExposureByBroker must be a mapping of broker -> amount`);
+            errors.push(`${label}.maxInvestmentByBroker must be a mapping of broker -> amount`);
         } else {
             for (const [name, cap] of Object.entries(m)) {
-                if (!isBrokerName(name)) errors.push(`${label}.maxExposureByBroker has an unknown broker '${name}'`);
+                if (!isBrokerName(name)) errors.push(`${label}.maxInvestmentByBroker has an unknown broker '${name}'`);
                 const n = coerceMaxInvestment(cap);
-                if (!(isNum(n) && n > 0)) errors.push(`${label}.maxExposureByBroker.${name} must be a number > 0 (got ${JSON.stringify(cap)})`);
+                if (!(isNum(n) && n > 0)) errors.push(`${label}.maxInvestmentByBroker.${name} must be a number > 0 (got ${JSON.stringify(cap)})`);
             }
         }
     }
@@ -178,10 +202,15 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
         errors.push(`${label}.maxLossPerOrder needs a usable maxInvestment (> 0) - the percent is taken of it`);
     }
 
-    // eodCloseTime is read as 'HH:mm'; isPastTime falls back to the strategy's default on anything else, which would silently move the
-    // end-of-day close to a time the operator did not write.
-    if (obj.eodCloseTime != null && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(obj.eodCloseTime))) {
-        errors.push(`${label}.eodCloseTime must be 'HH:mm' (24-hour), got ${JSON.stringify(obj.eodCloseTime)}`);
+    // eodCloseTime is one global setting (settings.eodCloseTime), read as 'HH:mm'; isPastTime falls back to the strategy's default on
+    // anything else, which would silently move the end-of-day close to a time the operator did not write. A strategy block that still
+    // carries the key would be ignored, so it is rejected rather than left as a silent no-op.
+    if (obj.eodCloseTime != null) {
+        if (label !== 'settings') {
+            errors.push(`${label}.eodCloseTime is now a global setting - move it to settings.eodCloseTime and remove it from the strategy block (the strategy-level key is ignored)`);
+        } else if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(obj.eodCloseTime))) {
+            errors.push(`${label}.eodCloseTime must be 'HH:mm' (24-hour), got ${JSON.stringify(obj.eodCloseTime)}`);
+        }
     }
 
     if (isNum(obj.minPrice) && isNum(obj.maxPrice) && obj.minPrice > obj.maxPrice) {
@@ -247,12 +276,25 @@ export function validateConfigFile(parsed: any): string[] {
         }
         // Same reasoning for the other strategies that size a live order from their own config: a missing quantity used to fall back to a
         // hidden 65 (a NIFTY lot) - wrong for a SENSEX Butterfly (lot 20) and for any size the operator never chose.
-        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], MomentumAtFixedTimeStrategy: ['targetPrice'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'] };
+        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff', 'maxProfit'] };
+        // Strategies that take their target and stop from the global exits: each must be set in the block or in settings (a value or 'none').
+        // An absent key is refused rather than read as "no stop" (strategies/exitRules.ts).
+        if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy') {
+            for (const key of ['target', 'stopLoss', ...(s.type === 'RuleBasedStrategy' ? ['maxHoldTimeMinutes'] : [])]) {
+                const set = (o: any) => o?.[key] !== undefined && o?.[key] !== null;
+                if (!set(s) && !set(parsed.settings)) errors.push(`${s.type}.${key} is not set in the block or in settings (give a value, or 'none')`);
+            }
+        }
         if (s.type === 'MomentumAtFixedTimeStrategy') {
             // Sized at runtime from maxInvestment (per broker); a quantity key is not read and must not be set.
             if (s.quantity !== undefined) errors.push(`${s.type}.quantity is not used - size with maxInvestment (per broker)`);
             if (!isNum(s.maxInvestment)) errors.push(`${s.type}.maxInvestment is required for an enabled strategy`);
             if (!Array.isArray(s.times) || s.times.some((t: any) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(t)))) errors.push(`${s.type}.times must be a list of HH:mm times`);
+        }
+        // maxProfit is an AMOUNT in rupees for SimpleContinuous (the other strategies' maxProfit is a percent of maxInvestment): a '%' string
+        // or a non-positive number is rejected, and the key is required (no default in code).
+        if (s.type === 'SimpleContinuousStrategy' && s.maxProfit !== undefined && !(typeof s.maxProfit === 'number' && Number.isFinite(s.maxProfit) && s.maxProfit > 0)) {
+            errors.push(`${s.type}.maxProfit must be a positive number of rupees, not a percent (got ${JSON.stringify(s.maxProfit)})`);
         }
         for (const field of requiredByType[s.type] ?? []) {
             if (!isNum(s[field])) errors.push(`${s.type}.${field} is required for an enabled strategy (got ${JSON.stringify(s[field])})`);

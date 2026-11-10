@@ -134,8 +134,10 @@ async function main() {
         assert(validateConfigFile({ settings: {}, strategies: [{ type, enabled: true, ...extra }] }).some((e) => e.includes('quantity')), `an enabled ${type} block without quantity is rejected (no hidden default size)`);
         assert(validateConfigFile({ settings: {}, strategies: [{ type, enabled: false }] }).length === 0, `a disabled ${type} block is not required to carry them`);
     }
-    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, eodCloseTime: '15:10' }] }).length === 0, "eodCloseTime '15:10' is accepted");
-    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, eodCloseTime: '3:10pm' }] }).some((e) => e.includes('eodCloseTime')), "eodCloseTime '3:10pm' is rejected (it would silently fall back to the default)");
+    assert(validateConfigFile({ settings: { eodCloseTime: '15:10' }, strategies: [{ type: 'A', enabled: true }] }).length === 0, "settings.eodCloseTime '15:10' is accepted");
+    assert(validateConfigFile({ settings: { eodCloseTime: '3:10pm' }, strategies: [{ type: 'A', enabled: true }] }).some((e) => e.includes('eodCloseTime')), "eodCloseTime '3:10pm' is rejected (it would silently fall back to the default)");
+    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, eodCloseTime: '15:10' }] }).some((e) => e.includes('global setting')),
+        'a strategy-level eodCloseTime is rejected (it is ignored now, so it would be a silent no-op)');
     assert(validateConfigFile({ settings: { maxDailyDrawdownPercent: '0%' }, strategies: [] }).length > 0,
         'a zero drawdown limit is rejected (would block every zero-P&L day)');
 

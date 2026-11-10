@@ -12,6 +12,7 @@ export const PERCENT_KEYS: ReadonlySet<string> = new Set([
     'maxLossPerTrade',
     'maxLossPerOrder',
     'marketProtectionPercent',
+    'stopLossPercent',
 ]);
 
 const PERCENT_PATTERN = /^\s*(-?\d+(?:\.\d+)?)\s*%?\s*$/;

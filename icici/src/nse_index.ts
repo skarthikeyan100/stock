@@ -1,6 +1,7 @@
 import Log from './util/Log';
 import { NIFTY, FINNIFTY, BANKNIFTY, NIFTY_FREEZE_QUANTITY } from "./constants";
 import Prism from "./prism";
+import PrismContractMaster from "./prism/PrismContractMaster";
 import { UserContext } from "./user";
 let config = require("./prism/config").default;
 
@@ -39,6 +40,18 @@ export class Index {
         }
         this.lotSize = lotSize;
         this.increment = increment;
+    }
+
+    // The Nth (expiryWeekDiff) upcoming expiry of this index from the Prism contract master, so an exchange-shifted expiry (NIFTY
+    // 2026-11-10 -> 09-NOV-2026) is used as listed. Falls back to the Tuesday calculation only when the master has no such expiry.
+    _expiryDateFor = (start: Date): Date => {
+        try {
+            const listed = PrismContractMaster.getInstance().upcomingExpiries(this.index)[this.expiryWeekDiff];
+            if (listed) return listed;
+        } catch (e: any) {
+            Log.log(`[nse_index] Prism master expiry lookup failed, using the Tuesday rule: ${e?.message ?? e}`);
+        }
+        return this._tuesdayAfterWeeks(start, this.expiryWeekDiff);
     }
 
     // First Tuesday on or after `date`. Works on a copy: the old version mutated its argument.
@@ -104,7 +117,7 @@ export class Index {
         var now = new Date();
         var date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-        date = this._tuesdayAfterWeeks(date, this.expiryWeekDiff);
+        date = this._expiryDateFor(date);
         return this._toShortFormat(date);
     }
 
@@ -164,7 +177,7 @@ export class Index {
         // Log.log("Thursday date: " + this._nextThursday(date));
 
 
-        date = this._tuesdayAfterWeeks(date, this.expiryWeekDiff);
+        date = this._expiryDateFor(date);
         let monthNames = ["JAN", "FEB", "MAR", "APR",
             "MAY", "JUN", "JUL", "AUG",
             "SEP", "OCT", "NOV", "DEC"];

@@ -8,6 +8,9 @@ import AntContractMaster from '../ant/AntContractMaster';
 import RecommendationStrategy from '../strategy/RecommendationStrategy';
 import NiftyChangeStrategy from '../strategy/NiftyChangeStrategy';
 import { Trade } from '../model/model';
+import configService from '../prism/ConfigService';
+// eodCloseTime is a global setting (not a strategy key): 23:59 so the end-of-day close never fires during a test, whatever time it is run.
+(configService.getConfig().settings as any).eodCloseTime = '23:59';
 
 function assert(condition: boolean, message: string) {
     console.log(`  ${condition ? 'PASS' : 'FAIL'}: ${message}`);
@@ -49,7 +52,7 @@ const last = (fn: string) => calls.filter((c) => c.fn === fn).pop();
     assert(JSON.stringify(RecommendationStrategy.parseContract('22750 CE')) === '{"strike":22750,"right":"CE"}', 'parses "22750 CE"');
     assert(RecommendationStrategy.parseContract('22750') === null, 'rejects a contract with no CE/PE');
 
-    const recCfg = { type: 'RecommendationStrategy', userId: 'Rec-test', contract: '22750 CE', entryPrice: 120, targetPrice: 150, stopLoss: 95, entryOffset: 5, maxInvestment: 100000, brokers: ['kite'], startTime: '00:00', eodCloseTime: '23:59' };
+    const recCfg = { type: 'RecommendationStrategy', userId: 'Rec-test', contract: '22750 CE', entryPrice: 120, targetPrice: 150, stopLoss: 95, entryOffset: 5, maxInvestment: 100000, brokers: ['kite'], startTime: '00:00' };
     let rec = make(RecommendationStrategy, recCfg);
     await rec.processNiftyQuote({ ltp: 22700 });
     const buy = last('placeLimitBuyBare');
@@ -88,7 +91,7 @@ const last = (fn: string) => calls.filter((c) => c.fn === fn).pop();
     console.log('NiftyChangeStrategy');
     NiftyChangeStrategy.processStartedAt = moment().subtract(1, 'hour');
     const slot = moment().format('HH:mm');
-    const ncCfg = { type: 'NiftyChangeStrategy', userId: 'NC-test', times: [slot], maxInvestment: 100000, limitOffset: 3, targetPoints: 5, entryTimeoutMinutes: 5, eodCloseTime: '23:59', brokers: ['kite'] };
+    const ncCfg = { type: 'NiftyChangeStrategy', userId: 'NC-test', times: [slot], maxInvestment: 100000, limitOffset: 3, targetPoints: 5, entryTimeoutMinutes: 5, brokers: ['kite'] };
     calls = [];
     let nc = make(NiftyChangeStrategy, ncCfg);
     await nc.processNiftyQuote({ ltp: 22710, prevClose: 22650 });

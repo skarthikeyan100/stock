@@ -94,7 +94,7 @@ A comment line is written to every stream every 20 s so a proxy never sees it as
 | `GET /strategies` (also `POST`) | `[{ type, userId, enabled }]` for every strategy instance. Read-only; enable or disable a strategy by editing `config.yml`. |
 | `POST /strategies/:type/reset` | Reset a strategy type (clears day latches and in-memory state). `?userId=<instance>` resets only that instance (default: every instance of the type); BulkPcr keeps the day's realized P&L unless `?clearPnl=true`. Returns `{ type, reset, userIds }`. |
 | `POST /reconcile` | Loads each broker's open positions into the trading process, then reconciles every strategy. The trading process does this by itself at start-up (and retries until every broker can be read), so this is for repairing a mismatch. Refused before 09:10 IST. 200 `{ brokers, strategies }`; 409 when a broker could not be read (strategies NOT reconciled); 500 on failure. |
-| `GET /config`, `POST /config` | The configuration in flattened form; a save is validated (`configValidation`) and rejected rather than written when the reload would reject it. |
+| `GET /config`, `POST /config` | The configuration in flattened form; a save is validated (`configValidation`) and rejected rather than written when the reload would reject it. `settings.hotRestartDuringMarketHours` (default `false`) decides whether a compiled-code change is applied during market hours (09:00-15:35 weekdays); the orchestrator reads it at the moment of each change. |
 
 ## Frontend
 

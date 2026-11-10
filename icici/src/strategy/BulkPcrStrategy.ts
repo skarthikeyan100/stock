@@ -12,7 +12,8 @@ import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
 import { roundToTick } from '../util/tick';
 import MomentumSignal from './MomentumSignal';
-import { isPastMarketClose, isPastTime } from '../util/marketHours';
+import { isPastMarketClose } from '../util/marketHours';
+import { isPastEodClose } from '../util/eodClose';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { PnlStop } from './PnlStop';
 import { toPercentNumber } from '../prism/percentConfig';
@@ -20,7 +21,7 @@ import { TrailStop } from './TrailStop';
 import { sleep } from '../util/sleep';
 import { fetchOpenTradesWithRetry } from './openTrades';
 import { recordExitReject, MARGIN_SHORTFALL_REASON_PATTERN, EXIT_REJECT_RETRY_DELAY_MS } from './exitRejectPolicy';
-import { exposureForBroker } from '../prism/configVocabulary';
+import { investmentForBroker } from '../prism/configVocabulary';
 import { BrokerName, configuredBrokersOf, normalizeBrokerName, normalizePersistedBrokers } from '../util/brokerName';
 import { exchangeForTsym } from '../util/underlyings';
 
@@ -593,9 +594,9 @@ export default class BulkPcrStrategy extends Strategy {
         return stop;
     }
 
-    // The broker's configured investment cap (config `maxExposureByBroker`; keys may use a broker alias such as zerodha).
+    // The broker's configured investment cap (config `maxInvestmentByBroker`; keys may use a broker alias such as zerodha).
     private baseCap(broker: BrokerName): number {
-        return exposureForBroker(this.cfg(), broker);
+        return investmentForBroker(this.cfg(), broker);
     }
 
     // The cap in force today: the configured one less every loss-trip cut so far. The loss and profit percentages are taken of it.
@@ -929,8 +930,8 @@ export default class BulkPcrStrategy extends Strategy {
     private async eodCheck(): Promise<void> {
         if (this.eodDone && this.eodDay !== localDayKey()) this.eodDone = false;
         if (!this.eodDone && this.pairSlots().length > 0) {
-            // cfg.eodCloseTime ('HH:mm') like every other strategy; this one's own default stays 15:15.
-            if (isPastTime(this.cfg().eodCloseTime, '15:15')) {
+            // settings.eodCloseTime ('HH:mm') like every other strategy; this one's own default stays 15:15.
+            if (isPastEodClose('15:15')) {
                 this.eodDone = true;
                 this.eodDay = localDayKey();
                 Log.log('[BulkPcrStrategy] EOD cutoff reached - force-closing open pair slot(s)');

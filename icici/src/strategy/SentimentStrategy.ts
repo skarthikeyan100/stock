@@ -211,7 +211,8 @@ export default class SentimentStrategy extends Strategy {
                 Log.log('Initiate buy index for NIFTY at ', quote.ltp, ' with initial quantity: ', orderQuantity, ' iterationCount: ', this.iterationCount);
                 let response;
                 try {
-                    response = await OrderClient.getInstance().buyIndex(this.userId, { niftyLtp: quote.ltp - 2, right: sentiment, quantity: orderQuantity });
+                    // targetPoints from this strategy's targetPrice; without it the order side falls back to the global settings.targetPoints (2).
+                    response = await OrderClient.getInstance().buyIndex(this.userId, { niftyLtp: quote.ltp - 2, right: sentiment, quantity: orderQuantity, targetPoints: Number(this.instanceConfig().targetPrice) });
                 } catch (e) {
                     Log.log('[SentimentStrategy] buyIndex failed:', e);
                     // Re-arm only on a definite rejection. After a timeout/IPC failure the order may still be live: re-arming would buy

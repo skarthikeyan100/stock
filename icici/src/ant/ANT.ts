@@ -6,6 +6,7 @@ import path from 'path';
 // Use a separate axios instance to avoid Shoonya interceptors
 import axiosModule from 'axios';
 import { sleep } from '../util/sleep';
+import AntContractMaster from './AntContractMaster';
 import { SessionValidityCache } from '../util/SessionValidityCache';
 // Default per-call timeout for every ANT broker HTTP call (order placement,
 // quotes, option chain, fill polling, etc). Applies automatically to every
@@ -521,14 +522,19 @@ class ANT {
     // endpoint is on a separate rate-limit bucket from the OHLC endpoint
     // (getQuote/getQuotes/postOhlc) - confirmed live, no 429s seen here even
     // when the OHLC endpoint was rate-limiting on a single call.
-    private async fetchOptionChainRows(underlying: string): Promise<any[]> {
+    private async fetchOptionChainRows(underlying: string, skipNearestExpiryDay?: boolean): Promise<any[]> {
         const chainExch = underlying === 'SENSEX' ? 'bse_fo' : 'nse_fo';
         const expResp = await axios.post(
             'https://a3.aliceblueonline.com/obrest/optionChain/getUnderlyingExp',
             { underlying, exch: chainExch },
             { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
         );
-        const expiry = expResp.data?.result?.[0]?.underlying_expiry?.[0];
+        // Nearest expiry, or the next one when a skip setting applies (expiry day / eve): the same index the contract masters resolve, so the
+        // chain's tokens and premiums are for the contract the order will actually be on.
+        let offset = 0;
+        try { offset = AntContractMaster.getInstance().nearestExpiryIndex(underlying, underlying === 'SENSEX' ? 'BFO' : 'NFO', skipNearestExpiryDay); } catch { /* master unreadable: nearest */ }
+        const expiries = expResp.data?.result?.[0]?.underlying_expiry;
+        const expiry = expiries?.[offset] ?? expiries?.[0];
         if (!expiry) {
             throw new Error(`ANT option chain: no expiry for ${underlying}: ${JSON.stringify(expResp.data)}`);
         }
@@ -566,12 +572,12 @@ class ANT {
     // from a single pair of requests, without ever touching the fragile OHLC
     // endpoint (see antExecutor.ts's estimateOptionPricesBatch, its
     // motivating caller).
-    async getOptionChain(underlying: string): Promise<Array<{
+    async getOptionChain(underlying: string, skipNearestExpiryDay?: boolean): Promise<Array<{
         strike: number;
         ce: { ltp: number; token: string; tradingsymbol: string };
         pe: { ltp: number; token: string; tradingsymbol: string };
     }>> {
-        const rows = await this.fetchOptionChainRows(underlying);
+        const rows = await this.fetchOptionChainRows(underlying, skipNearestExpiryDay);
         return rows
             .filter((row) => row?.CE != null && row?.PE != null)
             .map((row) => ({

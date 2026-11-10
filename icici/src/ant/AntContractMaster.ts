@@ -253,6 +253,36 @@ class AntContractMaster {
     };
   }
 
+  // Calendar day (midnight-UTC epoch ms) of the nearest listed option expiry on or after today for `symbol`, or undefined when the
+  // master lists none. The exchange moves an expiry to the previous trading day when its usual weekday is a holiday (NIFTY 2026-11-10
+  // -> 2026-11-09), so callers needing "is today an expiry day" must read this instead of assuming a weekday.
+  nearestExpiryDayMs(symbol: string, exch: string = 'NFO'): number | undefined {
+    const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
+    const todayStart = todayStartUtc();
+    let best: number | undefined;
+    for (const r of cache) {
+      if (r.Symbol !== symbol || r.Exch !== exch || (r['Option Type'] !== 'CE' && r['Option Type'] !== 'PE')) continue;
+      const expiry = parseInt(r['Expiry Date']);
+      if (expiry >= todayStart && (best === undefined || expiry < best)) best = expiry;
+    }
+    return best;
+  }
+
+  // Index into the ascending distinct expiries (>= today) that a nearest-expiry lookup resolves to: 0, or 1 when a skip setting
+  // (skipNearestExpiryOnEve / skipNearestExpiryOnExpiryDay) bumps it. ANT's option chain lists expiries nearest-first, so
+  // ANT.fetchOptionChainRows indexes it with this and prices the same expiry the master resolves.
+  nearestExpiryIndex(symbol: string, exch: string = 'NFO', skipNearestExpiryDay?: boolean): number {
+    const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
+    const todayStart = todayStartUtc();
+    const expiries = new Set<number>();
+    for (const r of cache) {
+      if (r.Symbol !== symbol || r.Exch !== exch || (r['Option Type'] !== 'CE' && r['Option Type'] !== 'PE')) continue;
+      const expiry = parseInt(r['Expiry Date']);
+      if (expiry >= todayStart) expiries.add(expiry);
+    }
+    return effectiveExpiryOffset(Array.from(expiries), 0, Date.now(), skipNearestExpiryDay);
+  }
+
   // Exact (symbol, strike, expiry, optionType) resolution, expiry given as a
   // date string (not epoch-ms) - mirrors KiteContractMaster.findExactOption's
   // caller contract. Converts internally to findOption's epoch-ms comparison.
@@ -279,8 +309,9 @@ class AntContractMaster {
     strike: number;
     optionType: string;
     expiryOffset?: number;
+    skipNearestExpiryDay?: boolean; // per-call override of settings.skipNearestExpiryOnExpiryDay (undefined = the setting)
   }): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
-    const { symbol, exch, strike, optionType, expiryOffset = 0 } = params;
+    const { symbol, exch, strike, optionType, expiryOffset = 0, skipNearestExpiryDay } = params;
     const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
     // 'Expiry Date' is stored as midnight UTC of the expiry date (confirmed:
     // today's contract carries exactly 00:00:00 UTC = 5:30am IST) - comparing
@@ -302,7 +333,7 @@ class AntContractMaster {
       )
       .sort((a, b) => parseInt(a['Expiry Date']) - parseInt(b['Expiry Date']));
 
-    const record = candidates[effectiveExpiryOffset(candidates.map((r) => parseInt(r['Expiry Date'])), expiryOffset)];
+    const record = candidates[effectiveExpiryOffset(candidates.map((r) => parseInt(r['Expiry Date'])), expiryOffset, Date.now(), skipNearestExpiryDay)];
     if (!record) {
       throw new Error(`No ${symbol} ${exch} ${optionType} contract found for strike ${strike} (expiryOffset=${expiryOffset})`);
     }
@@ -365,7 +396,7 @@ class AntContractMaster {
   // Deliberately a linear scan rather than a regex over the trading symbol -
   // the tsym format is ambiguous (expiry-code digits run into the strike,
   // e.g. NIFTY2690124200CE), so the cache is the only reliable source.
-  findByToken(token: string): { token: string; strike: number; optionType: string; exch: string; tradingSymbol: string; lotSize: string } | undefined {
+  findByToken(token: string): { token: string; strike: number; optionType: string; exch: string; tradingSymbol: string; lotSize: string; expiryMs: number } | undefined {
     const record = this.loadNFO().find((r) => r.Token === token) || this.loadBFO().find((r) => r.Token === token);
     if (!record) return undefined;
     return {
@@ -375,6 +406,7 @@ class AntContractMaster {
       optionType: record['Option Type'],
       exch: record.Exch,
       tradingSymbol: tradingSymbolOf(record),
+      expiryMs: parseInt(record['Expiry Date']),
     };
   }
 

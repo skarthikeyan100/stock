@@ -12,6 +12,7 @@ export async function pickContractByPremium<T extends object>(
     minPremium: number,
     excludeStrikes: Set<number>,
     resolve: (strike: number, antToken: string) => Promise<T> | T,
+    skipNearestExpiryDay?: boolean,
 ): Promise<T & { strike: number; premium: number; antToken: string }> {
     const strikeStep = index === 'SENSEX' ? 100 : 50;
     const atmStrike = Math.round(underlyingLtp / strikeStep) * strikeStep;
@@ -26,7 +27,7 @@ export async function pickContractByPremium<T extends object>(
         if (!excludeStrikes.has(strike)) candidateStrikes.push(strike);
     }
 
-    const premiumData = await estimateOptionPricesBatch(index, candidateStrikes.map((strike) => ({ strike, optionType })));
+    const premiumData = await estimateOptionPricesBatch(index, candidateStrikes.map((strike) => ({ strike, optionType })), skipNearestExpiryDay);
 
     for (const strike of candidateStrikes) {
         const data = premiumData.get(`${strike}_${optionType}`);

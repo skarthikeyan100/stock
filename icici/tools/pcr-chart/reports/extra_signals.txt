@@ -1,0 +1,31 @@
+Days: 2026-11-02, 2026-11-04, 2026-11-05, 2026-11-06   cost assumption: 2 pts round trip
+
+Signal                                              n    hit%       95% CI hit     avg     net  days
+OBI all ticks, next 30s                         38069    49.3            47-51   -0.16   -2.16     4
+OBI strong |OBI|>=0.5, next 30s                 23834    49.4            48-51   -0.19   -2.19     4
+OBI all ticks, next 60s                         38148    49.0            47-51   -0.24   -2.24     4
+OBI strong |OBI|>=0.5, next 60s                 23879    48.1            45-50   -0.39   -2.39     4
+OBI all ticks, next 5m                          37658    49.8            47-52    0.28   -1.72     4
+OBI strong |OBI|>=0.5, next 5m                  23580    49.7            46-53    0.25   -1.75     4
+Futures buildup long/short, next 5m               812    55.8            53-57    3.23    1.23     4
+Buildup confirmed by PCR move, next 5m            408    58.3            56-61    3.38    1.38     4
+Buildup against PCR move, next 5m                 392    53.1            49-55    3.07    1.07     4
+
+By session region (cells with n<50 suppressed):
+  OBI all ticks, next 30s: opening 50% (n=8443) | range 50% (n=7366) | lunch 49% (n=7886) | closing 49% (n=14374)
+  OBI strong |OBI|>=0.5, next 30s: opening 50% (n=5274) | range 51% (n=4713) | lunch 50% (n=4866) | closing 48% (n=8981)
+  OBI all ticks, next 60s: opening 50% (n=8477) | range 49% (n=7377) | lunch 49% (n=7933) | closing 48% (n=14361)
+  OBI strong |OBI|>=0.5, next 60s: opening 50% (n=5288) | range 49% (n=4718) | lunch 48% (n=4905) | closing 47% (n=8968)
+  OBI all ticks, next 5m: opening 50% (n=8497) | range 48% (n=7406) | lunch 50% (n=7956) | closing 51% (n=13799)
+  OBI strong |OBI|>=0.5, next 5m: opening 49% (n=5293) | range 48% (n=4737) | lunch 49% (n=4919) | closing 51% (n=8631)
+  Futures buildup long/short, next 5m: opening 56% (n=110) | range 54% (n=176) | lunch 58% (n=227) | closing 55% (n=299)
+  Buildup confirmed by PCR move, next 5m: opening 52% (n=50) | range 61% (n=80) | lunch 66% (n=126) | closing 53% (n=152)
+  Buildup against PCR move, next 5m: opening n<50 | range 48% (n=96) | lunch 49% (n=101) | closing 57% (n=147)
+
+Volatility target (next 15m NIFTY range, n=1380):
+  r(VIX level, range) = 0.34   r(15m VIX change, range) = 0.05
+  VIX low  mean range 30.2 pts (n=448)
+  VIX mid  mean range 33.0 pts (n=459)
+  VIX high mean range 47.0 pts (n=473)
+  VIX falling (15m)  mean range 35.5 pts (n=624)
+  VIX rising (15m)   mean range 37.6 pts (n=615)

@@ -6,7 +6,7 @@ import AppConfig, { StrategyInstanceConfig } from './AppConfig';
 import { normalizePercentFields, formatPercentFields } from './percentConfig';
 import { validateConfigFile, coerceMaxInvestment } from './configValidation';
 import { expandStrategyInstances } from '../util/strategyInstances';
-import { withCanonicalSettings, withCanonicalStrategy } from './configVocabulary';
+import { withCanonicalSettings } from './configVocabulary';
 
 class ConfigService {
   private configPath = process.env.CONFIG_PATH || './config.yml';
@@ -161,9 +161,6 @@ class ConfigService {
     for (const s of parsed.strategies || []) {
       const id = `${s?.type}${s?.userId ? ':' + s.userId : ''}`;
       if (s && s.broker !== undefined) this.warnOnce(`${id}: config key broker is REMOVED, use brokers: [...] - it is ignored (the strategy trades on ${Array.isArray(s.brokers) && s.brokers.length ? s.brokers.join(', ') : 'kite'})`);
-      if (s && s.maxExposure != null && s.maxInvestment != null && Number(s.maxExposure) !== Number(s.maxInvestment)) {
-        this.warnOnce(`${id}: maxExposure (${s.maxExposure}) and maxInvestment (${s.maxInvestment}) differ - maxExposure wins`);
-      }
     }
   }
 
@@ -190,16 +187,14 @@ class ConfigService {
     this.warnConfigKeys(parsed);
     // Percent fields may be written as "2" or "2%"; normalise to numbers so
     // every consumer does arithmetic on a number.
-    // maxInvestment/maxExposure may be quoted in YAML ("100000"): coerced to a number, and both names kept in step (the canonical one
-    // wins - see configVocabulary.ts).
+    // maxInvestment may be quoted in YAML ("100000"): coerced to a number.
     const normalizeBlock = (o: any) => {
       if (!o) return o;
-      const exposure = o.maxExposure ?? o.maxInvestment;
-      return normalizePercentFields(exposure !== undefined ? { ...o, maxExposure: coerceMaxInvestment(exposure), maxInvestment: coerceMaxInvestment(exposure) } : o);
+      return normalizePercentFields(o.maxInvestment !== undefined ? { ...o, maxInvestment: coerceMaxInvestment(o.maxInvestment) } : o);
     };
     parsed.settings = withCanonicalSettings(normalizeBlock(parsed.settings));
     if (Array.isArray(parsed.strategies)) {
-      parsed.strategies = parsed.strategies.map((s: any) => withCanonicalStrategy(normalizeBlock(s)));
+      parsed.strategies = parsed.strategies.map((s: any) => normalizeBlock(s));
     }
     this.config = parsed as AppConfig;
     this.loadedSnapshot = JSON.parse(JSON.stringify(this.config));

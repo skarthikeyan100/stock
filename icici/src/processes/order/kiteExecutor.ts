@@ -745,10 +745,11 @@ export async function getContractByPriceRangeOnKite(
     optionType: 'CE' | 'PE',
     index: 'NIFTY' | 'SENSEX' = 'NIFTY',
     minPremium = 100,
-    excludeStrikes: Set<number> = new Set()
+    excludeStrikes: Set<number> = new Set(),
+    skipNearestExpiryDay?: boolean
 ): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: 'NFO' | 'BFO'; strike: number; premium: number; antToken: string }> {
     return pickContractByPremium(underlyingLtp, optionType, index, minPremium, excludeStrikes, (strike) =>
-        KiteContractMaster.getInstance().findNearestExpiryOption(strike, optionType, index));
+        KiteContractMaster.getInstance().findNearestExpiryOption(strike, optionType, index, 0, skipNearestExpiryDay), skipNearestExpiryDay);
 }
 
 // exitMonitor calls this when a useGTT=false trade crosses target/SL. Wired

@@ -62,3 +62,6 @@ src/tools/gapscreener/*.csv
 .NiftyChangeStrategy.*.json
 .SimpleContinuousStrategy.*.json
 logs/
+
+# RuleBased backtest output
+backtest-results/

@@ -1,4 +1,4 @@
-import { isPastTime } from '../util/marketHours';
+import { isPastEodClose } from '../util/eodClose';
 import GateLogger from '../util/GateLogger';
 import moment from 'moment';
 import Log from '../util/Log';
@@ -235,12 +235,12 @@ export default class ContinuousStrategy extends Strategy {
         return aligned ? configuredRight : null;
     }
 
-    // End of the trading day for this strategy: cfg.eodCloseTime ('HH:mm', default 15:10). Expiry-day options go to
+    // End of the trading day for this strategy: settings.eodCloseTime ('HH:mm', default 15:10). Expiry-day options go to
     // zero or are exercised at 15:30, and the app's own expiry sweeper only runs on Tuesdays (a holiday-shifted
     // Monday expiry on 2026-10-19 left every leg open), so the strategy closes its own legs before then.
     private isPastEodCloseTime(): boolean {
         if (MOCK_BROKER) return false;
-        return isPastTime(this.cfg().eodCloseTime);
+        return isPastEodClose();
     }
 
     private lastEodAttempt = 0;

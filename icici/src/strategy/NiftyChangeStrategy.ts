@@ -5,16 +5,17 @@ import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
 import { roundToTick } from '../util/tick';
 import { localDayKey } from './dayKey';
-import { exposureForBroker, resolveMaxExposure } from '../prism/configVocabulary';
+import { investmentForBroker, resolveMaxInvestment } from '../prism/configVocabulary';
 import { LimitEntryStrategy, Leg } from './LimitEntryStrategy';
+import { entryStopPrice, minMovePoints } from './entryStop';
 
 // At each configured HH:mm slot, buys the option in the direction of Nifty's move since the previous slot (Nifty LTP at this slot minus
 // its LTP at the previous slot today, from the live tick; the first slot of the day compares with the previous day's close): up -> CE,
-// down -> PE, flat -> nothing. The LTP seen at each slot is kept in memory as the reference for the next one. The order is a LIMIT buy at (the option's LTP - limitOffset) on every
-// configured broker, sized from maxExposure (the amount PER broker, see exposureForBroker; maxExposureByBroker overrides one broker). When it fills, a resting limit sell goes in at
-// (fill price + targetPoints), and when stopLossPoints (and/or maxLossPerLeg, rupees per leg) is set a stop below the fill is attached with it
+// down -> PE, flat -> nothing. The LTP seen at each slot is kept in memory as the reference for the next one. The order is a LIMIT buy at (the option's LTP - limitOffset; the default offset is 0, i.e. the LTP itself) on every
+// configured broker, sized from maxInvestment (the amount PER broker, see investmentForBroker; maxInvestmentByBroker overrides one broker). When it fills, a resting limit sell goes in at
+// (fill price + targetPoints), and when stopLossPercent / stopLossPoints (and/or maxLossPerLeg, rupees per leg) is set a stop below the fill is attached with it
 // (attachProtection: Kite GTT, ANT in-app exitMonitor, Breeze resting sell + tick stop). An unfilled entry is cancelled after entryTimeoutMinutes, and a position still held at
-// eodCloseTime is closed at market.
+// settings.eodCloseTime is closed at market.
 //
 // Slot rules are BulkPcrAutoStartStrategy's: each slot fires at most once a day (persisted), a slot earlier than this process's start
 // is never fired (a restart must not buy "the slot a minute ago"), and a slot more than 5 minutes old is missed. A slot is also
@@ -27,13 +28,14 @@ import { LimitEntryStrategy, Leg } from './LimitEntryStrategy';
 //
 // Config (config.yml):
 //   times: ['10:40', '11:40', '12:30', '13:40', '14:30']
-//   maxExposure: 100000     - the amount PER broker
-//   limitOffset: 3          - entry limit = option LTP - limitOffset
+//   maxInvestment: 100000     - the amount PER broker
+//   minMovePoints: 10       - skip a slot whose |Nifty move| is below this (0 / omitted: any non-zero move trades)
+//   limitOffset: 0          - entry limit = option LTP - limitOffset (0 = the LTP itself; a limit below the market fills only on a dip)
 //   targetPoints: 5
-//   stopLossPoints: 8       - stop = fill - stopLossPoints (omit for no stop)
+//   stopLossPercent: 10     - stop = fill * (1 - 10%); wins over stopLossPoints when set
+//   stopLossPoints: 8       - stop = fill - stopLossPoints (used only without stopLossPercent; omit both for no stop)
 //   maxLossPerLeg: 15000    - optional rupee cap per leg: the stop is never further than this loss
 //   entryTimeoutMinutes: 5  - cancel an unfilled entry after this long
-//   eodCloseTime: '15:10'
 //   brokers: [kite]
 const LATE_WINDOW_MINUTES = 5;
 
@@ -120,33 +122,28 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
         if (!(ltp > 0) || !(reference > 0)) { Log.log(`[${this.logTag}] ${timeStr}: Nifty ltp/reference unusable (${ltp}/${reference}) - skipping`); return; }
         const change = ltp - reference;
         if (change === 0) { Log.log(`[${this.logTag}] ${timeStr}: Nifty is flat vs ${referenceLabel} - skipping`); return; }
-        const budget = resolveMaxExposure(cfg);
-        const offset = cfg.limitOffset == null ? 3 : Number(cfg.limitOffset);
+        const minMove = minMovePoints(cfg);
+        if (Math.abs(change) < minMove) { Log.log(`[${this.logTag}] ${timeStr}: Nifty ${ltp} vs ${referenceLabel} ${reference}: move ${change > 0 ? '+' : ''}${change.toFixed(2)} is below minMovePoints ${minMove} - not trading`); return; }
+        const budget = resolveMaxInvestment(cfg);
+        const offset = cfg.limitOffset == null ? 0 : Number(cfg.limitOffset);
         const targetPoints = Number(cfg.targetPoints);
         if (!(budget > 0) || !Number.isFinite(offset) || offset < 0 || !(targetPoints > 0)) {
-            Log.log(`[${this.logTag}] ALERT: ${timeStr}: maxExposure (${budget}), limitOffset (${cfg.limitOffset}) or targetPoints (${cfg.targetPoints}) invalid - not trading`);
+            Log.log(`[${this.logTag}] ALERT: ${timeStr}: maxInvestment (${budget}), limitOffset (${cfg.limitOffset}) or targetPoints (${cfg.targetPoints}) invalid - not trading`);
             return;
         }
         const right: 'CE' | 'PE' = change > 0 ? 'CE' : 'PE';
         const strike = AntContractMaster.getInstance().entryStrike(ltp, right, 'NIFTY');
         Log.log(`[${this.logTag}] ${timeStr}: Nifty ${ltp} vs ${referenceLabel} ${reference}: difference ${change > 0 ? '+' : ''}${change.toFixed(2)} points -> direction ${change > 0 ? 'up' : 'down'} -> ${right} ${strike}`);
-        await this.startCycle(key, { index: 'NIFTY', strike, right }, (b) => exposureForBroker(cfg, b), async (c) => {
+        await this.startCycle(key, { index: 'NIFTY', strike, right }, (b) => investmentForBroker(cfg, b), async (c) => {
             const optionLtp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
             return roundToTick(optionLtp - offset);
         });
     }
 
-    // Stop price for a filled leg: stopLossPoints below the average fill, tightened to maxLossPerLeg (rupees) when that is nearer.
+    // Stop price for a filled leg (stopLossPercent, else stopLossPoints, tightened to maxLossPerLeg when that is nearer); see entryStop.ts.
     // undefined = no stop configured (the old behaviour: a resting target sell only).
     private stopFor(leg: Leg): number | undefined {
-        const cfg = this.cfg() as any;
-        const points = Number(cfg.stopLossPoints);
-        const cap = Number(cfg.maxLossPerLeg);
-        if (!(points > 0) && !(cap > 0)) return undefined;
-        const avg = this.avgPrice(leg);
-        let stop = points > 0 ? avg - points : 0;
-        if (cap > 0 && leg.filledQty > 0) stop = Math.max(stop, avg - cap / leg.filledQty);
-        return Math.max(roundToTick(stop), 0.05);
+        return entryStopPrice(this.cfg(), this.avgPrice(leg), leg.filledQty);
     }
 
     protected async topUpExit(leg: Leg, delta: number): Promise<void> {

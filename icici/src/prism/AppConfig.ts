@@ -4,9 +4,7 @@ export interface StrategyInstanceConfig {
     enabled: boolean;
     lossLimit?: number;
     lotLimit?: number;
-    maxExposure?: number; // canonical (REFACTOR_PLAN.md section 3)
-    /** @deprecated use maxExposure */
-    maxInvestment?: number;
+    maxInvestment?: number; // per broker
     useGTT?: boolean;
     [key: string]: any;
 }
@@ -28,4 +26,6 @@ export class Settings {
     trailingDistance = 3
     cooldownSeconds = 60
     logQuotes = false
+    /** 'HH:mm': the one end-of-day close time for every strategy (never a per-strategy key) */
+    eodCloseTime?: string
 }

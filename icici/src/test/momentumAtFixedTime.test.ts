@@ -6,6 +6,10 @@ import moment from 'moment';
 import OrderClient from '../processes/strategies/OrderClient';
 import MomentumAtFixedTimeStrategy from '../strategy/MomentumAtFixedTimeStrategy';
 import { Trade, OptionQuote } from '../model/model';
+import configService from '../prism/ConfigService';
+import { settingFor } from '../prism/configVocabulary';
+// eodCloseTime is a global setting (not a strategy key): 23:59 so the end-of-day close never fires during a test, whatever time it is run.
+(configService.getConfig().settings as any).eodCloseTime = '23:59';
 
 function assert(condition: boolean, message: string) {
     console.log(`  ${condition ? 'PASS' : 'FAIL'}: ${message}`);
@@ -35,6 +39,8 @@ function make(cfg: any): any {
     const s: any = new MomentumAtFixedTimeStrategy(cfg.userId);
     s.enabled = true;
     s.cfg = () => cfg;
+    // Exits are read through Strategy.setting(): this block's own target/stopLoss, else settings (the same lookup the strategy uses).
+    s.setting = (key: string) => settingFor(cfg, configService.getConfig().settings as any, key);
     s.stateFile = () => `/tmp/momentum-at-fixed-time-test-${cfg.userId}-${process.pid}.json`;
     s.momentum.readDepth = async (_strategy: any, tokens: string[]) => {
         if (!depth) return null;
@@ -59,7 +65,7 @@ MomentumAtFixedTimeStrategy.processStartedAt = moment().subtract(1, 'hour');
 async function runTwoSlots(userId: string, refLtp: number, ltp: number, ce: { tbq: number; tsq: number } | null, pe: { tbq: number; tsq: number } | null) {
     calls = [];
     depth = ce && pe ? { 'CE-T': ce, 'PE-T': pe } : null;
-    const cfg: any = { type: 'MomentumAtFixedTimeStrategy', userId, times: [slotA], maxInvestment: 100000, targetPrice: 3, entryTimeoutMinutes: 5, eodCloseTime: '23:59', brokers: ['kite'] };
+    const cfg: any = { type: 'MomentumAtFixedTimeStrategy', userId, times: [slotA], maxInvestment: 100000, target: 3, stopLoss: 'none', entryTimeoutMinutes: 5, brokers: ['kite'] };
     const s = make(cfg);
     await s.processNiftyQuote({ ltp: refLtp, prevClose: 22000 });
     cfg.times = [slotA, slotB];
@@ -99,47 +105,35 @@ async function runTwoSlots(userId: string, refLtp: number, ltp: number, ce: { tb
 
     console.log('  first slot of the day');
     calls = [];
-    const cfgFirst: any = { type: 'MomentumAtFixedTimeStrategy', userId: 'MAT-first', times: [slotA], maxInvestment: 100000, targetPrice: 3, eodCloseTime: '23:59', brokers: ['kite'] };
+    const cfgFirst: any = { type: 'MomentumAtFixedTimeStrategy', userId: 'MAT-first', times: [slotA], maxInvestment: 100000, target: 3, stopLoss: 'none', brokers: ['kite'] };
     depth = { 'CE-T': { tbq: 900, tsq: 100 }, 'PE-T': { tbq: 300, tsq: 200 } };
     const first = make(cfgFirst);
     await first.processNiftyQuote({ ltp: 22010, prevClose: 21000 });
     assert(count('placeLimitBuyBare') === 0, 'first slot of the day never trades (no previous slot)');
 
-    console.log('  target sell on tick, not on fill');
+    console.log('  resting target sell placed on fill');
     s = await runTwoSlots('MAT-target', 22000, 22010, { tbq: 900, tsq: 100 }, { tbq: 300, tsq: 200 });
     calls = [];
     await s.updateTrade(fill('NIFTY22050CE', 'Buy', 975, 100));
-    assert(count('brokerPlaceLimitSellBare') === 0, 'no sell on fill');
-    assert(s.legs()[0].exit === 'target' && s.legs()[0].targetTrigger === 103, `trigger at fill + 3 (got ${s.legs()[0].targetTrigger})`);
-    await s.processOptionQuote(tick('CE-T', 102));
-    assert(count('brokerPlaceLimitSellBare') === 0, 'tick below the target: still no sell');
-    await s.processOptionQuote(tick('CE-T', 103.4));
     const sell = last('brokerPlaceLimitSellBare');
-    assert(count('brokerPlaceLimitSellBare') === 1 && sell?.args[1].quantity === 975 && sell?.args[1].price === 103.4, `tick at target: one limit sell 975 at the tick price 103.4 (got ${sell?.args[1].quantity} @ ${sell?.args[1].price})`);
-    await s.processOptionQuote(tick('CE-T', 104));
-    assert(count('brokerPlaceLimitSellBare') === 1, 'further ticks do not place a second sell');
-    await s.updateTrade(fill('NIFTY22050CE', 'Sell', 975, 103.4));
+    assert(count('brokerPlaceLimitSellBare') === 1 && sell?.args[1].quantity === 975 && sell?.args[1].price === 103, `the fill places one resting limit sell of 975 at fill + 3 (got ${sell?.args[1].quantity} @ ${sell?.args[1].price})`);
+    assert(s.legs()[0].exit === 'resting', 'leg exit is a resting sell');
+    assert(count('attachProtection') === 0, 'no stop configured -> nothing attached');
+    await s.processOptionQuote(tick('CE-T', 103.4));
+    assert(count('brokerPlaceLimitSellBare') === 1, 'ticks place nothing more (the resting sell is at the broker)');
+    await s.updateTrade(fill('NIFTY22050CE', 'Sell', 975, 103));
     assert(s.legs()[0].status === 'closed', 'sell fill closes the leg');
 
     console.log('  partial fills');
     s = await runTwoSlots('MAT-partial', 22000, 22010, { tbq: 900, tsq: 100 }, { tbq: 300, tsq: 200 });
     calls = [];
     await s.updateTrade(fill('NIFTY22050CE', 'Buy', 500, 100));
+    const p1 = last('brokerPlaceLimitSellBare');
+    assert(count('brokerPlaceLimitSellBare') === 1 && p1?.args[1].quantity === 500 && p1.args[1].price === 103, 'the first 500 get a resting sell at once');
     await s.updateTrade(fill('NIFTY22050CE', 'Buy', 475, 101));
-    assert(count('brokerPlaceLimitSellBare') === 0, 'partial fills before the target: still no sell');
-    assert(s.legs()[0].targetTrigger > 103, `trigger follows the new average fill (got ${s.legs()[0].targetTrigger})`);
-    await s.processOptionQuote(tick('CE-T', s.legs()[0].targetTrigger + 0.05));
-    const first1 = last('brokerPlaceLimitSellBare');
-    assert(count('brokerPlaceLimitSellBare') === 1 && first1?.args[1].quantity === 975, 'target sell covers the whole filled quantity');
-    calls = [];
-    s = await runTwoSlots('MAT-late', 22000, 22010, { tbq: 900, tsq: 100 }, { tbq: 300, tsq: 200 });
-    calls = [];
-    await s.updateTrade(fill('NIFTY22050CE', 'Buy', 500, 100));
-    await s.processOptionQuote(tick('CE-T', 104));
-    calls = [];
-    await s.updateTrade(fill('NIFTY22050CE', 'Buy', 475, 100));
-    const late = last('brokerPlaceLimitSellBare');
-    assert(count('brokerPlaceLimitSellBare') === 1 && late?.args[1].quantity === 475, `a fill after the target sell is sold at the same price for the extra (got ${late?.args[1].quantity})`);
+    const p2 = last('brokerPlaceLimitSellBare');
+    assert(count('brokerPlaceLimitSellBare') === 2 && p2?.args[1].quantity === 475 && p2.args[1].price > 103, `the later 475 gets its own sell at the new average + 3 (got ${p2?.args[1].quantity} @ ${p2?.args[1].price})`);
+    assert(s.legs()[0].exitQty === 975, `the exit covers the whole filled quantity (got ${s.legs()[0].exitQty})`);
 
     console.log('  one position at a time');
     s = await runTwoSlots('MAT-busy', 22000, 22010, { tbq: 900, tsq: 100 }, { tbq: 300, tsq: 200 });
@@ -156,17 +150,20 @@ async function runTwoSlots(userId: string, refLtp: number, ltp: number, ce: { tb
     const cfgB = s.cfg();
     assert(cfgB.quantity === undefined, 'no quantity key is read');
 
-    console.log('  restart re-arms the target watch');
+    console.log('  restart keeps a stop-protected leg watched');
     s = await runTwoSlots('MAT-restart', 22000, 22010, { tbq: 900, tsq: 100 }, { tbq: 300, tsq: 200 });
+    s.cfg().stopLoss = '25%';
     await s.updateTrade(fill('NIFTY22050CE', 'Buy', 975, 100));
+    s.legs()[0].stop = 75; // a self-managed stop (no broker-side protection): the tick watch must survive a restart
+    s.save();
     const restarted: any = make(s.cfg());
     restarted.stateFile = s.stateFile;
     await restarted.processNiftyQuote({ ltp: 22010, prevClose: 22000 });
-    assert(restarted.canHandleOptionQuote(tick('CE-T', 103)), 'after a restart the target-watched leg still receives its option ticks');
+    assert(restarted.canHandleOptionQuote(tick('CE-T', 103)), 'after a restart a leg with a tick-driven stop still receives its option ticks');
 
     console.log('  disabled strategy');
     calls = [];
-    const off = make({ type: 'MomentumAtFixedTimeStrategy', userId: 'MAT-off', times: [slotA], maxInvestment: 100000, targetPrice: 3, eodCloseTime: '23:59', brokers: ['kite'] });
+    const off = make({ type: 'MomentumAtFixedTimeStrategy', userId: 'MAT-off', times: [slotA], maxInvestment: 100000, target: 3, stopLoss: 'none', brokers: ['kite'] });
     off.enabled = false;
     depth = { 'CE-T': { tbq: 900, tsq: 100 }, 'PE-T': { tbq: 300, tsq: 200 } };
     await off.processNiftyQuote({ ltp: 22010, prevClose: 22000 });

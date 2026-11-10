@@ -1,11 +1,16 @@
 import Log from '../util/Log';
-import { NiftyQuote, OptionQuote, Trade, PeriodicStats, RSI, MACD, Bollinger, EMACrossOver } from "../model/model";
+import { NiftyQuote, OptionQuote, Trade, PeriodicStats, RSI } from "../model/model";
 import { Strategy } from "./strategy";
 import OrderClient from '../processes/strategies/OrderClient';
 import { CALL, PUT } from '../constants';
 import configService from '../prism/ConfigService';
+import { ExitRule, ExitRules, exitDistance, exitRulesFrom, legacyExitKeysIn, timeoutFrom } from './exitRules';
+import { RuleIndicator, parseRuleIndicator, ruleSignal, consensusOf, parseRuleLines, combineRules } from './ruleIndicators';
 
 const round = (num: number) => Math.round(num * 100) / 100;
+
+// Keys a RuleBased block carried before target/stopLoss became global. They are ignored; the constructor reports them.
+const LEGACY_EXIT_KEYS = ['targetProfitPercent', 'stopLossPercent', 'targetPoints', 'stopLossPoints'];
 
 class RuleBasedContract {
     contract: string = '';
@@ -20,7 +25,14 @@ class RuleBasedContract {
     exitReason: 'win' | 'loss' | 'timeout' | null = null;
     exitPnl: number = 0;
     soldQty: number = 0; // monitor-triggered (target/SL) exit fills accumulated so far
+    maxHoldMinutes: number = 0; // timeout resolved when the entry was placed; 0 = no timeout
     soldValue: number = 0;
+    // Exit rules resolved when the entry was placed (so a config edit mid-trade does not move the levels of an open position).
+    targetRule: ExitRule | null = null;
+    stopRule: ExitRule | null = null;
+    // Distances in points from the average entry price, recomputed by applyLevels() whenever that price changes. null = none.
+    targetDist: number | null = null;
+    stopDist: number | null = null;
 
     clear() {
         this.contract = '';
@@ -36,6 +48,16 @@ class RuleBasedContract {
         this.exitPnl = 0;
         this.soldQty = 0;
         this.soldValue = 0;
+        this.maxHoldMinutes = 0;
+        this.targetRule = null;
+        this.stopRule = null;
+        this.targetDist = null;
+        this.stopDist = null;
+    }
+
+    applyLevels() {
+        this.targetDist = this.targetRule && this.price > 0 ? exitDistance(this.targetRule, this.price) : null;
+        this.stopDist = this.stopRule && this.price > 0 ? exitDistance(this.stopRule, this.price) : null;
     }
 
     async processOptionQuote(quote: OptionQuote, strategy: RuleBasedStrategy): Promise<boolean> {
@@ -54,12 +76,19 @@ class RuleBasedContract {
             Log.log(`[Rule:${strategy.userId}] ${this.contract} P&L=${round(profit)} diff=${round(priceDiff)}`);
         }
 
-        const timeout = config.maxHoldTimeMinutes > 0 && timeElapsed >= config.maxHoldTimeMinutes * 60 * 1000;
+        // Timeout first, then target, then stop. Each closes the whole position once; the sell fill is booked in updateTrade.
+        const timeout = this.maxHoldMinutes > 0 && timeElapsed >= this.maxHoldMinutes * 60 * 1000;
+        let reason: 'timeout' | 'win' | 'loss' | null = null;
+        if (!this.sellOrderPlaced) {
+            if (timeout) reason = 'timeout';
+            else if (this.targetDist !== null && quote.ltp >= this.price + this.targetDist) reason = 'win';
+            else if (this.stopDist !== null && quote.ltp <= this.price - this.stopDist) reason = 'loss';
+        }
 
-        if (timeout && !this.sellOrderPlaced) {
-            Log.log(`[Rule:${strategy.userId}] Selling ${this.contract}: TIMEOUT P&L=${round(profit)}`);
+        if (reason) {
+            Log.log(`[Rule:${strategy.userId}] Selling ${this.contract}: ${reason.toUpperCase()} P&L=${round(profit)}`);
             this.sellOrderPlaced = true;
-            this.exitReason = 'timeout';
+            this.exitReason = reason;
             this.exitPnl = profit;
             await strategy.sellContract(this.contract, this.quantity, quote.ltp);
         }
@@ -79,8 +108,9 @@ class RuleBasedContract {
             this.price = trade.price;
             this.quantity = trade.quantity;
             this.entryTime = Date.now();
+            this.applyLevels();
             if (config.logEnabled) {
-                Log.log(`[Rule:${strategy.userId}] Buy confirmed: ${this.contract} qty=${this.quantity} price=${this.price}`);
+                Log.log(`[Rule:${strategy.userId}] Buy confirmed: ${this.contract} qty=${this.quantity} price=${this.price} target=${this.targetDist ?? 'none'} stop=${this.stopDist ?? 'none'} (points)`);
             }
             return false;
         }
@@ -90,6 +120,7 @@ class RuleBasedContract {
         if (!this.buyOrderPlaced && trade.action === 'Buy' && this.price > 0 && !this.sellOrderPlaced && this.soldQty === 0 && Date.now() - this.entryTime < 120_000) {
             this.price = (this.price * this.quantity + trade.price * trade.quantity) / (this.quantity + trade.quantity);
             this.quantity += trade.quantity;
+            this.applyLevels();
             return false;
         }
 
@@ -102,9 +133,8 @@ class RuleBasedContract {
             return true;
         }
 
-        // A Sell fill the strategy did not place itself: the broker-side target/stop-loss closed the
-        // position. Without this the contract is never cleared and the strategy can never trade again. Chunked exits
-        // arrive as several fills - only complete once the held quantity is sold.
+        // A Sell fill the strategy did not place itself (a resting broker-side sell filled): without this the contract is never
+        // cleared and the strategy can never trade again. Chunked exits arrive as several fills - only complete once the held quantity is sold.
         if (!this.sellOrderPlaced && !this.buyOrderPlaced && trade.action === 'Sell' && this.price > 0 && this.quantity > 0) {
             this.soldQty += trade.quantity;
             this.soldValue += trade.quantity * trade.price;
@@ -123,18 +153,33 @@ class RuleBasedContract {
 
 export default class RuleBasedStrategy extends Strategy {
     private contract: RuleBasedContract | null = null;
-    private indicators: string[] = [];
+    // One entry per rule (a line of `indicators`); each rule is its indicators, all of which must agree (requireAllIndicators) or a majority.
+    private ruleNames: string[][] = [];
+    private parsed: RuleIndicator[][] = [];
+    // Set when a listed indicator is unknown or not computed live: the block then never trades (reported once, in the constructor).
+    private indicatorError: string | null = null;
 
     constructor(userId?: string) {
         super(userId);
         const config = this.getConfig();
         this.enabled = config.enabled;
-        this.indicators = config.indicators || [];
+        this.ruleNames = parseRuleLines(config.indicators);
 
-        if (this.indicators.length === 0) {
-            console.warn(`[RuleBased:${this.userId}] No indicators configured - strategy will be inactive`);
+        if (this.ruleNames.length === 0) {
+            console.warn(`[RuleBased:${this.userId}] No rules configured - strategy will be inactive`);
         } else {
-            Log.log(`[RuleBased:${this.userId}] Initialized with indicators: ${this.indicators.join(', ')}`);
+            try {
+                this.parsed = this.ruleNames.map((names) => names.map((name) => parseRuleIndicator(name)));
+                Log.log(`[RuleBased:${this.userId}] Initialized with ${this.ruleNames.length} rule(s): ${this.ruleNames.map((r) => r.join(',')).join(' | ')}`);
+            } catch (e: any) {
+                this.indicatorError = e?.message ?? String(e);
+                Log.log(`[RuleBased:${this.userId}] ALERT: ${this.indicatorError} - this block will not trade`);
+            }
+        }
+
+        const legacy = legacyExitKeysIn(this.instanceConfig() as any, LEGACY_EXIT_KEYS);
+        if (legacy.length > 0) {
+            Log.log(`[RuleBased:${this.userId}] ALERT: ${legacy.join(', ')} ignored - exits come from target / stopLoss (this block or settings)`);
         }
     }
 
@@ -152,117 +197,78 @@ export default class RuleBasedStrategy extends Strategy {
             enabled: myConfig?.enabled ?? false,
             indicators: myConfig?.indicators || [],
             quantity: myConfig?.quantity ?? 0,
-            target: myConfig?.target ?? 10,
-            stopLoss: myConfig?.stopLoss ?? 5,
-            maxHoldTimeMinutes: myConfig?.maxHoldTimeMinutes ?? 30,
-            logEnabled: myConfig?.logEnabled ?? true
+            logEnabled: myConfig?.logEnabled ?? true,
+            // true: every indicator in a rule must agree. false: a majority of a rule's indicators must agree (NEUTRAL / no value casts no vote).
+            requireAllIndicators: myConfig?.requireAllIndicators !== false,
         };
     }
 
     /**
-     * Sole decision point. Collects all indicator signals from the current stats snapshot.
-     * Only trades when every configured indicator is non-null, non-NEUTRAL, and all agree.
+     * Sole decision point. Each rule gives UP, DOWN or nothing. Any rule that fires buys; rules that disagree (one UP and one DOWN on the same
+     * candle) give no trade.
      */
     receive(_oldStats: PeriodicStats, newStats: PeriodicStats) {
         if (!this.enabled || !newStats?.results) return;
+        if (this.indicatorError) return;
         if (!this.isTimeInRange()) return;
         if (this.contract !== null) return;  // position already open
 
         const config = this.getConfig();
         if (!this.isCooldownElapsed(this.setting<number>('cooldownSeconds') ?? 0)) return;
 
-        const signals: Record<string, string | null> = {};
-        for (const name of this.indicators) {
-            signals[name] = this.getIndicatorSignal(name, newStats);
-        }
+        const ruleDirections = this.parsed.map((rule) => {
+            const signals = rule.map((ind) => this.getIndicatorSignal(ind, newStats));
+            const d = consensusOf(signals, config.requireAllIndicators);
+            return d;
+        });
 
         if (config.logEnabled) {
-            const str = Object.entries(signals).map(([k, v]) => `${k}=${v ?? 'null'}`).join(', ');
-            Log.log(`[Rule:${this.userId}] Signals: ${str}`);
+            const str = this.ruleNames.map((names, i) => `[${names.join(',')}]=${ruleDirections[i] ?? 'none'}`).join(' ');
+            Log.log(`[Rule:${this.userId}] Rules: ${str}`);
         }
 
-        const direction = this.consensus(signals);
+        const { direction, conflict } = combineRules(ruleDirections);
+        if (conflict) {
+            Log.log(`[Rule:${this.userId}] Rules disagree (one UP, one DOWN) - no trade`);
+            return;
+        }
         if (!direction) return;
+        const side = direction === 'UP' ? CALL : PUT;
 
-        Log.log(`[Rule:${this.userId}] Consensus: ${direction}`);
+        const exits = this.resolveExits();
+        if (!exits) return;
+        const maxHoldMinutes = this.resolveTimeout();
+        if (maxHoldMinutes === null) return;
+
+        Log.log(`[Rule:${this.userId}] Consensus: ${side}`);
         this.recordTriggerTime();
-        this.executeTrade(direction).catch(e =>
+        this.executeTrade(side, exits, maxHoldMinutes).catch(e =>
             console.error(`[Rule:${this.userId}] Trade execution error:`, e)
         );
     }
 
-    /**
-     * All indicators must be present (non-null) and non-NEUTRAL and agree.
-     * A single NEUTRAL or missing signal blocks the trade.
-     */
-    private consensus(signals: Record<string, string | null>): string | null {
-        const values = Object.values(signals);
-
-        if (values.some(s => s === null || s === 'NEUTRAL')) return null;
-
-        const upCount = values.filter(s => s === 'UP').length;
-        const downCount = values.filter(s => s === 'DOWN').length;
-
-        if (upCount === values.length) return CALL;
-        if (downCount === values.length) return PUT;
-        return null;
+    // Target and stop from this block, else settings. An absent or invalid value stops the trade (ALERT), it is never read as "none".
+    private resolveExits(): ExitRules | null {
+        try {
+            return exitRulesFrom(this.setting('target'), this.setting('stopLoss'), `RuleBased:${this.userId}`);
+        } catch (e: any) {
+            Log.log(`[Rule:${this.userId}] ALERT: ${e?.message ?? e} - not trading`);
+            return null;
+        }
     }
 
-    private getIndicatorSignal(indicatorName: string, stats: PeriodicStats): string | null {
-        const parts = indicatorName.split('_');
-        if (!stats.results) return null;
-
-        if (parts[0] === 'RSI' && parts.length >= 4) {
-            const match = (stats.results.rsi || []).find((rsi: RSI) =>
-                rsi.period === parseInt(parts[1]) &&
-                rsi.overbought === parseInt(parts[2]) &&
-                rsi.oversold === parseInt(parts[3])
-            );
-            return match?.trend || null;
+    // Timeout from settings.maxHoldTimeMinutes (or this block's override). 0 = no timeout. null = absent or invalid: the block does not trade (ALERT).
+    private resolveTimeout(): number | null {
+        try {
+            return timeoutFrom(this.setting('maxHoldTimeMinutes'), `RuleBased:${this.userId}`) ?? 0;
+        } catch (e: any) {
+            Log.log(`[Rule:${this.userId}] ALERT: ${e?.message ?? e} - not trading`);
+            return null;
         }
+    }
 
-        if (parts[0] === 'MACD' && parts.length === 4) {
-            const match = (stats.results.macd || []).find((macd: MACD) =>
-                macd.shortPeriod === parseInt(parts[1]) &&
-                macd.longPeriod === parseInt(parts[2]) &&
-                macd.signalPeriod === parseInt(parts[3])
-            );
-            return match?.trend || null;
-        }
-
-        if (parts[0] === 'EMA' && parts.length === 3) {
-            const match = (stats.results.ema || []).find((ema: EMACrossOver) =>
-                ema.shortPeriod === parseInt(parts[1]) &&
-                ema.longPeriod === parseInt(parts[2])
-            );
-            return match?.trend || null;
-        }
-
-        if (parts[0] === 'Bollinger' && parts.length === 3) {
-            const match = (stats.results.bollinger || []).find((bb: Bollinger) =>
-                bb.period === parseInt(parts[1]) &&
-                bb.numDeviations === parseFloat(parts[2])
-            );
-            return match?.trend || null;
-        }
-
-        if (parts[0] === 'ADX' && parts.length === 2) {
-            const match = (stats.results.adx || []).find((adx: any) =>
-                adx.period === parseInt(parts[1])
-            );
-            return match?.trend || null;
-        }
-
-        if (parts[0] === 'Stoch' && parts.length === 3) {
-            const match = (stats.results.stochastic || []).find((stoch: any) =>
-                stoch.kPeriod === parseInt(parts[1]) &&
-                stoch.dPeriod === parseInt(parts[2])
-            );
-            return match?.trend || null;
-        }
-
-        console.warn(`[Rule:${this.userId}] Unknown indicator format: ${indicatorName}`);
-        return null;
+    private getIndicatorSignal(ind: RuleIndicator, stats: PeriodicStats): string | null {
+        return ruleSignal(ind, stats.results);
     }
 
     // No-op: all decisions happen in receive()
@@ -297,10 +303,13 @@ export default class RuleBasedStrategy extends Strategy {
         }
     }
 
-    private async executeTrade(right: string) {
+    private async executeTrade(right: string, exits: ExitRules, maxHoldMinutes: number) {
         // Set sentinel immediately to block re-entry from concurrent receive() calls
         this.contract = new RuleBasedContract();
         this.contract.right = right;
+        this.contract.maxHoldMinutes = maxHoldMinutes;
+        this.contract.targetRule = exits.target;
+        this.contract.stopRule = exits.stop;
 
         const config = this.getConfig();
         const orderClient = OrderClient.getInstance();
@@ -348,6 +357,7 @@ export default class RuleBasedStrategy extends Strategy {
                 this.contract.quantity = Number(held.quantity);
                 this.contract.entryTime = Date.now();
                 this.contract.buyOrderPlaced = false;
+                this.contract.applyLevels();
             } else {
                 Log.log(`[Rule:${this.userId}] ALERT: outcome of the buy of ${contract} unknown - keeping the entry lock, check the broker`);
             }

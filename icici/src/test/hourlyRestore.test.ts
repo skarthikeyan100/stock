@@ -4,6 +4,7 @@
  * Run: node ./dist/test/hourlyRestore.test.js
  */
 import HourlyStrategy from '../strategy/HourlyStrategy';
+import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
 import { localDayKey } from '../strategy/dayKey';
 import { CALL } from '../constants';
@@ -36,7 +37,7 @@ async function main() {
     assert(closes.length === 1 && closes[0] === 'kite:selling', 'the stop closes the restored (error-flagged) position');
 
     pos.phase = 'error'; pos.lastCloseAttemptAt = undefined;
-    s.cfg = () => ({ eodCloseTime: '00:00' });
+    (configService.getConfig().settings as any).eodCloseTime = '00:00'; // global setting: the close time has already passed
     s.checkEod();
     assert(closes.length === 2, 'the EOD flatten also closes the restored position');
 

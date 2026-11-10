@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { effectiveExpiryOffset } from '../util/expirySkip';
+import { effectiveExpiryOffset, calendarDayUtc } from '../util/expirySkip';
 import path from 'path';
 import axios from 'axios';
 import { execFileSync } from 'child_process';
@@ -48,6 +48,50 @@ export function breezeShortNameFor(underlying: string): string {
 // ICICI shortName -> index name the rest of the codebase uses (tsym prefix, ANT option chain).
 export function indexNameFor(shortName: string): string {
     return shortName === SENSEX_BREEZE_SHORT_NAME ? 'SENSEX' : shortName;
+}
+
+// ---- Breeze trading symbols ----
+// Breeze names a contract by a tuple (stock code, expiry, strike, right), and the platform keys everything (strategy legs, bookkeeping, Mongo
+// fills, pending-order trackers, square-offs) by ONE string. The old string, `NIFTY24950CE`, had no expiry, so the 09-Nov and the 17-Nov
+// contract of one strike were the same key (2026-11-09: a restart reconcile mixed them and a strategy bought a second CE). A Breeze tsym now
+// carries the expiry between the underlying and the strike: `NIFTY09NOV2624950CE` (DDMMMYY, upper case). The old form is still accepted
+// everywhere a tsym is read (state written before the change); it names "whichever expiry the ANT token / the nearest-expiry rule picks".
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// '09-Nov-2026' (Breeze's expiry_date / ExpiryDate format) -> '09NOV26'; undefined when it is not in that format.
+export function breezeExpiryCode(expiryDate: string): string | undefined {
+    const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(String(expiryDate ?? '').trim());
+    if (!m || MONTHS.findIndex((x) => x.toLowerCase() === m[2].toLowerCase()) < 0) return undefined;
+    return `${m[1].padStart(2, '0')}${m[2].toUpperCase()}${m[3].slice(2)}`;
+}
+
+// '09NOV26' -> '09-Nov-2026'.
+export function breezeExpiryFromCode(code: string): string | undefined {
+    const m = /^(\d{2})([A-Z]{3})(\d{2})$/.exec(code);
+    if (!m) return undefined;
+    const month = MONTHS.find((x) => x.toUpperCase() === m[2]);
+    return month ? `${m[1]}-${month}-20${m[3]}` : undefined;
+}
+
+// The tsym of one Breeze contract (stock code as ICICI reports it: 'NIFTY', 'BSESEN' -> 'SENSEX'). An expiry that cannot be read falls back
+// to the old expiry-less form rather than inventing one.
+export function breezeTsym(stockCode: string, expiryDate: string, strike: number | string, optionType: 'CE' | 'PE'): string {
+    const code = breezeExpiryCode(expiryDate);
+    return `${indexNameFor(String(stockCode))}${code ?? ''}${strike}${optionType}`;
+}
+
+// The old, expiry-less tsym of the same contract (what rows and state written before 2026-11-09 carry).
+export function breezeLegacyTsym(stockCode: string, strike: number | string, optionType: 'CE' | 'PE'): string {
+    return `${indexNameFor(String(stockCode))}${strike}${optionType}`;
+}
+
+// Both forms: `expiryDate` is the contract's expiry in Breeze's format ('09-Nov-2026') when the tsym carries one.
+export function parseBreezeTsym(tsym: string): { shortName: string; expiryDate?: string; strike: number; optionType: 'CE' | 'PE' } | null {
+    const m = /^([A-Za-z]+?)(?:(\d{2}[A-Z]{3}\d{2}))?(\d+)(CE|PE)$/.exec(String(tsym ?? ''));
+    if (!m) return null;
+    const expiryDate = m[2] ? breezeExpiryFromCode(m[2]) : undefined;
+    if (m[2] && !expiryDate) return null;
+    return { shortName: m[1], expiryDate, strike: Number(m[3]), optionType: m[4] as 'CE' | 'PE' };
 }
 
 // Which exchange an option/underlying trades on, derived from its ICICI shortName.
@@ -332,13 +376,14 @@ class BreezeContractMaster {
         return match;
     }
 
+    // `skipNearestExpiryDay`: per-call override of settings.skipNearestExpiryOnExpiryDay (undefined = the setting). `exactExpiryDayUtc`: see below.
     // Resolves a specific (strike, optionType) to its nearest-upcoming-expiry contract -
     // mirrors KiteContractMaster.findNearestExpiryOption. Needed because the bare-
     // execution IPC surface (breezeExecutor.ts) only carries a flat tradingSymbol string
     // (no expiry) into sell/limit-buy calls, so the full contract tuple must be
     // re-resolved from just strike+optionType - safe since both LegManager-driven
     // strategies only ever trade the nearest expiry of their underlying.
-    async findNearestExpiryOption(strike: number, optionType: 'CE' | 'PE', underlyingShortName: string = 'NIFTY'): Promise<FnoRecord> {
+    async findNearestExpiryOption(strike: number, optionType: 'CE' | 'PE', underlyingShortName: string = 'NIFTY', skipNearestExpiryDay?: boolean, exactExpiryDayUtc?: number): Promise<FnoRecord> {
         await this.ensureLoaded();
         const shortName = breezeShortNameFor(underlyingShortName);
         const todayStartMs = new Date().setHours(0, 0, 0, 0);
@@ -354,7 +399,13 @@ class BreezeContractMaster {
             throw new Error(`No ${shortName} ${strike}${optionType} contract found for any upcoming expiry`);
         }
         candidates.sort((a, b) => expiryMs(a.expiryDate) - expiryMs(b.expiryDate));
-        return candidates[effectiveExpiryOffset(candidates.map((r) => expiryMs(r.expiryDate)), 0)] ?? candidates[0];
+        // An exact expiry (the calendar day of the ANT token the caller holds) wins over every rule: a Breeze tsym has no expiry, so the ANT token
+        // is what says which week a leg is in, and a sell must hit the contract the buy did, whatever the global skip setting says now.
+        if (exactExpiryDayUtc != null) {
+            const exact = candidates.find((r) => calendarDayUtc(expiryMs(r.expiryDate)) === exactExpiryDayUtc);
+            if (exact) return exact;
+        }
+        return candidates[effectiveExpiryOffset(candidates.map((r) => expiryMs(r.expiryDate)), 0, Date.now(), skipNearestExpiryDay)] ?? candidates[0];
     }
 
     // Any one live option contract of an underlying, nearest expiry - only used to read the

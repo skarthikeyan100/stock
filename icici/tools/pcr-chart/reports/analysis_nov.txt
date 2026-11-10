@@ -1,0 +1,187 @@
+
+=== 2026-11-02 ===
+NIFTY 23274.25 -> 23440.80  range 23207.05-23440.80  (360 minutes with a price)
+Straddle (ATM CE+PE): 200.55 at 09:30 -> 148.80 at 15:28 (-25.8%); day range 234 pts vs open straddle 201
+ATM IV: 18.3% at 09:30 -> 15.2% at 15:28
+IV change (5m) vs NIFTY move: past r=-0.41  next r=-0.12  | vs next |move| r=-0.03
+Straddle change (5m) vs NIFTY move: past r=-0.35  next r=-0.11  | vs next |move| r=-0.03
+Put-call skew change (5m) vs NIFTY move: past r=-0.50  next r=0.12
+OI walls among subscribed strikes: call wall 23300 (0 changes), put wall 23200 (2 changes)
+Wall touches (within 15 pts): 25; price bounced back over the next 15m in 11
+1-min return autocorr (ac) and rms move (rv) by hour: 09:30: ac=0.03 rv=6.88 | 10:30: ac=0.13 rv=5.61 | 11:30: ac=-0.04 rv=5.33 | 12:30: ac=-0.01 rv=7.54 | 13:30: ac=0.13 rv=5.14 | 14:30: ac=0.02 rv=14.68
+Day high 23440.80 at 15:29, day low 23207.05 at 13:40
+Opening range 15m 23255-23317: first break up at 09:45; close 124.00 pts from the broken edge
+Opening range 30m 23255-23330: first break up at 10:26; close 110.55 pts from the broken edge
+Signals (hit = NIFTY moved the signalled way):
+  OI-only bias (put OI added - call OI added) next  5m  n=350  hit 51%  avg 1.18 pts
+  OI-only bias (put OI added - call OI added) next 15m  n=340  hit 49%  avg 0.46 pts
+  OI-only bias (put OI added - call OI added) next 30m  n=325  hit 46%  avg -1.00 pts
+  IV falling = up, IV rising = down  next  5m  n=350  hit 51%  avg 0.39 pts
+  IV falling = up, IV rising = down  next 15m  n=340  hit 54%  avg 1.56 pts
+  IV falling = up, IV rising = down  next 30m  n=325  hit 56%  avg 5.54 pts
+  Skew rising = down                 next  5m  n= 69  hit 46%  avg -1.04 pts
+  Skew rising = down                 next 15m  n= 69  hit 51%  avg -0.29 pts
+  Skew rising = down                 next 30m  n= 69  hit 57%  avg 3.98 pts
+Futures: 23349.80 -> 23410.00, OI 15416505 -> 15399865
+  Futures buildup (all four statuses) next  5m  n=335  hit 52%  avg 0.71 pts
+  Futures buildup (all four statuses) next 15m  n=326  hit 57%  avg 1.72 pts
+  Futures buildup (all four statuses) next 30m  n=311  hit 50%  avg 1.40 pts
+  Futures buildup (long/short buildup only) next  5m  n=186  hit 56%  avg 1.26 pts
+  Futures buildup (long/short buildup only) next 15m  n=185  hit 56%  avg 0.51 pts
+  Futures buildup (long/short buildup only) next 30m  n=171  hit 48%  avg 1.27 pts
+  Futures above/below its VWAP       next  5m  n=353  hit 46%  avg -1.35 pts
+  Futures above/below its VWAP       next 15m  n=343  hit 41%  avg -3.96 pts
+  Futures above/below its VWAP       next 30m  n=328  hit 38%  avg -9.64 pts
+  Basis widening = up                next  5m  n=350  hit 51%  avg 1.09 pts
+  Basis widening = up                next 15m  n=340  hit 55%  avg 0.90 pts
+  Basis widening = up                next 30m  n=325  hit 52%  avg -0.76 pts
+  Futures buildup (all) when VIX rising next  5m  n=149  hit 48%  avg -1.47 pts
+  Futures buildup (all) when VIX rising next 15m  n=148  hit 43%  avg -2.94 pts
+  Futures buildup (all) when VIX rising next 30m  n=141  hit 37%  avg -7.96 pts
+  Futures buildup (all) when VIX falling next  5m  n=147  hit 54%  avg 2.20 pts
+  Futures buildup (all) when VIX falling next 15m  n=140  hit 68%  avg 4.55 pts
+  Futures buildup (all) when VIX falling next 30m  n=132  hit 61%  avg 9.35 pts
+VIX 15.59 -> 15.46
+
+=== 2026-11-04 ===
+NIFTY 23921.75 -> 23960.60  range 23737.45-23960.60  (360 minutes with a price)
+Straddle (ATM CE+PE): 390.55 at 09:30 -> 325.15 at 15:29 (-16.7%); day range 223 pts vs open straddle 391
+ATM IV: 17.0% at 09:30 -> 14.3% at 15:29
+IV change (5m) vs NIFTY move: past r=-0.23  next r=-0.05  | vs next |move| r=0.05
+Straddle change (5m) vs NIFTY move: past r=-0.12  next r=-0.05  | vs next |move| r=0.03
+Put-call skew change (5m) vs NIFTY move: past r=-0.73  next r=-0.05
+OI walls among subscribed strikes: call wall 23900 (0 changes), put wall 23900 (12 changes)
+Wall touches (within 15 pts): 25; price bounced back over the next 15m in 11
+1-min return autocorr (ac) and rms move (rv) by hour: 09:30: ac=0.04 rv=9.72 | 10:30: ac=0.18 rv=8.17 | 11:30: ac=0.06 rv=7.89 | 12:30: ac=-0.04 rv=5.17 | 13:30: ac=0.19 rv=5.49 | 14:30: ac=-0.11 rv=7.48
+Day high 23960.60 at 15:29, day low 23737.45 at 12:15
+Opening range 15m 23898-23946: first break down at 10:16; close 63.00 pts from the broken edge
+Opening range 30m 23898-23946: first break down at 10:16; close 63.00 pts from the broken edge
+Signals (hit = NIFTY moved the signalled way):
+  OI-only bias (put OI added - call OI added) next  5m  n=350  hit 50%  avg -0.80 pts
+  OI-only bias (put OI added - call OI added) next 15m  n=340  hit 51%  avg -0.58 pts
+  OI-only bias (put OI added - call OI added) next 30m  n=325  hit 50%  avg -3.70 pts
+  IV falling = up, IV rising = down  next  5m  n=350  hit 59%  avg 3.53 pts
+  IV falling = up, IV rising = down  next 15m  n=340  hit 58%  avg 4.68 pts
+  IV falling = up, IV rising = down  next 30m  n=325  hit 56%  avg 4.92 pts
+  Skew rising = down                 next  5m  n= 89  hit 51%  avg 2.60 pts
+  Skew rising = down                 next 15m  n= 89  hit 54%  avg 0.80 pts
+  Skew rising = down                 next 30m  n= 89  hit 60%  avg 2.88 pts
+Futures: 23938.00 -> 23975.00, OI 13886210 -> 13822120
+  Futures buildup (all four statuses) next  5m  n=348  hit 53%  avg 2.88 pts
+  Futures buildup (all four statuses) next 15m  n=338  hit 51%  avg -0.75 pts
+  Futures buildup (all four statuses) next 30m  n=323  hit 51%  avg -0.50 pts
+  Futures buildup (long/short buildup only) next  5m  n=267  hit 56%  avg 4.44 pts
+  Futures buildup (long/short buildup only) next 15m  n=258  hit 53%  avg 1.87 pts
+  Futures buildup (long/short buildup only) next 30m  n=245  hit 54%  avg 2.58 pts
+  Futures above/below its VWAP       next  5m  n=353  hit 52%  avg 0.62 pts
+  Futures above/below its VWAP       next 15m  n=343  hit 51%  avg 2.01 pts
+  Futures above/below its VWAP       next 30m  n=328  hit 58%  avg 3.01 pts
+  Basis widening = up                next  5m  n=349  hit 49%  avg 1.75 pts
+  Basis widening = up                next 15m  n=339  hit 53%  avg -0.22 pts
+  Basis widening = up                next 30m  n=324  hit 51%  avg -0.80 pts
+  Futures buildup (all) when VIX rising next  5m  n=115  hit 56%  avg 3.36 pts
+  Futures buildup (all) when VIX rising next 15m  n=112  hit 52%  avg -0.28 pts
+  Futures buildup (all) when VIX rising next 30m  n=107  hit 56%  avg 7.20 pts
+  Futures buildup (all) when VIX falling next  5m  n=201  hit 51%  avg 2.04 pts
+  Futures buildup (all) when VIX falling next 15m  n=195  hit 51%  avg -1.43 pts
+  Futures buildup (all) when VIX falling next 30m  n=185  hit 49%  avg -5.32 pts
+VIX 16.03 -> 15.17
+
+=== 2026-11-05 ===
+NIFTY 24341.95 -> 24536.60  range 24305.35-24579.35  (360 minutes with a price)
+Straddle (ATM CE+PE): 301.60 at 09:30 -> 319.40 at 15:29 (5.9%); day range 274 pts vs open straddle 302
+ATM IV: 14.4% at 09:30 -> 15.6% at 15:29
+IV change (5m) vs NIFTY move: past r=0.37  next r=0.02  | vs next |move| r=0.09
+Straddle change (5m) vs NIFTY move: past r=0.39  next r=0.04  | vs next |move| r=0.10
+Put-call skew change (5m) vs NIFTY move: past r=0.06  next r=0.12
+OI walls among subscribed strikes: call wall 24500 (0 changes), put wall 24400 (1 changes)
+Wall touches (within 15 pts): 5; price bounced back over the next 15m in 1
+1-min return autocorr (ac) and rms move (rv) by hour: 09:30: ac=0.17 rv=8.62 | 10:30: ac=-0.12 rv=6.18 | 11:30: ac=0.08 rv=4.48 | 12:30: ac=0.02 rv=5.25 | 13:30: ac=-0.01 rv=7.58 | 14:30: ac=0.14 rv=4.58
+Day high 24579.35 at 13:48, day low 24305.35 at 09:33
+Opening range 15m 24305-24391: first break up at 09:45; close 145.50 pts from the broken edge
+Opening range 30m 24305-24442: first break up at 12:36; close 94.65 pts from the broken edge
+Signals (hit = NIFTY moved the signalled way):
+  OI-only bias (put OI added - call OI added) next  5m  n=350  hit 53%  avg 1.55 pts
+  OI-only bias (put OI added - call OI added) next 15m  n=340  hit 52%  avg 1.68 pts
+  OI-only bias (put OI added - call OI added) next 30m  n=325  hit 53%  avg 6.02 pts
+  IV falling = up, IV rising = down  next  5m  n=350  hit 47%  avg -1.09 pts
+  IV falling = up, IV rising = down  next 15m  n=340  hit 54%  avg 2.91 pts
+  IV falling = up, IV rising = down  next 30m  n=325  hit 58%  avg 4.72 pts
+  Skew rising = down                 next  5m  n=150  hit 52%  avg 0.32 pts
+  Skew rising = down                 next 15m  n=150  hit 54%  avg 3.40 pts
+  Skew rising = down                 next 30m  n=150  hit 51%  avg 3.83 pts
+Futures: 24370.10 -> 24580.20, OI 13604565 -> 12849395
+  Futures buildup (all four statuses) next  5m  n=347  hit 53%  avg 1.89 pts
+  Futures buildup (all four statuses) next 15m  n=337  hit 55%  avg 3.33 pts
+  Futures buildup (all four statuses) next 30m  n=322  hit 55%  avg 5.40 pts
+  Futures buildup (long/short buildup only) next  5m  n=153  hit 51%  avg 1.37 pts
+  Futures buildup (long/short buildup only) next 15m  n=148  hit 49%  avg -0.49 pts
+  Futures buildup (long/short buildup only) next 30m  n=138  hit 48%  avg 0.41 pts
+  Futures above/below its VWAP       next  5m  n=353  hit 54%  avg 1.37 pts
+  Futures above/below its VWAP       next 15m  n=343  hit 57%  avg 4.30 pts
+  Futures above/below its VWAP       next 30m  n=328  hit 56%  avg 9.89 pts
+  Basis widening = up                next  5m  n=350  hit 53%  avg 1.10 pts
+  Basis widening = up                next 15m  n=340  hit 51%  avg 1.37 pts
+  Basis widening = up                next 30m  n=325  hit 52%  avg 2.33 pts
+  Futures buildup (all) when VIX rising next  5m  n=163  hit 53%  avg 2.27 pts
+  Futures buildup (all) when VIX rising next 15m  n=162  hit 54%  avg 2.60 pts
+  Futures buildup (all) when VIX rising next 30m  n=160  hit 49%  avg 4.63 pts
+  Futures buildup (all) when VIX falling next  5m  n=163  hit 52%  avg 2.05 pts
+  Futures buildup (all) when VIX falling next 15m  n=155  hit 55%  avg 4.26 pts
+  Futures buildup (all) when VIX falling next 30m  n=142  hit 59%  avg 6.11 pts
+VIX 15.20 -> 15.53
+
+=== 2026-11-06 ===
+NIFTY 24522.65 -> 25030.35  range 24500.50-25030.35  (360 minutes with a price)
+Straddle (ATM CE+PE): 347.25 at 09:30 -> 320.75 at 13:43 (-7.6%); day range 530 pts vs open straddle 347
+ATM IV: 18.8% at 09:30 -> 17.3% at 13:43
+IV change (5m) vs NIFTY move: past r=-0.52  next r=-0.23  | vs next |move| r=-0.14
+Straddle change (5m) vs NIFTY move: past r=-0.42  next r=-0.23  | vs next |move| r=-0.14
+Put-call skew change (5m) vs NIFTY move: past r=-0.51  next r=-0.06
+OI walls among subscribed strikes: call wall 24700 (2 changes), put wall 24500 (0 changes)
+Wall touches (within 15 pts): 7; price bounced back over the next 15m in 3
+1-min return autocorr (ac) and rms move (rv) by hour: 09:30: ac=0.10 rv=12.03 | 10:30: ac=0.07 rv=8.91 | 11:30: ac=0.09 rv=8.38 | 12:30: ac=-0.19 rv=8.82 | 13:30: ac=-0.09 rv=7.80 | 14:30: ac=0.12 rv=13.90
+Day high 25030.35 at 15:29, day low 24500.50 at 09:30
+Opening range 15m 24501-24582: first break up at 09:45; close 448.65 pts from the broken edge
+Opening range 30m 24501-24673: first break up at 10:29; close 357.35 pts from the broken edge
+Signals (hit = NIFTY moved the signalled way):
+  OI-only bias (put OI added - call OI added) next  5m  n=350  hit 47%  avg -0.62 pts
+  OI-only bias (put OI added - call OI added) next 15m  n=340  hit 49%  avg -1.18 pts
+  OI-only bias (put OI added - call OI added) next 30m  n=325  hit 47%  avg -2.55 pts
+  IV falling = up, IV rising = down  next  5m  n=249  hit 54%  avg 3.42 pts
+  IV falling = up, IV rising = down  next 15m  n=249  hit 51%  avg 2.45 pts
+  IV falling = up, IV rising = down  next 30m  n=249  hit 47%  avg -0.24 pts
+  Skew rising = down                 next  5m  n= 85  hit 51%  avg 2.88 pts
+  Skew rising = down                 next 15m  n= 85  hit 45%  avg -3.58 pts
+  Skew rising = down                 next 30m  n= 85  hit 52%  avg 2.55 pts
+Futures: 24509.70 -> 25047.00, OI 12824175 -> 13187785
+  Futures buildup (all four statuses) next  5m  n=346  hit 50%  avg 2.24 pts
+  Futures buildup (all four statuses) next 15m  n=336  hit 50%  avg 2.83 pts
+  Futures buildup (all four statuses) next 30m  n=321  hit 54%  avg 1.04 pts
+  Futures buildup (long/short buildup only) next  5m  n=228  hit 53%  avg 4.35 pts
+  Futures buildup (long/short buildup only) next 15m  n=219  hit 55%  avg 6.80 pts
+  Futures buildup (long/short buildup only) next 30m  n=208  hit 57%  avg 5.25 pts
+  Futures above/below its VWAP       next  5m  n=353  hit 53%  avg 4.13 pts
+  Futures above/below its VWAP       next 15m  n=343  hit 63%  avg 13.25 pts
+  Futures above/below its VWAP       next 30m  n=328  hit 67%  avg 27.02 pts
+  Basis widening = up                next  5m  n=349  hit 56%  avg 4.07 pts
+  Basis widening = up                next 15m  n=339  hit 50%  avg 2.52 pts
+  Basis widening = up                next 30m  n=324  hit 54%  avg 1.84 pts
+  Futures buildup (all) when VIX rising next  5m  n=190  hit 46%  avg -0.34 pts
+  Futures buildup (all) when VIX rising next 15m  n=187  hit 47%  avg -0.61 pts
+  Futures buildup (all) when VIX rising next 30m  n=178  hit 56%  avg 0.59 pts
+  Futures buildup (all) when VIX falling next  5m  n=127  hit 59%  avg 7.58 pts
+  Futures buildup (all) when VIX falling next 15m  n=123  hit 58%  avg 12.06 pts
+  Futures buildup (all) when VIX falling next 30m  n=118  hit 58%  avg 9.46 pts
+VIX 16.57 -> 17.58
+
+=== Pooled over 4 day(s) ===
+OI-only bias (put OI added - call OI added)    5m n=1400 hit 50% avg 0.32 | 15m n=1360 hit 50% avg 0.10 | 30m n=1300 hit 49% avg -0.31
+IV falling = up, IV rising = down              5m n=1299 hit 52% avg 1.42 | 15m n=1269 hit 55% avg 2.93 | 30m n=1224 hit 55% avg 3.98
+Skew rising = down                             5m n=393 hit 50% avg 1.15 | 15m n=393 hit 51% avg 0.65 | 30m n=393 hit 54% avg 3.36
+Futures buildup (all four statuses)            5m n=1376 hit 52% avg 1.94 | 15m n=1337 hit 53% avg 1.78 | 30m n=1277 hit 53% avg 1.84
+Futures buildup (long/short buildup only)      5m n=834 hit 54% avg 3.14 | 15m n=810 hit 53% avg 2.46 | 30m n=762 hit 52% avg 2.62
+Futures above/below its VWAP                   5m n=1412 hit 51% avg 1.19 | 15m n=1372 hit 53% avg 3.90 | 30m n=1312 hit 55% avg 7.57
+Basis widening = up                            5m n=1398 hit 52% avg 2.00 | 15m n=1358 hit 52% avg 1.14 | 30m n=1298 hit 52% avg 0.65
+Futures buildup (all) when VIX rising          5m n=617 hit 50% avg 0.77 | 15m n=609 hit 49% avg -0.26 | 30m n=586 hit 49% avg 0.84
+Futures buildup (all) when VIX falling         5m n=638 hit 54% avg 3.18 | 15m n=613 hit 57% avg 4.08 | 30m n=577 hit 56% avg 3.87

@@ -1,3 +1,5 @@
+import AntContractMaster from '../ant/AntContractMaster';
+
 const MARKET_CLOSE_HOUR = 15;
 const MARKET_CLOSE_MINUTE = 25;
 
@@ -20,8 +22,28 @@ const EXPIRY_SQUAREOFF_MINUTE = 15;
 // simpler, matches how the user actually reasons about this ("Tuesday,
 // which is Nifty expiry day"), and tsym-expiry parsing already has known
 // ambiguity caveats elsewhere in this codebase (see AntContractMaster.ts).
+//
+// 2026-11-04: the weekday alone is wrong when the exchange moves an expiry for a holiday (NIFTY's 2026-11-10 expiry is listed on
+// 2026-11-09): a Tuesday-only rule would skip the Monday squareoff while the contracts expire. The day now comes from the ANT contract
+// master's nearest NIFTY expiry; the Tuesday rule remains only for an unreadable or stale master (see isExpiryDayFor).
+const DAY_MS = 86400000;
+
+// Pure decision. `todayDayMs` and `nearestExpiryDayMs` are midnight-UTC calendar days. NIFTY lists an expiry within every 7 days, so
+// a nearest expiry further out than that (or none) means the master is stale or incomplete and cannot say: use the weekday.
+export function isExpiryDayFor(todayDayMs: number, nearestExpiryDayMs: number | undefined, weekday: number): boolean {
+  if (nearestExpiryDayMs === undefined || nearestExpiryDayMs - todayDayMs > 7 * DAY_MS) return weekday === 2; // 0=Sun, 1=Mon, 2=Tue, ...
+  return nearestExpiryDayMs === todayDayMs;
+}
+
 export function isNiftyExpiryDay(): boolean {
-  return new Date().getDay() === 2; // 0=Sun, 1=Mon, 2=Tue, ...
+  const now = new Date();
+  let nearest: number | undefined;
+  try {
+    nearest = AntContractMaster.getInstance().nearestExpiryDayMs('NIFTY');
+  } catch {
+    nearest = undefined; // master file missing/unreadable: fall back to the weekday
+  }
+  return isExpiryDayFor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()), nearest, now.getDay());
 }
 
 export function isPastExpirySquareOffTime(): boolean {
@@ -76,7 +98,7 @@ export function isWithinTradingWindow(): boolean {
   return afterStart && !isPastMarketClose();
 }
 
-// True when the local clock is at or past "HH:mm" (e.g. a strategy's eodCloseTime). Minutes since midnight, so it is one comparison
+// True when the local clock is at or past "HH:mm" (e.g. settings.eodCloseTime, via util/eodClose.ts). Minutes since midnight, so it is one comparison
 // instead of the hour/minute pair every caller used to spell out. An unparsable value falls back to the default.
 export function isPastTime(hhmm: string | undefined, fallback = '15:10', now: Date = new Date()): boolean {
   const parse = (v: string) => { const [h, m] = v.split(':').map(Number); return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : NaN; };

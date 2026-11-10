@@ -9,7 +9,7 @@ import SerialWriter from './SerialWriter';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { sleep } from '../util/sleep';
 import { BrokerName, configuredBrokersOf, normalizePersistedBrokers } from '../util/brokerName';
-import { isPastTime } from '../util/marketHours';
+import { isPastEodClose, effectiveEodCloseTime } from '../util/eodClose';
 
 // Iron Butterfly (standard, net credit) / Reverse Iron Butterfly (net debit) 4-leg combo on
 // NIFTY/SENSEX. Manual arm only (config.yml `enabled: true`, fires once on the next tick),
@@ -514,14 +514,14 @@ export default class ButterflyStrategy extends Strategy {
         const dayKey = localDayKey();
         if (this.eodDone && this.eodDay !== dayKey) this.eodDone = false;
         if (this.eodDone) return;
-        // cfg.eodCloseTime ('HH:mm') like every other strategy; this one's own default stays 15:15.
-        if (!isPastTime(this.cfg().eodCloseTime, '15:15')) return;
+        // settings.eodCloseTime ('HH:mm') like every other strategy; this one's own default stays 15:15.
+        if (!isPastEodClose('15:15')) return;
         this.eodDone = true;
         this.eodDay = dayKey;
         for (const pos of this.positions.values()) {
             if (pos.phase === 'open' && !pos.squaringOff) {
                 pos.squaringOff = true; // blocks a concurrent target/stop tick from also closing this combo
-                await this.squareOffAll(pos, `EOD cutoff ${this.cfg().eodCloseTime ?? '15:15'} reached`);
+                await this.squareOffAll(pos, `EOD cutoff ${effectiveEodCloseTime('15:15')} reached`);
             } else if (pos.phase === 'wingsOpen' || pos.phase === 'sellingCenter' || pos.phase === 'buyingWings') {
                 Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] EOD: entry still in flight (${pos.phase}) - it will be closed as soon as it finishes opening`);
             }

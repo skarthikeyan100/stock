@@ -397,15 +397,14 @@ export default function ProfilePage() {
   return (
     <div className="min-vh-100 bg-body-tertiary">
       <div className="bg-dark bg-opacity-10 border-bottom">
-        <Container className="py-2 d-flex justify-content-between align-items-center">
+        {/* Menu on the left, same order as the trading header: title, theme, bell, then page buttons */}
+        <Container className="py-2 d-flex align-items-center gap-3">
           <span className="fw-bold">My Profile</span>
-          <div className="d-flex align-items-center gap-3">
-            <ThemeToggle />
-            <NotificationBell />
-            <Button variant="outline-secondary" size="sm" onClick={() => navigate('/rules')}>Rules</Button>
-            <Button variant="outline-secondary" size="sm" onClick={() => navigate('/trade')}>← Trading</Button>
-            <Button variant="outline-secondary" size="sm" onClick={handleLogout}>Logout</Button>
-          </div>
+          <ThemeToggle />
+          <NotificationBell />
+          <Button variant="outline-secondary" size="sm" onClick={() => navigate('/rules')}>Rules</Button>
+          <Button variant="outline-secondary" size="sm" onClick={() => navigate('/trade')}>← Trading</Button>
+          <Button variant="outline-secondary" size="sm" onClick={handleLogout}>Logout</Button>
         </Container>
       </div>
 
@@ -595,58 +594,100 @@ export default function ProfilePage() {
         <Alert variant="info" className="small py-2 mt-3">
           Payouts are processed periodically on the profit of each period. A period with no profit, or one that breaches the
           daily or weekly loss limit, pays nothing.
+          <div className="mt-1">
+            To enable payouts, provide either your <strong>PAN number</strong> (upload your PAN card below) or your <strong>GSTIN</strong> (under Account Type, for company accounts).
+          </div>
         </Alert>
 
         <Card className="mb-3">
           <Card.Header className="fw-bold d-flex justify-content-between align-items-center">
             Bank Details
-            {!editingBank && <Button size="sm" variant="outline-primary" onClick={() => setEditingBank(true)}>Edit</Button>}
-          </Card.Header>
-          <Card.Body>
-            {editingBank ? (
-              <>
-                <Row className="g-2">
-                  <Col md={6}>
-                    <Form.Group className="mb-2">
-                      <Form.Label className="small">Account Holder Name</Form.Label>
-                      <Form.Control size="sm" value={holderName} onChange={e => setHolderName(e.target.value)} />
-                    </Form.Group>
-                  </Col>
-                  <Col md={6}>
-                    <Form.Group className="mb-2">
-                      <Form.Label className="small">Account Number</Form.Label>
-                      <Form.Control size="sm" placeholder={user?.bankAccountNumberMasked || 'Enter account number'} value={accountNumber} onChange={e => setAccountNumber(e.target.value)} />
-                    </Form.Group>
-                  </Col>
-                  <Col md={6}>
-                    <Form.Group className="mb-2">
-                      <Form.Label className="small">IFSC</Form.Label>
-                      <Form.Control size="sm" value={ifsc} onChange={e => setIfsc(e.target.value.toUpperCase())} />
-                    </Form.Group>
-                  </Col>
-                  <Col md={6}>
-                    <Form.Group className="mb-2">
-                      <Form.Label className="small">UPI ID</Form.Label>
-                      <Form.Control size="sm" value={upiId} onChange={e => setUpiId(e.target.value)} />
-                    </Form.Group>
-                  </Col>
-                </Row>
-                <div className="d-flex gap-2 align-items-center">
-                  <Button size="sm" onClick={saveBankDetails} disabled={bankSaving}>
-                    {bankSaving ? <Spinner animation="border" size="sm" /> : 'Save'}
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={() => setEditingBank(false)}>Cancel</Button>
-                </div>
-              </>
-            ) : (
-              <div className="small">
-                <div><span className="text-muted">Account Holder:</span> {user?.bankAccountHolderName || '—'}</div>
-                <div><span className="text-muted">Account:</span> {user?.bankAccountNumberMasked || '—'}</div>
-                <div><span className="text-muted">IFSC:</span> {user?.bankIFSC || '—'} &nbsp; <span className="text-muted">UPI:</span> {user?.upiId || '—'}</div>
-                {bankSaved && <div className="text-success mt-1">Bank details saved</div>}
-                {bankError && <div className="text-danger mt-1">{bankError}</div>}
-              </div>
+            {!editingBank && (
+              <Button
+                size="sm"
+                variant="outline-primary"
+                onClick={() => {
+                  // Start from the saved values, not whatever a previous, cancelled edit left in the inputs.
+                  setHolderName(user?.bankAccountHolderName ?? '');
+                  setAccountNumber('');
+                  setIfsc(user?.bankIFSC ?? '');
+                  setUpiId(user?.upiId ?? '');
+                  setBankError(null);
+                  setEditingBank(true);
+                }}
+              >
+                Edit
+              </Button>
             )}
+          </Card.Header>
+          {/* The form is always shown: read mode disables the inputs and the Save/Cancel buttons, and shows the saved values
+              (or "Not set"). The account number is never returned in full - the masked value is shown instead. */}
+          <Card.Body>
+            <Row className="g-2">
+              <Col md={6}>
+                <Form.Group className="mb-2">
+                  <Form.Label className="small">Account Holder Name</Form.Label>
+                  <Form.Control
+                    size="sm"
+                    disabled={!editingBank}
+                    placeholder={editingBank ? 'Enter account holder name' : 'Not set'}
+                    value={editingBank ? holderName : (user?.bankAccountHolderName ?? '')}
+                    onChange={e => setHolderName(e.target.value)}
+                  />
+                </Form.Group>
+              </Col>
+              <Col md={6}>
+                <Form.Group className="mb-2">
+                  <Form.Label className="small">Account Number</Form.Label>
+                  <Form.Control
+                    size="sm"
+                    disabled={!editingBank}
+                    placeholder={editingBank ? (user?.bankAccountNumberMasked || 'Enter account number') : 'Not set'}
+                    value={editingBank ? accountNumber : (user?.bankAccountNumberMasked ?? '')}
+                    onChange={e => setAccountNumber(e.target.value)}
+                  />
+                </Form.Group>
+              </Col>
+              <Col md={6}>
+                <Form.Group className="mb-2">
+                  <Form.Label className="small">IFSC</Form.Label>
+                  <Form.Control
+                    size="sm"
+                    disabled={!editingBank}
+                    placeholder={editingBank ? 'Enter IFSC' : 'Not set'}
+                    value={editingBank ? ifsc : (user?.bankIFSC ?? '')}
+                    onChange={e => setIfsc(e.target.value.toUpperCase())}
+                  />
+                </Form.Group>
+              </Col>
+              <Col md={6}>
+                <Form.Group className="mb-2">
+                  <Form.Label className="small">UPI ID</Form.Label>
+                  <Form.Control
+                    size="sm"
+                    disabled={!editingBank}
+                    placeholder={editingBank ? 'Enter UPI ID' : 'Not set'}
+                    value={editingBank ? upiId : (user?.upiId ?? '')}
+                    onChange={e => setUpiId(e.target.value)}
+                  />
+                </Form.Group>
+              </Col>
+            </Row>
+            <div className="d-flex gap-2 align-items-center">
+              <Button size="sm" onClick={saveBankDetails} disabled={!editingBank || bankSaving}>
+                {bankSaving ? <Spinner animation="border" size="sm" /> : 'Save'}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={!editingBank || bankSaving}
+                onClick={() => { setBankError(null); setEditingBank(false); }}
+              >
+                Cancel
+              </Button>
+              {bankSaved && <span className="text-success small">Bank details saved</span>}
+            </div>
+            {bankError && <div className="text-danger small mt-2">{bankError}</div>}
           </Card.Body>
         </Card>
 

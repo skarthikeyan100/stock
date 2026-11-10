@@ -1,31 +1,5 @@
 #!/bin/bash
-
-set -e
-
-PRISM_URL="http://localhost:3000/prism/login"
-ANT_URL="http://localhost:3000/ant/login"
-KITE_URL="http://localhost:3000/kite/login"
-BREEZE_URL="http://localhost:3000/breeze/login"
-
-if ! command -v firefox &> /dev/null; then
-    echo "Error: firefox is not installed."
-    exit 1
-fi
-
-# GTK_MODULES=gail:atk-bridge (set at the session/desktop level, not by this repo)
-# makes Firefox print a harmless "Not loading module 'atk-bridge'..." message on
-# every launch, since GTK3+ already provides that functionality natively.
-# Unset it just for these launches rather than touching the session-wide env var,
-# in case something else relies on it for accessibility.
-
-echo "Opening Prism (Shoonya) login: $PRISM_URL"
-env -u GTK_MODULES firefox "$PRISM_URL" &
-
-echo "Opening ANT (AliceBlue) login: $ANT_URL"
-env -u GTK_MODULES firefox "$ANT_URL" &
-
-echo "Opening Kite (Kite) login: $KITE_URL"
-env -u GTK_MODULES firefox "$KITE_URL" &
-
-echo "Opening Breeze (ICICI Direct) login: $BREEZE_URL"
-env -u GTK_MODULES firefox "$BREEZE_URL" &
+# Logs in to Shoonya, ANT, Kite and Breeze: pre-fills user id and password from broker-credentials.json in Chrome
+# and asks for each broker's OTP in this terminal, one at a time. See login.js.
+# Usage: login.sh [--dry-run] [prism|ant|kite|breeze ...]
+exec node "$(dirname "$(readlink -f "$0")")/login.js" "$@"

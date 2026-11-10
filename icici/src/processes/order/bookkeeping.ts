@@ -5,6 +5,7 @@ import Mongo from '../../tools/mongo';
 import Kite from '../../kite/Kite';
 import ANT from '../../ant/ANT';
 import Breeze from '../../breeze/Breeze';
+import BreezeContractMaster, { indexNameFor, breezeTsym, breezeLegacyTsym } from '../../breeze/BreezeContractMaster';
 import { Trade } from '../../model/model';
 import { UserContext, closeUserAccount } from '../../user';
 import { PUT, CALL, UNKNOWN_USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, INDEX_LOT_SIZE } from '../../constants';
@@ -64,7 +65,7 @@ interface UserSettings {
     lossLimit: number;
     lotLimit?: number;
     maxInvestment?: number;
-    // Per-broker investment caps (BulkPcr `maxExposureByBroker`, keyed by canonical broker name). A broker without an entry uses maxInvestment.
+    // Per-broker investment caps (BulkPcr `maxInvestmentByBroker`, keyed by canonical broker name). A broker without an entry uses maxInvestment.
     maxInvestmentByBroker?: Record<string, number>;
     investmentMode?: string;
     accountCapital?: number;
@@ -1415,6 +1416,27 @@ class OrderBookkeeping {
     // untracked at the broker. Field names (stock_code/expiry_date/
     // strike_price/right/quantity) confirmed live 2026-09-17 against a real
     // open position - see breezeExecutor.ts's getPositionsOnBreeze comment.
+    // The tokens that identify one Breeze position's exact contract (expiry included) in the Mongo fills: the ANT-native token (what a
+    // bare Breeze buy stores as Trade.token) and Breeze's own. Empty when the contract cannot be resolved (the restore then keeps the old
+    // tsym-wide behaviour).
+    private async breezeContractTokens(p: any, optionType: 'CE' | 'PE'): Promise<string[]> {
+        const tokens: string[] = [];
+        try {
+            const strike = Number(p.strike_price);
+            const rec = await BreezeContractMaster.getInstance().findOption(String(p.stock_code), String(p.expiry_date), strike, optionType);
+            if (rec?.token) tokens.push(String(rec.token));
+            const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(String(p.expiry_date));
+            const month = m ? ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(m[2].toLowerCase()) : -1;
+            if (m && month >= 0 && rec) {
+                const ant = AntContractMaster.getInstance().findOption({ symbol: indexNameFor(String(p.stock_code)), exch: rec.exchange, strike: String(strike), optionType, expiryEpochMs: Date.UTC(Number(m[3]), month, Number(m[1])) });
+                if (ant?.token) tokens.push(String(ant.token));
+            }
+        } catch (e: any) {
+            Log.log(`[order] reconcileBreezePositions: could not resolve the contract tokens of ${p.stock_code} ${p.expiry_date} ${p.strike_price} ${optionType} (${e?.message ?? e}) - restoring by trading symbol only`);
+        }
+        return tokens;
+    }
+
     async reconcileBreezePositions(): Promise<boolean> {
         const restored: Trade[] = [];
         try {
@@ -1426,10 +1448,10 @@ class OrderBookkeeping {
             for (const p of rows) {
                 const optionType = p.right === 'Call' ? 'CE' : p.right === 'Put' ? 'PE' : undefined;
                 if (!optionType) continue;
-                const tsym = `${p.stock_code}${p.strike_price}${optionType}`;
+                const tsym = breezeTsym(String(p.stock_code), String(p.expiry_date), p.strike_price, optionType);
                 const qty = Number(p.quantity ?? 0);
                 if (qty === 0 || !OrderBookkeeping.isOptionContract(tsym)) continue;
-                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, undefined, 'breeze', { avg: p.average_price, ltp: p.ltp })));
+                restored.push(...(await this.restoreOpenTradesForTsym(tsym, qty, undefined, 'breeze', { avg: p.average_price, ltp: p.ltp }, await this.breezeContractTokens(p, optionType), [breezeLegacyTsym(String(p.stock_code), p.strike_price, optionType), `${p.stock_code}${p.strike_price}${optionType}`])));
             }
         } catch (e) {
             Log.log('[order] reconcileBreezePositions: Breeze getPortfolioPositions failed (continuing without restore):', e?.message ?? e);
@@ -1483,7 +1505,7 @@ class OrderBookkeeping {
     // brokers' Mongo Buy/Sell docs into one blended restored position on
     // restart, corrupting quantity/avgPrice and losing which broker a
     // resting exit order belongs to.
-    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number, brokerToken: string | undefined, broker: 'kite' | 'ant' | 'breeze' | 'prism', brokerView?: { avg?: unknown; ltp?: unknown }): Promise<Trade[]> {
+    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number, brokerToken: string | undefined, broker: 'kite' | 'ant' | 'breeze' | 'prism', brokerView?: { avg?: unknown; ltp?: unknown }, contractTokens?: string[], alsoTsyms?: string[]): Promise<Trade[]> {
         const db = Mongo.getInstance()?.db;
         if (!db || !tsym) return [];
 
@@ -1507,15 +1529,32 @@ class OrderBookkeeping {
         // the same tsym (the previous single-query version scoped the
         // last-Sell boundary globally across all users, not per user - a
         // second latent bug this fixes at the same time).
-        const users: string[] = await db.collection('Trade').distinct('user', { tsym, action: 'Buy', ...brokerOrLegacy });
+        // `alsoTsyms`: older spellings of the same contract (a Breeze tsym had no expiry before 2026-11-09); the token filter below keeps two
+        // expiries that shared the old spelling apart.
+        const tsymMatch = alsoTsyms && alsoTsyms.length > 0 ? { $in: [tsym, ...alsoTsyms] } : tsym;
+        let users: string[] = await db.collection('Trade').distinct('user', { tsym: tsymMatch, action: 'Buy', ...brokerOrLegacy });
 
         // Every user's fills for this contract in one pass, collapsed so each broker order id counts once, for its owner (the
         // order-owner ledger). An order id booked under several users with no ledger answer is not guessed at: the whole contract
         // is held for manual review, because a wrong split here is what sizes the exit sells.
-        const allFills: any[] = await db.collection('Trade')
-            .find({ tsym, action: { $in: ['Buy', 'Sell'] }, ...brokerOrLegacy })
+        const allTsymFills: any[] = await db.collection('Trade')
+            .find({ tsym: tsymMatch, action: { $in: ['Buy', 'Sell'] }, ...brokerOrLegacy })
             .sort({ entryTime: 1 })
             .toArray();
+        // One tsym can name SEVERAL contracts: a Breeze tsym has no expiry (NIFTY24950CE is both the 09-Nov and the 17-Nov contract), so two
+        // owners holding different expiries of one strike looked like one pool of lots (1170 restored against a broker position of 780 or
+        // 390, nothing restored, 2026-11-09 13:31). The caller passes the tokens of the broker position's own contract (its ANT-native token
+        // and the broker's own); the fills that carry one of them are that contract's. No fill with such a token (rows written before the token
+        // was stored) keeps the old tsym-wide behaviour.
+        let allFills = allTsymFills;
+        if (contractTokens && contractTokens.length > 0) {
+            const wanted = new Set(contractTokens.map(String));
+            const byContract = allTsymFills.filter((f: any) => f.token != null && wanted.has(String(f.token)));
+            if (byContract.length > 0) {
+                allFills = byContract;
+                users = Array.from(new Set(byContract.filter((f: any) => f.action === 'Buy').map((f: any) => String(f.user))));
+            }
+        }
         const owners = await loadOrderOwners(Array.from(new Set(allFills.map((f: any) => f.brokerOrderId).filter(Boolean).map(String))));
         const { fills: ownedFills, ambiguousOrderIds } = collapseFillsByOrderId(allFills, (id) => owners.get(id));
         if (ambiguousOrderIds.length > 0) {

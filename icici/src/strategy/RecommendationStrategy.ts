@@ -4,16 +4,17 @@ import OrderClient from '../processes/strategies/OrderClient';
 import configService from '../prism/ConfigService';
 import { roundToTick } from '../util/tick';
 import { isPastTime } from '../util/marketHours';
-import { exposureForBroker, resolveMaxExposure } from '../prism/configVocabulary';
+import { isPastEodClose } from '../util/eodClose';
+import { investmentForBroker, resolveMaxInvestment } from '../prism/configVocabulary';
 import { LimitEntryStrategy, Leg, ResolvedEntry } from './LimitEntryStrategy';
 
 // Trades one analyst recommendation given in config.yml: a contract ("22750 CE"), an entry price, a target and a stop loss.
-// Places a LIMIT buy at (entryPrice - entryOffset) on every configured broker, sized from maxExposure (the amount PER
-// broker, maxExposureByBroker overrides one broker), and once it fills attaches the target and stop loss:
+// Places a LIMIT buy at (entryPrice - entryOffset) on every configured broker, sized from maxInvestment (the amount PER
+// broker, maxInvestmentByBroker overrides one broker), and once it fills attaches the target and stop loss:
 //   kite  - one two-leg GTT (OCO) at the broker; if that fails, the in-app exitMonitor.
 //   ant   - the in-app exitMonitor (a bracket/cover order must BE the entry order, it cannot be attached to a filled one).
 //   other - a resting limit sell at the target plus a tick-driven market stop in this strategy.
-// An unfilled entry is cancelled at the end of day (and after entryTimeoutMinutes when set); a held position is closed at eodCloseTime.
+// An unfilled entry is cancelled at the end of day (and after entryTimeoutMinutes when set); a held position is closed at settings.eodCloseTime (global, not a key of this block).
 // One recommendation per config block (add another block, with its own userId, for another one). Changing the contract/prices of a
 // block is a new recommendation and is placed once more; the same recommendation is never placed twice on a day, even across restarts.
 // A recommendation arriving while a trade is still open (order or position) is dropped, not held for later. When the trade is finished
@@ -24,11 +25,11 @@ import { LimitEntryStrategy, Leg, ResolvedEntry } from './LimitEntryStrategy';
 //   entryPrice: 120               - recommended entry; the order goes in at entryPrice - entryOffset
 //   targetPrice: 150              - absolute option price
 //   stopLoss: 95                  - absolute option price; must be below the order price
-//   maxExposure: 100000   - rupee budget per broker
+//   maxInvestment: 100000   - rupee budget per broker
 //   entryOffset: 5                - default 5
 //   index: NIFTY                  - default NIFTY
 //   brokers: [kite]
-//   startTime: '09:20'            - not placed before this; eodCloseTime: '15:10'; entryTimeoutMinutes: optional
+//   startTime: '09:20'            - not placed before this; entryTimeoutMinutes: optional (the EOD close is settings.eodCloseTime)
 export default class RecommendationStrategy extends LimitEntryStrategy {
     protected readonly logTag = `Recommendation:${this.userId}`;
     protected readonly strategyType = 'RecommendationStrategy';
@@ -75,16 +76,16 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
 
     protected async onNiftyTick(_quote: NiftyQuote): Promise<void> {
         const cfg = this.cfg() as any;
-        if (isPastTime(cfg.eodCloseTime, '15:10') || !isPastTime(cfg.startTime, '09:20')) return;
+        if (isPastEodClose() || !isPastTime(cfg.startTime, '09:20')) return;
         const parsed = RecommendationStrategy.parseContract(cfg.contract);
         const entryPrice = Number(cfg.entryPrice);
         const target = Number(cfg.targetPrice);
         const stop = Number(cfg.stopLoss);
-        const budget = resolveMaxExposure(cfg);
+        const budget = resolveMaxInvestment(cfg);
         const offset = cfg.entryOffset == null ? 5 : Number(cfg.entryOffset);
         const orderPrice = roundToTick(entryPrice - offset);
         const problem = !parsed ? `contract '${cfg.contract}' is not like '22750 CE'`
-            : !(entryPrice > 0 && target > 0 && stop > 0 && budget > 0 && Number.isFinite(offset) && offset >= 0) ? 'entryPrice, targetPrice, stopLoss and maxExposure must be positive numbers'
+            : !(entryPrice > 0 && target > 0 && stop > 0 && budget > 0 && Number.isFinite(offset) && offset >= 0) ? 'entryPrice, targetPrice, stopLoss and maxInvestment must be positive numbers'
             : !(stop < orderPrice && orderPrice < target) ? `need stopLoss (${stop}) < order price (${orderPrice} = entryPrice - entryOffset) < targetPrice (${target})`
             : null;
         const key = RecommendationStrategy.keyOf(cfg);
@@ -103,7 +104,7 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         }
         const entry: ResolvedEntry = { index: this.index(), strike: parsed.strike, right: parsed.right };
         this.state.baseKey = RecommendationStrategy.baseKeyOf(cfg);
-        await this.startCycle(key, entry, (b) => exposureForBroker(cfg, b), async (c) => {
+        await this.startCycle(key, entry, (b) => investmentForBroker(cfg, b), async (c) => {
             // Logged with the order: a limit buy ABOVE the market fills at the market, and the supplied target/stop were meant for the
             // entry price (2026-11-02: entry 110 vs LTP 80 filled at 78.85, so target 172 / stop 50 became +93 / -29 from the real cost).
             try {

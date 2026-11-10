@@ -32,7 +32,7 @@ import * as antExecutor from './order/antExecutor';
 import { buyIndexOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
 import { attachProtection, cancelProtection } from './order/attachProtection';
 import { buyChunked, marketBuyBareChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
-import BreezeContractMaster from '../breeze/BreezeContractMaster';
+import BreezeContractMaster, { breezeTsym } from '../breeze/BreezeContractMaster';
 import Breeze from '../breeze/Breeze';
 import KiteContractMaster from '../kite/KiteContractMaster';
 import AntContractMaster from '../ant/AntContractMaster';
@@ -48,7 +48,7 @@ import Kite from '../kite/Kite';
 import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
 import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, CALL } from '../constants';
-import { resolveMaxExposure, exposureForBroker } from '../prism/configVocabulary';
+import { resolveMaxInvestment, investmentForBroker } from '../prism/configVocabulary';
 import { getUser, getAllUsers } from '../user';
 import { OptionQuote, Trade } from '../model/model';
 import { isPastExpirySquareOffTime, isPastReconcileTime } from '../util/marketHours';
@@ -548,7 +548,7 @@ async function brokerLastPrices(broker: string): Promise<Map<string, number>> {
     if (broker === 'kite') {
         for (const r of raw?.net ?? []) add(r.tradingsymbol, r.last_price);
     } else if (broker === 'breeze') {
-        for (const r of Array.isArray(raw) ? raw : []) add(`${r.stock_code}${r.strike_price}${String(r.right).toLowerCase().startsWith('p') ? 'PE' : 'CE'}`, r.ltp);
+        for (const r of Array.isArray(raw) ? raw : []) add(breezeTsym(String(r.stock_code), String(r.expiry_date), r.strike_price, String(r.right).toLowerCase().startsWith('p') ? 'PE' : 'CE'), r.ltp);
     } else if (broker === 'prism') {
         // Shoonya position-book rows: tsym / lp (last price). The generic branch below reads tradingSymbol / ltp and never matched them,
         // so every prism position came back "no live price for this contract in the broker positions - not sold".
@@ -699,9 +699,10 @@ async function resolveOptionContractForBroker(
     broker: 'kite' | 'ant' | 'breeze' | 'prism',
     index: 'NIFTY' | 'SENSEX',
     strike: number,
-    right: 'CE' | 'PE'
+    right: 'CE' | 'PE',
+    skipNearestExpiryDay?: boolean
 ): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
-    return getExecutorByBroker(broker).resolveContract(index, strike, right);
+    return getExecutorByBroker(broker).resolveContract(index, strike, right, skipNearestExpiryDay);
 }
 
 // Force-closes one ButterflyStrategy short leg (bookkeeping.shortTrades entry) via
@@ -1019,8 +1020,8 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // broker's own contract master. Used by ButterflyStrategy to resolve all 4 of
             // its legs before placing anything.
             case 'resolveOptionContract': {
-                const { broker, index, strike, right } = req.payload;
-                const result = await resolveOptionContractForBroker(broker, index, strike, right);
+                const { broker, index, strike, right, skipNearestExpiryDay } = req.payload;
+                const result = await resolveOptionContractForBroker(broker, index, strike, right, skipNearestExpiryDay);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -1203,7 +1204,7 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'getContractByPriceRangeBare': {
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
                 const excludeStrikes = new Set<number>(req.payload.excludeStrikes || []);
-                const result = await executor.getContractByPriceRange(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes);
+                const result = await executor.getContractByPriceRange(req.payload.underlyingLtp, req.payload.optionType, req.payload.index, req.payload.minPremium, excludeStrikes, req.payload.skipNearestExpiryDay);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -1264,9 +1265,9 @@ async function applyConfigStrategyLimitsOnce() {
         bookkeeping.updateUserSettings(userId, {
             lossLimit: mongoUser?.lossLimit ?? USER_LOSS_LIMIT,
             lotLimit: mongoUser?.lotLimit ?? mongoUser?.lotCount ?? DEFAULT_LOT_LIMIT,
-            maxInvestment: resolveMaxExposure(cfg as any),
-            // Per broker (own amount for each configured broker), not one pooled cap: see exposureForBroker.
-            maxInvestmentByBroker: Object.fromEntries(configuredBrokersOf(cfg).map((b) => [b, exposureForBroker(cfg as any, b)])),
+            maxInvestment: resolveMaxInvestment(cfg as any),
+            // Per broker (own amount for each configured broker), not one pooled cap: see investmentForBroker.
+            maxInvestmentByBroker: Object.fromEntries(configuredBrokersOf(cfg).map((b) => [b, investmentForBroker(cfg as any, b)])),
             useGTT: cfg.useGTT ?? mongoUser?.useGTT ?? true,
             broker: normalizeBrokerName((cfg as any).broker ?? (mongoUser as any)?.broker ?? 'kite') as any,
         });

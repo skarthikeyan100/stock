@@ -2,20 +2,28 @@ import { useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { GoogleLogin, CredentialResponse } from '@react-oauth/google';
 import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import { isMarketHours } from '../utils/marketHours';
 import ThemeToggle from '../components/ThemeToggle';
 
+type LoginSlot = 'nav' | 'hero' | 'footer';
+
 export default function LoginPage() {
   const { login, isLoggedIn, termsAccepted } = useAuth();
+  const { theme } = useTheme();
   const navigate = useNavigate();
-  const [loginError, setLoginError] = useState<{ message: string; where: 'hero' | 'footer' } | null>(null);
+  const [loginError, setLoginError] = useState<{ message: string; where: LoginSlot } | null>(null);
+
+  // Google's button is drawn on the opposite tone of the page so it stands out: a dark button on the light theme,
+  // a light (outline) button on the dark theme. The theme prop re-renders the button when the user toggles.
+  const googleTheme = theme === 'dark' ? 'outline' : 'filled_black';
 
   useEffect(() => {
     if (isLoggedIn && !termsAccepted) navigate('/rules', { replace: true });
   }, [isLoggedIn, termsAccepted, navigate]);
 
-  // One handler pair for both Google buttons (hero and footer). /rules forwards a user who has already accepted the terms.
-  const onGoogleSuccess = (where: 'hero' | 'footer') => async (credentialResponse: CredentialResponse) => {
+  // One handler pair for every Google button (nav, hero and footer). /rules forwards a user who has already accepted the terms.
+  const onGoogleSuccess = (where: LoginSlot) => async (credentialResponse: CredentialResponse) => {
     setLoginError(null);
     try {
       if (!credentialResponse.credential) throw new Error('Google did not return a credential');
@@ -26,13 +34,16 @@ export default function LoginPage() {
       setLoginError({ message: e?.message || 'Login failed - please try again', where });
     }
   };
-  const onGoogleError = (where: 'hero' | 'footer') => () => setLoginError({ message: 'Google sign-in failed - please try again', where });
+  const onGoogleError = (where: LoginSlot) => () => setLoginError({ message: 'Google sign-in failed - please try again', where });
 
   return (
     <div className="landing-page">
-      {/* Nav */}
+      {/* Nav: theme toggle on the left (same side as the trading and profile headers), sign-in on the right */}
       <nav className="landing-nav">
-        <span className="landing-nav-brand">PropFirm</span>
+        <div className="d-flex align-items-center gap-3">
+          <span className="landing-nav-brand">PropFirm</span>
+          <ThemeToggle />
+        </div>
         <div className="landing-nav-signin d-flex align-items-center gap-3">
           {isMarketHours() && (
             <span
@@ -44,7 +55,17 @@ export default function LoginPage() {
               Try Demo
             </span>
           )}
-          <ThemeToggle />
+          <div className="position-relative">
+            <GoogleLogin
+              onSuccess={onGoogleSuccess('nav')}
+              onError={onGoogleError('nav')}
+              theme={googleTheme}
+              size="medium"
+            />
+            {loginError?.where === 'nav' && (
+              <div className="text-danger small position-absolute end-0" style={{ whiteSpace: 'nowrap' }}>{loginError.message}</div>
+            )}
+          </div>
         </div>
       </nav>
 
@@ -61,7 +82,7 @@ export default function LoginPage() {
             you bring the skill. Keep 25% of every rupee you earn.
           </p>
           <div className="landing-hero-cta">
-            <GoogleLogin onSuccess={onGoogleSuccess('hero')} onError={onGoogleError('hero')} />
+            <GoogleLogin onSuccess={onGoogleSuccess('hero')} onError={onGoogleError('hero')} theme={googleTheme} />
             {loginError?.where === 'hero' && <div className="text-danger small mt-2">{loginError.message}</div>}
           </div>
         </div>
@@ -108,6 +129,51 @@ export default function LoginPage() {
         </div>
       </section>
 
+      {/* Rules: first, because accepting them is the first step after sign-in */}
+      <section className="landing-section landing-section-dark">
+        <div className="landing-section-inner">
+          <h2 className="landing-section-title">Platform Rules</h2>
+          <p className="landing-section-sub">Understanding your obligations and protections</p>
+          <p className="text-center mb-4" style={{ color: 'var(--landing-muted)' }}>
+            <strong style={{ color: 'var(--landing-strong)' }}>Trading week:</strong> runs from Wednesday to Tuesday.
+            The weekly loss limit below is measured over one trading week.
+          </p>
+          <div className="rules-grid">
+            <div className="rule-card">
+              <div className="rule-icon rule-icon-green">₹</div>
+              <h4>Profit Sharing</h4>
+              <p>
+                You keep <strong>25% of net profits</strong> generated through your trades. There is no upfront fee
+                or capital commitment required from you.
+              </p>
+            </div>
+            <div className="rule-card">
+              <div className="rule-icon rule-icon-red">!</div>
+              <h4>Loss Limit & Reset</h4>
+              <p>
+                Your realized loss on any single day may not exceed <strong>25% of your allocated capital</strong> —
+                breach it and your positions are squared off, trading is paused until the next trading day, and
+                <strong>all profits accumulated since your last payout are forfeited</strong>, even if you had made
+                100% profit before that day. Your realized loss across a trading week (Wednesday–Tuesday)
+                may not exceed <strong>50%</strong> — breach this weekly limit and <strong>your account will be
+                closed</strong>. Manage your risk carefully.
+              </p>
+            </div>
+            <div className="rule-card">
+              <div className="rule-icon rule-icon-blue">📅</div>
+              <h4>Payout Schedule</h4>
+              <p>
+                Payouts are processed <strong>every Wednesday</strong>.
+                Earnings are calculated from all confirmed closed trades since the previous payout.
+              </p>
+              <p className="mt-2">
+                To receive payouts, provide either your <strong>PAN number</strong> or your <strong>GSTIN</strong> in your profile.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Profit Scenarios */}
       <section className="landing-section">
         <div className="landing-section-inner">
@@ -137,50 +203,12 @@ export default function LoginPage() {
         </div>
       </section>
 
-      {/* Rules */}
-      <section className="landing-section landing-section-dark">
-        <div className="landing-section-inner">
-          <h2 className="landing-section-title">Platform Rules</h2>
-          <p className="landing-section-sub">Understanding your obligations and protections</p>
-          <div className="rules-grid">
-            <div className="rule-card">
-              <div className="rule-icon rule-icon-green">₹</div>
-              <h4>Profit Sharing</h4>
-              <p>
-                You keep <strong>25% of net profits</strong> generated through your trades. There is no upfront fee
-                or capital commitment required from you.
-              </p>
-            </div>
-            <div className="rule-card">
-              <div className="rule-icon rule-icon-red">!</div>
-              <h4>Loss Limit & Reset</h4>
-              <p>
-                Your realized loss on any single day may not exceed <strong>25% of your allocated capital</strong> —
-                breach it and your positions are squared off, trading is paused until the next trading day, and
-                <strong>all profits accumulated since your last payout are forfeited</strong>, even if you had made
-                100% profit before that day. Your realized loss across a trading week (Wednesday–Tuesday)
-                may not exceed <strong>50%</strong> — breach this weekly limit and <strong>your account will be
-                closed</strong>. Manage your risk carefully.
-              </p>
-            </div>
-            <div className="rule-card">
-              <div className="rule-icon rule-icon-blue">📅</div>
-              <h4>Payout Schedule</h4>
-              <p>
-                Payouts are processed <strong>every Wednesday</strong>.
-                Earnings are calculated from all confirmed closed trades since the previous payout.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
       {/* CTA Footer */}
       <section className="landing-cta-section">
         <h2>Ready to start trading?</h2>
         <p>Sign in with your Google account to get access.</p>
         <div className="landing-cta-btn">
-          <GoogleLogin onSuccess={onGoogleSuccess('footer')} onError={onGoogleError('footer')} />
+          <GoogleLogin onSuccess={onGoogleSuccess('footer')} onError={onGoogleError('footer')} theme={googleTheme} />
           {loginError?.where === 'footer' && <div className="text-danger small mt-2">{loginError.message}</div>}
         </div>
       </section>

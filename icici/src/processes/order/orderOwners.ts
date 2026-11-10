@@ -25,7 +25,7 @@ export function recordOrderOwner(orderId: string | undefined, user: string | und
         if (unconfirmed.size > MAX_UNCONFIRMED) unconfirmed.delete(unconfirmed.keys().next().value as string);
     }
     // Fire-and-forget, same convention as the other bookkeeping writes - a Mongo hiccup must not block order placement.
-    const col = Mongo.getInstance()?.db.collection(COLLECTION);
+    const col = Mongo.getInstance()?.db?.collection(COLLECTION); // db?: an instance whose connection is not up yet must not make recordFill throw
     if (!col) return;
     writing.add(id);
     col.updateOne({ orderId: id }, { $setOnInsert: { orderId: id, user, broker, at: new Date() } }, { upsert: true })
@@ -53,7 +53,7 @@ export async function loadOrderOwners(orderIds: string[]): Promise<Map<string, s
     }
     if (missing.length === 0) return out;
     try {
-        const rows = await Mongo.getInstance()?.db.collection(COLLECTION).find({ orderId: { $in: missing } }).toArray();
+        const rows = await Mongo.getInstance()?.db?.collection(COLLECTION).find({ orderId: { $in: missing } }).toArray();
         for (const r of rows ?? []) {
             out.set(String(r.orderId), String(r.user));
             cache.set(String(r.orderId), String(r.user));

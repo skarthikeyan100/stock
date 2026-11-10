@@ -10,17 +10,23 @@ settings:
   maxWeeklyDrawdownPercent: 50%
   targetPoints: 2
   stopLossPoints: 11
+  target: 10              # global exit: points above entry, or "N%", or none (strategies override with their own target)
+  stopLoss: 20            # global exit: points below entry, or "N%", or none
+  maxHoldTimeMinutes: 60  # global timeout: minutes a position is held (winners and losers alike); 'none' = no timeout
   skipNearestExpiryOnEve: false
+  skipNearestExpiryOnExpiryDay: true
+  hotRestartDuringMarketHours: false
+  eodCloseTime: '15:50'
 strategies:
   - type: SentimentStrategy
     enabled: false
-    averageThreshold: 20
-    targetPrice: 2
-    orderQuantity: 7200
-    sentiment: put
-    loopCount: 1
+    averageThreshold: 40
+    targetPrice: 10
+    orderQuantity: 65
+    sentiment: call
+    loopCount: 5
   - type: ContinuousStrategy
-    enabled: true
+    enabled: false
     brokers:
       - kite
     initialQuantity: 65
@@ -46,7 +52,6 @@ strategies:
     logEnabled: true
     momentumEnabled: false
     momentumTimeoutMs: 3000
-    maxExposure: 100000
   - type: RateOfChangeStrategy
     enabled: false
     pointsThreshold: 30
@@ -72,14 +77,25 @@ strategies:
     gapReversalMode: false
     gapReversalThreshold: 100
     logEnabled: true
+  # One RuleBased block = one strategy. Each line under indicators is a RULE; commas join indicators that must agree within that rule.
+  # A rule that fires buys; rules that disagree on the same candle (one CE, one PE) give no trade. One position at a time.
+  # Six rules: 3 pairs and 3 single indicators, chosen from the 20-rule block by backtest (backtest-results/rulebased-final, 5-minute).
+  # The other rules fired on the same candles and added no trades (npm run analyze:ruleBlockLevers). See analysis_next.md.
+  # DISABLED: 4 days, all rising; the backtest does not show them beating always-CALL on net P&L. Enable deliberately only.
   - type: RuleBasedStrategy
     enabled: false
     indicators:
-      - RSI_5_70_30
+      - MACD_4_8_3, Bollinger_25_1.5
+      - EMA_9_21, Bollinger_5_1
+      - MACD_4_8_3, MACD_16_32_12
+      - MACD_4_8_3
+      - Bollinger_20_1
+      - MACD_16_32_12
     quantity: 65
+    # One exit set for the whole block: 10-point target, no stop, 60-minute timeout (backtest-results/ruleblock-final, grid).
     target: 10
-    stopLoss: 20
-    maxHoldTimeMinutes: 30
+    stopLoss: none
+    maxHoldTimeMinutes: 60
     logEnabled: true
   - type: GoodMorningStrategy
     enabled: false
@@ -118,7 +134,6 @@ strategies:
     maxProfit: 100%
     cooldownSeconds: 60
     marketSentiment: none
-    maxExposure: 200000
   - type: HourlyStrategy
     enabled: false
     brokers:
@@ -130,7 +145,6 @@ strategies:
     cooldownSeconds: 60
     driftCancelPoints: 10
     logEnabled: true
-    maxExposure: 100000
   - type: TargetReachStrategy
     enabled: false
     symbol: NIFTY
@@ -157,18 +171,17 @@ strategies:
     brokers:
       - kite
     index: SENSEX
-    maxExposure: 100000
     lossCooldownSeconds: 300
     profitCooldownSeconds: 0
     lossInvestmentCut: 10000
-    maxExposureByBroker:
+    maxInvestmentByBroker:
       ant: 100000
       kite: 100000
   - type: BulkPcrStrategy
     userId: BulkPcr-NIFTY
     enabled: false
     quantity: -1
-    targetPoints: 4
+    targetPoints: 2
     right: none
     maxInvestment: 100000
     maxLossPerOrder: 8%
@@ -181,11 +194,10 @@ strategies:
     brokers:
       - kite
     index: NIFTY
-    maxExposure: 100000
     lossCooldownSeconds: 300
     profitCooldownSeconds: 0
     lossInvestmentCut: 10000
-    maxExposureByBroker:
+    maxInvestmentByBroker:
       ant: 100000
       kite: 100000
       breeze: 100000
@@ -256,17 +268,17 @@ strategies:
       - '13:30'
       - '13:35'
     quantity: -1
-    targetPoints: 4
+    targetPoints: 2
     index: NIFTY
     brokers:
       - kite
   - type: TopStockOptionsOpeningGapStrategy
     enabled: false
     brokers:
-      - ant
+      - kite
     rankStart: 3
-    rankCount: 3
-    lots: 1
+    rankCount: 2
+    lots: 3
     logEnabled: true
   - type: ButterflyStrategy
     enabled: false
@@ -305,10 +317,8 @@ strategies:
     brokers:
       - kite
     startTime: '09:20'
-    eodCloseTime: '15:10'
-    maxExposure: 100000
   - type: NiftyChangeStrategy
-    enabled: true
+    enabled: false
     userId: NiftyChange-NIFTY
     times:
       - '10:40'
@@ -318,36 +328,71 @@ strategies:
       - '13:40'
       - '14:30'
     maxInvestment: 100000
-    limitOffset: 3
+    minMovePoints: 10
+    limitOffset: 0
     targetPoints: 5
     stopLossPoints: 8
+    stopLossPercent: 10%
     entryTimeoutMinutes: 5
-    eodCloseTime: '15:10'
     index: NIFTY
+    brokers:
+      - kite
+  - type: MomentumAtFixedTimeStrategy
+    enabled: true
+    userId: MomentumAtFixedTime-NIFTY
+    times:
+      - '10:00'
+      - '10:10'
+      - '10:20'
+      - '10:30'
+      - '10:40'
+      - '10:50'
+      - '11:00'
+      - '11:10'
+      - '11:20'
+      - '11:30'
+      - '11:40'
+      - '11:50'
+      - '12:00'
+      - '12:10'
+      - '12:20'
+      - '12:30'
+      - '12:40'
+      - '12:50'
+      - '13:00'
+      - '13:10'
+      - '13:20'
+      - '13:30'
+      - '13:40'
+      - '13:50'
+      - '14:00'
+      - '14:10'
+      - '14:20'
+      - '14:30'
+      - '14:40'
+      - '14:50'
+    maxInvestment: 100000
+    minMovePoints: 10
+    target: 5               # exit override: 5 points above the fill
+    stopLoss: none          # exit override: no stop-loss
+    upDownSampleMinutes: 1
+    entryTimeoutMinutes: 5
+    index: NIFTY
+    brokers:
+      - ant
+      - prism
+      - kite
+      - breeze
+  - type: SimpleContinuousStrategy
+    enabled: true
     brokers:
       - kite
       - breeze
-      - ant
-    maxExposure: 100000
-  - type: MomentumAtFixedTimeStrategy
-    enabled: false              # placeholder: set times before arming
-    userId: MomentumAtFixedTime-NIFTY
-    times:
-      - '10:40'
-      - '11:40'
-      - '12:40'
-      - '13:40'
-    maxInvestment: 100000       # per broker; lots computed at runtime
-    targetPrice: 3              # limit sell at fill average + targetPrice, placed on the tick that reaches it (no stop)
-    entryTimeoutMinutes: 5
-    eodCloseTime: '15:10'
-    index: NIFTY
-    brokers:
-      - kite
-  - type: SimpleContinuousStrategy
-    enabled: false
-    brokers:
-      - kite
-    initialQuantity: 65
-    maxInvestment: 100000       # per broker
-    priceDiff: 5                # resting sell at entry + priceDiff; hedge when a leg falls priceDiff
+    initialQuantity: 1300
+    skipNearestExpiryOnExpiryDay: false
+    onePositionPerSide: true
+    maxInvestment: 100000
+    maxProfit: 20000
+    priceDiff: 10
+    maxLegsPerSide: 5
+    stackRecoveryPoints: 20

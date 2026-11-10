@@ -3,7 +3,7 @@
 ## From today's session
 
 1. **`login.sh` should be able to log into all 3 brokers.**
-   `scripts/login.sh` already opens `/prism/login`, `/ant/login`, `/kite/login` in Firefox — all three routes are live in today's ported `server.ts`. Nothing new to write; the open item is verifying it actually works end-to-end against the new 4-process split (session files get written, `order`/`data` pick them up).
+   `scripts/login.sh` now drives Chrome (puppeteer-core), fills user/password from `broker-credentials.json` (copy `broker-credentials.example.json`), and asks only for each broker's OTP in turn. Dry-run verified against the real login pages; the open item is a live OTP run: the ANT, Kite and Breeze OTP-step selectors are not yet confirmed (they are found by a generic OTP-field match), and it must confirm session files get written and `order`/`data` pick them up.
 
 2. **Does login also call connect in case of ANT? If not, test connect from the frontend.**
    Confirmed by reading `server.ts`: `/ant/callback` only exchanges the auth code and writes `.ant_session.json` — it never triggers a reconnect. `data` auto-connects once at boot using whatever session already exists at that time, but won't pick up a *later* fresh login on its own. `/ant/connect` is what does that now (sends `data` a `reconnect` command over the frontend->data stdout/stdin pipe). Test it explicitly after a fresh `/ant/login`.

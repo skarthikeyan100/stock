@@ -26,6 +26,7 @@
  * Run: npm run build (compile), then: node ./dist/test/bulkPcrStrategyReconcileAnt.test.js
  */
 
+import { localDayKey } from '../strategy/dayKey';
 import BulkPcrStrategy from '../strategy/BulkPcrStrategy';
 import configService from '../prism/ConfigService';
 import OrderClient from '../processes/strategies/OrderClient';
@@ -86,6 +87,7 @@ async function testAntSingleLegWithNoPersistedState() {
     );
 
     const strategy = new BulkPcrStrategy('bulkpcr-test-1') as any;
+    strategy.enabled = true; // a disabled strategy places no order (2026-10-29 rule); these tests exercise the enabled path
     await strategy.reconcile();
 
     const callSlot = strategy.positions.get('ant_call');
@@ -114,6 +116,7 @@ async function testAntBothLegsNakedSimultaneously() {
     );
 
     const strategy = new BulkPcrStrategy('bulkpcr-test-2') as any;
+    strategy.enabled = true; // a disabled strategy places no order (2026-10-29 rule); these tests exercise the enabled path
     await strategy.reconcile();
 
     const callSlot = strategy.positions.get('ant_call');
@@ -133,6 +136,7 @@ async function testAntPersistedErrorStaysUntouched() {
     );
 
     const strategy = new BulkPcrStrategy('bulkpcr-test-3') as any;
+    strategy.enabled = true; // a disabled strategy places no order (2026-10-29 rule); these tests exercise the enabled path
     // Simulate a persisted 'error' record by pre-seeding loadState's result.
     strategy.loadState = async () => ({
         userId: 'bulkpcr-test-3',
@@ -162,6 +166,7 @@ async function testAntPersistedErrorRecoversWhenSellStillResting() {
     );
 
     const strategy = new BulkPcrStrategy('bulkpcr-test-3b') as any;
+    strategy.enabled = true; // a disabled strategy places no order (2026-10-29 rule); these tests exercise the enabled path
     strategy.loadState = async () => ({
         userId: 'bulkpcr-test-3b',
         positions: {
@@ -193,6 +198,7 @@ async function testNonAntSingleSidedNoPersistedState() {
     );
 
     const strategy = new BulkPcrStrategy('bulkpcr-test-4') as any;
+    strategy.enabled = true; // a disabled strategy places no order (2026-10-29 rule); these tests exercise the enabled path
     await strategy.reconcile();
 
     // Every broker runs the pair now: the open CE is restored into its own <broker>_call slot.
@@ -218,8 +224,10 @@ async function testNonAntPersistedDoneIsRestored() {
     mockOrderClient([], placedSells);
 
     const strategy = new BulkPcrStrategy('bulkpcr-test-5') as any;
+    strategy.enabled = true; // a disabled strategy places no order (2026-10-29 rule); these tests exercise the enabled path
     strategy.loadState = async () => ({
         userId: 'bulkpcr-test-5',
+        realizedDay: localDayKey(), // a finished slot saved on an earlier day is deliberately dropped (2026-10-30 fix)
         positions: {
             breeze_call: {
                 broker: 'breeze', right: 'call', phase: 'done', heldTsym: 'NIFTY27OCT26C23000',
@@ -247,6 +255,7 @@ async function testAntFallbackFindsAlreadyRestingSell() {
     );
 
     const strategy = new BulkPcrStrategy('bulkpcr-test-6') as any;
+    strategy.enabled = true; // a disabled strategy places no order (2026-10-29 rule); these tests exercise the enabled path
     await strategy.reconcile();
 
     const callSlot = strategy.positions.get('ant_call');

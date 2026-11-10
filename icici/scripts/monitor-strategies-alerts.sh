@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Attention-only feed for the Claude Code Monitor tool, covering BulkPcr, ContinuousStrategy, NiftyChange and Recommendation.
+# Attention-only feed for the Claude Code Monitor tool, covering BulkPcr, ContinuousStrategy, SimpleContinuousStrategy, NiftyChange, MomentumAtFixedTime and Recommendation.
 #
-# Runs both compact event feeds and keeps only their "!!!" lines (errors, failures, fail-closed blocks,
+# Runs the compact event feeds (BulkPcr, Continuous, limit-entry, SentimentStrategy) and keeps only their "!!!" lines (errors, failures, fail-closed blocks,
 # MAX PROFIT / MAX LOSS trips, ALERTs). Routine buy/sell/fill/spawn/target events and BulkPcr's normal
 # "Cycle complete" are dropped. Use scripts/strategy-status.sh for the P&L picture.
 #
@@ -24,9 +24,10 @@ READER=(tail -n0 -F "$LOG_FILE")
         wait
     } | grep -E --line-buffered '!!!' | grep -E --line-buffered -v 'Cycle complete' &
     "$DIR/monitor-limitentry-events.sh" "$@" &
+    "$DIR/monitor-sentiment-events.sh" "$@" &
     "${READER[@]}" 2>/dev/null \
-        | sed -nuE -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange):([^]]*)\] (Missed ([0-9:]{5}) slot.*)/=== SLOT MISSED \1 \2 \3 \5: late - \4/p;t" \
-                   -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange):([^]]*)\] ([0-9:]{5}):? ?(slot[: ]*)?(.*(skipp|not arming|not trading|not starting|already attempted|already handled).*)/=== SLOT MISSED \1 \2 \3 \4: \6/p" \
+        | sed -nuE -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange|MomentumAtFixedTime):([^]]*)\] (Missed ([0-9:]{5}) slot.*)/=== SLOT MISSED \1 \2 \3 \5: late - \4/p;t" \
+                   -e "s/^\[([0-9:]+)\].*(BulkPcrAutoStart|NiftyChange|MomentumAtFixedTime):([^]]*)\] ([0-9:]{5}):? ?(slot[: ]*)?(.*(skipp|not arming|not trading|not starting|already attempted|already handled).*)/=== SLOT MISSED \1 \2 \3 \4: \6/p" \
         | awk '{ if ($0 ~ /already handled earlier today/) next; if ($0 ~ /process started after it/) { split($4, a, ":"); split($7, b, ":"); if ((a[1]*60 + a[2]) - (b[1]*60 + b[2]) > 10) next } print; fflush() }' &
     wait
 }

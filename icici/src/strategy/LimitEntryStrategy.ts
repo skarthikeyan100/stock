@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { expiryDayOverrideOf } from '../util/expirySkip';
 import * as path from 'path';
 import Log from '../util/Log';
 import { Strategy } from './strategy';
@@ -13,7 +14,7 @@ import { roundToTick } from '../util/tick';
 import { NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY, INDEX_LOT_SIZE } from '../constants';
 import { configuredBrokersOf } from '../util/brokerName';
 import { splitIntoFreezeQtyChunks } from '../util/quantityChunks';
-import { isPastTime } from '../util/marketHours';
+import { isPastEodClose } from '../util/eodClose';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 
 // Shared engine of RecommendationStrategy and NiftyChangeStrategy: one LIMIT buy per configured broker, sized from a rupee budget (per broker: every broker gets its own full amount),
@@ -345,7 +346,7 @@ export abstract class LimitEntryStrategy extends Strategy {
             for (const broker of brokers) {
                 try {
                     const perBroker = budgetOf(broker); // the amount is PER broker: each one buys with its own full budget
-                    const contract = await OrderClient.getInstance().resolveOptionContract(this.userId, { broker: broker as any, index: entry.index, strike: entry.strike, right: entry.right });
+                    const contract = await OrderClient.getInstance().resolveOptionContract(this.userId, { broker: broker as any, index: entry.index, strike: entry.strike, right: entry.right, skipNearestExpiryDay: expiryDayOverrideOf(this.cfg()) });
                     const price = roundToTick(await priceFor(contract));
                     const qty = this.sizeOrder(perBroker, price, entry.index);
                     if (!(price > 0) || qty <= 0) {
@@ -690,7 +691,7 @@ export abstract class LimitEntryStrategy extends Strategy {
 
     private async housekeeping(): Promise<void> {
         const cfg = this.cfg() as any;
-        const eod = isPastTime(cfg.eodCloseTime, '15:10');
+        const eod = isPastEodClose();
         const timeoutMs = Number(cfg.entryTimeoutMinutes) > 0 ? Number(cfg.entryTimeoutMinutes) * 60_000 : 0;
         const now = Date.now();
         await this.endIfIdle();

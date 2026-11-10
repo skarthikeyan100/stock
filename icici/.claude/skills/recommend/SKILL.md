@@ -38,9 +38,9 @@ The target block is `type: RecommendationStrategy` with `userId: Recommendation-
    - `contract: 24150 CE`
    - `entryPrice: 140`, `targetPrice: 160`, `stopLoss: 120`
    - `index: NIFTY` (or the index given)
-   - Keep `maxExposure` (the amount per broker), `maxInvestment`, `entryOffset`, `brokers`, `startTime`, `eodCloseTime`, `maxExposure` as they are. Never delete a key or a block.
+   - Keep `maxInvestment` (the amount per broker), `entryOffset`, `brokers`, `startTime` as they are (`eodCloseTime` is a global setting, `settings.eodCloseTime`, not a key of this block). Never delete a key or a block.
 
-6. **Check the result.** Re-read the block and confirm the values. Note the time: a recommendation given after `eodCloseTime` (15:10) or before `startTime` (09:20) is not placed until the next window. The strategy hot-reloads config.yml, so a running `npm run processes` picks it up with no restart.
+6. **Check the result.** Re-read the block and confirm the values. Note the time: a recommendation given after `settings.eodCloseTime` or before `startTime` (09:20) is not placed until the next window. The strategy hot-reloads config.yml, so a running `npm run processes` picks it up with no restart.
 
 7. **Report** in one short message: the contract, entry, target and stop, the order price (`entry - entryOffset`), the index, and that the block is enabled. The block is set to `enabled: false` automatically once the trade is finished (bought and sold, or the entry cancelled with nothing filled).
 

@@ -1,9 +1,10 @@
 import GateLogger from '../util/GateLogger';
+import { expiryDayOverrideOf } from '../util/expirySkip';
 import { HEDGE_UNCONFIRMED_TAG, ORDER_MAY_BE_LIVE_TAG } from '../ipc/orderProtocol';
 import crypto from 'crypto';
 import Log from '../util/Log';
 import { CALL, PUT } from '../constants';
-import { resolveMaxExposure } from '../prism/configVocabulary';
+import { resolveMaxInvestment } from '../prism/configVocabulary';
 import { Trade } from '../model/model';
 import AntContractMaster from '../ant/AntContractMaster';
 import { watchToken, unwatchToken, registerTrade } from '../processes/strategies/tokenRouter';
@@ -109,9 +110,7 @@ export interface LegManagerConfig {
     marketSentiment?: string;
     refillCancelDistance?: number; // default 50
     minPremium?: number; // default 100
-    maxExposure?: number; // canonical; falls back to maxInvestment, then DEFAULT_MAX_INVESTMENT
-    /** @deprecated use maxExposure */
-    maxInvestment?: number;
+    maxInvestment?: number; // per broker; falls back to DEFAULT_MAX_INVESTMENT when unset
     maxProfit?: number | null; // null/undefined disables the feature
     maxLoss?: number | null; // % of maxInvestment, mirrors maxProfit on the loss side; null/undefined disables the feature
     // Loss-trip cut and cooldown (BulkPcr's lossInvestmentCut / lossCooldownSeconds, same meaning here). Each max-loss trip
@@ -449,8 +448,8 @@ export class LegManager {
     }
 
     // The investment cap in force today: the configured one less every max-loss cut so far (lossInvestmentCut).
-    private effectiveMaxExposure(cfg: LegManagerConfig): number {
-        return resolveMaxExposure(cfg) - this.lossInvestmentCutTotal;
+    private effectiveMaxInvestment(cfg: LegManagerConfig): number {
+        return resolveMaxInvestment(cfg) - this.lossInvestmentCutTotal;
     }
 
     // sum(qty * entryPrice) over open legs + pending re-entries, plus the new
@@ -465,7 +464,7 @@ export class LegManager {
         this.rollDayIfNeeded();
         if (this.capitalGateTripped) return false; // latched permanently - see field comment
         const cfg = this.deps.getConfig();
-        const maxInvestment = this.effectiveMaxExposure(cfg);
+        const maxInvestment = this.effectiveMaxInvestment(cfg);
         let total = 0;
         for (const leg of this.legsByToken.values()) total += leg.totalQuantity * leg.avgPrice;
         for (const pending of this.pendingReEntries.values()) total += pending.quantity * pending.limitPrice;
@@ -502,7 +501,7 @@ export class LegManager {
         if (cfg.maxProfit == null) return; // feature not configured
         const maxProfitPct = toPercentNumber(cfg.maxProfit);
         if (maxProfitPct === null) { this.logUnparseablePercent('maxProfit', cfg.maxProfit); return; }
-        const maxInvestment = resolveMaxExposure(cfg);
+        const maxInvestment = resolveMaxInvestment(cfg);
         const threshold = (maxProfitPct / 100) * maxInvestment;
         const cumulative = this.computeCumulativeProfit();
         if (!(cumulative >= threshold)) return; // NaN-safe: a NaN cumulative must not trip it
@@ -606,7 +605,7 @@ export class LegManager {
         if (cfg.maxLoss == null) return;
         const maxLossPct = toPercentNumber(cfg.maxLoss);
         if (maxLossPct === null) { this.logUnparseablePercent('maxLoss', cfg.maxLoss); return; }
-        const maxInvestment = this.effectiveMaxExposure(cfg);
+        const maxInvestment = this.effectiveMaxInvestment(cfg);
         const threshold = (maxLossPct / 100) * maxInvestment;
         const openUnrealized = this.computeOpenUnrealized();
         if (!(openUnrealized <= -threshold)) return; // NaN-safe: a NaN P&L must not trip it
@@ -617,7 +616,7 @@ export class LegManager {
         this.lossCooldownUntil = Number.isFinite(cooldownSec) && cooldownSec > 0 ? Date.now() + cooldownSec * 1000 : null;
         this.persistLossState();
         if (this.lossCooldownUntil != null) this.armLossCooldownTimer(this.lossCooldownUntil - Date.now());
-        const after = this.effectiveMaxExposure(cfg);
+        const after = this.effectiveMaxInvestment(cfg);
         const lockout = this.lossCooldownUntil != null ? `lockout released after ${cooldownSec}s once flat` : 'locked out for the rest of the day (no cooldown)';
         Log.log(`[${this.deps.ownerType}] MAX LOSS TRIPPED - open-position P&L=${Math.round(openUnrealized)} threshold=-${Math.round(threshold)} (maxLoss=${maxLossPct}% of maxInvestment=${maxInvestment}) - closing every open leg and blocking new entries; investment cap cut ${maxInvestment} -> ${after}, ${lockout}`);
     }
@@ -699,7 +698,7 @@ export class LegManager {
         await this.withOpLock(async () => {
             if (!this.maxLossTripped || this.lossCooldownUntil == null || !this.isIdle()) return;
             const cfg = this.deps.getConfig();
-            const cap = this.effectiveMaxExposure(cfg);
+            const cap = this.effectiveMaxInvestment(cfg);
             if (!(cap > 0)) {
                 Log.log(`[${this.deps.ownerType}] max-loss cooldown over but the investment cap is ${cap} after the cuts - staying locked for the day`);
                 this.lossCooldownUntil = null;
@@ -864,7 +863,7 @@ export class LegManager {
             if (this.newOrdersBlocked() || this.capitalGateTripped) return null;
             const optionType = params.right === CALL ? 'CE' : 'PE';
             const excludeStrikes = Array.from(this.openStrikesFor(params.right));
-            const contract = await this.currentOps(true).pickContract(this.deps.userId, params.underlyingLtp, optionType, params.minPremium, excludeStrikes);
+            const contract = await this.currentOps(true).pickContract(this.deps.userId, params.underlyingLtp, optionType, params.minPremium, excludeStrikes, expiryDayOverrideOf(this.deps.getConfig()));
             if (!(await this.capitalCheck(params.quantity, contract.premium, params.entryLabel))) {
                 return null;
             }
@@ -1083,7 +1082,7 @@ export class LegManager {
                 // cancel them first so capitalCheck below sees the freed capital.
                 await this.cancelChildRefills(leg, level);
                 const excludeStrikes = Array.from(this.openStrikesFor(oppositeRight));
-                const contract = await this.currentOps(true).pickContract(this.deps.userId, underlyingLtp, optionType, cfg.minPremium ?? 100, excludeStrikes);
+                const contract = await this.currentOps(true).pickContract(this.deps.userId, underlyingLtp, optionType, cfg.minPremium ?? 100, excludeStrikes, expiryDayOverrideOf(cfg));
                 if (!(await this.capitalCheck(spawnQty, contract.premium, `Level ${level} spawn (${leg.tsym})`))) {
                     leg.childByLevel.delete(level); // free the slot regardless - harmless even though the capital gate (now tripped) means it won't actually be retried
                     return;

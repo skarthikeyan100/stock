@@ -44,8 +44,9 @@ token_status() {
 }
 
 ws_status() {
-    # $1 = connected-log tag, $2 = disconnect-pattern (extended regex)
-    local connect_tag="$1" disconnect_pattern="$2"
+    # $1 = connected-log tag, $2 = disconnect-pattern (extended regex),
+    # $3 = optional recovery-pattern: a line socket.io logs after an automatic reconnect (no new "Connected and streaming")
+    local connect_tag="$1" disconnect_pattern="$2" recovery_pattern="${3:-}"
     if [ ! -f "$ORCH_LOG" ]; then
         echo "FAIL (orchestrator.log not found)"
         fail=$((fail+1))
@@ -61,8 +62,18 @@ ws_status() {
         echo "FAIL (never connected this run)"
         fail=$((fail+1))
     elif [ -n "$disconnect_line" ] && [ "$disconnect_line" -gt "$connect_line" ]; then
-        echo "FAIL (disconnected after last connect)"
-        fail=$((fail+1))
+        # A disconnect is only a failure if the socket did not come back: socket.io reconnects on its own and logs the reconnect, not a new "Connected and streaming".
+        local recovered_line=""
+        [ -n "$recovery_pattern" ] && recovered_line=$(grep -nE "$recovery_pattern" "$ORCH_LOG" | tail -1)
+        local recovered_no="${recovered_line%%:*}"
+        if [ -n "$recovered_no" ] && [ "$recovered_no" -gt "$disconnect_line" ]; then
+            local ts
+            ts=$(echo "$recovered_line" | grep -oE '\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' | head -1 | tr -d '[]')
+            echo "OK (reconnected ${ts:-})"
+        else
+            echo "FAIL (disconnected after last connect)"
+            fail=$((fail+1))
+        fi
     else
         local ts
         ts=$(echo "$last_connect" | grep -oE '\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' | head -1 | tr -d '[]')
@@ -79,7 +90,7 @@ kite_token=$(token_status kite positions)
 breeze_token=$(token_status breeze trades)
 
 ant_ws=$(ws_status "\[AntDataStream\] Connected and streaming" '\[AntDataStream\].*(Disconnected|onerror|onclose)|\[AntWS\].*(Disconnected|closed)')
-breeze_ws=$(ws_status "\[BreezeDataStream\] Connected and streaming" '\[BreezeDataStream\].*(disconnected|connect_error)')
+breeze_ws=$(ws_status "\[BreezeDataStream\] Connected and streaming" '\[BreezeDataStream\].*(disconnected|connect_error)' '\[BreezeDataStream\] socket connected')
 kite_ws="N/A (no live tick stream for this broker)"
 
 # The status helpers above run in $(...) subshells, so their `fail` increments

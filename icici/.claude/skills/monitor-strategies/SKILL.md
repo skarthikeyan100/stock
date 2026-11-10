@@ -1,9 +1,9 @@
 ---
 name: monitor-strategies
-description: Use when asked to monitor, watch, or babysit BulkPcrStrategy / BulkPcrAutoStartStrategy (ANT opposite-side pair) or ContinuousStrategy while the processes are already running, to give their status / P&L / open contracts, or to fix, restart and verify if an error appears.
+description: Use when asked to monitor, watch, or babysit BulkPcrStrategy / BulkPcrAutoStartStrategy (ANT opposite-side pair), ContinuousStrategy, SimpleContinuousStrategy or MomentumAtFixedTimeStrategy while the processes are already running, to give their status / P&L / open contracts, or to fix, restart and verify if an error appears.
 ---
 
-# Monitor BulkPcr + ContinuousStrategy (and fix on error)
+# Monitor BulkPcr + ContinuousStrategy + SimpleContinuousStrategy + MomentumAtFixedTime (and fix on error)
 
 The user has already started the processes (`npm run processes`). Do NOT start them unless an
 error forces a restart (see "On error"). Keep token use low: no polling, no re-reading files already
@@ -18,9 +18,9 @@ one first on re-arm, never two), `timeout_ms: 1800000`, re-arm on each expiry wh
 /home/karthikeyan/work/icici/scripts/monitor-strategies-alerts.sh
 ```
 
-It covers both strategies and emits only `!!!` lines: errors, failures, fail-closed blocks, ALERTs,
+It covers all of them (SimpleContinuousStrategy rides the Continuous feed; MomentumAtFixedTime, NiftyChange and Recommendation the limit-entry feed) and emits only `!!!` lines: errors, failures, fail-closed blocks, ALERTs,
 and MAX PROFIT / MAX LOSS trips. It also emits `=== SLOT MISSED <time> <strategy> <slot>: <reason>` for
-every BulkPcrAutoStart / NiftyChange slot that did not trade (late, process started after it, previous
+every BulkPcrAutoStart / NiftyChange / MomentumAtFixedTime slot that did not trade (late, process started after it, previous
 position still running, flat Nifty, loss-stopped broker, invalid config). A filled buy+sell pair is NOT
 notified. Routine buy / sell / fill / spawn / target / refill events and
 BulkPcr's normal "Cycle complete" are filtered out at the source.
@@ -28,18 +28,26 @@ BulkPcr's normal "Cycle complete" are filtered out at the source.
 **Reporting rules**
 - Stay silent on normal events (including a filled buy+sell pair). Reply only to a `!!!` line or a `=== SLOT MISSED` line.
 - For a missed slot, say in one sentence which slot of which strategy was missed and the reason given in the line.
+- **MomentumAtFixedTime slots: always report a missed one, including a silent one.** The feed only speaks when the strategy logs a reason, so
+  a slot that is not evaluated at all (strategy `enabled: false`, processes down, broker logins missing so no ticks, state not loaded) produces
+  no line. Each time a slot in `MomentumAtFixedTimeStrategy.times` passes (every 10 min, 10:00-14:50), look in the day's
+  `logs/orchestrator-YYYY-MM-DD.log` for a `MomentumAtFixedTime ... <HH:MM> slot` line within about a minute of it. Three outcomes:
+  - the slot traded: stay silent (a filled pair is routine);
+  - the slot was evaluated and chose not to trade ("no positive surplus winner", flat/no momentum): report it as "slot HH:MM did not trade: <reason>";
+  - no line, or "skipped - process started at ..., after it": report it as "slot HH:MM was missed: not evaluated" and, in the same message, say why
+    from `enabled`, the process start time and `scripts/check-broker-sessions.sh`. Do not enable, restart or reconcile to fix it without the user's instruction.
 - Report the line in one or two plain sentences: what failed or which limit tripped, and the strategy.
   Name the contract only when the contract itself is the problem (e.g. a rejected or stuck order).
 - A notification can be cut off; if so, say that plainly and wait for the next event.
 - Once, at the start, tell the user the clock (`date +%H:%M`) and, for BulkPcr, the next slot in
-  `BulkPcrAutoStartStrategy.times` (config.yml). For ContinuousStrategy confirm `enabled` (entry window
+  `BulkPcrAutoStartStrategy.times` (config.yml); for MomentumAtFixedTime the next entry in its `times` (every 10 min, 10:00-14:50). For ContinuousStrategy and SimpleContinuousStrategy confirm `enabled` (entry window
   09:30-15:00); if `false`, ask before enabling. Its `broker:` key is informational (real broker is
   `bookkeeping.getUserBroker`, default kite).
 
 ## 2. Status on demand
 
 When asked "status", "what is the status now" or similar, run `scripts/strategy-status.sh` and show
-its output as-is: realized and unrealized P&L per strategy for BulkPcr and ContinuousStrategy, plus a
+its output as-is: realized and unrealized P&L per strategy for BulkPcr, ContinuousStrategy, SimpleContinuousStrategy and MomentumAtFixedTime, plus a
 total. Add nothing else (no event history, no contract list) unless the user asks.
 
 Only when asked for the position picture / open contracts / capital, run
@@ -50,7 +58,7 @@ labeled "orphan/partial-log" were restored by `reconcile()`).
 
 You may fix, restart and verify. Own the fix:
 
-1. Root-cause in `src/strategy/BulkPcrStrategy.ts` or `src/strategy/ContinuousStrategy.ts` /
+1. Root-cause in `src/strategy/BulkPcrStrategy.ts`, `ContinuousStrategy.ts`, `SimpleContinuousStrategy.ts`, `MomentumAtFixedTimeStrategy.ts` /
    `LegManager.ts` (shared with SupportResistanceStrategy; do not break it). Think through the
    variations first: both sides / several legs and levels, partial fills and chunks, restart
    mid-state (`reconcile()`), latched max-profit/max-loss, refills pending.

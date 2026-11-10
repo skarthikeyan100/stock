@@ -11,7 +11,8 @@ import fs from 'fs';
 import { createHash } from 'crypto';
 import path from 'path';
 import { sleep } from './util/sleep';
-import { shouldAutoRestart } from './orchestratorPolicy';
+import { shouldAutoRestart, shouldApplyCodeChange } from './orchestratorPolicy';
+import * as yaml from 'js-yaml';
 
 // NOTE: do NOT force IPv4 globally here (e.g. via NODE_OPTIONS=--dns-result-
 // order=ipv4first) - tried that 2026-09-25 to fix Kite's IPv4-only IP
@@ -163,6 +164,18 @@ function duringMarketHours(now: Date = new Date()): boolean {
     return day >= 1 && day <= 5 && minutes >= 9 * 60 && minutes <= 15 * 60 + 35;
 }
 
+// settings.hotRestartDuringMarketHours from config.yml; false when the file cannot be read or parsed (fail closed).
+function readHotRestartSetting(): boolean {
+    const configPath = process.env.CONFIG_PATH || './config.yml';
+    try {
+        const parsed: any = yaml.load(fs.readFileSync(configPath, 'utf8'));
+        return parsed?.settings?.hotRestartDuringMarketHours === true;
+    } catch (e) {
+        console.log(`[orchestrator] could not read ${configPath} for settings.hotRestartDuringMarketHours - treating it as false: ${(e as Error).message}`);
+        return false;
+    }
+}
+
 // A change seen this soon after the watch was set up is applied only once the grace has passed, never in the middle of a start.
 const HOT_RESTART_BOOT_GRACE_MS = 90_000;
 
@@ -186,8 +199,9 @@ function watchAndRestart(name: string, watchPaths: string[], onChange: () => voi
         if (!changed) return;
         // Editing src/ during market hours used to hot-restart the trading process with open legs (twice on 2026-11-02). Unless
         // HOT_RESTART=true is set explicitly, a change seen between 09:00 and 15:35 on a weekday is NOT applied: restart by hand when flat.
-        if (process.env.HOT_RESTART !== 'true' && duringMarketHours()) {
-            console.log(`[orchestrator] ${name}: code changed during market hours - NOT restarting it (set HOT_RESTART=true to allow, or restart by hand when flat)`);
+        // The config.yml key is read at the moment of the change (not cached), so it can be flipped at runtime; see shouldApplyCodeChange.
+        if (!shouldApplyCodeChange({ envHotRestart: process.env.HOT_RESTART, configAllows: readHotRestartSetting(), inMarketHours: duringMarketHours() })) {
+            console.log(`[orchestrator] ${name}: code changed during market hours - NOT restarting it (set settings.hotRestartDuringMarketHours: true in config.yml, or restart by hand when flat)`);
             return;
         }
         onChange();

@@ -248,7 +248,8 @@ class KiteContractMaster {
         strike: number,
         optionType: 'CE' | 'PE',
         symbol: string = 'NIFTY',
-        expiryOffset = 0
+        expiryOffset = 0,
+        skipNearestExpiryDay?: boolean // per-call override of settings.skipNearestExpiryOnExpiryDay (undefined = the setting)
     ): Promise<{ tradingSymbol: string; instrumentToken: number; lotSize: number; exchange: Exchange }> {
         const exchange: Exchange = exchangeForIndex(symbol);
         const instruments = this.loadInstruments(exchange);
@@ -259,7 +260,7 @@ class KiteContractMaster {
             .filter((i) => i.name === symbol && i.instrument_type === optionType && i.strike === strike && new Date(i.expiry) >= today)
             .sort((a, b) => new Date(a.expiry).getTime() - new Date(b.expiry).getTime());
 
-        const contract = candidates[effectiveExpiryOffset(candidates.map((i) => new Date(i.expiry).getTime()), expiryOffset)];
+        const contract = candidates[effectiveExpiryOffset(candidates.map((i) => new Date(i.expiry).getTime()), expiryOffset, Date.now(), skipNearestExpiryDay)];
         if (!contract) {
             throw new Error(`No ${symbol} ${optionType} contract found for strike ${strike} (expiryOffset=${expiryOffset})`);
         }

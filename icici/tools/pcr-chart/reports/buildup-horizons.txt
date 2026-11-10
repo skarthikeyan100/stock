@@ -1,0 +1,54 @@
+Days: 2026-11-02, 2026-11-04, 2026-11-05, 2026-11-06
+
+Base rate (NIFTY rose over H, all minutes): 5m 56.6% (n=1381) | 15m 60.9% (n=1379) | 30m 61.4% (n=1320) | 60m 67.2% (n=1200)
+(An always-long rule hits this rate; an always-short rule hits 1 minus it.)
+
+Status | lookback | horizon | n | hit | 95% CI | per-day hit (11-02, 11-04, 11-05, 11-06)
+long buildup | lookback 5m | next 5m                 n= 448 hit= 58.9% CI 57.6%-61.4%  per-day 58, 59, 63, 57
+short covering | lookback 5m | next 5m               n= 322 hit= 58.1% CI 53.4%-60.8%  per-day 58, 51, 61, 57
+short buildup | lookback 5m | next 5m                n= 364 hit= 51.9% CI 44.7%-56.3%  per-day 54, 57, 41, 51
+long unwinding | lookback 5m | next 5m               n= 204 hit= 37.3% CI 28.6%-43.0%  per-day 41, 35, 44, 24
+long buildup | lookback 5m | next 15m                n= 448 hit= 60.5% CI 55.6%-64.8%  per-day 64, 54, 59, 66
+short covering | lookback 5m | next 15m              n= 321 hit= 64.2% CI 59.3%-67.7%  per-day 64, 59, 69, 59
+short buildup | lookback 5m | next 15m               n= 362 hit= 44.5% CI 37.1%-49.8%  per-day 47, 52, 38, 37
+long unwinding | lookback 5m | next 15m              n= 205 hit= 35.6% CI 19.2%-48.5%  per-day 52, 29, 39, 13
+long buildup | lookback 5m | next 30m                n= 422 hit= 60.0% CI 51.8%-69.5%  per-day 50, 54, 58, 74
+short covering | lookback 5m | next 30m              n= 314 hit= 64.6% CI 60.8%-68.5%  per-day 61, 63, 70, 61
+short buildup | lookback 5m | next 30m               n= 340 hit= 42.9% CI 32.9%-50.7%  per-day 46, 54, 35, 31
+long unwinding | lookback 5m | next 30m              n= 201 hit= 35.3% CI 21.6%-43.3%  per-day 45, 13, 41, 27
+long buildup | lookback 5m | next 60m                n= 367 hit= 67.6% CI 60.4%-75.0%  per-day 60, 61, 73, 76
+short covering | lookback 5m | next 60m              n= 293 hit= 69.6% CI 53.3%-80.8%  per-day 46, 64, 83, 75
+short buildup | lookback 5m | next 60m               n= 307 hit= 33.2% CI 17.5%-44.2%  per-day 39, 48, 9, 23
+long unwinding | lookback 5m | next 60m              n= 193 hit= 37.8% CI 27.6%-50.4%  per-day 55, 33, 28, 27
+long buildup | lookback 15m | next 5m                n= 412 hit= 52.9% CI 47.7%-56.7%  per-day 56, 47, 49, 57
+short covering | lookback 15m | next 5m              n= 380 hit= 57.1% CI 50.0%-62.8%  per-day 50, 57, 65, 50
+short buildup | lookback 15m | next 5m               n= 279 hit= 48.7% CI 42.9%-56.8%  per-day 60, 44, 42, 48
+long unwinding | lookback 15m | next 5m              n= 240 hit= 38.8% CI 29.9%-47.2%  per-day 34, 49, 45, 23
+long buildup | lookback 15m | next 15m               n= 412 hit= 61.4% CI 53.5%-66.8%  per-day 63, 50, 64, 68
+short covering | lookback 15m | next 15m             n= 380 hit= 58.7% CI 54.5%-60.6%  per-day 61, 60, 60, 53
+short buildup | lookback 15m | next 15m              n= 278 hit= 44.6% CI 36.0%-56.9%  per-day 63, 37, 42, 34
+long unwinding | lookback 15m | next 15m             n= 239 hit= 36.4% CI 21.7%-51.2%  per-day 39, 59, 29, 12
+long buildup | lookback 15m | next 30m               n= 381 hit= 60.4% CI 52.2%-68.9%  per-day 58, 48, 74, 66
+short covering | lookback 15m | next 30m             n= 378 hit= 60.6% CI 57.5%-65.0%  per-day 59, 66, 57, 64
+short buildup | lookback 15m | next 30m              n= 254 hit= 40.6% CI 26.9%-57.6%  per-day 66, 36, 30, 25
+long unwinding | lookback 15m | next 30m             n= 237 hit= 39.7% CI 26.9%-52.3%  per-day 42, 59, 30, 23
+long buildup | lookback 15m | next 60m               n= 314 hit= 67.5% CI 53.5%-80.4%  per-day 45, 61, 86, 78
+short covering | lookback 15m | next 60m             n= 344 hit= 72.4% CI 66.9%-77.0%  per-day 70, 66, 78, 70
+short buildup | lookback 15m | next 60m              n= 238 hit= 39.5% CI 22.9%-57.6%  per-day 65, 38, 23, 23
+long unwinding | lookback 15m | next 60m             n= 234 hit= 34.2% CI 19.8%-45.1%  per-day 43, 47, 15, 27
+long buildup | lookback 30m | next 5m                n= 374 hit= 56.7% CI 55.7%-57.8%  per-day 55, 57, 59, 57
+short covering | lookback 30m | next 5m              n= 427 hit= 57.4% CI 52.9%-63.2%  per-day 63, 50, 56, 63
+short buildup | lookback 30m | next 5m               n= 201 hit= 52.7% CI 39.5%-69.3%  per-day 75, 41, 37, 45
+long unwinding | lookback 30m | next 5m              n= 250 hit= 40.0% CI 30.6%-52.8%  per-day 30, 55, 31, 46
+long buildup | lookback 30m | next 15m               n= 371 hit= 58.2% CI 48.7%-68.1%  per-day 48, 49, 68, 68
+short covering | lookback 30m | next 15m             n= 429 hit= 69.2% CI 65.0%-77.3%  per-day 82, 66, 64, 71
+short buildup | lookback 30m | next 15m              n= 201 hit= 45.3% CI 28.4%-67.3%  per-day 76, 29, 31, 28
+long unwinding | lookback 30m | next 15m             n= 249 hit= 42.2% CI 27.6%-60.4%  per-day 24, 63, 33, 54
+long buildup | lookback 30m | next 30m               n= 327 hit= 64.5% CI 44.7%-77.2%  per-day 38, 64, 88, 75
+short covering | lookback 30m | next 30m             n= 427 hit= 70.3% CI 66.6%-77.4%  per-day 80, 71, 66, 70
+short buildup | lookback 30m | next 30m              n= 190 hit= 40.5% CI 14.6%-60.5%  per-day 68, 35, 0, 28
+long unwinding | lookback 30m | next 30m             n= 248 hit= 52.8% CI 39.6%-67.0%  per-day 36, 68, 49, 64
+long buildup | lookback 30m | next 60m               n= 273 hit= 73.6% CI 35.4%-92.9%  per-day 15, 91, 97, 88
+short covering | lookback 30m | next 60m             n= 378 hit= 76.2% CI 67.3%-82.0%  per-day 77, 66, 84, 68
+short buildup | lookback 30m | next 60m              n= 188 hit= 36.7% CI 11.6%-57.1%  per-day 63, 35, 0, 17
+long unwinding | lookback 30m | next 60m             n= 233 hit= 41.6% CI 26.6%-55.7%  per-day 35, 59, 23, 46

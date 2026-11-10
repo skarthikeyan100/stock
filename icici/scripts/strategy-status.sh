@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Realized / unrealized P&L for BulkPcr, ContinuousStrategy, SimpleContinuousStrategy, MomentumAtFixedTime, NiftyChange and Recommendation
+# Realized / unrealized P&L for BulkPcr, ContinuousStrategy, SimpleContinuousStrategy, MomentumAtFixedTime, NiftyChange, Recommendation and SentimentStrategy
 # (from the running `order` process): one table per strategy, then one table per broker (kite / ant / breeze / prism).
 # Usage: scripts/strategy-status.sh [port]
 PORT="${1:-3000}"
-MATCH='BulkPcr|Continuous|MomentumAtFixedTime|NiftyChange|Recommendation'
+MATCH='BulkPcr|Continuous|MomentumAtFixedTime|NiftyChange|Recommendation|Sentiment'
 BY_STRATEGY="$(curl -s -m10 "localhost:$PORT/strategyPnl?match=$MATCH")"
 BY_BROKER="$(curl -s -m10 "localhost:$PORT/strategyPnl?match=$MATCH&by=broker")"
 BY_STRATEGY="$BY_STRATEGY" BY_BROKER="$BY_BROKER" node -e '
@@ -18,7 +18,7 @@ const table=(title,rows)=>{
 };
 const byStrategy=parse(process.env.BY_STRATEGY);
 if(!byStrategy){console.log("order process not reachable");process.exit(1)}
-if(!byStrategy.length){console.log("no BulkPcr / Continuous / MomentumAtFixedTime / NiftyChange / Recommendation trades this session");process.exit(0)}
+if(!byStrategy.length){console.log("no BulkPcr / Continuous / MomentumAtFixedTime / NiftyChange / Recommendation / Sentiment trades this session");process.exit(0)}
 table("BY STRATEGY",byStrategy);
 const byBroker=parse(process.env.BY_BROKER);
 if(byBroker&&byBroker.length){console.log("");table("BY BROKER",byBroker)}

@@ -1,4 +1,4 @@
-import { isPastTime } from '../util/marketHours';
+import { isPastEodClose } from '../util/eodClose';
 import { localDayKey } from './dayKey';
 import Log from '../util/Log';
 import { CALL, PUT } from '../constants';
@@ -307,10 +307,10 @@ export default class HourlyStrategy extends Strategy {
         return true;
     }
 
-    // End of day: flatten any live position at cfg.eodCloseTime (default 15:10) instead of carrying it past the close.
+    // End of day: flatten any live position at settings.eodCloseTime (default 15:10) instead of carrying it past the close.
     private checkEod(): void {
         if (!this.hasOpenPosition()) return;
-        if (!isPastTime(this.cfg().eodCloseTime)) return;
+        if (!isPastEodClose()) return;
         for (const pos of this.positions.values()) {
             if (!this.isClosable(pos) || pos.squaringOff) continue;
             if (pos.placingExit) { pos.closeRequested = 'eod'; continue; }

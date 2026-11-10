@@ -60,6 +60,19 @@ class PrismContractMaster {
         return rows;
     }
 
+    // Distinct option expiries of `symbol` on or after today, ascending, as local-midnight Dates. The exchange's own dates, so a
+    // holiday-shifted expiry (NIFTY 2026-11-10 listed as 09-NOV-2026) is returned as listed.
+    upcomingExpiries(symbol: string): Date[] {
+        const now = new Date().setHours(0, 0, 0, 0);
+        const seen = new Set<number>();
+        for (const r of this.load()) {
+            if (r.symbol !== symbol) continue;
+            const t = Date.parse(r.expiry);
+            if (Number.isFinite(t) && t >= now) seen.add(t);
+        }
+        return Array.from(seen).sort((a, b) => a - b).map((t) => new Date(t));
+    }
+
     // Canonical-symbol resolution: exact (symbol, strike, optionType), no
     // expiry given - resolves to the nearest expiry (expiryOffset=0) or the
     // Nth-nearest (expiryOffset=1 => "next", etc), same shape as
@@ -67,7 +80,7 @@ class PrismContractMaster {
     // equivalent. Prism is the secondary/legacy execution path (Kite is
     // primary) - resolution only wired into order execution if/when that path
     // is used, per src/processes/order/prismExecutor.ts.
-    findNearestExpiryOption(symbol: string, strike: number, optionType: 'CE' | 'PE', expiryOffset = 0): { token: string; tradingSymbol: string } {
+    findNearestExpiryOption(symbol: string, strike: number, optionType: 'CE' | 'PE', expiryOffset = 0, skipNearestExpiryDay?: boolean): { token: string; tradingSymbol: string } {
         const rows = this.load();
         // Start of today: a contract expiring TODAY is still tradable all day (Date.parse gives
         // midnight, which is < now for the whole expiry day).
@@ -77,7 +90,7 @@ class PrismContractMaster {
             .filter((r) => r.symbol === symbol && r.strike === strike && r.optionType === optionType && Date.parse(r.expiry) >= now)
             .sort((a, b) => Date.parse(a.expiry) - Date.parse(b.expiry));
 
-        const row = candidates[effectiveExpiryOffset(candidates.map((r) => Date.parse(r.expiry)), expiryOffset)];
+        const row = candidates[effectiveExpiryOffset(candidates.map((r) => Date.parse(r.expiry)), expiryOffset, Date.now(), skipNearestExpiryDay)];
         if (!row) {
             throw new Error(`No ${symbol} ${optionType} contract found for strike ${strike} (expiryOffset=${expiryOffset})`);
         }
