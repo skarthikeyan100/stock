@@ -14,6 +14,7 @@
     "test:continuousStrategy": "tsc && MOCK_BROKER=true node ./dist/test/continuousStrategyTest.js",
     "backtest:continuousStrategy": "tsc && MOCK_BROKER=true node ./dist/tools/ContinuousStrategyBacktest.js",
     "backtest:supportResistanceStrategy": "tsc && MOCK_BROKER=true node ./dist/tools/SupportResistanceStrategyBacktest.js",
+    "backtest:simpleContinuous": "tsc && MOCK_BROKER=true node ./dist/tools/SimpleContinuousBacktest.js",
     "backtest:ruleBased": "tsc && MOCK_BROKER=true node ./dist/tools/RuleBasedBacktest.js",
     "backtest:ruleBlock": "tsc && MOCK_BROKER=true node ./dist/tools/RuleBlockBacktest.js",
     "analyze:ruleBlockGrid": "node ./scripts/ruleBlockGrid.js",
