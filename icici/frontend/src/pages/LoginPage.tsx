@@ -72,7 +72,7 @@ export default function LoginPage() {
       {/* Hero */}
       <section className="landing-hero">
         <div className="landing-hero-content">
-          <div className="landing-badge">NIFTY Options Trading</div>
+          <div className="landing-badge">Options Trading</div>
           <h1 className="landing-title">
             Trade Smarter.<br />
             <span className="landing-title-accent">Share the Profits.</span>
