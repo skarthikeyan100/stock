@@ -55,6 +55,8 @@ strategies:
     momentumTimeoutMs: 3000
   - type: RateOfChangeStrategy
     enabled: false
+    brokers:
+      - kite
     pointsThreshold: 30
     accelerationThreshold: 5
     numberOfDatapointsReceived: 50
@@ -85,13 +87,10 @@ strategies:
   # DISABLED: 4 days, all rising; the backtest does not show them beating always-CALL on net P&L. Enable deliberately only.
   - type: RuleBasedStrategy
     enabled: false
+    # Two single-indicator rules (2026-11-11). The earlier six-rule set is kept in strategies.md ("RuleBasedStrategy: previous rule set").
     indicators:
-      - MACD_4_8_3, Bollinger_25_1.5
-      - EMA_9_21, Bollinger_5_1
-      - MACD_4_8_3, MACD_16_32_12
+      - Bollinger_5_1
       - MACD_4_8_3
-      - Bollinger_20_1
-      - MACD_16_32_12
     quantity: 65
     # One exit set for the whole block: 10-point target, no stop, 60-minute timeout (backtest-results/ruleblock-final, grid).
     target: 10

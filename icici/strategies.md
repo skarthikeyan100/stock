@@ -554,6 +554,17 @@ average. The strategy sells at the tick price (`sellContract`); no resting broke
 **Sizing**: fixed `quantity` per rule.
 **Config keys**: `enabled`, `indicators`, `quantity`, `target`, `stopLoss`, `maxHoldTimeMinutes`, `requireAllIndicators`, `cooldownSeconds`,
 `logEnabled`. The old `targetProfitPercent`, `stopLossPercent`, `targetPoints`, `stopLossPoints` keys are ignored (ALERT at startup).
+**RuleBasedStrategy: previous rule set** (replaced 2026-11-11 by `Bollinger_5_1` and `MACD_4_8_3`; restore by pasting these under `indicators:`).
+Each line is one rule; the comma joins indicators that must all agree. Chosen from `backtest-results/ruleblock-final`. The live candle builder only has
+closes since the process start (no backfill), so slow indicators need a long warm-up after a restart (`MACD_16_32_12` needs 44 five-minute closes):
+```
+- MACD_4_8_3, Bollinger_25_1.5
+- EMA_9_21, Bollinger_5_1
+- MACD_4_8_3, MACD_16_32_12
+- MACD_4_8_3
+- Bollinger_20_1
+- MACD_16_32_12
+```
 
 ### SentimentStrategy (`SentimentStrategy.ts`) — config: active, `enabled: false`
 **Entry**: fires up to `loopCount` times total (across the process lifetime,
