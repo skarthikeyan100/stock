@@ -10,6 +10,7 @@ import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategie
 import { sleep } from '../util/sleep';
 import { BrokerName, configuredBrokersOf, normalizePersistedBrokers } from '../util/brokerName';
 import { isPastEodClose, effectiveEodCloseTime } from '../util/eodClose';
+import { isPastMarketClose, isWithinTradingWindow } from '../util/marketHours';
 
 // Iron Butterfly (standard, net credit) / Reverse Iron Butterfly (net debit) 4-leg combo on
 // NIFTY/SENSEX. Manual arm only (config.yml `enabled: true`, fires once on the next tick),
@@ -52,6 +53,10 @@ interface BrokerButterflyPosition {
     entryCycleStartedAt: number;   // epoch ms when buy legs were placed; reconcile uses this to judge
                                     // whether the confirmed-pair window is still open after a restart
     squaringOff?: boolean;         // in-memory only, not persisted (same convention as BulkPcrStrategy)
+    // Order work a reconcile found but may not do itself (a reconcile never trades, user's rule 2026-11-11). Persisted; runPendingRestoreActions() closes
+    // the combo from ticks. 'closeAll': a close that was in flight (ends 'done' when every leg is flat). 'closeThenError': a mid-entry combo (always
+    // ends 'error' for manual review, as before).
+    pendingRestoreAction?: 'closeAll' | 'closeThenError';
 }
 
 interface PersistedState {
@@ -121,11 +126,13 @@ export default class ButterflyStrategy extends Strategy {
     // ---- entry ----
     async processNiftyQuote(quote: NiftyQuote): Promise<void> {
         await this.eodCheck();
+        await this.runPendingRestoreActions();
         if (this.index() !== 'NIFTY') return;
         await this.processUnderlyingQuote(quote);
     }
     async processSensexQuote(quote: SensexQuote): Promise<void> {
         await this.eodCheck();
+        await this.runPendingRestoreActions();
         if (this.index() !== 'SENSEX') return;
         await this.processUnderlyingQuote(quote as unknown as NiftyQuote);
     }
@@ -509,6 +516,44 @@ export default class ButterflyStrategy extends Strategy {
         if (allClosed) this.afterPositionDone(pos.broker);
     }
 
+    // The close a reconcile deferred (see reconcileOneBroker): runs from the index tick, only for an enabled, loaded strategy (the dispatcher's gate)
+    // inside the trading window, never while a reconcile runs, at most every 15 s. reconcileCloseWhateverIsOpen live-checks every leg first.
+    private async runPendingRestoreActions(): Promise<void> {
+        if (this.reconciling || this.restoreBusy || isPastMarketClose() || !isWithinTradingWindow()) return;
+        if (!Array.from(this.positions.values()).some((p) => p.pendingRestoreAction && !p.squaringOff)) return;
+        const now = Date.now();
+        if (now - this.lastRestoreAt < 15_000) return;
+        this.lastRestoreAt = now;
+        this.restoreBusy = true;
+        try {
+            for (const pos of Array.from(this.positions.values())) {
+                const action = pos.pendingRestoreAction;
+                if (!action || pos.squaringOff) continue;
+                pos.squaringOff = true; // blocks a concurrent target/stop tick or the EOD close from also closing this combo
+                pos.pendingRestoreAction = undefined;
+                try {
+                    await this.reconcileCloseWhateverIsOpen(pos);
+                } catch (e) {
+                    Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] ALERT: deferred close failed (manual review required):`, e);
+                }
+                const allClosed = ALL_LEG_ROLES.every((r) => pos.legs[r].status === 'closed');
+                if (action === 'closeAll' && allClosed) {
+                    pos.phase = 'done';
+                    pos.squaringOff = false;
+                    this.persistState();
+                    this.afterPositionDone(pos.broker);
+                } else {
+                    pos.phase = 'error';
+                    pos.squaringOff = false;
+                    this.persistState();
+                    Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] ${action === 'closeThenError' ? 'marked error (manual review): a restart recovered the combo mid-entry - closed whatever was live' : 'ALERT: interrupted close could not be completed - manual review required'}`);
+                }
+            }
+        } finally {
+            this.restoreBusy = false;
+        }
+    }
+
     // ---- EOD force-close + recurring reset ----
     private async eodCheck(): Promise<void> {
         const dayKey = localDayKey();
@@ -565,7 +610,20 @@ export default class ButterflyStrategy extends Strategy {
     // Called automatically once at `strategies` process startup, generically, for every
     // strategy that defines this method (see strategiesProcess.ts's reconcile loop) - no
     // explicit per-strategy call-site wiring needed.
+    private reconciling = false;
+    private restoreBusy = false;
+    private lastRestoreAt = 0;
+
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
+        this.reconciling = true;
+        try {
+            await this.reconcileBody(maxAttempts, retryDelayMs);
+        } finally {
+            this.reconciling = false;
+        }
+    }
+
+    private async reconcileBody(maxAttempts: number, retryDelayMs: number): Promise<void> {
         const saved = await this.loadState();
         // The per-day cycle count survives a restart, or a restart would let a cycle that already ran (and stopped out) fire again.
         if ((saved as any)?.cycleDay === localDayKey()) { this.cycleDay = (saved as any).cycleDay; this.cyclesToday = Number((saved as any).cyclesToday ?? 0); }
@@ -666,40 +724,18 @@ export default class ButterflyStrategy extends Strategy {
         // already use).
         switch (pos.phase) {
             case 'buyingWings':
-                // Restart before any buy confirmed - treat as a failed entry: close whatever is
-                // live-open, mark error.
-                await this.reconcileCloseWhateverIsOpen(pos);
-                pos.phase = 'error';
-                break;
             case 'wingsOpen':
-            case 'sellingCenter': {
-                // Restart mid-entry: buys confirmed, sells not yet CONFIRMED placed - but a sell
-                // order can genuinely have filled at the broker before the crash, with
-                // leg.filledQty/entryAvg/pos.phase='open' never having been persisted (that
-                // update happens only after placeSellLegs resolves). Found on review: blindly
-                // re-calling placeSellLegs here (the original approach) would place a SECOND
-                // sell-to-open for a leg already short at the broker, doubling that leg's short
-                // exposure. Cross-check each sell-role leg's live quantity first; only place a
-                // fresh sell for a leg that's genuinely NOT yet open at the broker.
-                const withinWindow = Date.now() - pos.entryCycleStartedAt < ENTRY_WINDOW_MS;
-                if (withinWindow) {
-                    const sellOk = await this.resumeOrPlaceSellLegs(pos);
-                    pos.phase = sellOk ? 'open' : 'error';
-                    if (sellOk) {
-                        // All four legs: the net-combo exit needs a live price for the wings too (a restart in this
-                        // phase never ran the wings' own watch).
-                        for (const role of ALL_LEG_ROLES) watchTokenOnSource('ant', pos.legs[role].token!, this, pos.legs[role].exchange!);
-                    }
-                } else {
-                    // Live-checked close of every leg (including ones persisted as 'entering', whose fill was never
-                    // recorded) rather than unwinding only legs recorded as filled.
-                    await this.reconcileCloseWhateverIsOpen(pos);
-                    pos.phase = 'error';
-                    this.persistState();
-                    Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] marked error (manual review): restart recovered mid-entry past the confirmed-pair window - closed whatever was live`);
-                }
-                break;
-            }
+            case 'sellingCenter':
+                // Restart mid-entry. Closing whatever is live (and, within the confirmed-pair window, finishing the sells) are orders, which a
+                // reconcile may not place: the combo is parked as 'closing' with a persisted action and closed - live-checked, shorts first - from
+                // ticks by runPendingRestoreActions. The old "resume the sell legs inside the window" path is gone: a restart in that 2-minute
+                // window now closes the combo (the conservative outcome) and ends 'error' for manual review, as every other mid-entry restart did.
+                pos.pendingRestoreAction = 'closeThenError';
+                pos.phase = 'closing';
+                this.positions.set(broker, pos);
+                this.persistState();
+                Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] reconcile: restart found the combo mid-entry - closing it is deferred to housekeeping (a reconcile never trades)`);
+                return;
             case 'open':
                 // Re-subscribe ticks for every leg still open at the broker, resume self-monitoring.
                 await this.reconcileResubscribeOpenLegs(pos);
@@ -707,22 +743,13 @@ export default class ButterflyStrategy extends Strategy {
                 this.positions.set(broker, pos);
                 break;
             case 'closing':
-                // Restart mid-exit: check each of the 4 legs independently, resume closing only
-                // what's still open - closeOneLeg's remaining-qty guard makes an already-closed
-                // leg a no-op.
-                // Every leg is live-checked first (persisted statuses can be stale after a crash mid-close): re-closing a leg that is
+                // Restart mid-exit (or a mid-entry combo parked above): the live-checked close is deferred to runPendingRestoreActions.
+                // Every leg is live-checked there first (persisted statuses can be stale after a crash mid-close): re-closing a leg that is
                 // already flat would BUY back an already-closed short into a new long, or SELL an already-sold wing into a naked short.
-                await this.reconcileCloseWhateverIsOpen(pos);
-                if (ALL_LEG_ROLES.every((r) => pos.legs[r].status === 'closed')) {
-                    pos.phase = 'done';
-                    this.persistState();
-                    this.afterPositionDone(broker);
-                } else {
-                    pos.phase = 'error';
-                    this.positions.set(broker, pos);
-                    this.persistState();
-                    Log.log(`[ButterflyStrategy:${this.userId}] [${broker}] ALERT: interrupted close could not be completed - manual review required`);
-                }
+                if (!pos.pendingRestoreAction) pos.pendingRestoreAction = 'closeAll';
+                this.positions.set(broker, pos);
+                this.persistState();
+                Log.log(`[ButterflyStrategy:${this.userId}] [${broker}] reconcile: restart found the combo closing - finishing the close is deferred to housekeeping (a reconcile never trades)`);
                 return;
             case 'done':
                 this.positions.delete(broker);
