@@ -35,7 +35,7 @@ BulkPcr's normal "Cycle complete" are filtered out at the source.
   - the slot traded: stay silent (a filled pair is routine);
   - the slot was evaluated and chose not to trade ("no positive surplus winner", flat/no momentum): report it as "slot HH:MM did not trade: <reason>";
   - no line, or "skipped - process started at ..., after it": report it as "slot HH:MM was missed: not evaluated" and, in the same message, say why
-    from `enabled`, the process start time and `scripts/check-broker-sessions.sh`. Do not enable, restart or reconcile to fix it without the user's instruction.
+    from `enabled`, the process start time and `scripts/check-broker-sessions.sh`. Do not enable, restart or sync to fix it without the user's instruction.
 - Report the line in one or two plain sentences: what failed or which limit tripped, and the strategy.
   Name the contract only when the contract itself is the problem (e.g. a rejected or stuck order).
 - A notification can be cut off; if so, say that plainly and wait for the next event.
@@ -81,11 +81,9 @@ You may fix, restart and verify. Own the fix:
 
 ## Notes
 
-- Reconcile is not needed after a restart for ticks/slots. Call `curl -s -X POST localhost:3000/reconcile`
-  (loopback needs no auth; 409 if a broker's positions can't be read) only when broker positions and
-  Mongo disagree, e.g. a restart with a position open. Until then strategy state is not restored: say
-  so rather than assuming the position is protected. If it logs "blocking new T1 entries until next
-  restart", the order query failed.
+- A restart restores open positions from Mongo alone (no broker read, no login) and a reconcile never places an order. Run `npm run sync` (broker -> Mongo; add
+  `-- --strategies` to also re-read Mongo into the strategies) after logging in, after a mid-day restart, or when a broker and Mongo disagree: a position a broker
+  closed earlier that day stays open in the platform until a sync books it. The platform also runs it by itself at 15:45.
 - `curl -s -X POST localhost:3000/ant/connect` if the ANT stream is not ticking.
 - MAX PROFIT / MAX LOSS latch for the session (persisted); new entries stay blocked until reset.
 - Continuous exits are price-based and self-monitored (no GTT, no time exit).

@@ -1845,15 +1845,18 @@ class OrderBookkeeping {
         for (const f of missing) {
             // A fill on a contract this platform never traded (in the last days) is the user's own trade in the broker's app: not ours to report.
             if (!have.tsyms.has(f.tsym) && !this.trades.some((t) => t.broker === broker && (t.tsym === f.tsym || (f.token != null && String(t.token) === f.token)))) continue;
+            const holders = this.trades.filter((t) => t.broker === broker && Number(t.quantity) > 0 && (t.tsym === f.tsym || (f.token != null && String(t.token) === f.token)));
+            const trackedTotal = holders.reduce((sum, t) => sum + Number(t.quantity), 0);
+            const held = OrderBookkeeping.rowsFor(rows, Object.assign(new Trade(), { tsym: f.tsym, token: f.token })).reduce((sum, r) => sum + r.qty, 0);
+            // Nothing is tracked on the contract and the broker holds none of it: a round trip nobody here depends on (typically the user's own trades in the
+            // broker's app on a contract the platform also traded earlier) - not worth a report line.
+            if (trackedTotal === 0 && held === 0) continue;
             if (f.action === 'Buy') {
                 mismatches.push({ kind: 'unattributedFill', broker, tsym: f.tsym, note: `a Buy of ${f.qty} @ ${f.price.toFixed(2)} (order ${f.orderId}) is at the broker but not in Mongo - not booked, check it` });
                 continue;
             }
-            const holders = this.trades.filter((t) => t.broker === broker && Number(t.quantity) > 0 && (t.tsym === f.tsym || (f.token != null && String(t.token) === f.token)));
             const owner = owners.get(f.orderId);
             const target = owner ? holders.find((t) => t.user === owner) : holders.length === 1 ? holders[0] : undefined;
-            const trackedTotal = holders.reduce((sum, t) => sum + Number(t.quantity), 0);
-            const held = OrderBookkeeping.rowsFor(rows, Object.assign(new Trade(), { tsym: f.tsym, token: f.token })).reduce((sum, r) => sum + r.qty, 0);
             const qty = target ? Math.min(f.qty, Number(target.quantity)) : 0;
             if (!target || !(qty > 0) || trackedTotal - qty < held) {
                 mismatches.push({ kind: 'unattributedFill', broker, tsym: f.tsym, brokerQty: held, mongoQty: trackedTotal, note: `a Sell of ${f.qty} @ ${f.price.toFixed(2)} (order ${f.orderId}) is at the broker but not in Mongo and cannot be attributed with evidence - not booked` });

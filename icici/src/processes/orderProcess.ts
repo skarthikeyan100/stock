@@ -1177,7 +1177,7 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 }
             }
 
-            // Explicit broker-position reconcile - POST /reconcile in server.ts
+            // Explicit broker -> Mongo sync (the end-of-day repair, on demand) - POST /reconcile in routes/admin.ts
             // invokes this first, then `strategies`' reconcile (which depends on
             // the restored bookkeeping.trades). Refused before 09:10.
             case 'eodSync': {
@@ -1341,7 +1341,8 @@ async function loadUserLimits() {
 }
 
 // Broker-position reconciliation is an explicit, operator-triggered step (the
-// 'reconcileBrokerPositions' IPC case, reached via POST /reconcile in server.ts)
+// 'reconcileBrokerPositions' IPC case, reached via POST /reconcile in routes/admin.ts). DEPRECATED since 2026-11-11: POST /reconcile and the end-of-day job
+// run OrderBookkeeping.eodRepairBroker instead; this broker-driven reader set is only kept for one week of clean end-of-day runs, then deleted.
 // - it does NOT run at process startup or on every broker login any more. The
 // user checks for open positions and then invokes it.
 //
@@ -1541,9 +1542,6 @@ export async function startOrderProcess() {
     // on every restart even though nothing was actually lost (see
     // loadClosedTradesFromMongo's comment).
     await bookkeeping.loadClosedTradesFromMongo().catch((e) => Log.log('[order] startup: loadClosedTradesFromMongo failed (continuing):', e));
-    // Broker positions are not loaded here: the strategies process requests 'reconcileBrokerPositions' at its own startup and holds every
-    // strategy back until it succeeds (startupReconcile). This call sees an empty trade list; the real exit-monitor rebuild happens in
-    // reconcileAllBrokersOnce.
     // Open positions are restored from Mongo alone, here, with no broker read and no login (user's design, 2026-11-11). Mongo is kept equal to
     // the brokers by the end-of-day sync and `npm run sync`, not by the restart. The strategies process then restores its own state from them.
     await runMongoRestore('startup').catch((e) => Log.log('[order] startup: restore from Mongo threw:', e));

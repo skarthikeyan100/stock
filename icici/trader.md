@@ -11,7 +11,7 @@ Allowed without asking:
 - Edit `config.yml` values (never delete a block; use `enabled: false` to stop a strategy). Amount changes are allowed when the
   user has asked for them.
 - Run the monitor and status scripts, and re-arm the alerts monitor on expiry.
-- `POST /reconcile` when broker positions and strategy state disagree.
+- `npm run sync` (broker → Mongo, places nothing) whenever a broker and the status table disagree; `POST /reconcile` (the same sync, then strategies re-read Mongo).
 - Edit `src/` to fix a bug, run `npx tsc --noEmit -p .`, and commit and push finished work (never token files).
 
 Needs the user's explicit instruction first:
@@ -32,7 +32,7 @@ Needs the user's explicit instruction first:
 | Broker login, token and WebSocket | `scripts/check-broker-sessions.sh` (the `check-broker-sessions` skill) |
 | Logins | `scripts/login.sh` (pass the broker name, e.g. `prism`) |
 | Stop everything (lock profits) | `POST /order/lock-profits` (needs user approval) |
-| Startup repair | `POST /reconcile` (loopback, no auth) |
+| Broker ↔ Mongo repair | `npm run sync` (on demand; the platform also runs it by itself at 15:45, `settings.eodReconcileTime`); `npm run sync -- --strategies` also re-reads Mongo into the strategies. It places no order. |
 | Positions and trade books | `GET /broker/<kite|ant|breeze|prism>/positions` and `/trades` |
 
 ## Pre-market start (before 09:15)
@@ -50,15 +50,16 @@ in this project.
    logins are done. It must be running before **09:15**: if the time has already passed 09:15 there is no point starting it, so skip it
    and say so. This project is separate from `~/work/icici`; it does not trade.
 
-Then enable the strategies wanted for the day (`POST /reconcile` first if any may hold legs, and restart the processes once the logins
-are valid, as CLAUDE.md describes), and carry on with the routine below.
+A start restores the open positions **from Mongo alone** (no broker read, no login needed for that). After the logins are valid run `npm run sync` (it books anything
+a broker did that Mongo lacks and prints what it could not attribute), check the positions against `scripts/strategy-status.sh`, then enable the strategies
+wanted for the day and carry on with the routine below.
 
 ## Daily routine
 
-1. Before the market opens: run the session check. Every enabled strategy's `brokers:` must have a valid login, otherwise the
-   startup reconcile does not run and no strategy receives ticks.
-2. After start: confirm the startup reconcile completed in the day's orchestrator log, and that each enabled strategy has loaded
-   its state. If not, run `POST /reconcile`.
+1. Before the market opens: run the session check. Every enabled strategy's `brokers:` must have a valid login to trade (orders fail loudly without one);
+   the start itself no longer depends on logins.
+2. After start: confirm `Startup restore complete (from Mongo, no broker read)` in the day's orchestrator log, and that each enabled strategy has loaded
+   its state. If not, run `npm run sync -- --strategies`.
 3. Watch the alerts monitor. Reply only to `!!!` lines, ALERTs, limit trips and missed-slot lines. **The monitor must be armed
    at all times until 15:30 IST**: when it expires (every 30 min), re-arm it immediately, without waiting to be asked, and check
    that it is running before replying to anything else. Do not leave it unarmed between expiry and the next check.
@@ -70,11 +71,12 @@ are valid, as CLAUDE.md describes), and carry on with the routine below.
 Before restarting `npm run processes` with any open leg or enabled strategy:
 1. Disable any strategy that must not trade after the restart. Some strategies keep their entry state only in memory, so after a
    restart they can enter again while an old position is still open.
-2. Check that every enabled strategy's brokers have valid logins. Log in to any missing broker first.
+2. Log in to every broker the enabled strategies trade on (orders need it), then run `npm run sync`: a restart restores from Mongo only, so a position a broker closed
+   earlier that day stays "open" until a sync books it.
 3. Check that latches (max loss, max profit) persist for each strategy that uses them.
 4. Check whether any auto-start strategy catches up on a missed slot at startup, and disable it if you do not want that.
-5. Restart in the background, then confirm: reconcile ran, slots already handled are skipped, broker positions match strategy
-   status, and no new orders appear in the log.
+5. Restart in the background, then confirm: the restore from Mongo completed, slots already handled are skipped, broker positions match strategy
+   status, and no new orders appear in the log (a reconcile never places one: `RECONCILE-NO-ORDERS refused` lines name anything that tried).
 6. If the orchestrator itself changed, restart `npm run processes`; a child restart is not enough. During market hours a code
    change is not applied to a running child unless hot restart is allowed (see `shouldApplyCodeChange` in
    `src/orchestratorPolicy.ts`).
@@ -89,8 +91,8 @@ Before restarting `npm run processes` with any open leg or enabled strategy:
 
 ## Principles
 
-- **Startup dependencies:** a missing login silently idles every strategy that lists that broker. Check logins before the
-  startup reconcile, and treat a quiet start as a fault until proven otherwise.
+- **Mongo is the source of truth at start:** the restart restores positions from Mongo alone; the 15:45 sync and `npm run sync` keep Mongo equal to the brokers.
+  Read the sync report (`eodReconcileRuns` in Mongo, `ALERT: EOD sync ...` log lines): unattributed fills, partial closes and broker-only positions are reported, never guessed.
 - **Mid-session changes trade immediately:** enabling a strategy or reconciling during market hours can start trades at once.
   Decide what should happen before flipping a switch.
 - **Silence is not success:** an alert feed only reports what the code logs. A slot that skipped without a logged reason is

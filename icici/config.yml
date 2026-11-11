@@ -16,6 +16,7 @@ settings:
   skipNearestExpiryOnEve: false
   skipNearestExpiryOnExpiryDay: true
   hotRestartDuringMarketHours: false
+  eodReconcileTime: '15:45'  # when the broker -> Mongo sync runs by itself each trading day (>= 15:30); `npm run sync` runs it on demand
   eodCloseTime: '23:59'  # 2026-11-11: moved from 15:50 so no strategy sells at the close; today's open positions carry overnight (user's instruction). Restore a real close time when wanted.
   mirrorPercentage: 100%  # admin mirrors this % of every frontend user's lots (floor to whole lots) with its own real order; 0 = no mirror
 strategies:
@@ -338,7 +339,7 @@ strategies:
     brokers:
       - kite
   - type: MomentumAtFixedTimeStrategy
-    enabled: false  # 2026-11-11 15:00: off while the Breeze/ANT sells are amended to 150 (no hedge/re-place reaction); needs POST /reconcile before re-enabling
+    enabled: false  # 2026-11-11 15:00: off while the Breeze/ANT sells are amended to 150 (no hedge/re-place reaction); re-enable only after `npm run sync -- --strategies`
     userId: MomentumAtFixedTime-NIFTY
     times:
       - '10:00'
@@ -384,7 +385,7 @@ strategies:
       - kite
       - breeze
   - type: SimpleContinuousStrategy
-    enabled: false  # 2026-11-11 15:00: off while the Breeze/ANT sells are amended to 150 (a loss close would buy a hedge); needs POST /reconcile before re-enabling
+    enabled: false  # 2026-11-11 15:00: off while the Breeze/ANT sells are amended to 150 (a loss close would buy a hedge); re-enable only after `npm run sync -- --strategies`
     brokers:
       - kite
       - breeze

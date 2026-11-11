@@ -7,8 +7,8 @@ is the runtime singleton that holds the live list and expands `RuleBasedStrategy
 multi-indicator configs. A strategy only receives ticks, fills and cancellations
 when `Strategy.receivesEvents()` is true: `enabled` in `config.yml` (always
 mirrored, never cleared in memory), inside the 09:10-15:25 trading window (a clock
-test), and `stateLoaded` (set once the startup reconcile has run for it; see
-`strategiesProcess.startupReconcile`).
+test), and `stateLoaded` (set once the startup restore has run for it: positions from Mongo, then its own `reconcile()` inside `OrderClient.withNoOrders`, which never places an
+order; see `strategiesProcess.startupReconcile`).
 
 **Armable today** (a `config.yml` block exists; all `enabled: false` unless the
 operator turns one on): `SentimentStrategy`, `ContinuousStrategy` (three
@@ -59,8 +59,8 @@ Two ways a block fans out over its brokers:
 order family: `SimpleContinuousStrategy` (instance id suffix `-Prism`), `NiftyChange`, `MomentumAtFixedTime`, `Recommendation`. Not
 `TopStockOptionsOpeningGapStrategy` (its broker union is kite/breeze/ant only; it drops `prism` with an ALERT). Needs a Shoonya login
 (`scripts/login.sh prism`) BEFORE the post-login restart: `brokerSessions` now reports `prism`, and one enabled strategy listing it keeps
-every strategy idle at startup until that login is valid, same as ant/breeze. Positions are restored by `reconcilePrismPositions`
-(only when an enabled strategy lists prism, so a missing Shoonya login does not make `POST /reconcile` 409 otherwise). Bare buys
+every strategy idle at startup until that login is valid, same as ant/breeze. Prism positions are restored from Mongo like every other broker's (no
+login needed for the restore; the end-of-day sync reads Prism's order book and positions when a Shoonya session is valid). Bare buys
 (`marketBuy`) go through `buyOnPrism`: a limit at the option LTP with a polled, cancel-and-recheck fill. Prism has no post-fill
 target/stop primitive (`attachProtection` refuses it), so NiftyChange falls back to a resting target sell plus a tick-driven stop.
 `PrismContractMaster` carries no lot size, so sizing from a rupee budget uses the NIFTY lot size (65).

@@ -34,7 +34,7 @@ export abstract class Strategy {
     // ANT token on the Breeze feed, where it is a different instrument or nothing, and tick-driven exits would never fire (R5-4).
     legTokenFeed?: FeedSource
 
-    // False until the startup (or a manual POST /reconcile) reconcile has run for this strategy. A restarted strategy has no memory of
+    // False until the startup restore (open trades from Mongo, then this strategy's own reconcile(), which never places an order) or a manual POST /reconcile has run for this strategy. A restarted strategy has no memory of
     // the open positions it held, so a tick before then could open a duplicate or leave a live leg without its stop (review R4-1/R4-2/R5-1).
     // Set by strategiesProcess; a strategy whose reconcile() threw stays false (and is retried) rather than trading blind.
     stateLoaded = false

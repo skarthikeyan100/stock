@@ -50,13 +50,10 @@ router.post('/strategies/:type/reset', requireAdmin, async function (req: expres
 
 // ============================== Reconcile ==============================
 
-// Explicit, on-demand broker-position + strategy reconcile - called only when
-// broker positions and Mongo documents disagree. Nothing waits for it (ticks,
-// order events and entries work without it). Order matters: `order` restores bookkeeping.trades from the
-// brokers first, and only then do strategies reconcile against them. If any
-// broker could not be read, strategies are NOT reconciled (they would otherwise
-// conclude "no open position" from incomplete data) - 409 with the per-broker
-// status so the caller can fix that broker's session and call again.
+// Explicit, on-demand broker -> Mongo sync (the same job as POST /sync and the end-of-day run) followed by every strategy re-reading Mongo into its
+// own state. A restart does not need it: `order` restores bookkeeping.trades from Mongo alone at start-up. Order matters: the sync repairs Mongo first, and
+// only then do strategies reconcile against it. If any broker's sync failed, strategies are NOT reconciled (they would otherwise conclude "no open
+// position" from incomplete data) - 409 with the per-broker report so the caller can fix that broker's session and call again. No order is ever placed.
 router.post('/reconcile', requireAdmin, async (req, res) => {
     try {
         const brokers = await orderClient.reconcileBrokerPositions();
