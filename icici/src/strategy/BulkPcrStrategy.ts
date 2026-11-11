@@ -12,7 +12,7 @@ import Mongo from '../tools/mongo';
 import { Strategy } from './strategy';
 import { roundToTick } from '../util/tick';
 import MomentumSignal from './MomentumSignal';
-import { isPastMarketClose } from '../util/marketHours';
+import { isPastMarketClose, isWithinTradingWindow } from '../util/marketHours';
 import { isPastEodClose } from '../util/eodClose';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import { PnlStop } from './PnlStop';
@@ -37,6 +37,8 @@ import { exchangeForTsym } from '../util/underlyings';
 // landing the broker position in phase='error' for no reason other than
 // this strategy's own call volume.
 const ENTRY_ATTEMPT_THROTTLE_MS = 10_000;
+// Deferred restore actions (see runDeferredRestoreActions) are looked at at most this often.
+const DEFERRED_ACTION_THROTTLE_MS = 15_000;
 // Minimum gap between retries of a pending pair-side buy (see retryPendingRebuys).
 const REBUY_RETRY_THROTTLE_MS = 10_000;
 // A buy that was rejected or unfilled is retried at most this many times (transient failures only; a margin
@@ -148,6 +150,10 @@ interface BrokerPosition {
     // meanwhile: the cancel's own filledQty already accounts for any chunk that filled during the
     // cancel, so counting those fills again would under-square-off.
     squaringOff?: boolean;
+    // Order work a reconcile found but may not do itself (a reconcile never trades, user's rule 2026-11-11). Persisted; runDeferredRestoreActions()
+    // does it from ticks, once the strategy is enabled, loaded and inside the trading window.
+    deferredSettle?: boolean; // a persisted resting re-buy that must be cancelled (and whatever it filled protected)
+    deferredExitQty?: number; // an exit sell to place for up to this quantity (the DAY sell expired, or no exit was ever placed)
     heldTsym: string | null;
     heldToken: string | null;
     entryAvg: number;
@@ -370,6 +376,11 @@ export default class BulkPcrStrategy extends Strategy {
     // True while reconcile() runs. A restored stop only blocks new buys after a restart (maxloss.md B3.7),
     // so the in-flight stop handling in placeExitSellAtTargetPrice is skipped then.
     private reconciling = false;
+    // Brokers a restart found locked out for today that still hold slots: closed by runDeferredRestoreActions. Rebuilt by every reconcile from the
+    // persisted latches and slots (not an operator control).
+    private pendingLockout = new Set<BrokerName>();
+    private deferredBusy = false;
+    private lastDeferredAt = 0;
 
     receive(oldStats, newStats) {}
 
@@ -927,6 +938,81 @@ export default class BulkPcrStrategy extends Strategy {
         await this.processUnderlyingQuote(quote as unknown as NiftyQuote);
     }
 
+    // Records an exit the reconcile found missing; the order itself is placed by runDeferredRestoreActions().
+    private deferExit(key: string, quantity: number): void {
+        const pos = this.positions.get(key);
+        if (!pos || !(quantity > 0)) return;
+        pos.deferredExitQty = quantity;
+        this.persistState();
+    }
+
+    // The order work reconcile() found but must not do itself (user's rule, 2026-11-11: a reconcile never trades): closing a locked-out broker's
+    // slots, cancelling a persisted resting re-buy, and (re)placing an exit sell that expired with the previous day's DAY order or was never placed.
+    // Runs from the underlying tick, only for an enabled, loaded strategy (the dispatcher's gate) inside the trading window, never while a
+    // reconcile runs and not after the EOD close started (eodCloseSlots / eodRetrySkippedSlots own the slots then). Before placing an exit it
+    // re-reads the resting sells and the open quantity, so a survivor is adopted instead of doubled and the size never exceeds what is held.
+    private async runDeferredRestoreActions(): Promise<void> {
+        if (this.reconciling || this.deferredBusy || this.eodDone || isPastMarketClose() || !isWithinTradingWindow()) return;
+        const any = this.pendingLockout.size > 0 || Array.from(this.positions.values()).some((p) => p.deferredSettle || (p.deferredExitQty ?? 0) > 0);
+        if (!any) return;
+        const now = Date.now();
+        if (now - this.lastDeferredAt < DEFERRED_ACTION_THROTTLE_MS) return;
+        this.lastDeferredAt = now;
+        this.deferredBusy = true;
+        try {
+            for (const b of Array.from(this.pendingLockout)) {
+                this.pendingLockout.delete(b);
+                await this.lockOutBroker(b, 'restart found this broker locked out for today').catch((e) => Log.log(`[BulkPcrStrategy] [${b}] deferred lockout close failed:`, e));
+            }
+            for (const [key, pos] of Array.from(this.positions.entries())) {
+                if (pos.deferredSettle) {
+                    pos.deferredSettle = undefined;
+                    this.persistState();
+                    await this.settleRestingRebuy(pos).catch((e) => Log.log(`[BulkPcrStrategy] [${pos.broker}] deferred re-buy settle failed:`, e));
+                    continue;
+                }
+                const wanted = pos.deferredExitQty ?? 0;
+                if (!(wanted > 0) || this.placingKeys.has(key) || pos.squaringOff || !pos.heldTsym) continue;
+                if (pos.phase !== 'selling' && pos.phase !== 'buying') { pos.deferredExitQty = undefined; this.persistState(); continue; }
+                const pending = await OrderClient.getInstance().getPendingSells(this.userId, pos.broker, pos.heldTsym).catch((e) => {
+                    Log.log(`[BulkPcrStrategy] [${pos.broker}] deferred exit for ${pos.heldTsym}: could not read resting sells (kept, retried):`, e);
+                    return null;
+                });
+                if (!pending) continue; // unreadable is not "nothing resting": a second sell on top of a live one oversells
+                const resting = pending.reduce((sum: number, o: { quantity: number }) => sum + o.quantity, 0);
+                if (resting > 0) {
+                    pos.deferredExitQty = undefined;
+                    pos.phase = 'selling';
+                    pos.targetQuantity = resting;
+                    pos.soldQty = 0;
+                    pos.soldValue = 0;
+                    pos.sellPlacedAt = Date.now();
+                    this.persistState();
+                    this.watchSlot(pos);
+                    Log.log(`[BulkPcrStrategy] [${pos.broker}] deferred exit for ${pos.heldTsym}: an exit sell (qty=${resting}) is already resting - resuming its fill watch instead of placing another`);
+                    continue;
+                }
+                const open: any[] | null = await OrderClient.getInstance().getOpenTrades(this.userId).catch(() => null);
+                if (!open) continue;
+                const held = open.find((t: any) => t.broker === pos.broker && t.tsym === pos.heldTsym);
+                pos.deferredExitQty = undefined;
+                if (!held || !(Number(held.quantity) > 0)) {
+                    pos.phase = 'done';
+                    this.persistState();
+                    Log.log(`[BulkPcrStrategy] [${pos.broker}] deferred exit for ${pos.heldTsym}: the position is no longer held - no exit placed, slot closed`);
+                    continue;
+                }
+                const quantity = Math.min(wanted, Number(held.quantity));
+                this.persistState();
+                Log.log(`[BulkPcrStrategy] [${pos.broker}] deferred exit for ${pos.heldTsym}: placing the exit sell for ${quantity} (wanted ${wanted}, held ${held.quantity})`);
+                if (pos.phase === 'selling') await this.placeExitSellAtTargetPrice(key, quantity, false);
+                else await this.placeExitSell(key, quantity);
+            }
+        } finally {
+            this.deferredBusy = false;
+        }
+    }
+
     private async eodCheck(): Promise<void> {
         if (this.eodDone && this.eodDay !== localDayKey()) this.eodDone = false;
         if (!this.eodDone && this.pairSlots().length > 0) {
@@ -975,6 +1061,7 @@ export default class BulkPcrStrategy extends Strategy {
         // found on review: this used to duplicate the cutoff check inline instead of calling eodCheck(),
         // which would have silently diverged the next time the cutoff changed in only one place.
         await this.eodCheck();
+        await this.runDeferredRestoreActions();
 
         if (!this.enabled) { this.logGateOnce('disabled'); return; }
         if (!this.stateLoaded) { this.logGateOnce('state not reconciled yet'); return; } // a restart mid-cycle looks idle until reconcile restores the slots
@@ -2392,6 +2479,7 @@ export default class BulkPcrStrategy extends Strategy {
     }
 
     private async reconcileBody(maxAttempts: number, retryDelayMs: number): Promise<void> {
+        this.pendingLockout.clear();
         const persisted = await this.loadState();
         // Loss-stop state first, before any slot is rebuilt: the current trade's realized P&L (only if it was saved today)
         // and each pair broker's lockout. A restored lockout blocks new buys; open slots of a locked-out broker are closed
@@ -2474,7 +2562,9 @@ export default class BulkPcrStrategy extends Strategy {
                 anyRestored = true;
                 if (pos.rebuy && pos.heldTsym) {
                     Log.log(`[BulkPcrStrategy] [${broker}] reconcile: a re-buy limit for ${pos.heldTsym} was resting (${pos.rebuy.filledQty}/${pos.rebuy.quantity} filled) - cancelling it and keeping what filled`);
-                    await this.settleRestingRebuy(pos);
+                    // Cancelling the resting re-buy and protecting what it filled are orders: deferred to runDeferredRestoreActions.
+                    pos.deferredSettle = true;
+                    this.persistState();
                 } else {
                     pos.phase = 'error';
                     Log.log(`[BulkPcrStrategy] [${broker}] ALERT: reconcile: persisted 'resting' re-buy has no order record - manual review required`);
@@ -2588,6 +2678,7 @@ export default class BulkPcrStrategy extends Strategy {
                     // succeed once it runs during market hours.
                     this.positions.set(key, { ...persistedPos });
                     anyRestored = true;
+                    this.deferExit(key, persistedPos.targetQuantity - persistedPos.soldQty);
                     Log.log(`[BulkPcrStrategy] [${broker}] reconcile: persisted limit-sell exit for ${persistedPos.heldTsym} expired unfilled at EOD, but market is currently closed - deferring re-placement to the next restart during market hours (NOT auto-placing now)`);
                     continue;
                 }
@@ -2608,9 +2699,9 @@ export default class BulkPcrStrategy extends Strategy {
                 Log.log(`[BulkPcrStrategy] [${broker}] reconcile: persisted limit-sell exit for ${persistedPos.heldTsym} was placed on a previous trading day (sellPlacedAt=${persistedPos.sellPlacedAt ?? 'unset'}) - DAY-order validity means it has certainly expired unfilled at the broker; re-placing exit for remaining qty=${remaining}`);
                 this.positions.set(key, { ...persistedPos });
                 anyRestored = true;
-                // Reconcile restores state for a disabled strategy too, but a disabled strategy places no order.
-                if (this.enabled) await this.placeExitSellAtTargetPrice(key, remaining, false);
-                else Log.log(`[BulkPcrStrategy] [${broker}] reconcile: strategy is disabled - NOT re-placing the exit sell for ${persistedPos.heldTsym} (remaining qty=${remaining})`);
+                // A reconcile never trades: the re-placement is deferred to runDeferredRestoreActions (ticks, strategy enabled and loaded).
+                this.deferExit(key, remaining);
+                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: exit re-placement for ${persistedPos.heldTsym} (remaining qty=${remaining}) deferred to housekeeping`);
                 continue;
             }
 
@@ -2778,15 +2869,12 @@ export default class BulkPcrStrategy extends Strategy {
                 // next restart's reconcile() re-runs this exact branch during
                 // market hours and will place it then.
                 Log.log(`[BulkPcrStrategy] [${broker}] reconcile: found open position ${brokerTrade.tsym} avg=${brokerTrade.price} qty=${brokerTrade.quantity} with no exit ever attempted, but market is currently closed - deferring exit placement to the next restart during market hours (NOT auto-placing now)`);
+                this.deferExit(key, brokerTrade.quantity);
                 continue;
             }
 
-            Log.log(`[BulkPcrStrategy] [${broker}] reconcile: restored open position ${brokerTrade.tsym} avg=${brokerTrade.price} qty=${brokerTrade.quantity} - placing exit sell`);
-            if (!this.enabled) {
-                Log.log(`[BulkPcrStrategy] [${broker}] reconcile: strategy is disabled - NOT placing an exit sell for ${brokerTrade.tsym} (qty=${brokerTrade.quantity})`);
-                continue;
-            }
-            await this.placeExitSell(key, brokerTrade.quantity);
+            Log.log(`[BulkPcrStrategy] [${broker}] reconcile: restored open position ${brokerTrade.tsym} avg=${brokerTrade.price} qty=${brokerTrade.quantity} - exit sell deferred to housekeeping (a reconcile never trades)`);
+            this.deferExit(key, brokerTrade.quantity);
         }
 
         // BUG FIX 2026-10-15 (found on review): blindly setting 'running' whenever anyRestored
@@ -2808,11 +2896,9 @@ export default class BulkPcrStrategy extends Strategy {
         for (const b of this.configuredBrokers()) {
             if (!isPairBroker(b) || !this.isBrokerStopped(b)) continue;
             if (!this.slotsOf(b).some((p) => (p.phase === 'selling' && this.mustClose(p)) || p.phase === 'pending')) continue;
-            if (!this.enabled) {
-                Log.log(`[BulkPcrStrategy] [${b}] reconcile: strategy is disabled - NOT closing the locked-out broker's positions`);
-                continue;
-            }
-            await this.lockOutBroker(b, 'restart found this broker locked out for today').catch((e) => Log.log(`[BulkPcrStrategy] [${b}] reconcile: lockout close failed:`, e));
+            // Closing the positions is trading: deferred to runDeferredRestoreActions.
+            this.pendingLockout.add(b);
+            Log.log(`[BulkPcrStrategy] [${b}] reconcile: this broker is locked out for today and still holds slots - closing deferred to housekeeping`);
         }
     }
 
