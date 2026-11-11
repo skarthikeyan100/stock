@@ -338,7 +338,7 @@ strategies:
     brokers:
       - kite
   - type: MomentumAtFixedTimeStrategy
-    enabled: true
+    enabled: false  # 2026-11-11 15:00: off while the Breeze/ANT sells are amended to 150 (no hedge/re-place reaction); needs POST /reconcile before re-enabling
     userId: MomentumAtFixedTime-NIFTY
     times:
       - '10:00'
@@ -384,7 +384,7 @@ strategies:
       - kite
       - breeze
   - type: SimpleContinuousStrategy
-    enabled: true
+    enabled: false  # 2026-11-11 15:00: off while the Breeze/ANT sells are amended to 150 (a loss close would buy a hedge); needs POST /reconcile before re-enabling
     brokers:
       - kite
       - breeze
