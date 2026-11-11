@@ -1,5 +1,5 @@
 #!/bin/bash
-# Checks ANT (AliceBlue), Kite (Kite), and Breeze (ICICI Direct) session-token
+# Checks ANT (AliceBlue), Kite (Kite), Breeze (ICICI Direct) and Prism (Shoonya) session-token
 # validity, plus each broker's market-data WebSocket connection state (ANT and
 # Breeze only - Kite/Kite has no live tick stream in this codebase, ticks are
 # always ANT/Breeze-sourced). Read-only: uses each broker's trades/positions
@@ -84,20 +84,23 @@ ws_status() {
 ant_session=$(session_status "$REPO_ROOT/.ant_session.json")
 kite_session=$(session_status "$REPO_ROOT/.kite_session.json")
 breeze_session=$(session_status "$REPO_ROOT/.breeze_session.json")
+prism_session=$(session_status "$REPO_ROOT/userToken.txt")
 
 ant_token=$(token_status ant trades)
 kite_token=$(token_status kite positions)
 breeze_token=$(token_status breeze trades)
+prism_token=$(token_status prism positions)
 
 ant_ws=$(ws_status "\[AntDataStream\] Connected and streaming" '\[AntDataStream\].*(Disconnected|onerror|onclose)|\[AntWS\].*(Disconnected|closed)')
 breeze_ws=$(ws_status "\[BreezeDataStream\] Connected and streaming" '\[BreezeDataStream\].*(disconnected|connect_error)' '\[BreezeDataStream\] socket connected')
 kite_ws="N/A (no live tick stream for this broker)"
+prism_ws="N/A (fills subscribe on the ANT feed)"
 
 # The status helpers above run in $(...) subshells, so their `fail` increments
 # never reach this shell. Count failures from the computed values instead.
 fail=0
-for status in "$ant_session" "$kite_session" "$breeze_session" \
-              "$ant_token" "$kite_token" "$breeze_token" "$ant_ws" "$breeze_ws"; do
+for status in "$ant_session" "$kite_session" "$breeze_session" "$prism_session" \
+              "$ant_token" "$kite_token" "$breeze_token" "$prism_token" "$ant_ws" "$breeze_ws"; do
     case "$status" in FAIL*) fail=$((fail+1));; esac
 done
 
@@ -111,6 +114,7 @@ print_row "----------" "----------------------------" "-------------------------
 print_row "ANT" "$ant_session" "$ant_token" "$ant_ws"
 print_row "Kite" "$kite_session" "$kite_token" "$kite_ws"
 print_row "Breeze" "$breeze_session" "$breeze_token" "$breeze_ws"
+print_row "Prism" "$prism_session" "$prism_token" "$prism_ws"
 
 echo
 if [ "$fail" -eq 0 ]; then
