@@ -31,12 +31,12 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //   4. There is no stop loss: a leg ends only through its resting sell (or the EOD close).
 //   5. When a hedge leg's sell fills at a profit and the leg that caused it (its parent) is still open, the parent is doubled ONCE
 //      per leg (the same contract is bought again for the parent's quantity, its resting sell is re-placed for the new total at the
-//      new average + priceDiff). It is skipped when it would exceed maxInvestment.
+//      new average + priceDiff). maxInvestment does not gate it (2026-11-11).
 //   5b. `maxProfit` (REQUIRED, rupees, per broker, no default in code): when the day's realized + unrealized P&L of this broker's legs, CE and PE
 //      together, reaches it, every open leg is closed and the strategy stays idle for the rest of the day (persisted in the state file). The
 //      total is measured from the start of counting (first load of a state file without the fields, or reset()), not from the morning: a leg
 //      that was already open then is valued from its first tick after it (`pnlRef`), so it does not carry its earlier P&L into the total.
-//   6. maxInvestment (per broker) gates the root and the double-up. Hedge buys ignore it (a hedge refused by the cap would leave a
+//   6. maxInvestment (per broker) gates the root only. Hedge buys and the double-up ignore it (a hedge refused by the cap would leave a
 //      leg unprotected).
 //   7. Stacking limits, two modes:
 //      - `onePositionPerSide: true` (config flag, off by default): at most ONE open leg per side. A CE and a PE may coexist, but while a CE is
@@ -85,7 +85,6 @@ export interface SimpleLeg {
     hedgeSame?: boolean; // the held-back hedge follows the leg's direction (it closed at a profit) instead of going opposite
     hedgeWaiting?: boolean; // the hedge for this leg is held back by the stacking guard (retried from Nifty ticks once the leg is closed)
     doubleDue?: boolean; // a profitable hedge sell asked for this (parent) leg to be doubled and it has not happened yet
-    doubleSkipLogged?: boolean; // the cap skip was logged (once, not on every retry)
     pnlRef?: number;        // price the maxProfit total values this leg from (blended on a double-up); absent = its entry
     pnlRefPending?: boolean; // the maxProfit counting started while the leg was open: pnlRef is set from its next tick
     lastLtp?: number;       // last option tick (in memory use only; refreshed by ticks)
@@ -676,13 +675,8 @@ export default class SimpleContinuousStrategy extends Strategy {
         try {
             const addQty = parent.qty;
             const ref = parent.entry;
-            if (this.invested() + ref * addQty > Number(this.cfg().maxInvestment)) {
-                if (!parent.doubleSkipLogged) {
-                    parent.doubleSkipLogged = true;
-                    Log.log(`[SimpleContinuousStrategy] double-up of ${parent.tsym} skipped: would exceed maxInvestment (retried while the parent is open)`);
-                }
-                return;
-            }
+            // maxInvestment does not gate the double-up (user's decision 2026-11-11): with onePositionPerSide the root already costs about the whole
+            // budget, so a cap check could never pass. It is still at most once per leg (`doubled`), and maxProfit is the only brake.
             // Free the position from its resting sell first (a limit sell plus a larger buy would leave the sell covering only part).
             let cancelledFilled = 0;
             if (parent.sellQty > 0) {

@@ -270,16 +270,12 @@ function make<T>(Cls: new (id: string) => T, cfg: any): any {
 
     console.log('  double-up flag');
     buyMode = 'ok'; calls = [];
-    sc = newSc('SCF-h', { maxInvestment: 5000 });
+    sc = newSc('SCF-h', { maxInvestment: 5000 }); // maxInvestment does not gate the double-up
     const parent = addLeg(sc.s, 'N23900CE', 'CE', 23900, 180);
     const hedgeLeg = addLeg(sc.s, 'N23850PE', 'PE', 23850, 150, {});
     hedgeLeg.role = 'hedge'; hedgeLeg.parentId = parent.id; hedgeLeg.hedged = true; hedgeLeg.sellQty = 65;
     await sc.s.updateTrade(fill('N23850PE', 'Sell', 65, 160));
-    assert(parent.doubled === false && parent.doubleDue === true && count('buyContractBare') === 0, 'cap skips the double-up: doubled stays false, doubleDue set');
-    sc.cfg.maxInvestment = 100000;
-    sc.s.lastDoubleAttempt.clear();
-    await sc.s.processOptionQuote(Object.assign(new OptionQuote(), { token: 'CE23900', ltp: 181 }));
-    assert(count('buyContractBare') === 1 && parent.doubled === true && parent.doubleDue === false && parent.qty === 130, `once the cap frees, the parent's tick retries and doubles it (qty ${parent.qty})`);
+    assert(count('buyContractBare') === 1 && parent.doubled === true && parent.doubleDue === false && parent.qty === 130, `the double-up is not capped by maxInvestment (qty ${parent.qty})`);
     await sc.s.processOptionQuote(Object.assign(new OptionQuote(), { token: 'CE23900', ltp: 181 }));
     assert(count('buyContractBare') === 1, 'and it is never doubled twice');
 
