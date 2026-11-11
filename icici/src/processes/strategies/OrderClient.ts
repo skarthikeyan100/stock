@@ -1,4 +1,5 @@
 import net from 'net';
+import { AsyncLocalStorage } from 'async_hooks';
 import type { BrokerName } from '../../util/brokerName';
 import type { ChunkedFillResult } from '../../ipc/orderProtocol';
 import Log from '../../util/Log';
@@ -24,8 +25,32 @@ export type ChunkedBuyIndexResult = ChunkedFillResult & {
     feedToken?: string | number;
 };
 
+// A strategy's reconcile() only restores state; it must never place, cancel or modify a broker order (user's rule, 2026-11-11: "reconcile must not do
+// any trades, its only job is to fix Mongo"). strategiesProcess runs every reconcile() inside OrderClient.withNoOrders; while that scope is active
+// every request NOT on this read-only list is refused here, in one place, instead of trusting each strategy to remember. Default-deny: a new request
+// type is blocked inside a reconcile until someone decides it is a read.
+const READ_ONLY_REQUESTS: ReadonlySet<OrderRequestType> = new Set<OrderRequestType>([
+    'openTrades', 'getPendingSells', 'getLiveQuantity', 'stats', 'canPlaceOrder', 'brokerSessions', 'getToken',
+    'getContractByPriceRange', 'getContractByPriceRangeBare', 'getPCR', 'getATMTokens', 'resolveOptionContract', 'getOptionLtp',
+    // Not orders: they restore a runtime cap / setting that a latched strategy re-applies when it reloads.
+    'setBrokerInvestmentCap', 'updateUserSettings', 'reloadUserLimits',
+]);
+type NoOrdersScope = { label: string; active: boolean };
+const noOrdersScope = new AsyncLocalStorage<NoOrdersScope>();
+
 class OrderClient {
     private static instance: OrderClient;
+
+    // Runs `fn` with order-placing requests refused (see READ_ONLY_REQUESTS). `active` is cleared when fn settles so a timer or promise that was
+    // started inside the scope and fires later is not blocked forever (a protective exit scheduled from there must still be able to go out).
+    static async withNoOrders<T>(label: string, fn: () => Promise<T>): Promise<T> {
+        const scope: NoOrdersScope = { label, active: true };
+        try {
+            return await noOrdersScope.run(scope, fn);
+        } finally {
+            scope.active = false;
+        }
+    }
     // Default timeout for a single request()/response round trip over the
     // IPC socket to the `order` process. Must comfortably exceed the
     // slowest legitimate round trip: an order-placing request can
@@ -156,6 +181,11 @@ class OrderClient {
     }
 
     private request(type: OrderRequestType, userId: string, payload: any, timeoutMs: number = OrderClient.REQUEST_TIMEOUT_MS): Promise<OrderResponse> {
+        const scope = noOrdersScope.getStore();
+        if (scope?.active && !READ_ONLY_REQUESTS.has(type)) {
+            Log.log(`[strategies] ALERT: RECONCILE-NO-ORDERS refused '${type}' for ${userId} (${scope.label}) - a reconcile only restores state; the strategy places this from its own tick path`);
+            return Promise.reject(new Error(`${NOT_PLACED_TAG} '${type}' refused: ${scope.label} may not place, cancel or modify orders`));
+        }
         return new Promise((resolve, reject) => {
             if (!this.local && (!this.socket || !this.connected)) return reject(new Error(`${NOT_PLACED_TAG} Not connected to order process`));
             const id = String(this.nextId++);

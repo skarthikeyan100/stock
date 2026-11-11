@@ -165,7 +165,8 @@ async function reconcileStrategies(): Promise<void> {
         // Runs for disabled strategies too: reconcile restores state. A strategy that would place an order while reconciling (BulkPcr's
         // exit re-placement and lockout close) checks `enabled` itself.
         try {
-            await (strategy as any).reconcile?.();
+            // No order of any kind may go out from a reconcile (OrderClient.withNoOrders refuses it and logs RECONCILE-NO-ORDERS).
+            await OrderClient.withNoOrders(`reconcile ${strategy.userId}`, async () => { await (strategy as any).reconcile?.(); });
             strategy.stateLoaded = true;
         } catch (e) {
             Log.log(`[strategies] ALERT: reconcile() failed for ${strategy.userId} - it receives no ticks or fills until a reconcile succeeds:`, e);
