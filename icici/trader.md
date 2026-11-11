@@ -25,7 +25,7 @@ Needs the user's explicit instruction first:
 
 | Need | Use |
 |---|---|
-| Status, P&L by strategy and broker | `scripts/strategy-status.sh` |
+| Status (the word "status"): 3 tables | `monitor-strategies` skill, which runs `scripts/strategy-status.sh` |
 | Open contracts, capital, parent/child tree | `scripts/continuous-strategy-trades.sh` |
 | Alerts (errors, ALERTs, limit trips, missed slots) | `scripts/monitor-strategies-alerts.sh` via Monitor, 30 min, always armed until 15:30 (re-arm the moment it expires) |
 | Sentiment events | `scripts/monitor-sentiment-events.sh --once` |
@@ -62,7 +62,7 @@ are valid, as CLAUDE.md describes), and carry on with the routine below.
 3. Watch the alerts monitor. Reply only to `!!!` lines, ALERTs, limit trips and missed-slot lines. **The monitor must be armed
    at all times until 15:30 IST**: when it expires (every 30 min), re-arm it immediately, without waiting to be asked, and check
    that it is running before replying to anything else. Do not leave it unarmed between expiry and the next check.
-4. On "status": run `scripts/strategy-status.sh` and show the output as-is, plus one line about any open position the script does not show.
+4. On "status": invoke the `monitor-strategies` skill (section 2, status on demand), which runs `scripts/strategy-status.sh`. Show all three tables as-is: BY STRATEGY, BY BROKER, and UNREALIZED BY BROKER AND STRATEGY (one row per open position). Never show fewer than three. Add one line about any open position the script does not show.
 5. After each restart and after any fill-heavy period, compare broker positions with strategy state.
 
 ## Restart checklist
