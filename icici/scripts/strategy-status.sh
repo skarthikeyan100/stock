@@ -23,9 +23,15 @@ const table=(title,rows)=>{
 };
 const byStrategy=parse(process.env.BY_STRATEGY);
 if(!byStrategy){console.log("order process not reachable");process.exit(1)}
+// The three endpoint calls each re-price open legs at the tick of their own moment, so their unrealized totals drift apart by a few hundred.
+// Realized and counts do not move with ticks; unrealized is overwritten below from the single ?detail=1 snapshot so every table agrees.
+const detailSnap=parse(process.env.DETAIL);
+const snapUnreal=(rows,key)=>{if(!detailSnap)return;for(const r of rows){const k=key(r);r.unrealized=detailSnap.filter(d=>key(d)===k).reduce((a,d)=>a+d.unrealized,0)}};
+snapUnreal(byStrategy,r=>r.strategy);
 if(!byStrategy.length){console.log("no BulkPcr / Continuous / MomentumAtFixedTime / NiftyChange / Recommendation / Sentiment trades this session");process.exit(0)}
 table("BY STRATEGY",byStrategy);
 const byBroker=parse(process.env.BY_BROKER);
+if(byBroker)snapUnreal(byBroker,r=>r.broker??r.strategy);
 if(byBroker&&byBroker.length){console.log("");table("BY BROKER",byBroker)}
 else console.log("\n(by-broker table unavailable: the API process predates the ?by=broker option - restart it)");
 
