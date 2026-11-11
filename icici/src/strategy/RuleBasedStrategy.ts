@@ -4,6 +4,9 @@ import { Strategy } from "./strategy";
 import OrderClient from '../processes/strategies/OrderClient';
 import { CALL, PUT } from '../constants';
 import configService from '../prism/ConfigService';
+import { registerTrade } from '../processes/strategies/tokenRouter';
+import { BROKER_TO_FEED_SOURCE, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
+import { exchangeForTsym } from '../util/underlyings';
 import { ExitRule, ExitRules, exitDistance, exitRulesFrom, legacyExitKeysIn, timeoutFrom } from './exitRules';
 import { RuleIndicator, parseRuleIndicator, ruleSignal, consensusOf, parseRuleLines, combineRules } from './ruleIndicators';
 
@@ -305,6 +308,49 @@ export default class RuleBasedStrategy extends Strategy {
     reset(): void {
         super.reset();
         this.contract = null;
+    }
+
+    // Restores the one open position from Mongo after a restart (2026-11-11: the position lived only in `contract`, so a restart left a live
+    // RuleBased position with no tick watch and no exit). State only - a reconcile never trades: the position is rebuilt from the user's open
+    // trade (entry price, quantity, entry time), its exit rules are re-resolved from the current config exactly as at entry, and its token is
+    // registered for ticks so the tick-driven exit in RuleBasedContract.processOptionQuote runs again. A restart cannot know the target/stop
+    // levels the position was entered with, so a config edit between entry and restart moves them (logged).
+    async reconcile(): Promise<void> {
+        if (this.contract) return; // a position already tracked in memory (POST /reconcile while running)
+        let open: any[];
+        try {
+            open = await OrderClient.getInstance().getOpenTrades(this.userId);
+        } catch (e) {
+            Log.log(`[Rule:${this.userId}] reconcile: could not read the open trades:`, e);
+            return;
+        }
+        const held = (open ?? []).filter((t: any) => Number(t.quantity) > 0 && t.tsym && t.token);
+        if (held.length === 0) return;
+        held.sort((a: any, b: any) => new Date(b.entryTime ?? 0).getTime() - new Date(a.entryTime ?? 0).getTime());
+        const t = held[0];
+        if (held.length > 1) Log.log(`[Rule:${this.userId}] ALERT: reconcile: ${held.length} open positions (${held.map((h: any) => h.tsym).join(', ')}); RuleBased tracks one - managing ${t.tsym}, the others are unmanaged`);
+        const exits = this.resolveExits();
+        const maxHoldMinutes = this.resolveTimeout();
+        if (!exits || maxHoldMinutes === null) {
+            Log.log(`[Rule:${this.userId}] ALERT: reconcile: ${t.tsym} is held but the exit rules are not valid in config - NOT restored, no exit will run (check target / stopLoss / maxHoldTimeMinutes)`);
+            return;
+        }
+        const c = new RuleBasedContract();
+        c.contract = t.tsym;
+        c.token = String(t.token);
+        c.price = Number(t.price);
+        c.quantity = Number(t.quantity);
+        c.right = /CE$|C\d+$/.test(String(t.tsym)) ? CALL : PUT;
+        const entryMs = t.entryTime ? new Date(t.entryTime).getTime() : NaN;
+        c.entryTime = Number.isFinite(entryMs) ? entryMs : Date.now();
+        c.maxHoldMinutes = maxHoldMinutes;
+        c.targetRule = exits.target;
+        c.stopRule = exits.stop;
+        c.applyLevels();
+        this.contract = c;
+        const broker = String(t.broker ?? 'kite');
+        registerTrade(c.token, this, BROKER_TO_FEED_SOURCE[broker] ?? DEFAULT_FEED_SOURCE, exchangeForTsym(c.contract));
+        Log.log(`[Rule:${this.userId}] reconcile: restored the open position ${c.contract} (${broker}) qty=${c.quantity} avg=${c.price} entered ${new Date(c.entryTime).toISOString()}; target=${c.targetDist ?? 'none'} stop=${c.stopDist ?? 'none'} timeout=${c.maxHoldMinutes || 'none'} min - its exit runs from ticks`);
     }
 
     updateTrade = async (trade: Trade): Promise<void> => {
