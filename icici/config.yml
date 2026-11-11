@@ -86,7 +86,7 @@ strategies:
   # The other rules fired on the same candles and added no trades (npm run analyze:ruleBlockLevers). See analysis_next.md.
   # DISABLED: 4 days, all rising; the backtest does not show them beating always-CALL on net P&L. Enable deliberately only.
   - type: RuleBasedStrategy
-    enabled: true
+    enabled: false
     # Two single-indicator rules (2026-11-11). The earlier six-rule set is kept in strategies.md ("RuleBasedStrategy: previous rule set").
     indicators:
       - Bollinger_5_1
