@@ -142,6 +142,7 @@ export default class ContinuousStrategy extends Strategy {
             return;
         }
         if (openTrades.length === 0) {
+            this.legManager.dropLegsNoLongerHeld();
             await this.legManager.restorePendingReEntries(); // a root refill may be resting while no leg is held
             return; // fresh in-memory defaults already correct
         }

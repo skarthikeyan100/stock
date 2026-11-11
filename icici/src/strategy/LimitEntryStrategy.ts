@@ -500,10 +500,26 @@ export abstract class LimitEntryStrategy extends Strategy {
         this.ensureLoaded();
         let open: any[] = [];
         try { open = await OrderClient.getInstance().getOpenTrades(this.userId); } catch (e) { Log.log(`[${this.logTag}] reconcile: could not read open trades:`, e); return; }
+        let closedAny = false;
         for (const leg of this.legs()) {
             if (leg.status !== 'resting' && leg.status !== 'filled') continue;
             const held = open.filter((t) => t.tsym === leg.tsym && (t.broker ?? 'kite') === leg.broker).reduce((s, t) => s + Math.max(0, Number(t.quantity) || 0), 0);
             const row = open.find((t) => t.tsym === leg.tsym && (t.broker ?? 'kite') === leg.broker);
+            const unsold = leg.filledQty - leg.soldQty;
+            if (leg.status === 'filled' && unsold > 0 && held === 0 && !row) {
+                // The broker no longer holds it (an intraday square-off, a sell in the broker's app, an expiry) and the order process, which now books
+                // such a close in its own reconcile, has no open trade for it: the leg is over. Left 'filled' it kept a tick stop / exit retry running
+                // on a position that is gone (2026-11-11: ANT MomentumAtFixedTime leg squared off at 15:16). Neutral P&L: the real exit was not seen here.
+                Log.log(`[${this.logTag}] ALERT: reconcile: ${leg.broker} ${leg.tsym} is no longer held by the broker (${unsold} left to sell) - closed outside the platform, marking the leg closed`);
+                leg.soldQty = leg.filledQty;
+                leg.soldValue += unsold * (leg.filledQty > 0 ? leg.boughtValue / leg.filledQty : 0);
+                leg.status = 'closed';
+                leg.outcomeRecorded = true;
+                this.unwatch(leg);
+                this.save();
+                closedAny = true;
+                continue;
+            }
             if (held > leg.filledQty - leg.soldQty && row) {
                 const missed = held - (leg.filledQty - leg.soldQty);
                 Log.log(`[${this.logTag}] reconcile: ${leg.broker} ${leg.tsym} holds ${held}, ${missed} more than tracked - adopting`);
@@ -514,6 +530,7 @@ export abstract class LimitEntryStrategy extends Strategy {
                 await this.protectFilled(leg);
             }
         }
+        if (closedAny) await this.endIfIdle();
     }
 
     reset(): void {

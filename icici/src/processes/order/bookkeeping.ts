@@ -20,6 +20,11 @@ import { normalizeBrokerName } from '../../util/brokerName';
 import { localDayKey } from '../../strategy/dayKey';
 import { exchangeForTsym } from '../../util/underlyings';
 
+// One row of a broker's position list, normalised across the four brokers (see OrderBookkeeping.readBrokerRows). `tsyms` and `tokens` are every
+// spelling/id the platform may have stored for the contract; `soldQty`/`soldValue` are TODAY's sells at the broker (absent where the broker does not report them).
+type BrokerRow = { tsyms: string[]; tokens: string[]; qty: number; soldQty?: number; soldValue?: number; ltp?: number };
+type BrokerKey = 'kite' | 'ant' | 'breeze' | 'prism';
+
 // Open-P&L pricing gets a short budget: it runs inside every buy's drawdown check, so a slow quote must not stall an order.
 const OPEN_PNL_TIMEOUT_MS = 4_000;
 const OPEN_PNL_LOG_EVERY_MS = 60_000;
@@ -1371,6 +1376,7 @@ class OrderBookkeeping {
             return false;
         }
         this.mergeRestored(restored);
+        await this.syncExternalClosesSafe('kite'); // a position the broker closed on its own is booked (the readers above only add)
         return true;
     }
 
@@ -1403,6 +1409,7 @@ class OrderBookkeeping {
             return false;
         }
         this.mergeRestored(restored);
+        await this.syncExternalClosesSafe('ant'); // a position the broker closed on its own is booked (the readers above only add)
         return true;
     }
 
@@ -1458,6 +1465,7 @@ class OrderBookkeeping {
             return false;
         }
         this.mergeRestored(restored);
+        await this.syncExternalClosesSafe('breeze'); // a position the broker closed on its own is booked (the readers above only add)
         return true;
     }
 
@@ -1481,7 +1489,231 @@ class OrderBookkeeping {
             return false;
         }
         this.mergeRestored(restored);
+        await this.syncExternalClosesSafe('prism'); // a position the broker closed on its own is booked (the readers above only add)
         return true;
+    }
+
+    // ---- Closes that happened outside the platform (2026-11-11) ----
+    // The reconcile*Positions readers above only ADD what a broker still holds. A tracked trade whose broker position went flat on its own - AliceBlue's
+    // intraday (MIS) square-off at ~15:16, a sell in the broker's own app, an expiry - therefore stayed "open" in `trades` for the life of the order
+    // process: the status showed it open with a made-up unrealized P&L, strategies kept it as held, its realized P&L was never booked, and Mongo had a
+    // Buy with no Sell (so a later restart's FIFO restore saw a "cost basis uncertain" contract). POST /reconcile did not repair it (live 2026-11-11,
+    // ANT NIFTY17NOV26C25400 390 sold by the broker at 15:16, still open at 15:22).
+    // syncExternalCloses books such a close as a normal Sell fill (raw Mongo doc, closedTrades row, realized P&L, exit-monitor unregister) WITHOUT
+    // notifying the strategies' fill listeners: a reconcile must place nothing, and a strategy would answer a loss-close with a hedge buy. The strategies
+    // learn of it from their own reconcile(), which reads the open trades afterwards. Only a contract that is FLAT at the broker is closed: a smaller
+    // but non-zero broker quantity is alerted (see below), never guessed at.
+    private flatSeen = new Map<string, number>(); // "<broker>|<user>|<tsym>" -> when the periodic sync first saw it flat
+    private partialAlerted = new Map<string, string>(); // "<broker>|<tsym>" -> "<tracked>/<held>" last alerted
+
+    private static num(v: unknown): number | undefined {
+        const n = Number(v);
+        return v != null && v !== '' && Number.isFinite(n) ? n : undefined;
+    }
+
+    // The broker's position list as BrokerRows, or null when it cannot be read or is not a list (a failed read must never look like "everything flat").
+    private async readBrokerRows(broker: BrokerKey): Promise<BrokerRow[] | null> {
+        const num = OrderBookkeeping.num;
+        try {
+            if (broker === 'kite') {
+                const net = (await Kite.getInstance().getPositions())?.net;
+                if (!Array.isArray(net)) return null;
+                return net.map((p: any) => ({ tsyms: [String(p.tradingsymbol)], tokens: p.instrument_token != null ? [String(p.instrument_token)] : [], qty: Number(p.quantity ?? 0), soldQty: num(p.sell_quantity), soldValue: num(p.sell_value), ltp: num(p.last_price) }));
+            }
+            if (broker === 'ant') {
+                const list = await ANT.getInstance().getPositions();
+                if (!Array.isArray(list)) return null;
+                return list.map((p: any) => ({ tsyms: [String(p.tradingSymbol)], tokens: p.instrumentId != null ? [String(p.instrumentId)] : [], qty: Number(p.netQuantity ?? 0), soldQty: num(p.daySellQuantity), soldValue: num(p.daySellValue), ltp: num(p.ltp) }));
+            }
+            if (broker === 'breeze') {
+                if (!(await withTimeout(Breeze.getInstance().hasValidSession(), 15000, 'Breeze hasValidSession'))) return null;
+                const result = await withTimeout(Breeze.getInstance().getPortfolioPositions(), 15000, 'Breeze getPortfolioPositions');
+                if (!Array.isArray(result?.Success)) return null;
+                const rows: BrokerRow[] = [];
+                for (const p of result.Success) {
+                    const optionType = p.right === 'Call' ? 'CE' : p.right === 'Put' ? 'PE' : undefined;
+                    if (!optionType) continue;
+                    rows.push({
+                        tsyms: [breezeTsym(String(p.stock_code), String(p.expiry_date), p.strike_price, optionType), breezeLegacyTsym(String(p.stock_code), p.strike_price, optionType), `${p.stock_code}${p.strike_price}${optionType}`],
+                        tokens: await this.breezeContractTokens(p, optionType), qty: Number(p.quantity ?? 0), ltp: num(p.ltp),
+                    });
+                }
+                return rows;
+            }
+            const Prism = (await import('../../prism')).default;
+            if (!(await withTimeout(Prism.getInstance().hasValidSession(), 15000, 'Prism hasValidSession'))) return null;
+            const list = await withTimeout(Prism.getInstance().getPositions({ strict: true }), 15000, 'Prism getPositions');
+            if (!Array.isArray(list)) return null;
+            return list.map((p: any) => ({ tsyms: [String(p.tsym)], tokens: p.token != null ? [String(p.token)] : [], qty: Number(p.netqty ?? 0), soldQty: num(p.daysellqty), soldValue: num(p.daysellamt), ltp: num(p.lp) }));
+        } catch (e: any) {
+            Log.log(`[order] readBrokerRows(${broker}): positions not readable (no close is booked from this read):`, e?.message ?? e);
+            return null;
+        }
+    }
+
+    private static rowsFor(rows: BrokerRow[], t: Trade): BrokerRow[] {
+        return rows.filter((r) => r.tsyms.includes(t.tsym) || (t.token != null && r.tokens.includes(String(t.token))));
+    }
+
+    // Today's sells already in Mongo for the contract (every user), so the broker's sell totals minus these are the sells nobody booked.
+    private async bookedSellsToday(broker: BrokerKey, tsyms: string[]): Promise<{ qty: number; value: number } | null> {
+        const db = Mongo.getInstance()?.db;
+        if (!db) return null;
+        try {
+            const brokerMatch = { $or: [{ broker: broker === 'kite' ? { $in: ['kite', /^\s*zerodha\s*$/i] } : broker }, { broker: { $exists: false } }] };
+            const docs: any[] = await db.collection('Trade').find({ tsym: { $in: tsyms }, action: 'Sell', entryTime: { $gte: OrderBookkeeping.startOfDay() }, ...brokerMatch }).toArray();
+            let qty = 0, value = 0;
+            for (const d of docs) { const q = Number(d.quantity) || 0; qty += q; value += q * (Number(d.price) || 0); }
+            return { qty, value };
+        } catch (e: any) {
+            Log.log('[order] bookedSellsToday: Mongo read failed:', e?.message ?? e);
+            return null;
+        }
+    }
+
+    // The price an unbooked broker-side sell of `qty` was done at: the broker's sell totals for today minus what is booked, when that leaves exactly
+    // `qty`; otherwise the broker's last price (flagged ESTIMATED - the realized P&L of that close is approximate), else the entry price (zero P&L).
+    private async impliedExternalSell(broker: BrokerKey, rows: BrokerRow[], qty: number, t: Trade): Promise<{ price: number; how: string }> {
+        const withTotals = rows.filter((r) => r.soldQty != null && r.soldValue != null);
+        if (rows.length > 0 && withTotals.length === rows.length) {
+            const booked = await this.bookedSellsToday(broker, Array.from(new Set(rows.flatMap((r) => r.tsyms))));
+            if (booked) {
+                const sold = withTotals.reduce((s, r) => s + (r.soldQty as number), 0) - booked.qty;
+                const value = withTotals.reduce((s, r) => s + (r.soldValue as number), 0) - booked.value;
+                if (Math.abs(sold - qty) <= 0.5 && value > 0) return { price: value / sold, how: "from the broker's sell totals" };
+            }
+        }
+        const ltp = rows.map((r) => r.ltp).find((v) => v != null && v > 0);
+        return ltp != null ? { price: ltp, how: "ESTIMATED at the broker's last price" } : { price: t.price, how: 'ESTIMATED at the entry price (no P&L)' };
+    }
+
+    // Lots bought TODAY (per Mongo, netted the same way the restore does) on contracts the broker no longer holds and that `trades` does not track: the
+    // close happened while no process was tracking them (before a restart, or while `order` was down), so nothing in memory can be matched against it.
+    // Today only: an older open lot with no matching close is an expiry or a lost record, not "a close that happened today". Built as open Trades so the
+    // normal Sell path can close them; the caller pushes them into `trades` right before booking.
+    private async mongoOpenLotsFlatAtBroker(broker: BrokerKey, rows: BrokerRow[]): Promise<Trade[]> {
+        const db = Mongo.getInstance()?.db;
+        if (!db) return [];
+        try {
+            const brokerMatch = { $or: [{ broker: broker === 'kite' ? { $in: ['kite', /^\s*zerodha\s*$/i] } : broker }, { broker: { $exists: false } }] };
+            const docs: any[] = await db.collection('Trade').find({ action: { $in: ['Buy', 'Sell'] }, entryTime: { $gte: OrderBookkeeping.startOfDay() }, ...brokerMatch }).sort({ entryTime: 1 }).toArray();
+            const byTsym = new Map<string, any[]>();
+            for (const d of docs) byTsym.set(String(d.tsym), [...(byTsym.get(String(d.tsym)) ?? []), d]);
+            const out: Trade[] = [];
+            for (const [tsym, fills] of byTsym) {
+                if (!OrderBookkeeping.isOptionContract(tsym)) continue;
+                const probe = Object.assign(new Trade(), { tsym, token: fills.find((f) => f.token != null)?.token });
+                if (OrderBookkeeping.rowsFor(rows, probe).reduce((sum, r) => sum + r.qty, 0) !== 0) continue; // still held: the restore owns it
+                const owners = await loadOrderOwners(Array.from(new Set(fills.map((f) => f.brokerOrderId).filter(Boolean).map(String))));
+                const { fills: owned, ambiguousOrderIds } = collapseFillsByOrderId(fills, (id) => owners.get(id));
+                if (ambiguousOrderIds.length > 0) continue; // an order booked under several users: not guessed at (the restore holds it for review too)
+                for (const user of Array.from(new Set(owned.map((f: any) => String(f.user))))) {
+                    if (this.trades.some((t) => t.broker === broker && t.user === user && t.tsym === tsym)) continue; // tracked: the in-memory pass handles it
+                    const open = netFifoLots<any>(owned.filter((f: any) => String(f.user) === user)).filter((l) => l.remaining > 0);
+                    if (open.length === 0) continue;
+                    const qty = open.reduce((sum, l) => sum + l.remaining, 0);
+                    const first = open[0].doc;
+                    const t = new Trade();
+                    t.tsym = tsym; t.token = first.token ?? probe.token ?? ''; t.right = first.right; t.quantity = qty;
+                    t.price = open.reduce((sum, l) => sum + l.remaining * Number(l.doc.price), 0) / qty;
+                    t.action = 'Buy'; t.status = 'COMPLETE'; t.user = user; t.broker = broker; t.open = true;
+                    t.strategy = first.strategy; t.entryTime = first.entryTime; t.originalEntryPrice = Number(first.price); t.originalEntryQuantity = Number(first.quantity);
+                    out.push(t);
+                }
+            }
+            return out;
+        } catch (e: any) {
+            Log.log('[order] mongoOpenLotsFlatAtBroker failed (no backfill):', e?.message ?? e);
+            return [];
+        }
+    }
+
+    // Books one tracked trade as sold at `price` through the normal Sell path (no strategy notification, see above).
+    private async bookExternalSell(t: Trade, price: number, how: string): Promise<void> {
+        const ev = new Trade();
+        ev.tsym = t.tsym; ev.token = t.token; ev.right = t.right; ev.quantity = t.quantity; ev.price = price;
+        ev.action = 'Sell'; ev.status = 'COMPLETE'; ev.user = t.user; ev.broker = t.broker; ev.strategy = t.strategy;
+        ev.brokerOrderId = `BROKER-SYNC-${t.broker}-${t.tsym}-${Date.now()}`;
+        recordOrderOwner(ev.brokerOrderId, ev.user, ev.broker ?? 'kite');
+        Log.log(`[order] ALERT: ${t.user} ${t.tsym} (${t.broker}) qty=${t.quantity} was closed outside the platform (the broker position is flat) - booked as a sell @ ${price.toFixed(2)} ${how}; entry ${Number(t.price).toFixed(2)}`);
+        await this._processTradeEvent(ev);
+    }
+
+    // Closes every tracked trade of `broker` whose contract is flat at the broker. `minFlatMs` > 0 (the periodic run) also requires the contract to have
+    // been seen flat for that long, so an own sell whose fill notification is still on its way is booked by that fill, not by this. Returns how many
+    // trades were booked. Never throws (see syncExternalClosesSafe).
+    async syncExternalCloses(broker: BrokerKey, minFlatMs = 0): Promise<number> {
+        const tracked = () => this.trades.filter((t) => t.broker === broker && Number(t.quantity) > 0);
+        const prefix = `${broker}|`;
+        const explicit = minFlatMs === 0; // a reconcile (startup / POST /reconcile), not the periodic run: also backfills closes from Mongo
+        if (tracked().length === 0 && !explicit) {
+            for (const k of Array.from(this.flatSeen.keys())) if (k.startsWith(prefix)) this.flatSeen.delete(k);
+            return 0;
+        }
+        const heldOf = (rows: BrokerRow[], t: Trade) => OrderBookkeeping.rowsFor(rows, t).reduce((s, r) => s + r.qty, 0);
+        const rows1 = await this.readBrokerRows(broker);
+        if (!rows1) return 0; // unreadable: nothing is concluded from it
+        const ghosts = new Set<Trade>(explicit ? await this.mongoOpenLotsFlatAtBroker(broker, rows1) : []);
+        let candidates = [...tracked().filter((t) => heldOf(rows1, t) === 0), ...ghosts];
+        // A broker quantity smaller than (but not zero against) what is tracked: part of it left outside the platform. Which user's share it was cannot be
+        // told, so it is alerted (once per change), not booked.
+        const byTsym = new Map<string, Trade[]>();
+        for (const t of tracked()) byTsym.set(t.tsym, [...(byTsym.get(t.tsym) ?? []), t]);
+        for (const [tsym, ts] of byTsym) {
+            const held = heldOf(rows1, ts[0]);
+            const total = ts.reduce((s, t) => s + Number(t.quantity), 0);
+            const key = `${broker}|${tsym}`;
+            if (held > 0 && held < total) {
+                const state = `${total}/${held}`;
+                if (this.partialAlerted.get(key) !== state) {
+                    this.partialAlerted.set(key, state);
+                    Log.log(`[order] ALERT: ${tsym} (${broker}) is tracked at ${total} but the broker holds only ${held} - part of it was closed outside the platform; not adjusted (which user's share is unknown), POST /reconcile after fixing by hand`);
+                }
+            } else this.partialAlerted.delete(key);
+        }
+        const flatKey = (t: Trade) => `${broker}|${t.user}|${t.tsym}`;
+        for (const k of Array.from(this.flatSeen.keys())) if (k.startsWith(prefix) && !candidates.some((t) => flatKey(t) === k)) this.flatSeen.delete(k);
+        if (candidates.length === 0) return 0;
+        // Confirmation read: a lagging or glitchy list must not close a position the broker still holds.
+        await new Promise((r) => setTimeout(r, 3000));
+        const rows2 = await this.readBrokerRows(broker);
+        if (!rows2) return 0;
+        const now = Date.now();
+        candidates = candidates.filter((t) => (ghosts.has(t) || this.trades.includes(t)) && Number(t.quantity) > 0 && heldOf(rows2, t) === 0);
+        for (const t of candidates) if (!this.flatSeen.has(flatKey(t))) this.flatSeen.set(flatKey(t), now);
+        candidates = candidates.filter((t) => now - (this.flatSeen.get(flatKey(t)) ?? now) >= minFlatMs);
+        if (candidates.length === 0) return 0;
+        const groups = new Map<string, Trade[]>();
+        for (const t of candidates) groups.set(t.tsym, [...(groups.get(t.tsym) ?? []), t]);
+        let booked = 0;
+        for (const [, ts] of groups) {
+            const live = ts.filter((t) => (ghosts.has(t) || this.trades.includes(t)) && Number(t.quantity) > 0); // a fill may have closed one while the price was looked up
+            if (live.length === 0) continue;
+            const qty = live.reduce((s, t) => s + Number(t.quantity), 0);
+            const { price, how } = await this.impliedExternalSell(broker, OrderBookkeeping.rowsFor(rows2, live[0]), qty, live[0]);
+            for (const t of live) {
+                if (!(Number(t.quantity) > 0)) continue;
+                if (ghosts.has(t)) {
+                    // Re-check at the last moment: a restore or a live buy may have tracked this user+contract since the Mongo read.
+                    if (this.trades.some((x) => x.broker === broker && x.user === t.user && x.tsym === t.tsym)) continue;
+                    this.trades.push(t);
+                    Log.log(`[order] ALERT: ${t.user} ${t.tsym} (${broker}) qty=${t.quantity} was bought today, is flat at the broker and was never booked as closed - backfilling the close`);
+                } else if (!this.trades.includes(t)) continue;
+                await this.bookExternalSell(t, price, how);
+                this.flatSeen.delete(flatKey(t));
+                booked++;
+            }
+        }
+        return booked;
+    }
+
+    async syncExternalClosesSafe(broker: BrokerKey, minFlatMs = 0): Promise<number> {
+        try {
+            return await this.syncExternalCloses(broker, minFlatMs);
+        } catch (e: any) {
+            Log.log(`[order] syncExternalCloses(${broker}) failed (reconcile continues):`, e?.message ?? e);
+            return 0;
+        }
     }
 
     // Recovers the app-only fields (user/target/stopLoss/gttTriggerId/strategy)

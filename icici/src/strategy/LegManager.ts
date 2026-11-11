@@ -1443,6 +1443,17 @@ export class LegManager {
     // for the retry-against-OrderClient policy and setting its own `ordered`
     // gate once this resolves - that's strategy-specific semantics, not leg-
     // lifecycle logic.
+    // The order process holds no open trade at all (everything this strategy tracked was closed outside the platform: an intraday square-off, a sell
+    // in the broker's app). restoreFromOpenTrades returns early on an empty list (right after a restart, where there is nothing to drop), so a LIVE
+    // reconcile left the stale legs tracked: ticks, exits and capital counts kept running on positions that are gone.
+    dropLegsNoLongerHeld(): void {
+        for (const leg of Array.from(this.legsByToken.values())) {
+            Log.log(`[${this.deps.ownerType}] ALERT: reconcile: ${leg.tsym} is tracked but the order process holds no open trade for it - closed outside the platform, dropping the leg`);
+            unwatchToken(leg.token, this.deps.strategyRef, (leg as any).exchange);
+            this.legsByToken.delete(leg.token);
+        }
+    }
+
     async restoreFromOpenTrades(openTrades: Trade[]): Promise<void> {
         if (openTrades.length === 0) return; // fresh in-memory defaults already correct
         this.legsByToken.clear();

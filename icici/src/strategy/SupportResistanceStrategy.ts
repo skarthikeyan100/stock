@@ -115,6 +115,7 @@ export default class SupportResistanceStrategy extends Strategy {
             return;
         }
         if (openTrades.length === 0) {
+            this.legManager.dropLegsNoLongerHeld();
             await this.legManager.restorePendingReEntries(); // a root refill may be resting while no leg is held
             return;
         }

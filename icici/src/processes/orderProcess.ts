@@ -1526,6 +1526,16 @@ export async function startOrderProcess() {
     guardedInterval('evaluateOpenDrawdowns', () => bookkeeping.evaluateOpenDrawdowns(), 10_000);
     guardedInterval('pollGttFills', pollGttFills, 60_000);
     guardedInterval('reconcileManualSells', reconcileManualSells, 60_000);
+    // A position the broker closed on its own (AliceBlue's MIS square-off, a sell in the broker's app, an expiry) is booked here without waiting for a
+    // POST /reconcile: only a contract seen flat for 90 s is booked (an own sell's fill notification gets that long to arrive first). Skipped while
+    // a reconcile runs (it does the same sync itself) and for a broker that is not in use.
+    guardedInterval('syncExternalCloses', async () => {
+        if (reconcileInFlight) return;
+        for (const b of ['kite', 'ant', 'breeze', 'prism'] as const) {
+            if (b === 'prism' && !prismInUse()) continue;
+            await bookkeeping.syncExternalClosesSafe(b, 90_000);
+        }
+    }, 120_000);
     for (const name of TRACKER_BROKERS) guardedInterval(`pollPending${name === 'kite' ? '' : name[0].toUpperCase() + name.slice(1)}LimitOrders`, () => TRACKERS[name].poll(), 15_000);
     // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
     // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than
