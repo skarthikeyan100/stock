@@ -62,7 +62,7 @@ are valid, as CLAUDE.md describes), and carry on with the routine below.
 3. Watch the alerts monitor. Reply only to `!!!` lines, ALERTs, limit trips and missed-slot lines. **The monitor must be armed
    at all times until 15:30 IST**: when it expires (every 30 min), re-arm it immediately, without waiting to be asked, and check
    that it is running before replying to anything else. Do not leave it unarmed between expiry and the next check.
-4. On "status": invoke the `monitor-strategies` skill (section 2, status on demand), which runs `scripts/strategy-status.sh`. Show all three tables as-is: BY STRATEGY, BY BROKER, and UNREALIZED BY BROKER AND STRATEGY (one row per open position). Never show fewer than three. Add one line about any open position the script does not show.
+4. On "status": invoke the `monitor-strategies` skill (section 2, status on demand), which runs `scripts/strategy-status.sh`. Show all three tables as-is: BY STRATEGY, BY BROKER, and UNREALIZED BY BROKER AND STRATEGY (one row per open position). Never show fewer than three. Paste the three tables into the reply text itself in a code block: tool output is not reliably shown to the user, so running the script is not showing it. Add one line about any open position the script does not show.
 5. After each restart and after any fill-heavy period, compare broker positions with strategy state.
 
 ## Restart checklist
