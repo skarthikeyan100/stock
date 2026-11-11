@@ -950,6 +950,9 @@ export default class Prism {
         return Array.isArray(raw) ? raw : [];
     }
 
+    // The Shoonya token currently loaded ('' = none). The pending-order poll uses it to stop retrying a token Shoonya already rejected.
+    currentToken = (): string => NorenRestApi.userToken || '';
+
     // Per-broker session probe (brokerSessions / position reconcile): a Shoonya token is loaded AND a strict positions read works.
     hasValidSession = async (): Promise<boolean> => {
         if (!NorenRestApi.userToken) return false;
