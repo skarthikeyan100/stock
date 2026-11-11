@@ -456,7 +456,7 @@ export async function startStrategiesProcess() {
 
     // The trading window is enforced at dispatch (Strategy.receivesEvents), not by clearing `enabled` in memory.
 
-    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. Startup reconcile runs once if the needed broker logins are valid.`);
+    Log.log(`[strategies] Initialized - ${strategies.getList().length} strategies loaded. The startup restore runs from Mongo (no broker read, no login).`);
 }
 
 // A throw in any strategy callback (or a stray rejected promise) must not kill the process mid-position:
