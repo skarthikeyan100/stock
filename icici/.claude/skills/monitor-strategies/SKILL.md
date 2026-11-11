@@ -47,8 +47,12 @@ BulkPcr's normal "Cycle complete" are filtered out at the source.
 ## 2. Status on demand
 
 When asked "status", "what is the status now" or similar, run `scripts/strategy-status.sh` and show
-its output as-is: realized and unrealized P&L per strategy for BulkPcr, ContinuousStrategy, SimpleContinuousStrategy and MomentumAtFixedTime, plus a
-total. Add nothing else (no event history, no contract list) unless the user asks.
+its output as-is: realized and unrealized P&L per strategy for BulkPcr, ContinuousStrategy, SimpleContinuousStrategy, MomentumAtFixedTime, Recommendation and RuleBased, plus a
+total, a table by broker, and a third table, **UNREALIZED BY BROKER AND STRATEGY**: one row per open position with broker, strategy, contract, qty,
+bought price, live price, resting sell price and unrealized P&L (unrealized only). The resting sell price is read from the strategy's own
+"resting sell @ <price>" log line for that contract (the position does not store it); `-` means none was logged (RuleBased exits on ticks, a
+Recommendation has a GTT), and `(tick)` marks a tick-monitored target. A `*` after a live price means no live quote, last known price.
+Add nothing else (no event history) unless the user asks.
 
 Only when asked for the position picture / open contracts / capital, run
 `scripts/continuous-strategy-trades.sh` (Capital Used, open contracts, parent/child tree; legs

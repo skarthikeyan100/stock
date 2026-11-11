@@ -307,10 +307,10 @@ strategies:
   - type: RecommendationStrategy
     enabled: false
     userId: Recommendation-1
-    contract: 23300 PE
-    entryPrice: 110
-    targetPrice: 172
-    stopLoss: 50
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
     entryOffset: 5
     maxInvestment: 100000
     index: NIFTY

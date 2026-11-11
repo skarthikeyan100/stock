@@ -90,6 +90,8 @@ async function main() {
     const formatted: Record<string, any> = formatPercentFields({ maxLoss: 6, targetPoints: 10 } as Record<string, any>);
     assert(formatted.maxLoss === '6%' && formatted.targetPoints === 10,
         'formatPercentFields writes percent keys with % and leaves others alone');
+    const rupees: Record<string, any> = formatPercentFields({ type: 'SimpleContinuousStrategy', maxProfit: 20000 } as Record<string, any>);
+    assert(rupees.maxProfit === 20000, 'formatPercentFields leaves SimpleContinuousStrategy.maxProfit (rupees) without a % sign');
 
     const okPercentErrors = validateFlatConfig(
         { settings: { maxWeeklyDrawdownPercent: '40%', maxDailyDrawdownPercent: 25 }, continuousStrategy: { type: 'ContinuousStrategy', maxProfit: '4%', maxLoss: 6 } },

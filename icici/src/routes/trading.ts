@@ -161,6 +161,21 @@ router.get('/strategyPnl', requireAdmin, async function (req: express.Request, r
                 if (q.ltp > 0) liveLtp.set(t, q.ltp);
             } catch (e) { /* fall back to lastTradePrice below */ }
         }));
+        // ?detail=1: one row per open position (strategy, broker, contract, quantity, bought price, live price, unrealized) instead of the
+        // grouped totals - the status script's unrealized table (by broker and strategy) is built from it.
+        if (req.query.detail === '1') {
+            res.json(openTrades.map((t) => {
+                const ltp = liveLtp.get(t) ?? Number(t.lastTradePrice);
+                const mark = (ltp - Number(t.price)) * Number(t.quantity);
+                return {
+                    strategy: t.strategy || t.user || '(none)', user: t.user, broker: String(t.broker || 'kite'), tsym: t.tsym,
+                    quantity: Number(t.quantity), price: Number(t.price), ltp: Number.isFinite(ltp) ? ltp : null, liveQuote: liveLtp.has(t),
+                    unrealized: Number.isFinite(mark) ? +mark.toFixed(2) : 0,
+                    targetPrice: Number(t.targetPrice) > 0 ? Number(t.targetPrice) : null, stopLossPrice: Number(t.stopLossPrice) > 0 ? Number(t.stopLossPrice) : null,
+                };
+            }));
+            return;
+        }
         for (const t of openTrades) {
             const mark = ((liveLtp.get(t) ?? Number(t.lastTradePrice)) - Number(t.price)) * Number(t.quantity);
             const r = row(t); r.open++; r.unrealized += Number.isFinite(mark) ? mark : 0;
