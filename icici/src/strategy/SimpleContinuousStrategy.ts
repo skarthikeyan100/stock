@@ -697,7 +697,8 @@ export default class SimpleContinuousStrategy extends Strategy {
             }
             let trade: Trade;
             try {
-                trade = await OrderClient.getInstance().buyContractBare(this.userId, parent.tsym, parent.token, addQty, parent.exchange, ref, this.broker());
+                // hedgeRebuy skips the order process's own investment-cap gate (the strategy-side check was removed 2026-11-11, but that gate refused it too: 14:11 live, kite 164264/100000).
+                trade = await OrderClient.getInstance().buyContractBare(this.userId, parent.tsym, parent.token, addQty, parent.exchange, ref, this.broker(), { hedgeRebuy: true });
             } catch (e) {
                 const notPlaced = this.noteBuyError(e, `double-up buy ${parent.tsym}`);
                 Log.log('[SimpleContinuousStrategy] double-up buy failed:', e);
