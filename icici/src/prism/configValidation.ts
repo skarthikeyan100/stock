@@ -213,6 +213,18 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
         }
     }
 
+    // eodReconcileTime: global only ('HH:mm', 24-hour); the end-of-day sync books what the brokers did during the day, so it must not be set before
+    // the 15:30 close.
+    if (obj.eodReconcileTime != null) {
+        if (label !== 'settings') {
+            errors.push(`${label}.eodReconcileTime is a global setting - move it to settings.eodReconcileTime`);
+        } else if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(obj.eodReconcileTime))) {
+            errors.push(`${label}.eodReconcileTime must be 'HH:mm' (24-hour), got ${JSON.stringify(obj.eodReconcileTime)}`);
+        } else if (String(obj.eodReconcileTime) < '15:30') {
+            errors.push(`${label}.eodReconcileTime must be at or after the 15:30 market close, got ${JSON.stringify(obj.eodReconcileTime)}`);
+        }
+    }
+
     if (isNum(obj.minPrice) && isNum(obj.maxPrice) && obj.minPrice > obj.maxPrice) {
         errors.push(`${label}.minPrice (${obj.minPrice}) must be <= ${label}.maxPrice (${obj.maxPrice})`);
     }

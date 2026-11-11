@@ -28,6 +28,8 @@ export class Settings {
     logQuotes = false
     /** 'HH:mm': the one end-of-day close time for every strategy (never a per-strategy key) */
     eodCloseTime?: string
+    /** 'HH:mm' (default 15:45, at or after the close): when the end-of-day broker -> Mongo sync runs; `npm run sync` runs it on demand */
+    eodReconcileTime?: string
     /** 0-100: share of every frontend user's lots the admin user mirrors with a real order (floor to whole lots); 0 or absent = no mirror */
     mirrorPercentage?: number
 }

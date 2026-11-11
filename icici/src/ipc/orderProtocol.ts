@@ -24,6 +24,8 @@ export type OrderRequestType =
     | 'brokerSessions'
     // Rebuilds the order process's open trades from Mongo alone (no broker read, no login). The strategies process asks for it at startup.
     | 'restoreFromMongo'
+    // End-of-day / on-demand broker -> Mongo sync (npm run sync, POST /sync): returns the per-broker report. Reads brokers, writes Mongo, places no order.
+    | 'eodSync'
     | 'updateUserSettings'
     // Runtime per-(user, broker) investment cap for the rest of the local day (BulkPcr loss-trip cut). payload: { broker, cap }.
     | 'setBrokerInvestmentCap'

@@ -26,7 +26,7 @@ import { ensureOrderIndexes } from './order/orderOwners';
 import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, ORDER_MAY_BE_LIVE_TAG, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
-import bookkeeping, { MongoRestoreResult } from './order/bookkeeping';
+import bookkeeping, { MongoRestoreResult, EodBrokerReport } from './order/bookkeeping';
 import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells } from './order/kiteExecutor';
 import * as antExecutor from './order/antExecutor';
 import { buyIndexOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
@@ -52,7 +52,9 @@ import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, CALL } from '../constants';
 import { resolveMaxInvestment, investmentForBroker } from '../prism/configVocabulary';
 import { getUser, getAllUsers } from '../user';
 import { OptionQuote, Trade } from '../model/model';
-import { isPastExpirySquareOffTime, isPastReconcileTime } from '../util/marketHours';
+import { isPastExpirySquareOffTime, isPastReconcileTime, isPastTime } from '../util/marketHours';
+import { effectiveEodReconcileTime } from '../util/eodReconcile';
+import { localDayKey } from '../strategy/dayKey';
 import { normalizeBrokerName, configuredBrokersOf } from '../util/brokerName';
 import { brokerClientFor } from '../broker/brokerClients';
 import { exchangeForIndex, exchangeForTsym } from '../util/underlyings';
@@ -1178,9 +1180,21 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // Explicit broker-position reconcile - POST /reconcile in server.ts
             // invokes this first, then `strategies`' reconcile (which depends on
             // the restored bookkeeping.trades). Refused before 09:10.
+            case 'eodSync': {
+                try {
+                    const reports = await runEodRepairNow('on demand');
+                    return { kind: 'response', id: req.id, ok: true, result: reports };
+                } catch (e: any) {
+                    Log.log('[order] eodSync failed:', e);
+                    return { kind: 'response', id: req.id, ok: false, error: e?.message ?? String(e) };
+                }
+            }
+
             case 'reconcileBrokerPositions': {
                 try {
-                    const result = await runBrokerReconcileNow('manual (POST /reconcile)');
+                    // POST /reconcile: the same broker -> Mongo repair as the end-of-day job; the per-broker ok flags are what the route needs.
+                    const reports = await runEodRepairNow('manual (POST /reconcile)');
+                    const result = Object.fromEntries(Object.entries(reports).map(([b, r]) => [b, r.ok]));
                     return { kind: 'response', id: req.id, ok: true, result };
                 } catch (e: any) {
                     Log.log('[order] reconcileBrokerPositions failed:', e);
@@ -1416,6 +1430,70 @@ function startReconcile(logContext: string): void {
     })();
 }
 
+// ---- End-of-day broker -> Mongo sync ----
+// One run at a time; a caller that arrives while one is in flight joins it. Brokers are repaired one after the other (the Mongo-only restore inside
+// eodRepairBroker is shared). Takes the reconcileInFlight gate so openTrades / canPlaceOrder / squareOff wait for the books to settle. It places no
+// order; strategies are not told, they read Mongo at their next restart / POST /reconcile.
+const EOD_BROKERS = ['kite', 'ant', 'breeze', 'prism'] as const;
+let eodRun: Promise<Record<string, EodBrokerReport>> | null = null;
+
+async function loadEodMarker(): Promise<{ brokers?: Record<string, { ok?: boolean }> } | null> {
+    try {
+        return await Mongo.getInstance()?.db.collection('eodReconcileRuns').findOne({ _id: localDayKey() as any }) ?? null;
+    } catch { return null; }
+}
+
+function runEodRepair(context: string, brokers: readonly (typeof EOD_BROKERS)[number][] = EOD_BROKERS): Promise<Record<string, EodBrokerReport>> {
+    if (eodRun) return eodRun;
+    const run = (async () => {
+        Log.log(`[order] End-of-day sync starting (${context}) for ${brokers.join(', ')}`);
+        const reports: Record<string, EodBrokerReport> = {};
+        for (const b of brokers) {
+            reports[b] = await bookkeeping.eodRepairBroker(b);
+            const r = reports[b];
+            Log.log(`[order] EOD sync ${b}: ${r.ok ? 'ok' : 'FAILED'}${r.skipped ? ` (${r.skipped})` : ''}${r.error ? ` - ${r.error}` : ''}; booked ${r.bookedFills} fill(s) from the broker's own fills and ${r.bookedFlat} flat close(s) at an implied price; ${r.mismatches.length} unattributed difference(s)`);
+        }
+        // Order book: let the pending-limit-order trackers resolve what the brokers now say (they already poll every 15 s; this is one more pass).
+        for (const name of TRACKER_BROKERS) await TRACKERS[name].poll().catch((e: any) => Log.log(`[order] EOD sync: pending ${name} order poll failed:`, e?.message ?? e));
+        exitMonitor.reconcileFromTrades(bookkeeping.trades);
+        try {
+            const set: Record<string, unknown> = { updatedAt: new Date() };
+            for (const [b, r] of Object.entries(reports)) set[`brokers.${b}`] = { ok: r.ok, at: new Date(), skipped: r.skipped ?? null, error: r.error ?? null, bookedFills: r.bookedFills, bookedFlat: r.bookedFlat, mismatches: r.mismatches };
+            await Mongo.getInstance()?.db.collection('eodReconcileRuns').updateOne({ _id: localDayKey() as any }, { $set: set }, { upsert: true });
+        } catch (e: any) {
+            Log.log('[order] EOD sync: could not store the run report in Mongo (eodReconcileRuns):', e?.message ?? e);
+        }
+        return reports;
+    })();
+    eodRun = run;
+    const gate = run.then(() => undefined, () => undefined).finally(() => { eodRun = null; if (reconcileInFlight === gate) reconcileInFlight = null; });
+    reconcileInFlight = gate;
+    return run;
+}
+
+// On-demand / POST /reconcile: refused before 09:10, when broker responses are pre-market and incomplete.
+async function runEodRepairNow(context: string): Promise<Record<string, EodBrokerReport>> {
+    if (!isPastReconcileTime()) throw new Error('broker sync refused before 09:10 - broker responses are pre-market and incomplete; retry after 09:10');
+    if (reconcileInFlight && !eodRun) await reconcileInFlight;
+    return runEodRepair(context);
+}
+
+// Scheduled once per trading day after settings.eodReconcileTime (default 15:45): runs the brokers whose report is not ok in today's
+// `eodReconcileRuns` marker, retried every 5 minutes until 23:30. The marker is in Mongo, so a restart neither repeats nor loses it.
+let lastEodAttemptAt = 0;
+async function eodReconcileTick(): Promise<void> {
+    const weekday = new Date().getDay();
+    if (weekday === 0 || weekday === 6) return;
+    if (!isPastTime(effectiveEodReconcileTime(), '15:45') || isPastTime('23:30')) return;
+    if (eodRun || reconcileInFlight) return;
+    if (Date.now() - lastEodAttemptAt < 5 * 60_000) return;
+    const marker = await loadEodMarker();
+    const pending = EOD_BROKERS.filter((b) => marker?.brokers?.[b]?.ok !== true);
+    if (pending.length === 0) return;
+    lastEodAttemptAt = Date.now();
+    await runEodRepair('scheduled, after the close', pending);
+}
+
 // Explicit reconcile, reached via the 'reconcileBrokerPositions' IPC case.
 // Refused before 09:10: pre-market broker responses are incomplete/stale (see
 // marketHours.isPastReconcileTime). Resolves only once the run - including any
@@ -1561,15 +1639,9 @@ export async function startOrderProcess() {
     guardedInterval('evaluateOpenDrawdowns', () => bookkeeping.evaluateOpenDrawdowns(), 10_000);
     guardedInterval('pollGttFills', pollGttFills, 60_000);
     guardedInterval('reconcileManualSells', reconcileManualSells, 60_000);
-    // A position the broker closed on its own (AliceBlue's MIS square-off, a sell in the broker's app, an expiry) is booked here without waiting for a
-    // POST /reconcile: only a contract seen flat for 90 s is booked (an own sell's fill notification gets that long to arrive first). Skipped while
-    // a reconcile runs (it does the same sync itself); a broker with no tracked trade costs nothing (no read).
-    guardedInterval('syncExternalCloses', async () => {
-        if (reconcileInFlight) return;
-        for (const b of ['kite', 'ant', 'breeze', 'prism'] as const) {
-            await bookkeeping.syncExternalClosesSafe(b, 90_000);
-        }
-    }, 120_000);
+    // The broker -> Mongo sync is an END-OF-DAY job (user's design, 2026-11-11), not a periodic one: it runs once after the close (eodReconcileTick) and
+    // on demand (`npm run sync` -> POST /sync). No broker is read intraday for it.
+    guardedInterval('eodReconcile', eodReconcileTick, 60_000);
     for (const name of TRACKER_BROKERS) guardedInterval(`pollPending${name === 'kite' ? '' : name[0].toUpperCase() + name.slice(1)}LimitOrders`, () => TRACKERS[name].poll(), 15_000);
     // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
     // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than

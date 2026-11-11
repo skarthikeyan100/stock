@@ -407,6 +407,11 @@ class OrderClient {
         return this.call('restoreFromMongo', 'Default', {}, 120000);
     }
 
+    // The broker -> Mongo sync (end of day / `npm run sync`): per-broker report of what was booked and what could not be attributed.
+    async eodSync(): Promise<Record<string, any>> {
+        return this.call('eodSync', 'Default', {}, 300000);
+    }
+
     // Per-broker session validity (kite / ant / breeze), read-only; a broker whose check throws counts as invalid.
     async brokerSessions(): Promise<Record<string, boolean>> {
         return this.call('brokerSessions', 'Default', {}, 30000);

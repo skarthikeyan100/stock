@@ -76,6 +76,18 @@ router.post('/reconcile', requireAdmin, async (req, res) => {
     }
 });
 
+// On-demand broker -> Mongo sync (`npm run sync`; the same job runs by itself at settings.eodReconcileTime, default 15:45): books the fills the brokers
+// report that Mongo lacks (closes a broker made on its own, at their exact price), reports what it cannot attribute with evidence, and places no order.
+// Strategies are not touched: POST /reconcile also re-reads Mongo into them.
+router.post('/sync', requireAdmin, async (req, res) => {
+    try {
+        res.json(await orderClient.eodSync());
+    } catch (e: any) {
+        Log.log('[frontend] /sync failed:', e);
+        res.status(500).json({ error: e?.message ?? 'sync failed' });
+    }
+});
+
 // ============================== Configuration ==============================
 
 router.get('/config', requireAdmin, (req, res) => {

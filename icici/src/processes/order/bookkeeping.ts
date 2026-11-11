@@ -24,6 +24,10 @@ import { exchangeForTsym } from '../../util/underlyings';
 // spelling/id the platform may have stored for the contract; `soldQty`/`soldValue` are TODAY's sells at the broker (absent where the broker does not report them).
 type BrokerRow = { tsyms: string[]; tokens: string[]; qty: number; soldQty?: number; soldValue?: number; ltp?: number };
 type BrokerKey = 'kite' | 'ant' | 'breeze' | 'prism';
+type BrokerFill = { orderId: string; action: 'Buy' | 'Sell'; tsym: string; token?: string; qty: number; price: number };
+export type EodMismatchKind = 'unattributedFill' | 'partialUnattributable' | 'brokerExcess' | 'brokerShort';
+export type EodMismatch = { kind: EodMismatchKind; broker: BrokerKey; tsym: string; brokerQty?: number; mongoQty?: number; note?: string };
+export type EodBrokerReport = { ok: boolean; skipped?: string; error?: string; bookedFills: number; bookedFlat: number; mismatches: EodMismatch[] };
 export type MongoRestoreResult = { ok: boolean; restored: number; contracts: number; skippedExpired: string[]; skippedUnknownToken: string[]; skippedNoToken: string[]; error?: string };
 
 // Open-P&L pricing gets a short budget: it runs inside every buy's drawdown check, so a slow quote must not stall an order.
@@ -1758,6 +1762,157 @@ class OrderBookkeeping {
             }
         }
         return booked;
+    }
+
+    // ---- End-of-day repair (2026-11-11): broker trade book + positions -> Mongo ----
+    // One central job (user's design): after the close, and on demand (`npm run sync`), look at Mongo and at what each broker says it did today
+    // (trade book / order book fills, open positions) and update Mongo to match. It reads brokers and writes Mongo and bookkeeping only; it places no
+    // order and does not notify strategies. Closes the broker made on its own are booked from the broker's own fills at their exact price; what cannot
+    // be attributed with evidence is REPORTED, never guessed into Mongo.
+
+    // Today's (and the last days') executed fills as the broker reports them, one row per broker order (partial fills of one order summed). null =
+    // unreadable. Kite/ANT/Breeze have a trade book; Prism has none wired, but its order book carries the filled quantity and average price.
+    private async readBrokerFills(broker: BrokerKey): Promise<BrokerFill[] | null> {
+        const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+        const sum = (rows: { orderId: string; action: 'Buy' | 'Sell'; tsym: string; token?: string; qty: number; price: number }[]): BrokerFill[] => {
+            const by = new Map<string, BrokerFill & { value: number }>();
+            for (const r of rows) {
+                if (!r.orderId || !(r.qty > 0)) continue;
+                const k = `${r.action}|${r.orderId}`;
+                const cur = by.get(k) ?? { orderId: r.orderId, action: r.action, tsym: r.tsym, token: r.token, qty: 0, price: 0, value: 0 };
+                cur.qty += r.qty; cur.value += r.qty * r.price; by.set(k, cur);
+            }
+            return Array.from(by.values()).map(({ value, ...f }) => ({ ...f, price: f.qty > 0 ? value / f.qty : 0 }));
+        };
+        const act = (v: unknown): 'Buy' | 'Sell' | null => { const t = String(v ?? '').trim().toUpperCase(); return t === 'BUY' || t === 'B' ? 'Buy' : t === 'SELL' || t === 'S' ? 'Sell' : null; };
+        try {
+            if (broker === 'kite') {
+                const rows = await Kite.getInstance().getTrades();
+                if (!Array.isArray(rows)) return null;
+                return sum(rows.flatMap((r: any) => { const a = act(r.transaction_type); return a ? [{ orderId: String(r.order_id ?? ''), action: a, tsym: String(r.tradingsymbol), qty: num(r.quantity), price: num(r.average_price) }] : []; }));
+            }
+            if (broker === 'ant') {
+                const rows = await ANT.getInstance().getTrades();
+                if (!Array.isArray(rows)) return null;
+                return sum(rows.flatMap((r: any) => { const a = act(r.transactionType); return a ? [{ orderId: String(r.brokerOrderId ?? ''), action: a, tsym: String(r.tradingSymbol), token: r.instrumentId != null ? String(r.instrumentId) : undefined, qty: num(r.filledQuantity), price: num(r.tradedPrice) }] : []; }));
+            }
+            if (broker === 'breeze') {
+                if (!(await withTimeout(Breeze.getInstance().hasValidSession(), 15000, 'Breeze hasValidSession'))) return null;
+                const from = new Date(); from.setHours(0, 0, 0, 0);
+                const result = await withTimeout(Breeze.getInstance().getTradeList({ fromDate: from.toISOString(), toDate: new Date().toISOString(), exchangeCode: 'NFO' }), 20000, 'Breeze getTradeList');
+                if (!Array.isArray(result?.Success)) return null;
+                return sum(result.Success.flatMap((r: any) => {
+                    const a = act(r.action); const optionType = r.right === 'Call' ? 'CE' : r.right === 'Put' ? 'PE' : undefined;
+                    if (!a || !optionType) return [];
+                    return [{ orderId: String(r.order_id ?? ''), action: a, tsym: breezeTsym(String(r.stock_code), String(r.expiry_date), r.strike_price, optionType), qty: num(r.quantity), price: num(r.average_cost ?? r.average_price) }];
+                }));
+            }
+            const Prism = (await import('../../prism')).default;
+            if (!(await withTimeout(Prism.getInstance().hasValidSession(), 15000, 'Prism hasValidSession'))) return null;
+            const book = await withTimeout(Prism.getInstance().getOrderBook(), 20000, 'Prism getOrderBook');
+            if (!Array.isArray(book)) return null;
+            return sum(book.flatMap((r: any) => { const a = act(r.trantype); return a && String(r.status).toUpperCase() === 'COMPLETE' ? [{ orderId: String(r.norenordno ?? ''), action: a, tsym: String(r.tsym), token: r.token != null ? String(r.token) : undefined, qty: num(r.fillshares ?? r.qty), price: num(r.avgprc) }] : []; }));
+        } catch (e: any) {
+            Log.log(`[order] readBrokerFills(${broker}): trade book not readable:`, e?.message ?? e);
+            return null;
+        }
+    }
+
+    // `${action}|${brokerOrderId}` of every fill Mongo already holds for this broker over the last days (a Breeze trade list spans several days).
+    private async mongoFillKeys(broker: BrokerKey): Promise<{ keys: Set<string>; tsyms: Set<string> } | null> {
+        const db = Mongo.getInstance()?.db;
+        if (!db) return null;
+        try {
+            const brokerMatch = { $or: [{ broker: broker === 'kite' ? { $in: ['kite', /^\s*zerodha\s*$/i] } : broker }, { broker: { $exists: false } }] };
+            const docs: any[] = await db.collection('Trade').find({ brokerOrderId: { $exists: true, $ne: null }, entryTime: { $gte: new Date(Date.now() - 8 * 86400000) }, ...brokerMatch }).project({ brokerOrderId: 1, action: 1, tsym: 1 }).toArray();
+            return { keys: new Set(docs.map((d) => `${d.action}|${d.brokerOrderId}`)), tsyms: new Set(docs.map((d) => String(d.tsym))) };
+        } catch (e: any) {
+            Log.log('[order] mongoFillKeys: Mongo read failed:', e?.message ?? e);
+            return null;
+        }
+    }
+
+    // Books a Sell the broker reports but Mongo does not have, to the user whose tracked position it closed: the order-owner ledger names the owner, or the
+    // contract has exactly one holder. The sell must also fit what the broker still holds (tracked - sold >= held), otherwise it was already booked under
+    // another id, or belongs to something this platform does not track, and is only reported. Buys that Mongo lacks are only reported.
+    private async bookMissingSellFills(broker: BrokerKey, fills: BrokerFill[], rows: BrokerRow[], mismatches: EodMismatch[]): Promise<number> {
+        const have = await this.mongoFillKeys(broker);
+        if (!have) return 0;
+        const missing = fills.filter((f) => !have.keys.has(`${f.action}|${f.orderId}`));
+        if (missing.length === 0) return 0;
+        const owners = await loadOrderOwners(Array.from(new Set(missing.map((f) => f.orderId))));
+        let booked = 0;
+        for (const f of missing) {
+            // A fill on a contract this platform never traded (in the last days) is the user's own trade in the broker's app: not ours to report.
+            if (!have.tsyms.has(f.tsym) && !this.trades.some((t) => t.broker === broker && (t.tsym === f.tsym || (f.token != null && String(t.token) === f.token)))) continue;
+            if (f.action === 'Buy') {
+                mismatches.push({ kind: 'unattributedFill', broker, tsym: f.tsym, note: `a Buy of ${f.qty} @ ${f.price.toFixed(2)} (order ${f.orderId}) is at the broker but not in Mongo - not booked, check it` });
+                continue;
+            }
+            const holders = this.trades.filter((t) => t.broker === broker && Number(t.quantity) > 0 && (t.tsym === f.tsym || (f.token != null && String(t.token) === f.token)));
+            const owner = owners.get(f.orderId);
+            const target = owner ? holders.find((t) => t.user === owner) : holders.length === 1 ? holders[0] : undefined;
+            const trackedTotal = holders.reduce((sum, t) => sum + Number(t.quantity), 0);
+            const held = OrderBookkeeping.rowsFor(rows, Object.assign(new Trade(), { tsym: f.tsym, token: f.token })).reduce((sum, r) => sum + r.qty, 0);
+            const qty = target ? Math.min(f.qty, Number(target.quantity)) : 0;
+            if (!target || !(qty > 0) || trackedTotal - qty < held) {
+                mismatches.push({ kind: 'unattributedFill', broker, tsym: f.tsym, brokerQty: held, mongoQty: trackedTotal, note: `a Sell of ${f.qty} @ ${f.price.toFixed(2)} (order ${f.orderId}) is at the broker but not in Mongo and cannot be attributed with evidence - not booked` });
+                continue;
+            }
+            const ev = new Trade();
+            ev.tsym = target.tsym; ev.token = target.token; ev.right = target.right; ev.quantity = qty; ev.price = f.price;
+            ev.action = 'Sell'; ev.status = 'COMPLETE'; ev.user = target.user; ev.broker = broker; ev.strategy = target.strategy; ev.brokerOrderId = f.orderId;
+            recordOrderOwner(f.orderId, ev.user, broker);
+            Log.log(`[order] ALERT: EOD sync ${broker}: ${target.user} ${target.tsym} - a Sell of ${qty} @ ${f.price.toFixed(2)} (order ${f.orderId}) is in the broker's own fills but was never booked - booking it now`);
+            await this._processTradeEvent(ev);
+            booked++;
+        }
+        return booked;
+    }
+
+    // Report-only differences between Mongo-derived positions and the broker (after the booking above).
+    private collectEodMismatches(broker: BrokerKey, rows: BrokerRow[], out: EodMismatch[]): void {
+        const byTsym = new Map<string, Trade[]>();
+        for (const t of this.trades) if (t.broker === broker && Number(t.quantity) > 0) byTsym.set(t.tsym, [...(byTsym.get(t.tsym) ?? []), t]);
+        for (const [tsym, ts] of byTsym) {
+            const held = OrderBookkeeping.rowsFor(rows, ts[0]).reduce((sum, r) => sum + r.qty, 0);
+            const total = ts.reduce((sum, t) => sum + Number(t.quantity), 0);
+            if (held > 0 && held < total) out.push({ kind: 'partialUnattributable', broker, tsym, brokerQty: held, mongoQty: total, note: 'part of the position was closed outside the platform; which user\'s share is unknown' });
+            else if (held > total) out.push({ kind: 'brokerExcess', broker, tsym, brokerQty: held, mongoQty: total });
+        }
+        for (const r of rows) {
+            if (r.qty < 0) out.push({ kind: 'brokerShort', broker, tsym: r.tsyms[0], brokerQty: r.qty, note: 'net short at the broker' });
+            else if (r.qty > 0 && !this.trades.some((t) => t.broker === broker && Number(t.quantity) > 0 && (r.tsyms.includes(t.tsym) || (t.token != null && r.tokens.includes(String(t.token)))))) {
+                out.push({ kind: 'brokerExcess', broker, tsym: r.tsyms[0], brokerQty: r.qty, mongoQty: 0, note: 'held at the broker with no open position in Mongo (a manual trade, or a Buy that was never recorded)' });
+            }
+        }
+    }
+
+    // One broker's end-of-day repair. Never throws.
+    async eodRepairBroker(broker: BrokerKey): Promise<EodBrokerReport> {
+        const report: EodBrokerReport = { ok: false, bookedFills: 0, bookedFlat: 0, mismatches: [] };
+        try {
+            const restored = await this.restoreOpenTradesFromMongo(); // idempotent: memory must equal Mongo before it is compared with the broker
+            if (!restored.ok) { report.error = `restore from Mongo failed: ${restored.error}`; return report; }
+            const rows = await this.readBrokerRows(broker);
+            if (!rows) {
+                if (!this.trades.some((t) => t.broker === broker && Number(t.quantity) > 0)) { report.ok = true; report.skipped = 'broker not readable (no valid session?) and nothing is open on it in Mongo'; return report; }
+                report.error = 'positions not readable (no valid session?) while Mongo has open lots on this broker';
+                Log.log(`[order] ALERT: EOD sync ${broker}: ${report.error}`);
+                return report;
+            }
+            const fills = await this.readBrokerFills(broker);
+            if (fills) report.bookedFills = await this.bookMissingSellFills(broker, fills, rows, report.mismatches);
+            else report.mismatches.push({ kind: 'unattributedFill', broker, tsym: '*', note: 'the broker trade book could not be read - closes were booked from position totals only' });
+            report.bookedFlat = await this.syncExternalCloses(broker, 0); // contracts flat at the broker with no exact fill: implied price
+            this.collectEodMismatches(broker, (await this.readBrokerRows(broker)) ?? rows, report.mismatches);
+            for (const m of report.mismatches) Log.log(`[order] ALERT: EOD sync ${broker}: ${m.kind} ${m.tsym}${m.brokerQty != null ? ` broker=${m.brokerQty}` : ''}${m.mongoQty != null ? ` mongo=${m.mongoQty}` : ''}${m.note ? ' - ' + m.note : ''}`);
+            report.ok = true;
+        } catch (e: any) {
+            report.error = e?.message ?? String(e);
+            Log.log(`[order] ALERT: EOD sync ${broker} failed:`, e);
+        }
+        return report;
     }
 
     async syncExternalClosesSafe(broker: BrokerKey, minFlatMs = 0): Promise<number> {
