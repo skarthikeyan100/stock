@@ -8,6 +8,7 @@ import SupportResistanceStrategy from '../strategy/SupportResistanceStrategy';
 import BulkPcrStrategy from '../strategy/BulkPcrStrategy';
 import strategies from '../strategy/strategies';
 import { resolveSource } from '../processes/strategies/tokenRouter';
+import { BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
 
 function assert(condition: boolean, message: string) {
     console.log(`  ${condition ? 'PASS' : 'FAIL'}: ${message}`);
@@ -24,6 +25,7 @@ async function main() {
     assert(resolveSource(new ContinuousStrategy('c-breeze')) === 'ant', 'Continuous with broker: breeze subscribes on the ANT feed');
     assert(resolveSource(new ContinuousStrategy('c-kite')) === 'ant', 'Continuous with broker: kite stays on the ANT feed');
     assert(resolveSource(new SupportResistanceStrategy('sr-breeze')) === 'ant', 'SupportResistance with broker: breeze subscribes on the ANT feed');
+    assert(BROKER_TO_FEED_SOURCE.prism === 'ant', 'a Prism fill subscribes its token on the ANT feed (the data process has no prism feed)');
     assert(resolveSource(new BulkPcrStrategy('other-breeze')) === 'breeze', 'a strategy without ANT-token legs still routes by broker');
 
     console.log(process.exitCode === 1 ? 'SOME TESTS FAILED' : 'ALL TESTS PASSED');
