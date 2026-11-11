@@ -33,7 +33,7 @@ const READ_ONLY_REQUESTS: ReadonlySet<OrderRequestType> = new Set<OrderRequestTy
     'openTrades', 'getPendingSells', 'getLiveQuantity', 'stats', 'canPlaceOrder', 'brokerSessions', 'getToken',
     'getContractByPriceRange', 'getContractByPriceRangeBare', 'getPCR', 'getATMTokens', 'resolveOptionContract', 'getOptionLtp',
     // Not orders: they restore a runtime cap / setting that a latched strategy re-applies when it reloads.
-    'setBrokerInvestmentCap', 'updateUserSettings', 'reloadUserLimits',
+    'setBrokerInvestmentCap', 'updateUserSettings', 'reloadUserLimits', 'restoreFromMongo',
 ]);
 type NoOrdersScope = { label: string; active: boolean };
 const noOrdersScope = new AsyncLocalStorage<NoOrdersScope>();
@@ -399,6 +399,12 @@ class OrderClient {
     // success flags; throws if the order process refused (e.g. before 09:10).
     async reconcileBrokerPositions(): Promise<Record<string, boolean>> {
         return this.call('reconcileBrokerPositions', 'Default', {}, 180000);
+    }
+
+    // Rebuilds the order process's open trades from Mongo alone - no broker read, no login. The strategies process asks for it at startup;
+    // `ok:false` means Mongo was not readable (no trade was restored) and the caller must retry or stay unloaded.
+    async restoreFromMongo(): Promise<{ ok: boolean; restored: number; contracts: number; skippedExpired: string[]; skippedUnknownToken: string[]; skippedNoToken: string[]; error?: string }> {
+        return this.call('restoreFromMongo', 'Default', {}, 120000);
     }
 
     // Per-broker session validity (kite / ant / breeze), read-only; a broker whose check throws counts as invalid.

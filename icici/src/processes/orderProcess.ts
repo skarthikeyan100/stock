@@ -26,7 +26,7 @@ import { ensureOrderIndexes } from './order/orderOwners';
 import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, ORDER_MAY_BE_LIVE_TAG, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
-import bookkeeping from './order/bookkeeping';
+import bookkeeping, { MongoRestoreResult } from './order/bookkeeping';
 import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells } from './order/kiteExecutor';
 import * as antExecutor from './order/antExecutor';
 import { buyIndexOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
@@ -1160,6 +1160,21 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result: { kite, ant, breeze, prism } };
             }
 
+            // Rebuild the open trades from Mongo alone (the strategies process asks at startup; no broker is read, no login is needed). Joins the
+            // startup restore when it is still running; a failed one (Mongo not ready yet) is run again here.
+            case 'restoreFromMongo': {
+                try {
+                    if (mongoRestoreRun) {
+                        const first = await mongoRestoreRun;
+                        if (first.ok) return { kind: 'response', id: req.id, ok: true, result: first };
+                    }
+                    const result = await runMongoRestore('requested');
+                    return { kind: 'response', id: req.id, ok: true, result };
+                } catch (e: any) {
+                    return { kind: 'response', id: req.id, ok: false, error: e?.message ?? String(e) };
+                }
+            }
+
             // Explicit broker-position reconcile - POST /reconcile in server.ts
             // invokes this first, then `strategies`' reconcile (which depends on
             // the restored bookkeeping.trades). Refused before 09:10.
@@ -1322,6 +1337,21 @@ async function loadUserLimits() {
 // (or approve a duplicate entry). null once nothing is in flight.
 let reconcileInFlight: Promise<void> | null = null;
 
+// The startup restore from Mongo (see startOrderProcess) and any later 'restoreFromMongo' run. It takes the reconcileInFlight gate so
+// openTrades / canPlaceOrder / squareOff wait for it instead of reading `trades` half-built.
+let mongoRestoreRun: Promise<MongoRestoreResult> | null = null;
+function runMongoRestore(context: string): Promise<MongoRestoreResult> {
+    const run = bookkeeping.restoreOpenTradesFromMongo().then((r) => {
+        exitMonitor.reconcileFromTrades(bookkeeping.trades);
+        Log.log(`[order] restore from Mongo (${context}): ${r.ok ? `ok, ${r.restored} trade(s)` : `FAILED - ${r.error}`}`);
+        return r;
+    });
+    mongoRestoreRun = run;
+    const gate = run.then(() => undefined, () => undefined).finally(() => { if (reconcileInFlight === gate) reconcileInFlight = null; });
+    reconcileInFlight = gate;
+    return run;
+}
+
 // True while a trailing coalesced reconcile has been requested but not yet
 // started - see startReconcile's comment.
 let reconcileQueued = false;
@@ -1436,7 +1466,9 @@ export async function startOrderProcess() {
     // Broker positions are not loaded here: the strategies process requests 'reconcileBrokerPositions' at its own startup and holds every
     // strategy back until it succeeds (startupReconcile). This call sees an empty trade list; the real exit-monitor rebuild happens in
     // reconcileAllBrokersOnce.
-    Log.log('[order] startup: waiting for the strategies process to request broker-position reconciliation');
+    // Open positions are restored from Mongo alone, here, with no broker read and no login (user's design, 2026-11-11). Mongo is kept equal to
+    // the brokers by the end-of-day sync and `npm run sync`, not by the restart. The strategies process then restores its own state from them.
+    await runMongoRestore('startup').catch((e) => Log.log('[order] startup: restore from Mongo threw:', e));
     exitMonitor.reconcileFromTrades(bookkeeping.trades);
 
     // Restore any resting root-refill limit orders tracked before this restart,

@@ -9,8 +9,6 @@ import { readJsonLines, writeJsonLine } from '../ipc/jsonLines';
 import { STRATEGIES_SOCKET_PATH, StrategiesRequest, StrategiesResponse } from '../ipc/strategiesProtocol';
 import strategies from '../strategy/strategies';
 import OrderClient from './strategies/OrderClient';
-import configService from '../prism/ConfigService';
-import { configuredBrokersOf } from '../util/brokerName';
 import { DataLink } from '../ipc/DataLink';
 import { registerTrade, unregisterTrade, optionTickTargets, deliverOptionTick, holdExternal, releaseExternal } from './strategies/tokenRouter';
 import * as niftyQuoteHistory from './strategies/niftyQuoteHistory';
@@ -140,11 +138,9 @@ async function onOrderCancelled(userId: string, notification: OrderCancelledNoti
     }
 }
 
-// reconcile() runs only when explicitly requested (the 'reconcile' IPC request,
-// reached via POST /reconcile in server.ts) - never on startup or on a tick, and
-// nothing waits for it: ticks and order events flow from startup. It is a repair
-// for when broker positions and Mongo documents disagree. Concurrent requests
-// share the run that is in flight; once it finishes a later request runs again.
+// A strategy's reconcile() restores its own state from the order process's open trades. It runs once at startup (startupReconcile, after the
+// order process restored them from Mongo) and on request (POST /reconcile); always inside OrderClient.withNoOrders, so it places no order.
+// Concurrent requests share the run that is in flight; once it finishes a later request runs again.
 let reconcileInFlight: Promise<void> | null = null;
 
 function runReconcile(): Promise<void> {
@@ -175,49 +171,28 @@ async function reconcileStrategies(): Promise<void> {
     Log.log(`[strategies] Reconciled - ${strategies.getList().length} strategies.`);
 }
 
-// Brings every strategy to a reconciled state once, at startup, and only if the brokers the enabled strategies trade on already have
-// a valid session. Nothing is polled and nothing is logged while a login is missing: the morning workflow is start the processes, log in
-// to every broker (scripts/login.sh), then restart, so a restart finds valid sessions. Without them the reconcile is simply not run and
-// no strategy receives ticks until a restart or POST /reconcile (which also marks them loaded). With no enabled strategy there is
-// nothing to protect: they are marked loaded at once and broker positions are left to POST /reconcile.
-// The only retry is for the order process's socket not being up yet (the processes start together): a failed IPC call, not a missing login.
+// Brings every strategy to a loaded state once, at startup. User's design (2026-11-11): a restart does not read any broker and needs no login.
+// The order process restores its open trades from Mongo alone ('restoreFromMongo'; Mongo is kept equal to the brokers by the end-of-day sync and
+// `npm run sync`), then every strategy's reconcile() rebuilds its own state from them - inside OrderClient.withNoOrders, so it places nothing.
+// Fails closed: while Mongo (or the order process) is not reachable no strategy is marked loaded and none receives a tick; the retry only covers the
+// order process's socket or Mongo not being up yet (the processes start together).
 const STARTUP_RECONCILE_IPC_RETRY_MS = 2_000;
 const STARTUP_RECONCILE_IPC_ATTEMPTS = 30;
 
-function brokersNeededByEnabledStrategies(): string[] {
-    const needed = new Set<string>();
-    for (const entry of configService.getConfig().strategies ?? []) {
-        if ((entry as any)?.enabled === true) for (const b of configuredBrokersOf(entry as any)) needed.add(b);
-    }
-    return Array.from(needed);
-}
-
 async function startupReconcile(): Promise<void> {
-    const needed = brokersNeededByEnabledStrategies();
-    if (needed.length === 0) {
-        for (const strategy of strategies.getList()) strategy.stateLoaded = true;
-        Log.log('[strategies] Startup reconcile skipped - no strategy is enabled (run POST /reconcile before enabling one)');
-        return;
-    }
     for (let attempt = 1; attempt <= STARTUP_RECONCILE_IPC_ATTEMPTS; attempt++) {
         if (strategies.getList().every((s) => s.stateLoaded)) return; // a manual POST /reconcile got there first
         try {
-            const sessions = await OrderClient.getInstance().brokerSessions();
-            if (needed.some((b) => !sessions[b])) return; // not logged in: no reconcile, no log, no polling
-            const brokers = await OrderClient.getInstance().reconcileBrokerPositions();
-            const failed = needed.filter((b) => !brokers[b]);
-            if (failed.length > 0) {
-                Log.log(`[strategies] ALERT: startup reconcile: positions could not be read for ${failed.join(', ')} although the session looked valid - no strategy receives ticks; fix it and restart or POST /reconcile`);
-                return;
-            }
+            const restored = await OrderClient.getInstance().restoreFromMongo();
+            if (!restored.ok) throw new Error(restored.error ?? 'the restore from Mongo did not complete');
             await runReconcile();
             const pending = strategies.getList().filter((s) => !s.stateLoaded);
-            if (pending.length > 0) Log.log(`[strategies] ALERT: startup reconcile left ${pending.map((s) => s.userId).join(', ')} unreconciled - they receive nothing until POST /reconcile succeeds`);
-            else Log.log('[strategies] Startup reconcile complete - ticks and fills are now delivered');
+            if (pending.length > 0) Log.log(`[strategies] ALERT: startup restore left ${pending.map((s) => s.userId).join(', ')} unloaded - they receive nothing until POST /reconcile succeeds`);
+            else Log.log('[strategies] Startup restore complete (from Mongo, no broker read) - ticks and fills are now delivered');
             return;
         } catch (e) {
             if (attempt === STARTUP_RECONCILE_IPC_ATTEMPTS) {
-                Log.log('[strategies] ALERT: startup reconcile could not reach the order process - no strategy receives ticks; restart or POST /reconcile:', e);
+                Log.log('[strategies] ALERT: startup restore could not complete (order process / Mongo not reachable) - no strategy receives ticks; fix it and restart or POST /reconcile:', e);
                 return;
             }
             await new Promise((r) => setTimeout(r, STARTUP_RECONCILE_IPC_RETRY_MS));

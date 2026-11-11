@@ -24,6 +24,7 @@ import { exchangeForTsym } from '../../util/underlyings';
 // spelling/id the platform may have stored for the contract; `soldQty`/`soldValue` are TODAY's sells at the broker (absent where the broker does not report them).
 type BrokerRow = { tsyms: string[]; tokens: string[]; qty: number; soldQty?: number; soldValue?: number; ltp?: number };
 type BrokerKey = 'kite' | 'ant' | 'breeze' | 'prism';
+export type MongoRestoreResult = { ok: boolean; restored: number; contracts: number; skippedExpired: string[]; skippedUnknownToken: string[]; skippedNoToken: string[]; error?: string };
 
 // Open-P&L pricing gets a short budget: it runs inside every buy's drawdown check, so a slow quote must not stall an order.
 const OPEN_PNL_TIMEOUT_MS = 4_000;
@@ -1493,6 +1494,58 @@ class OrderBookkeeping {
         return true;
     }
 
+    // Rebuilds `trades` from Mongo ALONE - no broker read, no login (user's design, 2026-11-11: a restart restores from Mongo; the end-of-day
+    // sync / `npm run sync` is what keeps Mongo equal to the brokers). Every (broker, token) with a Buy in the last `lookbackDays` goes through the
+    // same per-user FIFO restore the broker-driven reconcile uses, with no broker quantity to cap against (restoreOpenTradesForTsym's `null` mode).
+    // Contracts that expired before today are skipped (an expired contract still open per Mongo is a record that was never closed, not a position;
+    // the end-of-day sync reports it), as are docs without a token or whose token the contract master does not know (ALERT: not restored).
+    // Idempotent: mergeRestored refuses a user+token+broker that is already tracked.
+    async restoreOpenTradesFromMongo(opts: { lookbackDays?: number } = {}): Promise<MongoRestoreResult> {
+        const result: MongoRestoreResult = { ok: false, restored: 0, contracts: 0, skippedExpired: [], skippedUnknownToken: [], skippedNoToken: [] };
+        const db = Mongo.getInstance()?.db;
+        if (!db) { result.error = 'Mongo is not available'; return result; }
+        try {
+            const since = new Date(Date.now() - (opts.lookbackDays ?? 120) * 86400000);
+            const docs: any[] = await db.collection('Trade').find({ action: 'Buy', entryTime: { $gte: since } }).project({ tsym: 1, token: 1, broker: 1 }).sort({ entryTime: 1 }).toArray();
+            const groups = new Map<string, { broker: BrokerKey; token?: string; newest: string; tsyms: Set<string> }>();
+            for (const d of docs) {
+                if (!d.tsym) continue;
+                const brokerName = d.broker == null || String(d.broker).trim() === '' ? 'kite' : normalizeBrokerName(d.broker);
+                if (brokerName !== 'kite' && brokerName !== 'ant' && brokerName !== 'breeze' && brokerName !== 'prism') continue;
+                const token = d.token != null && String(d.token) !== '' ? String(d.token) : undefined;
+                const key = `${brokerName}|${token ?? 'tsym:' + d.tsym}`;
+                const g = groups.get(key) ?? { broker: brokerName as BrokerKey, token, newest: String(d.tsym), tsyms: new Set<string>() };
+                g.newest = String(d.tsym);
+                g.tsyms.add(String(d.tsym));
+                groups.set(key, g);
+            }
+            const todayStartUtc = Math.floor(Date.now() / 86400000) * 86400000;
+            const restored: Trade[] = [];
+            for (const g of groups.values()) {
+                if (!OrderBookkeeping.isOptionContract(g.newest)) continue;
+                if (!g.token) { result.skippedNoToken.push(`${g.broker}:${g.newest}`); continue; }
+                const contract = AntContractMaster.getInstance().findByToken(g.token);
+                if (!contract) { result.skippedUnknownToken.push(`${g.broker}:${g.newest}(${g.token})`); continue; }
+                if (contract.expiryMs < todayStartUtc) { result.skippedExpired.push(`${g.broker}:${g.newest}`); continue; }
+                result.contracts++;
+                const others = Array.from(g.tsyms).filter((t) => t !== g.newest);
+                restored.push(...(await this.restoreOpenTradesForTsym(g.newest, null, g.token, g.broker, undefined, [g.token], others.length > 0 ? others : undefined)));
+            }
+            this.mergeRestored(restored);
+            result.restored = restored.length;
+            result.ok = true;
+            Log.log(`[order] Restored ${restored.length} open trade(s) from Mongo alone (${result.contracts} live contract(s) with a recent Buy; no broker was read)`);
+            // A restore that silently drops a contract would leave a held position unmanaged: say so for every kind of skip that is not an expiry.
+            if (result.skippedNoToken.length > 0) Log.log(`[order] ALERT: restore from Mongo: Buy docs without a token were NOT restored (${result.skippedNoToken.join(', ')}) - check them by hand`);
+            if (result.skippedUnknownToken.length > 0) Log.log(`[order] ALERT: restore from Mongo: contracts unknown to the contract master were NOT restored (${result.skippedUnknownToken.join(', ')}) - refresh the contract master and restart`);
+            if (result.skippedExpired.length > 0) Log.log(`[order] restore from Mongo: ${result.skippedExpired.length} expired contract(s) skipped (${result.skippedExpired.slice(0, 6).join(', ')}${result.skippedExpired.length > 6 ? ', ...' : ''})`);
+        } catch (e: any) {
+            result.error = e?.message ?? String(e);
+            Log.log('[order] ALERT: restore from Mongo failed - no trade was restored:', e);
+        }
+        return result;
+    }
+
     // ---- Closes that happened outside the platform (2026-11-11) ----
     // The reconcile*Positions readers above only ADD what a broker still holds. A tracked trade whose broker position went flat on its own - AliceBlue's
     // intraday (MIS) square-off at ~15:16, a sell in the broker's own app, an expiry - therefore stayed "open" in `trades` for the life of the order
@@ -1737,7 +1790,7 @@ class OrderBookkeeping {
     // brokers' Mongo Buy/Sell docs into one blended restored position on
     // restart, corrupting quantity/avgPrice and losing which broker a
     // resting exit order belongs to.
-    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number, brokerToken: string | undefined, broker: 'kite' | 'ant' | 'breeze' | 'prism', brokerView?: { avg?: unknown; ltp?: unknown }, contractTokens?: string[], alsoTsyms?: string[]): Promise<Trade[]> {
+    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number | null, brokerToken: string | undefined, broker: 'kite' | 'ant' | 'breeze' | 'prism', brokerView?: { avg?: unknown; ltp?: unknown }, contractTokens?: string[], alsoTsyms?: string[]): Promise<Trade[]> {
         const db = Mongo.getInstance()?.db;
         if (!db || !tsym) return [];
 
@@ -1868,6 +1921,10 @@ class OrderBookkeeping {
             restored.push(trade);
             totalRestoredQty += totalQty;
         }
+
+        // Mongo-only restore (restoreOpenTradesFromMongo, brokerQuantity === null): the FIFO net IS the position, there is no broker quantity or
+        // average to cross-check against, cap at or compare with.
+        if (brokerQuantity == null) return restored;
 
         // Cost cross-check. The cost above is a FIFO net of Mongo buys and sells, which assumes exits consume the oldest lots; when an
         // exit sold the newest lot instead (a restart-orphaned older lot, live 2026-10-29: puts bought near 105-108 restored at 91) the

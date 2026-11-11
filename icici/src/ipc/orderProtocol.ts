@@ -22,6 +22,8 @@ export type OrderRequestType =
     | 'reconcileBrokerPositions'
     // Whether each broker's saved session is valid right now (read-only). The strategies process waits on this before its startup reconcile.
     | 'brokerSessions'
+    // Rebuilds the order process's open trades from Mongo alone (no broker read, no login). The strategies process asks for it at startup.
+    | 'restoreFromMongo'
     | 'updateUserSettings'
     // Runtime per-(user, broker) investment cap for the rest of the local day (BulkPcr loss-trip cut). payload: { broker, cap }.
     | 'setBrokerInvestmentCap'
