@@ -506,10 +506,12 @@ export abstract class LimitEntryStrategy extends Strategy {
             const held = open.filter((t) => t.tsym === leg.tsym && (t.broker ?? 'kite') === leg.broker).reduce((s, t) => s + Math.max(0, Number(t.quantity) || 0), 0);
             const row = open.find((t) => t.tsym === leg.tsym && (t.broker ?? 'kite') === leg.broker);
             const unsold = leg.filledQty - leg.soldQty;
-            if (leg.status === 'filled' && unsold > 0 && held === 0 && !row) {
-                // The broker no longer holds it (an intraday square-off, a sell in the broker's app, an expiry) and the order process, which now books
-                // such a close in its own reconcile, has no open trade for it: the leg is over. Left 'filled' it kept a tick stop / exit retry running
-                // on a position that is gone (2026-11-11: ANT MomentumAtFixedTime leg squared off at 15:16). Neutral P&L: the real exit was not seen here.
+            if (leg.status === 'filled' && unsold > 0 && held === 0 && !row && await this.closeBookedElsewhere(leg)) {
+                // The order process holds no open trade for the leg AND has booked a close of the whole position (an intraday square-off, a sell in the
+                // broker's app, an expiry: its reconcile books those). Left 'filled' the leg kept a tick stop / exit retry running on a position that is gone
+                // (2026-11-11: ANT MomentumAtFixedTime leg squared off at 15:16). "No open trade" alone is NOT enough: a broker the reconcile skipped or could
+                // not read (Prism with no enabled strategy on it, live 2026-11-11) also shows no row, and that closed a Prism leg the broker still held.
+                // Neutral P&L: the real exit was not seen here.
                 Log.log(`[${this.logTag}] ALERT: reconcile: ${leg.broker} ${leg.tsym} is no longer held by the broker (${unsold} left to sell) - closed outside the platform, marking the leg closed`);
                 leg.soldQty = leg.filledQty;
                 leg.soldValue += unsold * (leg.filledQty > 0 ? leg.boughtValue / leg.filledQty : 0);
@@ -531,6 +533,22 @@ export abstract class LimitEntryStrategy extends Strategy {
             }
         }
         if (closedAny) await this.endIfIdle();
+    }
+
+    // True when the order process has booked closes today for this leg's contract (this user, this broker) that add up to everything this user bought on the contract:
+    // positive evidence that the position really left, as opposed to a position the order process never loaded.
+    private async closeBookedElsewhere(leg: Leg): Promise<boolean> {
+        try {
+            const st = await OrderClient.getInstance().stats(this.userId);
+            const closed = (st?.closedTrades ?? []).filter((c: any) => c.tsym === leg.tsym && (c.broker ?? 'kite') === leg.broker && (c.user ?? this.userId) === this.userId)
+                .reduce((sum: number, c: any) => sum + (Number(c.quantity) || 0), 0);
+            // Several legs (slots) can sit on one contract and the closed rows are per contract, so compare with everything bought on it by this user.
+            const bought = this.legs().filter((l) => l.tsym === leg.tsym && l.broker === leg.broker).reduce((sum, l) => sum + l.filledQty, 0);
+            return closed >= bought;
+        } catch (e) {
+            Log.log(`[${this.logTag}] reconcile: could not read the closed trades (${leg.broker} ${leg.tsym} stays tracked):`, e);
+            return false;
+        }
     }
 
     reset(): void {

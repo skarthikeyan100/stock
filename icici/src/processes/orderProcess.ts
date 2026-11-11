@@ -1343,9 +1343,12 @@ async function reconcileAllBrokersOnce(logContext: string): Promise<void> {
         bookkeeping.reconcileKitePositions().catch((e) => { Log.log('[order] reconcileKitePositions failed:', e); return false; }),
         bookkeeping.reconcileAntPositions().catch((e) => { Log.log('[order] reconcileAntPositions failed:', e); return false; }),
         bookkeeping.reconcileBreezePositions().catch((e) => { Log.log('[order] reconcileBreezePositions failed:', e); return false; }),
+        // Prism is always tried: with no enabled strategy on it the old code skipped it, so a held Prism position was never restored (2026-11-11: the
+        // 390 Prism 25400CE was invisible to bookkeeping after a restart with every strategy disabled). A missing login only fails the reconcile when a
+        // strategy that is enabled trades on prism.
         prismInUse()
             ? bookkeeping.reconcilePrismPositions().catch((e) => { Log.log('[order] reconcilePrismPositions failed:', e); return false; })
-            : Promise.resolve(true),
+            : bookkeeping.reconcilePrismPositions().then(() => true).catch((e) => { Log.log('[order] reconcilePrismPositions (prism not in use) failed:', e); return true; }),
     ]);
     lastReconcileResult.kite = kite;
     lastReconcileResult.ant = ant;
@@ -1528,11 +1531,10 @@ export async function startOrderProcess() {
     guardedInterval('reconcileManualSells', reconcileManualSells, 60_000);
     // A position the broker closed on its own (AliceBlue's MIS square-off, a sell in the broker's app, an expiry) is booked here without waiting for a
     // POST /reconcile: only a contract seen flat for 90 s is booked (an own sell's fill notification gets that long to arrive first). Skipped while
-    // a reconcile runs (it does the same sync itself) and for a broker that is not in use.
+    // a reconcile runs (it does the same sync itself); a broker with no tracked trade costs nothing (no read).
     guardedInterval('syncExternalCloses', async () => {
         if (reconcileInFlight) return;
         for (const b of ['kite', 'ant', 'breeze', 'prism'] as const) {
-            if (b === 'prism' && !prismInUse()) continue;
             await bookkeeping.syncExternalClosesSafe(b, 90_000);
         }
     }, 120_000);
