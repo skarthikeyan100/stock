@@ -158,24 +158,14 @@ export default class RuleBasedStrategy extends Strategy {
     private parsed: RuleIndicator[][] = [];
     // Set when a listed indicator is unknown or not computed live: the block then never trades (reported once, in the constructor).
     private indicatorError: string | null = null;
+    // The `indicators` value the current rules were parsed from; a different value in config.yml re-parses them (see loadRules).
+    private rulesSource = '';
 
     constructor(userId?: string) {
         super(userId);
         const config = this.getConfig();
         this.enabled = config.enabled;
-        this.ruleNames = parseRuleLines(config.indicators);
-
-        if (this.ruleNames.length === 0) {
-            console.warn(`[RuleBased:${this.userId}] No rules configured - strategy will be inactive`);
-        } else {
-            try {
-                this.parsed = this.ruleNames.map((names) => names.map((name) => parseRuleIndicator(name)));
-                Log.log(`[RuleBased:${this.userId}] Initialized with ${this.ruleNames.length} rule(s): ${this.ruleNames.map((r) => r.join(',')).join(' | ')}`);
-            } catch (e: any) {
-                this.indicatorError = e?.message ?? String(e);
-                Log.log(`[RuleBased:${this.userId}] ALERT: ${this.indicatorError} - this block will not trade`);
-            }
-        }
+        this.loadRules(config.indicators);
 
         const legacy = legacyExitKeysIn(this.instanceConfig() as any, LEGACY_EXIT_KEYS);
         if (legacy.length > 0) {
@@ -183,6 +173,27 @@ export default class RuleBasedStrategy extends Strategy {
         }
     }
 
+
+    // (Re)parses the rule list. Called at construction and again whenever config.yml's `indicators` changes, so an edit applies to the
+    // running strategy (config is hot-read) instead of only after a restart. A parse failure blocks trading with an ALERT, as at startup.
+    private loadRules(indicators: unknown): void {
+        this.rulesSource = JSON.stringify(indicators ?? []);
+        this.indicatorError = null;
+        this.parsed = [];
+        this.ruleNames = parseRuleLines(indicators as any);
+
+        if (this.ruleNames.length === 0) {
+            console.warn(`[RuleBased:${this.userId}] No rules configured - strategy will be inactive`);
+            return;
+        }
+        try {
+            this.parsed = this.ruleNames.map((names) => names.map((name) => parseRuleIndicator(name)));
+            Log.log(`[RuleBased:${this.userId}] Initialized with ${this.ruleNames.length} rule(s): ${this.ruleNames.map((r) => r.join(',')).join(' | ')}`);
+        } catch (e: any) {
+            this.indicatorError = e?.message ?? String(e);
+            Log.log(`[RuleBased:${this.userId}] ALERT: ${this.indicatorError} - this block will not trade`);
+        }
+    }
 
     getConfig() {
         const strategiesSingleton = require('./strategies').default;
@@ -209,6 +220,9 @@ export default class RuleBasedStrategy extends Strategy {
      */
     receive(_oldStats: PeriodicStats, newStats: PeriodicStats) {
         if (!this.enabled || !newStats?.results) return;
+        // Before the error check, so fixing a bad indicator name in config.yml clears the block without a restart.
+        const latest = this.getConfig().indicators;
+        if (JSON.stringify(latest ?? []) !== this.rulesSource) this.loadRules(latest);
         if (this.indicatorError) return;
         if (!this.isTimeInRange()) return;
         if (this.contract !== null) return;  // position already open
