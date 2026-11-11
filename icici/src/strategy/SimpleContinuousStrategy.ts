@@ -80,6 +80,7 @@ export interface SimpleLeg {
     doubled: boolean;    // the one-time double-up has been done (original legs only)
     status: 'open' | 'closed';
     sellQty: number;     // quantity currently resting as a limit sell
+    sellShortfall?: number; // quantity of the leg with NO resting sell although others rest (a placement the broker clamped, or a restart that found fewer resting sells than the leg holds): placed from the leg's ticks
     sellPrice: number;
     niftyAt?: number;    // Nifty LTP when this leg was bought (the stacking guard's reference; absent on adopted / older legs)
     hedgeSame?: boolean; // the held-back hedge follows the leg's direction (it closed at a profit) instead of going opposite
@@ -320,6 +321,9 @@ export default class SimpleContinuousStrategy extends Strategy {
                 const pending = await OrderClient.getInstance().getPendingSells(this.userId, this.brokerOrKite(), leg.tsym);
                 leg.sellQty = pending.reduce((s, p) => s + Number(p.quantity || 0), 0);
                 if (leg.sellQty > 0 && !leg.sellPrice) leg.sellPrice = roundToTick(leg.entry + this.priceDiff());
+                // Some of the leg rests but not all of it (2026-11-11: a clamped placement after a double-up left 325 of 650 resting): the rest is placed from ticks.
+                leg.sellShortfall = leg.sellQty > 0 && leg.sellQty < this.remaining(leg) ? this.remaining(leg) - leg.sellQty : 0;
+                if (leg.sellShortfall > 0) Log.log(`[SimpleContinuousStrategy] ALERT: reconcile: ${leg.tsym} holds ${this.remaining(leg)} but only ${leg.sellQty} rests as a sell - placing the other ${leg.sellShortfall} from ticks`);
             } catch (e) {
                 Log.log(`[SimpleContinuousStrategy] reconcile: could not read pending sells for ${leg.tsym}; assuming none rest:`, e);
                 leg.sellQty = 0;
@@ -439,15 +443,51 @@ export default class SimpleContinuousStrategy extends Strategy {
         this.lastSellAttempt.set(leg.id, Date.now());
         const price = roundToTick(leg.entry + this.priceDiff());
         try {
-            await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
+            const res = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
                 tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(),
             });
-            leg.sellQty = quantity;
-            leg.sellPrice = price;
-            this.save();
-            Log.log(`[SimpleContinuousStrategy] resting sell ${leg.tsym} qty=${quantity} @${price}`);
+            this.bookPlacedSell(leg, quantity, price, res);
         } catch (e) {
             Log.log(`[SimpleContinuousStrategy] ALERT: resting sell for ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
+        } finally {
+            this.busy.delete(leg.id);
+        }
+    }
+
+    // Books a resting-sell placement by the quantity the order process says it PLACED, not the requested one: Kite's never-short guard can clamp a
+    // sell (live 2026-11-11 14:13: the buy of a double-up had just filled, the position read lagged, 325 of 650 were placed while the leg was
+    // booked as fully covered). The unplaced rest becomes `sellShortfall`, placed from the leg's ticks.
+    private bookPlacedSell(leg: SimpleLeg, requested: number, price: number, res: any): void {
+        const placed = Number(res?.placedQuantity);
+        const got = Number.isFinite(placed) && placed >= 0 ? Math.min(placed, requested) : requested; // an executor that reports nothing placed-wise is taken as fully placed
+        leg.sellQty = got;
+        leg.sellShortfall = requested - got;
+        leg.sellPrice = price;
+        this.save();
+        Log.log(`[SimpleContinuousStrategy] resting sell ${leg.tsym} qty=${got} @${price}`);
+        if (got < requested) Log.log(`[SimpleContinuousStrategy] ALERT: only ${got}/${requested} of ${leg.tsym} placed as a resting sell (clamped by the broker's guard) - placing the other ${requested - got} from ticks`);
+    }
+
+    // Places the quantity of a leg that has no resting sell while others rest (sellShortfall). Capped at what the leg still holds.
+    private async placeShortfall(leg: SimpleLeg): Promise<void> {
+        if (leg.status !== 'open' || this.busy.has(leg.id)) return;
+        const quantity = Math.min(leg.sellShortfall ?? 0, this.remaining(leg));
+        if (quantity <= 0) { leg.sellShortfall = 0; return; }
+        this.busy.add(leg.id);
+        this.lastSellAttempt.set(leg.id, Date.now());
+        const price = roundToTick(leg.entry + this.priceDiff());
+        try {
+            const res: any = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
+                tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(),
+            });
+            const placed = Number(res?.placedQuantity);
+            const got = Number.isFinite(placed) && placed >= 0 ? Math.min(placed, quantity) : quantity;
+            leg.sellQty += got;
+            leg.sellShortfall = quantity - got;
+            this.save();
+            Log.log(`[SimpleContinuousStrategy] resting sell (rest of the leg) ${leg.tsym} qty=${got} @${price}${leg.sellShortfall > 0 ? `, ${leg.sellShortfall} still unplaced` : ''}`);
+        } catch (e) {
+            Log.log(`[SimpleContinuousStrategy] ALERT: resting sell for the rest of ${leg.tsym} (${quantity}) failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
         } finally {
             this.busy.delete(leg.id);
         }
@@ -466,6 +506,8 @@ export default class SimpleContinuousStrategy extends Strategy {
         // A leg whose sell never got placed (placement failed, or a restart found none resting) is retried.
         if (leg.sellQty === 0 && !this.busy.has(leg.id) && Date.now() - (this.lastSellAttempt.get(leg.id) ?? 0) > SELL_RETRY_MS) {
             await this.placeSell(leg);
+        } else if ((leg.sellShortfall ?? 0) > 0 && leg.sellQty > 0 && !this.busy.has(leg.id) && Date.now() - (this.lastSellAttempt.get(leg.id) ?? 0) > SELL_RETRY_MS) {
+            await this.placeShortfall(leg);
         }
         if (!leg.hedged && quote.ltp <= leg.entry - this.priceDiff()) {
             await this.hedge(leg, 'adverse move');
@@ -629,6 +671,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         if (leg.soldQty < leg.qty) { this.save(); return; } // chunked sell: the rest is still resting
         leg.status = 'closed';
         leg.sellQty = 0;
+        leg.sellShortfall = 0;
         this.unwatch(leg);
         const avgSell = leg.soldValue / leg.soldQty;
         const pnl = (avgSell - leg.entry) * leg.qty;
@@ -660,6 +703,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         for (const leg of this.openLegs()) {
             if (leg.tsym !== n.tradingSymbol || leg.sellQty <= 0 || this.busy.has(leg.id)) continue;
             leg.sellQty = 0;
+            leg.sellShortfall = 0; // the tick retry places the whole remainder
         }
     };
 
@@ -687,6 +731,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 }
                 cancelledFilled = res.filledQty;
                 parent.sellQty = 0;
+                parent.sellShortfall = 0;
             }
             if (cancelledFilled > 0) {
                 // Part of the target sell filled while we were cancelling: its fill events will arrive; do not grow the position.
@@ -731,13 +776,10 @@ export default class SimpleContinuousStrategy extends Strategy {
         if (quantity <= 0 || leg.status !== 'open') return;
         const price = roundToTick(leg.entry + this.priceDiff());
         try {
-            await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
+            const res = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
                 tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(),
             });
-            leg.sellQty = quantity;
-            leg.sellPrice = price;
-            this.save();
-            Log.log(`[SimpleContinuousStrategy] resting sell ${leg.tsym} qty=${quantity} @${price}`);
+            this.bookPlacedSell(leg, quantity, price, res);
         } catch (e) {
             Log.log(`[SimpleContinuousStrategy] ALERT: resting sell for ${leg.tsym} failed (tick retry follows):`, e);
         }
@@ -756,6 +798,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                     if (res.cancelFailed) { Log.log(`[SimpleContinuousStrategy] ${label}: could not cancel the resting sell of ${leg.tsym}, retrying`); continue; }
                     filled = res.filledQty;
                     leg.sellQty = 0;
+                    leg.sellShortfall = 0;
                 }
                 const left = leg.qty - leg.soldQty - filled;
                 if (left > 0) await chunkedLegSell(this.userId, leg.tsym, left, this.broker());
