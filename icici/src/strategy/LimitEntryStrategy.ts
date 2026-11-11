@@ -15,6 +15,7 @@ import { NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY, INDEX_LOT_SIZE } from '.
 import { configuredBrokersOf } from '../util/brokerName';
 import { splitIntoFreezeQtyChunks } from '../util/quantityChunks';
 import { isPastEodClose } from '../util/eodClose';
+import { exchangeForTsym } from '../util/underlyings';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 
 // Shared engine of RecommendationStrategy and NiftyChangeStrategy: one LIMIT buy per configured broker, sized from a rupee budget (per broker: every broker gets its own full amount),
@@ -529,9 +530,31 @@ export abstract class LimitEntryStrategy extends Strategy {
                 leg.boughtValue += missed * (Number(row.price) || leg.price);
                 leg.status = 'filled';
                 this.save();
-                await this.protectFilled(leg);
+                // The exit for the adopted quantity is NOT placed here (a reconcile never trades): housekeeping, driven by ticks, places it
+                // (`!leg.exit` -> tryPlaceExit) or tops it up (`exitQty < filledQty` -> topUp).
             }
         }
+        // Positions carried from an earlier day (2026-11-11): the per-day state starts empty, so a position of this user that no leg of today's
+        // state knows would stay unmanaged (ensureLoaded only logs "check by hand" for yesterday's legs, and the DAY exit sell expired at the
+        // close). Each becomes a 'filled' leg with no exit; housekeeping places its exit from ticks like for any other filled leg. Only a contract
+        // with NO leg at all (in any status) is adopted, so today's own legs and their history are never duplicated.
+        let adoptedAny = false;
+        for (const t of open) {
+            const qty = Math.max(0, Number(t.quantity) || 0);
+            const broker = String(t.broker ?? 'kite');
+            if (!(qty > 0) || !t.tsym || !t.token) continue;
+            if (this.legs().some((l) => l.tsym === t.tsym && l.broker === broker)) continue;
+            const price = Number(t.price) > 0 ? Number(t.price) : 0;
+            const leg: Leg = {
+                broker, tsym: t.tsym, token: String(t.token), exchange: exchangeForTsym(t.tsym) === 'BFO' ? 'BFO' : 'NFO',
+                qty, price, status: 'filled', placedAt: Date.now(), filledQty: qty, boughtValue: qty * price, soldQty: 0, soldValue: 0, entryCancelled: true,
+            };
+            this.state.legs[`adopted:${broker}:${t.tsym}`] = leg;
+            Log.log(`[${this.logTag}] ALERT: reconcile: ${broker} ${t.tsym} qty=${qty} @ ${price.toFixed(2)} is held by this strategy but no leg of today's state knows it (carried from an earlier day) - adopted as a filled leg; its exit is placed from ticks`);
+            this.rewatch(leg);
+            adoptedAny = true;
+        }
+        if (adoptedAny) this.save();
         if (closedAny) await this.endIfIdle();
     }
 
