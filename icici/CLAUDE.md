@@ -267,6 +267,7 @@ Common settings:
 - `strategy.*.threshold` - Signal generation thresholds
 - `strategy.*.enabled` - Enable/disable strategies
 - `settings.trailingDistance` - For trailing stop losses
+- `settings.mirrorPercentage` - 0-100 (default 100 in config.yml; absent = 0). Every buy a user starts from the frontend (`/order/buy`) is mirrored by the first `ADMIN_EMAILS` account as its own real order, `floor(lots x pct/100)` whole lots (30%: 1-3 lots nothing, 4 lots one), same contract/broker/target/stop-loss; the user's sells (squareoff, target/stop, force-close, expiry) close the matching admin share, `/order/settarget` is forwarded. Strategy pseudo-users and the admin never mirror. Code: `src/processes/order/mirror.ts`; durable state in Mongo `mirrorLegs` (user+token -> adminQty). The admin order bypasses the admin's own lot/investment caps; broker margin still applies. Admin trades show in Admin > Trades (pick the admin user) and on the admin's own trading page.
 
 ## User Authentication Flow
 

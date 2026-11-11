@@ -53,7 +53,7 @@ const QUANTITY_SENTINEL_TYPES = ['BulkPcrStrategy', 'BulkPcrAutoStartStrategy', 
 
 // Percent-of-profit / drawdown fields, constrained to a sane 0-100 range.
 const PERCENT_FIELDS: string[] = [
-    'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent', 'stopLossPercent',
+    'maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent', 'stopLossPercent', 'mirrorPercentage',
 ];
 
 // Stop levels that must be strictly positive. 0 for maxProfit/maxLoss would

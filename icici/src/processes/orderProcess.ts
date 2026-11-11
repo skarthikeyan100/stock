@@ -41,6 +41,7 @@ import Prism from '../prism';
 import BreezeOrderNotifyStream from '../breeze/BreezeOrderNotifyStream';
 import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
+import { startMirrorBuy, undoMirrorBuy, onUserSell, mirrorSetTargetStopLoss, type MirrorLeg, type MirrorHook } from './order/mirror';
 import * as prismExecutor from './order/prismExecutor';
 import { getBrokerExecutor, getExecutorByBroker } from './order/brokerExecutors';
 import { BrokerExecutor, OrderAlreadyFilledError } from './order/BrokerExecutor';
@@ -90,6 +91,9 @@ function broadcast(msg: OrderNotification) {
         try { l(msg); } catch (e) { Log.log('[order] in-process notification listener threw:', e); }
     }
 }
+
+// A frontend user's sell (squareoff, target/stop hit, force-close, expiry) closes the matching share of the admin's mirror leg.
+bookkeeping.onFill(onUserSell);
 
 bookkeeping.onFill((userId, trade) => {
     // Net open quantity of this token once the fill is booked (listeners run after booking), summed over every broker on the same
@@ -1090,14 +1094,20 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return await placeOrderWithPendingGuard(req, estimatedValue, () => {
                     const manualBuyBroker = bookkeeping.getUserBroker(req.userId);
                     if (manualBuyBroker === 'breeze') throw new Error('manualBuy: no Breeze manual-buy primitive - refusing to route a Breeze user to Kite');
-                    return manualBuyBroker === 'ant'
-                        ? antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload })
-                        : manualBuyOnKite({ userId: req.userId, ...req.payload });
+                    // mirror: a frontend user's buy is copied by the admin (mirror.ts; settings.mirrorPercentage). If the user's own order then
+                    // fails, the admin's matching quantity is taken back so it does not sit open without the user's.
+                    const started: Array<{ leg: MirrorLeg; done: Promise<void> | void }> = [];
+                    const mirror: MirrorHook = (leg) => { const done = startMirrorBuy(leg); started.push({ leg, done }); return done; };
+                    const buy = manualBuyBroker === 'ant'
+                        ? antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload, mirror })
+                        : manualBuyOnKite({ userId: req.userId, ...req.payload, mirror });
+                    return buy.catch((e) => { for (const s of started) undoMirrorBuy(s.leg, s.done); throw e; });
                 });
             }
 
             case 'setTargetStopLoss': {
                 await setTargetStopLoss(req.userId, req.payload.token, req.payload.targetPoints, req.payload.stopLossPoints);
+                await mirrorSetTargetStopLoss(req.userId, req.payload.token, req.payload.targetPoints, req.payload.stopLossPoints);
                 return { kind: 'response', id: req.id, ok: true };
             }
 

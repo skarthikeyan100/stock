@@ -56,8 +56,9 @@ export default function TermsAndConditionsPage() {
 
           <h3>3.1 Profit Sharing Model</h3>
           <ul>
-            <li>You retain 25% of net profits generated through your trades</li>
-            <li>PropFirm retains 75% of net profits</li>
+            <li>You retain 40% of net profits generated through your trades</li>
+            <li>PropFirm retains 60% of net profits</li>
+            <li>Every trade is placed from PropFirm's own account and capital. PropFirm may place its own parallel trades alongside yours, on the same contracts</li>
             <li>There is no upfront capital contribution required from you</li>
             <li>Profits are calculated and payable on a weekly basis (every Wednesday)</li>
           </ul>

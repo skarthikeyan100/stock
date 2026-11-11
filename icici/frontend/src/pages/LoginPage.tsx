@@ -79,7 +79,7 @@ export default function LoginPage() {
           </h1>
           <p className="landing-subtitle">
             Join our proprietary trading platform. We provide the capital —
-            you bring the skill. Keep 25% of every rupee you earn.
+            you bring the skill. Keep 40% of every rupee you earn.
           </p>
           <div className="landing-hero-cta">
             <GoogleLogin onSuccess={onGoogleSuccess('hero')} onError={onGoogleError('hero')} theme={googleTheme} />
@@ -88,7 +88,7 @@ export default function LoginPage() {
         </div>
         <div className="landing-hero-graphic">
           <div className="stat-card stat-card-1">
-            <div className="stat-value text-success">+25%</div>
+            <div className="stat-value text-success">+40%</div>
             <div className="stat-label">Your Profit Share</div>
           </div>
           <div className="stat-card stat-card-2">
@@ -123,7 +123,7 @@ export default function LoginPage() {
             <div className="step-card">
               <div className="step-number">03</div>
               <h4>Earn Your Share</h4>
-              <p>25% of all profits you generate are yours — paid out every Wednesday.</p>
+              <p>40% of all profits you generate are yours — paid out every Wednesday.</p>
             </div>
           </div>
         </div>
@@ -143,7 +143,7 @@ export default function LoginPage() {
               <div className="rule-icon rule-icon-green">₹</div>
               <h4>Profit Sharing</h4>
               <p>
-                You keep <strong>25% of net profits</strong> generated through your trades. There is no upfront fee
+                You keep <strong>40% of net profits</strong> generated through your trades. There is no upfront fee
                 or capital commitment required from you.
               </p>
             </div>
@@ -185,7 +185,7 @@ export default function LoginPage() {
               <h4>Scenario A — You Profit</h4>
               <p>
                 You trade carefully and close the week with <strong>₹40,000 in net profits</strong>.
-                Your 25% share is <strong>₹10,000 paid directly to you</strong> on the next payout date.
+                Your 40% share is <strong>₹16,000 paid directly to you</strong> on the next payout date.
                 The firm keeps the rest and your account continues with full capital for next week.
               </p>
             </div>

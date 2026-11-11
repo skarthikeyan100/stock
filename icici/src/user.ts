@@ -158,6 +158,11 @@ const ADMIN_EMAILS = process.env.ADMIN_EMAILS
     ? process.env.ADMIN_EMAILS.split(',').map(e => e.trim().toLowerCase()).filter(Boolean)
     : ['skarthikeyan100@gmail.com'];
 
+// The admin account that mirrors frontend users' trades (settings.mirrorPercentage): the first ADMIN_EMAILS entry.
+export function primaryAdminEmail(): string {
+    return ADMIN_EMAILS[0];
+}
+
 function isAdminEmail(email: string): boolean {
     return ADMIN_EMAILS.includes(email.trim().toLowerCase());
 }

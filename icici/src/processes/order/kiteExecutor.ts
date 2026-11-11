@@ -1,3 +1,4 @@
+import type { MirrorHook } from './mirror';
 import Log from '../../util/Log';
 import { getSpotLtp } from './spotQuote';
 import Kite from '../../kite/Kite';
@@ -182,6 +183,7 @@ async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BF
 
 export interface BuyIndexRequest {
     userId: string;
+    mirror?: MirrorHook; // frontend manual buy only (see mirror.ts)
     index?: 'NIFTY' | 'SENSEX';
     niftyLtp: number;
     right: string; // CALL | PUT
@@ -229,6 +231,8 @@ export async function buyIndexOnKite(req: BuyIndexRequest): Promise<Trade> {
         : AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: entryStrike });
     Log.log(`[order] Buying ${contract.tradingSymbol} qty=${req.quantity} for ${req.userId}`);
 
+    req.mirror?.({ userId: req.userId, broker: 'kite', tsym: contract.tradingSymbol, token: commonToken, exchange: contract.exchange, quantity: req.quantity,
+        place: (adminId, qty) => buyContractOnKite(adminId, contract.tradingSymbol, commonToken, qty, contract.exchange, targetPoints, stopLossPoints) });
     const buyPrice = await getMarketableKitePrice(commonToken, contract.exchange, 'BUY');
     const { orderId } = await kite.placeLimitBuyOption(contract.tradingSymbol, req.quantity, buyPrice, contract.exchange);
     const mkPartial = (qty: number, price: number): Trade => kiteFillTrade({ tsym: contract.tradingSymbol, token: commonToken, action: 'Buy', userId: req.userId, orderId: orderId, right: req.right }, qty, price);
@@ -271,6 +275,7 @@ export interface ManualBuyRequest {
     quantity?: number;
     targetPoints?: number;
     stopLossPoints?: number;
+    mirror?: MirrorHook; // set by orderProcess for a frontend user's buy: the admin mirrors it (mirror.ts)
 }
 
 export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade> {
@@ -280,7 +285,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade> {
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
         const price = await estimateOptionPrice(canonical.symbol, canonical.strike, canonical.optionType);
         const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity);
-        return buyContractOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.targetPoints, req.stopLossPoints);
+        return buyContractOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
     }
 
     if (!req.right) throw new Error('manualBuy requires either contract or right');
@@ -296,19 +301,25 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade> {
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.strikePrice });
         const price = await estimateOptionPrice(index, req.strikePrice, optionType);
         const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity);
-        return buyContractOnKite(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.targetPoints, req.stopLossPoints);
+        return buyContractOnKite(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
     }
 
     const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
-    return buyIndexOnKite({ userId: req.userId, index: req.index, niftyLtp: await getSpotLtp(index), right: req.right, quantity, targetPoints: req.targetPoints, stopLossPoints: req.stopLossPoints });
+    return buyIndexOnKite({ userId: req.userId, index: req.index, niftyLtp: await getSpotLtp(index), right: req.right, quantity, targetPoints: req.targetPoints, stopLossPoints: req.stopLossPoints, mirror: req.mirror });
 }
 
-async function buyContractOnKite(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', targetPoints?: number, stopLossPoints?: number): Promise<Trade> {
+async function buyContractOnKite(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', targetPoints?: number, stopLossPoints?: number, mirror?: MirrorHook): Promise<Trade> {
     const kite = Kite.getInstance();
     if (!(await kite.hasValidSession())) {
         throw new Error('Kite session not active - complete /kite/login first.');
     }
     Log.log(`[order] Buying (manual) ${tradingSymbol} qty=${quantity} for ${userId}`);
+    // The admin mirror starts now, in parallel with this order (it does not wait for the user's fill).
+    mirror?.({ userId, broker: 'kite', tsym: tradingSymbol, token: commonToken, exchange, quantity,
+        // The admin leg gets the user's RESOLVED exit points (request, else the user's own, else settings), not the admin's defaults.
+        place: (adminId, qty) => buyContractOnKite(adminId, tradingSymbol, commonToken, qty, exchange,
+            targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? configService.getConfig().settings.targetPoints,
+            stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? configService.getConfig().settings.stopLossPoints) });
     const buyPrice = await getMarketableKitePrice(commonToken, exchange, 'BUY');
     const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
     const mkPartial = (qty: number, px: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: commonToken, action: 'Buy', userId: userId, orderId: orderId }, qty, px);

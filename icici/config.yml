@@ -17,6 +17,7 @@ settings:
   skipNearestExpiryOnExpiryDay: true
   hotRestartDuringMarketHours: false
   eodCloseTime: '15:50'
+  mirrorPercentage: 100%  # admin mirrors this % of every frontend user's lots (floor to whole lots) with its own real order; 0 = no mirror
 strategies:
   - type: SentimentStrategy
     enabled: false

@@ -1,3 +1,4 @@
+import type { MirrorHook } from './mirror';
 import Log from '../../util/Log';
 import { getSpotLtp } from './spotQuote';
 import ANT from '../../ant/ANT';
@@ -155,6 +156,8 @@ async function sizingQuote(exch: string, token: string): Promise<{ ltp: number; 
 async function enterManualBuy(req: ManualBuyRequest, tsym: string, token: string, exch: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number): Promise<Trade> {
     const sized = req.quantity != null ? undefined : await sizingQuote(exch, token);
     const quantity = sizeManualBuyOrRefuse(req, tsym, sized?.ltp);
+    req.mirror?.({ userId: req.userId, broker: 'ant', tsym, token, exchange: exch, quantity,
+        place: (adminId, qty) => enterPosition(adminId, tsym, token, qty, exch, targetPoints, stopLossPoints, 'bracket') });
     return enterPosition(req.userId, tsym, token, quantity, exch, targetPoints, stopLossPoints, 'bracket', sized);
 }
 
@@ -514,6 +517,7 @@ export async function getLiveNetQuantity(tradingSymbol: string): Promise<number>
 
 export interface BuyIndexRequest {
     userId: string;
+    mirror?: MirrorHook; // frontend manual buy only (see mirror.ts)
     index?: 'NIFTY' | 'SENSEX';
     niftyLtp: number;
     right: string; // CALL | PUT
@@ -535,6 +539,8 @@ export async function buyIndexOnAnt(req: BuyIndexRequest): Promise<Trade> {
         ? AntContractMaster.getInstance().findExactOption({ symbol: index, strike: req.strike, expiry: req.expiry, optionType })
         : AntContractMaster.getInstance().findATMOption(AntContractMaster.getInstance().entryStrike(req.niftyLtp, optionType, index), optionType, index);
 
+    req.mirror?.({ userId: req.userId, broker: 'ant', tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exch as 'NFO' | 'BFO', quantity: req.quantity,
+        place: (adminId, qty) => enterPosition(adminId, contract.tradingSymbol, contract.token, qty, contract.exch as 'NFO' | 'BFO', targetPoints, stopLossPoints) });
     return enterPosition(
         req.userId,
         contract.tradingSymbol,
@@ -557,6 +563,7 @@ export interface ManualBuyRequest {
     quantity?: number;
     targetPoints?: number;
     stopLossPoints?: number;
+    mirror?: MirrorHook; // set by orderProcess for a frontend user's buy: the admin mirrors it (mirror.ts)
 }
 
 // Quote retry schedules (ms between attempts after the first). Only HTTP 429 is retried, by
@@ -722,7 +729,7 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
 
     const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
 
-    return buyIndexOnAnt({ userId: req.userId, index: req.index, niftyLtp: await getSpotLtp(index), right: req.right, quantity, targetPoints, stopLossPoints });
+    return buyIndexOnAnt({ userId: req.userId, index: req.index, niftyLtp: await getSpotLtp(index), right: req.right, quantity, targetPoints, stopLossPoints, mirror: req.mirror });
 }
 
 // Returns immediately with {orderId} - fill arrives later via

@@ -404,7 +404,7 @@ export default function AdminPage() {
       ...prev,
       [u.email]: {
         lossLimit: String(u.lossLimit), lotLimit: String(u.lotLimit ?? u.lotCount ?? ''), role: u.role, enabled: u.enabled ?? true, useGTT: u.useGTT ?? true,
-        profitSplitPercent: String(u.profitSplitPercent ?? 80), perOrderCap: u.perOrderCap !== undefined ? String(u.perOrderCap) : '',
+        profitSplitPercent: String(u.profitSplitPercent ?? 40), perOrderCap: u.perOrderCap !== undefined ? String(u.perOrderCap) : '',
         // Show the actual value in effect (override, else the resolved
         // default) rather than a blank field with a "default" placeholder.
         strategyCapital: String(u.strategyCapital ?? u.allottedCapital ?? userDefaults.allottedCapital ?? ''),
@@ -662,6 +662,7 @@ export default function AdminPage() {
     'settings.minPrice': { description: "Skip generating a buy signal when the option's LTP is below this floor.", values: 'Integer, in ₹ (e.g. 20).' },
     'settings.maxPrice': { description: "Skip generating a buy signal when the option's LTP is above this ceiling.", values: 'Integer, in ₹ (e.g. 30000).' },
     'settings.cooldownSeconds': { description: 'Minimum wait after an exit before a new entry can be attempted.', values: 'Integer seconds (e.g. 60).' },
+    'settings.mirrorPercentage': { description: 'Share of every frontend user\'s lots that the admin account mirrors with its own real order (same contract, same target/stop-loss, follows the user\'s exits). Whole lots only, rounded down: at 30%, 1-3 lots mirror nothing and 4 lots mirror 1.', values: '0-100 (0 = no mirror), e.g. 100 or 30%.' },
     'settings.trailingDistance': { description: 'Distance the trailing stop trails behind the best price seen since entry.', values: 'Integer points.' },
     'settings.logQuotes': { description: "Persist every incoming option tick to Mongo's OptionQuote collection.", values: 'On/Off — heavy write volume when enabled.' },
 
@@ -1076,7 +1077,7 @@ export default function AdminPage() {
                             style={{ width: 80 }}
                           />
                         ) : (
-                          `${u.profitSplitPercent ?? 80}%`
+                          `${u.profitSplitPercent ?? 40}%`
                         )}
                       </td>
                       <td>
@@ -1295,6 +1296,7 @@ export default function AdminPage() {
                       </Col>
                       <Col md={6}>
                         {renderConfigField('Cooldown (sec)', ['settings', 'cooldownSeconds'], config.settings?.cooldownSeconds)}
+                        {renderConfigField('Admin mirror %', ['settings', 'mirrorPercentage'], config.settings?.mirrorPercentage)}
                       </Col>
                       <Col md={6}>
                         {renderConfigField('Trailing Distance', ['settings', 'trailingDistance'], config.settings?.trailingDistance)}
