@@ -6,10 +6,10 @@
 # contract (today's log, last match); "-" when none is found (no resting sell, e.g. tick-monitored RuleBased, GTT-protected Recommendation).
 # Usage: scripts/strategy-status.sh [port]
 PORT="${1:-3000}"
-MATCH='BulkPcr|Continuous|MomentumAtFixedTime|NiftyChange|Recommendation|Sentiment'
+MATCH='BulkPcr|Continuous|MomentumAtFixedTime|NiftyChange|Recommendation|Sentiment|RuleBased'
 BY_STRATEGY="$(curl -s -m10 "localhost:$PORT/strategyPnl?match=$MATCH")"
 BY_BROKER="$(curl -s -m10 "localhost:$PORT/strategyPnl?match=$MATCH&by=broker")"
-DETAIL="$(curl -s -m20 "localhost:$PORT/strategyPnl?match=Rule|$MATCH&detail=1")"
+DETAIL="$(curl -s -m20 "localhost:$PORT/strategyPnl?match=$MATCH&detail=1")"
 LOG="$(dirname "$(readlink -f "$0")")/../logs/orchestrator-$(date +%F).log"
 BY_STRATEGY="$BY_STRATEGY" BY_BROKER="$BY_BROKER" DETAIL="$DETAIL" LOG="$LOG" node -e '
 const f=n=>(n>=0?"+":"")+n.toFixed(2);
