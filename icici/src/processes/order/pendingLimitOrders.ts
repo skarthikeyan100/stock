@@ -46,7 +46,20 @@ const tracker = new PendingOrderTracker<PendingLimitOrder, KiteSnapshot, 'kite'>
         if (!latest) {
             if (snapshot.historyBudget <= 0) return { status: 'PENDING' };
             snapshot.historyBudget--;
-            const history = await Kite.getInstance().getKiteConnect().getOrderHistory(order.orderId);
+            let history: KiteOrderRow[];
+            try {
+                history = await Kite.getInstance().getKiteConnect().getOrderHistory(order.orderId) as any;
+            } catch (e: any) {
+                // Kite keeps only the current trading day's orders. An id that is in neither today's list nor its own history is a
+                // previous day's order (restored from Mongo after a restart): it can no longer rest, so polling it forever only
+                // errors every tick. Untracked as CANCELLED without notifying listeners; whether it filled before is the next
+                // reconcile()'s to find (positions are loaded from the broker there).
+                if (/Couldn't find that `?order_id`?/i.test(String(e?.message ?? e))) {
+                    Log.log(`[order] ALERT: Kite order ${order.orderId} (${order.tradingSymbol}, ${order.userId}, ${order.action} ${order.quantity}) is unknown to Kite (a previous day's order) - untracked; run POST /reconcile if a fill of it may be unbooked`);
+                    return { status: 'CANCELLED', skipListener: true };
+                }
+                throw e;
+            }
             latest = history[history.length - 1];
         }
         if (!latest) return { status: 'PENDING' };
