@@ -487,7 +487,15 @@ export default class SimpleContinuousStrategy extends Strategy {
             this.save();
             Log.log(`[SimpleContinuousStrategy] resting sell (rest of the leg) ${leg.tsym} qty=${got} @${price}${leg.sellShortfall > 0 ? `, ${leg.sellShortfall} still unplaced` : ''}`);
         } catch (e) {
-            Log.log(`[SimpleContinuousStrategy] ALERT: resting sell for the rest of ${leg.tsym} (${quantity}) failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
+            if (String((e as any)?.message ?? e).includes('nothing sellable')) {
+                // Kite's never-short guard: nothing is left to sell, so the whole position already rests (the platform's pending list had missed an order,
+                // live 2026-11-11 14:15: two resting sells of 325 on a 650 leg). Not a gap: stop retrying.
+                leg.sellShortfall = 0;
+                this.save();
+                Log.log(`[SimpleContinuousStrategy] ${leg.tsym}: the broker has nothing left to sell, so the rest of the leg already rests - no further sell placed`);
+            } else {
+                Log.log(`[SimpleContinuousStrategy] ALERT: resting sell for the rest of ${leg.tsym} (${quantity}) failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
+            }
         } finally {
             this.busy.delete(leg.id);
         }
