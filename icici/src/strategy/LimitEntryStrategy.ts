@@ -359,7 +359,7 @@ export abstract class LimitEntryStrategy extends Strategy {
             for (const broker of brokers) {
                 try {
                     const perBroker = budgetOf(broker); // the amount is PER broker: each one buys with its own full budget
-                    const contract = await OrderClient.getInstance().resolveOptionContract(this.userId, { broker: broker as any, index: entry.index, strike: entry.strike, right: entry.right, skipNearestExpiryDay: expiryDayOverrideOf(this.cfg()) });
+                    const contract = await OrderClient.getInstance().resolveOptionContract(this.userId, { broker: broker as any, index: entry.index, strike: entry.strike, right: entry.right, skipNearestExpiryDay: expiryDayOverrideOf(this.cfg()), expiryOffset: entry.expiryOffset });
                     const price = roundToTick(await priceFor(contract));
                     const qty = this.sizeOrder(perBroker, price, entry.index);
                     if (!(price > 0) || qty <= 0) {
@@ -762,14 +762,16 @@ export abstract class LimitEntryStrategy extends Strategy {
     private async housekeeping(): Promise<void> {
         const cfg = this.cfg() as any;
         const eod = isPastEodClose();
-        const timeoutMs = Number(cfg.entryTimeoutMinutes) > 0 ? Number(cfg.entryTimeoutMinutes) * 60_000 : 0;
+        // settings.entryTimeoutMinutes is the global; a block's own entryTimeoutMinutes overrides it (same lookup as target / stopLoss). 0 / unset = no timeout.
+        const timeoutMinutes = Number(this.setting('entryTimeoutMinutes'));
+        const timeoutMs = timeoutMinutes > 0 ? timeoutMinutes * 60_000 : 0;
         const now = Date.now();
         await this.endIfIdle();
         for (const leg of this.legs()) {
             // The entry order is still open (possibly part-filled, in which case status is already 'filled').
             const entryOpen = (leg.status === 'resting' || leg.status === 'filled') && !leg.entryCancelled && leg.filledQty < leg.qty;
             if (entryOpen && (eod || (timeoutMs > 0 && now - leg.placedAt >= timeoutMs))) {
-                await this.cancelEntry(leg, eod ? 'end of day' : `unfilled after ${cfg.entryTimeoutMinutes} min`);
+                await this.cancelEntry(leg, eod ? 'end of day' : `unfilled after ${timeoutMinutes} min`);
             }
             // Only once every share of the entry has arrived is the leg's size final: exit placement and the EOD close use it.
             // Exit placement and its top-up need only SOME fill (every filled share is protected as it arrives); the EOD close waits for the

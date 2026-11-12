@@ -141,6 +141,20 @@ export default function ProfilePage() {
       .finally(() => setPayoutsLoading(false));
   }, [user?.email]);
 
+  // What this week's (Wednesday to Tuesday) closed trades would pay out - read-only, refreshed every minute.
+  const [estimate, setEstimate] = useState<any>(null);
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const load = () => apiFetch(`/users/${encodeURIComponent(user.email)}/payouts/estimate`)
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => { if (!cancelled) setEstimate(data); })
+      .catch(() => {});
+    load();
+    const timer = setInterval(load, 60000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [user?.email]);
+
   const saveBankDetails = async () => {
     if (!user) return;
     setBankSaving(true);
@@ -705,6 +719,29 @@ export default function ProfilePage() {
             </Card.Body>
           </Card>
         )}
+
+        <Card className="mb-3">
+          <Card.Header className="fw-bold">Your payment this week</Card.Header>
+          <Card.Body>
+            {!estimate ? (
+              <p className="text-muted mb-0">Estimate not available right now.</p>
+            ) : (
+              <>
+                <div className="text-muted small mb-2">
+                  Week: {new Date(estimate.periodStart + 'T00:00:00').toDateString()} (Wed) – {new Date(estimate.periodEnd + 'T00:00:00').toDateString()} (Tue)
+                </div>
+                <div className="d-flex justify-content-between"><span>Profit from your closed trades</span><span>₹{estimate.grossProfit.toFixed(2)}</span></div>
+                <div className="d-flex justify-content-between"><span>Your share ({estimate.profitSplitPercent}%)</span><span>₹{estimate.splitAmount.toFixed(2)}</span></div>
+                <div className="d-flex justify-content-between">
+                  <span>{estimate.entityType === 'company' ? 'GST registered - no TDS' : 'TDS (10%)'}</span><span>₹{estimate.tdsAmount.toFixed(2)}</span>
+                </div>
+                <div className="d-flex justify-content-between fw-bold border-top pt-1 mt-1"><span>You would get</span><span>₹{(estimate.blocked ? 0 : estimate.netAmount).toFixed(2)}</span></div>
+                {estimate.blocked && <div className="small text-warning-emphasis mt-2">⚠ {estimate.blockReason}</div>}
+                <div className="small text-muted mt-2">This is an estimate from trades closed so far this week. Payments are reviewed and paid after the week ends; they appear in Payout History below.</div>
+              </>
+            )}
+          </Card.Body>
+        </Card>
 
         <Card>
           <Card.Header className="fw-bold">Payout History</Card.Header>

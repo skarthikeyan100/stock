@@ -148,12 +148,12 @@ router.post('/users/:email/settings', requireSelfOrAdmin('email'), async functio
         const lotCount = req.body.lotLimit ?? req.body.lotCount;
         const investmentAmount = req.body.accountCapital ?? req.body.investmentAmount;
         const allottedCapital = req.body.strategyCapital !== undefined ? req.body.strategyCapital : req.body.allottedCapital;
-        // Self-service is limited to the investment mode; limits, capital (investmentAmount is the base the daily/weekly loss limits are
+        // Self-service is limited to the investment mode and the personal target / stop-loss points (the Flash Trade settings popup); limits, capital (investmentAmount is the base the daily/weekly loss limits are
         // measured against), exit mode (useGTT), broker, profit split and the enabled flag are admin-controlled (a trader must not be able to raise their own loss limit or re-enable a disabled account).
         if (!requestIsLoopback(req)) {
             const caller = await getUser(resolveUser(req) ?? '');
             if (caller?.role !== 'admin') {
-                const restricted = { lossLimit, lotCount, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled };
+                const restricted = { lossLimit, lotCount, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, profitSplitPercent, enabled };
                 const attempted = Object.entries(restricted).filter(([, v]) => v !== undefined).map(([k]) => k);
                 if (attempted.length > 0) {
                     res.status(403).json({ error: `Only an admin can change: ${attempted.join(', ')}` });
@@ -172,6 +172,9 @@ router.post('/users/:email/settings', requireSelfOrAdmin('email'), async functio
         for (const [k, v] of Object.entries({ perOrderCap, allottedCapital, targetPoints, stopLossPoints })) {
             // null clears the override
             if (v !== undefined && v !== null && !(finite(v) && (v as number) >= 0)) return bad(`${k} must be a number >= 0 (or null to clear)`);
+        }
+        for (const [k, v] of Object.entries({ targetPoints, stopLossPoints })) {
+            if (v !== undefined && v !== null && !((v as number) > 0)) return bad(`${k} must be greater than 0 (or null to clear)`);
         }
         if (profitSplitPercent !== undefined && !(finite(profitSplitPercent) && profitSplitPercent >= 0)) return bad('profitSplitPercent must be a number >= 0');
         if (profitSplitPercent !== undefined && profitSplitPercent > 100) return bad('profitSplitPercent must be <= 100');

@@ -23,10 +23,10 @@ import { pickContractByPremium } from './priceRangeContract';
 type Exch = 'NFO' | 'BFO';
 
 // ANT's common token for a strike (every broker's tick routing and Trade.token key off it, never the broker's own instrument id).
-function antContractFor(index: OptionIndex, strike: number, right: OptionRight, skipNearestExpiryDay?: boolean) {
-    return AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch: exchangeForIndex(index), strike, optionType: right, expiryOffset: 0, skipNearestExpiryDay });
+function antContractFor(index: OptionIndex, strike: number, right: OptionRight, skipNearestExpiryDay?: boolean, expiryOffset: number = 0) {
+    return AntContractMaster.getInstance().findNearestExpiryOption({ symbol: index, exch: exchangeForIndex(index), strike, optionType: right, expiryOffset, skipNearestExpiryDay });
 }
-const antTokenFor = (index: OptionIndex, strike: number, right: OptionRight, skipNearestExpiryDay?: boolean): string => antContractFor(index, strike, right, skipNearestExpiryDay).token;
+const antTokenFor = (index: OptionIndex, strike: number, right: OptionRight, skipNearestExpiryDay?: boolean, expiryOffset: number = 0): string => antContractFor(index, strike, right, skipNearestExpiryDay, expiryOffset).token;
 
 export const KiteExecutor: BrokerExecutor = {
     brokerName: 'kite',
@@ -52,9 +52,9 @@ export const KiteExecutor: BrokerExecutor = {
     // trade.token/tick subscriptions must always carry the ANT common token, never Kite's own instrument_token - ANT is the sole
     // live-tick source and the only thing exitMonitor/tokenRouter's subscriptions understand (see AntContractMaster's comment on
     // this invariant). Kite's instrumentToken is discarded here.
-    resolveContract: async (index, strike, right, skipNearestExpiryDay): Promise<ResolvedContract> => {
-        const r = await KiteContractMaster.getInstance().findNearestExpiryOption(strike, right, index, 0, skipNearestExpiryDay);
-        return { tsym: r.tradingSymbol, token: antTokenFor(index, strike, right, skipNearestExpiryDay), exchange: r.exchange };
+    resolveContract: async (index, strike, right, skipNearestExpiryDay, expiryOffset = 0): Promise<ResolvedContract> => {
+        const r = await KiteContractMaster.getInstance().findNearestExpiryOption(strike, right, index, expiryOffset, skipNearestExpiryDay);
+        return { tsym: r.tradingSymbol, token: antTokenFor(index, strike, right, skipNearestExpiryDay, expiryOffset), exchange: r.exchange };
     },
     getContractByPriceRange: kiteExecutor.getContractByPriceRangeOnKite,
     findPendingOrders: (userId, tradingSymbol) => TRACKERS.kite.find(userId, tradingSymbol),
@@ -85,8 +85,8 @@ export const AntExecutor: BrokerExecutor = {
     marketSell: (userId, tradingSymbol, _instrumentToken, quantity, exchange) => antExecutor.squareOffOnAnt(userId, tradingSymbol, quantity, exchange),
     placeLimitBuy: antExecutor.placeLimitBuyBareOnAnt,
     getLiveQuantity: antExecutor.getLiveNetQuantity,
-    resolveContract: async (index, strike, right, skipNearestExpiryDay): Promise<ResolvedContract> => {
-        const r = antContractFor(index, strike, right, skipNearestExpiryDay);
+    resolveContract: async (index, strike, right, skipNearestExpiryDay, expiryOffset = 0): Promise<ResolvedContract> => {
+        const r = antContractFor(index, strike, right, skipNearestExpiryDay, expiryOffset);
         return { tsym: r.tradingSymbol, token: r.token, exchange: r.exch as Exch };
     },
     getContractByPriceRange: (underlyingLtp, optionType, index, minPremium, excludeStrikes, skipNearestExpiryDay) =>
@@ -125,9 +125,9 @@ export const PrismExecutor: BrokerExecutor = {
     getLiveQuantity: async (tradingSymbol) => Number((await prismExecutor.getPositionsOnPrism()).find((p) => p.tradingSymbol === tradingSymbol)?.quantity ?? 0),
     // Prism's own contract master (NFO_symbols.txt) carries no exchange field and uses the Shoonya/Prism token scheme, which is
     // NOT cross-referenced with ANT's - so ANT's token is resolved separately (every live tick flows through ANT).
-    resolveContract: async (index, strike, right, skipNearestExpiryDay): Promise<ResolvedContract> => {
-        const r = PrismContractMaster.getInstance().findNearestExpiryOption(index, strike, right, 0, skipNearestExpiryDay);
-        return { tsym: r.tradingSymbol, token: antTokenFor(index, strike, right, skipNearestExpiryDay), exchange: exchangeForIndex(index) };
+    resolveContract: async (index, strike, right, skipNearestExpiryDay, expiryOffset = 0): Promise<ResolvedContract> => {
+        const r = PrismContractMaster.getInstance().findNearestExpiryOption(index, strike, right, expiryOffset, skipNearestExpiryDay);
+        return { tsym: r.tradingSymbol, token: antTokenFor(index, strike, right, skipNearestExpiryDay, expiryOffset), exchange: exchangeForIndex(index) };
     },
     getContractByPriceRange: prismExecutor.getContractByPriceRangeOnPrism,
     findPendingOrders: (userId, tradingSymbol) => TRACKERS.prism.find(userId, tradingSymbol),
@@ -152,8 +152,8 @@ export const BreezeExecutor: BrokerExecutor = {
     marketSell: breezeExecutor.marketSellBareOnBreeze,
     placeLimitBuy: breezeExecutor.placeLimitBuyBareOnBreeze,
     getLiveQuantity: breezeExecutor.getLiveNetQuantity,
-    resolveContract: async (index, strike, right, skipNearestExpiryDay): Promise<ResolvedContract> => {
-        const ant = antContractFor(index, strike, right, skipNearestExpiryDay);
+    resolveContract: async (index, strike, right, skipNearestExpiryDay, expiryOffset = 0): Promise<ResolvedContract> => {
+        const ant = antContractFor(index, strike, right, skipNearestExpiryDay, expiryOffset);
         const r = await BreezeContractMaster.getInstance().findNearestExpiryOption(strike, right, index, skipNearestExpiryDay, calendarDayUtc(AntContractMaster.getInstance().findByToken(ant.token)?.expiryMs ?? NaN));
         return { tsym: breezeExecutor.tsymFor(r), token: ant.token, exchange: exchangeForIndex(index) };
     },

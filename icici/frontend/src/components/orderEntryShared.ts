@@ -1,9 +1,9 @@
 // Pieces the live OrderEntry and the Demo copy must agree on. They differ in where contracts come from (symbols.txt vs the ANT-native
 // /demo/symbols list) and how an order is placed, but not in how the search box matches or how target/stop points are validated -
-// those had drifted (demo matched from 2 characters, live from 4; demo treated 0 as "unset").
+// those had drifted (demo matched from 2 characters, live from 4, now both 3 so a 3-letter stock like TCS shows up; demo treated 0 as "unset").
 
 /** Characters the search box needs before it suggests anything. */
-export const SYMBOL_SEARCH_MIN_CHARS = 4;
+export const SYMBOL_SEARCH_MIN_CHARS = 3;
 export const MAX_SUGGESTIONS = 10;
 
 /** Items whose text contains every whitespace-separated term of `query` (already upper-cased), capped. */

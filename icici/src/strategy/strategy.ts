@@ -3,7 +3,7 @@ import Log from '../util/Log';
 import { MOCK_BROKER } from "../constants";
 import configService from '../prism/ConfigService';
 import { settingFor } from '../prism/configVocabulary';
-import { NiftyQuote, OptionQuote, OrderInfo, SensexQuote, Trade } from "../model/model";
+import { FutQuote, NiftyQuote, OptionQuote, OrderInfo, SensexQuote, Trade } from "../model/model";
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import moment from "moment";
 import { StrategyInstanceConfig } from '../prism/AppConfig';
@@ -157,6 +157,12 @@ export abstract class Strategy {
     }
 
     async processSensexQuote(quote: SensexQuote): Promise<void> {}
+
+    // NIFTY-future ticks (price, volume, VWAP). Only a strategy that returns true from wantsFutQuotes() is sent them.
+    wantsFutQuotes(): boolean {
+        return false;
+    }
+    async processFutQuote(quote: FutQuote): Promise<void> {}
 
     isTimeInRange(): boolean {
         if (MOCK_BROKER) return true;  // bypass time check in mock/test mode

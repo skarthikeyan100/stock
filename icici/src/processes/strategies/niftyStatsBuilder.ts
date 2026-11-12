@@ -35,10 +35,25 @@ function dayOf(epochSeconds: number): string {
 export interface StatsBuilder {
     record(ltp: number, ltt: number): { oldStats: PeriodicStats | null; newStats: PeriodicStats } | null;
     reset(): void;
+    // The close of every completed (or seeded) candle, oldest first. A copy.
+    closes(): number[];
+    // Loads already-completed candles (oldest first) as history, so indicators that need many candles (a 50 EMA) work from the first live
+    // candle. The last seeded candle becomes the "previous" candle of the first live one. Replaces any earlier history.
+    seed(candles: SeedCandle[]): void;
+}
+
+export interface SeedCandle { time: number; open: number; high: number; low: number; close: number }
+
+export interface StatsBuilderOptions {
+    // true: buckets start on clock boundaries (epoch multiples of bucketSeconds, which for 900 are IST 09:15, 09:30, ...) and the tick that
+    // crosses a boundary belongs to the NEW candle. false (default, every existing caller): a bucket starts at its first tick and closes on
+    // the first tick at least bucketSeconds later, which then drifts the next bucket's start (decision.ts's algorithm).
+    aligned?: boolean;
 }
 
 // Returns a builder with its own state. record() returns a stats update only when a tick closes a bucket, otherwise null.
-export function createStatsBuilder(bucketSeconds: number): StatsBuilder {
+export function createStatsBuilder(bucketSeconds: number, options: StatsBuilderOptions = {}): StatsBuilder {
+    const aligned = options.aligned === true;
     let startTime: number | null = null;
     let bucket: number[] = [];
     const closes: number[] = []; // one entry per completed bucket, grows for the session (matches decision.ts's candlesMap-derived `prices` array)
@@ -61,16 +76,33 @@ export function createStatsBuilder(bucketSeconds: number): StatsBuilder {
         // A tick older than the bucket start (out-of-order/replayed) would corrupt the bucket's time base.
         if (startTime !== null && ltt < startTime) return null;
         if (startTime === null) {
-            startTime = ltt;
+            startTime = aligned ? Math.floor(ltt / bucketSeconds) * bucketSeconds : ltt;
+        }
+
+        // Aligned: the tick that crosses the boundary starts the next candle, it is not part of the one it closes.
+        if (aligned && bucket.length > 0 && ltt - startTime >= bucketSeconds) {
+            const closing = completeBucket(startTime);
+            startTime = Math.floor(ltt / bucketSeconds) * bucketSeconds;
+            bucket = [ltp];
+            return closing;
         }
 
         bucket.push(ltp);
+        if (aligned) return null;
         const diff = ltt - startTime;
         if (!(diff >= bucketSeconds && bucket.length >= 2)) {
             return null;
         }
 
-        const candle = buildCandle(bucket, startTime);
+        const result = completeBucket(startTime);
+        startTime = ltt;
+        bucket = [];
+        return result;
+    }
+
+    // Builds the candle for the current bucket, appends its close and returns the stats update. Does not touch startTime/bucket.
+    function completeBucket(candleStart: number): { oldStats: PeriodicStats | null; newStats: PeriodicStats } {
+        const candle = buildCandle(bucket, candleStart);
         closes.push(candle.close);
 
         // decision.ts:520-521 builds highs/lows from each completed candle's own
@@ -105,16 +137,25 @@ export function createStatsBuilder(bucketSeconds: number): StatsBuilder {
             determineTrend(closes), results
         );
 
+        newStats.candleTime = candle.time;
         const oldStats = previousStats;
         previousStats = newStats;
-
-        startTime = ltt;
-        bucket = [];
-
         return { oldStats, newStats };
     }
 
-    return { record, reset };
+    function seed(candles: SeedCandle[]): void {
+        reset();
+        for (const c of candles) {
+            if (![c.open, c.high, c.low, c.close].every((n) => Number.isFinite(n) && n > 0)) continue;
+            closes.push(c.close);
+            const mid = (c.high + c.low) / 2;
+            previousStats = new PeriodicStats(c.open, c.high, c.low, c.close, mid, mid, 0, 0, 'Sideways', { eventName: `priceUpdate_${bucketSeconds}` } as any);
+            (previousStats as any).time = c.time;
+            previousStats.candleTime = c.time;
+        }
+    }
+
+    return { record, reset, closes: () => closes.slice(), seed };
 }
 
 // The live 5-minute builder (used by strategiesProcess.ts).

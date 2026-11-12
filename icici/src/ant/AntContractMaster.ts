@@ -25,6 +25,7 @@ interface ContractRecord {
   Exch: string;
   'Expiry Date': string;
   'Lot Size': string;
+  'Instrument Type'?: string;
 }
 
 interface EquityRecord {
@@ -298,6 +299,18 @@ class AntContractMaster {
     });
   }
 
+  // The nearest not-yet-expired index future of `symbol` (NIFTY -> the current-month contract; it rolls to the next month the day after
+  // expiry). The data process subscribes it for VWAP.
+  findNearestFuture(symbol: string, exch: 'NFO' | 'BFO' = 'NFO'): { token: string; exch: string; tradingSymbol: string; expiryMs: number } {
+    const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
+    const todayStart = todayStartUtc();
+    const record = cache
+      .filter((r) => r.Symbol === symbol && r.Exch === exch && r['Instrument Type'] === 'FUTIDX' && parseInt(r['Expiry Date']) >= todayStart)
+      .sort((a, b) => parseInt(a['Expiry Date']) - parseInt(b['Expiry Date']))[0];
+    if (!record) throw new Error(`No ${symbol} ${exch} index future found in the contract master`);
+    return { token: record.Token, exch: record.Exch, tradingSymbol: tradingSymbolOf(record), expiryMs: parseInt(record['Expiry Date']) };
+  }
+
   // Canonical-symbol resolution: exact (symbol, strike, optionType), no
   // expiry given - resolves to the nearest expiry (expiryOffset=0) or the
   // Nth-nearest (expiryOffset=1 => "next", etc), same shape as
@@ -310,7 +323,7 @@ class AntContractMaster {
     optionType: string;
     expiryOffset?: number;
     skipNearestExpiryDay?: boolean; // per-call override of settings.skipNearestExpiryOnExpiryDay (undefined = the setting)
-  }): { token: string; exch: string; tradingSymbol: string; lotSize: string } {
+  }): { token: string; exch: string; tradingSymbol: string; lotSize: string; expiryMs: number } {
     const { symbol, exch, strike, optionType, expiryOffset = 0, skipNearestExpiryDay } = params;
     const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
     // 'Expiry Date' is stored as midnight UTC of the expiry date (confirmed:
@@ -343,6 +356,7 @@ class AntContractMaster {
       exch: record.Exch,
       tradingSymbol: tradingSymbolOf(record),
       lotSize: record['Lot Size'],
+      expiryMs: parseInt(record['Expiry Date']),
     };
   }
 

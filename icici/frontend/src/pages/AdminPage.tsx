@@ -127,12 +127,11 @@ export default function AdminPage() {
 
   // Payments tab
   const [payoutUser, setPayoutUser] = useState('');
-  const [payoutPeriod, setPayoutPeriod] = useState<DateRange>(() => resolveDateRange('month', '', ''));
+  const [payoutPeriod, setPayoutPeriod] = useState<DateRange>(() => resolveDateRange('day', '', ''));
   const [computing, setComputing] = useState(false);
   const [computeError, setComputeError] = useState<string | null>(null);
   const [computed, setComputed] = useState<any>(null);
   const [decidingId, setDecidingId] = useState<string | null>(null);
-  const [payoutNote, setPayoutNote] = useState('');
   const [adminPayouts, setAdminPayouts] = useState<any[]>([]);
   const [payoutsFilter, setPayoutsFilter] = useState('');
   const [payoutsLoading, setPayoutsLoading] = useState(true);
@@ -279,11 +278,15 @@ export default function AdminPage() {
     setSearchParams(next, { replace: true });
   }, [activeTab, tradeUser, tradeDateRange]);
 
+  // The preview is computed automatically whenever the user or period changes (no Compute button). A response that arrives
+  // after the selection changed again is dropped.
+  const computeSeq = useRef(0);
   const computePayout = async () => {
+    const seq = ++computeSeq.current;
     setComputeError(null);
     setComputed(null);
     if (!payoutUser || !payoutPeriod.from || !payoutPeriod.to) {
-      setComputeError('Select a user and both dates');
+      setComputing(false);
       return;
     }
     setComputing(true);
@@ -294,39 +297,17 @@ export default function AdminPage() {
         body: JSON.stringify({ user: payoutUser, periodStart: payoutPeriod.from, periodEnd: payoutPeriod.to }),
       });
       const data = await res.json();
+      if (seq !== computeSeq.current) return;
       if (!res.ok) throw new Error(data.error || 'Failed to compute payout');
       setComputed(data);
     } catch (e: any) {
-      setComputeError(e.message);
+      if (seq === computeSeq.current) setComputeError(e.message);
     } finally {
-      setComputing(false);
+      if (seq === computeSeq.current) setComputing(false);
     }
   };
 
-  const [creatingPayout, setCreatingPayout] = useState(false);
-  // The preview belongs to the exact user/period it was computed for: changing either invalidates it, so Create can
-  // never post values different from what the admin reviewed.
-  useEffect(() => { setComputed(null); }, [payoutUser, payoutPeriod.from, payoutPeriod.to]);
-
-  const createPayout = async () => {
-    if (creatingPayout || !computed) return;
-    setComputeError(null);
-    setCreatingPayout(true);
-    try {
-      // Post the computed snapshot's own user/period (not whatever the inputs say now).
-      const res = await apiPost('/admin/payouts', {
-        user: computed.user, periodStart: computed.periodStart, periodEnd: computed.periodEnd, note: payoutNote || undefined,
-      });
-      if (!res.ok) throw new Error(await readError(res));
-      setComputed(null);
-      setPayoutNote('');
-      fetchAdminPayouts();
-    } catch (e: any) {
-      setComputeError(e.message);
-    } finally {
-      setCreatingPayout(false);
-    }
-  };
+  useEffect(() => { computePayout(); }, [payoutUser, payoutPeriod.from, payoutPeriod.to]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [decisionNote, setDecisionNote] = useState('');
   const decidePayout = async (id: string, status: 'rejected') => {
@@ -1725,7 +1706,7 @@ export default function AdminPage() {
 
           <Tab eventKey="payments" title="Payments">
             <Card className="mb-3">
-              <Card.Header className="fw-bold">Compute Payout</Card.Header>
+              <Card.Header className="fw-bold">Payout Preview</Card.Header>
               <Card.Body>
                 <Row className="g-2 align-items-end mb-3">
                   <Col md={4}>
@@ -1737,13 +1718,9 @@ export default function AdminPage() {
                       </Form.Select>
                     </Form.Group>
                   </Col>
-                  <Col md={6}>
-                    <DateRangeFilter value={payoutPeriod} onChange={setPayoutPeriod} size="sm" />
-                  </Col>
-                  <Col md={2}>
-                    <Button size="sm" variant="primary" onClick={computePayout} disabled={computing}>
-                      {computing ? <Spinner animation="border" size="sm" /> : 'Compute'}
-                    </Button>
+                  <Col md={8}>
+                    <DateRangeFilter value={payoutPeriod} onChange={setPayoutPeriod} size="sm" modes={['day', 'week', 'month']} />
+                    {computing && <Spinner animation="border" size="sm" className="ms-2" />}
                   </Col>
                 </Row>
 
@@ -1767,18 +1744,6 @@ export default function AdminPage() {
                         ⚠ {computed.blockReason}
                       </Alert>
                     )}
-                    <div className="mt-3">
-                      <Form.Control
-                        size="sm"
-                        placeholder="Note (optional)"
-                        value={payoutNote}
-                        onChange={e => setPayoutNote(e.target.value)}
-                        className="mb-2"
-                      />
-                      <Button size="sm" variant="success" onClick={createPayout} disabled={creatingPayout}>
-                        {computed.blocked ? 'Record as Rejected' : 'Create Pending Payout'}
-                      </Button>
-                    </div>
                   </div>
                 )}
               </Card.Body>

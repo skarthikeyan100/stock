@@ -18,6 +18,8 @@ import ButterflyStrategy from './ButterflyStrategy';
 import RecommendationStrategy from './RecommendationStrategy';
 import NiftyChangeStrategy from './NiftyChangeStrategy';
 import MomentumAtFixedTimeStrategy from './MomentumAtFixedTimeStrategy';
+import NextWeekStrategy from './NextWeekStrategy';
+import BreakoutStrategy from './BreakoutStrategy';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 import { expandRuleBasedConfig, expandStrategyInstances } from '../util/strategyInstances';
 
@@ -39,6 +41,8 @@ STRATEGY_REGISTRY.set('ButterflyStrategy', ButterflyStrategy);
 STRATEGY_REGISTRY.set('RecommendationStrategy', RecommendationStrategy);
 STRATEGY_REGISTRY.set('NiftyChangeStrategy', NiftyChangeStrategy);
 STRATEGY_REGISTRY.set('MomentumAtFixedTimeStrategy', MomentumAtFixedTimeStrategy);
+STRATEGY_REGISTRY.set('NextWeekStrategy', NextWeekStrategy);
+STRATEGY_REGISTRY.set('BreakoutStrategy', BreakoutStrategy);
 STRATEGY_REGISTRY.set('SimpleContinuousStrategy', SimpleContinuousStrategy);
 
 export function createStrategy(config: StrategyInstanceConfig): Strategy | null {

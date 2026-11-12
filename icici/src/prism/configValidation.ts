@@ -7,6 +7,7 @@ import { PERCENT_KEYS, toPercentNumber } from './percentConfig';
 import { isBrokerName } from '../util/brokerName';
 import { exitValueError, timeoutValueError } from '../strategy/exitRules';
 import { parseRuleIndicator } from '../strategy/ruleIndicators';
+import { INDEX_LOT_SIZE } from '../constants';
 
 function isNum(v: any): v is number {
     return typeof v === 'number' && Number.isFinite(v);
@@ -291,7 +292,7 @@ export function validateConfigFile(parsed: any): string[] {
         const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff', 'maxProfit'] };
         // Strategies that take their target and stop from the global exits: each must be set in the block or in settings (a value or 'none').
         // An absent key is refused rather than read as "no stop" (strategies/exitRules.ts).
-        if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy') {
+        if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy' || s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy') {
             for (const key of ['target', 'stopLoss', ...(s.type === 'RuleBasedStrategy' ? ['maxHoldTimeMinutes'] : [])]) {
                 const set = (o: any) => o?.[key] !== undefined && o?.[key] !== null;
                 if (!set(s) && !set(parsed.settings)) errors.push(`${s.type}.${key} is not set in the block or in settings (give a value, or 'none')`);
@@ -302,6 +303,11 @@ export function validateConfigFile(parsed: any): string[] {
             if (s.quantity !== undefined) errors.push(`${s.type}.quantity is not used - size with maxInvestment (per broker)`);
             if (!isNum(s.maxInvestment)) errors.push(`${s.type}.maxInvestment is required for an enabled strategy`);
             if (!Array.isArray(s.times) || s.times.some((t: any) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(t)))) errors.push(`${s.type}.times must be a list of HH:mm times`);
+        }
+        if (s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy') {
+            // A fixed quantity per broker (whole lots), not a rupee budget.
+            if (!isNum(s.quantity) || !(s.quantity > 0) || !Number.isInteger(s.quantity) || s.quantity % INDEX_LOT_SIZE.NIFTY !== 0) errors.push(`${s.type}.quantity must be a positive multiple of the NIFTY lot size ${INDEX_LOT_SIZE.NIFTY} (per broker; got ${JSON.stringify(s.quantity)})`);
+            if (s.index !== undefined && s.index !== 'NIFTY') errors.push(`${s.type}.index must be NIFTY (got ${JSON.stringify(s.index)})`);
         }
         // maxProfit is an AMOUNT in rupees for SimpleContinuous (the other strategies' maxProfit is a percent of maxInvestment): a '%' string
         // or a non-positive number is rejected, and the key is required (no default in code).

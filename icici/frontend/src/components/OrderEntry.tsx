@@ -5,11 +5,22 @@ import { useAuth } from '../context/AuthContext';
 import { matchSymbols, parsePoints, SYMBOL_SEARCH_MIN_CHARS } from './orderEntryShared';
 import { apiFetch } from '../utils/api';
 import DemoHelpTip from './DemoHelpTip';
+import FlashSettingsModal from './FlashSettingsModal';
 import { DEMO_MAX_LOSS } from '../context/DemoTradingContext';
 
 // One searchable contract: `label` is what the list shows, `value` is what placeContractOrder receives.
 interface ContractItem { label: string; value: string }
 interface AntOption { token: string; tradingSymbol: string; strike: number; optionType: string }
+// /order/contract-quote's answer for the selected contract. Every figure is null when ANT had no usable value.
+interface ContractQuote {
+  contract: string; tradingSymbol: string; fetchedAt: string;
+  strike: number; optionType: string; expiry: string | null; lotSize: number | null;
+  ltp: number | null; open: number | null; high: number | null; low: number | null;
+  vwap: number | null; volume: number | null; bid: number | null; ask: number | null;
+  bidQty: number | null; askQty: number | null; oiCall: number | null; oiPut: number | null;
+}
+const fmtNum = (v: number | null | undefined, digits = 2) =>
+  v == null ? '—' : v.toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 
 // `demo`: the anonymous demo page renders this same component (its provider supplies the same trading context). Differences: the
 // contract list is the ANT-native /demo/symbols one (symbols.txt is Kite-format and not subscribable on ANT's feed), help bubbles
@@ -27,6 +38,7 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
   const [stopLossPoints, setStopLossPoints] = useState('');
   const [defaultTargetPoints, setDefaultTargetPoints] = useState<number | null>(null);
   const [defaultStopLossPoints, setDefaultStopLossPoints] = useState<number | null>(null);
+  const [showFlashSettings, setShowFlashSettings] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Mirrors the fallback chain manualBuyOnKite/manualBuyOnAnt apply server-side
@@ -84,6 +96,32 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
+
+  // Live figures for the selected contract, refreshed every 5 s while it stays selected. The server throttles ANT's OHLC call, so
+  // the poll interval is the only load this adds. Demo mode has no login, so it gets no panel.
+  const [quote, setQuote] = useState<ContractQuote | null>(null);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  useEffect(() => {
+    setQuote(null);
+    setQuoteError(null);
+    if (demo || !selectedSymbol) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await apiFetch(`/order/contract-quote?contract=${encodeURIComponent(selectedSymbol.value)}`);
+        const body = await res.json();
+        if (cancelled) return;
+        if (!res.ok) { setQuoteError(body?.error ?? `status ${res.status}`); return; }
+        setQuote(body as ContractQuote);
+        setQuoteError(null);
+      } catch (err) {
+        if (!cancelled) setQuoteError('Quote unavailable');
+      }
+    };
+    load();
+    const timer = setInterval(load, 5000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [selectedSymbol, demo]);
 
   const handleInputChange = (value: string) => {
     const upper = value.toUpperCase();
@@ -153,8 +191,17 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
           <small className="text-muted" style={{ fontSize: '0.75rem' }}>
             Predict the trend — buys NIFTY CE or PE {demo ? '(demo)' : 'at market'}
           </small>
+          {!demo && (
+            <Button variant="link" size="sm" className="p-0" onClick={() => setShowFlashSettings(true)}>
+              Settings
+            </Button>
+          )}
         </div>
       </fieldset>
+      {!demo && (
+        <FlashSettingsModal show={showFlashSettings} onHide={() => setShowFlashSettings(false)}
+          defaultTarget={defaultTargetPoints} defaultStopLoss={defaultStopLossPoints} />
+      )}
 
       {/* Section B: Symbol Search */}
       <fieldset style={{ border: '1px solid var(--bs-border-color)', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
@@ -227,6 +274,47 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
           )}
         </div>
       </fieldset>
+
+      {!demo && selectedSymbol && (
+        <div className="mb-3 px-3 py-2 rounded border small" style={{ borderColor: 'var(--bs-border-color)' }}>
+          <div className="d-flex justify-content-between mb-1">
+            <span className="fw-semibold">{selectedSymbol.label}</span>
+            {quote && <span className="text-muted">{quote.tradingSymbol} · {new Date(quote.fetchedAt).toLocaleTimeString('en-IN')}</span>}
+          </div>
+          {quoteError && <div className="text-danger">{quoteError}</div>}
+          {!quote && !quoteError && <div className="text-muted">Loading quote…</div>}
+          {quote && (
+            <>
+              <div className="row row-cols-2 row-cols-sm-4 g-2">
+                {([
+                  ['Strike', fmtNum(quote.strike, 0)],
+                  ['Type', quote.optionType === 'CE' ? 'CE (Call)' : 'PE (Put)'],
+                  ['Expiry', quote.expiry ? new Date(quote.expiry + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'],
+                  ['Lot size', fmtNum(quote.lotSize, 0)],
+                  ['Price (LTP)', fmtNum(quote.ltp)],
+                  ['High', fmtNum(quote.high)],
+                  ['Low', fmtNum(quote.low)],
+                  ['Buy qty', fmtNum(quote.bidQty, 0)],
+                  ['Sell qty', fmtNum(quote.askQty, 0)],
+                  ['OI put', fmtNum(quote.oiPut, 0)],
+                  ['OI call', fmtNum(quote.oiCall, 0)],
+                  ['Bid', fmtNum(quote.bid)],
+                  ['Ask', fmtNum(quote.ask)],
+                  ['Open', fmtNum(quote.open)],
+                  ['VWAP', fmtNum(quote.vwap)],
+                  ['Volume', fmtNum(quote.volume, 0)],
+                ] as [string, string][]).map(([label, value]) => (
+                  <div key={label}>
+                    <div className="text-muted">{label}</div>
+                    <div className="fw-semibold">{value}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="text-muted mt-1">Buy qty / Sell qty = best bid / ask quantity. OI put / call = open interest at this strike.</div>
+            </>
+          )}
+        </div>
+      )}
 
       {orderError && (
         <Alert variant="danger" className="mt-2 py-2" dismissible onClose={clearError}>

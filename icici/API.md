@@ -28,7 +28,7 @@ Base URL: `http://localhost:3000` (also listens on 80, and 443 when `key.pem`/`c
 | `DELETE /users/:email` | admin | Delete an account. |
 | `PATCH /users/:email/role` | admin | Change role. |
 | `PATCH /users/:email/verify` | admin | Body `{ field, verified }`: set one verification flag (email, phone, address, dob, pan, aadhar, gst). |
-| `POST /users/:email/settings` | self/admin | Trading settings (loss limit, lots, investment mode, capital, `useGTT`, broker, caps, target/stop points). Every change is pushed in full to the trading process. |
+| `POST /users/:email/settings` | self/admin | Trading settings (loss limit, lots, investment mode, capital, `useGTT`, broker, caps, target/stop points). Every change is pushed in full to the trading process. A non-admin may send only `investmentMode`, `targetPoints` and `stopLossPoints` (the Flash Trade settings popup; targets/stops must be > 0 or null to clear); every other field is admin-only (403). |
 | `PATCH /users/:email/profile`, `/kyc-numbers`, `/bank-details`, `/entity-type`, `/company-profile` | self/admin | Profile, PAN/Aadhaar numbers, bank details, entity type, company profile. |
 | `POST /users/:email/documents/:docType` | self/admin | Upload a KYC document (multipart `file`, 5 MB, type sniffed; PAN/Aadhaar numbers are OCR-checked). |
 | `GET /users/:email/documents/:docType` | self/admin | Download it. |
@@ -37,6 +37,7 @@ Base URL: `http://localhost:3000` (also listens on 80, and 443 when `key.pem`/`c
 
 | Route | Auth | Purpose |
 |---|---|---|
+| `GET /users/:email/payouts/estimate` | self/admin | Read-only estimate of the payout for the current Wednesday-Tuesday week (gross, split, TDS/GST, net, blocked reason). Creates nothing. |
 | `GET /users/:email/payouts`, `/payouts/:id/invoice`, `/payouts/:id/decision-log`, `/payouts/:id/proof` | self/admin | A user's payouts, invoice HTML, the decision log, the payment proof image. |
 | `GET /admin/payouts`, `GET /admin/payouts/:id` | admin | List / one payout. |
 | `POST /admin/payouts/compute` | admin | Compute a payout for a user and period without saving it. |
@@ -65,7 +66,7 @@ Base URL: `http://localhost:3000` (also listens on 80, and 443 when `key.pem`/`c
 | `GET /order/can-place` | auth | `{ allowed, reason? }` from the risk gate (loss limit, lot limit, accountClosed). |
 | `POST /order/lock-profits` | admin | See below. |
 | `GET /strategyPnl` | admin | Realized and unrealized P&L per strategy (`?match=` regex; `?by=broker` groups by broker instead); used by `scripts/strategy-status.sh`. |
-| `GET /admin/trades/open`, `/admin/trades/closed`, `/admin/trades/pnl-summary` | admin | Open trades, closed trades, P&L summary across users. |
+| `GET /admin/trades/open`, `/admin/trades/closed`, `/admin/trades/pnl-summary` | admin | Open trades, closed trades, P&L summary across users. `from`/`to` (YYYY-MM-DD) are IST calendar days, `to` inclusive of its whole day. |
 
 ### POST /order/lock-profits
 Locks the current open P&L. Admin only (loopback callers skip auth). Query: `broker` (`kite`|`breeze`|`ant`; omitted = every broker with an open position), `reprice=true` (re-price a lock that is still resting).
@@ -94,7 +95,7 @@ A comment line is written to every stream every 20 s so a proxy never sees it as
 | `GET /strategies` (also `POST`) | `[{ type, userId, enabled }]` for every strategy instance. Read-only; enable or disable a strategy by editing `config.yml`. |
 | `POST /strategies/:type/reset` | Reset a strategy type (clears day latches and in-memory state). `?userId=<instance>` resets only that instance (default: every instance of the type); BulkPcr keeps the day's realized P&L unless `?clearPnl=true`. Returns `{ type, reset, userIds }`. |
 | `POST /reconcile` | Runs the broker → Mongo sync (see `POST /sync`), then every strategy re-reads Mongo into its own state (no strategy places an order while reconciling). A restart no longer needs it: the trading process restores open positions from Mongo alone at start-up. Refused before 09:10 IST. 200 `{ brokers, strategies }`; 409 when a broker's sync failed (strategies NOT reconciled); 500 on failure. |
-| `POST /sync` | Broker → Mongo sync, on demand (`npm run sync`; the platform also runs it by itself after `settings.eodReconcileTime`, default 15:45). Reads each broker's trade book / order book / open positions and updates Mongo: books a Sell the broker did and Mongo lacks at its exact price, closes a contract that is flat at the broker at an implied (`ESTIMATED`) price, and only reports what it cannot attribute. Places no order; strategies are not touched. 200 `{ <broker>: { ok, skipped?, error?, bookedFills, bookedFlat, mismatches[] } }`. |
+| `POST /sync` | Broker → Mongo sync, on demand (`npm run sync`; the platform also runs it by itself after `settings.eodReconcileTime`, default 15:45). Reads each broker's trade book / order book / open positions and updates Mongo: books a Sell the broker did and Mongo lacks at its exact price, closes a contract that is flat at the broker at an implied (`ESTIMATED`) price, and only reports what it cannot attribute. Places no order; strategies are not touched. 200 `{ <broker>: { ok, skipped?, error?, bookedFills, bookedFlat, repairedClosed, mismatches[] } }`. First step, Mongo only: writes a `closedTrades` row for every Sell fill of the last 7 days that has none (`repairedClosed`). |
 | `GET /config`, `POST /config` | The configuration in flattened form; a save is validated (`configValidation`) and rejected rather than written when the reload would reject it. `settings.hotRestartDuringMarketHours` (default `false`) decides whether a compiled-code change is applied during market hours (09:00-15:35 weekdays); the orchestrator reads it at the moment of each change. `settings.mirrorPercentage` (0-100, `N` or `N%`) is the share of every frontend user's lots (`POST /order/buy`) that the admin account mirrors with its own real order, rounded down to whole lots; 0 = off. |
 
 ## Frontend

@@ -10,7 +10,7 @@ import { Trade } from '../../model/model';
 import { UserContext, closeUserAccount } from '../../user';
 import { PUT, CALL, UNKNOWN_USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, INDEX_LOT_SIZE } from '../../constants';
 import * as exitMonitor from './exitMonitor';
-import { collapseFillsByOrderId, netFifoLots } from './fillNetting';
+import { collapseFillsByOrderId, netFifoLots, pairFillsFifo } from './fillNetting';
 import { recordOrderOwner, loadOrderOwners } from './orderOwners';
 import configService from '../../prism/ConfigService';
 import { drawdownLimit, drawdownDecision } from '../../prism/percentConfig';
@@ -25,9 +25,9 @@ import { exchangeForTsym } from '../../util/underlyings';
 type BrokerRow = { tsyms: string[]; tokens: string[]; qty: number; soldQty?: number; soldValue?: number; ltp?: number };
 type BrokerKey = 'kite' | 'ant' | 'breeze' | 'prism';
 type BrokerFill = { orderId: string; action: 'Buy' | 'Sell'; tsym: string; token?: string; qty: number; price: number };
-export type EodMismatchKind = 'unattributedFill' | 'partialUnattributable' | 'brokerExcess' | 'brokerShort';
+export type EodMismatchKind = 'unattributedFill' | 'partialUnattributable' | 'brokerExcess' | 'brokerShort' | 'sellWithoutBuy';
 export type EodMismatch = { kind: EodMismatchKind; broker: BrokerKey; tsym: string; brokerQty?: number; mongoQty?: number; note?: string };
-export type EodBrokerReport = { ok: boolean; skipped?: string; error?: string; bookedFills: number; bookedFlat: number; mismatches: EodMismatch[] };
+export type EodBrokerReport = { ok: boolean; skipped?: string; error?: string; bookedFills: number; bookedFlat: number; repairedClosed: number; mismatches: EodMismatch[] };
 export type MongoRestoreResult = { ok: boolean; restored: number; contracts: number; skippedExpired: string[]; skippedUnknownToken: string[]; skippedNoToken: string[]; error?: string };
 
 // Open-P&L pricing gets a short budget: it runs inside every buy's drawdown check, so a slow quote must not stall an order.
@@ -1218,6 +1218,14 @@ class OrderBookkeeping {
                 // write is in flight, so the breach check needs no wait on the ledger write.
                 this.persistClosedTrade(closedPortion, user, tradeEvent.price);
                 this.checkBreachAndNotify(user);
+            } else if (tradeEvent.user && tradeEvent.broker) {
+                // No open position in memory for this Sell, so no closed-trade row is written here. The raw fill is stored; once its insert has
+                // landed, rebuild this contract's closes from the fills (a no-op when Mongo holds no Buy for it, i.e. a foreign sell).
+                Log.log(`[order] ALERT: Sell ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} (${tradeEvent.user}, ${tradeEvent.broker}) has no open position in memory - the fill is stored; repairing its closed trade from Mongo`);
+                const inserted = tradeEvent.brokerOrderId ? this.pendingFillInserts.get(tradeEvent.brokerOrderId) : undefined;
+                void Promise.resolve(inserted).catch(() => undefined)
+                    .then(() => this.repairClosedTradesFromFills(tradeEvent.broker as BrokerKey, [], { lookbackDays: 1, only: { user: tradeEvent.user as string, tsym: tradeEvent.tsym } }))
+                    .catch((e) => Log.log('[order] closed-trade repair after an unmatched Sell failed:', e?.message ?? e));
             }
         }
         this.notifyPositionsChanged();
@@ -1904,12 +1912,103 @@ class OrderBookkeeping {
         }
     }
 
+    // A Sell fill in Mongo's `Trade` with no closedTrades row is a close the books lost: _processTradeEvent writes the row only when the open
+    // position is in memory, so a fill that arrived while memory did not hold it (a restart whose restore did not run, 2026-11-11 16:19: Breeze
+    // Momentum 25400CE sold at 150 for -35,139) left only the raw fill. Rebuilds each contract's closes from its fills (FIFO, per user, one order
+    // id counted once for its owner) over the last `lookbackDays` days, and writes a closedTrades row for every close that has none. Mongo only:
+    // no broker read, no order. A row already there is matched on user/contract/quantity/exit time (+-5 min) and left alone, so it is safe to
+    // run again. A Sell with no Buy before it is reported (`sellWithoutBuy`), never turned into a closed trade. `only` limits it to one contract.
+    async repairClosedTradesFromFills(broker: BrokerKey, mismatches: EodMismatch[] = [], opts: { lookbackDays?: number; only?: { user: string; tsym: string } } = {}): Promise<number> {
+        const db = Mongo.getInstance()?.db;
+        if (!db) return 0;
+        // A close still waiting for its write must not look missing (it would be written twice): land the held rows first.
+        await this.flushUnpersistedClosed().catch(() => undefined);
+        if (this.unpersistedClosed.size > 0) { mismatches.push({ kind: 'sellWithoutBuy', broker, tsym: '*', note: 'closed-trade rows are still waiting to be written to Mongo - repair skipped, run the sync again' }); return 0; }
+        const since = OrderBookkeeping.startOfDay();
+        since.setDate(since.getDate() - (opts.lookbackDays ?? 7));
+        const brokerMatch: any = broker === 'kite' ? { $in: ['kite', /^\s*zerodha\s*$/i] } : broker;
+        const sellFilter: any = { action: 'Sell', broker: brokerMatch, entryTime: { $gte: since } };
+        if (opts.only) { sellFilter.user = opts.only.user; sellFilter.tsym = opts.only.tsym; }
+        const sells: any[] = await db.collection('Trade').find(sellFilter).toArray();
+        const contracts = new Map<string, { user: string; tsym: string; token?: string }>();
+        for (const s of sells) {
+            if (!s.user || !s.tsym) continue;
+            contracts.set(`${s.user}|${s.tsym}|${s.token ?? ''}`, { user: String(s.user), tsym: String(s.tsym), token: s.token != null ? String(s.token) : undefined });
+        }
+        let inserted = 0;
+        for (const c of contracts.values()) {
+            const fillFilter: any = { tsym: c.tsym, action: { $in: ['Buy', 'Sell'] }, broker: brokerMatch };
+            const all: any[] = await db.collection('Trade').find(fillFilter).sort({ entryTime: 1 }).toArray();
+            // One tsym can name several contracts (a Breeze tsym had no expiry before 2026-11-09): the token keeps them apart when both sides carry one.
+            const ofContract = c.token ? all.filter((f) => f.token == null || String(f.token) === c.token) : all;
+            const owners = await loadOrderOwners(Array.from(new Set(ofContract.map((f) => f.brokerOrderId).filter(Boolean).map(String))));
+            const { fills, ambiguousOrderIds } = collapseFillsByOrderId(ofContract, (id) => owners.get(id));
+            if (ambiguousOrderIds.length > 0) {
+                mismatches.push({ kind: 'sellWithoutBuy', broker, tsym: c.tsym, note: `broker order(s) ${ambiguousOrderIds.join(', ')} are booked under more than one user with no recorded owner - closed trades of this contract not repaired` });
+                continue;
+            }
+            const { pieces, unmatched } = pairFillsFifo(fills.filter((f) => f.user === c.user));
+            for (const u of unmatched) {
+                if (new Date(u.sell.entryTime) >= since) mismatches.push({ kind: 'sellWithoutBuy', broker, tsym: c.tsym, mongoQty: u.qty, note: `${c.user}: a Sell of ${u.qty} @ ${Number(u.sell.price).toFixed(2)} (order ${u.sell.brokerOrderId ?? '-'}) has no Buy before it in Mongo - no closed trade written` });
+            }
+            const wanted = pieces.filter((p) => new Date(p.sell.entryTime) >= since);
+            if (wanted.length === 0) continue;
+            const rows: any[] = await db.collection('closedTrades').find({ user: c.user, tsym: c.tsym, broker: brokerMatch, $or: [{ exitTime: { $gte: new Date(since.getTime() - 3600_000) } }, { repairedFromFills: true }] }).toArray();
+            const used = new Set<any>();
+            for (const p of wanted) {
+                const at = new Date(p.sell.entryTime).getTime();
+                let best: any; let bestGap = 5 * 60_000 + 1;
+                // A row this repair wrote earlier is recognised by the sell it was written for, whatever day it was dated to.
+                const byOrder = p.sell.brokerOrderId ? rows.find((r) => !used.has(r) && r.sellOrderId != null && String(r.sellOrderId) === String(p.sell.brokerOrderId) && Number(r.quantity) === p.qty) : undefined;
+                if (byOrder) { used.add(byOrder); continue; }
+                for (const r of rows) {
+                    if (used.has(r) || Number(r.quantity) !== p.qty) continue;
+                    if (c.token && r.token != null && String(r.token) !== c.token) continue;
+                    const gap = Math.abs(new Date(r.exitTime).getTime() - at);
+                    if (gap < bestGap) { best = r; bestGap = gap; }
+                }
+                if (best) { used.add(best); continue; }
+                const exitPrice = Number(p.sell.price);
+                const pnl = (exitPrice - p.entryPrice) * p.qty;
+                // A Breeze order id starts with its placement date (YYYYMMDD...). A Day order cannot fill on a later day, so a fill booked after
+                // that day (the notification only reached the books on a later one) closed on the order's own day: dated at that day's close.
+                const bookedAt = new Date(p.sell.entryTime);
+                let exitAt = bookedAt; let exitApprox = false;
+                const od = broker === 'breeze' ? /^(\d{4})(\d{2})(\d{2})/.exec(String(p.sell.brokerOrderId ?? '')) : null;
+                if (od) {
+                    const placedClose = new Date(`${od[1]}-${od[2]}-${od[3]}T15:30:00+05:30`);
+                    if (!isNaN(placedClose.getTime()) && placedClose.getTime() < bookedAt.getTime() - 3600_000) { exitAt = placedClose; exitApprox = true; }
+                }
+                const row = {
+                    _id: randomUUID(), user: c.user, tsym: c.tsym, token: p.buy.token ?? p.sell.token, right: p.buy.right ?? p.sell.right, quantity: p.qty,
+                    entryPrice: p.entryPrice, exitPrice, realizedPnL: pnl, entryTime: p.buy.entryTime, exitTime: exitAt, ...(exitApprox ? { exitTimeApprox: true, bookedAt } : {}),
+                    strategy: p.buy.strategy ?? p.sell.strategy, broker: normalizeBrokerName(String(p.sell.broker ?? broker)) ?? broker,
+                    createdAt: new Date(), repairedFromFills: true, sellOrderId: p.sell.brokerOrderId,
+                };
+                await db.collection('closedTrades').insertOne(row as any);
+                inserted++;
+                Log.log(`[order] ALERT: closed-trade repair ${broker}: ${c.user} ${c.tsym} - the Sell of ${p.qty} @ ${exitPrice.toFixed(2)} (order ${p.sell.brokerOrderId ?? '-'}, ${new Date(p.sell.entryTime).toISOString()}) had no closed-trade row - wrote one, P&L ${pnl.toFixed(2)}${exitApprox ? ` (dated to the order's own day ${exitAt.toISOString()})` : ''}`);
+                if (new Date(row.exitTime) >= OrderBookkeeping.startOfDay()) {
+                    const t = new Trade();
+                    t.tsym = row.tsym; t.token = row.token; t.right = row.right; t.quantity = row.quantity; t.price = row.entryPrice; t.action = 'Sell';
+                    t.user = row.user; t.broker = row.broker as any; t.open = false; t.realizedPnL = pnl; t.entryTime = row.entryTime; t.exitTime = row.exitTime; t.strategy = row.strategy;
+                    this.closedTrades.push(t);
+                    this.userPnL.set(c.user, (this.userPnL.get(c.user) || 0) + pnl);
+                }
+            }
+        }
+        if (inserted > 0) this.notifyPositionsChanged();
+        return inserted;
+    }
+
     // One broker's end-of-day repair. Never throws.
     async eodRepairBroker(broker: BrokerKey): Promise<EodBrokerReport> {
-        const report: EodBrokerReport = { ok: false, bookedFills: 0, bookedFlat: 0, mismatches: [] };
+        const report: EodBrokerReport = { ok: false, bookedFills: 0, bookedFlat: 0, repairedClosed: 0, mismatches: [] };
         try {
             const restored = await this.restoreOpenTradesFromMongo(); // idempotent: memory must equal Mongo before it is compared with the broker
             if (!restored.ok) { report.error = `restore from Mongo failed: ${restored.error}`; return report; }
+            // Mongo-only, so it runs before (and whether or not) the broker can be read: a Sell fill that never got its closed-trade row.
+            report.repairedClosed = await this.repairClosedTradesFromFills(broker, report.mismatches);
             const rows = await this.readBrokerRows(broker);
             if (!rows) {
                 if (!this.trades.some((t) => t.broker === broker && Number(t.quantity) > 0)) { report.ok = true; report.skipped = 'broker not readable (no valid session?) and nothing is open on it in Mongo'; return report; }

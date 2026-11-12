@@ -13,7 +13,7 @@ import { DataLink } from '../ipc/DataLink';
 import { registerTrade, unregisterTrade, optionTickTargets, deliverOptionTick, holdExternal, releaseExternal } from './strategies/tokenRouter';
 import * as niftyQuoteHistory from './strategies/niftyQuoteHistory';
 import * as niftyStatsBuilder from './strategies/niftyStatsBuilder';
-import { NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
+import { FutQuote, NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/model';
 import { FeedSource, DEFAULT_FEED_SOURCE, BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import { exchangeForTsym } from '../util/underlyings';
@@ -304,6 +304,14 @@ async function onTick(tick: any) {
         for (const strategy of strategies.getList()) {
             enqueueLatestIndex(`tick:sensex:${strategy.getClassName()}:${strategy.userId}`, quote, undefined, async (q) => {
                 if (strategy.receivesEvents()) await isolate(strategy, 'processSensexQuote', () => strategy.processSensexQuote(q));
+            });
+        }
+    } else if (tick.type === 'fut') {
+        const quote = Object.assign(new FutQuote(), tick.quote) as FutQuote;
+        for (const strategy of strategies.getList()) {
+            if (!strategy.wantsFutQuotes()) continue;
+            enqueueLatestIndex(`tick:fut:${strategy.getClassName()}:${strategy.userId}`, quote, undefined, async (q) => {
+                if (strategy.receivesEvents()) await isolate(strategy, 'processFutQuote', () => strategy.processFutQuote(q));
             });
         }
     } else if (tick.type === 'option') {

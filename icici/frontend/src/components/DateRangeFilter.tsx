@@ -28,7 +28,9 @@ export function resolveDateRange(mode: DateRangeMode, customFrom: string, custom
     // in sync by construction (frontend/backend are separate TS projects).
     const diff = (now.getDay() - 3 + 7) % 7; // 3 = Wednesday
     const wednesday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diff);
-    return { mode, from: toDateInputValue(wednesday), to: toDateInputValue(now) };
+    // The week runs to its closing Tuesday (days after today have no trades yet, so the full week costs nothing).
+    const tuesday = new Date(wednesday.getFullYear(), wednesday.getMonth(), wednesday.getDate() + 6);
+    return { mode, from: toDateInputValue(wednesday), to: toDateInputValue(tuesday) };
   }
   if (mode === 'month') {
     const first = new Date(now.getFullYear(), now.getMonth(), 1);

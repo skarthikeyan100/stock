@@ -683,10 +683,17 @@ types, and `maxInvestment` is not read), and the target / stopLoss exit copied f
 own copy so no live strategy was touched; the two can be merged later.
 
 ### TopStockOptionsOpeningGapStrategy (`TopStockOptionsOpeningGapStrategy.ts`) — config: `enabled: true`, multi-broker
-**Entry**: one-shot per day, fires once within a short morning window
-(`isTimeInRange()` override, 9:10–9:20 IST — right as NSE's pre-open
-equilibrium price settles, well clear of `BulkPcrAutoStartStrategy`'s 10:35
-earliest slot). Gap is computed live, not from any CSV: one batched ANT OHLC
+**Entry**: one-shot per day, **fired by the first Nifty tick the strategy is
+delivered, i.e. the first tick of the 09:15 open** (since 2026-11-12 the
+dispatcher delivers nothing before 09:15; before that change it was 09:10).
+It is NOT a trading window in the design sense: there is no "wait for the
+pre-open price to settle" step. `isTimeInRange()` (9:10–9:20 constants in the
+file) exists only because the strategy base needs a range test; it is a
+retry limit, not the trigger. A retryable skip (no OHLC data yet) is retried
+on later ticks, one attempt per 15 s, until 9:20, and a successful dispatch
+of the legs records the day as fired. Do not describe this strategy as
+"fires inside a 9:10–9:20 window" or as "waiting for the pre-open
+equilibrium price". Gap is computed live, not from any CSV: one batched ANT OHLC
 call (`getOpenAndPrevClose`) over a static Nifty-100 universe
 (`data/nifty100_symbols.txt`, snapshotted from NSE's index-constituent CSVs —
 re-run the fetch by hand every few months to refresh it; not wired to a

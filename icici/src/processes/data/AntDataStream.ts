@@ -5,7 +5,10 @@ import AntWebSocket from '../../ant/AntWebSocket';
 import ANT from '../../ant/ANT';
 import Mongo from '../../tools/mongo';
 import configService from '../../prism/ConfigService';
-import { NiftyQuote, OptionQuote, SensexQuote } from '../../model/model';
+import AntContractMaster from '../../ant/AntContractMaster';
+import { FutVwapTracker } from '../../lib/futVwap';
+import { localDayKey } from '../../strategy/dayKey';
+import { FutQuote, NiftyQuote, OptionQuote, SensexQuote } from '../../model/model';
 import { DataStream } from './DataStream';
 
 // data process's own tick source. Adapted from src/ant/AntStream.ts: same ANT
@@ -23,6 +26,20 @@ class AntDataStream implements DataStream {
 
     private readonly INDEX_TOKEN = '26000'; // NIFTY
     private readonly SENSEX_TOKEN = '1';
+    // The current-month NIFTY future: its `ap` (exchange VWAP) and `v` feed BreakoutStrategy. Resolved from the contract master on every
+    // (re)connect, so it rolls to the next month by itself after expiry.
+    private futToken: string | null = null;
+    private futSymbol = '';
+    private readonly futVwap = new FutVwapTracker();
+    private futTicks = 0;
+    private firstFutTickLogged = false;
+    private firstFutTickAt = 0;
+    private lastFutTickAt = 0;
+    private lastFutHeartbeatAt = 0;
+    private lastFutAlertAt = 0;
+    private lastFutMissingAlertAt = 0;
+    private readonly FUT_HEARTBEAT_MS = 60_000;
+    private readonly FUT_ALERT_REPEAT_MS = 5 * 60_000;
     private readonly ALWAYS_ON = [
         { exch: 'NSE', token: '26000' },
         { exch: 'BSE', token: '1' },
@@ -86,6 +103,8 @@ class AntDataStream implements DataStream {
             if (this.ws !== ws) return;
             Log.log('[AntDataStream] WebSocket open, subscribing to always-on instruments...');
             const fixedKeys = this.ALWAYS_ON.map((i) => `${i.exch}|${i.token}`);
+            const futKey = this.resolveFuture();
+            if (futKey) fixedKeys.push(futKey);
             const dynamicKeys = Array.from(this.dynamicOptionTokens, ([t, exch]) => `${exch}|${t}`);
             ws.subscribe([...fixedKeys, ...dynamicKeys]);
             if (this.dynamicDepthTokens.size > 0) {
@@ -167,7 +186,88 @@ class AntDataStream implements DataStream {
         await this.connect();
     }
 
+    // Looks up the nearest NIFTY future and returns its subscription key, or null (logged) when the contract master has none. A failure here
+    // must never stop the index/option subscriptions, so it is caught.
+    private resolveFuture(): string | null {
+        try {
+            const fut = AntContractMaster.getInstance().findNearestFuture('NIFTY', 'NFO');
+            if (this.futToken !== fut.token) {
+                this.firstFutTickLogged = false;
+                this.firstFutTickAt = 0;
+            }
+            this.futToken = fut.token;
+            this.futSymbol = fut.tradingSymbol;
+            Log.log(`[VWAP-FEED] subscribing NIFTY future ${fut.tradingSymbol} token ${fut.token} (expires ${new Date(fut.expiryMs).toISOString().slice(0, 10)}) for VWAP`);
+            return `NFO|${fut.token}`;
+        } catch (e: any) {
+            this.futToken = null;
+            Log.log(`[VWAP-FEED] ALERT: could not resolve the NIFTY future (${e?.message ?? e}) - no VWAP feed; BreakoutStrategy will not trade`);
+            return null;
+        }
+    }
+
+    // One future tick: merge the partial update, log the first raw tick of the day and a once-a-minute heartbeat (exchange `ap` next to our
+    // own volume-weighted figure), store the heartbeat in Mongo (vwapSamples) and emit a FutQuote.
+    private onFutTick(data: any): void {
+        const now = Date.now();
+        const day = localDayKey();
+        this.lastFutTickAt = now;
+        this.futTicks++;
+        if (!this.firstFutTickLogged) {
+            this.firstFutTickLogged = true;
+            this.firstFutTickAt = now;
+            Log.log(`[VWAP-FEED] first ${this.futSymbol} tick of the day, raw fields: ${JSON.stringify({ t: data.t, tk: data.tk, lp: data.lp, v: data.v, ap: data.ap, ltq: data.ltq, ft: data.ft, oi: data.oi })}`);
+        }
+        const issues = this.futVwap.update({ lp: data.lp, v: data.v, ap: data.ap }, day);
+        for (const issue of issues) {
+            if (now - this.lastFutAlertAt >= this.FUT_ALERT_REPEAT_MS) {
+                this.lastFutAlertAt = now;
+                Log.log(`[VWAP-FEED] ALERT: ${this.futSymbol} ${issue} (raw v=${data.v}, ap=${data.ap}, lp=${data.lp})`);
+            }
+        }
+        const st = this.futVwap.state();
+        const best = this.futVwap.best();
+        if (now - this.lastFutHeartbeatAt >= this.FUT_HEARTBEAT_MS) {
+            this.lastFutHeartbeatAt = now;
+            const diff = st.exchangeVwap !== undefined && st.ownVwap !== undefined ? (st.ownVwap - st.exchangeVwap).toFixed(2) : 'n/a';
+            Log.log(`[VWAP-FEED] ${this.futSymbol} ltp ${Number.isFinite(st.ltp) ? st.ltp : 'n/a'} | ap ${st.exchangeVwap?.toFixed(2) ?? 'MISSING'} | own vwap ${st.ownVwap?.toFixed(2) ?? 'n/a'} (own - ap = ${diff}) | v ${st.volume ?? 'n/a'} (own since v ${st.ownSinceVolume ?? 'n/a'}) | ticks ${this.futTicks}`);
+            try {
+                Mongo.getInstance()?.tryInsert({ day, at: new Date(), token: this.futToken, tsym: this.futSymbol, ltp: Number.isFinite(st.ltp) ? st.ltp : null, ap: st.exchangeVwap ?? null, ownVwap: st.ownVwap ?? null, v: st.volume ?? null }, 'vwapSamples');
+            } catch (e) { /* logging only */ }
+            if (st.exchangeVwap === undefined && this.firstFutTickAt > 0 && now - this.firstFutTickAt >= 60_000 && now - this.lastFutMissingAlertAt >= this.FUT_ALERT_REPEAT_MS) {
+                this.lastFutMissingAlertAt = now;
+                Log.log(`[VWAP-FEED] ALERT: no ap (exchange VWAP) on ${this.futSymbol} ${Math.round((now - this.firstFutTickAt) / 1000)}s after its first tick - using the own volume-weighted VWAP${st.ownVwap === undefined ? ' (none yet: no volume seen either)' : ''}`);
+            }
+        }
+        if (!Number.isFinite(st.ltp)) return; // nothing priced yet (a tick carrying only v/ap before the first lp)
+        const quote = new FutQuote();
+        quote.ltp = st.ltp;
+        quote.ltt = data.ft ?? String(Math.floor(now / 1000)); // a v/ap-only update may carry no ft
+        quote.token = String(data.tk);
+        quote.volume = st.volume;
+        quote.exchangeVwap = st.exchangeVwap;
+        quote.ownVwap = st.ownVwap;
+        quote.vwap = best?.vwap;
+        quote.vwapSource = best?.source;
+        this.writeTick({ type: 'fut', quote });
+    }
+
+    // A NIFTY tick arrived but the future has been silent for a minute: logged at most every 5 minutes.
+    private checkFutSilence(): void {
+        if (!this.futToken || this.firstFutTickAt === 0) return;
+        const now = Date.now();
+        if (now - this.lastFutTickAt >= 60_000 && now - this.lastFutAlertAt >= this.FUT_ALERT_REPEAT_MS) {
+            this.lastFutAlertAt = now;
+            Log.log(`[VWAP-FEED] ALERT: no ${this.futSymbol} tick for ${Math.round((now - this.lastFutTickAt) / 1000)}s while NIFTY ticks keep arriving`);
+        }
+    }
+
     private emitTick(data: any): void {
+        if (this.futToken && data.tk === this.futToken) {
+            // A future update can carry only v/ap (no lp): it still moves the VWAP, so the usual "no lp, nothing new" guard is skipped for it.
+            try { this.onFutTick(data); } catch (e) { Log.log('[AntDataStream] fut tick failed:', e); }
+            return;
+        }
         // Depth feed updates ('df') are sparse - a tick carrying a fresh
         // tbq/tsq for a depth-tracked token doesn't always also carry 'lp',
         // so the usual "no lp, nothing new" short-circuit would silently
@@ -176,6 +276,7 @@ class AntDataStream implements DataStream {
         if (!data.lp && !(isDepthTracked && (data.tbq !== undefined || data.tsq !== undefined))) return;
         try {
             if (data.tk === this.INDEX_TOKEN) {
+                this.checkFutSilence();
                 this.writeTick({ type: 'nifty', quote: NiftyQuote.fromAnt(data) });
             } else if (data.tk === this.SENSEX_TOKEN) {
                 this.writeTick({ type: 'sensex', quote: SensexQuote.fromAnt(data) });

@@ -8,6 +8,22 @@ import axiosModule from 'axios';
 import { sleep } from '../util/sleep';
 import AntContractMaster from './AntContractMaster';
 import { SessionValidityCache } from '../util/SessionValidityCache';
+
+// One contract's figures for the Search & Buy panel (see ANT.getContractSnapshot). null = ANT returned no usable value.
+export interface ContractSnapshot {
+    ltp: number | null;
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    vwap: number | null;
+    volume: number | null;
+    bid: number | null;
+    ask: number | null;
+    bidQty: number | null;
+    askQty: number | null;
+    oiCall: number | null;
+    oiPut: number | null;
+}
 // Default per-call timeout for every ANT broker HTTP call (order placement,
 // quotes, option chain, fill polling, etc). Applies automatically to every
 // axios.get/axios.post made through the shared instance below - previously
@@ -512,6 +528,43 @@ class ANT {
         const bid = Number(data?.BRate);
         const ask = Number(data?.SRate);
         return { ltp, bid: bid > 0 ? bid : 0, ask: ask > 0 ? ask : 0 };
+    }
+
+    // Figures for the Search & Buy panel on a selected contract, from two ANT calls: ScripDetails for the selected token (LTP, day
+    // open/high/low, best bid/ask price and quantity, VWAP, volume) and one OHLC call for both legs of the strike (open interest of the
+    // CE and the PE). Every field is null when ANT did not return a usable value - never 0 or NaN. An OHLC failure leaves only the OI
+    // null; the ScripDetails figures still come back. The OHLC `close` is not used: it is not a stable previous close on live data.
+    // BQty/SQty are the top-of-book bid/ask quantities, not the day's total buy/sell quantity (ScripDetails' TotalBuy/TotalSell equal the
+    // traded volume on live data, so they are not used).
+    async getContractSnapshot(exchange: string, selectedToken: string, ceToken: string, peToken: string): Promise<ContractSnapshot> {
+        const positive = (v: unknown): number | null => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
+        const nonNegative = (v: unknown): number | null => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null; };
+        const snap: ContractSnapshot = {
+            ltp: null, open: null, high: null, low: null, vwap: null, volume: null,
+            bid: null, ask: null, bidQty: null, askQty: null, oiCall: null, oiPut: null,
+        };
+        const data = await this.fetchScripDetails(exchange, selectedToken);
+        snap.ltp = positive(data?.LTP);
+        snap.open = positive(data?.openPrice);
+        snap.high = positive(data?.High);
+        snap.low = positive(data?.Low);
+        snap.vwap = positive(data?.vwapAveragePrice);
+        snap.volume = nonNegative(data?.TradeVolume);
+        snap.bid = positive(data?.BRate);
+        snap.ask = positive(data?.SRate);
+        snap.bidQty = positive(data?.BQty);
+        snap.askQty = positive(data?.SQty);
+        try {
+            const resp = await this.postOhlc([{ exchange, token: ceToken }, { exchange, token: peToken }]);
+            for (const row of resp.data?.result ?? []) {
+                const tk = String(row?.tk);
+                if (tk === String(ceToken)) snap.oiCall = nonNegative(row.oi);
+                if (tk === String(peToken)) snap.oiPut = nonNegative(row.oi);
+            }
+        } catch (e) {
+            Log.log(`[ANT] getContractSnapshot OHLC for ${exchange}|${ceToken},${peToken} failed; OI left null: ${(e as Error).message}`);
+        }
+        return snap;
     }
 
     // Shared by getOptionChainPCR/getOptionChain - both need the same

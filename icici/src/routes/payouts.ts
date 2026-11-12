@@ -3,6 +3,7 @@ import { computePayout, createPayoutRecord, markPayoutDecision, markPayoutPaidWi
 import { GridFSBucket, ObjectId } from 'mongodb';
 import { sendPayoutPaidEmail } from '../mailer';
 import Mongo from '../tools/mongo';
+import { startOfWeek } from '../util/weekWindow';
 import { asyncRouter } from './asyncRouter';
 import { resolveUser, requestIsLoopback, requireAdmin, requireSelfOrAdmin } from './session';
 import { upload, detectDocumentType } from './users';
@@ -23,6 +24,27 @@ router.get('/users/:email/payouts', requireSelfOrAdmin('email'), async function 
     } catch (e) {
         console.error('Get payouts error:', e);
         res.sendStatus(500);
+    }
+});
+
+// Read-only estimate of what this trader would be paid for the CURRENT trading week (Wednesday to Tuesday). Nothing is created or
+// stored: a payout record only comes into existence when an admin records one.
+router.get('/users/:email/payouts/estimate', requireSelfOrAdmin('email'), async function (req, res) {
+    try {
+        const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const wednesday = startOfWeek();
+        const tuesday = new Date(wednesday.getFullYear(), wednesday.getMonth(), wednesday.getDate() + 6);
+        const period = periodFromInputs(ymd(wednesday), ymd(tuesday));
+        const c = await computePayout(req.params.email, period.start, period.end);
+        res.json({
+            periodStart: ymd(wednesday), periodEnd: ymd(tuesday),
+            grossProfit: c.grossProfit, profitSplitPercent: c.profitSplitPercent, splitAmount: c.splitAmount,
+            entityType: c.entityType, tdsAmount: c.tdsAmount, gstAmount: c.gstAmount, netAmount: c.netAmount,
+            blocked: c.blocked, blockReason: c.blockReason,
+        });
+    } catch (e: any) {
+        console.error('Payout estimate error:', e);
+        res.status(400).json({ error: e.message || 'Failed to estimate payout' });
     }
 });
 

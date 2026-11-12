@@ -368,7 +368,7 @@ class OrderClient {
         return this.call('butterflyBuyToClose', userId, payload);
     }
 
-    async resolveOptionContract(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE'; skipNearestExpiryDay?: boolean }): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
+    async resolveOptionContract(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE'; skipNearestExpiryDay?: boolean; expiryOffset?: number }): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
         return this.call('resolveOptionContract', userId, payload);
     }
 

@@ -294,6 +294,19 @@ export class OptionQuote {
 
 }
 
+// A tick of the current-month NIFTY future (the VWAP source of BreakoutStrategy). Built in the data process, where the partial ANT updates
+// are merged (FutVwapTracker), so every FutQuote carries the latest price, volume and VWAP.
+export class FutQuote {
+    ltp: number
+    ltt
+    token
+    volume?: number          // cumulative day volume (`v`)
+    exchangeVwap?: number    // `ap`: the exchange's average traded price
+    ownVwap?: number         // the same figure computed from volume deltas (see FutVwapTracker)
+    vwap?: number            // exchangeVwap when present, else ownVwap
+    vwapSource?: 'ap' | 'own'
+}
+
 export class Message {
     tsym
     traded
@@ -364,6 +377,8 @@ export class PeriodicStats {
     trend
     results: Result
     time
+    // Epoch seconds at which this candle's bucket started (set by createStatsBuilder; lets a strategy check that two candles are consecutive).
+    candleTime?: number
 }
 
 

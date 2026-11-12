@@ -15,6 +15,7 @@ import SimpleContinuousStrategy from '../strategy/SimpleContinuousStrategy';
 import { entryStopPrice, minMovePoints } from '../strategy/entryStop';
 import { Trade, OptionQuote } from '../model/model';
 import configService from '../prism/ConfigService';
+import { settingFor } from '../prism/configVocabulary';
 // eodCloseTime is a global setting (not a strategy key): 23:59 so the end-of-day close never fires during a test, whatever time it is run.
 (configService.getConfig().settings as any).eodCloseTime = '23:59';
 
@@ -71,6 +72,8 @@ function make<T>(Cls: new (id: string) => T, cfg: any): any {
     s.enabled = true;
     s.stateLoaded = true;
     s.cfg = () => cfg;
+    // Exits are read through Strategy.setting() (this block's target/stopLoss, else settings): point it at the stubbed block, as the strategy tests do.
+    s.setting = (key: string) => settingFor(cfg, configService.getConfig().settings as any, key);
     s.stateFile = () => `/tmp/replay-fixes-test-${cfg.userId}-${process.pid}.json`;
     return s;
 }
@@ -113,7 +116,7 @@ function make<T>(Cls: new (id: string) => T, cfg: any): any {
     const slotA = moment().subtract(3, 'minutes').format('HH:mm');
     const slotB = moment().subtract(1, 'minutes').format('HH:mm');
     const mom = (userId: string, extra: any = {}) => {
-        const cfg: any = { type: 'MomentumAtFixedTimeStrategy', userId, times: [slotA], maxInvestment: 100000, targetPoints: 10, entryTimeoutMinutes: 5, brokers: ['kite'], minMovePoints: 10, ...extra };
+        const cfg: any = { type: 'MomentumAtFixedTimeStrategy', userId, times: [slotA], maxInvestment: 100000, target: 10, stopLoss: 'none', entryTimeoutMinutes: 5, brokers: ['kite'], minMovePoints: 10, ...extra }; // exits are target / stopLoss (the old targetPoints / stopLossPercent keys are ignored)
         const s = make(MomentumAtFixedTimeStrategy, cfg);
         s.momentum.readDepth = async (_x: any, tokens: string[]) => new Map(tokens.map((t) => [t, t === 'PE-T' ? { tbq: 900, tsq: 100 } : { tbq: 300, tsq: 200 }]));
         return { s, cfg };
@@ -125,14 +128,14 @@ function make<T>(Cls: new (id: string) => T, cfg: any): any {
     await m.s.processNiftyQuote({ ltp: 21995, prevClose: 22000 });
     assert(!calls.some((c) => c.fn === 'placeLimitBuyBare') && !calls.some((c) => c.fn === 'resolveOptionContract'), 'a -5 move is below minMovePoints 10 -> no trade (and no order-book read)');
     calls = [];
-    m = mom('MF-b', { stopLossPercent: 25 });
+    m = mom('MF-b', { stopLoss: '25%' });
     await m.s.processNiftyQuote({ ltp: 22000, prevClose: 22000 });
     m.cfg.times = [slotA, slotB];
     await m.s.processNiftyQuote({ ltp: 21985, prevClose: 22000 });
     assert(!!last('placeLimitBuyBare'), 'a -15 move trades');
     await m.s.updateTrade(fill('NIFTY21950PE', 'Buy', 975, 100));
     const matt = last('attachProtection');
-    assert(matt?.args[1].targetPrice === 110 && matt?.args[1].stopLossPrice === 75, `stopLossPercent 25 -> target 110 / stop 75 attached (got ${matt?.args[1].targetPrice}/${matt?.args[1].stopLossPrice})`);
+    assert(matt?.args[1].targetPrice === 110 && matt?.args[1].stopLossPrice === 75, `stopLoss 25% -> target 110 / stop 75 attached (got ${matt?.args[1].targetPrice}/${matt?.args[1].stopLossPrice})`);
     calls = [];
     m = mom('MF-c');
     await m.s.processNiftyQuote({ ltp: 22000, prevClose: 22000 });

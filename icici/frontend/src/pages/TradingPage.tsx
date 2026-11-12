@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTrading } from '../context/TradingContext';
 import { useAuth } from '../context/AuthContext';
 import OrderEntry from '../components/OrderEntry';
+import TradingFaq from '../components/TradingFaq';
 import NiftyTicker from '../components/NiftyTicker';
 import PositionCard from '../components/PositionCard';
 import NotificationBell from '../components/NotificationBell';
@@ -106,6 +107,7 @@ export default function TradingPage() {
             )}
             <h6 className="text-muted mb-2">Place Order</h6>
             <OrderEntry />
+            <TradingFaq />
           </>
         )}
 

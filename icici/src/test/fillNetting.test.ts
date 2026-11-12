@@ -4,7 +4,7 @@
  * Run: npm run build (compile), then: node ./dist/test/fillNetting.test.js
  */
 
-import { collapseFillsByOrderId, netFifoLots, FillDoc } from '../processes/order/fillNetting';
+import { collapseFillsByOrderId, netFifoLots, pairFillsFifo, FillDoc } from '../processes/order/fillNetting';
 
 function assert(condition: boolean, message: string) {
     if (condition) {
@@ -90,4 +90,23 @@ console.log('Fills without an order id are untouched');
     const fills = [fill('U', 'Buy', 10, 1), fill('U', 'Buy', 10, 1)];
     const r = collapseFillsByOrderId(fills, () => undefined);
     assert(r.fills.length === 2, 'both kept');
+}
+
+console.log('pairFillsFifo: each Sell closes the oldest Buy lots; a Sell with no Buy is reported, not paired');
+{
+    const fills = [
+        fill('S', 'Buy', 390, 240.1, 'B1'),
+        fill('S', 'Sell', 390, 150, 'S1'),          // the 2026-11-11 Breeze Momentum close: one piece, -90.1 x 390
+        fill('S', 'Buy', 325, 261.85, 'B2'),
+        fill('S', 'Buy', 325, 205, 'B3'),
+        fill('S', 'Sell', 650, 157.97, 'S2'),       // closes two lots at once: weighted entry
+        fill('S', 'Sell', 65, 100, 'S3'),           // nothing left to close
+    ];
+    const { pieces, unmatched } = pairFillsFifo(fills);
+    assert(pieces.length === 2, 'two closed pieces');
+    assert(pieces[0].qty === 390 && pieces[0].entryPrice === 240.1 && pieces[0].sell.brokerOrderId === 'S1', 'first piece: 390 from 240.1 closed by S1');
+    assert(pieces[1].qty === 650 && Math.abs(pieces[1].entryPrice - 233.425) < 1e-9, 'second piece: 650 at the weighted entry 233.425');
+    assert(unmatched.length === 1 && unmatched[0].qty === 65 && unmatched[0].sell.brokerOrderId === 'S3', 'the sell with no Buy is unmatched');
+    const part = pairFillsFifo([fill('S', 'Buy', 100, 10, 'B'), fill('S', 'Sell', 30, 12, 'S'), fill('S', 'Sell', 70, 11, 'T')]);
+    assert(part.pieces.length === 2 && part.pieces[0].qty === 30 && part.pieces[1].qty === 70 && part.unmatched.length === 0, 'a partial sell and its remainder are two pieces');
 }

@@ -2,9 +2,12 @@ import Log from '../util/Log';
 import express from 'express';
 import { Trade } from '../model/model';
 import configService from '../prism/ConfigService';
-import { computePnlSummary } from '../payout';
+import { computePnlSummary, periodFromInputs } from '../payout';
 import Mongo from '../tools/mongo';
 import ANT from '../ant/ANT';
+import AntContractMaster from '../ant/AntContractMaster';
+import { CanonicalSymbol, formatCanonicalSymbol, parseCanonicalSymbol } from '../model/CanonicalSymbol';
+import { exchangeForIndex } from '../util/underlyings';
 import OrderClient from '../processes/strategies/OrderClient';
 import { asyncRouter } from './asyncRouter';
 import { requireCsrfHeader, resolveUser, requireAuth, requireAdmin } from './session';
@@ -128,6 +131,33 @@ router.post('/order/settarget', requireAuth, requireCsrfHeader, async function (
 
 // ============================== Trade & Position Queries ==============================
 
+// Live figures for the contract picked in Search & Buy (?contract=NIFTY_25550_CE, the same canonical string /order/buy takes). Read-only.
+// Resolves the contract the buy would use (nearest expiry, same as findNearestExpiryOption in estimateOptionPrice) for the CE and the PE at
+// that strike, so the panel shows OI for both sides. Figures come from ANT (see ANT.getContractSnapshot) - ANT is the platform's price source
+// on every broker, since Kite's quote endpoints are refused for this account.
+router.get('/order/contract-quote', requireAuth, async function (req: express.Request, res) {
+    let canonical: CanonicalSymbol;
+    try {
+        canonical = parseCanonicalSymbol(String(req.query.contract ?? ''));
+    } catch {
+        res.status(400).json({ error: 'contract must look like NIFTY_25550_CE' });
+        return;
+    }
+    try {
+        const exch = exchangeForIndex(canonical.symbol);
+        const master = AntContractMaster.getInstance();
+        const lookup = (optionType: 'CE' | 'PE') => master.findNearestExpiryOption({ symbol: canonical.symbol, exch, strike: canonical.strike, optionType });
+        const selected = lookup(canonical.optionType);
+        const ce = canonical.optionType === 'CE' ? selected : lookup('CE');
+        const pe = canonical.optionType === 'PE' ? selected : lookup('PE');
+        const snap = await ANT.getInstance().getContractSnapshot(selected.exch, String(selected.token), String(ce.token), String(pe.token));
+        res.json({ contract: formatCanonicalSymbol(canonical), tradingSymbol: selected.tradingSymbol, strike: canonical.strike, optionType: canonical.optionType, expiry: Number.isFinite(selected.expiryMs) ? new Date(selected.expiryMs).toISOString().slice(0, 10) : null, lotSize: Number(selected.lotSize) || null, fetchedAt: new Date().toISOString(), ...snap });
+    } catch (e: any) {
+        Log.log(`[contract-quote] ${req.query.contract}: ${e?.message ?? e}`);
+        res.status(503).json({ error: `Quote unavailable: ${e?.message ?? e}` });
+    }
+});
+
 
 // Per-strategy realized (closed trades) and unrealized (open positions) P&L for the current `order` session,
 // used by the monitor-strategies skill's "status" report. Optional ?match=<regex> filters on Trade.strategy, falling back to Trade.user (bare broker orders carry no strategy).
@@ -196,10 +226,19 @@ router.get('/admin/trades/closed', requireAdmin, async function (req, res) {
         const { user, from, to } = req.query as { user?: string; from?: string; to?: string };
         const query: any = {};
         if (user) query.user = user;
+        // Date-only from/to are IST calendar days (a plain new Date('YYYY-MM-DD') is UTC midnight = 05:30 IST, which made a Day filter a
+        // zero-width window and dropped the last day of Week/Month). `to` is inclusive of its whole day: [from 00:00 IST, to+1 00:00 IST).
         if (from || to) {
-            query.exitTime = {};
-            if (from) query.exitTime.$gte = new Date(from);
-            if (to) query.exitTime.$lte = new Date(to);
+            const dateOnly = /^\d{4}-\d{2}-\d{2}$/;
+            const istStart = (d: string) => (dateOnly.test(d) ? new Date(`${d}T00:00:00+05:30`) : new Date(d));
+            const range: any = {};
+            if (from) range.$gte = istStart(from);
+            if (to) range.$lt = dateOnly.test(to) ? new Date(new Date(`${to}T00:00:00+05:30`).getTime() + 24 * 60 * 60 * 1000) : new Date(to);
+            if ((range.$gte && Number.isNaN(range.$gte.getTime())) || (range.$lt && Number.isNaN(range.$lt.getTime()))) {
+                res.status(400).json({ error: 'from/to must be valid dates' });
+                return;
+            }
+            query.exitTime = range;
         }
         const trades = await Mongo.getInstance().db.collection('closedTrades').find(query).sort({ exitTime: -1 }).toArray();
         res.json(trades);
@@ -221,7 +260,9 @@ router.get('/admin/trades/pnl-summary', requireAdmin, async function (req, res) 
             res.status(400).json({ error: 'user, from and to are required' });
             return;
         }
-        const summary = await computePnlSummary(user, new Date(from), new Date(to), breakdown === 'week');
+        let period: { start: Date; end: Date };
+        try { period = periodFromInputs(from, to); } catch (e: any) { res.status(400).json({ error: e.message }); return; }
+        const summary = await computePnlSummary(user, period.start, period.end, breakdown === 'week');
         res.json(summary);
     } catch (e) {
         Log.log('Admin get P&L summary error:', e);

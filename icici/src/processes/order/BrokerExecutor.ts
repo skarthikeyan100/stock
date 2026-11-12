@@ -299,11 +299,12 @@ export interface BrokerExecutor {
     // Net open quantity of a contract, read live from the broker.
     getLiveQuantity(tradingSymbol: string): Promise<number>;
 
-    // Read-only contract lookups. resolveContract: strike + right -> contract (nearest expiry). getContractByPriceRange: the
+    // Read-only contract lookups. resolveContract: strike + right -> contract (nearest expiry; `expiryOffset` 1 = the next expiry, 2 = the one after, and
+    // an explicit offset is never bumped by skipNearestExpiryDay). getContractByPriceRange: the
     // contract whose premium is closest to (and not below) minPremium. `skipNearestExpiryDay` (optional, any strategy): true = on the nearest
     // expiry's own day use the next expiry, false = never, undefined = settings.skipNearestExpiryOnExpiryDay. Breeze honours it too: its tsym has no
     // expiry, so every later order on it resolves the expiry from the leg's ANT token (resolveBreezeContract), which carries the week.
-    resolveContract(index: OptionIndex, strike: number, right: OptionRight, skipNearestExpiryDay?: boolean): Promise<ResolvedContract>;
+    resolveContract(index: OptionIndex, strike: number, right: OptionRight, skipNearestExpiryDay?: boolean, expiryOffset?: number): Promise<ResolvedContract>;
     getContractByPriceRange(underlyingLtp: number, optionType: 'CE' | 'PE', index: OptionIndex, minPremium: number, excludeStrikes: Set<number>, skipNearestExpiryDay?: boolean): Promise<any>;
 
     // This broker's resting limit orders on one contract (the pending-order tracker's view).

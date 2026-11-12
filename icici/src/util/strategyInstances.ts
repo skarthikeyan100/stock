@@ -10,6 +10,7 @@ import { investmentForBroker } from '../prism/configVocabulary';
 export const MULTI_BROKER_TYPES: readonly string[] = [
     'BulkPcrStrategy', 'BulkPcrAutoStartStrategy', 'HourlyStrategy', 'ButterflyStrategy',
     'TopStockOptionsOpeningGapStrategy', 'RecommendationStrategy', 'NiftyChangeStrategy', 'MomentumAtFixedTimeStrategy',
+    'NextWeekStrategy', 'BreakoutStrategy',
 ];
 
 // Kite keeps the base id (state, latches and trade history carry over); the others get a suffix, as the hand-made copies did.

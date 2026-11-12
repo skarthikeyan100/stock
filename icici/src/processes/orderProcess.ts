@@ -706,9 +706,10 @@ async function resolveOptionContractForBroker(
     index: 'NIFTY' | 'SENSEX',
     strike: number,
     right: 'CE' | 'PE',
-    skipNearestExpiryDay?: boolean
+    skipNearestExpiryDay?: boolean,
+    expiryOffset?: number
 ): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
-    return getExecutorByBroker(broker).resolveContract(index, strike, right, skipNearestExpiryDay);
+    return getExecutorByBroker(broker).resolveContract(index, strike, right, skipNearestExpiryDay, expiryOffset);
 }
 
 // Force-closes one ButterflyStrategy short leg (bookkeeping.shortTrades entry) via
@@ -1026,8 +1027,8 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // broker's own contract master. Used by ButterflyStrategy to resolve all 4 of
             // its legs before placing anything.
             case 'resolveOptionContract': {
-                const { broker, index, strike, right, skipNearestExpiryDay } = req.payload;
-                const result = await resolveOptionContractForBroker(broker, index, strike, right, skipNearestExpiryDay);
+                const { broker, index, strike, right, skipNearestExpiryDay, expiryOffset } = req.payload;
+                const result = await resolveOptionContractForBroker(broker, index, strike, right, skipNearestExpiryDay, expiryOffset);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -1179,7 +1180,7 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
 
             // Explicit broker -> Mongo sync (the end-of-day repair, on demand) - POST /reconcile in routes/admin.ts
             // invokes this first, then `strategies`' reconcile (which depends on
-            // the restored bookkeeping.trades). Refused before 09:10.
+            // the restored bookkeeping.trades). Runs at any time.
             case 'eodSync': {
                 try {
                     const reports = await runEodRepairNow('on demand');
@@ -1452,14 +1453,14 @@ function runEodRepair(context: string, brokers: readonly (typeof EOD_BROKERS)[nu
         for (const b of brokers) {
             reports[b] = await bookkeeping.eodRepairBroker(b);
             const r = reports[b];
-            Log.log(`[order] EOD sync ${b}: ${r.ok ? 'ok' : 'FAILED'}${r.skipped ? ` (${r.skipped})` : ''}${r.error ? ` - ${r.error}` : ''}; booked ${r.bookedFills} fill(s) from the broker's own fills and ${r.bookedFlat} flat close(s) at an implied price; ${r.mismatches.length} unattributed difference(s)`);
+            Log.log(`[order] EOD sync ${b}: ${r.ok ? 'ok' : 'FAILED'}${r.skipped ? ` (${r.skipped})` : ''}${r.error ? ` - ${r.error}` : ''}; booked ${r.bookedFills} fill(s) from the broker's own fills and ${r.bookedFlat} flat close(s) at an implied price; wrote ${r.repairedClosed} missing closed trade(s) from the fills; ${r.mismatches.length} unattributed difference(s)`);
         }
         // Order book: let the pending-limit-order trackers resolve what the brokers now say (they already poll every 15 s; this is one more pass).
         for (const name of TRACKER_BROKERS) await TRACKERS[name].poll().catch((e: any) => Log.log(`[order] EOD sync: pending ${name} order poll failed:`, e?.message ?? e));
         exitMonitor.reconcileFromTrades(bookkeeping.trades);
         try {
             const set: Record<string, unknown> = { updatedAt: new Date() };
-            for (const [b, r] of Object.entries(reports)) set[`brokers.${b}`] = { ok: r.ok, at: new Date(), skipped: r.skipped ?? null, error: r.error ?? null, bookedFills: r.bookedFills, bookedFlat: r.bookedFlat, mismatches: r.mismatches };
+            for (const [b, r] of Object.entries(reports)) set[`brokers.${b}`] = { ok: r.ok, at: new Date(), skipped: r.skipped ?? null, error: r.error ?? null, bookedFills: r.bookedFills, bookedFlat: r.bookedFlat, repairedClosed: r.repairedClosed, mismatches: r.mismatches };
             await Mongo.getInstance()?.db.collection('eodReconcileRuns').updateOne({ _id: localDayKey() as any }, { $set: set }, { upsert: true });
         } catch (e: any) {
             Log.log('[order] EOD sync: could not store the run report in Mongo (eodReconcileRuns):', e?.message ?? e);
@@ -1472,9 +1473,8 @@ function runEodRepair(context: string, brokers: readonly (typeof EOD_BROKERS)[nu
     return run;
 }
 
-// On-demand / POST /reconcile: refused before 09:10, when broker responses are pre-market and incomplete.
+// On-demand / POST /sync / POST /reconcile: runs at any time of day (user's rule, 2026-11-12: no 09:10 gate on the sync).
 async function runEodRepairNow(context: string): Promise<Record<string, EodBrokerReport>> {
-    if (!isPastReconcileTime()) throw new Error('broker sync refused before 09:10 - broker responses are pre-market and incomplete; retry after 09:10');
     if (reconcileInFlight && !eodRun) await reconcileInFlight;
     return runEodRepair(context);
 }

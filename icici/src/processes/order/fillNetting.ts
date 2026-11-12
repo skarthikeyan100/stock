@@ -80,3 +80,49 @@ export function netFifoLots<T extends FillDoc>(fills: T[]): Lot<T>[] {
     }
     return lots;
 }
+
+/** One closed slice: a Sell fill and the FIFO-matched Buy lots it consumed. */
+export interface ClosedPiece<T extends FillDoc = FillDoc> {
+    sell: T;
+    qty: number;
+    /** Quantity-weighted price of the Buy lots this sell consumed. */
+    entryPrice: number;
+    /** The oldest consumed lot's fill (entry time, strategy, token of the closed position). */
+    buy: T;
+}
+
+/**
+ * FIFO pairing for ONE user's fills of ONE contract, in time order. Same consumption rule as netFifoLots, but it keeps what each Sell
+ * closed so a closed-trade row can be written for it. A Sell with no (or too few) Buy lots before it is reported as `unmatched`
+ * (a sell of something Mongo never saw bought) - never turned into a closed trade.
+ */
+export function pairFillsFifo<T extends FillDoc>(fills: T[]): { pieces: ClosedPiece<T>[]; unmatched: { sell: T; qty: number }[] } {
+    const lots: Lot<T>[] = [];
+    const pieces: ClosedPiece<T>[] = [];
+    const unmatched: { sell: T; qty: number }[] = [];
+    for (const f of fills) {
+        const q = Number(f.quantity);
+        if (!(q > 0)) continue;
+        if (f.action === 'Buy') {
+            lots.push({ doc: f, remaining: q });
+            continue;
+        }
+        if (f.action !== 'Sell') continue;
+        let toSell = q;
+        let matched = 0;
+        let value = 0;
+        let first: T | undefined;
+        while (toSell > 0 && lots.length > 0) {
+            const use = Math.min(toSell, lots[0].remaining);
+            matched += use;
+            value += use * Number(lots[0].doc.price ?? 0);
+            first = first ?? lots[0].doc;
+            lots[0].remaining -= use;
+            toSell -= use;
+            if (lots[0].remaining <= 0) lots.shift();
+        }
+        if (matched > 0 && first) pieces.push({ sell: f, qty: matched, entryPrice: value / matched, buy: first });
+        if (toSell > 0) unmatched.push({ sell: f, qty: toSell });
+    }
+    return { pieces, unmatched };
+}
