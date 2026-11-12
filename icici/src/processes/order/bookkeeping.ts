@@ -174,6 +174,9 @@ class OrderBookkeeping {
     private positionsChangedListeners: PositionsChangedListener[] = [];
     private drawdownBreachListeners: DrawdownBreachListener[] = [];
 
+    /** True when this broker order id was already booked (or is being booked) in this process. */
+    isFillProcessed(orderId: string): boolean { return this.processedFillIds.has(orderId); }
+
     onFill(listener: FillListener) {
         this.fillListeners.push(listener);
     }
@@ -1802,7 +1805,14 @@ class OrderBookkeeping {
             if (broker === 'breeze') {
                 if (!(await withTimeout(Breeze.getInstance().hasValidSession(), 15000, 'Breeze hasValidSession'))) return null;
                 const from = new Date(); from.setHours(0, 0, 0, 0);
-                const result = await withTimeout(Breeze.getInstance().getTradeList({ fromDate: from.toISOString(), toDate: new Date().toISOString(), exchangeCode: 'NFO' }), 20000, 'Breeze getTradeList');
+                let result: any;
+                try {
+                    result = await withTimeout(Breeze.getInstance().getTradeList({ fromDate: from.toISOString(), toDate: new Date().toISOString(), exchangeCode: 'NFO' }), 20000, 'Breeze getTradeList');
+                } catch (e: any) {
+                    // Breeze answers an EMPTY trade list with Error 'No Data Found' (live every sync on a day Breeze traded nothing): that is a readable, empty book.
+                    if (/No Data Found/i.test(String(e?.message ?? e))) return [];
+                    throw e;
+                }
                 if (!Array.isArray(result?.Success)) return null;
                 return sum(result.Success.flatMap((r: any) => {
                     const a = act(r.action); const optionType = r.right === 'Call' ? 'CE' : r.right === 'Put' ? 'PE' : undefined;

@@ -831,8 +831,17 @@ function adoptUntrackedGtts(liveGtts: any[]): void {
     }
     for (const t of bookkeeping.trades.filter(needsGttAdoption)) {
         gttAdoptTried.add(adoptKey(t));
-        const matches = liveGtts.filter((g: any) => g?.condition?.tradingsymbol === t.tsym && (g.status === 'active' || g.status === 'triggered')
+        let matches = liveGtts.filter((g: any) => g?.condition?.tradingsymbol === t.tsym && (g.status === 'active' || g.status === 'triggered')
             && !owned.has(g.id) && Number(g.orders?.[0]?.quantity) === t.quantity);
+        if (matches.length > 1 && t.targetPrice != null && t.stopLossPrice != null) {
+            // Two users on one contract with the same quantity (a mirror pair) is normal: tell the GTTs apart by this leg's own stop/target pair.
+            const want = [Number(t.stopLossPrice), Number(t.targetPrice)].sort((a, b) => a - b);
+            const exact = matches.filter((g: any) => {
+                const tv = (g.condition?.trigger_values ?? []).map(Number).sort((a: number, b: number) => a - b);
+                return tv.length === 2 && Math.abs(tv[0] - want[0]) <= 0.05 && Math.abs(tv[1] - want[1]) <= 0.05;
+            });
+            if (exact.length === 1) matches = exact;
+        }
         if (matches.length !== 1) {
             if (matches.length > 1) Log.log(`[order] ALERT: ${matches.length} live GTTs fit ${t.tsym} (${t.user}) qty ${t.quantity} - not adopting any; check the broker's GTT list by hand`);
             continue;
@@ -909,9 +918,21 @@ async function pollGttFillsOnce(): Promise<void> {
         try {
             const orders = await kite.getKiteConnect().getOrders();
             const entryMs = trade.entryTime ? new Date(trade.entryTime).getTime() : 0;
-            const sellFill = (orders as any[])
-                .filter((o: any) => o.tradingsymbol === trade.tsym && o.transaction_type === 'SELL' && o.status === 'COMPLETE' && new Date(o.order_timestamp).getTime() >= entryMs)
-                .sort((a: any, b: any) => new Date(b.order_timestamp).getTime() - new Date(a.order_timestamp).getTime())[0];
+            // THIS GTT's own exit order: Kite reports it on the triggered GTT (orders[].result.order_result.order_id). Picking "the newest
+            // completed sell of the contract" instead booked the SAME order for two users holding the same contract (a mirror pair, both GTTs
+            // firing together): the second booking was dropped as a redelivered fill and that leg stayed open (live 2026-11-12 10:50).
+            const gttOrderIds = new Set<string>((gtt.orders ?? []).map((x: any) => x?.result?.order_result?.order_id).filter((x: any) => x != null && x !== '').map(String));
+            const completedSells = (orders as any[]).filter((o: any) => o.tradingsymbol === trade.tsym && o.transaction_type === 'SELL' && o.status === 'COMPLETE' && new Date(o.order_timestamp).getTime() >= entryMs);
+            let sellFill: any;
+            if (gttOrderIds.size > 0) {
+                sellFill = completedSells.find((o: any) => gttOrderIds.has(String(o.order_id)));
+            } else {
+                // The GTT did not name its order: only a sell no other leg has claimed, nearest this leg's own target/stop price.
+                const free = completedSells.filter((o: any) => !bookkeeping.isFillProcessed(String(o.order_id)));
+                const ref = [trade.targetPrice, trade.stopLossPrice].filter((x) => x != null) as number[];
+                const dist = (o: any) => ref.length ? Math.min(...ref.map((r) => Math.abs(Number(o.average_price) - r))) : 0;
+                sellFill = free.sort((a: any, b: any) => dist(a) - dist(b))[0];
+            }
             if (!sellFill) {
                 // Triggered but the exit order isn't COMPLETE yet (or not visible): retry next poll rather than
                 // booking a guessed exit.
