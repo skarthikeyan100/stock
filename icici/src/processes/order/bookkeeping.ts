@@ -168,6 +168,9 @@ class OrderBookkeeping {
     private notifiedThresholds: Map<string, Set<number>> = new Map();
     userSettingsCache: Map<string, UserSettings> = new Map();
     private fillListeners: FillListener[] = [];
+    // Broker order ids of sells the BROKER itself executed (a GTT target/stop that fired), booked by the GTT poll. Not stored in Mongo. A fill
+    // listener (mirror.ts) reads it to tell a broker-side exit, which the matching admin GTT performs by itself, from a sell this platform placed.
+    readonly brokerOwnedExitOrderIds = new Set<string>();
     private positionsChangedListeners: PositionsChangedListener[] = [];
     private drawdownBreachListeners: DrawdownBreachListener[] = [];
 

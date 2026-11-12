@@ -933,6 +933,7 @@ async function pollGttFillsOnce(): Promise<void> {
             // The GTT itself sold: clear the id first so booking this sell does not try to delete the trigger that just fired.
             const firedId = trade.gttTriggerId;
             trade.gttTriggerId = undefined;
+            if (sellTrade.brokerOrderId) bookkeeping.brokerOwnedExitOrderIds.add(String(sellTrade.brokerOrderId));
             try {
                 await bookkeeping.recordFill(sellTrade);
             } catch (e) {

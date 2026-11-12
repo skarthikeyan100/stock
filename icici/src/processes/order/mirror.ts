@@ -98,7 +98,10 @@ export const startMirrorBuy: MirrorHook = (leg) => {
 
 // Closes `fraction` of the user's sold quantity on the admin leg (`sold`/`before`), or all of it when `sold` is undefined or the
 // user is flat. Caps to what the admin really holds (its own target/SL may already have exited it).
-async function closeMirror(userId: string, token: string, sold: { qty: number; before: number } | undefined, exactQty?: number): Promise<void> {
+// `brokerOwned`: the user's exit was a broker-side GTT fill. The admin leg carries its own GTT with the same target/stop (+/-0.10), so the broker
+// closes it by itself: placing a sell here would race that GTT (the 2026-11-12 10:50 false ALERT: both GTTs hit, the mirror sell was refused
+// as NEVER-SHORT). The row is still reduced, and a bounded check (verifyAdminClosed) alerts once if the admin leg is not closed by then.
+async function closeMirror(userId: string, token: string, sold: { qty: number; before: number } | undefined, exactQty?: number, brokerOwned = false): Promise<void> {
     const c = col();
     const row = (await c?.findOne({ userId, token })) as MirrorRow | null | undefined;
     if (!c || !row) return;
@@ -108,13 +111,48 @@ async function closeMirror(userId: string, token: string, sold: { qty: number; b
     const userFlat = exactQty === undefined && openQty(userId, token) <= 0;
     let closeQty = exactQty !== undefined ? exactQty : userFlat || !sold ? row.adminQty : Math.floor((row.adminQty * sold.qty) / sold.before / lot + 1e-9) * lot;
     closeQty = Math.min(closeQty, row.adminQty, adminHeld);
-    if (closeQty > 0) {
+    let verify = false;
+    if (closeQty > 0 && brokerOwned) {
+        Log.log(`[order] mirror: ${userId}'s ${row.tsym} exit was a broker GTT fill - ${admin}'s own GTT closes the admin share (qty=${closeQty}); no mirror sell placed`);
+        verify = true;
+    } else if (closeQty > 0) {
         Log.log(`[order] mirror: ${admin} sells ${row.tsym} qty=${closeQty} following ${userId}`);
-        await getBrokerExecutor(admin, row.broker).squareOff(admin, row.tsym, closeQty, row.exchange);
+        try {
+            await getBrokerExecutor(admin, row.broker).squareOff(admin, row.tsym, closeQty, row.exchange);
+        } catch (e) {
+            // Nothing sellable at the broker: the admin leg is already gone there (its own GTT sold it; the GTT poll books it next). Not retried.
+            if (!/NEVER-SHORT GUARD: nothing sellable/.test(String((e as any)?.message ?? e))) throw e;
+            Log.log(`[order] mirror: ${admin}'s ${row.tsym} share is already closed at the broker (nothing sellable) - no mirror sell needed`);
+            verify = true;
+        }
     }
     const left = userFlat || adminHeld <= closeQty ? 0 : row.adminQty - Math.max(closeQty, 0);
     if (left <= 0) await c.deleteOne({ userId, token });
     else await c.updateOne({ userId, token }, { $set: { adminQty: left, updatedAt: new Date() } });
+    if (verify) verifyAdminClosed(row.tsym, token);
+}
+
+const VERIFY_AFTER_MS = 3 * 60_000;
+const verifying = new Set<string>();
+/** Alert-only check (nothing is sold, no control state): a few minutes after a broker-owned exit, the admin must hold no more than the other
+ *  users' mirror rows account for. One timer per token; a timer lost to a restart only loses this alert (the admin leg keeps its own GTT). */
+function verifyAdminClosed(tsym: string, token: string): void {
+    if (verifying.has(token)) return;
+    verifying.add(token);
+    const t = setTimeout(async () => {
+        verifying.delete(token);
+        try {
+            const rows = (await col()?.find({ token }).toArray()) as MirrorRow[] | undefined;
+            const expected = (rows ?? []).reduce((s, r) => s + r.adminQty, 0);
+            const admin = primaryAdminEmail();
+            const held = openQty(admin, token);
+            if (held > expected) Log.log(`[order] ALERT: ${tsym}: the user's GTT exit closed the position but ${admin} still holds ${held} (other mirror rows account for ${expected}) ${VERIFY_AFTER_MS / 60000} min later - the admin leg's own GTT has not fired; it is still open`);
+            else Log.log(`[order] mirror: ${tsym} admin share closed as expected`);
+        } catch (e) {
+            Log.log(`[order] mirror: admin-closed check for ${tsym} failed:`, e);
+        }
+    }, VERIFY_AFTER_MS);
+    t.unref?.();
 }
 
 /** The user's own buy failed after the mirror started: take back the admin's matching quantity (never the leg of an earlier user buy). */
@@ -131,7 +169,8 @@ export function onUserSell(userId: string, trade: Trade): void {
     if (trade.action !== 'Sell' || !(trade.quantity > 0) || !eligibleUser(userId)) return;
     const token = trade.token;
     const before = openQty(userId, token) + trade.quantity; // listeners run after booking: the sold units are already out of trades
-    serialized(`${userId}|${token}`, () => closeMirror(userId, token, { qty: trade.quantity, before }))
+    const brokerOwned = !!trade.brokerOrderId && bookkeeping.brokerOwnedExitOrderIds.has(String(trade.brokerOrderId));
+    serialized(`${userId}|${token}`, () => closeMirror(userId, token, { qty: trade.quantity, before }, undefined, brokerOwned))
         .catch((e) => Log.log(`[order] ALERT: mirror close for ${userId} ${trade.tsym} failed - the admin leg may still be open:`, e));
 }
 
