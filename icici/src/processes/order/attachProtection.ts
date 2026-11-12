@@ -4,6 +4,7 @@ import { roundToTick } from '../../util/tick';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { exchangeForTsym } from '../../util/underlyings';
+import { persistGttTriggerId } from './kiteExecutor';
 
 // Attaches an absolute target / stop-loss to a position that is ALREADY open (a filled limit buy), unlike finalizeEntry which runs
 // at entry. Used by RecommendationStrategy. Mirrors kiteExecutor.setTargetStopLoss: finds the open row in bookkeeping, sets its
@@ -45,6 +46,7 @@ export async function attachProtection(
                 trade.tsym, exchange, trade.quantity, entry, target - entry, entry - stop, entry,
             );
             exitMonitor.registerTrade(trade, exchange, 'kite', true);
+            persistGttTriggerId(trade); // the Buy document was inserted before this GTT existed; a restart must learn its id
             bookkeeping.notifyTargetStopLossChanged();
             return { mode: 'gtt', gttTriggerId: trade.gttTriggerId };
         } catch (e) {

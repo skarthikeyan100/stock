@@ -18,6 +18,7 @@ import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForS
 import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { exchangeForTsym } from '../../util/underlyings';
 import { loadOrderOwners } from './orderOwners';
+import Mongo from '../../tools/mongo';
 
 // Kite is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -770,6 +771,15 @@ exitMonitor.onExit('kite', async (trade: Trade, exchange: 'NFO' | 'BFO') => {
     await squareOffOnKite(trade.user, trade.tsym, trade.quantity, exchange);
 });
 
+// exitMonitor calls this ONCE when its squareoff was refused because Kite holds nothing sellable (the broker's GTT already sold the
+// position): look for / adopt the GTT and book its fill now instead of waiting for the next 60 s poll.
+exitMonitor.onExitResolve('kite', async (trade: Trade) => {
+    // A poll already in flight may have read the GTT list before this squareoff was refused: wait for it, then poll again with this contract flagged.
+    for (let i = 0; i < 20 && gttPollInFlight; i++) await new Promise((r) => setTimeout(r, 500));
+    gttAdoptNow.add(trade.tsym);
+    await pollGttFills();
+});
+
 // GTT placement (above, useGTT=true path) is fire-and-forget - the broker
 // watches price after that, but nothing here ever asked whether it actually
 // triggered. Without this poll, a GTT-closed trade stays "open" in
@@ -782,6 +792,58 @@ exitMonitor.onExit('kite', async (trade: Trade, exchange: 'NFO' | 'BFO') => {
 // raw payloads on the first real trigger and correct field names here if the
 // broker's actual shape disagrees.
 let gttPollInFlight = false;
+
+// Writes a GTT id onto the newest Buy document of this position in Mongo. The document is inserted at the fill, BEFORE a post-fill
+// protection (attachProtection) places its GTT, so without this a restart restores the row with no gttTriggerId: exitMonitor then arms an
+// ACTIVE self squareoff next to the broker's GTT and pollGttFills never looks at that GTT (live 2026-11-12 10:04-10:12: the stop fired at the
+// broker and here, and the fill was not booked for over 80 s). Fire-and-forget; one retry because the Buy insert may still be in flight.
+export function persistGttTriggerId(trade: Trade): void {
+    const id = trade.gttTriggerId;
+    const db = Mongo.getInstance()?.db;
+    if (id == null || !db || !trade.tsym) return;
+    const filter = { tsym: trade.tsym, user: trade.user, action: 'Buy', $or: [{ broker: 'kite' }, { broker: { $exists: false } }] };
+    const attempt = async (): Promise<boolean> => {
+        const r = await db.collection('Trade').findOneAndUpdate(filter, { $set: { gttTriggerId: id } }, { sort: { entryTime: -1 } });
+        return !!r?.value;
+    };
+    attempt()
+        .then((hit) => hit ? true : new Promise<boolean>((res) => setTimeout(() => attempt().then(res, () => res(false)), 2500)))
+        .then((hit) => { if (!hit) Log.log(`[order] ALERT: could not store GTT ${id} on the Buy document of ${trade.tsym} (${trade.user}) - a restart before the GTT poll adopts it would not know about it`); })
+        .catch((e) => Log.log(`[order] persisting GTT ${id} for ${trade.tsym} failed:`, e));
+}
+
+// Healing for a position whose GTT id is unknown (restored from Mongo without it, or lost): look for ONE live broker GTT on the same
+// contract with the same quantity that no other row already owns, and adopt it. Tried once per row (plus on demand when a squareoff is
+// refused as nothing-sellable), so a position that never had a GTT does not cost a broker read every poll.
+const gttAdoptTried = new Set<string>();
+const gttAdoptNow = new Set<string>(); // tsyms a refused squareoff asked to re-check
+function adoptKey(t: Trade): string { return `${t.user}|${t.tsym}|${t.quantity}`; }
+function needsGttAdoption(t: Trade): boolean {
+    return (t.broker ?? 'kite') === 'kite' && t.gttTriggerId == null && t.quantity > 0 && !!t.token
+        && (t.targetPrice != null || t.stopLossPrice != null) && bookkeeping.getUserUseGTT(t.user)
+        && (!gttAdoptTried.has(adoptKey(t)) || gttAdoptNow.has(t.tsym));
+}
+function adoptUntrackedGtts(liveGtts: any[]): void {
+    const owned = new Set<any>();
+    for (const t of bookkeeping.trades) {
+        if (t.gttTriggerId != null) owned.add(t.gttTriggerId);
+        for (const x of t.extraGttTriggerIds ?? []) owned.add(x);
+    }
+    for (const t of bookkeeping.trades.filter(needsGttAdoption)) {
+        gttAdoptTried.add(adoptKey(t));
+        const matches = liveGtts.filter((g: any) => g?.condition?.tradingsymbol === t.tsym && (g.status === 'active' || g.status === 'triggered')
+            && !owned.has(g.id) && Number(g.orders?.[0]?.quantity) === t.quantity);
+        if (matches.length !== 1) {
+            if (matches.length > 1) Log.log(`[order] ALERT: ${matches.length} live GTTs fit ${t.tsym} (${t.user}) qty ${t.quantity} - not adopting any; check the broker's GTT list by hand`);
+            continue;
+        }
+        t.gttTriggerId = matches[0].id;
+        owned.add(matches[0].id);
+        persistGttTriggerId(t);
+        Log.log(`[order] GTT poll: adopted live GTT ${matches[0].id} (${matches[0].status}) for ${t.tsym} (${t.user}) - broker owns its exit, exitMonitor watch-only`);
+        if (matches[0].status === 'active' && t.token) exitMonitor.registerTrade(t, exchangeForTsym(t.tsym), 'kite', true);
+    }
+}
 // Consecutive polls in which a trade's GTT was absent from the broker's list.
 const gttMissCount = new Map<string, number>();
 const GTT_MISSING_FALLBACK_POLLS = 3;
@@ -801,10 +863,13 @@ async function pollGttFillsOnce(): Promise<void> {
     const kite = Kite.getInstance();
     if (!(await kite.hasValidSession())) return;
 
-    const openGttTrades = bookkeeping.trades.filter((t) => t.gttTriggerId != null);
-    if (openGttTrades.length === 0) return;
+    if (bookkeeping.trades.every((t) => t.gttTriggerId == null) && !bookkeeping.trades.some(needsGttAdoption)) return;
 
     const liveGtts: any[] = await kite.getGTTs();
+    adoptUntrackedGtts(liveGtts);
+    gttAdoptNow.clear();
+    const openGttTrades = bookkeeping.trades.filter((t) => t.gttTriggerId != null);
+    if (openGttTrades.length === 0) return;
     const byId = new Map<any, any>(liveGtts.map((g: any) => [g.id, g]));
 
     for (const trade of openGttTrades) {

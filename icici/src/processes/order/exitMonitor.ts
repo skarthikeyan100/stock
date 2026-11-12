@@ -94,6 +94,26 @@ export function onExit(broker: Broker, handler: ExitHandler): void {
     exitHandlers.set(broker, handler);
 }
 
+// Called ONCE (not per tick) when a squareoff is refused because the broker holds nothing sellable: the broker already closed the position
+// (its GTT/bracket fired, a resting sell filled) and what is left is to book that. Kite wires it to the GTT-fill poll.
+const resolveHandlers = new Map<Broker, ExitHandler>();
+export function onExitResolve(broker: Broker, handler: ExitHandler): void {
+    resolveHandlers.set(broker, handler);
+}
+
+// Per position+broker retry gate for a failed squareoff. Without it a failure re-registered the watch and the very next tick fired the
+// squareoff again (live 2026-11-12 10:11: 279 refusals in 90 s, one ALERT and one broker read each). Exponential delay from 5 s to 60 s;
+// a refusal because the broker holds nothing sellable stops after NEVER_SHORT_MAX_ATTEMPTS (the position is gone at the broker, retrying
+// cannot help). Any other failure keeps retrying at the capped delay, since giving up would leave the position unprotected.
+interface RetryState { attempts: number; nextAt: number }
+const retryGate = new Map<string, RetryState>();
+export const RETRY_BASE_MS = 5_000;
+export const RETRY_MAX_MS = 60_000;
+export const NEVER_SHORT_MAX_ATTEMPTS = 3;
+export function retryDelayMs(attempts: number): number {
+    return Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1));
+}
+
 export function onPriceUpdate(listener: PriceUpdateListener): void {
     priceUpdateListeners.push(listener);
 }
@@ -156,6 +176,13 @@ function isSelfManagedTradeUser(userId: string): boolean {
 }
 
 export function registerTrade(trade: Trade, exchange: 'NFO' | 'BFO', broker: Broker, watchOnly = false): void {
+    registerTradeInternal(trade, exchange, broker, watchOnly, false);
+}
+
+// `retry`: the exit monitor itself putting a failed squareoff back on the watch list - keeps the retry gate and logs nothing per call.
+// An outside registration is new information about the position, so it clears the gate.
+function registerTradeInternal(trade: Trade, exchange: 'NFO' | 'BFO', broker: Broker, watchOnly: boolean, retry: boolean): void {
+    if (!retry) retryGate.delete(monitorKey(trade.user, trade.token, broker));
     if (isSelfManagedTradeUser(trade.user)) {
         Log.log(`[order] exitMonitor: skipping ${trade.tsym} for ${trade.user} - self-managed strategy, never watched here`);
         return;
@@ -171,16 +198,21 @@ export function registerTrade(trade: Trade, exchange: 'NFO' | 'BFO', broker: Bro
         // the exchange is requested as NFO and never ticks.
         DataLink.getInstance().subscribe('exit', { cmd: 'subscribe', token: trade.token, source: BROKER_TO_FEED_SOURCE[broker] ?? DEFAULT_FEED_SOURCE, exchange });
     }
-    Log.log(`[order] exitMonitor watching ${trade.tsym} (token ${trade.token}, ${broker}) for ${trade.user}: target=${trade.targetPrice} stopLoss=${trade.stopLossPrice}${watchOnly ? ' (watch-only, broker owns exit)' : ''}`);
+    if (!retry) Log.log(`[order] exitMonitor watching ${trade.tsym} (token ${trade.token}, ${broker}) for ${trade.user}: target=${trade.targetPrice} stopLoss=${trade.stopLossPrice}${watchOnly ? ' (watch-only, broker owns exit)' : ''}`);
 }
 
 // `broker` omitted removes every broker's entry for this user+token.
 export function unregisterTrade(user: string, token: string, broker?: Broker): void {
+    unregisterTradeInternal(user, token, broker, false);
+}
+
+function unregisterTradeInternal(user: string, token: string, broker: Broker | undefined, keepRetry: boolean): void {
     const removed: MonitoredTrade[] = [];
     for (const [key, entry] of Array.from(monitored.entries())) {
         if (entry.trade.token !== token || (entry.trade.user || 'Default') !== (user || 'Default')) continue;
         if (broker !== undefined && entry.broker !== broker) continue;
         monitored.delete(key);
+        if (!keepRetry) retryGate.delete(key);
         removed.push(entry);
     }
     // Only unsubscribe at the token level once nobody else is still
@@ -268,6 +300,16 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
         // Watch-only: keep lastTradePrice fresh for the frontend's live P&L, but
         // the broker's own GTT/bracket owns the actual exit - never square off here.
         if (watchOnly) continue;
+        // A trade that carries a broker exit (a Kite GTT id) is broker-owned whatever flag this entry was registered with: a restart
+        // restores the row before its GTT id is known and registers it active (live 2026-11-12: the stop then fired at the broker AND
+        // here). Never run a competing squareoff for it; the GTT-fill poll books the broker's exit.
+        if (trade.gttTriggerId != null || aggregate?.gttTriggerId != null) {
+            entry.watchOnly = true;
+            Log.log(`[order] exitMonitor: ${trade.tsym} (${trade.user}, ${broker}) has broker GTT ${trade.gttTriggerId ?? aggregate?.gttTriggerId} - switching to watch-only, no self squareoff`);
+            continue;
+        }
+        const gate = retryGate.get(monitorKey(trade.user, trade.token, broker));
+        if (gate && now < gate.nextAt) continue; // a failed squareoff is waiting out its backoff
 
         const hitTarget = trade.targetPrice != null && quote.ltp >= trade.targetPrice;
         const hitStopLoss = trade.stopLossPrice != null && quote.ltp <= trade.stopLossPrice;
@@ -277,7 +319,7 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
         // squareoff is in flight can't trigger it twice. If the exit attempt
         // fails below, this entry is re-registered in the catch block so a
         // future tick can retry it - see the comment there (bug-04).
-        unregisterTrade(trade.user, trade.token, broker);
+        unregisterTradeInternal(trade.user, trade.token, broker, true);
         Log.log(`[order] exitMonitor triggering squareoff for ${trade.tsym} (${trade.user}, ${broker}): ltp=${quote.ltp} hit=${hitTarget ? 'target' : 'stopLoss'}`);
 
         const exitHandler = exitHandlers.get(broker);
@@ -285,20 +327,42 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
             Log.log(`[order] exitMonitor has no exit handler registered for broker '${broker}' - cannot square off`, trade.tsym);
             continue;
         }
+        const key = monitorKey(trade.user, trade.token, broker);
         try {
             // Size the exit off the aggregate row (all chunks), falling back to the monitored trade.
             await exitHandler(aggregate ?? trade, exchange);
+            retryGate.delete(key);
         } catch (e) {
-            // A transient failure here (network hiccup, broker rate limit, etc.)
-            // must not silently end target/SL protection on this position for
-            // the rest of the day. Re-register with the same trade/exchange/
-            // broker/watchOnly this entry was unregistered with above, so the
-            // next tick retries the exit. Deliberately unconditional (no retry
-            // cap/backoff) - worst case this keeps trying to protect the
-            // position, which is the desired behavior; see bug-04 plan for
-            // rationale.
-            Log.log('[order] exitMonitor squareoff failed - re-registering for retry:', trade.tsym, e);
-            registerTrade(trade, exchange, broker, watchOnly);
+            // A transient failure here (network hiccup, broker rate limit, etc.) must not silently end target/SL protection on this
+            // position for the rest of the day: put the watch back, but behind the retry gate (see retryGate above).
+            const state = retryGate.get(key) ?? { attempts: 0, nextAt: 0 };
+            state.attempts++;
+            const neverShort = /NEVER-SHORT GUARD: nothing sellable/.test(String((e as any)?.message ?? e));
+            if (neverShort) {
+                // The broker holds nothing sellable: it already closed this position (GTT/bracket fired, a resting sell filled) or the
+                // tracking is stale. Ask the broker's resolver to book it - once, here, not per tick.
+                try {
+                    await resolveHandlers.get(broker)?.(aggregate ?? trade, exchange);
+                } catch (re) {
+                    Log.log(`[order] exitMonitor: resolving the broker-side exit of ${trade.tsym} (${trade.user}, ${broker}) failed:`, re);
+                }
+                const stillOpen = aggregateResolver ? aggregateResolver(trade, broker) !== undefined : true;
+                if (!stillOpen) {
+                    Log.log(`[order] exitMonitor: ${trade.tsym} (${trade.user}, ${broker}) was already closed at the broker and is now booked - squareoff not needed`);
+                    retryGate.delete(key);
+                    continue;
+                }
+                if (state.attempts >= NEVER_SHORT_MAX_ATTEMPTS) {
+                    Log.log(`[order] ALERT: exitMonitor gave up squaring off ${trade.tsym} (${trade.user}, ${broker}) after ${state.attempts} refusals - the broker holds nothing sellable but the position is still open here; the next GTT poll or npm run sync (POST /sync) books it`);
+                    retryGate.delete(key);
+                    continue;
+                }
+            }
+            const delay = retryDelayMs(state.attempts);
+            state.nextAt = Date.now() + delay;
+            retryGate.set(key, state);
+            Log.log(`[order] ALERT: exitMonitor squareoff failed for ${trade.tsym} (${trade.user}, ${broker}), attempt ${state.attempts} - retrying in ${delay / 1000}s:`, (e as any)?.message ?? e);
+            registerTradeInternal(trade, exchange, broker, watchOnly, true);
         }
     }
 }

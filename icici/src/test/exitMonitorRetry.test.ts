@@ -69,12 +69,15 @@ async function main() {
     await exitMonitor.handleOptionTick(makeQuote(trade.token, 100));
     assert(exitCallCount === 1, `first tick triggers the exit attempt (got ${exitCallCount} call(s))`);
 
-    // Tick 2: still above target. If the trade was re-registered after the
-    // failure (the fix), this tick retries the exit and the handler is
-    // called again (and this time succeeds). If the bug is present, the
-    // trade is no longer monitored and this tick is a silent no-op.
+    // Tick 2, immediately: the failed exit is behind its retry backoff (5 s), so it must NOT be retried at tick rate.
     await exitMonitor.handleOptionTick(makeQuote(trade.token, 100));
-    assert(exitCallCount === 2, `second tick retries the exit after the first failure was re-registered (got ${exitCallCount} call(s))`);
+    assert(exitCallCount === 1, `an immediate second tick does not retry (backoff) (got ${exitCallCount} call(s))`);
+
+    // After the backoff the trade (re-registered after the failure) is retried and this time succeeds. If the trade had been dropped
+    // after the failure this tick would be a silent no-op.
+    await new Promise((r) => setTimeout(r, exitMonitor.RETRY_BASE_MS + 200));
+    await exitMonitor.handleOptionTick(makeQuote(trade.token, 100));
+    assert(exitCallCount === 2, `a tick after the backoff retries the exit (got ${exitCallCount} call(s))`);
 
     // Tick 3: exit already succeeded on tick 2, so the trade should have
     // been unregistered normally (not re-registered) - a further tick must

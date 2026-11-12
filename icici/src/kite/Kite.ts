@@ -252,6 +252,7 @@ class Kite {
                 price,
             });
             Log.log(`[Kite] Limit buy order placed: ${response.order_id}`);
+            this.sellRefusals.delete(tradingSymbol); // a fresh buy can make the contract sellable again
             this.placedOrderIds.add(response.order_id);
             return { orderId: response.order_id };
         } catch (e) {
@@ -271,6 +272,15 @@ class Kite {
     // never reflected a real tradable price).
     // Contracts with a sell currently between its sellable-quantity check and the broker accepting the order.
     private sellsInFlight = new Set<string>();
+
+    // A refused sell (nothing sellable) is remembered per contract for SELL_REFUSAL_TTL_MS: the guard's check costs two broker REST calls
+    // (positions + orders), and a caller that retries at tick rate (live 2026-11-12 10:11: 279 refusals in 90 s on one contract after the
+    // broker's own GTT had already sold it) must not turn each retry into broker traffic or an ALERT line. Within the window the refusal is
+    // answered from memory; one ALERT per minute per contract reports how many were suppressed. Only refusals are cached - a positive
+    // sellable quantity is always re-read, so a real sell is never delayed by this.
+    private sellRefusals = new Map<string, { until: number; suppressed: number; loggedAt: number }>();
+    private static readonly SELL_REFUSAL_TTL_MS = 5_000;
+    private static readonly SELL_REFUSAL_LOG_EVERY_MS = 60_000;
 
     // NEVER-SHORT GUARD. How many of `tradingSymbol` can still be sold without going net short:
     // the lower of the broker's net position and the net implied by today's orders (overnight qty +
@@ -304,11 +314,24 @@ class Kite {
         if (this.sellsInFlight.has(tradingSymbol)) {
             throw new Error(`NEVER-SHORT GUARD: another sell for ${tradingSymbol} is in flight - refusing a concurrent sell`);
         }
+        const cached = this.sellRefusals.get(tradingSymbol);
+        if (cached && Date.now() < cached.until) {
+            cached.suppressed++;
+            if (Date.now() - cached.loggedAt >= Kite.SELL_REFUSAL_LOG_EVERY_MS) {
+                Log.log(`[Kite] ALERT: NEVER-SHORT GUARD still refusing sells of ${tradingSymbol} (${cached.suppressed} refusal(s) answered from memory, no broker call)`);
+                cached.loggedAt = Date.now();
+                cached.suppressed = 0;
+            }
+            throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${tradingSymbol} (sellable=0, refusal remembered for ${Kite.SELL_REFUSAL_TTL_MS / 1000}s) - refusing to sell ${quantity}`);
+        }
         this.sellsInFlight.add(tradingSymbol);
         try {
             const sellable = await this.getSellableQuantity(tradingSymbol);
             if (sellable <= 0) {
-                Log.log(`[Kite] ALERT: NEVER-SHORT GUARD refused a sell of ${quantity} ${tradingSymbol} - nothing sellable (sellable=${sellable}); the caller's position tracking is out of sync with the broker`);
+                const prev = this.sellRefusals.get(tradingSymbol);
+                const logNow = !prev || Date.now() - prev.loggedAt >= Kite.SELL_REFUSAL_LOG_EVERY_MS;
+                this.sellRefusals.set(tradingSymbol, { until: Date.now() + Kite.SELL_REFUSAL_TTL_MS, suppressed: 0, loggedAt: logNow ? Date.now() : prev!.loggedAt });
+                if (logNow) Log.log(`[Kite] ALERT: NEVER-SHORT GUARD refused a sell of ${quantity} ${tradingSymbol} - nothing sellable (sellable=${sellable}); the caller's position tracking is out of sync with the broker`);
                 throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${tradingSymbol} (sellable=${sellable}) - refusing to sell ${quantity}`);
             }
             const requestedQuantity = quantity;
