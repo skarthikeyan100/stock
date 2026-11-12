@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# Realized / unrealized P&L for BulkPcr, ContinuousStrategy, SimpleContinuousStrategy, MomentumAtFixedTime, NiftyChange, Recommendation and SentimentStrategy
-# (from the running `order` process): one table per strategy, one per broker (kite / ant / breeze / prism), then UNREALIZED BY BROKER AND
-# STRATEGY: one row per open position with the contract, bought price, live price, resting sell price and unrealized P&L.
-# The resting sell price is not stored on the position: it is read from the strategy's own "resting sell @ <price>" log line for that
-# contract (today's log, last match); "-" when none is found (no resting sell, e.g. tick-monitored RuleBased, GTT-protected Recommendation).
+# Realized / unrealized P&L for EVERY strategy, not a fixed list (from the running `order` process): one table per strategy, one per broker
+# (kite / ant / breeze / prism), then UNREALIZED BY BROKER AND STRATEGY: one row per open position with the contract, bought price,
+# live price, resting sell price and unrealized P&L.
+# Which strategies: every strategy with an open or closed trade today (enabled or not), plus every strategy enabled in config.yml
+# (expanded per broker the way the platform names instances: <userId>, <userId>-ANT, <userId>-Breeze) shown with zeros until it trades,
+# so a newly enabled strategy appears with no change here.
+# The resting sell price is not stored on the position: it is read from the strategy's own log line for that contract (today's log, last
+# match): "resting sell @ <price>", or "target <price> / stop <price> protected via <gtt|..>" which shows "<price> (<gtt|..>)". "-" when
+# none is found (no resting sell, e.g. tick-monitored RuleBased).
 # Usage: scripts/strategy-status.sh [port]
 PORT="${1:-3000}"
-MATCH='BulkPcr|Continuous|MomentumAtFixedTime|NiftyChange|Recommendation|Sentiment|RuleBased'
-BY_STRATEGY="$(curl -s -m10 "localhost:$PORT/strategyPnl?match=$MATCH")"
-BY_BROKER="$(curl -s -m10 "localhost:$PORT/strategyPnl?match=$MATCH&by=broker")"
-DETAIL="$(curl -s -m20 "localhost:$PORT/strategyPnl?match=$MATCH&detail=1")"
+BY_STRATEGY="$(curl -s -m10 "localhost:$PORT/strategyPnl")"
+BY_BROKER="$(curl -s -m10 "localhost:$PORT/strategyPnl?by=broker")"
+DETAIL="$(curl -s -m20 "localhost:$PORT/strategyPnl?detail=1")"
+ROOT="$(dirname "$(readlink -f "$0")")/.."
 LOG="$(dirname "$(readlink -f "$0")")/../logs/orchestrator-$(date +%F).log"
-BY_STRATEGY="$BY_STRATEGY" BY_BROKER="$BY_BROKER" DETAIL="$DETAIL" LOG="$LOG" node -e '
+BY_STRATEGY="$BY_STRATEGY" BY_BROKER="$BY_BROKER" DETAIL="$DETAIL" LOG="$LOG" ROOT="$ROOT" node -e '
 const f=n=>(n>=0?"+":"")+n.toFixed(2);
 const parse=(s)=>{try{const r=JSON.parse(s);return Array.isArray(r)?r:null}catch{return null}};
 const table=(title,rows)=>{
@@ -28,7 +32,18 @@ if(!byStrategy){console.log("order process not reachable");process.exit(1)}
 const detailSnap=parse(process.env.DETAIL);
 const snapUnreal=(rows,key)=>{if(!detailSnap)return;for(const r of rows){const k=key(r);r.unrealized=detailSnap.filter(d=>key(d)===k).reduce((a,d)=>a+d.unrealized,0)}};
 snapUnreal(byStrategy,r=>r.strategy);
-if(!byStrategy.length){console.log("no BulkPcr / Continuous / MomentumAtFixedTime / NiftyChange / Recommendation / Sentiment trades this session");process.exit(0)}
+// Strategies enabled in config.yml, named as the platform names its instances (src/util/strategyInstances.ts, compiled in dist/).
+try{
+  const {expandStrategyInstances}=require(process.env.ROOT+"/dist/util/strategyInstances.js");
+  const cfg=require(process.env.ROOT+"/node_modules/js-yaml").load(require("fs").readFileSync(process.env.CONFIG_PATH||process.env.ROOT+"/config.yml","utf8"));
+  const have=new Set(byStrategy.map(r=>r.strategy));
+  for(const c of expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&c.enabled===true))){
+    const name=c.userId||c.type;
+    if(!have.has(name)){have.add(name);byStrategy.push({strategy:name,realized:0,unrealized:0,open:0,closed:0})}
+  }
+}catch(e){console.log("(could not read the enabled strategies from config.yml: "+e.message+")")}
+byStrategy.sort((a,b)=>a.strategy.localeCompare(b.strategy));
+if(!byStrategy.length){console.log("no strategy enabled and no trades this session");process.exit(0)}
 table("BY STRATEGY",byStrategy);
 const byBroker=parse(process.env.BY_BROKER);
 if(byBroker)snapUnreal(byBroker,r=>r.broker??r.strategy);
@@ -46,7 +61,10 @@ try{
     let m=line.match(/\[MomentumAtFixedTime:([^\]]+)\] \w+ (\S+): bought .* resting sell @ ([0-9.]+)/);
     if(m){sells.set(m[1]+"|"+m[2],+m[3]);sells.set("|"+m[2],+m[3]);continue}
     m=line.match(/\] \[([^\]]+)\] resting sell (\S+) qty=\d+ ?@ ?([0-9.]+)/);
-    if(m){sells.set(m[1]+"|"+m[2],+m[3]);sells.set("|"+m[2],+m[3])} // the contract-only key covers an instance that logs under another id (Breeze)
+    if(m){sells.set(m[1]+"|"+m[2],+m[3]);sells.set("|"+m[2],+m[3]);continue} // the contract-only key covers an instance that logs under another id (Breeze)
+    // CandleEntry family (NextWeek, Breakout): "[Type:<user>] <broker> <tsym> qty=<n> avg=<a>: target <t> / stop <s> protected via gtt"
+    m=line.match(/\[[^\]:]+:([^\]]+)\] \w+ (\S+) qty=\d+ avg=\S+: target ([0-9.]+) \/ stop [0-9.]+ protected via (\w+)/);
+    if(m){const v={p:+m[3],via:m[4]};sells.set(m[1]+"|"+m[2],v);sells.set("|"+m[2],v)}
   }
 }catch{}
 console.log("\nUNREALIZED BY BROKER AND STRATEGY (open positions)");
@@ -55,7 +73,7 @@ detail.sort((a,b)=>a.broker.localeCompare(b.broker)||a.strategy.localeCompare(b.
 const hdr=["broker","strategy","contract","qty","bought","ltp","resting sell","unrealized"];
 const rows=detail.map(r=>{
   const sell=sells.get(r.user+"|"+r.tsym)??sells.get("|"+r.tsym);
-  const rest=sell!=null?sell.toFixed(2):(r.targetPrice!=null?r.targetPrice.toFixed(2)+" (tick)":"-");
+  const rest=sell!=null?(typeof sell==="object"?sell.p.toFixed(2)+" ("+sell.via+")":sell.toFixed(2)):(r.targetPrice!=null?r.targetPrice.toFixed(2)+" (tick)":"-");
   return [r.broker,r.strategy,r.tsym,String(r.quantity),r.price.toFixed(2),r.ltp==null?"?":r.ltp.toFixed(2)+(r.liveQuote?"":"*"),rest,f(r.unrealized)];
 });
 const w=hdr.map((h,i)=>Math.max(h.length,...rows.map(r=>r[i].length)));

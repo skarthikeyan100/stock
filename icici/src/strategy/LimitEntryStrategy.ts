@@ -76,12 +76,16 @@ export interface State {
     // RecommendationStrategy only: the recommendation's identity apart from target/stop (contract, entry, offset, amount). Lets a later edit of
     // target/stop on the SAME open trade be told apart from a new recommendation (see adjustOpenTrade).
     baseKey?: string;
+    // Signature of the cycle state onCycleEnded last ran for (see endIfIdle). Durable, so a restart does not end the same cycle again.
+    endedSig?: string;
 }
 
 export interface ResolvedEntry {
     index: 'NIFTY' | 'SENSEX';
     strike: number;
     right: 'CE' | 'PE';
+    // 0/absent = the nearest expiry (the existing behaviour), 1 = the next expiry (NextWeekStrategy).
+    expiryOffset?: number;
 }
 
 export abstract class LimitEntryStrategy extends Strategy {
@@ -185,6 +189,14 @@ export abstract class LimitEntryStrategy extends Strategy {
     private async endIfIdle(): Promise<void> {
         if (this.state.keys.length === 0) return;
         if (this.legs().some((l) => this.isActive(l) || this.entryOpen(l))) return;
+        // Once per ended state, not once per call (housekeeping calls this every second). The signature is the cycle keys plus every leg's
+        // fill/sell totals, so a second cycle later the same day, or a fill/sell that lands after the cycle "ended", is a new state and
+        // ends it again (with the corrected totals). It is saved, so a restart of an already-ended cycle does nothing, while a restart
+        // that finds a cycle ended but never reported (no signature yet) still reports it. Set before the await: a concurrent call skips.
+        const sig = this.state.keys.join(',') + '|' + this.legs().map((l) => `${l.token}:${l.status}:${l.filledQty}:${l.soldQty}:${l.soldValue}`).join(';');
+        if (this.state.endedSig === sig) return;
+        this.state.endedSig = sig;
+        this.save();
         await this.onCycleEnded();
     }
 
