@@ -6,7 +6,7 @@ a `config.yml` `strategies:` block (matched by `type`). `src/strategy/strategies
 is the runtime singleton that holds the live list and expands `RuleBasedStrategy`
 multi-indicator configs. A strategy only receives ticks, fills and cancellations
 when `Strategy.receivesEvents()` is true: `enabled` in `config.yml` (always
-mirrored, never cleared in memory), inside the 09:10-15:25 trading window (a clock
+mirrored, never cleared in memory), inside the 09:15-15:25 trading window (09:15 = the NSE open; pre-open ticks are indicative and are never delivered) (a clock
 test), and `stateLoaded` (set once the startup restore has run for it: positions from Mongo, then its own `reconcile()` inside `OrderClient.withNoOrders`, which never places an
 order; see `strategiesProcess.startupReconcile`).
 
@@ -44,7 +44,7 @@ unset stop is never read as "no stop". Helper: `src/strategy/exitRules.ts`; vali
 **The amount is per broker:** `maxInvestment` is what EACH listed broker trades with, and
 `maxInvestmentByBroker: {ant: 70000}` overrides one broker (helper `investmentForBroker`, `prism/configVocabulary.ts`).
 Two ways a block fans out over its brokers:
-- `BulkPcr`, `BulkPcrAutoStart`, `Hourly`, `Butterfly`, `TopStock`, `Recommendation`, `NiftyChange`, `MomentumAtFixedTime` fan out inside one
+- `BulkPcr`, `BulkPcrAutoStart`, `Hourly`, `Butterfly`, `TopStock`, `Recommendation`, `NiftyChange`, `MomentumAtFixedTime`, `NextWeek`, `Breakout` fan out inside one
   instance (`configuredBrokersOf`); the order-side cap is per (user, broker) (`maxInvestmentByBroker`).
 - Every other type (Continuous, SupportResistance, Sentiment, RateOfChange, Gap, RuleBased, GoodMorning*, TargetReach) is
   expanded in memory into ONE INSTANCE PER BROKER (`util/strategyInstances.ts`, `expandBrokerInstances`): kite keeps the
@@ -76,6 +76,8 @@ ANT tokens: `Strategy.legTokenFeed`).
 - `canHandleOptionQuote(quote)` (default `false`, `strategy.ts:122-124`) gates
   whether a strategy's `processOptionQuote` gets called at all for a given
   tick — routing happens one level up, not inside the strategy.
+- `wantsFutQuotes()` (default `false`) / `processFutQuote(quote)` (default no-op): NIFTY-future ticks (`FutQuote`, price + volume + VWAP) are dispatched
+  only to a strategy that returns true (BreakoutStrategy); `strategiesProcess.onTick` handles `tick.type === 'fut'`.
 - `getMonitorConfig()` (`strategy.ts:76-82`) — returning `{targetPoints,
   stopLossPoints, trailingDistance}` (the default, from `config.yml`'s
   `settings.*`) means the broker-side GTT/bracket or the in-app
@@ -615,6 +617,70 @@ flat ticks and a few at the slot edges are missing), with a near-constant 51-54%
 
 Config keys: `times`, `maxInvestment`, `minMovePoints`, `target`, `stopLoss` (block overrides of the global exits), `upDownSampleMinutes`, `entryTimeoutMinutes`, `index` (NIFTY), `brokers`. The old `targetPoints`, `stopLossPercent`, `stopLossPoints` and `maxLossPerLeg` keys are ignored (ALERT at startup).
 Test: `node dist/test/momentumAtFixedTime.test.js` (stubbed OrderClient and depth read).
+
+### NextWeekStrategy (`NextWeekStrategy.ts`, on `CandleEntryStrategy` -> `LimitEntryStrategy`) — config: `enabled: true`, multi-broker
+15-minute NIFTY candles, a 50 EMA trend and the breakout-candle pattern, traded on the **next-week expiry** (`expiryOffset: 1` through
+`resolveOptionContract`; an explicit offset is never bumped by `skipNearestExpiryOnExpiryDay`). When a candle closes, two signals are computed:
+1. **Trend** (`sideVsAverage`): the closed candle's close above the 50 EMA = `call`, below = `put`, equal = none. `seededEMA(closes, 50)`, valid only with
+   at least 50 closed candles.
+2. **Breakout** (`BreakoutData.from(c1, c2)`, `lib/breakoutData.ts`, shared and pure): c2 closes above its own open AND above c1's high = `call`;
+   below its own open AND below c1's low = `put`; otherwise none.
+Both must give the same side: one LIMIT buy per broker of the ATM option (`round(NIFTY/50)*50`, CE for call, PE for put) at the option's prevailing
+LTP, `quantity` units per broker (see `CandleEntryStrategy`: a fixed quantity, a whole number of lots, split above the freeze quantity), next-week
+expiry. Otherwise it logs why and does nothing. One position at a time; a candle is evaluated once (persisted key `<day> <candle start>`), so a restart never
+re-fires it.
+
+Candles are the same `createStatsBuilder` the RuleBased strategy uses, with two additive options: `aligned: true` (buckets start on the IST quarter
+hours, 09:15, 09:30, ...; the crossing tick starts the next candle; the default drifting behaviour used by every other caller is unchanged) and
+`seed(candles)` (pre-loads history; the last seeded candle is the previous candle of the first live one). **History**: at the first tick of the day
+the previous days' candles come from **Yahoo Finance** (`lib/yahooCandles.ts`, `^NSEI` 15m, 5 days, one call per trading day, cached in Mongo
+`candles15Seed`; verified 2026-11-12: 126 candles, aligned to 09:15, index volume 0; Kite's historical API is not used, there is no paid subscription).
+Yahoo is an unofficial keyless endpoint and can change or rate-limit without notice: a failed seed logs `ALERT: SEED failed`, retries every 60 s and the
+strategy does not trade meanwhile. Today's own completed candles are stored in Mongo `candles15Live`, so a mid-day restart keeps them.
+
+Guards, each logged as `-> no trade: <reason>` on every candle close (grep `[NextWeek:`): fewer than 50 closes (`warming up n/50`); c1 not the immediately
+preceding candle of the same day (so the 09:15-09:30 candle never trades, the first possible entry is the 09:45 close); an incomplete candle (the first tick
+arrived more than 60 s after the candle started, a restart mid-candle) is not traded and never used as c1; a candle that closed more than 5 minutes before the
+tick that reports it is not traded late; `lastEntryTime` (default 15:00); a position still open; quantity not a multiple of the NIFTY lot (65).
+
+Exit: `target` / `stopLoss` from the block, else `settings.target` / `settings.stopLoss` (the block ships without them, so the global exits apply; points, `N%`
+or `none`), placed on fill exactly as MomentumAtFixedTime does (`protectLeg` with both, a resting sell with a target only, a tick stop with a stop only). With
+`settings.eodCloseTime` at 23:59 there is no EOD close, so a position with neither exit would be held overnight. Config keys: `quantity`, `target`, `stopLoss`,
+`lastEntryTime` (optional, default 15:00), `index` (NIFTY), `brokers`. An unfilled entry is cancelled after the global `settings.entryTimeoutMinutes`. Next-week options are less liquid than the nearest expiry: expect wider spreads.
+Test: `node dist/test/nextWeekStrategy.test.js`, `node dist/test/candleLibs.test.js`.
+
+### BreakoutStrategy (`BreakoutStrategy.ts`, on `CandleEntryStrategy` -> `LimitEntryStrategy`) — config: `enabled: true`, multi-broker
+First-candle VWAP breakout. Only the day's first 15-minute candle (09:15-09:30) matters, no history. The index has no traded volume, so the candle AND the
+VWAP both come from the **current-month NIFTY future** (the future trades at a premium over the index, so comparing an index close with futures VWAP would favour
+PE every day). When candle 1 closes: its close **above** the future's VWAP = `call` (buy the ATM CE), **below** = `put` (buy the ATM PE), equal = no trade.
+The ATM strike comes from the NIFTY index price, nearest expiry, `quantity` per broker, one LIMIT buy at the option's prevailing LTP; one trade a day, entered at the
+end of candle 1. Exit as in NextWeek (`target` / `stopLoss`, block or settings).
+
+**Candle 2 (09:30-09:45) never trades.** It exists to find out whether waiting for it would be better. At its close the strategy logs `BREAKOUT-CONFIRM` and stores one
+document per day in Mongo `breakoutAnalysis`: both candles (OHLC), the VWAP at each close, the side candle 1 gave, the side candle 2's close gives against the VWAP, the
+breakout-pattern side of (c1, c2), whether candle 2 confirms candle 1 (`confirmedByVwap`, `confirmedByPattern`), the option's price and P&L per unit at that moment
+(`legsAtCandle2Close`) and, once the position is closed, its realised P&L (`finalExit`). After some weeks, compare days where candle 2 confirmed with days where it did
+not to decide whether a confirmation entry is worth it.
+
+**VWAP feed** (new 2026-11-12). The data process subscribes the nearest not-yet-expired NIFTY future (`AntContractMaster.findNearestFuture`, resolved on every
+connect so it rolls by itself) and emits `type: 'fut'` ticks (`FutQuote`: price, cumulative volume `v`, `ap` = the exchange's average traded price, and our own
+volume-weighted figure from the volume deltas, `lib/futVwap.ts`). The VWAP used is `ap` when present, else our own. ANT touchline updates are partial, so the data
+process merges them. Delivered to strategies that return true from `wantsFutQuotes()` through `processFutQuote`. Whether `ap`/`v` actually arrive on ANT's future
+touchline was NOT verified when this was written: the first live morning is the test. Log lines, all greppable with `VWAP-FEED`: the resolved contract at connect; the
+raw fields of the day's first future tick; a heartbeat once a minute (`ap`, own VWAP, their difference, `v`, tick count), also stored in Mongo `vwapSamples`; `ALERT`
+for no `ap` 60 s after the first tick, `ap = 0`, volume going backwards, or no future tick for 60 s while NIFTY ticks arrive. The own VWAP only covers volume traded
+since the process saw its first future tick, so it equals the exchange's figure only when the data process was up from the open.
+
+Guards (each logged as `-> no trade: <reason>`, grep `[Breakout:`): no VWAP, or one older than 2 minutes; close equal to the VWAP; an incomplete candle 1 (first future tick
+more than 60 s after 09:15); candle 1 reported more than 5 minutes after it closed; no NIFTY index price in the last minute (needed for the ATM strike); a position
+open; already traded today (persisted key, a restart does not redo it); `lastEntryTime`; quantity not a multiple of 65.
+Config keys: `quantity`, `target`, `stopLoss`, `lastEntryTime` (optional, default 15:00), `index` (NIFTY), `brokers`; the entry timeout is the global `settings.entryTimeoutMinutes`.
+Test: `node dist/test/breakoutStrategy.test.js`, `node dist/test/candleLibs.test.js`.
+
+### CandleEntryStrategy (`CandleEntryStrategy.ts`) — shared base of NextWeek and Breakout, not a strategy
+Extends `LimitEntryStrategy`: fixed `quantity` sizing (overrides `sizeOrder`; the validator requires a positive multiple of the NIFTY lot size 65 per broker for these two
+types, and `maxInvestment` is not read), and the target / stopLoss exit copied from MomentumAtFixedTime (`placeExit`, `topUpExit`). MomentumAtFixedTime was left on its
+own copy so no live strategy was touched; the two can be merged later.
 
 ### TopStockOptionsOpeningGapStrategy (`TopStockOptionsOpeningGapStrategy.ts`) — config: `enabled: true`, multi-broker
 **Entry**: one-shot per day, fires once within a short morning window

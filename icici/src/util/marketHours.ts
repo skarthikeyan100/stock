@@ -78,7 +78,8 @@ export function isPastReconcileTime(): boolean {
 }
 
 const TRADING_WINDOW_START_HOUR = 9;
-const TRADING_WINDOW_START_MINUTE = 10;
+// 09:15 = the NSE open. Pre-open ticks (09:00-09:15) are indicative equilibrium prices, not traded prices, so no tick, fill or cancellation reaches a strategy before it (user rule 2026-11-12).
+const TRADING_WINDOW_START_MINUTE = 15;
 
 const pad = (n: number) => n.toString().padStart(2, '0');
 export const TRADING_WINDOW_LABEL =

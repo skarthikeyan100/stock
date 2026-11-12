@@ -27,7 +27,9 @@ const s = new ContinuousStrategy('ContinuousStrategy') as any;
 s.enabled = true;
 s.stateLoaded = true; // the gate under test here is enabled + window; readiness has its own test
 atTime(10, 0, () => assert(s.receivesEvents() === true, 'enabled inside the window is active'));
-atTime(9, 5, () => assert(s.receivesEvents() === false, 'enabled before 09:10 is not active'));
+atTime(9, 5, () => assert(s.receivesEvents() === false, 'enabled before 09:15 (pre-open) is not active'));
+atTime(9, 12, () => assert(s.receivesEvents() === false, 'enabled at 09:12 (pre-open, indicative ticks) is not active'));
+atTime(9, 15, () => assert(s.receivesEvents() === true, 'enabled at 09:15 is active'));
 atTime(15, 30, () => assert(s.receivesEvents() === false, 'enabled after the close is not active'));
 assert(s.enabled === true, 'the gate never clears `enabled` (it still mirrors config.yml)');
 atTime(10, 0, () => assert(s.receivesEvents() === true, 'the gate reopens by itself when the window does'));
