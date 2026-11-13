@@ -12,6 +12,7 @@ import { fetchOpenTradesWithRetry } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
 import { roundToTick } from '../util/tick';
+import { clearPrice } from './maxProfitLock';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import { isPastEodClose } from '../util/eodClose';
 import { BrokerName, normalizeBrokerName } from '../util/brokerName';
@@ -807,11 +808,65 @@ export default class SimpleContinuousStrategy extends Strategy {
 
     // ---- EOD ----
 
+    // The maxProfit exit of one open leg (user's rule 2026-11-13: lock the cap, never dump at the bid; 2026-11-13 10:53 the old cancel-and-sell-at-the-bid
+    // booked 4732 on a 5044 trip of a 5000 cap). The trip is judged on the last tick; the exit is a limit sell at `clearPrice`, the price at which the
+    // strategy total equals the cap. A resting sell already at or above it stays; a lower one (or none) is cancelled - confirmed at the broker - and one
+    // limit sell for the unsold quantity is placed at clearPrice. The leg stays open until the sell fills (updateTrade closes it); there is no drop
+    // to the bid (EOD closes whatever still rests). Caller holds the leg's busy slot. Idempotent: it runs again every EOD_RETRY_MS from the Nifty ticks.
+    private async lockProfitOnLeg(leg: SimpleLeg, cap: number): Promise<void> {
+        if (leg.pnlRefPending) return; // valued from its next tick; the price that locks the cap is unknown until then
+        const rem = this.remaining(leg);
+        if (rem <= 0) return;
+        const price = clearPrice(leg, this.openLegs(), this.state.realizedPnl, cap);
+        if (leg.sellQty > 0) {
+            if (leg.sellPrice >= price - 1e-9) {
+                const missing = Math.min(leg.sellShortfall ?? 0, rem - leg.sellQty);
+                if (missing > 0) await this.placeTripSell(leg, missing, leg.sellPrice, true, cap); // the unplaced rest rests at the same price
+                return;
+            }
+            const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
+            if (res.cancelFailed) { Log.log(`[SimpleContinuousStrategy] MAX PROFIT: could not cancel the resting sell of ${leg.tsym} (it may still fill), retrying`); return; }
+            leg.sellQty = 0;
+            leg.sellShortfall = 0;
+            this.save();
+            if (res.filledQty > 0) {
+                // Part (or all) of the old sell filled while it was cancelled: its fill events update soldQty; the next pass places what is really left.
+                Log.log(`[SimpleContinuousStrategy] MAX PROFIT: ${res.filledQty} of ${leg.tsym} sold while cancelling the resting sell - the rest is re-priced on the next pass`);
+                return;
+            }
+        }
+        await this.placeTripSell(leg, rem, price, false, cap);
+    }
+
+    // One limit sell for `quantity` of `leg` at `price` after a maxProfit trip. `add` = the leg already has a resting sell at this price and this is its unplaced rest.
+    private async placeTripSell(leg: SimpleLeg, quantity: number, price: number, add: boolean, cap: number): Promise<void> {
+        try {
+            const res: any = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
+                tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(),
+            });
+            if (add) {
+                const placed = Number(res?.placedQuantity);
+                const got = Number.isFinite(placed) && placed >= 0 ? Math.min(placed, quantity) : quantity;
+                leg.sellQty += got;
+                leg.sellShortfall = quantity - got;
+                this.save();
+            } else this.bookPlacedSell(leg, quantity, price, res);
+            Log.log(`[SimpleContinuousStrategy] MAX PROFIT: resting sell ${leg.tsym} qty=${quantity} @${price} (locks ${cap})`);
+        } catch (e) {
+            if (add && String((e as any)?.message ?? e).includes('nothing sellable')) {
+                leg.sellShortfall = 0; // the broker has nothing left to sell: the rest of the leg already rests
+                this.save();
+            } else Log.log(`[SimpleContinuousStrategy] ALERT: MAX PROFIT resting sell for ${leg.tsym} (${quantity} @${price}) failed, retrying:`, e);
+        }
+    }
+
     private async closeAllLegs(label: 'EOD' | 'MAX PROFIT'): Promise<void> {
+        const cap = this.maxProfit();
         for (const leg of this.openLegs()) {
             if (this.busy.has(leg.id)) continue;
             this.busy.add(leg.id);
             try {
+                if (label === 'MAX PROFIT' && cap > 0) { await this.lockProfitOnLeg(leg, cap); continue; }
                 let filled = 0;
                 if (leg.sellQty > 0) {
                     const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
