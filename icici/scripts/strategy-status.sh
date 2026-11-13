@@ -8,13 +8,21 @@
 # The resting sell price is not stored on the position: it is read from the strategy's own log line for that contract (today's log, last
 # match): "resting sell @ <price>", or "target <price> / stop <price> protected via <gtt|..>" which shows "<price> (<gtt|..>)". "-" when
 # none is found (no resting sell, e.g. tick-monitored RuleBased).
-# Usage: scripts/strategy-status.sh [port]
-PORT="${1:-3000}"
-BY_STRATEGY="$(curl -s -m10 "localhost:$PORT/strategyPnl")"
-DETAIL="$(curl -s -m20 "localhost:$PORT/strategyPnl?detail=1")"
+# By default ONLY trades OPENED today (IST day of the trade's entry time) count, realized and unrealized: a trade bought on an earlier day and
+# sold today, or still open from an earlier day, is left out (?opened=today on /strategyPnl; a trade with no entry time counts as today).
+# With `all` it also counts trades opened on an earlier day but closed today and positions still open from earlier days (?opened=all).
+# Usage: scripts/strategy-status.sh [all] [port]      e.g.  scripts/strategy-status.sh   |  scripts/strategy-status.sh all 3000  |  scripts/strategy-status.sh 3000
+OPENED=today
+ARGS=()
+for a in "$@"; do if [ "$a" = "all" ]; then OPENED=all; else ARGS+=("$a"); fi; done
+PORT="${ARGS[0]:-3000}"
+HDR="$(mktemp)"; trap 'rm -f "$HDR"' EXIT
+BY_STRATEGY="$(curl -s -m10 -D "$HDR" "localhost:$PORT/strategyPnl?opened=$OPENED")"
+if [ "$OPENED" = today ] && ! grep -qi '^x-opened-filter: today' "$HDR"; then echo "WARNING: the web server predates the ?opened filter (needs a restart): the tables below count ALL trades, not only today's"; fi
+DETAIL="$(curl -s -m20 "localhost:$PORT/strategyPnl?detail=1&opened=$OPENED")"
 ROOT="$(dirname "$(readlink -f "$0")")/.."
 LOG="$(dirname "$(readlink -f "$0")")/../logs/orchestrator-$(date +%F).log"
-PORT="$PORT" BY_STRATEGY="$BY_STRATEGY" DETAIL="$DETAIL" LOG="$LOG" ROOT="$ROOT" node -e '
+OPENED="$OPENED" PORT="$PORT" BY_STRATEGY="$BY_STRATEGY" DETAIL="$DETAIL" LOG="$LOG" ROOT="$ROOT" node -e '
 const f=n=>(n>=0?"+":"")+n.toFixed(2);
 const parse=(s)=>{try{const r=JSON.parse(s);return Array.isArray(r)?r:null}catch{return null}};
 const table=(title,rows)=>{
@@ -45,10 +53,11 @@ if(enabledNames){
 }
 byStrategy.sort((a,b)=>a.strategy.localeCompare(b.strategy));
 if(!byStrategy.length){console.log("no strategy enabled and no trades this session");process.exit(0)}
+console.log(process.env.OPENED==="all"?"(all trades: also those opened on an earlier day)":"(trades opened today only; `all` adds earlier-day trades closed or still open today)");
 table("BY STRATEGY",byStrategy);
 const esc=n=>n.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
 const matchQ=enabledNames?"&match="+encodeURIComponent("^("+[...enabledNames].map(esc).join("|")+")$"):"";
-const byBroker=parse(require("child_process").execFileSync("curl",["-s","-m10","localhost:"+process.env.PORT+"/strategyPnl?by=broker"+matchQ]).toString());
+const byBroker=parse(require("child_process").execFileSync("curl",["-s","-m10","localhost:"+process.env.PORT+"/strategyPnl?by=broker&opened="+process.env.OPENED+matchQ]).toString());
 if(byBroker)snapUnreal(byBroker,r=>r.broker??r.strategy);
 if(byBroker&&byBroker.length){console.log("");table("BY BROKER",byBroker)}
 else console.log("\n(by-broker table unavailable: the API process predates the ?by=broker option - restart it)");

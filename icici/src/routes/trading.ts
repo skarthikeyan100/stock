@@ -10,6 +10,7 @@ import { CanonicalSymbol, formatCanonicalSymbol, parseCanonicalSymbol } from '..
 import { exchangeForIndex } from '../util/underlyings';
 import OrderClient from '../processes/strategies/OrderClient';
 import { asyncRouter } from './asyncRouter';
+import { isOpenedToday, openedFilterOf } from '../util/openedToday';
 import { requireCsrfHeader, resolveUser, requireAuth, requireAdmin } from './session';
 
 const router = asyncRouter();
@@ -163,11 +164,17 @@ router.get('/order/contract-quote', requireAuth, async function (req: express.Re
 // used by the monitor-strategies skill's "status" report. Optional ?match=<regex> filters on Trade.strategy, falling back to Trade.user (bare broker orders carry no strategy).
 // Optional ?by=broker groups the same rows by broker instead of by strategy (the row's `strategy` field then holds the broker name;
 // a trade with no broker field is a legacy kite row).
+// Optional ?opened=today counts only trades OPENED today (IST day of Trade.entryTime), realized and unrealized alike: a trade bought on an
+// earlier day and sold today, or still open from an earlier day, is left out. A trade with no entryTime counts as opened today (see
+// util/openedToday.ts). Absent or ?opened=all keeps every trade (the route's own default, for other callers); the status script passes it.
 router.get('/strategyPnl', requireAdmin, async function (req: express.Request, res) {
     try {
         const stats = await orderClient.stats();
         const re = req.query.match ? new RegExp(String(req.query.match), 'i') : null;
         const byBroker = req.query.by === 'broker';
+        const todayOnly = openedFilterOf(req.query.opened) === 'today';
+        const wanted = (t: Trade) => !todayOnly || isOpenedToday(t.entryTime);
+        res.setHeader('X-Opened-Filter', todayOnly ? 'today' : 'all'); // lets the status script tell a server that predates ?opened from one that applied it
         const rows = new Map<string, { strategy: string; realized: number; unrealized: number; open: number; closed: number }>();
         const row = (t: Trade) => {
             const key = byBroker ? String(t.broker || 'kite') : (t.strategy || t.user || '(none)');
@@ -176,9 +183,10 @@ router.get('/strategyPnl', requireAdmin, async function (req: express.Request, r
         };
         for (const t of stats.closedTrades as Trade[]) {
             if (re && !re.test(t.strategy || t.user || '')) continue;
+            if (!wanted(t)) continue;
             const r = row(t); r.closed++; r.realized += Number(t.realizedPnL) || 0;
         }
-        const openTrades = (stats.trades as Trade[]).filter((t) => !re || re.test(t.strategy || t.user || ''));
+        const openTrades = (stats.trades as Trade[]).filter((t) => (!re || re.test(t.strategy || t.user || '')) && wanted(t));
         // The order process never fills Trade.unrealizedPnL (only the legacy in-process Monitor does) and keeps lastTradePrice
         // fresh only for trades whose exits it monitors itself (resting-sell and reconcile-restored legs stay at their entry price),
         // so price each open trade from a live quote, falling back to lastTradePrice when the quote call fails.

@@ -5,6 +5,7 @@ Optional, not a code item: set CF_ORIGIN_SECRET plus a Cloudflare Transform Rule
 Remove an item from this file when it is fixed.
 
 ## Awaiting a decision
+- 2026-11-13: `/strategyPnl?opened=today` (status script default, `status all` for everything) is coded and unit-tested but NOT live: it needs a web-server (`frontend` child) restart. Until then the script prints a WARNING and shows all trades. After the restart run `scripts/strategy-status.sh` and `scripts/strategy-status.sh all` and confirm the 11-11 MomentumAtFixedTime legs drop out of the default. Remove this item once confirmed.
 
 ## Global exits and RuleBased fixes (2026-11-10)
 Done: `settings.target` / `settings.stopLoss` with per-strategy overrides, used by RuleBasedStrategy and MomentumAtFixedTimeStrategy (`strategies/exitRules.ts`); the RuleBased bugs (list form, Stochastic name, `_REV`, unknown indicators, majority vote, target/stop never acted on). Not yet run in a live trading process; code was type-checked and checked with stubbed harnesses, and `momentumAtFixedTime.test.ts` was updated but NOT run (no test scripts this session, by instruction).
