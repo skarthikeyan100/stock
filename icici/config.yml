@@ -412,7 +412,7 @@ strategies:
     maxLegsPerSide: 5
     stackRecoveryPoints: 20
   - type: ScaledHedgedContinuousStrategy
-    enabled: false          # set true to trade; the root buys initialQuantity, a hedge buys initialQuantity + drop/priceDiff x initialQuantity, one CE and one PE contract per cycle (strategies.md)
+    enabled: true           # false stops it; the root buys initialQuantity, a hedge buys initialQuantity + drop/priceDiff x initialQuantity, one CE and one PE contract per cycle (strategies.md)
     brokers:
       - kite
     initialQuantity: 65
