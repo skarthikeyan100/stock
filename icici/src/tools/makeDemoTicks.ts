@@ -1,9 +1,9 @@
 /**
- * Builds the trimmed tick file the anonymous /demo page replays IN THE BROWSER (frontend/public/demo-ticks.csv), so Try Demo works with no
+ * Builds the trimmed tick file the anonymous /demo page replays IN THE BROWSER (frontend/public/demo-ticks.txt), so Try Demo works with no
  * server and no market. Reads one recorded day from the daily backup layout `<dir>/<Mon-DD>/csv/{Quote,OptionQuote}.csv`, keeps NIFTY only
  * and thins each series (the index and every option contract separately) to its first row plus every Nth row.
  *
- *   npx tsc && node dist/tools/makeDemoTicks.js Nov-13 [every=10] [outFile=frontend/public/demo-ticks.csv] [dir=~/later/data/backups]
+ *   npx tsc && node dist/tools/makeDemoTicks.js Nov-13 [every=10] [outFile=frontend/public/demo-ticks.txt] [dir=~/later/data/backups]
  *
  * Output has only the columns the page needs: `ltt` (epoch seconds as recorded), `sym` ('NIFTY' or the option trading symbol, which carries
  * strike and CE/PE), `ltp`.
@@ -94,7 +94,7 @@ export async function buildDemoTicks(dirSetting: string, date: string, every: nu
 if (require.main === module) {
     const [date, everyArg, outArg, dirArg] = process.argv.slice(2);
     if (!date) { console.error('usage: makeDemoTicks <Mon-DD> [every=10] [outFile] [dir]'); process.exit(2); }
-    const out = outArg || path.join(__dirname, '../../frontend/public/demo-ticks.csv');
+    const out = outArg || path.join(__dirname, '../../frontend/public/demo-ticks.txt');
     buildDemoTicks(dirArg || '~/later/data/backups', date, everyArg ? Number(everyArg) : 10)
         .then((text) => { fs.writeFileSync(out, text); console.log(`wrote ${out}: ${text.split('\n').length - 2} rows, ${(text.length / 1024).toFixed(0)} KB`); })
         .catch((e) => { console.error(e.message); process.exit(1); });

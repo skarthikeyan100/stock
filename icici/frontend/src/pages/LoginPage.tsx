@@ -46,7 +46,7 @@ export default function LoginPage() {
           <ThemeToggle />
         </div>
         <div className="landing-nav-signin d-flex align-items-center gap-3">
-          {/* Works with the server down too: the demo replays a recorded day from /demo-ticks.csv in the browser */}
+          {/* Works with the server down too: the demo replays a recorded day from /demo-ticks.txt in the browser */}
           <span
             role="button"
             className="landing-nav-demo"

@@ -23,7 +23,7 @@ const lotLimit = 10;
 const NIFTY_LOT_SIZE = 65;
 
 // Where the demo's prices come from. 'live': the server's anonymous demo streams (only while the market is open and the server answers).
-// 'feed': the recorded day replayed in the browser from /demo-ticks.csv (market closed, or the server is down) - no server calls at all.
+// 'feed': the recorded day replayed in the browser from /demo-ticks.txt (market closed, or the server is down) - no server calls at all.
 // 'checking': market hours, still asking the server (/demo/health). Decided once, when the demo opens.
 export type DemoMode = 'checking' | 'live' | 'feed';
 interface DemoModeValue { mode: DemoMode; feedError: string | null; feedDate: string | null }

@@ -1,10 +1,10 @@
 /**
- * Replays one recorded NIFTY day (public/demo-ticks.csv: `ltt,sym,ltp`, thinned by src/tools/makeDemoTicks.ts) inside the browser, so Try
+ * Replays one recorded NIFTY day (public/demo-ticks.txt: `ltt,sym,ltp`, thinned by src/tools/makeDemoTicks.ts) inside the browser, so Try
  * Demo works with the market closed and with the trading server down. No DOM and no React here (pure, so it can be tested on its own).
  * Pacing follows the recorded `ltt` gaps divided by DEMO_SPEED; at the end of the day it pauses and starts again from the open.
  */
 
-export const DEMO_TICKS_URL = '/demo-ticks.csv';
+export const DEMO_TICKS_URL = '/demo-ticks.txt';
 export const DEMO_SPEED = 10;
 const RESTART_PAUSE_MS = 3000;
 const FRESH_VIRTUAL_S = 5 * 60; // a contract counts as "ticking" if it traded within this much recorded time

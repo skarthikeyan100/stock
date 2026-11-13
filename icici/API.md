@@ -88,7 +88,7 @@ Notes: `lockedPnl` is measured from the bookkeeping row's cost, which a reconcil
 
 A comment line is written to every stream every 20 s so a proxy never sees it as idle.
 
-| `GET /demo/health` | none | `{ ok: true }`. Liveness probe for the static site (Cloudflare Pages): an answer means the trading server is up, so the home page offers Google sign-in and the demo uses live prices during market hours. The demo does not need the server otherwise: outside market hours, or when this probe fails, it replays `frontend/public/demo-ticks.csv` in the browser (regenerate with `node dist/tools/makeDemoTicks.js <Mon-DD> [every=10]` after `npx tsc`). |
+| `GET /demo/health` | none | `{ ok: true }`. Liveness probe for the static site (Cloudflare Pages): an answer means the trading server is up, so the home page offers Google sign-in and the demo uses live prices during market hours. The demo does not need the server otherwise: outside market hours, or when this probe fails, it replays `frontend/public/demo-ticks.txt` in the browser (regenerate with `node dist/tools/makeDemoTicks.js <Mon-DD> [every=10]` after `npx tsc`). |
 ## Strategies, reconcile and configuration (admin)
 
 | Route | Purpose |
