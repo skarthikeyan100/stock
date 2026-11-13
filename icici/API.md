@@ -60,10 +60,10 @@ Base URL: `http://localhost:3000` (also listens on 80, and 443 when `key.pem`/`c
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `POST /order/buy` | auth | Manual buy through the user's broker (risk limits apply). |
+| `POST /order/buy` | auth | Manual buy through the user's broker (kite, ant or breeze; risk limits apply). Quantity: `investmentMode` `investmentAmount` buys as many lots as the remaining capital covers (net of open positions and pending orders; no lot-count cap; clamped to the per-order cap and the exchange freeze quantity, one lot minimum), `lotCount` buys one lot. Applies to the `contract`, `strikePrice` and plain `right` (ATM) forms alike. Breeze has no GTT/bracket: a target/stop is enforced by the in-app exit monitor whatever `useGTT` says; the order is a limit at the widest of Breeze's and ANT's ask. |
 | `POST /order/squareoff` | auth | Square off a position. |
 | `POST /order/settarget` | auth | Body `{ token, targetPoints, stopLossPoints }` (numbers >= 0): set target / stop-loss points on an open position. |
-| `GET /order/can-place` | auth | `{ allowed, reason? }` from the risk gate (loss limit, lot limit, accountClosed). |
+| `GET /order/can-place` | auth | `{ allowed, reason? }` from the risk gate (loss limit, lot limit, accountClosed). The lot limit applies in `lotCount` mode only; in `investmentAmount` mode (with an account capital set) there is no lot-count cap and the account capital, net of open positions and pending orders, blocks instead ("no capital left"). |
 | `POST /order/lock-profits` | admin | See below. |
 | `GET /strategyPnl` | admin | Realized and unrealized P&L per strategy (`?match=` regex; `?by=broker` groups by broker instead; `?detail=1` one row per open position; `?opened=today` counts only trades opened today, IST day of `entryTime`, realized and unrealized, a trade with no `entryTime` counts as today; absent or `all` keeps every trade; the response carries `X-Opened-Filter`); used by `scripts/strategy-status.sh`. |
 | `GET /admin/trades/open`, `/admin/trades/closed`, `/admin/trades/pnl-summary` | admin | Open trades, closed trades, P&L summary across users. `from`/`to` (YYYY-MM-DD) are IST calendar days, `to` inclusive of its whole day. |

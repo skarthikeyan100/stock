@@ -490,7 +490,7 @@ export default function ProfilePage() {
 
             {investmentMode === 'investmentAmount' ? (
               <Alert variant="info" className="small py-2 mb-3">
-                <strong>Investment Amount mode:</strong> Each trade is sized to as many lots as your remaining capital (&#8377;{(user?.accountCapital ?? user?.investmentAmount ?? 100000).toLocaleString()}) covers at the option's current price, rather than a fixed lot count. Your investment amount is set by an admin — contact them to change it.
+                <strong>Investment Amount mode:</strong> Each trade is sized to as many lots as your remaining capital (&#8377;{(user?.accountCapital ?? user?.investmentAmount ?? 100000).toLocaleString()}) covers at the option's current price, rather than a fixed lot count. There is no lot-count cap in this mode: only your capital (net of open positions and pending orders), the per-order cap and the exchange freeze quantity limit a buy. Your investment amount is set by an admin — contact them to change it.
               </Alert>
             ) : (
               <Alert variant="info" className="small py-2 mb-3">
