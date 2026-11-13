@@ -402,7 +402,7 @@ strategies:
   - type: SimpleContinuousStrategy
     enabled: true
     brokers:
-      - kite
+      - breeze
     initialQuantity: 1300
     skipNearestExpiryOnExpiryDay: false
     onePositionPerSide: true
@@ -411,3 +411,13 @@ strategies:
     priceDiff: 10
     maxLegsPerSide: 5
     stackRecoveryPoints: 20
+  - type: ScaledHedgedContinuousStrategy
+    enabled: false          # set true to trade; the root buys initialQuantity, a hedge buys initialQuantity + drop/priceDiff x initialQuantity, one CE and one PE contract per cycle (strategies.md)
+    brokers:
+      - kite
+    initialQuantity: 65
+    skipNearestExpiryOnExpiryDay: false
+    onePositionPerSide: true
+    maxInvestment: 200000   # honoured by every buy (root, hedge, add), per broker
+    maxProfit: 20000
+    priceDiff: 10

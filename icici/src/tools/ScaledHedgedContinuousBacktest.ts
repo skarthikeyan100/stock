@@ -1,10 +1,10 @@
 /**
- * Backtest of ModifiedSimpleContinuousStrategy (a clone of SimpleContinuousStrategy; see its header for the rules: root = initialQuantity,
+ * Backtest of ScaledHedgedContinuousStrategy (a clone of SimpleContinuousStrategy; see its header for the rules: root = initialQuantity,
  * scaled hedge quantity, no double-up, one fixed CE and PE contract per cycle, a profitable first order restarts the contract selection). Same replay engine as SimpleContinuousBacktest
  * (real ticks, buys fill at the last tick price, a resting sell fills at its limit on the first tick at or above it, PCR from Pcr.csv,
  * nothing closes at the end of the day: open legs are marked at their last price). Writes an HTML report with ONE ROW PER BUY FILL.
  *
- * Usage: tsc && MOCK_BROKER=true node ./dist/tools/ModifiedSimpleContinuousBacktest.js [--allDays <dir>] [--initialQuantity 65]
+ * Usage: tsc && MOCK_BROKER=true node ./dist/tools/ScaledHedgedContinuousBacktest.js [--allDays <dir>] [--initialQuantity 65]
  *        [--priceDiff N] [--maxProfit N] [--maxInvestment N, default 200000] [--only Nov-12,Nov-06] [--out report.html] [--verbose]
  */
 import * as fs from 'fs';
@@ -14,7 +14,7 @@ import { NiftyQuote, OptionQuote, Trade } from '../model/model';
 import OrderClient from '../processes/strategies/OrderClient';
 import configService from '../prism/ConfigService';
 import Log from '../util/Log';
-import ModifiedSimpleContinuousStrategy from '../strategy/ModifiedSimpleContinuousStrategy';
+import ScaledHedgedContinuousStrategy from '../strategy/ScaledHedgedContinuousStrategy';
 import {
     getArg, getFlag, loadNiftyTicks, loadNiftyOptionTicks, buildContractDirectory, contractKey, fmtTime, round2,
     discoverDayFolders, BacktestOrderClient, ContractInfo,
@@ -22,7 +22,7 @@ import {
 
 const VERBOSE = getFlag('verbose');
 const ALL_DAYS_DIR = getArg('allDays', '/home/karthikeyan/later/data/backups');
-const STATE_FILE = path.join(__dirname, '../../.ModifiedSimpleContinuousStrategy.Backtest.json');
+const STATE_FILE = path.join(__dirname, '../../.ScaledHedgedContinuousStrategy.Backtest.json');
 
 interface PcrRow { at: number; pcr: number }
 function loadPcr(file: string): PcrRow[] {
@@ -76,7 +76,7 @@ async function runDay(niftyFile: string, optionFile: string, pcrFile: string, da
     (OrderClient as any).instance = mock;
     try { fs.unlinkSync(STATE_FILE); } catch { /* none */ }
 
-    const strategy: any = new ModifiedSimpleContinuousStrategy('Backtest');
+    const strategy: any = new ScaledHedgedContinuousStrategy('Backtest');
     strategy.enabled = true;
     strategy.stateLoaded = true;
 
@@ -219,12 +219,12 @@ const cl = (x: number) => (x > 0 ? 'pos' : x < 0 ? 'neg' : '');
 function html(results: DayResult[], c: any): string {
     const tot = results.reduce((a, r) => a + r.realized + r.unrealized, 0);
     const parts: string[] = [];
-    parts.push(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ModifiedSimpleContinuousStrategy backtest</title><style>
+    parts.push(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ScaledHedgedContinuousStrategy backtest</title><style>
 body{font:14px system-ui,sans-serif;margin:16px;color:#1b1f24;background:#fff}h1{font-size:20px}h2{font-size:16px;margin-top:28px}.scroll{overflow-x:auto}
 table{border-collapse:collapse;width:100%;margin:8px 0}th,td{border:1px solid #d0d7de;padding:4px 8px;text-align:left;white-space:nowrap}td.rs{white-space:normal;min-width:260px}th{background:#f6f8fa}
 .n{text-align:right;font-variant-numeric:tabular-nums}.pos{color:#1a7f37}.neg{color:#cf222e}tr.sub td{font-weight:600;background:#f6f8fa}ul.notes{line-height:1.5}
 @media(prefers-color-scheme:dark){body{background:#0d1117;color:#e6edf3}th,tr.sub td{background:#161b22}th,td{border-color:#30363d}.pos{color:#3fb950}.neg{color:#f85149}}</style></head><body>`);
-    parts.push(`<h1>ModifiedSimpleContinuousStrategy: backtest on stored ticks</h1><p>Config: initialQuantity ${c.initialQuantity}, priceDiff ${c.priceDiff}, maxInvestment ${c.maxInvestment}, maxProfit ${c.maxProfit}, onePositionPerSide ${c.onePositionPerSide}. One simulated broker. Net over ${results.length} day(s): <b class="${cl(tot)}">${fm(tot)}</b></p>`);
+    parts.push(`<h1>ScaledHedgedContinuousStrategy: backtest on stored ticks</h1><p>Config: initialQuantity ${c.initialQuantity}, priceDiff ${c.priceDiff}, maxInvestment ${c.maxInvestment}, maxProfit ${c.maxProfit}, onePositionPerSide ${c.onePositionPerSide}. One simulated broker. Net over ${results.length} day(s): <b class="${cl(tot)}">${fm(tot)}</b></p>`);
     parts.push(`<div class="scroll"><table><thead><tr><th>Day</th><th>Root</th><th>Buys</th><th class="n">Realized</th><th class="n">Unrealized (open at last tick)</th><th class="n">Net</th><th class="n">Peak total P&amp;L</th><th>at</th><th class="n">Lowest total P&amp;L</th><th class="n">Peak cost of open legs</th><th>maxProfit tripped</th></tr></thead><tbody>`);
     for (const r of results) parts.push(`<tr><td>${r.day}</td><td>${esc(r.root)}</td><td class="n">${r.rows.length}</td><td class="n ${cl(r.realized)}">${fm(r.realized)}</td><td class="n ${cl(r.unrealized)}">${fm(r.unrealized)}</td><td class="n ${cl(r.realized + r.unrealized)}">${fm(r.realized + r.unrealized)}</td><td class="n">${fm(r.maxTotal)}</td><td>${fmtTime(r.maxTotalAt)}</td><td class="n">${fm(r.minTotal)}</td><td class="n">${fm(r.maxInvested)}</td><td>${r.tripped ? 'YES' : '-'}</td></tr>`);
     parts.push(`<tr class="sub"><td colspan="5">Total</td><td class="n ${cl(tot)}">${fm(tot)}</td><td colspan="5"></td></tr></tbody></table></div>`);
@@ -262,13 +262,13 @@ async function main() {
     const base: any = (configService.config.strategies || []).find((s: any) => s.type === 'SimpleContinuousStrategy');
     if (!base) throw new Error('no SimpleContinuousStrategy block in config.yml to copy the settings from');
     const block = {
-        ...base, type: 'ModifiedSimpleContinuousStrategy', enabled: true, userId: 'ModifiedSimpleContinuousStrategy',
+        ...base, type: 'ScaledHedgedContinuousStrategy', enabled: true, userId: 'ScaledHedgedContinuousStrategy',
         initialQuantity: Number(ov('initialQuantity') || 65),
         ...(ov('maxProfit') ? { maxProfit: Number(ov('maxProfit')) } : {}), ...(ov('priceDiff') ? { priceDiff: Number(ov('priceDiff')) } : {}),
-        maxInvestment: Number(ov('maxInvestment') || 200000), // honoured by every buy of the Modified strategy (user: 200000)
+        maxInvestment: Number(ov('maxInvestment') || 200000), // honoured by every buy of the ScaledHedged strategy (user: 200000)
     };
-    configService.config.strategies = [...(configService.config.strategies || []).filter((s: any) => s.type !== 'ModifiedSimpleContinuousStrategy'), block];
-    const c: any = configService.getStrategyConfig('ModifiedSimpleContinuousStrategy');
+    configService.config.strategies = [...(configService.config.strategies || []).filter((s: any) => s.type !== 'ScaledHedgedContinuousStrategy'), block];
+    const c: any = configService.getStrategyConfig('ScaledHedgedContinuousStrategy');
     console.error(`Config: initialQuantity=${c.initialQuantity} maxInvestment=${c.maxInvestment} maxProfit=${c.maxProfit} priceDiff=${c.priceDiff} onePositionPerSide=${c.onePositionPerSide}`);
 
     const only = ov('only') ? new Set(ov('only').split(',')) : null;
@@ -280,7 +280,7 @@ async function main() {
         const r = await runDay(d.niftyFile, d.optionFile, pcrFile, d.day);
         if (r) { results.push(r); console.error(`[${d.day}] realized=${r.realized} unrealized=${r.unrealized} buys=${r.rows.length} peakTotal=${r.maxTotal}`); }
     }
-    const out = ov('out') || path.join(__dirname, '../../backtest-ModifiedSimpleContinuous.html');
+    const out = ov('out') || path.join(__dirname, '../../backtest-ScaledHedgedContinuous.html');
     fs.writeFileSync(out, html(results, c));
     console.log(`${out}  (${results.length} days, net ${round2(results.reduce((a, r) => a + r.realized + r.unrealized, 0))})`);
     process.exit(0);

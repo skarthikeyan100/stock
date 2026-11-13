@@ -18,7 +18,7 @@ import { BrokerName, normalizeBrokerName } from '../util/brokerName';
 import { NOT_PLACED_TAG, OrderCancelledNotification } from '../ipc/orderProtocol';
 import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY } from '../constants';
 
-// ModifiedSimpleContinuousStrategy: a BACKTEST-ONLY clone of SimpleContinuousStrategy (not registered in StrategyFactory, not traded). Differences:
+// ScaledHedgedContinuousStrategy: derived from SimpleContinuousStrategy (a separate class, SimpleContinuousStrategy is unchanged apart from rule E). Differences:
 //   A. The root buys `initialQuantity` (e.g. 65), never the whole maxInvestment (onePositionPerSide no longer sizes the root).
 //   B. A hedge buys initialQuantity + (leg entry - leg price now) / priceDiff * initialQuantity, floored to whole lots (never below
 //      initialQuantity): a CE that fell by priceDiff gets a PE of 2 x initialQuantity (65 + 10/10 x 65 = 130). A hedge opened by a target
@@ -32,7 +32,7 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //   G. A same-direction re-buy (after a target fill) is skipped when that contract already has an open leg.
 //   E. (also in SimpleContinuousStrategy) When the FIRST order (root) closes at a profit with no hedge ever bought, it does not buy the same
 //      direction again: the contract selection (PCR direction, premium floor, ATM pick) runs again for a new root and a new CE/PE pair.
-// ModifiedSimpleContinuousStrategy (config keys: initialQuantity, maxInvestment, priceDiff, plus enabled/brokers):
+// ScaledHedgedContinuousStrategy (config keys: initialQuantity, maxInvestment, priceDiff, plus enabled/brokers):
 //   1. PCR gives the direction of the ROOT entry (PCR > 1 -> PE, else CE), `initialQuantity` at market. There is ONE root per day;
 //      every later order is a hedge or a double-up. With `onePositionPerSide: true` `initialQuantity` is IGNORED: the root buys as many whole
 //      lots as the free part of `maxInvestment` pays for at the picked premium (capped at the NIFTY freeze quantity).
@@ -112,8 +112,8 @@ interface State { day: string; legs: Record<string, SimpleLeg>; pair?: { CE?: Pa
 
 const opposite = (r: Right): Right => (r === 'CE' ? 'PE' : 'CE');
 
-export default class ModifiedSimpleContinuousStrategy extends Strategy {
-    name = 'ModifiedSimpleContinuousStrategy';
+export default class ScaledHedgedContinuousStrategy extends Strategy {
+    name = 'ScaledHedgedContinuousStrategy';
     legTokenFeed = 'ant' as const; // legs carry ANT tokens whatever broker places the orders
 
     private state: State = { day: '', legs: {}, seq: 0, pnlStarted: true, realizedPnl: 0, profitTripped: false };
@@ -131,7 +131,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
     private lastEodAttempt = 0;
     private lastWaitingHedgeRetry = 0;
     private lastDoubleAttempt = new Map<string, number>();
-    private gateLog = new GateLogger('[ModifiedSimpleContinuousStrategy] gate:', PCR_RECHECK_MS);
+    private gateLog = new GateLogger('[ScaledHedgedContinuousStrategy] gate:', PCR_RECHECK_MS);
 
     constructor(userId?: string) {
         super(userId);
@@ -179,14 +179,14 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         if (total < cap) return;
         this.state.profitTripped = true; // synchronous, before any await: only one caller runs the close
         this.save();
-        Log.log(`[ModifiedSimpleContinuousStrategy] MAX PROFIT TRIPPED - total=${Math.round(total)} threshold=${cap} (realized=${Math.round(this.state.realizedPnl)}) - closing every open leg of ${this.userId}, no new orders for the rest of the day`);
+        Log.log(`[ScaledHedgedContinuousStrategy] MAX PROFIT TRIPPED - total=${Math.round(total)} threshold=${cap} (realized=${Math.round(this.state.realizedPnl)}) - closing every open leg of ${this.userId}, no new orders for the rest of the day`);
         await this.closeAllLegs('MAX PROFIT');
     }
 
     // ---- persistence ----
 
     private stateFile(): string {
-        return path.join(__dirname, `../../.ModifiedSimpleContinuousStrategy.${this.userId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`);
+        return path.join(__dirname, `../../.ScaledHedgedContinuousStrategy.${this.userId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`);
     }
 
     private ensureLoaded(): void {
@@ -208,19 +208,20 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             }
             else if (raw?.legs) {
                 for (const leg of Object.values(raw.legs)) {
-                    if (leg.status === 'open') Log.log(`[ModifiedSimpleContinuousStrategy] ALERT: ${leg.tsym} from ${raw.day} was still open when the day rolled over - check the broker position by hand`);
+                    if (leg.status === 'open') Log.log(`[ScaledHedgedContinuousStrategy] ALERT: ${leg.tsym} from ${raw.day} was still open when the day rolled over - check the broker position by hand`);
                 }
             }
         } catch { /* no file yet */ }
         this.state = fresh;
         for (const leg of this.openLegs()) this.watch(leg);
+        for (const c of [this.state.pair?.CE, this.state.pair?.PE]) if (c) registerTrade(c.token, this, undefined, c.exchange);
     }
 
     private save(): void {
         try {
             fs.writeFileSync(this.stateFile(), JSON.stringify(this.state));
         } catch (e: any) {
-            Log.log(`[ModifiedSimpleContinuousStrategy] ALERT: could not persist state: ${e?.message ?? e}`);
+            Log.log(`[ScaledHedgedContinuousStrategy] ALERT: could not persist state: ${e?.message ?? e}`);
         }
     }
 
@@ -247,8 +248,23 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         registerTrade(leg.token, this, undefined, leg.exchange);
     }
 
+    private isPairToken(token: string): boolean {
+        return token === this.state.pair?.CE?.token || token === this.state.pair?.PE?.token;
+    }
+
+    // The two contracts of the cycle stay subscribed while they have no open leg, so the maxInvestment check prices a re-buy from a live tick.
     private unwatch(leg: SimpleLeg): void {
+        if (this.isPairToken(leg.token)) return;
         unregisterTrade(leg.token, this, undefined, leg.exchange);
+    }
+
+    private setPair(pair: { CE?: PairContract; PE?: PairContract }): void {
+        const old = this.state.pair;
+        this.state.pair = pair;
+        for (const c of [pair.CE, pair.PE]) if (c) registerTrade(c.token, this, undefined, c.exchange);
+        for (const c of [old?.CE, old?.PE]) {
+            if (c && !this.isPairToken(c.token) && !this.openLegs().some((l) => l.token === c.token)) unregisterTrade(c.token, this, undefined, c.exchange);
+        }
     }
 
     private newLegId(): string {
@@ -275,7 +291,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         // Anything else (unconfirmed fill, timeout, transport error) leaves the outcome unknown: it may be live.
         if (latch) {
             this.manualReview = true;
-            Log.log(`[ModifiedSimpleContinuousStrategy] ALERT: ${what} may be live at the broker - no new buys until it is reviewed and the strategy is reset: ${msg}`);
+            Log.log(`[ScaledHedgedContinuousStrategy] ALERT: ${what} may be live at the broker - no new buys until it is reviewed and the strategy is reset: ${msg}`);
         }
         return false;
     }
@@ -290,9 +306,9 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
 
     async reconcile(maxAttempts = 15, retryDelayMs = 2000): Promise<void> {
         this.ensureLoaded();
-        const openTrades = await fetchOpenTradesWithRetry(this.userId, 'ModifiedSimpleContinuousStrategy', maxAttempts, retryDelayMs);
+        const openTrades = await fetchOpenTradesWithRetry(this.userId, 'ScaledHedgedContinuousStrategy', maxAttempts, retryDelayMs);
         if (!openTrades) {
-            Log.log('[ModifiedSimpleContinuousStrategy] reconcile: order query exhausted retries, blocking new entries until next restart');
+            Log.log('[ScaledHedgedContinuousStrategy] reconcile: order query exhausted retries, blocking new entries until next restart');
             this.blocked = true;
             return;
         }
@@ -303,7 +319,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         for (const leg of this.openLegs()) {
             const t = byKey.get(leg.token) ?? openTrades.find((x) => x.tsym === leg.tsym);
             if (!t || !(Number(t.quantity) > 0)) {
-                Log.log(`[ModifiedSimpleContinuousStrategy] reconcile: ${leg.tsym} is no longer held by the broker - marking closed`);
+                Log.log(`[ScaledHedgedContinuousStrategy] reconcile: ${leg.tsym} is no longer held by the broker - marking closed`);
                 leg.status = 'closed';
                 this.unwatch(leg);
                 continue;
@@ -332,7 +348,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             this.state.legs[leg.id] = leg;
             adopted.push(leg);
             this.watch(leg);
-            Log.log(`[ModifiedSimpleContinuousStrategy] reconcile: adopted unknown broker position ${leg.tsym} qty=${leg.qty} entry=${leg.entry}`);
+            Log.log(`[ScaledHedgedContinuousStrategy] reconcile: adopted unknown broker position ${leg.tsym} qty=${leg.qty} entry=${leg.entry}`);
         }
         if (rights.size > 1) for (const l of adopted) l.hedged = true;
         // Which legs already have a resting sell (so ticks do not place a second one).
@@ -343,9 +359,9 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
                 if (leg.sellQty > 0 && !leg.sellPrice) leg.sellPrice = roundToTick(leg.entry + this.priceDiff());
                 // Some of the leg rests but not all of it (2026-11-11: a clamped placement after a double-up left 325 of 650 resting): the rest is placed from ticks.
                 leg.sellShortfall = leg.sellQty > 0 && leg.sellQty < this.remaining(leg) ? this.remaining(leg) - leg.sellQty : 0;
-                if (leg.sellShortfall > 0) Log.log(`[ModifiedSimpleContinuousStrategy] ALERT: reconcile: ${leg.tsym} holds ${this.remaining(leg)} but only ${leg.sellQty} rests as a sell - placing the other ${leg.sellShortfall} from ticks`);
+                if (leg.sellShortfall > 0) Log.log(`[ScaledHedgedContinuousStrategy] ALERT: reconcile: ${leg.tsym} holds ${this.remaining(leg)} but only ${leg.sellQty} rests as a sell - placing the other ${leg.sellShortfall} from ticks`);
             } catch (e) {
-                Log.log(`[ModifiedSimpleContinuousStrategy] reconcile: could not read pending sells for ${leg.tsym}; assuming none rest:`, e);
+                Log.log(`[ScaledHedgedContinuousStrategy] reconcile: could not read pending sells for ${leg.tsym}; assuming none rest:`, e);
                 leg.sellQty = 0;
             }
         }
@@ -362,7 +378,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
                 if (value == null) return null;
                 this.lastPcr = { value, at: now };
             } catch (e) {
-                Log.log('[ModifiedSimpleContinuousStrategy] PCR check failed, blocking entry (fail-closed):', e);
+                Log.log('[ScaledHedgedContinuousStrategy] PCR check failed, blocking entry (fail-closed):', e);
                 this.lastPcr = null;
                 return null;
             }
@@ -400,7 +416,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             if (right == null) return;
             await this.openRoot(right, quote.ltp, qty, maxInvestment);
         } catch (e) {
-            Log.log('[ModifiedSimpleContinuousStrategy] root entry failed:', e);
+            Log.log('[ScaledHedgedContinuousStrategy] root entry failed:', e);
         } finally {
             this.entering = false;
         }
@@ -413,7 +429,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
     private async openRoot(right: Right, ltp: number, qty: number, maxInvestment: number): Promise<void> {
         const ops = brokerLegOps(() => this.cfg()?.broker);
         const contract = await ops.pickContract(this.userId, ltp, right, ROOT_MIN_PREMIUM, [], expiryDayOverrideOf(this.cfg()));
-        // Modified (A): the root is initialQuantity, whatever onePositionPerSide says. Whole lots, never above one exchange order.
+        // Scaled (A): the root is initialQuantity, whatever onePositionPerSide says. Whole lots, never above one exchange order.
         const lot = INDEX_LOT_SIZE.NIFTY;
         qty = Math.min(Math.floor(qty / lot) * lot, Math.floor(NIFTY_FREEZE_QUANTITY / lot) * lot);
         if (!(qty > 0)) {
@@ -430,13 +446,13 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             trade = await ops.buy(this.userId, contract.tradingSymbol, contract.token, qty, contract.exchange, contract.premium);
         } catch (e) {
             this.noteBuyError(e, `root buy ${contract.tradingSymbol}`);
-            Log.log('[ModifiedSimpleContinuousStrategy] root buy failed:', e);
+            Log.log('[ScaledHedgedContinuousStrategy] root buy failed:', e);
             return;
         }
         const leg = this.addLeg(trade, contract, right, 'root', false);
-        this.state.pair = { [right]: { tradingSymbol: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, premium: contract.premium } };
+        this.setPair({ [right]: { tradingSymbol: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, premium: contract.premium } });
         this.save();
-        Log.log(`[ModifiedSimpleContinuousStrategy] root ${right} ${leg.tsym} qty=${leg.qty} @${leg.entry}`);
+        Log.log(`[ScaledHedgedContinuousStrategy] root ${right} ${leg.tsym} qty=${leg.qty} @${leg.entry}`);
         await this.placeSell(leg);
     }
 
@@ -469,7 +485,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             });
             this.bookPlacedSell(leg, quantity, price, res);
         } catch (e) {
-            Log.log(`[ModifiedSimpleContinuousStrategy] ALERT: resting sell for ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
+            Log.log(`[ScaledHedgedContinuousStrategy] ALERT: resting sell for ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
         } finally {
             this.busy.delete(leg.id);
         }
@@ -485,8 +501,8 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         leg.sellShortfall = requested - got;
         leg.sellPrice = price;
         this.save();
-        Log.log(`[ModifiedSimpleContinuousStrategy] resting sell ${leg.tsym} qty=${got} @${price}`);
-        if (got < requested) Log.log(`[ModifiedSimpleContinuousStrategy] ALERT: only ${got}/${requested} of ${leg.tsym} placed as a resting sell (clamped by the broker's guard) - placing the other ${requested - got} from ticks`);
+        Log.log(`[ScaledHedgedContinuousStrategy] resting sell ${leg.tsym} qty=${got} @${price}`);
+        if (got < requested) Log.log(`[ScaledHedgedContinuousStrategy] ALERT: only ${got}/${requested} of ${leg.tsym} placed as a resting sell (clamped by the broker's guard) - placing the other ${requested - got} from ticks`);
     }
 
     // Places the quantity of a leg that has no resting sell while others rest (sellShortfall). Capped at what the leg still holds.
@@ -506,16 +522,16 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             leg.sellQty += got;
             leg.sellShortfall = quantity - got;
             this.save();
-            Log.log(`[ModifiedSimpleContinuousStrategy] resting sell (rest of the leg) ${leg.tsym} qty=${got} @${price}${leg.sellShortfall > 0 ? `, ${leg.sellShortfall} still unplaced` : ''}`);
+            Log.log(`[ScaledHedgedContinuousStrategy] resting sell (rest of the leg) ${leg.tsym} qty=${got} @${price}${leg.sellShortfall > 0 ? `, ${leg.sellShortfall} still unplaced` : ''}`);
         } catch (e) {
             if (String((e as any)?.message ?? e).includes('nothing sellable')) {
                 // Kite's never-short guard: nothing is left to sell, so the whole position already rests (the platform's pending list had missed an order,
                 // live 2026-11-11 14:15: two resting sells of 325 on a 650 leg). Not a gap: stop retrying.
                 leg.sellShortfall = 0;
                 this.save();
-                Log.log(`[ModifiedSimpleContinuousStrategy] ${leg.tsym}: the broker has nothing left to sell, so the rest of the leg already rests - no further sell placed`);
+                Log.log(`[ScaledHedgedContinuousStrategy] ${leg.tsym}: the broker has nothing left to sell, so the rest of the leg already rests - no further sell placed`);
             } else {
-                Log.log(`[ModifiedSimpleContinuousStrategy] ALERT: resting sell for the rest of ${leg.tsym} (${quantity}) failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
+                Log.log(`[ScaledHedgedContinuousStrategy] ALERT: resting sell for the rest of ${leg.tsym} (${quantity}) failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
             }
         } finally {
             this.busy.delete(leg.id);
@@ -608,7 +624,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         }
     }
 
-    // Modified (F): the quantity of a buy of `contract` that fits under maxInvestment (whole lots), at most `qty`; 0 = not even one lot.
+    // Scaled (F): the quantity of a buy of `contract` that fits under maxInvestment (whole lots), at most `qty`; 0 = not even one lot.
     private capQuantity(qty: number, contract: { token: string; premium: number }): number {
         const lot = INDEX_LOT_SIZE.NIFTY;
         const price = this.pairPx.get(String(contract.token)) ?? contract.premium;
@@ -618,7 +634,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         return Math.max(0, Math.min(qty, lots * lot));
     }
 
-    // Modified (B): hedge quantity = initialQuantity + (entry - price now) / priceDiff * initialQuantity, in whole lots, at least initialQuantity.
+    // Scaled (B): hedge quantity = initialQuantity + (entry - price now) / priceDiff * initialQuantity, in whole lots, at least initialQuantity.
     private hedgeQuantity(leg: SimpleLeg): number {
         const base = Number(this.cfg()?.initialQuantity);
         const lot = INDEX_LOT_SIZE.NIFTY;
@@ -635,10 +651,10 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         const fixed = this.state.pair?.[right];
         const openSame = fixed ? this.openLegs().find((l) => l.token === fixed.token) : undefined; // the fixed contract's leg is open: the buy is ADDED to it
         if (same && openSame) {
-            // Modified (G): the same contract already has an open leg: no re-buy.
+            // Scaled (G): the same contract already has an open leg: no re-buy.
             leg.hedged = true;
             this.save();
-            Log.log(`[ModifiedSimpleContinuousStrategy] no re-buy of ${openSame.tsym} after ${leg.tsym} (${reason}): that contract already has an open leg`);
+            Log.log(`[ScaledHedgedContinuousStrategy] no re-buy of ${openSame.tsym} after ${leg.tsym} (${reason}): that contract already has an open leg`);
             return;
         }
         if (!openSame && this.sideBlocked(right)) {
@@ -647,11 +663,11 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
                 leg.hedgeWaiting = true;
                 leg.hedgeSame = same;
                 this.save();
-                Log.log(`[ModifiedSimpleContinuousStrategy] hedge of ${leg.tsym} (${reason}) held back: ${this.onePerSide() ? `a ${right} leg is already open (onePositionPerSide)` : `${this.openLegs().filter((l) => l.right === right).length} ${right} legs already open (maxLegsPerSide ${this.cfg()?.maxLegsPerSide}) and Nifty ${this.lastNiftyLtp} has not moved back toward the root`}`);
+                Log.log(`[ScaledHedgedContinuousStrategy] hedge of ${leg.tsym} (${reason}) held back: ${this.onePerSide() ? `a ${right} leg is already open (onePositionPerSide)` : `${this.openLegs().filter((l) => l.right === right).length} ${right} legs already open (maxLegsPerSide ${this.cfg()?.maxLegsPerSide}) and Nifty ${this.lastNiftyLtp} has not moved back toward the root`}`);
             }
             return;
         }
-        if (leg.hedgeWaiting) { leg.hedgeWaiting = false; if (!this.capHeld.has(leg.id)) Log.log(`[ModifiedSimpleContinuousStrategy] hedge of ${leg.tsym} released (${reason})`); }
+        if (leg.hedgeWaiting) { leg.hedgeWaiting = false; if (!this.capHeld.has(leg.id)) Log.log(`[ScaledHedgedContinuousStrategy] hedge of ${leg.tsym} released (${reason})`); }
         leg.hedged = true; // synchronous, before any await: a second tick must not buy a second hedge
         if (!openSame && this.onePerSide()) this.pendingSides.add(right); // same synchronous section as the sideBlocked check above
         this.busy.add(leg.id);
@@ -662,21 +678,21 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             // premium floor of 1 only skips a strike with no price. A strike already held on that side is skipped (one position per contract).
             const contract: PairContract = fixed ?? await ops.pickContract(this.userId, this.lastNiftyLtp, right, 1, this.excludeStrikes(right), expiryDayOverrideOf(this.cfg()));
             if (!fixed) {
-                this.state.pair = { ...(this.state.pair ?? {}), [right]: { tradingSymbol: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, premium: contract.premium } };
+                this.setPair({ ...(this.state.pair ?? {}), [right]: { tradingSymbol: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, premium: contract.premium } });
                 this.save();
             }
             const wanted = this.hedgeQuantity(leg);
             const hedgeQty = this.capQuantity(wanted, contract);
             if (hedgeQty <= 0) {
-                // Modified (F): not even one lot fits under maxInvestment: held back, retried (own ticks / Nifty ticks) when room appears.
+                // Scaled (F): not even one lot fits under maxInvestment: held back, retried (own ticks / Nifty ticks) when room appears.
                 leg.hedged = false;
                 leg.hedgeWaiting = true; leg.hedgeSame = same;
-                if (!this.capHeld.has(leg.id)) { this.capHeld.add(leg.id); Log.log(`[ModifiedSimpleContinuousStrategy] hedge of ${leg.tsym} (${reason}) held back: maxInvestment ${this.cfg()?.maxInvestment} leaves no room for one lot of ${contract.tradingSymbol} (open cost ${Math.round(this.invested())})`); }
+                if (!this.capHeld.has(leg.id)) { this.capHeld.add(leg.id); Log.log(`[ScaledHedgedContinuousStrategy] hedge of ${leg.tsym} (${reason}) held back: maxInvestment ${this.cfg()?.maxInvestment} leaves no room for one lot of ${contract.tradingSymbol} (open cost ${Math.round(this.invested())})`); }
                 this.save();
                 return;
             }
             this.capHeld.delete(leg.id);
-            if (hedgeQty < wanted) Log.log(`[ModifiedSimpleContinuousStrategy] hedge quantity of ${contract.tradingSymbol} cut ${wanted} -> ${hedgeQty} by maxInvestment`);
+            if (hedgeQty < wanted) Log.log(`[ScaledHedgedContinuousStrategy] hedge quantity of ${contract.tradingSymbol} cut ${wanted} -> ${hedgeQty} by maxInvestment`);
             if (openSame) {
                 const ok = await this.addToLeg(openSame, hedgeQty, leg, reason);
                 if (!ok) { leg.hedged = false; this.save(); } // nothing bought: the next tick retries
@@ -684,26 +700,26 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             }
             let trade: Trade;
             try {
-                trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, hedgeQty, contract.exchange, contract.premium, this.broker(), { hedgeRebuy: true });
+                trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, hedgeQty, contract.exchange, contract.premium, this.broker());
             } catch (e) {
                 if (this.noteBuyError(e, `hedge buy ${contract.tradingSymbol}`, false)) {
                     leg.hedged = false; // nothing was placed: the next tick may try again
-                    Log.log('[ModifiedSimpleContinuousStrategy] hedge buy failed (not placed, will retry):', e);
+                    Log.log('[ScaledHedgedContinuousStrategy] hedge buy failed (not placed, will retry):', e);
                     this.save();
                     return;
                 }
                 // Outcome unknown (timeout / unconfirmed fill): ask the broker instead of freezing the chain.
-                Log.log(`[ModifiedSimpleContinuousStrategy] hedge buy of ${contract.tradingSymbol} unconfirmed (${(e as any)?.message ?? e}) - checking the broker`);
+                Log.log(`[ScaledHedgedContinuousStrategy] hedge buy of ${contract.tradingSymbol} unconfirmed (${(e as any)?.message ?? e}) - checking the broker`);
                 const res = await this.resolveUnconfirmedBuy(contract);
                 if (res.kind === 'none') {
                     leg.hedged = false; // cancelled with 0 filled: the hedge is retried
-                    Log.log(`[ModifiedSimpleContinuousStrategy] hedge buy of ${contract.tradingSymbol} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
+                    Log.log(`[ScaledHedgedContinuousStrategy] hedge buy of ${contract.tradingSymbol} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
                     this.save();
                     return;
                 }
                 if (res.kind === 'unknown') {
                     this.manualReview = true;
-                    Log.log(`[ModifiedSimpleContinuousStrategy] ALERT: hedge buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - no new buys until it is reviewed and the strategy is reset`);
+                    Log.log(`[ScaledHedgedContinuousStrategy] ALERT: hedge buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - no new buys until it is reviewed and the strategy is reset`);
                     this.save();
                     return;
                 }
@@ -711,18 +727,18 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
                 adopted.quantity = res.qty;
                 adopted.price = res.price;
                 const hedgeLeg = this.addLeg(adopted, contract, right, 'hedge', false, leg.id);
-                Log.log(`[ModifiedSimpleContinuousStrategy] hedge buy of ${contract.tradingSymbol} had filled after all: adopted qty=${hedgeLeg.qty} @${hedgeLeg.entry} as the hedge of ${leg.tsym}`);
+                Log.log(`[ScaledHedgedContinuousStrategy] hedge buy of ${contract.tradingSymbol} had filled after all: adopted qty=${hedgeLeg.qty} @${hedgeLeg.entry} as the hedge of ${leg.tsym}`);
                 await this.placeSell(hedgeLeg);
                 return;
             }
             const hedgeLeg = this.addLeg(trade, contract, right, 'hedge', false, leg.id);
-            Log.log(`[ModifiedSimpleContinuousStrategy] hedged ${leg.tsym} (${reason}) with ${hedgeLeg.tsym} qty=${hedgeLeg.qty} @${hedgeLeg.entry}`);
+            Log.log(`[ScaledHedgedContinuousStrategy] hedged ${leg.tsym} (${reason}) with ${hedgeLeg.tsym} qty=${hedgeLeg.qty} @${hedgeLeg.entry}`);
             await this.placeSell(hedgeLeg);
         } catch (e) {
             // pickContract failed before any order: allow a retry.
             leg.hedged = false;
             this.save();
-            Log.log('[ModifiedSimpleContinuousStrategy] hedge contract lookup failed, will retry:', e);
+            Log.log('[ScaledHedgedContinuousStrategy] hedge contract lookup failed, will retry:', e);
         } finally {
             this.pendingSides.delete(right);
             this.busy.delete(leg.id);
@@ -752,7 +768,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         const avgSell = leg.soldValue / leg.soldQty;
         const pnl = (avgSell - leg.entry) * leg.qty;
         this.recordOutcome(pnl >= 0 ? 'win' : 'loss', pnl);
-        Log.log(`[ModifiedSimpleContinuousStrategy] ${leg.tsym} closed qty=${leg.qty} entry=${leg.entry.toFixed(2)} sell=${avgSell.toFixed(2)} pnl=${Math.round(pnl)}`);
+        Log.log(`[ScaledHedgedContinuousStrategy] ${leg.tsym} closed qty=${leg.qty} entry=${leg.entry.toFixed(2)} sell=${avgSell.toFixed(2)} pnl=${Math.round(pnl)}`);
         this.save();
         await this.checkMaxProfit();
         if (this.isStopped()) return;
@@ -766,7 +782,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             leg.hedged = true;
             leg.restarted = true;
             this.save();
-            Log.log(`[ModifiedSimpleContinuousStrategy] first order ${leg.tsym} closed at a profit with no hedge: no same-direction re-buy, the contract selection runs again for a new root`);
+            Log.log(`[ScaledHedgedContinuousStrategy] first order ${leg.tsym} closed at a profit with no hedge: no same-direction re-buy, the contract selection runs again for a new root`);
         } else if (!leg.hedged) await this.hedge(leg, 'target met', same);
     };
 
@@ -783,7 +799,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         }
     };
 
-    // ---- add to an open leg (Modified C/D: replaces the double-up) ----
+    // ---- add to an open leg (Scaled C/D: replaces the double-up) ----
 
     // Buys `addQty` more of the open leg's contract and re-places its resting sell for the new total at the new average + priceDiff. The leg's
     // hedge trigger is re-armed (hedged = false) so it hedges again when it falls priceDiff below the NEW average; the leg that caused the add
@@ -796,23 +812,23 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             let cancelledFilled = 0;
             if (parent.sellQty > 0) {
                 const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: parent.tsym, broker });
-                if (res.cancelFailed) { Log.log(`[ModifiedSimpleContinuousStrategy] add to ${parent.tsym} aborted: its resting sell could not be cancelled`); return false; }
+                if (res.cancelFailed) { Log.log(`[ScaledHedgedContinuousStrategy] add to ${parent.tsym} aborted: its resting sell could not be cancelled`); return false; }
                 cancelledFilled = res.filledQty;
                 parent.sellQty = 0;
                 parent.sellShortfall = 0;
             }
             if (cancelledFilled > 0) {
-                Log.log(`[ModifiedSimpleContinuousStrategy] add to ${parent.tsym} aborted: ${cancelledFilled} sold while cancelling`);
+                Log.log(`[ScaledHedgedContinuousStrategy] add to ${parent.tsym} aborted: ${cancelledFilled} sold while cancelling`);
                 const left = parent.qty - parent.soldQty - cancelledFilled;
                 if (left > 0) await this.placeSellQty(parent, left);
                 return false;
             }
             let trade: Trade;
             try {
-                trade = await OrderClient.getInstance().buyContractBare(this.userId, parent.tsym, parent.token, addQty, parent.exchange, parent.entry, this.broker(), { hedgeRebuy: true });
+                trade = await OrderClient.getInstance().buyContractBare(this.userId, parent.tsym, parent.token, addQty, parent.exchange, parent.entry, this.broker());
             } catch (e) {
                 const notPlaced = this.noteBuyError(e, `add buy ${parent.tsym}`, false);
-                Log.log('[ModifiedSimpleContinuousStrategy] add buy failed:', e);
+                Log.log('[ScaledHedgedContinuousStrategy] add buy failed:', e);
                 if (notPlaced) await this.placeSellQty(parent, this.remaining(parent));
                 return false;
             }
@@ -828,11 +844,11 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             parent.hedged = false; // re-armed from the new average
             parent.hedgeWaiting = false;
             this.save();
-            Log.log(`[ModifiedSimpleContinuousStrategy] added to ${parent.tsym}: +${got} @${price} (${trigger.tsym} fell ${this.priceDiff()}: ${reason}), now qty=${parent.qty} avg=${parent.entry.toFixed(2)}`);
+            Log.log(`[ScaledHedgedContinuousStrategy] added to ${parent.tsym}: +${got} @${price} (${trigger.tsym} fell ${this.priceDiff()}: ${reason}), now qty=${parent.qty} avg=${parent.entry.toFixed(2)}`);
             await this.placeSellQty(parent, this.remaining(parent));
             return got > 0;
         } catch (e) {
-            Log.log('[ModifiedSimpleContinuousStrategy] add to leg failed:', e);
+            Log.log('[ScaledHedgedContinuousStrategy] add to leg failed:', e);
             return false;
         } finally {
             this.busy.delete(parent.id);
@@ -849,7 +865,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             });
             this.bookPlacedSell(leg, quantity, price, res);
         } catch (e) {
-            Log.log(`[ModifiedSimpleContinuousStrategy] ALERT: resting sell for ${leg.tsym} failed (tick retry follows):`, e);
+            Log.log(`[ScaledHedgedContinuousStrategy] ALERT: resting sell for ${leg.tsym} failed (tick retry follows):`, e);
         }
     }
 
@@ -863,7 +879,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
                 let filled = 0;
                 if (leg.sellQty > 0) {
                     const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
-                    if (res.cancelFailed) { Log.log(`[ModifiedSimpleContinuousStrategy] ${label}: could not cancel the resting sell of ${leg.tsym}, retrying`); continue; }
+                    if (res.cancelFailed) { Log.log(`[ScaledHedgedContinuousStrategy] ${label}: could not cancel the resting sell of ${leg.tsym}, retrying`); continue; }
                     filled = res.filledQty;
                     leg.sellQty = 0;
                     leg.sellShortfall = 0;
@@ -873,9 +889,9 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
                 leg.status = 'closed';
                 this.unwatch(leg);
                 this.save();
-                Log.log(`[ModifiedSimpleContinuousStrategy] ${label}: closed ${leg.tsym}`);
+                Log.log(`[ScaledHedgedContinuousStrategy] ${label}: closed ${leg.tsym}`);
             } catch (e) {
-                Log.log(`[ModifiedSimpleContinuousStrategy] ${label} close of ${leg.tsym} failed, retrying:`, e);
+                Log.log(`[ScaledHedgedContinuousStrategy] ${label} close of ${leg.tsym} failed, retrying:`, e);
             } finally {
                 this.busy.delete(leg.id);
             }
