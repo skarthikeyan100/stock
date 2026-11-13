@@ -847,9 +847,12 @@ class OrderBookkeeping {
                 return { allowed: false, reason: `User '${user}' has reached the lot limit (${tradedLots}/${lotLimit} lots).` };
             }
         }
+        // A real user in investmentAmount mode is capped by their account capital (checked above), never by maxInvestment: that field is only
+        // set for strategy pseudo-users, so for a real user it was the 100000 default and blocked a 200000-capital account at ~100000 used.
+        const cappedByAccountCapital = ctx.investmentMode === 'investmentAmount' && ctx.accountCapital > 0 && this.userSettingsCache.get(user)?.maxInvestment === undefined;
         const currentInvestment = this.getCurrentInvestment(user, broker) + this.pendingValue(user, broker);
         const maxInvestment = this.getUserMaxInvestment(user, broker);
-        if (currentInvestment >= maxInvestment) {
+        if (!cappedByAccountCapital && currentInvestment >= maxInvestment) {
             return { allowed: false, reason: `User '${user}'${broker ? ` (${broker})` : ''} has reached max investment (${currentInvestment}/${maxInvestment}).` };
         }
         const perOrderCap = this.getUserPerOrderCap(user);
@@ -1121,7 +1124,7 @@ class OrderBookkeeping {
         tradeEvent.price = parseFloat(data.flprc);
         tradeEvent.action = data.trantype == 'S' ? 'Sell' : 'Buy';
         tradeEvent.status = data.status;
-        tradeEvent.right = tradeEvent.tsym.indexOf('P') !== -1 ? PUT : CALL;
+        tradeEvent.right = /PE$/i.test(tradeEvent.tsym) ? PUT : CALL;
         tradeEvent.user = user;
         tradeEvent.broker = 'prism';
         tradeEvent.brokerOrderId = data.norenordno;
@@ -1142,9 +1145,6 @@ class OrderBookkeeping {
         // query otherwise silently excludes later same-day fills (e.g. an
         // averaging buy) from restart recovery.
         tradeEvent.entryTime = new Date();
-        // Fire-and-forget, same convention as checkDrawdownNotification/
-        // persistClosedTrade elsewhere in this class - never let a Mongo
-        // hiccup block live bookkeeping. The .catch() (not a try/catch,
         // A fill doc without the contract token (a manual square-off builds its Sell from tsym alone) is invisible to the token-filtered restore:
         // the Buy then restored as still open after a restart (live 2026-11-13, a 325-lot put booked closed twice). Take the token (and right /
         // strategy) from the position this fill acts on, BEFORE the raw doc is inserted.
@@ -1154,6 +1154,9 @@ class OrderBookkeeping {
             if (own && tradeEvent.right == null && own.right != null) tradeEvent.right = own.right;
             if (own && tradeEvent.strategy == null && own.strategy != null) tradeEvent.strategy = own.strategy;
         }
+        // Fire-and-forget, same convention as checkDrawdownNotification/
+        // persistClosedTrade elsewhere in this class - never let a Mongo
+        // hiccup block live bookkeeping. The .catch() (not a try/catch,
         // which cannot catch a rejection from a promise that isn't awaited)
         // is what actually prevents an unhandled promise rejection from
         // crashing the `order` process on a transient Mongo error.
@@ -1320,7 +1323,7 @@ class OrderBookkeeping {
                 const trade = new Trade();
                 trade.tsym = row.tsym;
                 trade.token = row.token;
-                trade.right = row.right;
+                trade.right = row.right ?? (/PE$/i.test(row.tsym ?? '') ? PUT : /CE$/i.test(row.tsym ?? '') ? CALL : undefined);
                 trade.quantity = row.quantity;
                 trade.price = row.entryPrice;
                 trade.lastTradePrice = row.exitPrice;
@@ -1739,9 +1742,6 @@ class OrderBookkeeping {
         }
     }
 
-    // Books one tracked trade as sold at `price` through the normal Sell path (no strategy notification, see above).
-    private async bookExternalSell(t: Trade, price: number, how: string): Promise<void> {
-        const ev = new Trade();
     // What Mongo's fills (Buys netted FIFO against Sells, this user, this contract) still show open for a tracked trade. 'unknown' = Mongo holds no Buy
     // doc of this user for it (nothing to net against: the caller keeps its old behaviour); 'unreadable' = Mongo/ownership could not be read.
     private async mongoOpenQuantity(t: Trade): Promise<number | 'unknown' | 'unreadable'> {
@@ -1759,6 +1759,9 @@ class OrderBookkeeping {
         }
     }
 
+    // Books one tracked trade as sold at `price` through the normal Sell path (no strategy notification, see above).
+    private async bookExternalSell(t: Trade, price: number, how: string): Promise<void> {
+        const ev = new Trade();
         ev.tsym = t.tsym; ev.token = t.token; ev.right = t.right; ev.quantity = t.quantity; ev.price = price;
         ev.action = 'Sell'; ev.status = 'COMPLETE'; ev.user = t.user; ev.broker = t.broker; ev.strategy = t.strategy;
         ev.brokerOrderId = `BROKER-SYNC-${t.broker}-${t.tsym}-${Date.now()}`;
@@ -1827,9 +1830,6 @@ class OrderBookkeeping {
                     this.trades.push(t);
                     Log.log(`[order] ALERT: ${t.user} ${t.tsym} (${broker}) qty=${t.quantity} was bought today, is flat at the broker and was never booked as closed - backfilling the close`);
                 } else if (!this.trades.includes(t)) continue;
-                await this.bookExternalSell(t, price, how);
-                this.flatSeen.delete(flatKey(t));
-                booked++;
                 // Idempotency: never book a second close for a lot Mongo already shows closed (live 2026-11-13: a position the platform had closed
                 // by a manual square-off was restored as open after a restart and then booked again at an estimated price, -12967 on top of the real
                 // loss). The fills in Mongo are the record: what they still show open is all that may be closed here.
@@ -1853,6 +1853,9 @@ class OrderBookkeeping {
                     Log.log(`[order] ALERT: ${t.user} ${t.tsym} (${broker}) tracked qty ${t.quantity} but Mongo's fills show only ${mongoOpen} still open - closing ${mongoOpen}`);
                     t.quantity = mongoOpen;
                 }
+                await this.bookExternalSell(t, price, how);
+                this.flatSeen.delete(flatKey(t));
+                booked++;
             }
         }
         return booked;
@@ -2194,10 +2197,10 @@ class OrderBookkeeping {
             Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) has broker order(s) booked under more than one user with no recorded owner (${loaded.ambiguous.join(', ')}) - restoring NOTHING for this contract, manual review required`);
             return [];
         }
+        const { users, ownedFills } = loaded;
 
         const restored: Trade[] = [];
         let totalRestoredQty = 0;
-        const { users, ownedFills } = loaded;
         for (const user of users) {
             // A same-tsym position can close and reopen (e.g. ContinuousStrategy's
             // root-refill re-enters the identical contract right after a
@@ -2243,7 +2246,7 @@ class OrderBookkeeping {
             // ToDo.md) over the broker's own token, which may use a different
             // scheme (e.g. Kite's instrument_token).
             trade.token = row.token ?? brokerToken ?? '';
-            trade.right = row.right;
+            trade.right = row.right ?? (/PE$/i.test(row.tsym ?? '') ? PUT : /CE$/i.test(row.tsym ?? '') ? CALL : undefined);
             trade.quantity = totalQty; // this user's own portion, not the broker's aggregate total
             trade.price = blendedPrice;
             // The broker's last price, not the cost: nothing refreshes lastTradePrice for a row restored here until a tick arrives (and
@@ -2419,9 +2422,6 @@ class OrderBookkeeping {
         for (const id of [...this.unpersistedClosed.keys()]) await this.writeClosedRow(id);
     }
 
-    // Called after kiteExecutor.setTargetStopLoss (or the Prism-routed
-    // equivalent, if ever added) mutates a trade's target/SL fields in place -
-    // matches Monitor.setTargetStopLoss's old myEmitter.emit('position', ...).
     // Waits (bounded) until the fire-and-forget raw fill inserts and held closedTrades rows are in Mongo. The SIGTERM handlers call it before
     // exiting: a stop right after a fill (the trader stopped the processes 40 s after a manual close) must not lose the Sell doc, or the next
     // start's restore brings the position back as open.
@@ -2434,6 +2434,9 @@ class OrderBookkeeping {
         await Promise.race([work, deadline]);
     }
 
+    // Called after kiteExecutor.setTargetStopLoss (or the Prism-routed
+    // equivalent, if ever added) mutates a trade's target/SL fields in place -
+    // matches Monitor.setTargetStopLoss's old myEmitter.emit('position', ...).
     notifyTargetStopLossChanged() {
         this.notifyPositionsChanged();
     }
