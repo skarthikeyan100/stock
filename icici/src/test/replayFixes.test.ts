@@ -3,7 +3,7 @@
  *   - entryStopPrice / minMovePoints (percentage stop, minimum-move threshold)
  *   - NiftyChange: minMovePoints, entry at the LTP itself (default limitOffset 0), percentage stop
  *   - MomentumAtFixedTime: minMovePoints, percentage stop, up/down sampling instead of per-tick counting
- *   - SimpleContinuous: one open leg per side, unconfirmed hedge buy resolved against the broker, double-up flag set only when it happens
+ *   - SimpleContinuous: one open leg per side, unconfirmed hedge buy resolved against the broker, no double-up
  * Run: npx tsc, then: node ./dist/test/replayFixes.test.js
  */
 import moment from 'moment';
@@ -271,25 +271,16 @@ function make<T>(Cls: new (id: string) => T, cfg: any): any {
     await sc.s.processOptionQuote(Object.assign(new OptionQuote(), { token: 'CE23900', ltp: 169 }));
     assert(count('buyContractBare') === 1, 'without either setting nothing is held back');
 
-    console.log('  double-up flag');
+    console.log('  no double-up (removed 2026-11-13; see simpleNoDoubleUp.test.ts)');
     buyMode = 'ok'; calls = [];
-    sc = newSc('SCF-h', { maxInvestment: 5000 }); // maxInvestment does not gate the double-up
+    sc = newSc('SCF-h', { maxInvestment: 5000 });
     const parent = addLeg(sc.s, 'N23900CE', 'CE', 23900, 180);
     const hedgeLeg = addLeg(sc.s, 'N23850PE', 'PE', 23850, 150, {});
     hedgeLeg.role = 'hedge'; hedgeLeg.parentId = parent.id; hedgeLeg.hedged = true; hedgeLeg.sellQty = 65;
     await sc.s.updateTrade(fill('N23850PE', 'Sell', 65, 160));
-    assert(count('buyContractBare') === 1 && parent.doubled === true && parent.doubleDue === false && parent.qty === 130, `the double-up is not capped by maxInvestment (qty ${parent.qty})`);
+    assert(count('buyContractBare') === 0 && parent.qty === 65 && parent.doubled === undefined, `a hedge profit sell does not buy the parent again (qty ${parent.qty})`);
     await sc.s.processOptionQuote(Object.assign(new OptionQuote(), { token: 'CE23900', ltp: 181 }));
-    assert(count('buyContractBare') === 1, 'and it is never doubled twice');
-
-    buyMode = 'timeout'; calls = [];
-    sc = newSc('SCF-i');
-    const p2 = addLeg(sc.s, 'N23900CE', 'CE', 23900, 180);
-    const h2 = addLeg(sc.s, 'N23850PE', 'PE', 23850, 150, {});
-    h2.role = 'hedge'; h2.parentId = p2.id; h2.hedged = true; h2.sellQty = 65;
-    await sc.s.updateTrade(fill('N23850PE', 'Sell', 65, 160));
-    assert(p2.doubled === true && sc.s.manualReview === true, 'a double-up buy that may be live is never retried blind (doubled set, manual review)');
-    buyMode = 'ok';
+    assert(count('buyContractBare') === 0, 'and the parent\'s ticks buy nothing either');
 
     console.log('  profit -> same direction, stop/adverse -> opposite)');
     buyMode = 'ok';
