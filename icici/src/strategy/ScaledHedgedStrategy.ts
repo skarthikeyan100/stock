@@ -8,7 +8,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
 import { brokerLegOps, chunkedLegSell } from './LegBrokerOps';
 import { isUnconfirmedBuyError } from './LegManager';
-import { fetchOpenTradesWithRetry } from './openTrades';
+import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
 import { roundToTick, NFO_TICK_SIZE } from '../util/tick';
@@ -320,10 +320,12 @@ export default class ScaledHedgedStrategy extends Strategy {
         for (const leg of this.openLegs()) {
             const t = byKey.get(leg.token) ?? openTrades.find((x) => x.tsym === leg.tsym);
             if (!t || !(Number(t.quantity) > 0)) {
-                Log.log(`[ScaledHedgedStrategy] reconcile: ${leg.tsym} is no longer held by the broker - marking closed`);
-                leg.status = 'closed';
-                this.unwatch(leg);
+                this.closeOutside(leg, 'reconcile');
                 continue;
+            }
+            if (Number(t.quantity) < this.remaining(leg)) {
+                // Partly sold outside the platform (a sell in the broker's app, booked by the sync): the leg continues with what is held.
+                Log.log(`[ScaledHedgedStrategy] ALERT: reconcile: ${leg.tsym} holds ${Number(t.quantity)} of the ${this.remaining(leg)} recorded - ${this.remaining(leg) - Number(t.quantity)} was sold outside the platform, continuing with the held quantity (its P&L is not in this strategy's realizedPnl)`);
             }
             leg.qty = Number(t.quantity);
             leg.soldQty = 0;
@@ -473,6 +475,31 @@ export default class ScaledHedgedStrategy extends Strategy {
 
     // ---- resting sell ----
 
+    // A leg the order side no longer holds was sold outside the platform (the broker's app, an expiry, a square-off) and booked by the sync or
+    // the order process's own reconcile. Marked closed so no tick, hedge, double-up or sell retry touches a position that is not there.
+    // P&L accounting: NEUTRAL. The real exit was not seen here, so nothing is added to realizedPnl / the maxProfit total (the closedTrades rows
+    // the sync booked carry the real P&L; booking it again here would double count it) and the leg's open value leaves the total with it.
+    private closeOutside(leg: SimpleLeg, why: string): void {
+        Log.log(`[ScaledHedgedStrategy] ALERT: ${why}: ${leg.tsym} (${this.remaining(leg)} left to sell) is no longer held by the broker - closed outside the platform, marking the leg closed (neutral P&L, not added to realizedPnl)`);
+        leg.status = 'closed';
+        leg.sellQty = 0;
+        leg.sellShortfall = 0;
+        leg.doubleDue = false;
+        leg.hedgeWaiting = false;
+        this.unwatch(leg);
+        this.save();
+    }
+
+    // A sell refused as "nothing sellable" (the broker's never-short guard): the position is gone if the order side holds nothing for the leg.
+    // Returns true when the leg was closed for that reason, so the caller stops retrying.
+    private async closeIfNotHeld(leg: SimpleLeg, e: unknown): Promise<boolean> {
+        if (!/nothing sellable/.test(String((e as any)?.message ?? e))) return false;
+        if (leg.status !== 'open') return true;
+        if ((await heldQuantity(this.userId, leg.token, leg.tsym)) !== 0) return false;
+        if (leg.status === 'open') this.closeOutside(leg, 'sell refused');
+        return true;
+    }
+
     private async placeSell(leg: SimpleLeg): Promise<void> {
         if (leg.status !== 'open' || this.busy.has(leg.id)) return;
         const quantity = this.remaining(leg);
@@ -486,6 +513,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             });
             this.bookPlacedSell(leg, quantity, price, res);
         } catch (e) {
+            if (await this.closeIfNotHeld(leg, e)) return;
             Log.log(`[ScaledHedgedStrategy] ALERT: resting sell for ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
         } finally {
             this.busy.delete(leg.id);

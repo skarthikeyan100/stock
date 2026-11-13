@@ -17,3 +17,15 @@ export async function fetchOpenTradesWithRetry(userId: string, tag: string, maxA
     }
     return undefined;
 }
+
+// Quantity the order side holds open for one contract of this strategy (matched by token, else tsym). undefined when it cannot be read.
+// Read-only: used to tell a sell refused as "nothing sellable" because the position is gone (closed outside the platform) from one
+// refused because the whole position already rests as a sell.
+export async function heldQuantity(userId: string, token: string, tsym: string): Promise<number | undefined> {
+    try {
+        const open = await OrderClient.getInstance().getOpenTrades(userId);
+        return open.filter((t: any) => String(t.token) === String(token) || t.tsym === tsym).reduce((s: number, t: any) => s + Math.max(0, Number(t.quantity) || 0), 0);
+    } catch {
+        return undefined;
+    }
+}
