@@ -27,6 +27,9 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //   D. Only ONE CE contract and ONE PE contract are used per cycle: the root's contract and the contract of the first hedge (ATM at that time).
 //      Every later buy of a right uses that same contract: if its leg is open the quantity is ADDED to it (blended entry, the resting sell is
 //      re-placed at the new average + priceDiff, and the leg's hedge trigger is re-armed from the new average); if it is closed a new leg opens.
+//   F. maxInvestment is honoured by EVERY buy (root, hedge, add): a buy is cut to the whole lots that still fit under the cap (cost basis of the open
+//      legs + the new buy at the contract's latest price), or skipped (held back and retried) when not even one lot fits.
+//   G. A same-direction re-buy (after a target fill) is skipped when that contract already has an open leg.
 //   E. (also in SimpleContinuousStrategy) When the FIRST order (root) closes at a profit with no hedge ever bought, it does not buy the same
 //      direction again: the contract selection (PCR direction, premium floor, ATM pick) runs again for a new root and a new CE/PE pair.
 // ModifiedSimpleContinuousStrategy (config keys: initialQuantity, maxInvestment, priceDiff, plus enabled/brokers):
@@ -116,6 +119,8 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
     private state: State = { day: '', legs: {}, seq: 0, pnlStarted: true, realizedPnl: 0, profitTripped: false };
     private loaded = false;
     private lastNiftyLtp = 0;
+    private capHeld = new Set<string>(); // legs whose hedge is waiting for maxInvestment room (no log spam on each retry)
+    private pairPx = new Map<string, number>(); // latest tick price of each contract of the pair (open or not), for the maxInvestment check
     private lastPcr: { value: number; at: number } | null = null;
     private entering = false;
     private manualReview = false; // an unconfirmed buy may be live: no new buys until a human looks and reset() clears it
@@ -277,7 +282,8 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
 
     canHandleOptionQuote = (quote: OptionQuote): boolean => {
         this.ensureLoaded();
-        return this.openLegs().some((l) => l.token === String(quote.token));
+        const t = String(quote.token);
+        return this.openLegs().some((l) => l.token === t) || t === this.state.pair?.CE?.token || t === this.state.pair?.PE?.token;
     };
 
     // ---- reconcile ----
@@ -519,6 +525,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
     // ---- ticks ----
 
     processOptionQuote = async (quote: OptionQuote): Promise<void> => {
+        if (quote.ltp > 0) this.pairPx.set(String(quote.token), quote.ltp);
         const leg = this.legByToken(String(quote.token));
         if (!leg || !(quote.ltp > 0)) return;
         leg.lastLtp = quote.ltp;
@@ -601,6 +608,16 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         }
     }
 
+    // Modified (F): the quantity of a buy of `contract` that fits under maxInvestment (whole lots), at most `qty`; 0 = not even one lot.
+    private capQuantity(qty: number, contract: { token: string; premium: number }): number {
+        const lot = INDEX_LOT_SIZE.NIFTY;
+        const price = this.pairPx.get(String(contract.token)) ?? contract.premium;
+        const room = Number(this.cfg()?.maxInvestment) - this.invested();
+        if (!(price > 0)) return qty;
+        const lots = Math.floor(room / (price * lot));
+        return Math.max(0, Math.min(qty, lots * lot));
+    }
+
     // Modified (B): hedge quantity = initialQuantity + (entry - price now) / priceDiff * initialQuantity, in whole lots, at least initialQuantity.
     private hedgeQuantity(leg: SimpleLeg): number {
         const base = Number(this.cfg()?.initialQuantity);
@@ -617,6 +634,13 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         const right = same ? leg.right : opposite(leg.right);
         const fixed = this.state.pair?.[right];
         const openSame = fixed ? this.openLegs().find((l) => l.token === fixed.token) : undefined; // the fixed contract's leg is open: the buy is ADDED to it
+        if (same && openSame) {
+            // Modified (G): the same contract already has an open leg: no re-buy.
+            leg.hedged = true;
+            this.save();
+            Log.log(`[ModifiedSimpleContinuousStrategy] no re-buy of ${openSame.tsym} after ${leg.tsym} (${reason}): that contract already has an open leg`);
+            return;
+        }
         if (!openSame && this.sideBlocked(right)) {
             // Stacking guard / side occupied: leave the leg un-hedged. An open leg is retried by its own ticks, a closed one from Nifty ticks.
             if (!leg.hedgeWaiting) {
@@ -627,7 +651,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             }
             return;
         }
-        if (leg.hedgeWaiting) { leg.hedgeWaiting = false; Log.log(`[ModifiedSimpleContinuousStrategy] hedge of ${leg.tsym} released (${reason})`); }
+        if (leg.hedgeWaiting) { leg.hedgeWaiting = false; if (!this.capHeld.has(leg.id)) Log.log(`[ModifiedSimpleContinuousStrategy] hedge of ${leg.tsym} released (${reason})`); }
         leg.hedged = true; // synchronous, before any await: a second tick must not buy a second hedge
         if (!openSame && this.onePerSide()) this.pendingSides.add(right); // same synchronous section as the sideBlocked check above
         this.busy.add(leg.id);
@@ -641,7 +665,18 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
                 this.state.pair = { ...(this.state.pair ?? {}), [right]: { tradingSymbol: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, premium: contract.premium } };
                 this.save();
             }
-            const hedgeQty = this.hedgeQuantity(leg);
+            const wanted = this.hedgeQuantity(leg);
+            const hedgeQty = this.capQuantity(wanted, contract);
+            if (hedgeQty <= 0) {
+                // Modified (F): not even one lot fits under maxInvestment: held back, retried (own ticks / Nifty ticks) when room appears.
+                leg.hedged = false;
+                leg.hedgeWaiting = true; leg.hedgeSame = same;
+                if (!this.capHeld.has(leg.id)) { this.capHeld.add(leg.id); Log.log(`[ModifiedSimpleContinuousStrategy] hedge of ${leg.tsym} (${reason}) held back: maxInvestment ${this.cfg()?.maxInvestment} leaves no room for one lot of ${contract.tradingSymbol} (open cost ${Math.round(this.invested())})`); }
+                this.save();
+                return;
+            }
+            this.capHeld.delete(leg.id);
+            if (hedgeQty < wanted) Log.log(`[ModifiedSimpleContinuousStrategy] hedge quantity of ${contract.tradingSymbol} cut ${wanted} -> ${hedgeQty} by maxInvestment`);
             if (openSame) {
                 const ok = await this.addToLeg(openSame, hedgeQty, leg, reason);
                 if (!ok) { leg.hedged = false; this.save(); } // nothing bought: the next tick retries

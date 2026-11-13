@@ -5,7 +5,7 @@
  * nothing closes at the end of the day: open legs are marked at their last price). Writes an HTML report with ONE ROW PER BUY FILL.
  *
  * Usage: tsc && MOCK_BROKER=true node ./dist/tools/ModifiedSimpleContinuousBacktest.js [--allDays <dir>] [--initialQuantity 65]
- *        [--priceDiff N] [--maxProfit N] [--maxInvestment N] [--only Nov-12,Nov-06] [--out report.html] [--verbose]
+ *        [--priceDiff N] [--maxProfit N] [--maxInvestment N, default 200000] [--only Nov-12,Nov-06] [--out report.html] [--verbose]
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -228,12 +228,32 @@ table{border-collapse:collapse;width:100%;margin:8px 0}th,td{border:1px solid #d
     parts.push(`<div class="scroll"><table><thead><tr><th>Day</th><th>Root</th><th>Buys</th><th class="n">Realized</th><th class="n">Unrealized (open at last tick)</th><th class="n">Net</th><th class="n">Peak total P&amp;L</th><th>at</th><th class="n">Lowest total P&amp;L</th><th class="n">Peak cost of open legs</th><th>maxProfit tripped</th></tr></thead><tbody>`);
     for (const r of results) parts.push(`<tr><td>${r.day}</td><td>${esc(r.root)}</td><td class="n">${r.rows.length}</td><td class="n ${cl(r.realized)}">${fm(r.realized)}</td><td class="n ${cl(r.unrealized)}">${fm(r.unrealized)}</td><td class="n ${cl(r.realized + r.unrealized)}">${fm(r.realized + r.unrealized)}</td><td class="n">${fm(r.maxTotal)}</td><td>${fmtTime(r.maxTotalAt)}</td><td class="n">${fm(r.minTotal)}</td><td class="n">${fm(r.maxInvested)}</td><td>${r.tripped ? 'YES' : '-'}</td></tr>`);
     parts.push(`<tr class="sub"><td colspan="5">Total</td><td class="n ${cl(tot)}">${fm(tot)}</td><td colspan="5"></td></tr></tbody></table></div>`);
+    const kind = (reason: string) => (reason.startsWith('Root') || reason.startsWith('New root') ? 'Root' : reason.startsWith('Same contract') ? 'Re-buy' : reason.includes('opposite') ? 'Hedge' : 'Add');
     for (const r of results) {
-        parts.push(`<h2>${r.day}: ${fmtTime(r.first)} to ${fmtTime(r.last)}</h2><div class="scroll"><table><thead><tr><th>#</th><th>Contract</th><th class="n">Qty</th><th>Buy time</th><th class="n">Buy price</th><th>Reason for buy</th><th>Sell time</th><th class="n">Sell price</th><th>Reason for sell</th><th class="n">P&amp;L</th><th class="n">Realized (cumulative)</th><th class="n">Unrealized (other legs)</th></tr></thead><tbody>`);
-        r.rows.forEach((x, i) => parts.push(`<tr><td>${i + 1}</td><td>${esc(x.tsym)}</td><td class="n">${x.qty}</td><td>${fmtTime(x.buyAt)}</td><td class="n">${x.buyPx.toFixed(2)}</td><td class="rs">${esc(x.buyReason)}</td><td>${x.sellAt ? fmtTime(x.sellAt) : '-'}</td><td class="n">${x.sellPx != null ? x.sellPx.toFixed(2) : '-'}</td><td class="rs">${esc(x.sellReason)}</td><td class="n ${cl(x.pnl)}">${fm(x.pnl)}</td><td class="n ${cl(x.realized)}">${fm(x.realized)}</td><td class="n ${cl(x.unreal)}">${fm(x.unreal)}</td></tr>`));
-        parts.push(`<tr class="sub"><td colspan="9">Day total (${r.rows.length} buys)</td><td class="n ${cl(r.realized + r.unrealized)}">${fm(r.realized + r.unrealized)}</td><td colspan="2"></td></tr></tbody></table></div>`);
+        // One leg = the buys of one contract that are sold together (same contract, same sell). Rows are the buys in time order with the leg's
+        // running count / quantity / average / resting sell; the closing row carries the sell and the leg's P&L.
+        const groups = new Map<string, Row[]>();
+        for (const x of r.rows) { const k = `${x.tsym}|${x.sellAt ?? 'open'}`; (groups.get(k) ?? groups.set(k, []).get(k)!).push(x); }
+        const legs = [...groups.values()].map((g) => g.sort((a, b) => a.buyAt - b.buyAt));
+        const buysAll = r.rows.map((x) => ({ at: x.buyAt, sellAt: x.sellAt, cost: x.qty * x.buyPx }));
+        const openCostAt = (t: number) => buysAll.filter((b) => b.at <= t && (b.sellAt == null || b.sellAt > t)).reduce((a, b) => a + b.cost, 0);
+        const flat: { x: Row; n: number; N: number; cq: number; cc: number; last: boolean; legPnl: number }[] = [];
+        for (const g of legs) {
+            let cq = 0, cc = 0;
+            const legPnl = g.reduce((a, x) => a + x.pnl, 0);
+            g.forEach((x, i) => { cq += x.qty; cc += x.qty * x.buyPx; flat.push({ x, n: i + 1, N: g.length, cq, cc, last: i === g.length - 1, legPnl }); });
+        }
+        flat.sort((a, b) => a.x.buyAt - b.x.buyAt);
+        parts.push(`<h2>${r.day}: ${fmtTime(r.first)} to ${fmtTime(r.last)}</h2><div class="scroll"><table><thead><tr><th>#</th><th>Contract</th><th>Type</th><th class="n">Buy no. in leg</th><th>Buy time</th><th class="n">Buy price</th><th class="n">Buy qty</th><th class="n">Buy cost</th><th class="n">Leg qty (cum.)</th><th class="n">Leg average</th><th class="n">Leg cost (cum.)</th><th class="n">Resting sell</th><th class="n">All open cost</th><th>Sell time</th><th class="n">Sell price</th><th class="n">Leg P&amp;L</th><th class="n">Realized (cumulative)</th></tr></thead><tbody>`);
+        flat.forEach((f, i) => {
+            const avg = f.cc / f.cq;
+            const x = f.x;
+            parts.push(`<tr><td>${i + 1}</td><td>${esc(x.tsym)}</td><td>${kind(x.buyReason)}</td><td class="n">${f.n} of ${f.N}</td><td>${fmtTime(x.buyAt)}</td><td class="n">${x.buyPx.toFixed(2)}</td><td class="n">${x.qty}</td><td class="n">${fm(x.qty * x.buyPx)}</td><td class="n">${f.cq}</td><td class="n">${avg.toFixed(2)}</td><td class="n">${fm(f.cc)}</td><td class="n">${(avg + Number(c.priceDiff)).toFixed(2)}</td><td class="n">${fm(openCostAt(x.buyAt))}</td>`
+                + (f.last ? `<td>${x.sellAt ? fmtTime(x.sellAt) : 'open'}</td><td class="n">${x.sellPx != null ? x.sellPx.toFixed(2) : '-'}</td><td class="n ${cl(f.legPnl)}">${fm(f.legPnl)}</td><td class="n ${cl(x.realized)}">${fm(x.realized)}</td></tr>` : `<td></td><td></td><td></td><td></td></tr>`));
+        });
+        parts.push(`<tr class="sub"><td colspan="15">Day total (${r.rows.length} buys in ${legs.length} legs)</td><td class="n ${cl(r.realized + r.unrealized)}">${fm(r.realized + r.unrealized)}</td><td></td></tr></tbody></table></div>`);
     }
-    parts.push(`<h2>Notes</h2><ul class="notes"><li>Ticks come from the stored backups (one row per buy fill; the strategy blends a double-up into its parent, the report splits it back). Only days with Quote, OptionQuote and Pcr CSVs are replayed.</li><li>Buys fill at the last tick price of the contract and a resting sell at its limit on the first tick at or above it: no slippage, no spread, no brokerage. Nothing closes at the end of the day here: "STILL OPEN" rows are marked at the last tick.</li><li>"Peak total P&amp;L" is the maxProfit-style total (realized plus every open leg marked at the last tick), checked after every tick.</li><li>Unrealized (other legs) at an exit is the mark of the contracts still open at that moment, exact here because every tick is replayed.</li></ul></body></html>`);
+    parts.push(`<h2>Notes</h2><ul class="notes"><li>Ticks come from the stored backups. A leg is one contract's buys that are sold together: each row is one buy with the leg's running count, quantity, average and resting sell (average + priceDiff, re-placed after every add); the closing row shows the sale and the leg's total P&amp;L. Only days with Quote, OptionQuote and Pcr CSVs are replayed.</li><li>Buys fill at the last tick price of the contract and a resting sell at its limit on the first tick at or above it: no slippage, no spread, no brokerage. Nothing closes at the end of the day here: "STILL OPEN" rows are marked at the last tick.</li><li>"Peak total P&amp;L" is the maxProfit-style total (realized plus every open leg marked at the last tick), checked after every tick.</li><li>Unrealized (other legs) at an exit is the mark of the contracts still open at that moment, exact here because every tick is replayed.</li></ul></body></html>`);
     return parts.join('\n');
 }
 
@@ -245,7 +265,7 @@ async function main() {
         ...base, type: 'ModifiedSimpleContinuousStrategy', enabled: true, userId: 'ModifiedSimpleContinuousStrategy',
         initialQuantity: Number(ov('initialQuantity') || 65),
         ...(ov('maxProfit') ? { maxProfit: Number(ov('maxProfit')) } : {}), ...(ov('priceDiff') ? { priceDiff: Number(ov('priceDiff')) } : {}),
-        ...(ov('maxInvestment') ? { maxInvestment: Number(ov('maxInvestment')) } : {}),
+        maxInvestment: Number(ov('maxInvestment') || 200000), // honoured by every buy of the Modified strategy (user: 200000)
     };
     configService.config.strategies = [...(configService.config.strategies || []).filter((s: any) => s.type !== 'ModifiedSimpleContinuousStrategy'), block];
     const c: any = configService.getStrategyConfig('ModifiedSimpleContinuousStrategy');
