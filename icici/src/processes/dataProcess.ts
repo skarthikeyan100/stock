@@ -90,9 +90,9 @@ async function main() {
     // before.
     for (const [source, stream] of Object.entries(streams)) {
         stream!
-            .connect()
+            .connectWithRetry()
             .then(() => Log.log(`[data] ${source} stream ready`))
-            .catch((e) => Log.log(`[data] Initial ${source} connect failed (will retry via reconnect):`, e));
+            .catch((e) => Log.log(`[data] Initial ${source} connect failed (retrying with backoff until connected, or a manual/login reconnect):`, e?.message ?? e));
     }
     Log.log('[data] Ready - NIFTY/SENSEX always subscribed (ANT), streaming on the data socket.');
 }

@@ -4,6 +4,8 @@
 export interface DataStream {
     connect(): Promise<void>;
     reconnect(): Promise<void>;
+    // Startup connect that keeps retrying (bounded backoff) after a failure; rejects with the FIRST failure so the caller can log it.
+    connectWithRetry(): Promise<void>;
     // exchange defaults to 'NFO' in every implementation - only a SENSEX
     // (BFO) option token needs to pass 'BFO' explicitly. Added so AntDataStream
     // can key its ANT websocket subscription (`NFO|<token>` vs `BFO|<token>`)

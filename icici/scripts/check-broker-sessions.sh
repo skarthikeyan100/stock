@@ -81,6 +81,20 @@ ws_status() {
     fi
 }
 
+feed_liveness() {
+    local dow hm now_s line ts t_s age
+    dow=$(date +%u); hm=$(date +%H%M)
+    # weekday, 09:20-15:25 only (before that, or after, silence is normal)
+    if [ "$dow" -gt 5 ] || [ "$hm" -lt 0925 ] || [ "$hm" -ge 1525 ]; then return; fi
+    line=$(grep -E "\[VWAP-FEED\] .* ltp " "$ORCH_LOG" 2>/dev/null | tail -1)
+    ts=$(echo "$line" | grep -oE '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' | tr -d '[]')
+    if [ -z "$ts" ]; then echo "FAIL (no tick heartbeat logged today)"; return; fi
+    now_s=$(( 10#$(date +%H) * 3600 + 10#$(date +%M) * 60 + 10#$(date +%S) ))
+    t_s=$(( 10#${ts:0:2} * 3600 + 10#${ts:3:2} * 60 + 10#${ts:6:2} ))
+    age=$(( now_s - t_s ))
+    if [ "$age" -gt 180 ]; then echo "FAIL (no ticks for $((age / 60))m, last $ts)"; else echo "OK (ticks, last $ts)"; fi
+}
+
 ant_session=$(session_status "$REPO_ROOT/.ant_session.json")
 kite_session=$(session_status "$REPO_ROOT/.kite_session.json")
 breeze_session=$(session_status "$REPO_ROOT/.breeze_session.json")
@@ -91,7 +105,12 @@ kite_token=$(token_status kite positions)
 breeze_token=$(token_status breeze trades)
 prism_token=$(token_status prism positions)
 
-ant_ws=$(ws_status "\[AntDataStream\] Connected and streaming" '\[AntDataStream\].*(Disconnected|onerror|onclose)|\[AntWS\].*(Disconnected|closed)')
+ant_ws=$(ws_status "\[AntDataStream\] Connected and streaming" '\[AntDataStream\].*(Disconnected|onerror|onclose|Connect failed|WebSocket closed)|\[AntWS\].*(Disconnected|closed)|\[data\] Initial ant connect failed')
+# The connect line only says when the socket last CONNECTED: during market hours also require a recent NIFTY-future heartbeat
+# ([VWAP-FEED], logged every 60 s while ticks flow) so a feed that is down or silent shows as FAIL (2026-11-13: a failed connect at
+# restart left no ticks for 26 min while this still printed the old connect time).
+ant_live=$(feed_liveness)
+case "$ant_ws" in OK*) [ -n "$ant_live" ] && ant_ws="$ant_live";; esac
 breeze_ws=$(ws_status "\[BreezeDataStream\] Connected and streaming" '\[BreezeDataStream\].*(disconnected|connect_error)' '\[BreezeDataStream\] socket connected')
 kite_ws="N/A (no live tick stream for this broker)"
 prism_ws="N/A (fills subscribe on the ANT feed)"

@@ -3,6 +3,8 @@ import Breeze from '../../breeze/Breeze';
 import { OptionQuote } from '../../model/model';
 import type { BreezeExchange } from '../../breeze/BreezeContractMaster';
 import { DataStream } from './DataStream';
+import { isPastMarketClose } from '../../util/marketHours';
+import { RECONNECT_INITIAL_MS, nextReconnectDelayMs, describeConnectError } from './connectRetry';
 
 // data process's Breeze-native tick source, mirroring AntDataStream.ts's
 // shape. Bypasses breezeconnect's broken structured-params subscribeFeeds
@@ -133,7 +135,32 @@ class BreezeDataStream implements DataStream {
 
     async reconnect(): Promise<void> {
         this.disconnect();
-        await this.connect();
+        this.manualDisconnect = false;
+        await this.connectWithRetry();
+    }
+
+    // Startup connect: a failure (no valid session yet, HTTP error from the session check) is retried with the shared bounded
+    // backoff until connected, a login/manual reconnect arrives, or the market closes. Once the socket exists, socket.io reconnects it.
+    private retryTimer: NodeJS.Timeout | null = null;
+    private retryDelayMs = RECONNECT_INITIAL_MS;
+    private manualDisconnect = false;
+    async connectWithRetry(): Promise<void> {
+        try {
+            await this.connect();
+            this.retryDelayMs = RECONNECT_INITIAL_MS;
+        } catch (e) {
+            if (!this.manualDisconnect && !isPastMarketClose() && !this.retryTimer) {
+                const delay = this.retryDelayMs;
+                Log.log(`[BreezeDataStream] Connect failed: ${describeConnectError(e)} - retrying in ${Math.round(delay / 1000)}s`);
+                this.retryDelayMs = nextReconnectDelayMs(delay, e);
+                this.retryTimer = setTimeout(() => {
+                    this.retryTimer = null;
+                    try { Breeze.getInstance().reloadSession(); } catch (_) { /* keep the in-memory session */ }
+                    this.connectWithRetry().catch(() => { /* logged above, next retry already armed */ });
+                }, delay);
+            }
+            throw e;
+        }
     }
 
     // The stockToken segment prefix per exchange. NFO's "4." is confirmed live (NIFTY/NFO legs tick).
@@ -214,6 +241,11 @@ class BreezeDataStream implements DataStream {
     }
 
     disconnect(): void {
+        this.manualDisconnect = true;
+        if (this.retryTimer) {
+            clearTimeout(this.retryTimer);
+            this.retryTimer = null;
+        }
         Breeze.getInstance().wsDisconnect('BreezeDataStream');
         this.connected = false;
         if (this.watchdogTimer) {

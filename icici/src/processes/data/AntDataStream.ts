@@ -10,6 +10,7 @@ import { FutVwapTracker } from '../../lib/futVwap';
 import { localDayKey } from '../../strategy/dayKey';
 import { FutQuote, NiftyQuote, OptionQuote, SensexQuote } from '../../model/model';
 import { DataStream } from './DataStream';
+import { RECONNECT_INITIAL_MS, nextReconnectDelayMs, describeConnectError } from './connectRetry';
 
 // data process's own tick source. Adapted from src/ant/AntStream.ts: same ANT
 // session/websocket plumbing, but ticks go to stdout (writeTick) instead of
@@ -19,8 +20,8 @@ class AntDataStream implements DataStream {
     private ws: AntWebSocket | null = null;
     private connected = false;
     private reconnectTimer: NodeJS.Timeout | null = null;
-    private reconnectDelayMs = 2000;
-    private readonly MAX_RECONNECT_DELAY_MS = 30000;
+    private reconnectDelayMs = RECONNECT_INITIAL_MS;
+    private connectFailures = 0;
     private manualDisconnect = false;
     private connecting: Promise<void> | null = null;
 
@@ -146,44 +147,78 @@ class AntDataStream implements DataStream {
         if (this.ws !== ws) return; // disconnect() raced the connect
 
         this.connected = true;
-        this.reconnectDelayMs = 2000; // reset backoff on a successful connect
+        this.reconnectDelayMs = RECONNECT_INITIAL_MS; // reset backoff on a successful connect
+        this.connectFailures = 0;
         Log.log('[AntDataStream] Connected and streaming');
     }
 
-    // Auto-reconnect with exponential backoff - previously a dropped websocket
-    // just sat there until someone manually hit /ant/connect. Manual reconnect
-    // (the 'reconnect' stdin command, for /ant/connect parity) still works via
-    // reconnect() below.
+    // Startup entry point (dataProcess): one connect attempt, and if it fails the SAME bounded backoff as a dropped socket takes over
+    // (it used to log "will retry" and never retry: a 500 from createWsSess at start left the feed dead until a manual /ant/connect).
+    async connectWithRetry(): Promise<void> {
+        try {
+            await this.connect();
+        } catch (e) {
+            this.onConnectFailed(e);
+            throw e; // the caller only logs it
+        }
+    }
+
+    // Every failed connect (initial, scheduled or manual) lands here: one log line per failure, then the next attempt is scheduled
+    // unless the feed was stopped on purpose or the market is closed. The delay doubles up to a cap (a login-needed failure backs off
+    // much slower, see connectRetry.ts).
+    private onConnectFailed(e: unknown): void {
+        if (this.manualDisconnect) return;
+        this.connectFailures++;
+        if (isPastMarketClose()) {
+            Log.log(`[AntDataStream] Connect failed (${describeConnectError(e)}) - past market close, not retrying`);
+            return;
+        }
+        if (this.reconnectTimer) return; // an attempt is already scheduled
+        const delay = this.reconnectDelayMs;
+        Log.log(`[AntDataStream] Connect failed (attempt ${this.connectFailures}): ${describeConnectError(e)} - retrying in ${Math.round(delay / 1000)}s`);
+        this.reconnectDelayMs = nextReconnectDelayMs(delay, e);
+        this.armReconnectTimer(delay);
+    }
+
+    // Auto-reconnect after a dropped socket (exponential backoff). Manual reconnect ('reconnect' command, /ant/connect) still works
+    // via reconnect() below.
     private scheduleReconnect(): void {
         if (this.reconnectTimer) return;
         Log.log(`[AntDataStream] Reconnecting in ${this.reconnectDelayMs}ms...`);
+        this.armReconnectTimer(this.reconnectDelayMs);
+    }
+
+    private armReconnectTimer(delayMs: number): void {
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
-            this.connect().catch((e) => {
-                Log.log('[AntDataStream] Reconnect attempt failed:', e);
-                if (isPastMarketClose()) {
-                    Log.log('[AntDataStream] Past market close - not retrying');
-                    return;
-                }
-                this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, this.MAX_RECONNECT_DELAY_MS);
-                this.scheduleReconnect();
-            });
-        }, this.reconnectDelayMs);
+            // A login done meanwhile writes the session file from another process: pick it up (cheap file read, no broker call).
+            try { ANT.getInstance().reloadSession(); } catch (e) { /* keep the in-memory session */ }
+            this.connect().catch((e) => this.onConnectFailed(e));
+        }, delayMs);
     }
 
     // Forces a fresh connection even if one is already considered active -
     // mirrors the old /ant/connect route's semantics (idempotent-ish manual trigger).
+    // A connect already in flight is joined, not repeated: if it succeeds that is the fresh connection.
     async reconnect(): Promise<void> {
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
         if (this.connecting) {
-            try { await this.connecting; } catch (e) { /* retry below */ }
+            try {
+                await this.connecting;
+                if (this.connected) return;
+            } catch (e) { /* retry below */ }
         }
         this.disconnect();
         this.manualDisconnect = false;
-        await this.connect();
+        try {
+            await this.connect();
+        } catch (e) {
+            this.onConnectFailed(e); // a failed manual attempt must not leave the feed without a retry either
+            throw e;
+        }
     }
 
     // Looks up the nearest NIFTY future and returns its subscription key, or null (logged) when the contract master has none. A failure here
