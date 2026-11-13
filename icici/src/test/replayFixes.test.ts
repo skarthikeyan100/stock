@@ -18,6 +18,8 @@ import configService from '../prism/ConfigService';
 import { settingFor } from '../prism/configVocabulary';
 // eodCloseTime is a global setting (not a strategy key): 23:59 so the end-of-day close never fires during a test, whatever time it is run.
 (configService.getConfig().settings as any).eodCloseTime = '23:59';
+// settings.maxProfit is the live config.yml's global cap (5000 since 2026-11-13); the tests here use fake prices and no P&L, so a cap must not trip: no global cap, whatever config.yml says.
+delete (configService.getConfig().settings as any).maxProfit;
 
 function assert(condition: boolean, message: string) {
     console.log(`  ${condition ? 'PASS' : 'FAIL'}: ${message}`);
