@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "postbuild": "[ -n \"$SKIP_DEPLOY\" ] || bash ../scripts/deploy-frontend.sh",
     "preview": "vite preview",
     "symbols": "bash update-symbols.sh"
   },
