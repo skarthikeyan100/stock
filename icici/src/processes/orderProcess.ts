@@ -1710,6 +1710,11 @@ export function stopOrderProcess(): void {
     ownSocket.unlink(ORDER_SOCKET_PATH);
 }
 
+// Exits only after the fills just booked are in Mongo (bounded): see OrderBookkeeping.drainPendingWrites.
+export async function drainOrderWrites(): Promise<void> {
+    try { await bookkeeping.drainPendingWrites(); } catch { /* exit anyway */ }
+}
+
 // Standalone entry (the old two-process topology, still useful for debugging `order` alone). The merged process starts it from
 // tradingProcess.ts instead.
 if (require.main === module) {
@@ -1720,6 +1725,6 @@ if (require.main === module) {
 
     process.on('SIGTERM', () => {
         stopOrderProcess();
-        process.exit(0);
+        void drainOrderWrites().finally(() => process.exit(0));
     });
 }

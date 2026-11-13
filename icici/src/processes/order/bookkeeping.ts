@@ -1145,6 +1145,15 @@ class OrderBookkeeping {
         // Fire-and-forget, same convention as checkDrawdownNotification/
         // persistClosedTrade elsewhere in this class - never let a Mongo
         // hiccup block live bookkeeping. The .catch() (not a try/catch,
+        // A fill doc without the contract token (a manual square-off builds its Sell from tsym alone) is invisible to the token-filtered restore:
+        // the Buy then restored as still open after a restart (live 2026-11-13, a 325-lot put booked closed twice). Take the token (and right /
+        // strategy) from the position this fill acts on, BEFORE the raw doc is inserted.
+        if (tradeEvent.token == null || String(tradeEvent.token) === '') {
+            const own = this.trades.find((t) => t.tsym == tradeEvent.tsym && t.user == tradeEvent.user && t.broker == tradeEvent.broker);
+            if (own?.token) tradeEvent.token = own.token;
+            if (own && tradeEvent.right == null && own.right != null) tradeEvent.right = own.right;
+            if (own && tradeEvent.strategy == null && own.strategy != null) tradeEvent.strategy = own.strategy;
+        }
         // which cannot catch a rejection from a promise that isn't awaited)
         // is what actually prevents an unhandled promise rejection from
         // crashing the `order` process on a transient Mongo error.
@@ -1733,6 +1742,23 @@ class OrderBookkeeping {
     // Books one tracked trade as sold at `price` through the normal Sell path (no strategy notification, see above).
     private async bookExternalSell(t: Trade, price: number, how: string): Promise<void> {
         const ev = new Trade();
+    // What Mongo's fills (Buys netted FIFO against Sells, this user, this contract) still show open for a tracked trade. 'unknown' = Mongo holds no Buy
+    // doc of this user for it (nothing to net against: the caller keeps its old behaviour); 'unreadable' = Mongo/ownership could not be read.
+    private async mongoOpenQuantity(t: Trade): Promise<number | 'unknown' | 'unreadable'> {
+        try {
+            if (!Mongo.getInstance()?.db) return 'unreadable';
+            const broker = (t.broker ?? 'kite') as BrokerKey;
+            const loaded = await this.loadContractFills(t.tsym, broker, t.token ? [String(t.token)] : undefined);
+            if (loaded.ambiguous) return 'unreadable';
+            const mine = loaded.ownedFills.filter((f: any) => f.user === t.user);
+            if (!mine.some((f: any) => f.action === 'Buy')) return 'unknown';
+            return netFifoLots<any>(mine).reduce((sum, l) => sum + l.remaining, 0);
+        } catch (e: any) {
+            Log.log('[order] mongoOpenQuantity: Mongo read failed:', e?.message ?? e);
+            return 'unreadable';
+        }
+    }
+
         ev.tsym = t.tsym; ev.token = t.token; ev.right = t.right; ev.quantity = t.quantity; ev.price = price;
         ev.action = 'Sell'; ev.status = 'COMPLETE'; ev.user = t.user; ev.broker = t.broker; ev.strategy = t.strategy;
         ev.brokerOrderId = `BROKER-SYNC-${t.broker}-${t.tsym}-${Date.now()}`;
@@ -1804,6 +1830,29 @@ class OrderBookkeeping {
                 await this.bookExternalSell(t, price, how);
                 this.flatSeen.delete(flatKey(t));
                 booked++;
+                // Idempotency: never book a second close for a lot Mongo already shows closed (live 2026-11-13: a position the platform had closed
+                // by a manual square-off was restored as open after a restart and then booked again at an estimated price, -12967 on top of the real
+                // loss). The fills in Mongo are the record: what they still show open is all that may be closed here.
+                const mongoOpen = await this.mongoOpenQuantity(t);
+                if (mongoOpen === 'unreadable') {
+                    Log.log(`[order] ALERT: ${t.user} ${t.tsym} (${broker}) is flat at the broker but Mongo's fills could not be read to confirm it is still open - NOT booked a close; run the sync again`);
+                    continue;
+                }
+                if (mongoOpen !== 'unknown' && mongoOpen <= 0) {
+                    const idx = this.trades.indexOf(t);
+                    if (idx !== -1) {
+                        this.trades.splice(idx, 1);
+                        if (t.token) exitMonitor.unregisterTrade(t.user, t.token, t.broker === 'ant' || t.broker === 'prism' || t.broker === 'kite' ? t.broker : undefined);
+                    }
+                    Log.log(`[order] ALERT: ${t.user} ${t.tsym} (${broker}) qty=${t.quantity} was tracked as open but Mongo's fills show it already closed (a Sell is booked) - dropped from memory, NO second close booked`);
+                    this.flatSeen.delete(flatKey(t));
+                    this.notifyPositionsChanged();
+                    continue;
+                }
+                if (mongoOpen !== 'unknown' && mongoOpen < Number(t.quantity)) {
+                    Log.log(`[order] ALERT: ${t.user} ${t.tsym} (${broker}) tracked qty ${t.quantity} but Mongo's fills show only ${mongoOpen} still open - closing ${mongoOpen}`);
+                    t.quantity = mongoOpen;
+                }
             }
         }
         return booked;
@@ -2091,22 +2140,45 @@ class OrderBookkeeping {
     // brokers' Mongo Buy/Sell docs into one blended restored position on
     // restart, corrupting quantity/avgPrice and losing which broker a
     // resting exit order belongs to.
+    // Every fill (Buy and Sell, all users) of one contract on one broker, collapsed so each broker order id counts once for its owner, plus the users
+    // who ever bought it. Shared by the restore and by the sync's "already closed in Mongo?" check, so both read a contract the same way.
+    // An order id booked under several users with no ledger answer is returned as `ambiguous` (never guessed at).
+    private async loadContractFills(tsym: string, broker: BrokerKey, contractTokens?: string[], alsoTsyms?: string[]): Promise<{ users: string[]; ownedFills: any[]; ambiguous?: string[] }> {
+        const db = Mongo.getInstance()?.db;
+        if (!db) return { users: [], ownedFills: [] };
+        // 'zerodha' = rows persisted before the Kite rename (scripts/migrate-broker-names.js); a fieldless legacy doc belongs to the broker being read.
+        const brokerOrLegacy = { $or: [{ broker: broker === 'kite' ? { $in: ['kite', /^\s*zerodha\s*$/i] } : broker }, { broker: { $exists: false } }] };
+        // `alsoTsyms`: older spellings of the same contract (a Breeze tsym had no expiry before 2026-11-09); the token filter below keeps two
+        // expiries that shared the old spelling apart.
+        const tsymMatch = alsoTsyms && alsoTsyms.length > 0 ? { $in: [tsym, ...alsoTsyms] } : tsym;
+        let users: string[] = await db.collection('Trade').distinct('user', { tsym: tsymMatch, action: 'Buy', ...brokerOrLegacy });
+        const allTsymFills: any[] = await db.collection('Trade')
+            .find({ tsym: tsymMatch, action: { $in: ['Buy', 'Sell'] }, ...brokerOrLegacy })
+            .sort({ entryTime: 1 })
+            .toArray();
+        // One tsym can name SEVERAL contracts (a Breeze tsym has no expiry): the fills that carry one of the wanted tokens are the contract's. A fill
+        // with NO token (a Sell written by a manual square-off before 2026-11-13, rows from before the token was stored) belongs to it too when no
+        // fill of this tsym carries a different token (the tsym then names one contract); dropping it left a closed position open after a restart.
+        let allFills = allTsymFills;
+        if (contractTokens && contractTokens.length > 0) {
+            const wanted = new Set(contractTokens.map(String));
+            const hasToken = (f: any) => f.token != null && String(f.token) !== '';
+            const byContract = allTsymFills.filter((f: any) => hasToken(f) && wanted.has(String(f.token)));
+            if (byContract.length > 0) {
+                const otherContract = allTsymFills.some((f: any) => hasToken(f) && !wanted.has(String(f.token)));
+                allFills = otherContract ? byContract : allTsymFills;
+                users = Array.from(new Set(allFills.filter((f: any) => f.action === 'Buy').map((f: any) => String(f.user))));
+            }
+        }
+        const owners = await loadOrderOwners(Array.from(new Set(allFills.map((f: any) => f.brokerOrderId).filter(Boolean).map(String))));
+        const { fills: ownedFills, ambiguousOrderIds } = collapseFillsByOrderId(allFills, (id) => owners.get(id));
+        if (ambiguousOrderIds.length > 0) return { users, ownedFills, ambiguous: ambiguousOrderIds };
+        return { users, ownedFills };
+    }
+
     private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number | null, brokerToken: string | undefined, broker: 'kite' | 'ant' | 'breeze' | 'prism', brokerView?: { avg?: unknown; ltp?: unknown }, contractTokens?: string[], alsoTsyms?: string[]): Promise<Trade[]> {
         const db = Mongo.getInstance()?.db;
         if (!db || !tsym) return [];
-
-        // Matches this broker's own docs, OR any doc with no `broker` field at
-        // all - every Trade document written before the broker field existed
-        // has no such field, and a strict `{broker}` equality match would
-        // silently exclude all of them (confirmed: MongoDB equality never
-        // matches a missing field), dropping any position opened before this
-        // change from restart recovery entirely. Safe to treat a fieldless
-        // doc as belonging to whichever single broker is being reconciled
-        // here - multi-broker overlap for one tsym+user is only possible from
-        // this change onward, so a legacy fieldless doc can never actually be
-        // one half of a genuine two-broker collision.
-        // 'zerodha' = rows persisted before the Kite rename (scripts/migrate-broker-names.js); match both spellings.
-        const brokerOrLegacy = { $or: [{ broker: broker === 'kite' ? { $in: ['kite', /^\s*zerodha\s*$/i] } : broker }, { broker: { $exists: false } }] };
 
         // Every user who has ever bought this tsym on this broker - each
         // reconciled independently below (including their own last-Sell
@@ -2117,39 +2189,15 @@ class OrderBookkeeping {
         // second latent bug this fixes at the same time).
         // `alsoTsyms`: older spellings of the same contract (a Breeze tsym had no expiry before 2026-11-09); the token filter below keeps two
         // expiries that shared the old spelling apart.
-        const tsymMatch = alsoTsyms && alsoTsyms.length > 0 ? { $in: [tsym, ...alsoTsyms] } : tsym;
-        let users: string[] = await db.collection('Trade').distinct('user', { tsym: tsymMatch, action: 'Buy', ...brokerOrLegacy });
-
-        // Every user's fills for this contract in one pass, collapsed so each broker order id counts once, for its owner (the
-        // order-owner ledger). An order id booked under several users with no ledger answer is not guessed at: the whole contract
-        // is held for manual review, because a wrong split here is what sizes the exit sells.
-        const allTsymFills: any[] = await db.collection('Trade')
-            .find({ tsym: tsymMatch, action: { $in: ['Buy', 'Sell'] }, ...brokerOrLegacy })
-            .sort({ entryTime: 1 })
-            .toArray();
-        // One tsym can name SEVERAL contracts: a Breeze tsym has no expiry (NIFTY24950CE is both the 09-Nov and the 17-Nov contract), so two
-        // owners holding different expiries of one strike looked like one pool of lots (1170 restored against a broker position of 780 or
-        // 390, nothing restored, 2026-11-09 13:31). The caller passes the tokens of the broker position's own contract (its ANT-native token
-        // and the broker's own); the fills that carry one of them are that contract's. No fill with such a token (rows written before the token
-        // was stored) keeps the old tsym-wide behaviour.
-        let allFills = allTsymFills;
-        if (contractTokens && contractTokens.length > 0) {
-            const wanted = new Set(contractTokens.map(String));
-            const byContract = allTsymFills.filter((f: any) => f.token != null && wanted.has(String(f.token)));
-            if (byContract.length > 0) {
-                allFills = byContract;
-                users = Array.from(new Set(byContract.filter((f: any) => f.action === 'Buy').map((f: any) => String(f.user))));
-            }
-        }
-        const owners = await loadOrderOwners(Array.from(new Set(allFills.map((f: any) => f.brokerOrderId).filter(Boolean).map(String))));
-        const { fills: ownedFills, ambiguousOrderIds } = collapseFillsByOrderId(allFills, (id) => owners.get(id));
-        if (ambiguousOrderIds.length > 0) {
-            Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) has broker order(s) booked under more than one user with no recorded owner (${ambiguousOrderIds.join(', ')}) - restoring NOTHING for this contract, manual review required`);
+        const loaded = await this.loadContractFills(tsym, broker, contractTokens, alsoTsyms);
+        if (loaded.ambiguous) {
+            Log.log(`[order] loadOpenTradesFromBroker: ALERT - ${tsym} (${broker}) has broker order(s) booked under more than one user with no recorded owner (${loaded.ambiguous.join(', ')}) - restoring NOTHING for this contract, manual review required`);
             return [];
         }
 
         const restored: Trade[] = [];
         let totalRestoredQty = 0;
+        const { users, ownedFills } = loaded;
         for (const user of users) {
             // A same-tsym position can close and reopen (e.g. ContinuousStrategy's
             // root-refill re-enters the identical contract right after a
@@ -2374,6 +2422,18 @@ class OrderBookkeeping {
     // Called after kiteExecutor.setTargetStopLoss (or the Prism-routed
     // equivalent, if ever added) mutates a trade's target/SL fields in place -
     // matches Monitor.setTargetStopLoss's old myEmitter.emit('position', ...).
+    // Waits (bounded) until the fire-and-forget raw fill inserts and held closedTrades rows are in Mongo. The SIGTERM handlers call it before
+    // exiting: a stop right after a fill (the trader stopped the processes 40 s after a manual close) must not lose the Sell doc, or the next
+    // start's restore brings the position back as open.
+    async drainPendingWrites(maxMs = 3500): Promise<void> {
+        const deadline = new Promise<void>((r) => setTimeout(r, maxMs));
+        const work = (async () => {
+            while (this.pendingFillInserts.size > 0) await Promise.all([...this.pendingFillInserts.values()].map((p) => Promise.resolve(p).catch(() => undefined)));
+            await this.flushUnpersistedClosed().catch(() => undefined);
+        })();
+        await Promise.race([work, deadline]);
+    }
+
     notifyTargetStopLossChanged() {
         this.notifyPositionsChanged();
     }

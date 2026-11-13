@@ -7,7 +7,7 @@
 import '../util/tz'; // pin TZ=Asia/Kolkata before any other module reads the clock
 import Log from '../util/Log';
 import OrderClient from './strategies/OrderClient';
-import { startOrderProcess, stopOrderProcess, handleRequest, onNotification } from './orderProcess';
+import { startOrderProcess, stopOrderProcess, drainOrderWrites, handleRequest, onNotification } from './orderProcess';
 import { startStrategiesProcess, stopStrategiesProcess } from './strategiesProcess';
 
 async function main() {
@@ -27,5 +27,5 @@ main().catch((e) => {
 process.on('SIGTERM', () => {
     stopOrderProcess();
     stopStrategiesProcess();
-    process.exit(0);
+    void drainOrderWrites().finally(() => process.exit(0));
 });
