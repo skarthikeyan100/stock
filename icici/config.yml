@@ -21,6 +21,10 @@ settings:
   eodCloseTime: '23:59'  # 2026-11-11: moved from 15:50 so no strategy sells at the close; today's open positions carry overnight (user's instruction). Restore a real close time when wanted.
   mirrorPercentage: 100%  # admin mirrors this % of every frontend user's lots (floor to whole lots) with its own real order; 0 = no mirror
 strategies:
+  demoReplay: true        # /demo replays a recorded day (CSV backups) instead of the live feed; false = live feed
+  demoReplayDate: Nov-13  # <Mon-DD> folder under ~/later/data/backups
+  demoReplaySpeed: 10     # 1 = recorded speed
+  eodEmailTestRecipient: skarthikeyan100@gmail.com  # EOD email API sends every user's email only to this address (testing); remove to email real users
   - type: SentimentStrategy
     enabled: false
     averageThreshold: 40

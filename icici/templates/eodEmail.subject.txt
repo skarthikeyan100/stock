@@ -1,0 +1,1 @@
+Your trading summary for {{dateLabel}} - {{dayPnlSigned}}

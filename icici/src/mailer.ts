@@ -8,7 +8,7 @@ const TEMPLATE_DIR = path.resolve(__dirname, '..', 'templates');
 
 export interface MailAttachment { filename: string; content: Buffer; contentType?: string }
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
     return value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 }
 
@@ -20,7 +20,7 @@ export function renderTemplate(template: string, vars: Record<string, string>, e
     });
 }
 
-function createTransport() {
+export function createTransport() {
     const { GMAIL_USER, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN } = process.env;
     if (!GMAIL_USER || !GMAIL_CLIENT_ID || !GMAIL_CLIENT_SECRET || !GMAIL_REFRESH_TOKEN) {
         throw new Error('Gmail is not configured (set GMAIL_USER, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN in .env)');
@@ -61,4 +61,16 @@ export async function sendPayoutPaidEmail(to: string, vars: PayoutPaidEmailVars,
         html,
         attachments: attachment ? [attachment] : [],
     });
+}
+
+export function isMailConfigured(): boolean {
+    const { GMAIL_USER, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN } = process.env;
+    return !!(GMAIL_USER && GMAIL_CLIENT_ID && GMAIL_CLIENT_SECRET && GMAIL_REFRESH_TOKEN);
+}
+
+// Sends an already-rendered email (the EOD summary). The From name is fixed; the address is the authenticated Gmail account (GMAIL_USER,
+// admin@nivedhatech.com in production). Throws on any failure; the caller records it per recipient.
+export async function sendRenderedEmail(to: string, subject: string, html: string): Promise<void> {
+    const transport = createTransport();
+    await transport.sendMail({ from: { name: 'Nivedha Tech', address: process.env.GMAIL_USER as string }, to, subject, html });
 }

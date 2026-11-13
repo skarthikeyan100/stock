@@ -10,6 +10,7 @@ import StrategiesClient from '../ipc/StrategiesClient';
 import { DataLink } from '../ipc/DataLink';
 import { isLoopback } from '../middleware/cloudflareOnly';
 import { asyncRouter } from './asyncRouter';
+import { demoReplay } from './demoReplay';
 import { resolveUser, requireAuth, requireAdmin, requireSelfOrAdmin } from './session';
 
 const router = asyncRouter();
@@ -111,8 +112,23 @@ function demoStream(clients: Set<express.Response>, replay?: () => string | null
         openMarketStream(req, res, clients, replay);
     };
 }
-router.get('/demo/niftystream', demoStream(niftyStreamClients, replayNifty));
-router.get('/demo/optionstream', demoStream(optionStreamClients));
+// With settings.demoReplay on, the demo streams carry the recorded day (routes/demoReplay.ts) through their own client sets instead of the live
+// feed, so replayed ticks never reach the authenticated streams.
+const liveDemoNifty = demoStream(niftyStreamClients, replayNifty);
+const liveDemoOption = demoStream(optionStreamClients);
+const replayDemoNifty = demoStream(demoReplay.niftyClients, () => demoReplay.replayNifty());
+const replayDemoOption = demoStream(demoReplay.optionClients);
+router.get('/demo/niftystream', (req, res) => {
+    if (!demoReplay.isEnabled()) return liveDemoNifty(req, res);
+    replayDemoNifty(req, res);
+    demoReplay.ensureStarted();
+});
+router.get('/demo/optionstream', (req, res) => {
+    if (!demoReplay.isEnabled()) return liveDemoOption(req, res);
+    replayDemoOption(req, res);
+    demoReplay.ensureStarted();
+});
+router.get('/demo/status', (_req, res) => { res.json(demoReplay.status()); });
 
 // Demo mode: lets an anonymous client trigger a real subscribe/unsubscribe for
 // an arbitrary option token, so /optionstream carries live ticks for whatever
@@ -121,6 +137,7 @@ router.get('/demo/optionstream', demoStream(optionStreamClients));
 // Anonymous callers may only manage the tokens THEY subscribed: a bounded, ref-counted set, so the demo can never
 // unsubscribe a token live strategies/exit monitors depend on, nor exhaust the shared feed's subscription cap.
 const demoSubscribed = new Map<string, number>(); // token -> demo subscriber count
+const demoLiveHeld = new Set<string>(); // tokens this module subscribed on the live feed (never in replay mode): only these are unsubscribed live
 const DEMO_MAX_TOKENS = 20;
 const demoHits = new Map<string, { n: number; resetAt: number }>();
 // Only tokens this server itself handed out (via /demo/resolve or /demo/symbols) may be subscribed: an anonymous caller can no longer
@@ -159,8 +176,12 @@ router.get('/demo/subscribe', async function (req, res) {
             if (count === 0) { res.status(403).json({ error: 'Token was not subscribed by the demo' }); return; }
             if (count === 1) {
                 demoSubscribed.delete(token);
+                demoReplay.setWatched(token, false);
                 try {
-                    await strategiesClient.unsubscribeToken(token);
+                    if (demoLiveHeld.has(token)) {
+                        await strategiesClient.unsubscribeToken(token);
+                        demoLiveHeld.delete(token);
+                    }
                 } catch (e) {
                     demoSubscribed.set(token, 1); // the hold is still in place: keep counting it so a retry can release it
                     throw e;
@@ -173,7 +194,13 @@ router.get('/demo/subscribe', async function (req, res) {
             if (!demoSubscribed.has(token) && demoSubscribed.size >= DEMO_MAX_TOKENS) { res.status(429).json({ error: 'Demo subscription limit reached' }); return; }
             demoSubscribed.set(token, (demoSubscribed.get(token) ?? 0) + 1);
             counted = token;
-            await strategiesClient.subscribeToken(token);
+            if (demoReplay.isEnabled()) {
+                // Recorded day: no broker subscription, the replay streams the held token.
+                demoReplay.setWatched(token, true);
+            } else {
+                await strategiesClient.subscribeToken(token);
+                demoLiveHeld.add(token);
+            }
             counted = null;
         }
         res.sendStatus(200);
@@ -197,11 +224,18 @@ router.get('/demo/subscribe', async function (req, res) {
 router.get('/demo/resolve', async function (req, res) {
     try {
         const { right } = req.query;
+        const optionType = right === 'put' ? 'PE' : 'CE';
+        if (demoReplay.isEnabled()) {
+            const hit = demoReplay.resolveATM(optionType);
+            if (!hit) { res.status(503).json({ error: 'Replay NIFTY quote not available yet' }); return; }
+            allowDemoTokens([hit.token]);
+            res.json({ token: hit.token, tradingSymbol: hit.tradingSymbol });
+            return;
+        }
         if (!lastNiftyQuote?.ltp) {
             res.status(503).json({ error: 'NIFTY quote not available yet' });
             return;
         }
-        const optionType = right === 'put' ? 'PE' : 'CE';
         const resolved = AntContractMaster.getInstance().findATMOption(AntContractMaster.getInstance().entryStrike(lastNiftyQuote.ltp, optionType, 'NIFTY'), optionType, 'NIFTY');
         allowDemoTokens([resolved.token]);
         res.json({ token: resolved.token, tradingSymbol: resolved.tradingSymbol });
@@ -217,6 +251,13 @@ router.get('/demo/resolve', async function (req, res) {
 router.get('/demo/symbols', async function (req, res) {
     try {
         const { symbol } = req.query;
+        if (demoReplay.isEnabled()) {
+            // Only the recorded NIFTY contracts: every one of them ticks.
+            const options = (symbol && String(symbol).toUpperCase() !== 'NIFTY') ? [] : demoReplay.contracts();
+            allowDemoTokens(options.map((o) => o.token));
+            res.json(options);
+            return;
+        }
         const options = AntContractMaster.getInstance().listNearestExpiryOptions((symbol as string) || 'NIFTY', 'NFO');
         allowDemoTokens(options.map((o) => o.token));
         res.json(options);

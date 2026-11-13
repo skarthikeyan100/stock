@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Container, Alert, Tab, Tabs, Badge, Button } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
 import { useTrading } from '../context/TradingContext';
@@ -7,6 +7,7 @@ import OrderEntry from '../components/OrderEntry';
 import NiftyTicker from '../components/NiftyTicker';
 import PositionCard from '../components/PositionCard';
 import ThemeToggle from '../components/ThemeToggle';
+import { apiFetch } from '../utils/api';
 
 // Standalone copy of TradingPage.tsx for anonymous/demo visitors - no
 // useAuth(), no Profile/Admin/Logout/NotificationBell. Kept as a separate
@@ -19,6 +20,14 @@ export default function DemoTradingPage() {
   const investmentAmount = 100000;
   const availableAmount = investmentAmount - usedAmount;
   const [activeTab, setActiveTab] = useState('active');
+  // Set when the server replays a recorded day (market closed) instead of the live feed.
+  const [replayDate, setReplayDate] = useState<string | null>(null);
+  useEffect(() => {
+    apiFetch('/demo/status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => setReplayDate(s?.replay && s.date ? String(s.date) : null))
+      .catch(() => setReplayDate(null));
+  }, []);
 
   const totalColor = totalPnL >= 0 ? 'success' : 'danger';
   const openColor = openPnL >= 0 ? 'success' : 'danger';
@@ -67,6 +76,12 @@ export default function DemoTradingPage() {
         {/* NIFTY live price ticker */}
         <NiftyTicker url="/demo/niftystream" />
       </div>
+
+      {replayDate && (
+        <Alert variant="info" className="mb-0 rounded-0 text-center py-1">
+          <small>Demo is replaying recorded market data from {replayDate} (market closed) - prices are not live.</small>
+        </Alert>
+      )}
 
       {nearLimit && (
         <Alert variant="warning" className="mb-0 rounded-0 text-center">

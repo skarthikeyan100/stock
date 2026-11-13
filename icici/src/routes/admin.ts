@@ -6,6 +6,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import StrategiesClient from '../ipc/StrategiesClient';
 import { asyncRouter } from './asyncRouter';
 import { requireAdmin } from './session';
+import { sendEodEmails, todayIst, istDayBounds } from '../eodEmail';
 const strategiesClient = StrategiesClient.getInstance();
 
 const router = asyncRouter();
@@ -82,6 +83,22 @@ router.post('/sync', requireAdmin, async (req, res) => {
     } catch (e: any) {
         Log.log('[frontend] /sync failed:', e);
         res.status(500).json({ error: e?.message ?? 'sync failed' });
+    }
+});
+
+// End-of-day trading summary email, one per real user who traded that IST day. NOT scheduled here: another program calls this API.
+// ?date=YYYY-MM-DD (default today IST), ?dryRun=true renders without sending (the HTML comes back in the response), ?force=true resends users already
+// sent, ?user=<email> limits it to one user. While settings.eodEmailTestRecipient is set every email goes only to that address.
+router.post('/admin/eod-email/send', requireAdmin, async (req, res) => {
+    try {
+        const date = typeof req.query.date === 'string' && req.query.date ? req.query.date : todayIst();
+        try { istDayBounds(date); } catch (e: any) { return res.status(400).json({ error: e.message }); }
+        if (date > todayIst()) return res.status(400).json({ error: 'date is in the future' });
+        const user = typeof req.query.user === 'string' && req.query.user ? req.query.user : undefined;
+        res.json(await sendEodEmails({ date, dryRun: req.query.dryRun === 'true', force: req.query.force === 'true', user }));
+    } catch (e: any) {
+        Log.log('[frontend] /admin/eod-email/send failed:', e);
+        res.status(/not configured/.test(e?.message ?? '') ? 503 : 500).json({ error: e?.message ?? 'eod email failed' });
     }
 });
 

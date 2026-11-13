@@ -424,6 +424,17 @@ class AntContractMaster {
     };
   }
 
+  // Bulk form of findByTradingSymbol: ONE pass over the NFO master for a whole set of symbols (the demo replay resolves hundreds; a
+  // linear find() per symbol over the ~30MB master took minutes).
+  mapTradingSymbols(tradingSymbols: Set<string>, exch: 'NFO' | 'BFO' = 'NFO'): Map<string, { token: string; strike: number; optionType: string; tradingSymbol: string }> {
+    const out = new Map<string, { token: string; strike: number; optionType: string; tradingSymbol: string }>();
+    for (const r of exch === 'NFO' ? this.loadNFO() : this.loadBFO()) {
+      const ts = tradingSymbolOf(r);
+      if (tradingSymbols.has(ts) && !out.has(ts)) out.set(ts, { token: r.Token, strike: Number(r['Strike Price']), optionType: r['Option Type'], tradingSymbol: ts });
+    }
+    return out;
+  }
+
   // The reverse of findByToken - resolves a stored trading symbol (e.g. from
   // a previous run's CSV output) back to its token, so a later re-quote hits
   // the exact same contract instead of re-deriving nearest-OTM against a spot

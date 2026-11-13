@@ -88,6 +88,7 @@ Notes: `lockedPnl` is measured from the bookkeeping row's cost, which a reconcil
 
 A comment line is written to every stream every 20 s so a proxy never sees it as idle.
 
+| `GET /demo/status` | none | `{ replay: boolean, date?, ready?, error? }`. With `settings.demoReplay: true` the demo endpoints above serve a RECORDED day (`settings.demoReplayDate`, e.g. `Nov-13`, from `<demoReplayDir or ~/later/data/backups>/<Mon-DD>/csv/{Quote,OptionQuote}.csv`, paced by `settings.demoReplaySpeed`, default 10, looping) through their own client sets, never the authenticated streams; `/demo/subscribe` then makes no broker subscription, and `/demo/symbols` / `/demo/resolve` offer only contracts present in that file. `demoReplay: false` = live feed. The page shows a "replaying" banner when `replay` is true. |
 ## Strategies, reconcile and configuration (admin)
 
 | Route | Purpose |
@@ -99,6 +100,7 @@ A comment line is written to every stream every 20 s so a proxy never sees it as
 | `GET /config`, `POST /config` | The configuration in flattened form; a save is validated (`configValidation`) and rejected rather than written when the reload would reject it. `settings.hotRestartDuringMarketHours` (default `false`) decides whether a compiled-code change is applied during market hours (09:00-15:35 weekdays); the orchestrator reads it at the moment of each change. `settings.mirrorPercentage` (0-100, `N` or `N%`) is the share of every frontend user's lots (`POST /order/buy`) that the admin account mirrors with its own real order, rounded down to whole lots; 0 = off. |
 
 ## Frontend
+| `POST /admin/eod-email/send` | End-of-day trading summary email, one per real user (not the admin, not strategy pseudo-users, enabled accounts) who had a closed trade or a fill that IST day: trades table, realized day P&L, open positions, and a payment section (current Wed-Tue week payout estimate: gross, split %, TDS, GST, net, blocked/forfeited reason; masked bank/UPI destination; latest payouts). NOT scheduled by this repo: another program calls it. Query: `date=YYYY-MM-DD` (default today IST, not in the future), `dryRun=true` (renders only; each result carries `subject` and `html`), `force=true` (resend users already sent), `user=<email>` (one user). While `settings.eodEmailTestRecipient` is set every email goes only to that address with a `[TEST for <user>]` subject prefix (recorded separately from live sends); remove the key to email real users. Sent from `GMAIL_USER` (admin@nivedhatech.com) via the Gmail OAuth `GMAIL_*` vars in `.env`; 503 when they are unset (dry runs still work). Sent records live in Mongo `eodEmails` (`date`+`user`+`mode`), so a repeat call skips them. 200 `{ date, mode: 'test'\|'live', testRecipient, results: [{ user, to, status: 'sent'\|'skipped'\|'failed'\|'dryRun', reason?, subject?, html? }] }`. Template: `templates/eodEmail.{html,subject.txt}`. |
 
 `GET *` serves the React shell (`public/index.html`) to browser navigations; an unknown API-style path (no `Accept: text/html`, or with a file extension) is a JSON 404.
 
