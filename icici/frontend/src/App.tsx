@@ -35,9 +35,9 @@ function RequireAdmin({ children }: { children: React.ReactElement }) {
 export default function App() {
   return (
     <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-      <ThemeProvider>
-        <AuthProvider>
-          <BrowserRouter>
+      <BrowserRouter>
+        <ThemeProvider>
+          <AuthProvider>
             <Routes>
               <Route path="/" element={<LoginPage />} />
               <Route path="/rules" element={<RequireAuth><RulesPage /></RequireAuth>} />
@@ -73,9 +73,9 @@ export default function App() {
               <Route path="/terms-and-conditions" element={<TermsAndConditionsPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
-          </BrowserRouter>
-        </AuthProvider>
-      </ThemeProvider>
+          </AuthProvider>
+        </ThemeProvider>
+      </BrowserRouter>
     </GoogleOAuthProvider>
   );
 }

@@ -1,20 +1,33 @@
 import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
+import { useLocation } from 'react-router-dom';
 
-// Light/dark theme. The choice lives only in this browser (localStorage), never in the backend.
+// Light/dark theme. Two inputs decide it:
+//  1. an EXPLICIT choice: stored in localStorage['theme'] ONLY when the user clicks the toggle
+//     (nothing is ever written on load, so a stored value is always a real choice); it wins on every page.
+//  2. otherwise the per-page DEFAULT from defaultThemeForPath(): dark for the landing/login page ('/')
+//     and the public legal pages, light for every logged-in app page (/trade, /demo, /rules,
+//     /profile, /admin...). The OS prefers-color-scheme is no longer used.
 // The attribute on <html> drives Bootstrap 5.3's own colour variables plus the app's
 // [data-bs-theme="dark"] overrides in App.css. index.html sets the same attribute before React
-// loads, so the first paint already has the right theme.
+// loads using the same rule, so the first paint already has the right theme. Keep both in sync.
 
 export type Theme = 'light' | 'dark';
 
 const STORAGE_KEY = 'theme';
+
+const DARK_DEFAULT_PATHS = ['/', '/privacy-policy', '/terms-and-conditions'];
+
+export function defaultThemeForPath(pathname: string): Theme {
+  const p = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
+  return DARK_DEFAULT_PATHS.includes(p) ? 'dark' : 'light';
+}
 
 function readSaved(): Theme | null {
   try {
     const v = localStorage.getItem(STORAGE_KEY);
     return v === 'light' || v === 'dark' ? v : null;
   } catch {
-    return null; // storage blocked (private mode, disabled site data): fall back to the OS preference
+    return null; // storage blocked: fall back to the page default
   }
 }
 
@@ -26,18 +39,6 @@ function saveChoice(theme: Theme) {
   }
 }
 
-function osPrefersDark(): boolean {
-  try {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches;
-  } catch {
-    return false;
-  }
-}
-
-function initialTheme(): Theme {
-  return readSaved() ?? (osPrefersDark() ? 'dark' : 'light');
-}
-
 interface ThemeContextValue {
   theme: Theme;
   setTheme: (theme: Theme) => void;
@@ -47,30 +48,17 @@ interface ThemeContextValue {
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(initialTheme);
+  const { pathname } = useLocation(); // ThemeProvider must be inside the router
+  const [explicit, setExplicit] = useState<Theme | null>(readSaved);
+  const theme: Theme = explicit ?? defaultThemeForPath(pathname);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-bs-theme', theme);
   }, [theme]);
 
-  // Without a saved choice, follow the OS setting live (e.g. auto dark at night).
-  useEffect(() => {
-    let mq: MediaQueryList;
-    try {
-      mq = window.matchMedia('(prefers-color-scheme: dark)');
-    } catch {
-      return;
-    }
-    const onChange = (e: MediaQueryListEvent) => {
-      if (readSaved() === null) setThemeState(e.matches ? 'dark' : 'light');
-    };
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
-
   const setTheme = useCallback((next: Theme) => {
     saveChoice(next);
-    setThemeState(next);
+    setExplicit(next);
   }, []);
 
   const toggleTheme = useCallback(() => {

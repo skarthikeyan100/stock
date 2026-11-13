@@ -6,14 +6,16 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="color-scheme" content="light dark" />
     <title>PropFirm Trading Platform</title>
-    <!-- Set the theme before first paint (no light flash). Must match ThemeContext.tsx: the saved
-         choice in localStorage 'theme', else the OS preference. -->
+    <!-- Set the theme before first paint (no flash). Must match ThemeContext.tsx: an explicit choice
+         (localStorage 'theme', written only by the toggle), else the page default: dark on '/' and the
+         public legal pages, light everywhere else. -->
     <script>
       (function () {
         var t = null;
         try { t = localStorage.getItem('theme'); } catch (e) {}
         if (t !== 'light' && t !== 'dark') {
-          t = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          var p = location.pathname.replace(/\/+$/, '') || '/';
+          t = (p === '/' || p === '/privacy-policy' || p === '/terms-and-conditions') ? 'dark' : 'light';
         }
         document.documentElement.setAttribute('data-bs-theme', t);
       })();
