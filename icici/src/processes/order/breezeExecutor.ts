@@ -13,6 +13,8 @@ import { BuyRequest, OptionExchange, cancelOrderWithFillRecheck, cancelRestingSe
 import { estimateOptionPricesBatch } from './antExecutor';
 import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, beginCancelOfBreezePendingLimitOrders, endCancelOfBreezePendingLimitOrders, silenceListenersOfBreezePendingLimitOrders } from './breezePendingLimitOrders';
 import { roundToTick } from '../../util/tick';
+import { fillWaitPlan } from '../../util/fillWait';
+import { crossCheckQuote } from '../../util/quoteCrossCheck';
 import { calendarDayUtc } from '../../util/expirySkip';
 
 // ICICI Breeze execution, mirroring kiteExecutor.ts/antExecutor.ts's shape.
@@ -50,7 +52,9 @@ import { calendarDayUtc } from '../../util/expirySkip';
 // cancelOnTimeout: forwarded to Breeze.getFillPrice's REST fallback - pass
 // false when the caller (squareOffOnBreeze) already cancels the order itself
 // right after this throws, to avoid a redundant double-cancel each retry.
-async function waitForBreezeFill(orderId: string, exchange: BreezeExchange, notifyTimeoutMs = 30000, restMaxAttempts = 12, restIntervalMs = 5000, cancelOnTimeout = true): Promise<number> {
+// Defaults come from fillWaitPlan (push + REST fallback bounded below the IPC timeout; the old 30 s + 12 x 5 s overran 90 s).
+const BREEZE_FILL_PLAN = fillWaitPlan();
+async function waitForBreezeFill(orderId: string, exchange: BreezeExchange, notifyTimeoutMs = BREEZE_FILL_PLAN.pushMs, restMaxAttempts = BREEZE_FILL_PLAN.restAttempts, restIntervalMs = BREEZE_FILL_PLAN.restIntervalMs, cancelOnTimeout = true): Promise<number> {
     try {
         const price = await BreezeOrderNotifyStream.getInstance().waitForFill(orderId, notifyTimeoutMs);
         Log.log(`[order] Breeze order ${orderId} filled at ${price} via order-notify push`);
@@ -187,6 +191,25 @@ async function getOptionQuote(record: FnoRecord): Promise<{ bestBid: number; bes
     }
 }
 
+// A Breeze contract quote can be STALE: live 2026-11-13 the Breeze quote for NIFTY17NOV2625100CE returned best_offer_price 155.85 at 13:02:30 and
+// the identical 155.85 at 13:18:30, although the contract's resting sell had filled at 165.35 one second earlier and Kite/ANT priced it ~165-173.
+// A limit buy "at best ask" 155.85 sat unfilled (30 s push wait, REST poll, cancel), and the next root (NIFTY17NOV2625150CE @131.85) did the
+// same. A limit buy above the real ask still fills AT the ask and a limit sell below the real bid fills AT the bid, so the limit is widened to
+// the safest of every source: buys take the highest of Breeze's ask / Breeze's ltp / ANT's live ask / ANT's live ltp; sells the lowest of Breeze's
+// bid / ANT's live bid. `live` is ANT's ScripDetails for the same contract (null when unavailable: Breeze's own numbers are then used as before).
+async function getGuardedOptionQuote(contract: FnoRecord, antToken: string): Promise<{ bestBid: number; bestAsk: number; ltp: number }> {
+    const q = await getOptionQuote(contract);
+    let live: { ltp: number; bid: number; ask: number } | null = null;
+    try {
+        live = await ANT.getInstance().getLiveQuote(contract.exchange, String(antToken));
+    } catch (e: any) {
+        Log.log(`[order] ANT live quote unavailable to cross-check the Breeze quote of ${tsymFor(contract)} (${String(e?.message ?? e).slice(0, 100)}) - using Breeze's own`);
+    }
+    const g = crossCheckQuote(q, live);
+    if (g.widened) Log.log(`[order] Breeze quote of ${tsymFor(contract)} looks stale: bid/ask ${q.bestBid}/${q.bestAsk} ltp ${q.ltp} vs ANT ltp ${live?.ltp} bid/ask ${live?.bid}/${live?.ask} - limit widened to bid ${g.bestBid} / ask ${g.bestAsk}`);
+    return { bestBid: g.bestBid, bestAsk: g.bestAsk, ltp: q.ltp };
+}
+
 // Breeze's own getQuotes has been observed live 2026-09-23 returning a
 // generic nginx "resource unavailable" page for this exact contract-quote
 // call - genuine API/infra flakiness (Breeze's session/auth/trades endpoints
@@ -295,7 +318,8 @@ export async function buyIndexOnBreeze(req: BuyIndexOnBreezeRequest): Promise<Tr
 
     const contract = await BreezeContractMaster.getInstance().findATMOption(AntContractMaster.getInstance().entryStrike(spotLtp, optionType, index), optionType, index);
     const quantity = req.quantity ?? contract.lotSize;
-    const { bestAsk } = await getOptionQuote(contract);
+    const quote = await getOptionQuote(contract);
+    const bestAsk = crossCheckQuote(quote, null).bestAsk; // no ANT token here: at least Breeze's own ltp floors the limit
     const tsym = tsymFor(contract);
 
     Log.log(`[order] Buying ${tsym} qty=${quantity} @ ${bestAsk} (limit) for ${req.userId} via Breeze`);
@@ -762,7 +786,7 @@ export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: strin
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const contract = await resolveBreezeContract(tradingSymbol, antToken);
-    const { bestAsk } = await getOptionQuote(contract);
+    const { bestAsk } = await getGuardedOptionQuote(contract, antToken);
     Log.log(`[order] Bare Breeze limit buy (at best ask) ${tradingSymbol} qty=${quantity} @ ${bestAsk} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, bestAsk);
     // Tracked from placement until the fill is booked - same restart-window reasoning as marketBuyBareOnKite.
@@ -787,7 +811,7 @@ export async function marketBuyBareOnBreeze(userId: string, tradingSymbol: strin
 
 export async function marketSellBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const contract = await resolveBreezeContract(tradingSymbol, antToken);
-    const { bestBid } = await getOptionQuote(contract);
+    const { bestBid } = await getGuardedOptionQuote(contract, antToken);
     Log.log(`[order] Bare Breeze limit sell (at best bid) ${tradingSymbol} qty=${quantity} @ ${bestBid} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, bestBid);
     const exitPrice = await waitForBreezeFillBooking(orderId, contract.exchange, { tsym: tradingSymbol, token: antToken, action: 'Sell', user: userId }, (t) => bookkeeping.recordFill(t));
@@ -817,7 +841,7 @@ export async function enterShortOnBreeze(userId: string, tradingSymbol: string, 
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const contract = await resolveBreezeContract(tradingSymbol, antToken);
-    const { bestBid } = await getOptionQuote(contract);
+    const { bestBid } = await getGuardedOptionQuote(contract, antToken);
     Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) ${tradingSymbol} qty=${quantity} @ ${bestBid} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, bestBid);
     const entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, { tsym: tradingSymbol, token: antToken, action: 'SellToOpen', user: userId }, (t) => bookkeeping.recordShortFill(t));
@@ -844,7 +868,7 @@ export async function buyToCloseOnBreeze(userId: string, tradingSymbol: string, 
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const contract = await resolveBreezeContract(tradingSymbol, antToken);
-    const { bestAsk } = await getOptionQuote(contract);
+    const { bestAsk } = await getGuardedOptionQuote(contract, antToken);
     Log.log(`[order] [BUTTERFLY] Buy-to-close ${tradingSymbol} qty=${quantity} @ ${bestAsk} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, bestAsk);
     const exitPrice = await waitForBreezeFillBooking(orderId, contract.exchange, { tsym: tradingSymbol, token: antToken, action: 'BuyToClose', user: userId }, (t) => bookkeeping.recordShortFill(t));

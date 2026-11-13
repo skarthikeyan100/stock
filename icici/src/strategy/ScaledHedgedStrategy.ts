@@ -8,6 +8,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
 import { brokerLegOps, chunkedLegSell } from './LegBrokerOps';
 import { isUnconfirmedBuyError } from './LegManager';
+import { resolveUnconfirmedBuy as resolveUnconfirmedBuyShared, UnconfirmedBuyResolution } from './unconfirmedBuy';
 import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
@@ -448,9 +449,21 @@ export default class ScaledHedgedStrategy extends Strategy {
         try {
             trade = await ops.buy(this.userId, contract.tradingSymbol, contract.token, qty, contract.exchange, contract.premium);
         } catch (e) {
-            this.noteBuyError(e, `root buy ${contract.tradingSymbol}`);
             Log.log('[ScaledHedgedStrategy] root buy failed:', e);
-            return;
+            if (this.noteBuyError(e, `root buy ${contract.tradingSymbol}`, false)) return; // definitely not placed: the next tick may try again
+            // Outcome unknown (IPC timeout / unconfirmed fill): settle it against the order side and the broker instead of parking the strategy.
+            const res = await this.resolveUnconfirmedBuy(contract);
+            if (res.kind === 'none') {
+                Log.log(`[ScaledHedgedStrategy] root buy of ${contract.tradingSymbol} was cancelled with 0 filled - no position, a new root may be tried`);
+                return;
+            }
+            if (res.kind === 'unknown') {
+                this.manualReview = true;
+                Log.log(`[ScaledHedgedStrategy] ALERT: root buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - no new buys until it is reviewed and the strategy is reset`);
+                return;
+            }
+            trade = Object.assign(new Trade(), { quantity: res.qty, price: res.price });
+            Log.log(`[ScaledHedgedStrategy] root buy of ${contract.tradingSymbol} had filled after all: adopting qty=${res.qty} @${res.price}`);
         }
         const leg = this.addLeg(trade, contract, right, 'root', false);
         this.setPair({ [right]: { tradingSymbol: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, premium: contract.premium } });
@@ -633,26 +646,8 @@ export default class ScaledHedgedStrategy extends Strategy {
     //   'none'    - nothing bought: safe to retry
     //   'filled'  - `qty` is held (at `price`): book it
     //   'unknown' - the broker could not be read or a cancel failed: a human must look
-    private async resolveUnconfirmedBuy(contract: { tradingSymbol: string; premium: number }): Promise<{ kind: 'none' } | { kind: 'filled'; qty: number; price: number } | { kind: 'unknown'; why: string }> {
-        const client = OrderClient.getInstance();
-        const broker = this.brokerOrKite();
-        try {
-            const cancel = await client.cancelRestingLimitBuys(this.userId, { tradingSymbol: contract.tradingSymbol, broker });
-            if (cancel.cancelFailed) return { kind: 'unknown', why: 'the resting buy could not be cancelled' };
-            const live = await client.getLiveQuantity(this.userId, broker, contract.tradingSymbol);
-            const qty = Math.max(Number(live) || 0, 0);
-            if (qty <= 0 && !(cancel.filledQty > 0)) return { kind: 'none' };
-            let price = contract.premium;
-            try {
-                const trades = await client.getOpenTrades(this.userId);
-                const held = trades.find((t: any) => t.tsym === contract.tradingSymbol && Number(t.quantity) > 0);
-                const p = Number(held?.originalEntryPrice ?? held?.price);
-                if (p > 0) price = p;
-            } catch { /* the premium hint is the fallback entry price */ }
-            return { kind: 'filled', qty: qty > 0 ? qty : cancel.filledQty, price };
-        } catch (e: any) {
-            return { kind: 'unknown', why: String(e?.message ?? e) };
-        }
+    private async resolveUnconfirmedBuy(contract: { tradingSymbol: string; premium: number }, heldBefore = 0): Promise<UnconfirmedBuyResolution> {
+        return resolveUnconfirmedBuyShared(this.userId, this.brokerOrKite(), contract, heldBefore);
     }
 
     // Scaled (F): the quantity of a buy of `contract` that fits under maxInvestment (whole lots), at most `qty`; 0 = not even one lot.
@@ -860,8 +855,23 @@ export default class ScaledHedgedStrategy extends Strategy {
             } catch (e) {
                 const notPlaced = this.noteBuyError(e, `add buy ${parent.tsym}`, false);
                 Log.log('[ScaledHedgedStrategy] add buy failed:', e);
-                if (notPlaced) await this.placeSellQty(parent, this.remaining(parent));
-                return false;
+                if (notPlaced) { await this.placeSellQty(parent, this.remaining(parent)); return false; }
+                // Outcome unknown (IPC timeout / unconfirmed fill): the parent has no resting sell now, so settle it here. The live quantity
+                // includes what the parent already holds, so only the excess is the add buy (a partial fill is booked as that partial).
+                const res = await this.resolveUnconfirmedBuy({ tradingSymbol: parent.tsym, premium: parent.entry }, this.remaining(parent));
+                if (res.kind === 'none') {
+                    Log.log(`[ScaledHedgedStrategy] add buy of ${parent.tsym} was cancelled with 0 filled - the parent keeps its quantity, sell re-placed`);
+                    await this.placeSellQty(parent, this.remaining(parent));
+                    return false;
+                }
+                if (res.kind === 'unknown') {
+                    this.manualReview = true;
+                    Log.log(`[ScaledHedgedStrategy] ALERT: add buy ${parent.tsym} may be live at the broker (${res.why}) - no new buys until it is reviewed and the strategy is reset`);
+                    this.save();
+                    return false;
+                }
+                trade = Object.assign(new Trade(), { quantity: res.qty, price: res.price });
+                Log.log(`[ScaledHedgedStrategy] add buy of ${parent.tsym} had filled after all: adopting +${res.qty} @${res.price}`);
             }
             const got = Number(trade.quantity) > 0 ? Number(trade.quantity) : 0;
             const price = Number(trade.price) > 0 ? Number(trade.price) : parent.entry;

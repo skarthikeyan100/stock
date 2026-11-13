@@ -44,3 +44,20 @@ export function fillStateUnknownError(message: string, orderMayBeLive: boolean):
         fillStateUnknown: true, orderMayBeLive,
     });
 }
+
+// The order process answers a strategy's buy request over IPC, and the strategy gives up on it after ORDER_IPC_TIMEOUT_MS (default 90 s, see
+// OrderClient.REQUEST_TIMEOUT_MS). A fill wait that outlasts that leaves the strategy with "timed out, outcome unknown" while the order process
+// goes on to cancel the order a few seconds later (live 2026-11-13: Breeze limit buy = 30 s push wait + 12 x 5 s REST poll + cancel + re-check =
+// ~93 s > 90 s, so a cleanly cancelled buy parked the strategy for manual review). The whole wait (push + REST fallback) is therefore planned
+// from the IPC timeout: it takes at most FILL_WAIT_BUDGET_SHARE of it, which leaves the rest for placement, the cancel and the re-check.
+export const FILL_WAIT_BUDGET_SHARE = 0.6;
+
+export function fillWaitPlan(opts: { pushShare?: number; restIntervalMs?: number; ipcTimeoutMs?: number } = {}): { pushMs: number; restAttempts: number; restIntervalMs: number; totalMs: number } {
+    const ipc = opts.ipcTimeoutMs ?? (Number(process.env.ORDER_IPC_TIMEOUT_MS) || 90000);
+    const interval = opts.restIntervalMs ?? 5000;
+    const budget = Math.max(10000, Math.floor(ipc * FILL_WAIT_BUDGET_SHARE));
+    const pushMs = Math.floor(budget * (opts.pushShare ?? 0.45));
+    // The poll loops sleep between attempts only (n attempts = n-1 sleeps), plus one request each; n-1 sleeps must fit in what the push left.
+    const restAttempts = Math.max(1, Math.floor((budget - pushMs) / interval));
+    return { pushMs, restAttempts, restIntervalMs: interval, totalMs: pushMs + (restAttempts - 1) * interval };
+}

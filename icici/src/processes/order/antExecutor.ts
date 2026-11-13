@@ -15,8 +15,12 @@ import * as exitMonitor from './exitMonitor';
 import { neverShortSellable } from './BrokerExecutor';
 import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder, beginCancelOfPendingAntLimitOrders, endCancelOfPendingAntLimitOrders, silenceListenersOfPendingAntLimitOrders } from './pendingAntLimitOrders';
 import { sleep } from '../../util/sleep';
+import { fillWaitPlan } from '../../util/fillWait';
 import { exchangeForIndex } from '../../util/underlyings';
 import { markNotPlaced } from '../../util/notPlaced';
+
+// Entry fill wait (push + REST fallback) bounded below the IPC timeout: the old 60 s push + 12 x 5 s poll (~120 s) outran the strategy's 90 s.
+const ANT_FILL_PLAN = fillWaitPlan();
 
 // AliceBlue/ANT execution, mirroring kiteExecutor.ts's shape and the same
 // per-user useGTT gating (bookkeeping.getUserUseGTT) - but the actual
@@ -292,12 +296,12 @@ export async function enterPosition(
     let entryPrice: number;
     let filledQuantity = quantity;
     try {
-        entryPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo);
+        entryPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo, ANT_FILL_PLAN.pushMs);
         Log.log(`[order] Filled ${tradingSymbol} at ${entryPrice} for ${userId}`);
     } catch (waitErr) {
         Log.log(`[order] waitForFill failed for ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
         try {
-            entryPrice = await ant.getFillPrice(orderNo);
+            entryPrice = await ant.getFillPrice(orderNo, ANT_FILL_PLAN.restAttempts, ANT_FILL_PLAN.restIntervalMs);
             Log.log(`[order] REST fallback confirmed fill for ${tradingSymbol} at ${entryPrice} for ${userId} (order-notify push was missed)`);
         } catch (fallbackErr: any) {
             // The history poll could not confirm a fill, so the order may still be resting
@@ -426,12 +430,12 @@ export async function enterShortPosition(userId: string, tradingSymbol: string, 
 
     let entryPrice: number;
     try {
-        entryPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo);
+        entryPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo, ANT_FILL_PLAN.pushMs);
         Log.log(`[order] [BUTTERFLY] Short-entry filled ${tradingSymbol} at ${entryPrice} for ${userId}`);
     } catch (waitErr) {
         Log.log(`[order] [BUTTERFLY] waitForFill failed for short-entry ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
         try {
-            entryPrice = await ant.getFillPrice(orderNo);
+            entryPrice = await ant.getFillPrice(orderNo, ANT_FILL_PLAN.restAttempts, ANT_FILL_PLAN.restIntervalMs);
             Log.log(`[order] [BUTTERFLY] REST fallback confirmed short-entry fill for ${tradingSymbol} at ${entryPrice} for ${userId} (order-notify push was missed)`);
         } catch (fillErr) {
             // Still unresolved: the resting sell-to-open could fill later, naked and unrecorded. Settle it the way enterPosition
@@ -479,11 +483,11 @@ export async function buyToClosePosition(userId: string, tradingSymbol: string, 
 
     let exitPrice: number;
     try {
-        exitPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo);
+        exitPrice = await AntOrderNotifyStream.getInstance().waitForFill(orderNo, ANT_FILL_PLAN.pushMs);
         Log.log(`[order] [BUTTERFLY] Buy-to-close filled ${tradingSymbol} at ${exitPrice} for ${userId}`);
     } catch (waitErr) {
         Log.log(`[order] [BUTTERFLY] waitForFill failed for buy-to-close ${tradingSymbol} order ${orderNo} (${userId}) - falling back to REST fill check:`, waitErr);
-        exitPrice = await ant.getFillPrice(orderNo);
+        exitPrice = await ant.getFillPrice(orderNo, ANT_FILL_PLAN.restAttempts, ANT_FILL_PLAN.restIntervalMs);
         Log.log(`[order] [BUTTERFLY] REST fallback confirmed buy-to-close fill for ${tradingSymbol} at ${exitPrice} for ${userId} (order-notify push was missed)`);
     }
 
