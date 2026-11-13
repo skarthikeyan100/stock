@@ -1,5 +1,5 @@
 /**
- * ScaledHedgedContinuousStrategy rules, against a stubbed OrderClient (no broker, no order process):
+ * ScaledHedgedStrategy rules, against a stubbed OrderClient (no broker, no order process):
  *   - the root buys initialQuantity (not the whole maxInvestment)
  *   - a hedge buys initialQuantity + drop / priceDiff x initialQuantity (whole lots)
  *   - one CE and one PE contract per cycle: a leg falling priceDiff buys the OTHER contract again, ADDED to its open leg
@@ -11,7 +11,7 @@
  */
 import OrderClient from '../processes/strategies/OrderClient';
 import AntContractMaster from '../ant/AntContractMaster';
-import ScaledHedgedContinuousStrategy from '../strategy/ScaledHedgedContinuousStrategy';
+import ScaledHedgedStrategy from '../strategy/ScaledHedgedStrategy';
 import { roundToTick } from '../util/tick';
 import { Trade, OptionQuote } from '../model/model';
 import configService from '../prism/ConfigService';
@@ -51,11 +51,11 @@ const buys = () => calls.filter((c) => c.fn === 'buyContractBare');
 const last = (fn: string) => calls.filter((c) => c.fn === fn).pop();
 const tick = (token: string, ltp: number) => Object.assign(new OptionQuote(), { token, ltp });
 
-const baseCfg: any = { type: 'ScaledHedgedContinuousStrategy', userId: 'SHC', initialQuantity: 65, maxInvestment: 200000, priceDiff: 10, maxProfit: 20000, onePositionPerSide: true, brokers: ['kite'] };
+const baseCfg: any = { type: 'ScaledHedgedStrategy', userId: 'SHC', initialQuantity: 65, maxInvestment: 200000, priceDiff: 10, maxProfit: 20000, onePositionPerSide: true, brokers: ['kite'] };
 let n = 0;
 function make(extra: any = {}) {
     const cfg = { ...baseCfg, userId: `SHC-${++n}`, ...extra };
-    const s: any = new ScaledHedgedContinuousStrategy(cfg.userId);
+    const s: any = new ScaledHedgedStrategy(cfg.userId);
     s.enabled = true; s.stateLoaded = true;
     s.cfg = () => cfg;
     s.setting = (key: string) => settingFor(cfg, configService.getConfig().settings as any, key);
@@ -74,6 +74,16 @@ const ceRoot = (s: any, entry = 180) => {
 };
 
 (async () => {
+    console.log('one open leg per side is always on');
+    assert(make({ onePositionPerSide: false }).onePerSide() === true && make({ onePositionPerSide: undefined }).onePerSide() === true, 'onePositionPerSide false / absent changes nothing: the strategy always keeps one open leg per side');
+    {
+        const g = make({ onePositionPerSide: false });
+        ceRoot(g);
+        assert(g.sideBlocked('CE') === true && g.sideBlocked('PE') === false, 'an open CE blocks a second CE leg, the PE side is free');
+        g.pendingSides.add('PE');
+        assert(g.sideBlocked('PE') === true, 'a PE buy in flight blocks a second PE buy');
+    }
+
     console.log('root = initialQuantity');
     calls = [];
     let s = make();

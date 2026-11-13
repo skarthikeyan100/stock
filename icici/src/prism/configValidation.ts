@@ -289,7 +289,7 @@ export function validateConfigFile(parsed: any): string[] {
         }
         // Same reasoning for the other strategies that size a live order from their own config: a missing quantity used to fall back to a
         // hidden 65 (a NIFTY lot) - wrong for a SENSEX Butterfly (lot 20) and for any size the operator never chose.
-        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff', 'maxProfit'], ScaledHedgedContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff', 'maxProfit'] };
+        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff', 'maxProfit'], ScaledHedgedStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff', 'maxProfit'] };
         // Strategies that take their target and stop from the global exits: each must be set in the block or in settings (a value or 'none').
         // An absent key is refused rather than read as "no stop" (strategies/exitRules.ts).
         if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy' || s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy') {
@@ -311,7 +311,7 @@ export function validateConfigFile(parsed: any): string[] {
         }
         // maxProfit is an AMOUNT in rupees for SimpleContinuous (the other strategies' maxProfit is a percent of maxInvestment): a '%' string
         // or a non-positive number is rejected, and the key is required (no default in code).
-        if ((s.type === 'SimpleContinuousStrategy' || s.type === 'ScaledHedgedContinuousStrategy') && s.maxProfit !== undefined && !(typeof s.maxProfit === 'number' && Number.isFinite(s.maxProfit) && s.maxProfit > 0)) {
+        if ((s.type === 'SimpleContinuousStrategy' || s.type === 'ScaledHedgedStrategy') && s.maxProfit !== undefined && !(typeof s.maxProfit === 'number' && Number.isFinite(s.maxProfit) && s.maxProfit > 0)) {
             errors.push(`${s.type}.maxProfit must be a positive number of rupees, not a percent (got ${JSON.stringify(s.maxProfit)})`);
         }
         for (const field of requiredByType[s.type] ?? []) {

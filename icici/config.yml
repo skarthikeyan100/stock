@@ -411,13 +411,13 @@ strategies:
     priceDiff: 10
     maxLegsPerSide: 5
     stackRecoveryPoints: 20
-  - type: ScaledHedgedContinuousStrategy
+  - type: ScaledHedgedStrategy
     enabled: true           # false stops it; the root buys initialQuantity, a hedge buys initialQuantity + drop/priceDiff x initialQuantity, one CE and one PE contract per cycle (strategies.md)
     brokers:
       - kite
     initialQuantity: 65
     skipNearestExpiryOnExpiryDay: false
-    onePositionPerSide: true
+    onePositionPerSide: true   # ignored: this strategy always keeps one open leg per side
     maxInvestment: 200000   # honoured by every buy (root, hedge, add), per broker
     maxProfit: 20000
     priceDiff: 10

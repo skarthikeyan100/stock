@@ -10,7 +10,7 @@ import SupportResistanceStrategy from './SupportResistanceStrategy';
 import TargetReachStrategy from './TargetReachStrategy';
 import ContinuousStrategy from './ContinuousStrategy';
 import SimpleContinuousStrategy from './SimpleContinuousStrategy';
-import ScaledHedgedContinuousStrategy from './ScaledHedgedContinuousStrategy';
+import ScaledHedgedStrategy from './ScaledHedgedStrategy';
 import BulkPcrStrategy from './BulkPcrStrategy';
 import BulkPcrAutoStartStrategy from './BulkPcrAutoStartStrategy';
 import TopStockOptionsOpeningGapStrategy from './TopStockOptionsOpeningGapStrategy';
@@ -45,7 +45,7 @@ STRATEGY_REGISTRY.set('MomentumAtFixedTimeStrategy', MomentumAtFixedTimeStrategy
 STRATEGY_REGISTRY.set('NextWeekStrategy', NextWeekStrategy);
 STRATEGY_REGISTRY.set('BreakoutStrategy', BreakoutStrategy);
 STRATEGY_REGISTRY.set('SimpleContinuousStrategy', SimpleContinuousStrategy);
-STRATEGY_REGISTRY.set('ScaledHedgedContinuousStrategy', ScaledHedgedContinuousStrategy);
+STRATEGY_REGISTRY.set('ScaledHedgedStrategy', ScaledHedgedStrategy);
 
 export function createStrategy(config: StrategyInstanceConfig): Strategy | null {
     const StrategyClass = STRATEGY_REGISTRY.get(config.type);
