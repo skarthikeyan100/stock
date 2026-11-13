@@ -1,6 +1,6 @@
 /**
  * maxProfit exit of SimpleContinuousStrategy and ScaledHedgedStrategy (2026-11-13: a trip must LOCK the cap, not dump at the bid):
- *   - a resting sell already at or above clearPrice stays (no cancel, no new order); a lower one is cancelled and one limit sell is placed at clearPrice
+ *   - a resting sell exactly at clearPrice stays (no cancel, no new order); one above or below it is cancelled and one limit sell is placed at clearPrice
  *   - never a market/bid sell on a trip (chunkedSquareOff); the booked exit is >= the cap
  *   - cancel failed: nothing placed; cancel succeeded but part filled: nothing placed until the next pass, which uses the fills
  *   - partial fills, several legs (the exits together reach the cap), a restart mid-trip, a leg still waiting for its reference tick
@@ -70,17 +70,28 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
     for (const Cls of [SimpleContinuousStrategy, ScaledHedgedStrategy] as any[]) {
         console.log(`\n=== ${Cls.name} ===`);
 
-        console.log('resting sell above clearPrice is kept (the 2026-11-13 case: 168.30 resting, 167.95 clears)');
+        console.log('resting sell above clearPrice is replaced at clearPrice (the 2026-11-13 12:14 case: 65 @144.25 resting 154.25, cap 5000)');
         calls = []; cancelResult = { filledQty: 0, cancelFailed: false };
         let s = make(Cls);
-        let leg = addLeg(s, 'L1', { tsym: 'NIFTY17NOV2625250PE', entry: 158.3, pnlRef: 158.3, qty: 520, sellQty: 520, sellPrice: 168.3, lastLtp: 168 });
+        let leg = addLeg(s, 'L1', { tsym: 'NIFTY26N1725100PE', entry: 144.25, pnlRef: 144.25, qty: 65, sellQty: 65, sellPrice: 154.25, lastLtp: 160 });
+        s.state.realizedPnl = 4550 - 65 * 0; // realized 4550 as live; clear = 144.25 + 450/65 = 151.17 -> 151.20
         await s.closeAllLegs('MAX PROFIT');
-        assert(of('cancelRestingLimitSells').length === 0 && of('chunkedSquareOffLimit').length === 0 && of('chunkedSquareOff').length === 0, 'no cancel, no new order');
-        assert(leg.status === 'open' && leg.sellPrice === 168.3, 'leg stays open with its sell at 168.30 (books 5200 >= 5000 when it fills)');
+        assert(of('cancelRestingLimitSells').length === 1, 'the old sell is cancelled');
+        assert(limitSells().length === 1 && limitSells()[0].price === 151.2 && limitSells()[0].quantity === 65 && of('chunkedSquareOff').length === 0, `one limit sell of 65 @151.20: ${JSON.stringify(limitSells())}`);
+        assert(leg.status === 'open' && leg.sellPrice === 151.2 && leg.sellQty === 65, 'leg open, resting at 151.20');
+        const n1 = calls.length;
         await s.closeAllLegs('MAX PROFIT');
-        assert(calls.length === 0, 'a second pass changes nothing');
+        assert(calls.length === n1, 'equal price: a second pass leaves it untouched');
 
-        console.log('resting sell below clearPrice is cancelled and re-placed at clearPrice, never at the bid');
+        console.log('tripped strategy restored with its old sell above clearPrice: the Nifty tick pass re-prices it (no trip event needed)');
+        calls = [];
+        s = make(Cls); leg = addLeg(s, 'L1', { entry: 144.25, pnlRef: 144.25, qty: 65, sellQty: 65, sellPrice: 154.25, lastLtp: 160 }); s.state.realizedPnl = 4550;
+        await s.processNiftyQuote(nifty());
+        assert(of('cancelRestingLimitSells').length === 1 && limitSells().length === 1 && limitSells()[0].price === 151.2, 'first tick after load: cancel + sell @151.20');
+        await s.processNiftyQuote(nifty());
+        assert(of('chunkedSquareOffLimit').length === 1, 'later ticks: no churn');
+
+        console.log('resting sell below clearPrice is cancelled and raised to clearPrice, never at the bid');
         calls = [];
         s = make(Cls); leg = addLeg(s, 'L1', { sellPrice: 130, lastLtp: 160 }); // total 6000, clear = 150
         await s.closeAllLegs('MAX PROFIT');
@@ -120,9 +131,9 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
 
         console.log('partial placement: the unplaced rest is placed at the same price on the next pass');
         calls = [];
-        s = make(Cls); leg = addLeg(s, 'L1', { sellQty: 60, sellShortfall: 40, sellPrice: 160 });
+        s = make(Cls); leg = addLeg(s, 'L1', { sellQty: 60, sellShortfall: 40, sellPrice: 150 });
         await s.closeAllLegs('MAX PROFIT');
-        assert(of('cancelRestingLimitSells').length === 0 && limitSells().length === 1 && limitSells()[0].quantity === 40 && limitSells()[0].price === 160, 'only the 40 missing, at 160, resting 60 untouched');
+        assert(of('cancelRestingLimitSells').length === 0 && limitSells().length === 1 && limitSells()[0].quantity === 40 && limitSells()[0].price === 150, 'only the 40 missing, at 150, resting 60 untouched');
         assert(leg.sellQty === 100 && leg.sellShortfall === 0, 'leg now fully covered');
 
         console.log('placement refused: retried on the next pass, never falls to the bid');
@@ -150,14 +161,23 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
         await s.closeAllLegs('MAX PROFIT');
         assert(calls.length === before, 'second pass: no cancel, no re-place (stable)');
 
-        console.log('two legs, one already resting above its clear price: kept; the other covers the cap with the real exit price');
+        console.log('two legs with stale resting sells (A 200, B 120): repeated passes converge and never oscillate, total stays >= cap');
         calls = [];
         s = make(Cls);
-        addLeg(s, 'L1', { sellQty: 100, sellPrice: 200, lastLtp: 140 });
-        const B2 = addLeg(s, 'L2', { sellQty: 0, sellPrice: 0, lastLtp: 120 });
+        const A3 = addLeg(s, 'L1', { sellQty: 100, sellPrice: 200, lastLtp: 140 });
+        const B3 = addLeg(s, 'L2', { sellQty: 130, qty: 130, sellPrice: 120, lastLtp: 120 });
+        const hist: string[] = [];
+        for (let i = 0; i < 5; i++) { await s.closeAllLegs('MAX PROFIT'); hist.push(`${A3.sellPrice}/${B3.sellPrice}`); }
+        const tot = 100 * (A3.sellPrice - 100) + 130 * (B3.sellPrice - 100);
+        assert(tot >= 5000, `both legs filled at ${hist[4]} book ${tot} >= 5000`);
+        assert(hist[2] === hist[3] && hist[3] === hist[4], `settled by pass 3: ${hist.join(' ')}`);
+        for (let i = 1; i < hist.length; i++) {
+            const [pa, pb] = hist[i - 1].split('/').map(Number), [qa, qb] = hist[i].split('/').map(Number);
+            assert(qa <= pa + 1e-9 && qb <= pb + 1e-9, `pass ${i + 1} never raises a price: ${hist[i - 1]} -> ${hist[i]}`);
+        }
+        const nb = calls.length;
         await s.closeAllLegs('MAX PROFIT');
-        assert(of('cancelRestingLimitSells').length === 0 && limitSells().length === 1, 'L1 untouched, L2 placed');
-        assert(B2.sellPrice === 50, `L2 only needs ${B2.sellPrice} because L1 rests at 200`);
+        assert(calls.length === nb, 'settled: no calls');
 
         console.log('a leg still waiting for its reference tick is skipped (it counts 0)');
         calls = [];
@@ -165,11 +185,11 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
         await s.closeAllLegs('MAX PROFIT');
         assert(calls.length === 0, 'no order for it');
 
-        console.log('restart mid-trip: profitTripped and the resting sell come back; ticks keep or re-place, never the bid');
+        console.log('restart mid-trip: profitTripped and the resting sell come back; ticks keep, move or re-place it, never the bid');
         calls = [];
-        s = make(Cls); leg = addLeg(s, 'L1', { sellQty: 100, sellPrice: 160 }); // restored: resting sell above the 150 clear price
+        s = make(Cls); leg = addLeg(s, 'L1', { sellQty: 100, sellPrice: 150 }); // restored: resting sell at the 150 clear price
         await s.processNiftyQuote(nifty());
-        assert(calls.length === 0, 'restored resting sell above clearPrice: left alone');
+        assert(calls.length === 0, 'restored resting sell exactly at clearPrice: left alone');
         calls = [];
         s = make(Cls); leg = addLeg(s, 'L1', { sellQty: 0, sellPrice: 0 }); // the restart found nothing resting
         await s.processNiftyQuote(nifty());

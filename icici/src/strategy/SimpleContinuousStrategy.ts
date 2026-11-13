@@ -11,7 +11,7 @@ import { isUnconfirmedBuyError } from './LegManager';
 import { fetchOpenTradesWithRetry } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
-import { roundToTick } from '../util/tick';
+import { roundToTick, NFO_TICK_SIZE } from '../util/tick';
 import { clearPrice } from './maxProfitLock';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import { isPastEodClose } from '../util/eodClose';
@@ -810,7 +810,7 @@ export default class SimpleContinuousStrategy extends Strategy {
 
     // The maxProfit exit of one open leg (user's rule 2026-11-13: lock the cap, never dump at the bid; 2026-11-13 10:53 the old cancel-and-sell-at-the-bid
     // booked 4732 on a 5044 trip of a 5000 cap). The trip is judged on the last tick; the exit is a limit sell at `clearPrice`, the price at which the
-    // strategy total equals the cap. A resting sell already at or above it stays; a lower one (or none) is cancelled - confirmed at the broker - and one
+    // strategy total equals the cap. A resting sell already AT it (same price) stays; any other (above or below, user's rule 2026-11-13 12:14: one above it sits out of reach and locks nothing) or none is cancelled - confirmed at the broker - and one
     // limit sell for the unsold quantity is placed at clearPrice. The leg stays open until the sell fills (updateTrade closes it); there is no drop
     // to the bid (EOD closes whatever still rests). Caller holds the leg's busy slot. Idempotent: it runs again every EOD_RETRY_MS from the Nifty ticks.
     private async lockProfitOnLeg(leg: SimpleLeg, cap: number): Promise<void> {
@@ -819,7 +819,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         if (rem <= 0) return;
         const price = clearPrice(leg, this.openLegs(), this.state.realizedPnl, cap);
         if (leg.sellQty > 0) {
-            if (leg.sellPrice >= price - 1e-9) {
+            if (Math.abs(leg.sellPrice - price) < NFO_TICK_SIZE / 2) { // already exactly at clearPrice: leave it (a retry pass never churns)
                 const missing = Math.min(leg.sellShortfall ?? 0, rem - leg.sellQty);
                 if (missing > 0) await this.placeTripSell(leg, missing, leg.sellPrice, true, cap); // the unplaced rest rests at the same price
                 return;
