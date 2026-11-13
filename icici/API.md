@@ -88,7 +88,7 @@ Notes: `lockedPnl` is measured from the bookkeeping row's cost, which a reconcil
 
 A comment line is written to every stream every 20 s so a proxy never sees it as idle.
 
-| `GET /demo/status` | none | `{ replay: boolean, date?, ready?, error? }`. With `settings.demoReplay: true` the demo endpoints above serve a RECORDED day (`settings.demoReplayDate`, e.g. `Nov-13`, from `<demoReplayDir or ~/later/data/backups>/<Mon-DD>/csv/{Quote,OptionQuote}.csv`, paced by `settings.demoReplaySpeed`, default 10, looping) through their own client sets, never the authenticated streams; `/demo/subscribe` then makes no broker subscription, and `/demo/symbols` / `/demo/resolve` offer only contracts present in that file. `demoReplay: false` = live feed. The page shows a "replaying" banner when `replay` is true. |
+| `GET /demo/health` | none | `{ ok: true }`. Liveness probe for the static site (Cloudflare Pages): an answer means the trading server is up, so the home page offers Google sign-in and the demo uses live prices during market hours. The demo does not need the server otherwise: outside market hours, or when this probe fails, it replays `frontend/public/demo-ticks.csv` in the browser (regenerate with `node dist/tools/makeDemoTicks.js <Mon-DD> [every=10]` after `npx tsc`). |
 ## Strategies, reconcile and configuration (admin)
 
 | Route | Purpose |

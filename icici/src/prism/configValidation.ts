@@ -235,20 +235,6 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
         }
     }
 
-    // Demo replay (settings only): a bad date/speed would leave /demo silently empty, so reject it when the config is written.
-    if (obj.demoReplay != null || obj.demoReplayDate != null || obj.demoReplaySpeed != null || obj.demoReplayDir != null) {
-        if (label !== 'settings') {
-            errors.push(`${label}.demoReplay* keys are global settings - move them to settings`);
-        } else {
-            if (obj.demoReplay != null && typeof obj.demoReplay !== 'boolean') errors.push(`${label}.demoReplay must be true or false, got ${JSON.stringify(obj.demoReplay)}`);
-            if (obj.demoReplay === true && !/^[A-Za-z]{3}-\d{2}$/.test(String(obj.demoReplayDate ?? ''))) {
-                errors.push(`${label}.demoReplayDate must look like 'Nov-13' when demoReplay is true, got ${JSON.stringify(obj.demoReplayDate)}`);
-            }
-            if (obj.demoReplaySpeed != null && !(isNum(obj.demoReplaySpeed) && obj.demoReplaySpeed > 0 && obj.demoReplaySpeed <= 1000)) {
-                errors.push(`${label}.demoReplaySpeed must be a number > 0 and <= 1000, got ${JSON.stringify(obj.demoReplaySpeed)}`);
-            }
-        }
-    }
     // eodEmailTestRecipient: one plain address; a list or a malformed value would send the test emails nowhere.
     if (obj.eodEmailTestRecipient != null) {
         if (label !== 'settings') errors.push(`${label}.eodEmailTestRecipient is a global setting - move it to settings`);

@@ -1,7 +1,9 @@
-import { useState, useEffect, useCallback, useRef, ReactNode } from 'react';
+import { useState, useEffect, useCallback, useRef, createContext, useContext, ReactNode } from 'react';
 import { Trade, TradingContext } from './TradingContext';
 import { apiFetch } from '../utils/api';
 import { useEventSource } from '../hooks/useEventSource';
+import { isMarketHours } from '../utils/marketHours';
+import { demoFeed } from '../demo/demoFeed';
 
 // In-memory demo trading state - no auth, no real orders, no /positionstream.
 // Feeds the SAME TradingContext object TradingContext.tsx creates (not a
@@ -20,7 +22,20 @@ const maxLoss = DEMO_MAX_LOSS;
 const lotLimit = 10;
 const NIFTY_LOT_SIZE = 65;
 
+// Where the demo's prices come from. 'live': the server's anonymous demo streams (only while the market is open and the server answers).
+// 'feed': the recorded day replayed in the browser from /demo-ticks.csv (market closed, or the server is down) - no server calls at all.
+// 'checking': market hours, still asking the server (/demo/health). Decided once, when the demo opens.
+export type DemoMode = 'checking' | 'live' | 'feed';
+interface DemoModeValue { mode: DemoMode; feedError: string | null; feedDate: string | null }
+const DemoModeContext = createContext<DemoModeValue>({ mode: 'live', feedError: null, feedDate: null });
+export const useDemoMode = (): DemoModeValue => useContext(DemoModeContext);
+
 export function DemoTradingProvider({ children }: { children: ReactNode }) {
+  const [mode, setMode] = useState<DemoMode>(() => (isMarketHours() ? 'checking' : 'feed'));
+  const modeRef = useRef<DemoMode>(mode);
+  modeRef.current = mode;
+  const [feedError, setFeedError] = useState<string | null>(null);
+  const [feedDate, setFeedDate] = useState<string | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [closedTrades, setClosedTrades] = useState<Trade[]>([]);
   const [placingOrder, setPlacingOrder] = useState(false);
@@ -54,11 +69,26 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   const tradedLots = trades.reduce((sum, t) => sum + Math.ceil(t.quantity / NIFTY_LOT_SIZE), 0);
   const isOrderDisabled = tradedLots >= lotLimit || totalPnL <= -maxLoss || placingOrder;
 
+  // Market hours: ask the server once. An answer means live prices; no answer (server down) falls back to the recorded day.
+  useEffect(() => {
+    if (mode !== 'checking') return;
+    let alive = true;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 4000);
+    fetch('/demo/health', { cache: 'no-store', signal: ctrl.signal })
+      .then((res) => res.ok && (res.headers.get('content-type') || '').includes('json'))
+      .catch(() => false)
+      .then((up) => { if (alive) setMode(up ? 'live' : 'feed'); })
+      .finally(() => clearTimeout(t));
+    return () => { alive = false; clearTimeout(t); ctrl.abort(); };
+  }, [mode]);
+
   const releaseToken = (token: string) => {
     const count = subscriptionCountRef.current.get(token) ?? 0;
     if (count <= 1) {
       subscriptionCountRef.current.delete(token);
       watchedTokensRef.current.delete(token);
+      if (modeRef.current !== 'live') return; // the recorded-day feed has no server subscription to release
       apiFetch(`/demo/subscribe?token=${encodeURIComponent(token)}&subscribe=false`).catch((e) =>
         console.error('[Demo] unsubscribe failed:', e)
       );
@@ -71,7 +101,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const counts = subscriptionCountRef.current;
     return () => {
-      for (const token of counts.keys()) {
+      for (const token of modeRef.current === 'live' ? counts.keys() : []) {
         apiFetch(`/demo/subscribe?token=${encodeURIComponent(token)}&subscribe=false`, { keepalive: true }).catch(() => undefined);
       }
       counts.clear();
@@ -122,7 +152,43 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   // Shared /optionstream connection - same reconnect-with-backoff pattern used
   // elsewhere (NiftyTicker, TradingContext's positionstream), matches ticks
   // against whichever tokens the demo currently has pending/open.
+  // Recorded-day feed: ticks for the held contracts arrive from the browser-side replay instead of the stream. When the recorded day ends
+  // and starts over the prices jump back to the open, so open positions are closed at their last price first (like a market close).
+  const closeAllAtRestart = useCallback(() => {
+    const open = tradesRef.current.filter((t) => t.status === 'open');
+    if (tradesRef.current.length === 0) return;
+    applyTrades([]);
+    subscriptionCountRef.current.clear();
+    watchedTokensRef.current.clear();
+    if (open.length > 0) {
+      setClosedTrades((prev) => [
+        ...prev,
+        ...open.map((t) => { const exit = t.lastTradePrice || t.price; return { ...t, lastTradePrice: exit, open: false, realizedPnL: (exit - t.price) * t.quantity }; }),
+      ]);
+    }
+    setOrderError('The recorded day restarted, so your open demo positions were closed at their last price.');
+  }, [applyTrades]);
+
+  useEffect(() => {
+    if (mode !== 'feed') return;
+    let cancelled = false;
+    let off: (() => void) | null = null;
+    demoFeed.load()
+      .then(() => {
+        if (cancelled) return;
+        setFeedError(null);
+        setFeedDate(demoFeed.dateLabel());
+        off = demoFeed.subscribe({
+          option: (token, ltp) => { if (watchedTokensRef.current.has(token)) handleTick(token, ltp); },
+          restart: closeAllAtRestart,
+        });
+      })
+      .catch((e) => { if (!cancelled) setFeedError(`Demo data could not be loaded (${e?.message ?? e}). Please refresh.`); });
+    return () => { cancelled = true; off?.(); };
+  }, [mode, handleTick, closeAllAtRestart]);
+
   useEventSource('/demo/optionstream', {
+    enabled: mode === 'live',
     authProbeUrl: null, // anonymous stream: there is no session to probe
     onMessage: (event) => {
       try {
@@ -147,9 +213,12 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
       setPlacingOrder(true);
       setOrderError(null);
       try {
-        const sub = await apiFetch(`/demo/subscribe?token=${encodeURIComponent(token)}&subscribe=true`);
-        // A rejected subscribe would leave a pending trade waiting for ticks that never come.
-        if (!sub.ok) throw new Error(`subscribe failed (${sub.status})`);
+        if (modeRef.current === 'checking') throw new Error('demo data source not ready');
+        if (modeRef.current === 'live') {
+          const sub = await apiFetch(`/demo/subscribe?token=${encodeURIComponent(token)}&subscribe=true`);
+          // A rejected subscribe would leave a pending trade waiting for ticks that never come.
+          if (!sub.ok) throw new Error(`subscribe failed (${sub.status})`);
+        }
         subscriptionCountRef.current.set(token, (subscriptionCountRef.current.get(token) ?? 0) + 1);
         watchedTokensRef.current.add(token);
 
@@ -168,6 +237,11 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
           pendingStopLossPoints: stopLossPoints,
         };
         applyTrades([...tradesRef.current, pendingTrade]);
+        // The recorded feed already knows this contract's last price, so the position fills at once instead of waiting for its next tick.
+        if (modeRef.current === 'feed') {
+          const last = demoFeed.lastPrice(token);
+          if (last) handleTick(token, last);
+        }
         return true;
       } catch (err) {
         console.error('[Demo] Order failed:', err);
@@ -177,15 +251,24 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
         setPlacingOrder(false);
       }
     },
-    [applyTrades]
+    [applyTrades, handleTick]
   );
 
   const placeOrder = useCallback(
     async (right: string) => {
       try {
-        const res = await apiFetch(`/demo/resolve?right=${encodeURIComponent(right)}`);
-        if (!res.ok) throw new Error('Failed to resolve contract');
-        const { token, tradingSymbol } = await res.json();
+        let token: string;
+        let tradingSymbol: string;
+        if (modeRef.current === 'feed') {
+          await demoFeed.load();
+          const hit = demoFeed.resolveATM(right);
+          if (!hit) throw new Error('No price yet');
+          ({ token, tradingSymbol } = hit);
+        } else {
+          const res = await apiFetch(`/demo/resolve?right=${encodeURIComponent(right)}`);
+          if (!res.ok) throw new Error('Failed to resolve contract');
+          ({ token, tradingSymbol } = await res.json());
+        }
         if (!token) throw new Error('No contract found');
         await startPendingTrade(token, tradingSymbol, right, NIFTY_LOT_SIZE);
       } catch (err) {
@@ -250,6 +333,7 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
   const clearError = useCallback(() => setOrderError(null), []);
 
   return (
+    <DemoModeContext.Provider value={{ mode, feedError, feedDate }}>
     <TradingContext.Provider
       value={{
         trades,
@@ -271,5 +355,6 @@ export function DemoTradingProvider({ children }: { children: ReactNode }) {
     >
       {children}
     </TradingContext.Provider>
+    </DemoModeContext.Provider>
   );
 }

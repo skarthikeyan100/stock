@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useEventSource } from '../hooks/useEventSource';
+import { demoFeed } from '../demo/demoFeed';
 
 interface NiftyQuote {
   ltp: number;
@@ -11,11 +12,23 @@ interface NiftyQuote {
   changePercent: number;
 }
 
-// `url` defaults to the authenticated stream; the logged-out demo page passes its anonymous copy.
-export default function NiftyTicker({ url = '/niftystream' }: { url?: string }) {
+// `url` defaults to the authenticated stream; the logged-out demo page passes its anonymous copy. `feed` makes the demo page take the
+// recorded day replayed in the browser instead (no stream at all); `enabled` = false opens nothing (demo still choosing its source).
+export default function NiftyTicker({ url = '/niftystream', feed = false, enabled = true }: { url?: string; feed?: boolean; enabled?: boolean }) {
   const [quote, setQuote] = useState<NiftyQuote | null>(null);
 
+  useEffect(() => {
+    if (!feed) return;
+    let cancelled = false;
+    let off: (() => void) | null = null;
+    demoFeed.load()
+      .then(() => { if (!cancelled) off = demoFeed.subscribe({ nifty: (n) => setQuote({ ...n, open: 0, high: 0, low: 0 }) }); })
+      .catch((err) => console.error('[NiftyTicker] demo data failed to load:', err));
+    return () => { cancelled = true; off?.(); };
+  }, [feed]);
+
   useEventSource(url, {
+    enabled: enabled && !feed,
     // The anonymous demo copy has no session to probe.
     authProbeUrl: url.startsWith('/demo/') ? null : '/auth/me',
     onMessage: (e) => {

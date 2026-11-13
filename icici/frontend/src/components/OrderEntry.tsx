@@ -6,7 +6,8 @@ import { matchSymbols, parsePoints, SYMBOL_SEARCH_MIN_CHARS } from './orderEntry
 import { apiFetch } from '../utils/api';
 import DemoHelpTip from './DemoHelpTip';
 import FlashSettingsModal from './FlashSettingsModal';
-import { DEMO_MAX_LOSS } from '../context/DemoTradingContext';
+import { DEMO_MAX_LOSS, useDemoMode } from '../context/DemoTradingContext';
+import { demoFeed } from '../demo/demoFeed';
 
 // One searchable contract: `label` is what the list shows, `value` is what placeContractOrder receives.
 interface ContractItem { label: string; value: string }
@@ -22,12 +23,22 @@ interface ContractQuote {
 const fmtNum = (v: number | null | undefined, digits = 2) =>
   v == null ? '—' : v.toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 
+// Recorded-day demo contracts, named after the underlying the user typed: "<NAME> <strike> CE|PE" (value = token|label|type, token = the
+// recorded option symbol whose prices are replayed).
+function feedSymbols(name: string): ContractItem[] {
+  return demoFeed.contracts().map((c) => {
+    const label = `${name} ${c.strike} ${c.optionType}`;
+    return { label, value: `${c.token}|${label}|${c.optionType}` };
+  });
+}
+
 // `demo`: the anonymous demo page renders this same component (its provider supplies the same trading context). Differences: the
 // contract list is the ANT-native /demo/symbols one (symbols.txt is Kite-format and not subscribable on ANT's feed), help bubbles
 // explain the controls, the loss limit is the fixed demo one, and no order is ever real.
 export default function OrderEntry({ demo }: { demo?: boolean }) {
   const { placeOrder, placeContractOrder, isOrderDisabled, placingOrder, totalPnL, orderError, clearError } = useTrading();
   const { user } = useAuth();
+  const { mode: demoMode } = useDemoMode(); // demo only: 'feed' = recorded day replayed in the browser
 
   const [input, setInput] = useState('');
   const [symbols, setSymbols] = useState<ContractItem[]>([]);
@@ -67,6 +78,13 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
   // two different encodings depending on expiry type (e.g. monthly
   // NIFTY26AUG24100CE vs weekly NIFTY2690124100CE).
   useEffect(() => {
+    if (demo && demoMode === 'checking') return;
+    if (demo && demoMode === 'feed') {
+      demoFeed.load()
+        .then(() => setSymbols(feedSymbols('NIFTY')))
+        .catch((err) => console.error('Failed to load demo contracts:', err));
+      return;
+    }
     if (demo) {
       apiFetch('/demo/symbols?symbol=NIFTY')
         .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
@@ -84,7 +102,7 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
         setSymbols(lines.map((l) => ({ label: l, value: l })));
       })
       .catch(err => console.error('Failed to load symbols:', err));
-  }, [demo]);
+  }, [demo, demoMode]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -128,7 +146,9 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
     setInput(upper);
     setSelectedSymbol(null);
 
-    const matches = matchSymbols(upper, symbols, (s) => s.label);
+    // Recorded-day demo: whatever underlying the user types (TCS, RELIANCE, ...) plays the same recorded NIFTY option prices.
+    const pool = demo && demoMode === 'feed' ? feedSymbols(upper.match(/^[A-Z][A-Z0-9&-]{1,}/)?.[0] ?? 'NIFTY') : symbols;
+    const matches = matchSymbols(upper, pool, (s) => s.label);
     setSuggestions(matches);
     setShowDropdown(matches.length > 0);
   };

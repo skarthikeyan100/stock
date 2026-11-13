@@ -3,8 +3,8 @@ import { useEffect, useState } from 'react';
 import { GoogleLogin, CredentialResponse } from '@react-oauth/google';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { isMarketHours } from '../utils/marketHours';
 import ThemeToggle from '../components/ThemeToggle';
+import { useServerReachable } from '../utils/useServerReachable';
 
 type LoginSlot = 'nav' | 'hero' | 'footer';
 
@@ -12,6 +12,7 @@ export default function LoginPage() {
   const { login, isLoggedIn, termsAccepted } = useAuth();
   const { theme } = useTheme();
   const navigate = useNavigate();
+  const serverUp = useServerReachable(); // Google sign-in is offered only if the trading server answered at page load
   const [loginError, setLoginError] = useState<{ message: string; where: LoginSlot } | null>(null);
 
   // Google's button is drawn on the opposite tone of the page so it stands out: a dark button on the light theme,
@@ -45,23 +46,24 @@ export default function LoginPage() {
           <ThemeToggle />
         </div>
         <div className="landing-nav-signin d-flex align-items-center gap-3">
-          {isMarketHours() && (
-            <span
-              role="button"
-              className="landing-nav-demo"
-              style={{ cursor: 'pointer', textDecoration: 'underline' }}
-              onClick={() => navigate('/demo')}
-            >
-              Try Demo
-            </span>
-          )}
+          {/* Works with the server down too: the demo replays a recorded day from /demo-ticks.csv in the browser */}
+          <span
+            role="button"
+            className="landing-nav-demo"
+            style={{ cursor: 'pointer', textDecoration: 'underline' }}
+            onClick={() => navigate('/demo')}
+          >
+            Try Demo
+          </span>
           <div className="position-relative">
-            <GoogleLogin
-              onSuccess={onGoogleSuccess('nav')}
-              onError={onGoogleError('nav')}
-              theme={googleTheme}
-              size="medium"
-            />
+            {serverUp && (
+              <GoogleLogin
+                onSuccess={onGoogleSuccess('nav')}
+                onError={onGoogleError('nav')}
+                theme={googleTheme}
+                size="medium"
+              />
+            )}
             {loginError?.where === 'nav' && (
               <div className="text-danger small position-absolute end-0" style={{ whiteSpace: 'nowrap' }}>{loginError.message}</div>
             )}
@@ -82,7 +84,7 @@ export default function LoginPage() {
             you bring the skill. Keep 40% of every rupee you earn.
           </p>
           <div className="landing-hero-cta">
-            <GoogleLogin onSuccess={onGoogleSuccess('hero')} onError={onGoogleError('hero')} theme={googleTheme} />
+            {serverUp && <GoogleLogin onSuccess={onGoogleSuccess('hero')} onError={onGoogleError('hero')} theme={googleTheme} />}
             {loginError?.where === 'hero' && <div className="text-danger small mt-2">{loginError.message}</div>}
           </div>
         </div>
@@ -208,7 +210,7 @@ export default function LoginPage() {
         <h2>Ready to start trading?</h2>
         <p>Sign in with your Google account to get access.</p>
         <div className="landing-cta-btn">
-          <GoogleLogin onSuccess={onGoogleSuccess('footer')} onError={onGoogleError('footer')} theme={googleTheme} />
+          {serverUp && <GoogleLogin onSuccess={onGoogleSuccess('footer')} onError={onGoogleError('footer')} theme={googleTheme} />}
           {loginError?.where === 'footer' && <div className="text-danger small mt-2">{loginError.message}</div>}
         </div>
       </section>
