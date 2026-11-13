@@ -13,7 +13,7 @@ import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
 import { roundToTick, NFO_TICK_SIZE } from '../util/tick';
-import { clearPrice } from './maxProfitLock';
+import { clearPrice, tripSellPrice, keepTripSell, TripGuard, TRIP_FILL_WAIT_MS } from './maxProfitLock';
 import { effectiveMaxProfit } from './effectiveMaxProfit';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import { isPastEodClose } from '../util/eodClose';
@@ -129,6 +129,7 @@ export default class ScaledHedgedStrategy extends Strategy {
     private manualReview = false; // an unconfirmed buy may be live: no new buys until a human looks and reset() clears it
     private blocked = false;      // reconcile could not read the open trades: no new entries
     private pendingSides = new Set<Right>();    // sides with a hedge buy in flight (not yet an open leg), so two hedges cannot both pass the one-per-side check
+    private tripGuard = new TripGuard(); // retry backoff / fill-event wait of the maxProfit trip sells (in memory throttle only)
     private busy = new Set<string>();           // leg ids with a hedge / double-up / sell placement in flight
     private lastSellAttempt = new Map<string, number>();
     private lastEodAttempt = 0;
@@ -917,32 +918,62 @@ export default class ScaledHedgedStrategy extends Strategy {
 
     // The maxProfit exit of one open leg (user's rule 2026-11-13: lock the cap, never dump at the bid; 2026-11-13 10:53 the old cancel-and-sell-at-the-bid
     // booked 4732 on a 5044 trip of a 5000 cap). The trip is judged on the last tick; the exit is a limit sell at `clearPrice`, the price at which the
-    // strategy total equals the cap. A resting sell already AT it (same price) stays; any other (above or below, user's rule 2026-11-13 12:14: one above it sits out of reach and locks nothing) or none is cancelled - confirmed at the broker - and one
-    // limit sell for the unsold quantity is placed at clearPrice. The leg stays open until the sell fills (updateTrade closes it); there is no drop
-    // to the bid (EOD closes whatever still rests). Caller holds the leg's busy slot. Idempotent: it runs again every EOD_RETRY_MS from the Nifty ticks.
+    // strategy total equals the cap, but never below the marketable floor (tripSellPrice: last tick LTP less 5%, tightening after a refusal): live 14:35
+    // clearPrice was 41 on a 126 leg because other legs had already realized more than the cap, and the broker refused the price as outside the exchange
+    // band. A resting sell stays when it sits at clearPrice or above it but at/below the market (keepTripSell); any other (below clearPrice locks less,
+    // above the market sits out of reach, user's rule 2026-11-13 12:14) or none is cancelled - confirmed at the broker - and one limit sell for the unsold
+    // quantity is placed. The leg stays open until the sell fills (updateTrade closes it); there is no drop to the bid (EOD closes whatever still rests).
+    // Caller holds the leg's busy slot. Idempotent: it runs again every EOD_RETRY_MS from the Nifty ticks; a refused placement backs off (TripGuard).
+    // After a cancel that reported a fill (live 14:35:21: all 195 of a leg sold while cancelling) the leg's fill events may not have arrived: nothing
+    // is placed until the order side's held quantity agrees with the leg (or the events arrive and close it), bounded by TRIP_FILL_WAIT_MS.
     private async lockProfitOnLeg(leg: SimpleLeg, cap: number): Promise<void> {
         if (leg.pnlRefPending) return; // valued from its next tick; the price that locks the cap is unknown until then
-        const rem = this.remaining(leg);
-        if (rem <= 0) return;
-        const price = clearPrice(leg, this.openLegs(), this.state.realizedPnl, cap);
+        if (this.remaining(leg) <= 0) return;
+        if (!this.tripGuard.due(leg.id)) return; // a refused placement / cancel is retried with a growing delay, not every pass
+        const clear = clearPrice(leg, this.openLegs(), this.state.realizedPnl, cap);
         if (leg.sellQty > 0) {
-            if (Math.abs(leg.sellPrice - price) < NFO_TICK_SIZE / 2) { // already exactly at clearPrice: leave it (a retry pass never churns)
-                const missing = Math.min(leg.sellShortfall ?? 0, rem - leg.sellQty);
+            if (keepTripSell(leg.sellPrice, clear, leg.lastLtp)) { // a retry pass never churns
+                const missing = Math.min(leg.sellShortfall ?? 0, this.remaining(leg) - leg.sellQty);
                 if (missing > 0) await this.placeTripSell(leg, missing, leg.sellPrice, true, cap); // the unplaced rest rests at the same price
                 return;
             }
             const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
-            if (res.cancelFailed) { Log.log(`[ScaledHedgedStrategy] MAX PROFIT: could not cancel the resting sell of ${leg.tsym} (it may still fill), retrying`); return; }
+            if (res.cancelFailed) {
+                const n = this.tripGuard.fail(leg.id);
+                if (this.tripGuard.shouldLogFailure(n)) Log.log(`[ScaledHedgedStrategy] MAX PROFIT: could not cancel the resting sell of ${leg.tsym} (it may still fill), retrying with backoff (failure ${n})`);
+                return;
+            }
             leg.sellQty = 0;
             leg.sellShortfall = 0;
             this.save();
             if (res.filledQty > 0) {
-                // Part (or all) of the old sell filled while it was cancelled: its fill events update soldQty; the next pass places what is really left.
-                Log.log(`[ScaledHedgedStrategy] MAX PROFIT: ${res.filledQty} of ${leg.tsym} sold while cancelling the resting sell - the rest is re-priced on the next pass`);
+                // Part (or all) of the old sell filled while it was cancelled: its fill events update soldQty (they may lag); the next pass sizes what is really left.
+                this.tripGuard.markFill(leg.id);
+                Log.log(`[ScaledHedgedStrategy] MAX PROFIT: ${res.filledQty} of ${leg.tsym} sold while cancelling the resting sell - the rest is re-priced on a later pass, once the fills are booked`);
                 return;
             }
         }
-        await this.placeTripSell(leg, rem, price, false, cap);
+        let quantity = this.remaining(leg);
+        const since = this.tripGuard.fillWait(leg.id);
+        if (since !== undefined) {
+            const held = await heldQuantity(this.userId, leg.token, leg.tsym);
+            if (leg.status !== 'open') { this.tripGuard.clearFill(leg.id); return; } // the fill events arrived meanwhile and closed it
+            quantity = this.remaining(leg);
+            const expired = Date.now() - since > TRIP_FILL_WAIT_MS;
+            if (held === 0) {
+                if (!expired) { Log.log(`[ScaledHedgedStrategy] MAX PROFIT: ${leg.tsym} is fully sold per the order side, waiting for its fill events (nothing placed)`); return; }
+                this.tripGuard.clearFill(leg.id);
+                this.closeOutside(leg, 'MAX PROFIT (fill events never arrived)');
+                return;
+            }
+            if ((held === undefined || held < quantity) && !expired) return; // the fills are not booked on the leg yet: its remaining/realized would misprice the sell
+            if (held !== undefined) quantity = Math.min(quantity, held);
+            this.tripGuard.clearFill(leg.id);
+        }
+        if (quantity <= 0) return;
+        const attempt = this.tripGuard.attempts(leg.id);
+        const price = tripSellPrice(clearPrice(leg, this.openLegs(), this.state.realizedPnl, cap), leg.lastLtp, attempt);
+        await this.placeTripSell(leg, quantity, price, false, cap);
     }
 
     // One limit sell for `quantity` of `leg` at `price` after a maxProfit trip. `add` = the leg already has a resting sell at this price and this is its unplaced rest.
@@ -951,6 +982,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             const res: any = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
                 tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(),
             });
+            this.tripGuard.ok(leg.id);
             if (add) {
                 const placed = Number(res?.placedQuantity);
                 const got = Number.isFinite(placed) && placed >= 0 ? Math.min(placed, quantity) : quantity;
@@ -960,10 +992,23 @@ export default class ScaledHedgedStrategy extends Strategy {
             } else this.bookPlacedSell(leg, quantity, price, res);
             Log.log(`[ScaledHedgedStrategy] MAX PROFIT: resting sell ${leg.tsym} qty=${quantity} @${price} (locks ${cap})`);
         } catch (e) {
-            if (add && String((e as any)?.message ?? e).includes('nothing sellable')) {
+            const nothingSellable = /nothing sellable/.test(String((e as any)?.message ?? e));
+            if (add && nothingSellable) {
                 leg.sellShortfall = 0; // the broker has nothing left to sell: the rest of the leg already rests
                 this.save();
-            } else Log.log(`[ScaledHedgedStrategy] ALERT: MAX PROFIT resting sell for ${leg.tsym} (${quantity} @${price}) failed, retrying:`, e);
+                return;
+            }
+            if (nothingSellable && leg.status === 'open') {
+                // The never-short guard sees nothing to sell (live 14:35:29: the leg had just been sold, its fill event had not arrived). Held nothing: give the
+                // event its grace, then close the leg; held something else: a resting sell this strategy does not know of, retried with backoff.
+                if ((await heldQuantity(this.userId, leg.token, leg.tsym)) === 0) {
+                    if (this.tripGuard.goneExpired(leg.id)) this.closeOutside(leg, 'MAX PROFIT sell refused');
+                    else Log.log(`[ScaledHedgedStrategy] MAX PROFIT: ${leg.tsym} has nothing sellable at the broker - waiting for its fill events before closing the leg`);
+                    return;
+                }
+            }
+            const n = this.tripGuard.fail(leg.id);
+            if (this.tripGuard.shouldLogFailure(n)) Log.log(`[ScaledHedgedStrategy] ALERT: MAX PROFIT resting sell for ${leg.tsym} (${quantity} @${price}) failed (failure ${n}; retried with backoff, the price moves toward the live LTP):`, e);
         }
     }
 

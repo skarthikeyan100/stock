@@ -10,7 +10,7 @@
 import OrderClient from '../processes/strategies/OrderClient';
 import SimpleContinuousStrategy from '../strategy/SimpleContinuousStrategy';
 import ScaledHedgedStrategy from '../strategy/ScaledHedgedStrategy';
-import { clearPrice } from '../strategy/maxProfitLock';
+import { clearPrice, tripSellPrice, tripFloor, keepTripSell, TripGuard } from '../strategy/maxProfitLock';
 import { Trade, NiftyQuote } from '../model/model';
 import configService from '../prism/ConfigService';
 import { settingFor } from '../prism/configVocabulary';
@@ -23,11 +23,13 @@ function assert(condition: boolean, message: string) {
 
 let calls: { fn: string; args: any[] }[] = [];
 let cancelResult: any = { filledQty: 0, cancelFailed: false };
+let heldTrades: any[] | 'error' = []; // what the order side holds open (read by heldQuantity)
 const fake: any = new Proxy({}, {
     get: (_t, fn: string) => async (...args: any[]) => {
         calls.push({ fn, args });
         if (fn === 'cancelRestingLimitSells') return cancelResult;
         if (fn === 'getPendingSells') return [];
+        if (fn === 'getOpenTrades') { if (heldTrades === 'error') throw new Error('unreadable'); return heldTrades; }
         return {};
     },
 });
@@ -67,13 +69,28 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
         assert(520 * (clearPrice(leg, [leg], 0, 5000) - 158.3) >= 5000, 'selling at clearPrice books at least the cap');
     }
 
+    console.log('tripSellPrice / keepTripSell / TripGuard');
+    {
+        assert(tripSellPrice(41, 126) === 119.7, 'clear 41, ltp 126 -> 119.70');
+        assert(tripSellPrice(123.2, 126) === 123.2, 'clear 123.20 above the floor stays');
+        assert(tripSellPrice(41, undefined) === 41, 'no LTP: clearPrice');
+        assert(tripSellPrice(41, 126, 1) === 123.5 && tripSellPrice(41, 126, 2) === 126 && tripSellPrice(41, 126, 9) === 126, 'attempts tighten the floor to the LTP');
+        assert(keepTripSell(150, 150, 140) && keepTripSell(130, 120, 140) && !keepTripSell(145, 120, 140) && !keepTripSell(110, 120, 140), 'keep: at clear, or above clear and at/below the market');
+        const g = new TripGuard();
+        assert(g.due('a', 0) && g.fail('a', 0) === 1 && !g.due('a', 4000) && g.due('a', 5000), 'first failure backs off 5 s');
+        assert(g.fail('a', 5000) === 2 && !g.due('a', 14000) && g.due('a', 15000), 'second 10 s');
+        for (let i = 0; i < 10; i++) g.fail('a', 0);
+        assert(!g.due('a', 59000) && g.due('a', 60000), 'capped at 60 s');
+        g.ok('a'); assert(g.due('a', 0), 'success resets');
+    }
+
     for (const Cls of [SimpleContinuousStrategy, ScaledHedgedStrategy] as any[]) {
         console.log(`\n=== ${Cls.name} ===`);
 
         console.log('resting sell above clearPrice is replaced at clearPrice (the 2026-11-13 12:14 case: 65 @144.25 resting 154.25, cap 5000)');
         calls = []; cancelResult = { filledQty: 0, cancelFailed: false };
         let s = make(Cls);
-        let leg = addLeg(s, 'L1', { tsym: 'NIFTY26N1725100PE', entry: 144.25, pnlRef: 144.25, qty: 65, sellQty: 65, sellPrice: 154.25, lastLtp: 160 });
+        let leg = addLeg(s, 'L1', { tsym: 'NIFTY26N1725100PE', entry: 144.25, pnlRef: 144.25, qty: 65, sellQty: 65, sellPrice: 154.25, lastLtp: 150 });
         s.state.realizedPnl = 4550 - 65 * 0; // realized 4550 as live; clear = 144.25 + 450/65 = 151.17 -> 151.20
         await s.closeAllLegs('MAX PROFIT');
         assert(of('cancelRestingLimitSells').length === 1, 'the old sell is cancelled');
@@ -85,7 +102,7 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
 
         console.log('tripped strategy restored with its old sell above clearPrice: the Nifty tick pass re-prices it (no trip event needed)');
         calls = [];
-        s = make(Cls); leg = addLeg(s, 'L1', { entry: 144.25, pnlRef: 144.25, qty: 65, sellQty: 65, sellPrice: 154.25, lastLtp: 160 }); s.state.realizedPnl = 4550;
+        s = make(Cls); leg = addLeg(s, 'L1', { entry: 144.25, pnlRef: 144.25, qty: 65, sellQty: 65, sellPrice: 154.25, lastLtp: 150 }); s.state.realizedPnl = 4550;
         await s.processNiftyQuote(nifty());
         assert(of('cancelRestingLimitSells').length === 1 && limitSells().length === 1 && limitSells()[0].price === 151.2, 'first tick after load: cancel + sell @151.20');
         await s.processNiftyQuote(nifty());
@@ -93,7 +110,7 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
 
         console.log('resting sell below clearPrice is cancelled and raised to clearPrice, never at the bid');
         calls = [];
-        s = make(Cls); leg = addLeg(s, 'L1', { sellPrice: 130, lastLtp: 160 }); // total 6000, clear = 150
+        s = make(Cls); leg = addLeg(s, 'L1', { sellPrice: 130, lastLtp: 140 }); // clear = 150, floor 133
         await s.closeAllLegs('MAX PROFIT');
         assert(of('cancelRestingLimitSells').length === 1, 'the old sell is cancelled');
         assert(limitSells().length === 1 && limitSells()[0].price === 150 && limitSells()[0].quantity === 100, `one limit sell of 100 @150: ${JSON.stringify(limitSells())}`);
@@ -122,12 +139,16 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
         await s.closeAllLegs('MAX PROFIT');
         assert(limitSells().length === 0 && leg.sellQty === 0, 'nothing placed on the pass that saw the fill');
         cancelResult = { filledQty: 0, cancelFailed: false };
+        heldTrades = [{ token: leg.token, tsym: leg.tsym, quantity: 60 }];
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 0, 'next pass, fill event NOT yet booked and the order side holds 60 of 100: still nothing placed');
         await s.updateTrade(sellFill(leg, 40, 130)); // the fill event: realized 1200, 60 left
         await s.closeAllLegs('MAX PROFIT');
         // total: realized 1200 + 60 x (ltp 140 - 100) = 3600 (< cap, still tripped); clear = 100 + 3800/60
         assert(limitSells().length === 1 && limitSells()[0].quantity === 60 && limitSells()[0].price === 163.35, `60 left re-priced @163.35: ${JSON.stringify(limitSells())}`);
         await s.updateTrade(sellFill(leg, 60, 163.35));
         assert(s.state.realizedPnl >= 5000, `booked ${s.state.realizedPnl} >= 5000 in total`);
+        heldTrades = [];
 
         console.log('partial placement: the unplaced rest is placed at the same price on the next pass');
         calls = [];
@@ -146,6 +167,102 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
         (OrderClient as any).getInstance = () => fake;
         assert(of('chunkedSquareOff').length === 0 && leg.status === 'open' && leg.sellQty === 0, 'leg open, no sell, no bid dump');
         void real;
+
+
+        console.log('FLOOR (2026-11-13 14:35): other legs already realized more than the cap, clearPrice 41 on a 126 leg -> sold at the marketable floor, never at 41');
+        calls = []; cancelResult = { filledQty: 0, cancelFailed: false };
+        s = make(Cls); leg = addLeg(s, 'L1', { tsym: 'NIFTY17NOV2625150CE', entry: 124.05, pnlRef: 124.05, qty: 65, sellQty: 0, sellPrice: 0, lastLtp: 126 });
+        s.state.realizedPnl = 8450;
+        assert(clearPrice(leg, [leg], 8450, 5000) < 90, `clearPrice alone is far below the market: ${clearPrice(leg, [leg], 8450, 5000)}`);
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 1 && limitSells()[0].price === tripFloor(126) && limitSells()[0].price > 100 && limitSells()[0].price === 119.7, `placed at the floor 119.70 (126 less 5%), not 41: ${JSON.stringify(limitSells())}`);
+        assert(of('chunkedSquareOff').length === 0, 'never a market/bid sell');
+        const nf = calls.length;
+        s.processNiftyQuote && await s.closeAllLegs('MAX PROFIT');
+        assert(calls.length === nf, 'second pass: the floored sell stays');
+        leg.lastLtp = 124; // the LTP drifts down but the sell (119.70) is still at/below the market: stays
+        await s.closeAllLegs('MAX PROFIT');
+        assert(calls.length === nf, 'LTP 124: resting 119.70 is still marketable, no churn');
+        leg.lastLtp = 110; // the market fell under the resting sell: re-priced to the new floor
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 2 && limitSells()[1].price === tripFloor(110) && of('cancelRestingLimitSells').length === 1, `market fell under it: cancelled and re-placed @${tripFloor(110)}`);
+
+        console.log('clearPrice above the market floor: rests at clearPrice as before');
+        calls = [];
+        s = make(Cls); leg = addLeg(s, 'L1', { sellQty: 0, sellPrice: 0, lastLtp: 140 });
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 1 && limitSells()[0].price === 150, 'clear 150 > floor 133: placed at 150');
+
+        console.log('no tick yet (no LTP): placed at clearPrice (no floor can be derived)');
+        calls = [];
+        s = make(Cls); leg = addLeg(s, 'L1', { sellQty: 0, sellPrice: 0, lastLtp: undefined });
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 1 && limitSells()[0].price === 150, 'clearPrice');
+
+        console.log('price-band refusal: backs off (no call every pass), log is throttled, the price tightens toward the LTP, then the sell rests');
+        calls = [];
+        s = make(Cls); leg = addLeg(s, 'L1', { sellQty: 0, sellPrice: 0, lastLtp: 126, entry: 124.05, pnlRef: 124.05, qty: 65 }); s.state.realizedPnl = 8450;
+        let refuse = 2;
+        const refusing = new Proxy({}, { get: (_t, fn: string) => async (...args: any[]) => { calls.push({ fn, args }); if (fn === 'chunkedSquareOffLimit' && refuse-- > 0) throw new Error('Breeze placeOrder failed: Your order might get rejected as the order price is outside the price range specified by the exchange'); if (fn === 'cancelRestingLimitSells') return cancelResult; return fake[fn] ? {} : {}; } });
+        (OrderClient as any).getInstance = () => refusing;
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 1 && leg.sellQty === 0, 'first attempt refused, leg still open and unsold');
+        for (let i = 0; i < 5; i++) await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 1, 'passes within the backoff place nothing (no call storm)');
+        s.tripGuard['failures'].get(leg.id).next = 0; // the 5 s backoff elapsed
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 2 && limitSells()[1].price === tripFloor(126, 1), `retry at the tighter floor ${tripFloor(126, 1)}`);
+        s.tripGuard['failures'].get(leg.id).next = 0;
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 3 && limitSells()[2].price === 126 && leg.sellQty === 65 && leg.sellPrice === 126, 'third attempt at the LTP rests');
+        (OrderClient as any).getInstance = () => fake;
+
+        console.log('cancel returned FILLED-ALL, fill event lagging (14:35:21/29): the next pass places NOTHING');
+        calls = []; cancelResult = { filledQty: 195, cancelFailed: false }; heldTrades = [];
+        s = make(Cls); leg = addLeg(s, 'L1', { qty: 195, sellQty: 195, sellPrice: 99, lastLtp: 140 });
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 0 && leg.sellQty === 0, 'cancel pass places nothing');
+        cancelResult = { filledQty: 0, cancelFailed: false };
+        await s.closeAllLegs('MAX PROFIT');
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 0, 'later passes: order side holds 0 -> nothing placed while the fill event is awaited');
+        await s.updateTrade(sellFill(leg, 195, 130));
+        assert(leg.status === 'closed', 'the fill event closes the leg');
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 0, 'closed: still nothing placed');
+
+        console.log('fill event never arrives (grace over): the leg is closed neutral, no sell');
+        calls = []; cancelResult = { filledQty: 195, cancelFailed: false };
+        s = make(Cls); leg = addLeg(s, 'L1', { qty: 195, sellQty: 195, sellPrice: 99, lastLtp: 140 });
+        await s.closeAllLegs('MAX PROFIT');
+        cancelResult = { filledQty: 0, cancelFailed: false };
+        s.tripGuard['fillSince'].set(leg.id, Date.now() - 61000);
+        await s.closeAllLegs('MAX PROFIT');
+        assert(leg.status === 'closed' && limitSells().length === 0, 'closed outside, nothing placed');
+
+        console.log('cancel returned FILLED-PART (65 of 195), events lagging: waits, then places ONLY the remainder (130)');
+        calls = []; cancelResult = { filledQty: 65, cancelFailed: false }; heldTrades = [{ token: 'KL1', tsym: 'TL1', quantity: 130 }];
+        s = make(Cls); leg = addLeg(s, 'L1', { qty: 195, sellQty: 195, sellPrice: 99, lastLtp: 140 });
+        await s.closeAllLegs('MAX PROFIT');
+        cancelResult = { filledQty: 0, cancelFailed: false };
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 0, 'order side holds 130 but the leg still counts 195: wait for the fill events');
+        await s.updateTrade(sellFill(leg, 65, 130));
+        await s.closeAllLegs('MAX PROFIT');
+        assert(limitSells().length === 1 && limitSells()[0].quantity === 130, `only the remaining 130 placed: ${JSON.stringify(limitSells())}`);
+        heldTrades = [];
+
+        console.log("'nothing sellable' refusal on a trip sell with nothing held: graced, then the leg is closed (no ALERT retry loop)");
+        calls = [];
+        s = make(Cls); leg = addLeg(s, 'L1', { sellQty: 0, sellPrice: 0, lastLtp: 140 });
+        const refusing2 = new Proxy({}, { get: (_t, fn: string) => async (...args: any[]) => { calls.push({ fn, args }); if (fn === 'chunkedSquareOffLimit') throw new Error('NEVER-SHORT GUARD refused a sell of 100 TL1 - nothing sellable (live=0)'); if (fn === 'getOpenTrades') return []; return {}; } });
+        (OrderClient as any).getInstance = () => refusing2;
+        await s.closeAllLegs('MAX PROFIT');
+        assert(leg.status === 'open', 'first refusal: the fill event gets its grace');
+        s.tripGuard['goneSince'].set(leg.id, Date.now() - 61000);
+        await s.closeAllLegs('MAX PROFIT');
+        assert(leg.status === 'closed', 'after the grace the leg is closed');
+        (OrderClient as any).getInstance = () => fake;
 
         console.log('two legs (CE and PE): the exits together reach the cap, and a second pass is stable');
         calls = [];

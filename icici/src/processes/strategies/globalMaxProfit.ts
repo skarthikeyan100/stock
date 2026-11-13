@@ -5,9 +5,8 @@ import { isWithinTradingWindow } from '../../util/marketHours';
 import { isOpenedToday } from '../../util/openedToday';
 import { exchangeForTsym } from '../../util/underlyings';
 import { globalMaxProfit } from '../../strategy/effectiveMaxProfit';
-import { clearPrice, LockLeg } from '../../strategy/maxProfitLock';
+import { clearPrice, LockLeg, tripSellPrice, keepTripSell, TripGuard } from '../../strategy/maxProfitLock';
 import { latchGlobalMaxProfit, globalMaxProfitLatchedBrokers } from '../../strategy/globalMaxProfitLatch';
-import { NFO_TICK_SIZE } from '../../util/tick';
 import OrderClient from './OrderClient';
 import type { Strategy } from '../../strategy/strategy';
 
@@ -24,6 +23,7 @@ const INTERVAL_MS = 5000;
 const REPRICE_AFTER_MS = 20_000;
 
 const placed = new Map<string, { qty: number; price: number; at: number }>(); // key user|broker|tsym: the trip sell this monitor rests
+const tripGuard = new TripGuard(); // backoff of refused trip sells (in memory throttle only)
 let running = false;
 
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -60,12 +60,16 @@ async function checkOne(userId: string, broker: string, cap: number, stats: { tr
     for (const t of open) {
         const key = `${userId}|${broker}|${t.tsym}`;
         const leg = legs.get(t)!;
-        const price = clearPrice(leg, [...legs.values()], realized, cap);
+        const key2 = key;
+        if (!tripGuard.due(key2)) continue; // a refused placement is retried with a growing delay, not every cycle
+        const clear = clearPrice(leg, [...legs.values()], realized, cap);
+        // Never below the marketable floor (last price less 5%, tightening after a refusal): a clearPrice far under the market is refused by the exchange band.
+        const price = tripSellPrice(clear, marks.get(t), tripGuard.attempts(key2));
         try {
             const rec = placed.get(key);
             const instrumentId = String(t.token);
             if (rec) {
-                if (Date.now() - rec.at < REPRICE_AFTER_MS || Math.abs(rec.price - price) < NFO_TICK_SIZE / 2) continue;
+                if (Date.now() - rec.at < REPRICE_AFTER_MS || keepTripSell(rec.price, clear, marks.get(t))) continue;
                 const res = await OrderClient.getInstance().cancelRestingLimitSells(userId, { tradingSymbol: t.tsym, broker: broker as any });
                 if (res.cancelFailed) { Log.log(`[GlobalMaxProfit] ${userId} ${broker}: could not cancel the resting sell of ${t.tsym}, retrying`); continue; }
                 placed.delete(key);
@@ -76,10 +80,12 @@ async function checkOne(userId: string, broker: string, cap: number, stats: { tr
                 if (pending.reduce((s, p) => s + num(p.quantity), 0) >= num(t.quantity)) { placed.set(key, { qty: num(t.quantity), price: 0, at: Date.now() }); continue; }
             }
             await OrderClient.getInstance().chunkedSquareOffLimit(userId, { tradingSymbol: t.tsym, instrumentId, quantity: num(t.quantity), price, broker: broker as any });
+            tripGuard.ok(key2);
             placed.set(key, { qty: num(t.quantity), price, at: Date.now() });
             Log.log(`[GlobalMaxProfit] ${userId} ${broker}: resting sell ${t.tsym} qty=${num(t.quantity)} @${price} (locks ${cap})`);
         } catch (e) {
-            Log.log(`[GlobalMaxProfit] ALERT: ${userId} ${broker}: trip sell for ${t.tsym} failed, retrying:`, e);
+            const n = tripGuard.fail(key2);
+            if (tripGuard.shouldLogFailure(n)) Log.log(`[GlobalMaxProfit] ALERT: ${userId} ${broker}: trip sell for ${t.tsym} @${price} failed (failure ${n}, retried with backoff):`, e);
         }
     }
 }

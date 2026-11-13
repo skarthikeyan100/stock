@@ -152,6 +152,7 @@ const tick = (l: any, ltp: number) => Object.assign(new OptionQuote(), { token: 
         openTrades = [openTrades[0]]; pendingFor = () => [{ quantity: 1170 }];
         await lk.reconcile(1, 0);
         calls = [];
+        (lk as any).state.legs.L2.sellPrice = 175; // a sell above the market (170) sits out of reach; one at/below the market and >= clearPrice is kept (marketable)
         await lk.processOptionQuote(tick(l2, 170));
         await lk.checkMaxProfit();
         assert(count('buyContractBare') === 0 && count('cancelRestingLimitSells') >= 1 && count('chunkedSquareOffLimit') >= 1, 'maxProfit lock: resting sell cancelled and re-placed, no buy');
