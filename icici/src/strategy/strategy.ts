@@ -10,6 +10,7 @@ import { StrategyInstanceConfig } from '../prism/AppConfig';
 import OrderClient from "../processes/strategies/OrderClient";
 import { isWithinTradingWindow } from '../util/marketHours';
 import { FeedSource } from '../ipc/feedSource';
+import { clearGlobalMaxProfit } from './globalMaxProfitLatch';
 
 export enum Outcome {
     WAIT = "WAIT",
@@ -126,6 +127,7 @@ export abstract class Strategy {
     // _opts.clearPnl: an admin reset also clearing the day's realized P&L (only strategies that keep one, e.g. BulkPcr, read it).
     reset(_opts?: { clearPnl?: boolean }): void {
         this.lastTriggerTime = 0;
+        void clearGlobalMaxProfit(this.userId); // re-arms the global settings.maxProfit latch of this strategy (all brokers)
         Log.log(`[${this.userId}] Reset via admin request`);
     }
 

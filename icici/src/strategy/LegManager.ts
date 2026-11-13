@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import Log from '../util/Log';
 import { CALL, PUT } from '../constants';
 import { resolveMaxInvestment } from '../prism/configVocabulary';
+import { globalMaxProfit } from './effectiveMaxProfit';
 import { Trade } from '../model/model';
 import AntContractMaster from '../ant/AntContractMaster';
 import { watchToken, unwatchToken, registerTrade } from '../processes/strategies/tokenRouter';
@@ -498,11 +499,14 @@ export class LegManager {
     private checkAndMaybeTripMaxProfit(cfg: LegManagerConfig): void {
         this.rollDayIfNeeded();
         if (this.maxProfitTripped) return; // latched permanently - see field comment
-        if (cfg.maxProfit == null) return; // feature not configured
-        const maxProfitPct = toPercentNumber(cfg.maxProfit);
-        if (maxProfitPct === null) { this.logUnparseablePercent('maxProfit', cfg.maxProfit); return; }
+        // The block's own maxProfit (a % of maxInvestment) wins; without one, settings.maxProfit (rupees, one value for all brokers) applies.
+        const globalCap = cfg.maxProfit == null ? globalMaxProfit() : 0;
+        if (cfg.maxProfit == null && !(globalCap > 0)) return; // feature not configured
+        const maxProfitPct = cfg.maxProfit == null ? null : toPercentNumber(cfg.maxProfit);
+        if (cfg.maxProfit != null && maxProfitPct === null) { this.logUnparseablePercent('maxProfit', cfg.maxProfit); return; }
         const maxInvestment = resolveMaxInvestment(cfg);
-        const threshold = (maxProfitPct / 100) * maxInvestment;
+        const threshold = cfg.maxProfit == null ? globalCap : ((maxProfitPct as number) / 100) * maxInvestment;
+        const capDesc = cfg.maxProfit == null ? `global settings.maxProfit=${globalCap} rupees` : `maxProfit=${maxProfitPct}% of maxInvestment=${maxInvestment}`;
         const cumulative = this.computeCumulativeProfit();
         if (!(cumulative >= threshold)) return; // NaN-safe: a NaN cumulative must not trip it
         this.maxProfitTripped = true;
@@ -511,7 +515,7 @@ export class LegManager {
         this.persistProfitState();
         if (this.profitCooldownUntil != null) this.armProfitCooldownTimer(this.profitCooldownUntil - Date.now());
         const lockout = this.profitCooldownUntil != null ? `blocking new entries for ${cooldownSec}s (released once flat, the target then restarts from there)` : 'permanently blocking new entries for the rest of this session';
-        Log.log(`[${this.deps.ownerType}] MAX PROFIT TRIPPED - cumulative=${Math.round(cumulative)} threshold=${Math.round(threshold)} (maxProfit=${maxProfitPct}% of maxInvestment=${maxInvestment}) - closing all legs, cancelling all pending re-entries, and ${lockout}`);
+        Log.log(`[${this.deps.ownerType}] MAX PROFIT TRIPPED - cumulative=${Math.round(cumulative)} threshold=${Math.round(threshold)} (${capDesc}) - closing all legs, cancelling all pending re-entries, and ${lockout}`);
     }
 
     // Invoked once maxProfitTripped latches - idempotent/safe to call

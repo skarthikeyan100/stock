@@ -154,21 +154,17 @@ async function main() {
     assert(validateConfigFile(blk({ enabled: false, brokers: undefined })).length === 0, 'a disabled block without brokers is exempt');
     for (const type of ['SimpleContinuousStrategy', 'ScaledHedgedStrategy']) {
         const sc = (over: Record<string, any>, settings: Record<string, any>) => blk({ type, maxInvestment: 100000, ...over }, settings);
-        assert(validateConfigFile(sc({ brokers: ['kite', 'ant'] }, { maxProfit: { kite: 5000, ant: 3000 } })).filter((e) => e.includes('maxProfit')).length === 0,
-            `${type} with no own maxProfit is accepted when settings.maxProfit caps each of its brokers`);
-        assert(validateConfigFile(sc({ brokers: ['kite', 'ant'] }, { maxProfit: { kite: 5000 } })).some((e) => e.includes("no cap for broker 'ant'")),
-            `${type} is rejected when a broker has neither a global cap nor its own maxProfit`);
-        assert(validateConfigFile(sc({ brokers: ['kite'] }, {})).some((e) => e.includes('settings.maxProfit has no cap')),
-            `${type} is rejected with no own maxProfit and no settings.maxProfit`);
+        assert(validateConfigFile(sc({ brokers: ['kite', 'ant'] }, { maxProfit: 5000 })).filter((e) => e.includes('maxProfit')).length === 0,
+            `${type} with no own maxProfit is accepted when settings.maxProfit is a number`);
+        const none = validateConfigFile(sc({ brokers: ['kite', 'ant'] }, {})).filter((e) => e.includes('maxProfit'));
+        assert(none.length === 1 && none[0].includes('settings.maxProfit is not a positive number'),
+            `${type} is rejected once (not per broker) with no own maxProfit and no settings.maxProfit`);
         assert(validateConfigFile(sc({ brokers: ['kite', 'ant'], maxProfit: 4000 }, {})).filter((e) => e.includes('maxProfit')).length === 0,
             `${type} with its own maxProfit needs no global cap`);
     }
-    assert(validateConfigFile({ settings: { maxProfit: { kite: 5000, ant: 3000 } }, strategies: [] }).length === 0, 'settings.maxProfit as a broker -> rupees map is accepted');
-    assert(validateConfigFile({ settings: { maxProfit: 5000 }, strategies: [] }).some((e) => e.includes('settings.maxProfit must be a map')), 'settings.maxProfit that is not a map is rejected');
-    assert(validateConfigFile({ settings: { maxProfit: [5000] }, strategies: [] }).some((e) => e.includes('settings.maxProfit')), 'settings.maxProfit as a list is rejected');
-    assert(validateConfigFile({ settings: { maxProfit: { nosuchbroker: 5000 } }, strategies: [] }).some((e) => e.includes('unknown broker')), 'settings.maxProfit with an unknown broker is rejected');
-    for (const bad of [0, -5, '5000', null]) {
-        assert(validateConfigFile({ settings: { maxProfit: { kite: bad } }, strategies: [] }).some((e) => e.includes('settings.maxProfit.kite')), `settings.maxProfit.kite = ${JSON.stringify(bad)} is rejected`);
+    assert(validateConfigFile({ settings: { maxProfit: 5000 }, strategies: [] }).length === 0, 'settings.maxProfit as one number of rupees is accepted');
+    for (const bad of [{ kite: 5000 }, [5000], '5000', '5000%', 0, -5]) {
+        assert(validateConfigFile({ settings: { maxProfit: bad }, strategies: [] }).some((e) => e.includes('settings.maxProfit must be a positive number of rupees')), `settings.maxProfit = ${JSON.stringify(bad)} is rejected`);
     }
 
     // --- drawdownLimit: shared default, percent parsing, safe with absent settings ---

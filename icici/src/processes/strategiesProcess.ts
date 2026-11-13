@@ -17,6 +17,7 @@ import { FutQuote, NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/
 import { FeedSource, DEFAULT_FEED_SOURCE, BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import { exchangeForTsym } from '../util/underlyings';
+import { startGlobalMaxProfitMonitor } from './strategies/globalMaxProfit';
 
 // Entry point for the `strategies` process. No Prism/Kite dependency at all -
 // ticks arrive over the DataLink socket from `data`, orders go out
@@ -461,6 +462,8 @@ export async function startStrategiesProcess() {
     // `order` process), then every strategy's reconcile(). Runs in the background and retries until it succeeds, so a broker that is
     // not logged in yet holds trading back rather than letting a restarted strategy open a duplicate. POST /reconcile also satisfies it.
     void startupReconcile();
+    // The global settings.maxProfit for strategies without a profit stop of their own (a no-op while the setting is absent).
+    startGlobalMaxProfitMonitor(() => strategies.getList());
 
     // The trading window is enforced at dispatch (Strategy.receivesEvents), not by clearing `enabled` in memory.
 

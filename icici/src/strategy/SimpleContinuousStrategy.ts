@@ -14,6 +14,7 @@ import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRou
 import { localDayKey } from './dayKey';
 import { roundToTick, NFO_TICK_SIZE } from '../util/tick';
 import { clearPrice } from './maxProfitLock';
+import { effectiveMaxProfit } from './effectiveMaxProfit';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import { isPastEodClose } from '../util/eodClose';
 import { BrokerName, normalizeBrokerName } from '../util/brokerName';
@@ -138,10 +139,12 @@ export default class SimpleContinuousStrategy extends Strategy {
         return Number(this.cfg()?.priceDiff);
     }
 
-    // maxProfit is a REQUIRED config key (rupees): no default here. Missing / not a positive number blocks every new entry (see the gate in
+    // maxProfit (rupees) is required in the block or as settings.maxProfit: no default here. Missing / not a positive number blocks every new entry (see the gate in
     // processNiftyQuote) and configValidation rejects such a config.
     private maxProfit(): number {
-        return Number(this.cfg()?.maxProfit);
+        const own = this.cfg()?.maxProfit;
+        // The block's own maxProfit (rupees) wins; without one, settings.maxProfit applies.
+        return effectiveMaxProfit(own === undefined || own === null ? undefined : Number(own));
     }
 
     // The maxProfit total of this broker's legs, CE and PE together: realized fills since counting started plus each open leg valued from its

@@ -97,6 +97,14 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     const errors: string[] = [];
     if (!obj || typeof obj !== 'object') return errors;
 
+    // settings.maxProfit: the global cap in rupees, ONE positive number for every broker (each strategy on each broker is judged separately).
+    if (label === 'settings' && obj.maxProfit !== undefined && obj.maxProfit !== null) {
+        const m = obj.maxProfit;
+        if (!(typeof m === 'number' && Number.isFinite(m) && m > 0)) {
+            errors.push(`settings.maxProfit must be a positive number of rupees, e.g. 5000 (got ${JSON.stringify(m)}); a map, list, string, percent, 0 or negative value is not allowed, remove the key for no global cap`);
+        }
+    }
+
     // Global exits (settings) and per-strategy overrides share the same value format; an absent key is not an error here.
     for (const which of ['target', 'stopLoss'] as const) {
         const err = exitValueError(label, which, obj[which]);
@@ -134,6 +142,7 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
     // that is present but unparseable is an error rather than silently skipped.
     for (const field of PERCENT_KEYS) {
         if (obj[field] == null) continue;
+        if (field === 'maxProfit' && label === 'settings') continue; // a single rupee number, validated above
         const n = toPercentNumber(obj[field]);
         if (n === null) {
             errors.push(`${label}.${field} must be a number, optionally with a % sign (got ${JSON.stringify(obj[field])})`);
@@ -280,6 +289,10 @@ export function validateConfigFile(parsed: any): string[] {
         }
         if (s.enabled === false) continue;
         errors.push(...validateNumericRanges(s.type, s));
+        // Every strategy names its brokers explicitly; the single-broker key is removed.
+        if (s.broker !== undefined) errors.push(`${s.type}${s.userId ? ':' + s.userId : ''}: the broker key is REMOVED - use brokers: [...]`);
+        if (!Array.isArray(s.brokers) || s.brokers.length === 0) errors.push(`${s.type}${s.userId ? ':' + s.userId : ''}.brokers is required (a non-empty list, e.g. [kite])`);
+        else for (const b of s.brokers) if (!isBrokerName(b)) errors.push(`${s.type}${s.userId ? ':' + s.userId : ''}.brokers has an unknown broker ${JSON.stringify(b)}`);
         if (s.type === 'BulkPcrStrategy') {
             // Required, not defaulted at the read site: a missing quantity once fell back to a hidden size that bought about 215 lots.
             for (const field of ['quantity', 'targetPoints', 'slDistance']) {
@@ -289,7 +302,7 @@ export function validateConfigFile(parsed: any): string[] {
         }
         // Same reasoning for the other strategies that size a live order from their own config: a missing quantity used to fall back to a
         // hidden 65 (a NIFTY lot) - wrong for a SENSEX Butterfly (lot 20) and for any size the operator never chose.
-        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff', 'maxProfit'], ScaledHedgedStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff', 'maxProfit'] };
+        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'], ScaledHedgedStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'] };
         // Strategies that take their target and stop from the global exits: each must be set in the block or in settings (a value or 'none').
         // An absent key is refused rather than read as "no stop" (strategies/exitRules.ts).
         if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy' || s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy') {
@@ -313,6 +326,11 @@ export function validateConfigFile(parsed: any): string[] {
         // or a non-positive number is rejected, and the key is required (no default in code).
         if ((s.type === 'SimpleContinuousStrategy' || s.type === 'ScaledHedgedStrategy') && s.maxProfit !== undefined && !(typeof s.maxProfit === 'number' && Number.isFinite(s.maxProfit) && s.maxProfit > 0)) {
             errors.push(`${s.type}.maxProfit must be a positive number of rupees, not a percent (got ${JSON.stringify(s.maxProfit)})`);
+        }
+        // Their maxProfit is the block's own value, or else settings.maxProfit (one number of rupees) must be set: one error per block.
+        if ((s.type === 'SimpleContinuousStrategy' || s.type === 'ScaledHedgedStrategy') && s.maxProfit === undefined) {
+            const g = parsed.settings?.maxProfit;
+            if (!(typeof g === 'number' && Number.isFinite(g) && g > 0)) errors.push(`${s.type}.maxProfit is not set in the block and settings.maxProfit is not a positive number of rupees`);
         }
         for (const field of requiredByType[s.type] ?? []) {
             if (!isNum(s[field])) errors.push(`${s.type}.${field} is required for an enabled strategy (got ${JSON.stringify(s[field])})`);

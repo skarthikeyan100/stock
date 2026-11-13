@@ -19,6 +19,7 @@ import AntContractMaster from '../../ant/AntContractMaster';
 import { normalizeBrokerName } from '../../util/brokerName';
 import { localDayKey } from '../../strategy/dayKey';
 import { exchangeForTsym } from '../../util/underlyings';
+import { isGlobalMaxProfitLatched } from '../../strategy/globalMaxProfitLatch';
 
 // One row of a broker's position list, normalised across the four brokers (see OrderBookkeeping.readBrokerRows). `tsyms` and `tokens` are every
 // spelling/id the platform may have stored for the contract; `soldQty`/`soldValue` are TODAY's sells at the broker (absent where the broker does not report them).
@@ -794,6 +795,10 @@ class OrderBookkeeping {
     // skipInvestmentCap: honoured only for the capital-only-exempt strategy pseudo-users below (BulkPcr's hedge re-buy, which re-opens a slot the
     // cap already counted: live 2026-10-30 a cap refusal left a put naked). Every other gate, and every other user, is unchanged.
     async canPlaceOrder(user: string, estimatedOrderValue?: number, broker?: string, skipInvestmentCap = false): Promise<{ allowed: boolean; reason?: string }> {
+        // Global settings.maxProfit tripped for this strategy on this broker today: no new buy of any kind (entry, hedge, average, refill).
+        if (await isGlobalMaxProfitLatched(user, broker)) {
+            return { allowed: false, reason: `'${user}'${broker ? ` (${broker})` : ''} hit the global maxProfit today - no new orders for the rest of the day (admin reset re-arms it)` };
+        }
         // ContinuousStrategy manages its own risk (per-leg averaging/hedging,
         // its own allottedCapital gate in ContinuousStrategy.capitalCheck())
         // and was hitting the shared daily-trade-count limit on ordinary

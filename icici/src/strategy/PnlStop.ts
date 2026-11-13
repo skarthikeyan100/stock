@@ -2,6 +2,7 @@ import { localDayKey } from './dayKey';
 import Log from '../util/Log';
 import Mongo from '../tools/mongo';
 import { toPercentNumber } from '../prism/percentConfig';
+import { globalMaxProfit } from './effectiveMaxProfit';
 
 // Day latch for one owner + scope (e.g. a BulkPcr broker). Tripped by a breach, it stays tripped for the rest of the
 // local day, including across restarts, until clear(). A latch that could not be read back after a restart fails
@@ -41,7 +42,14 @@ export class PnlStop {
     // The cap is on when set to a number other than 0. Unset (null/undefined) and 0 both mean "no limit".
     private capEnabled(): boolean {
         const raw = this.deps.getCapPct();
-        return raw != null && toPercentNumber(raw) !== 0;
+        if (raw == null) return this.globalRupees() > 0;
+        return toPercentNumber(raw) !== 0;
+    }
+
+    // Global cap (rupees) for a 'profit' latch whose block sets no maxProfit of its own (an own value, even 0 = no limit, wins).
+    private globalRupees(): number {
+        if (this.deps.kind !== 'profit' || this.deps.getCapPct() != null) return 0;
+        return globalMaxProfit();
     }
 
     isTripped(): boolean {
@@ -53,6 +61,13 @@ export class PnlStop {
     evaluate(pnl: number): boolean {
         if (this.tripped) return false;
         if (!this.capEnabled()) return false;
+        const globalCap = this.globalRupees();
+        if (globalCap > 0) {
+            if (!(pnl >= globalCap)) return false;
+            this.tripped = true;
+            Log.log(`[${this.deps.ownerType}] [${this.deps.scope}] MAX PROFIT TRIPPED - day P&L=${Math.round(pnl)} threshold=+${Math.round(globalCap)} (global settings.maxProfit, rupees) - locked out for the rest of the day`);
+            return true;
+        }
         const raw = this.deps.getCapPct();
         const pct = toPercentNumber(raw);
         if (pct === null || !(pct > 0)) {
