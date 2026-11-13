@@ -2,20 +2,19 @@
 # Realized / unrealized P&L for EVERY strategy, not a fixed list (from the running `order` process): one table per strategy, one per broker
 # (kite / ant / breeze / prism), then UNREALIZED BY BROKER AND STRATEGY: one row per open position with the contract, bought price,
 # live price, resting sell price and unrealized P&L.
-# Which strategies: every strategy with an open or closed trade today (enabled or not), plus every strategy enabled in config.yml
-# (expanded per broker the way the platform names instances: <userId>, <userId>-ANT, <userId>-Breeze) shown with zeros until it trades,
-# so a newly enabled strategy appears with no change here.
+# Which strategies: ONLY those enabled in config.yml (expanded per broker the way the platform names instances: <userId>, <userId>-ANT,
+# <userId>-Breeze), shown with zeros until they trade, so a newly enabled strategy appears with no change here. Trades of a disabled
+# strategy are left out of every table (user's rule, 2026-11-13); the by-broker table is filtered the same way (?match=).
 # The resting sell price is not stored on the position: it is read from the strategy's own log line for that contract (today's log, last
 # match): "resting sell @ <price>", or "target <price> / stop <price> protected via <gtt|..>" which shows "<price> (<gtt|..>)". "-" when
 # none is found (no resting sell, e.g. tick-monitored RuleBased).
 # Usage: scripts/strategy-status.sh [port]
 PORT="${1:-3000}"
 BY_STRATEGY="$(curl -s -m10 "localhost:$PORT/strategyPnl")"
-BY_BROKER="$(curl -s -m10 "localhost:$PORT/strategyPnl?by=broker")"
 DETAIL="$(curl -s -m20 "localhost:$PORT/strategyPnl?detail=1")"
 ROOT="$(dirname "$(readlink -f "$0")")/.."
 LOG="$(dirname "$(readlink -f "$0")")/../logs/orchestrator-$(date +%F).log"
-BY_STRATEGY="$BY_STRATEGY" BY_BROKER="$BY_BROKER" DETAIL="$DETAIL" LOG="$LOG" ROOT="$ROOT" node -e '
+PORT="$PORT" BY_STRATEGY="$BY_STRATEGY" DETAIL="$DETAIL" LOG="$LOG" ROOT="$ROOT" node -e '
 const f=n=>(n>=0?"+":"")+n.toFixed(2);
 const parse=(s)=>{try{const r=JSON.parse(s);return Array.isArray(r)?r:null}catch{return null}};
 const table=(title,rows)=>{
@@ -33,25 +32,30 @@ const detailSnap=parse(process.env.DETAIL);
 const snapUnreal=(rows,key)=>{if(!detailSnap)return;for(const r of rows){const k=key(r);r.unrealized=detailSnap.filter(d=>key(d)===k).reduce((a,d)=>a+d.unrealized,0)}};
 snapUnreal(byStrategy,r=>r.strategy);
 // Strategies enabled in config.yml, named as the platform names its instances (src/util/strategyInstances.ts, compiled in dist/).
+let enabledNames=null;
 try{
   const {expandStrategyInstances}=require(process.env.ROOT+"/dist/util/strategyInstances.js");
   const cfg=require(process.env.ROOT+"/node_modules/js-yaml").load(require("fs").readFileSync(process.env.CONFIG_PATH||process.env.ROOT+"/config.yml","utf8"));
-  const have=new Set(byStrategy.map(r=>r.strategy));
-  for(const c of expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&c.enabled===true))){
-    const name=c.userId||c.type;
-    if(!have.has(name)){have.add(name);byStrategy.push({strategy:name,realized:0,unrealized:0,open:0,closed:0})}
-  }
+  enabledNames=new Set(expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&c.enabled===true)).map(c=>c.userId||c.type));
 }catch(e){console.log("(could not read the enabled strategies from config.yml: "+e.message+")")}
+if(enabledNames){
+  for(let i=byStrategy.length-1;i>=0;i--)if(!enabledNames.has(byStrategy[i].strategy))byStrategy.splice(i,1);
+  const have=new Set(byStrategy.map(r=>r.strategy));
+  for(const name of enabledNames)if(!have.has(name))byStrategy.push({strategy:name,realized:0,unrealized:0,open:0,closed:0});
+}
 byStrategy.sort((a,b)=>a.strategy.localeCompare(b.strategy));
 if(!byStrategy.length){console.log("no strategy enabled and no trades this session");process.exit(0)}
 table("BY STRATEGY",byStrategy);
-const byBroker=parse(process.env.BY_BROKER);
+const esc=n=>n.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+const matchQ=enabledNames?"&match="+encodeURIComponent("^("+[...enabledNames].map(esc).join("|")+")$"):"";
+const byBroker=parse(require("child_process").execFileSync("curl",["-s","-m10","localhost:"+process.env.PORT+"/strategyPnl?by=broker"+matchQ]).toString());
 if(byBroker)snapUnreal(byBroker,r=>r.broker??r.strategy);
 if(byBroker&&byBroker.length){console.log("");table("BY BROKER",byBroker)}
 else console.log("\n(by-broker table unavailable: the API process predates the ?by=broker option - restart it)");
 
 // ---- Unrealized by broker and strategy, per open position ----
 const detail=parse(process.env.DETAIL);
+if(detail&&enabledNames)for(let i=detail.length-1;i>=0;i--)if(!enabledNames.has(detail[i].strategy))detail.splice(i,1);
 if(!detail){console.log("\n(position table unavailable: the API process predates the ?detail=1 option - restart it)");process.exit(0)}
 // Resting sell prices from today log: MomentumAtFixedTime "[MomentumAtFixedTime:<user>] <broker> <tsym>: bought .. - resting sell @ <p>" and
 // SimpleContinuous-style "[<user>] resting sell <tsym> qty=<n> @<p>". Keyed user|tsym; the last line wins.
