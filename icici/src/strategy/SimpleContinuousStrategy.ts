@@ -1,3 +1,4 @@
+import { NonFiniteAlert, profitTotalOf, shouldTrip } from './finiteGuard';
 import * as fs from 'fs';
 import * as path from 'path';
 import Log from '../util/Log';
@@ -148,22 +149,22 @@ export default class SimpleContinuousStrategy extends Strategy {
         return effectiveMaxProfit(own === undefined || own === null ? undefined : Number(own));
     }
 
+    private nonFiniteAlert = new NonFiniteAlert();
+
     // The maxProfit total of this broker's legs, CE and PE together: realized fills since counting started plus each open leg valued from its
-    // pnlRef (entry when absent). A leg with no tick yet, or still waiting for its reference tick, counts as 0.
+    // pnlRef (entry when absent). A leg with no tick yet, still waiting for its reference tick, or with a non-numeric lastLtp / entry / pnlRef / quantity counts as 0
+    // (the last kind is alerted, once per 10 min); a non-finite total never trips (finiteGuard.ts).
     private profitTotal(): number {
-        let total = this.state.realizedPnl;
-        for (const leg of this.openLegs()) {
-            if (leg.pnlRefPending || !(Number(leg.lastLtp) > 0)) continue;
-            total += this.remaining(leg) * (Number(leg.lastLtp) - (leg.pnlRef ?? leg.entry));
-        }
-        return total;
+        return profitTotalOf(this.userId, this.state.realizedPnl, this.openLegs().map((leg) => ({
+            id: leg.id, remaining: this.remaining(leg), lastLtp: leg.lastLtp, ref: leg.pnlRef ?? leg.entry, pending: leg.pnlRefPending,
+        })), this.nonFiniteAlert);
     }
 
     private async checkMaxProfit(): Promise<void> {
         const cap = this.maxProfit();
         if (this.state.profitTripped || !(cap > 0)) return;
         const total = this.profitTotal();
-        if (total < cap) return;
+        if (!shouldTrip(this.userId, total, cap, this.nonFiniteAlert)) return; // total >= cap, and only for a finite total (NaN must not trip)
         this.state.profitTripped = true; // synchronous, before any await: only one caller runs the close
         this.save();
         Log.log(`[SimpleContinuousStrategy] MAX PROFIT TRIPPED - total=${Math.round(total)} threshold=${cap} (realized=${Math.round(this.state.realizedPnl)}) - closing every open leg of ${this.userId}, no new orders for the rest of the day`);

@@ -26,9 +26,10 @@ export function gainAt(l: LockLeg, price: number): number {
 // A leg still waiting for its reference tick (or with no tick) counts 0, as in profitTotal.
 function gainOfOther(l: LockLeg): number {
     if (l.pnlRefPending) return 0;
-    if (l.sellQty > 0 && l.sellPrice > 0) return gainAt(l, l.sellPrice);
+    if (l.sellQty > 0 && l.sellPrice > 0) { const g = gainAt(l, l.sellPrice); return Number.isFinite(g) ? g : 0; }
     if (!(Number(l.lastLtp) > 0)) return 0;
-    return gainAt(l, Number(l.lastLtp));
+    const g = gainAt(l, Number(l.lastLtp));
+    return Number.isFinite(g) ? g : 0; // an unusable leg counts 0 (finiteGuard.ts)
 }
 
 // The lowest tick price at which selling the rest of `leg` brings the total to `cap`:
@@ -38,6 +39,7 @@ export function clearPrice(leg: LockLeg, openLegs: LockLeg[], realized: number, 
     const others = openLegs.filter((l) => l !== leg).reduce((s, l) => s + gainOfOther(l), 0);
     const rem = remaining(leg);
     const exact = refOf(leg) + (cap - realized - others) / rem;
+    if (!Number.isFinite(exact)) return NFO_TICK_SIZE; // unusable inputs: never a NaN price; tripSellPrice then places at the marketable floor
     const ticks = Math.ceil(exact / NFO_TICK_SIZE - 1e-9);
     return Math.max(NFO_TICK_SIZE, roundToTick(ticks * NFO_TICK_SIZE));
 }

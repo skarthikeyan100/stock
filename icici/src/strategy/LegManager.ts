@@ -1,3 +1,4 @@
+import { NonFiniteAlert } from './finiteGuard';
 import GateLogger from '../util/GateLogger';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import { HEDGE_UNCONFIRMED_TAG, ORDER_MAY_BE_LIVE_TAG } from '../ipc/orderProtocol';
@@ -255,6 +256,7 @@ export class LegManager {
     // (recordedPnL - maxProfitBaseline) instead of raw totalPnL so that a reset() actually
     // re-arms max-profit tracking for a fresh session.
     private maxProfitBaseline = 0;
+    private nonFiniteAlert = new NonFiniteAlert();
     private realizedPnL = 0; // mirrors the owning strategy's totalPnL, tracked independently so computeCumulativeProfit doesn't need a getter callback
     // Serializes every contract-selection+buy decision (root entry, spawns,
     // root refill) on this instance. Without this, concurrent ticks (e.g. two
@@ -485,10 +487,15 @@ export class LegManager {
     // Unrealized P&L of the legs open right now, with no realized P&L netted in (the max-loss stop's measure).
     private computeOpenUnrealized(): number {
         let unrealized = 0;
+        const bad: string[] = [];
         for (const leg of this.legsByToken.values()) {
             const ltp = leg.lastLtp ?? leg.avgPrice; // no quote seen yet -> contributes 0
-            unrealized += (ltp - leg.avgPrice) * leg.totalQuantity;
+            const term = (ltp - leg.avgPrice) * leg.totalQuantity;
+            // A leg with a non-numeric price / quantity is skipped (counts 0) and alerted, so it cannot poison the sum for the good legs (finiteGuard.ts).
+            if (!Number.isFinite(term)) { bad.push(`${leg.token}: lastLtp=${String(leg.lastLtp)} avgPrice=${String(leg.avgPrice)} qty=${String(leg.totalQuantity)}`); continue; }
+            unrealized += term;
         }
+        if (bad.length) this.nonFiniteAlert.report(`${this.deps.ownerType}:${this.deps.userId}:legs`, `[${this.deps.ownerType}] non-finite P&L input, leg(s) skipped from the max-profit/max-loss measure (they count 0): ${bad.join('; ')}`);
         return unrealized;
     }
 
@@ -508,7 +515,11 @@ export class LegManager {
         const threshold = cfg.maxProfit == null ? globalCap : ((maxProfitPct as number) / 100) * maxInvestment;
         const capDesc = cfg.maxProfit == null ? `global settings.maxProfit=${globalCap} rupees` : `maxProfit=${maxProfitPct}% of maxInvestment=${maxInvestment}`;
         const cumulative = this.computeCumulativeProfit();
-        if (!(cumulative >= threshold)) return; // NaN-safe: a NaN cumulative must not trip it
+        if (!Number.isFinite(cumulative)) { // realized itself is not a number: fail safe, never trip
+            this.nonFiniteAlert.report(`${this.deps.ownerType}:${this.deps.userId}:cumulative`, `[${this.deps.ownerType}] max-profit cumulative P&L is ${String(cumulative)} - NOT tripping`);
+            return;
+        }
+        if (!(cumulative >= threshold)) return;
         this.maxProfitTripped = true;
         const cooldownSec = Number(cfg.profitCooldownSeconds ?? 0);
         this.profitCooldownUntil = Number.isFinite(cooldownSec) && cooldownSec > 0 ? Date.now() + cooldownSec * 1000 : null;
@@ -612,7 +623,8 @@ export class LegManager {
         const maxInvestment = this.effectiveMaxInvestment(cfg);
         const threshold = (maxLossPct / 100) * maxInvestment;
         const openUnrealized = this.computeOpenUnrealized();
-        if (!(openUnrealized <= -threshold)) return; // NaN-safe: a NaN P&L must not trip it
+        if (!Number.isFinite(openUnrealized)) return; // fail safe (computeOpenUnrealized already skips and alerts on a bad leg)
+        if (!(openUnrealized <= -threshold)) return;
         this.maxLossTripped = true;
         const cut = Number(cfg.lossInvestmentCut ?? 0);
         if (Number.isFinite(cut) && cut > 0) this.lossInvestmentCutTotal += cut;

@@ -7,6 +7,7 @@ import { exchangeForTsym } from '../../util/underlyings';
 import { globalMaxProfit } from '../../strategy/effectiveMaxProfit';
 import { clearPrice, LockLeg, tripSellPrice, keepTripSell, TripGuard } from '../../strategy/maxProfitLock';
 import { latchGlobalMaxProfit, globalMaxProfitLatchedBrokers } from '../../strategy/globalMaxProfitLatch';
+import { NonFiniteAlert } from '../../strategy/finiteGuard';
 import OrderClient from './OrderClient';
 import type { Strategy } from '../../strategy/strategy';
 
@@ -26,6 +27,7 @@ const placed = new Map<string, { qty: number; price: number; at: number }>(); //
 const tripGuard = new TripGuard(); // backoff of refused trip sells (in memory throttle only)
 let running = false;
 
+const nonFiniteAlert = new NonFiniteAlert();
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
 async function markOf(t: any): Promise<number> {
@@ -36,9 +38,15 @@ async function markOf(t: any): Promise<number> {
     return num(t.lastTradePrice) > 0 ? num(t.lastTradePrice) : num(t.price);
 }
 
-async function checkOne(userId: string, broker: string, cap: number, stats: { trades: any[]; closedTrades: any[] }, latchedBrokers: Set<string>): Promise<void> {
+export async function checkOne(userId: string, broker: string, cap: number, stats: { trades: any[]; closedTrades: any[] }, latchedBrokers: Set<string>): Promise<void> {
     const mine = (t: any) => t.user === userId && String(t.broker || 'kite') === broker && isOpenedToday(t.entryTime);
-    const open = stats.trades.filter((t) => mine(t) && num(t.quantity) > 0);
+    // A trade whose price or quantity is not a positive finite number cannot be valued (num() would turn it into 0 and book a fake profit of
+    // mark x qty): it is left out of the total and of the lock, and alerted once per 10 min. A non-finite realizedPnL counts 0 (under-counts: safe).
+    const badTrades = stats.trades.filter((t) => mine(t) && num(t.quantity) > 0 && !(Number.isFinite(Number(t.price)) && Number(t.price) > 0));
+    if (badTrades.length) nonFiniteAlert.report(`${userId}|${broker}:trades`, `[GlobalMaxProfit] ${userId} ${broker}: open trade(s) with an unusable price skipped from the max-profit total: ${badTrades.map((t) => `${t.tsym} price=${String(t.price)}`).join('; ')}`);
+    const open = stats.trades.filter((t) => mine(t) && num(t.quantity) > 0 && Number.isFinite(Number(t.price)) && Number(t.price) > 0);
+    const badRealized = [...stats.closedTrades.filter(mine), ...open].filter((t) => t.realizedPnL != null && !Number.isFinite(Number(t.realizedPnL)));
+    if (badRealized.length) nonFiniteAlert.report(`${userId}|${broker}:realized`, `[GlobalMaxProfit] ${userId} ${broker}: trade(s) with a non-numeric realizedPnL counted as 0: ${badRealized.map((t) => `${t.tsym} realizedPnL=${String(t.realizedPnL)}`).join('; ')}`);
     let realized = stats.closedTrades.filter(mine).reduce((s, t) => s + num(t.realizedPnL), 0);
     realized += open.reduce((s, t) => s + num(t.realizedPnL), 0); // partial exits of a still-open trade
     const marks = new Map<any, number>();
@@ -47,6 +55,7 @@ async function checkOne(userId: string, broker: string, cap: number, stats: { tr
     const total = realized + unrealized;
 
     if (!latchedBrokers.has(broker)) {
+        if (!Number.isFinite(total)) { nonFiniteAlert.report(`${userId}|${broker}:total`, `[GlobalMaxProfit] ${userId} ${broker}: total is ${String(total)} - NOT tripping`); return; }
         if (!(total >= cap)) return;
         if (!(await latchGlobalMaxProfit(userId, broker, { pnl: total, cap }))) return; // not durable: retry next cycle rather than act on a latch that would vanish
         latchedBrokers.add(broker);

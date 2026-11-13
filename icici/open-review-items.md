@@ -5,6 +5,7 @@ Optional, not a code item: set CF_ORIGIN_SECRET plus a Cloudflare Transform Rule
 Remove an item from this file when it is fixed.
 
 ## Awaiting a decision
+- 2026-11-13 [SEV: high, code done, NOT live]: max-profit/max-loss trips fail safe on NaN (finiteGuard.ts; SimpleContinuous, ScaledHedged, LegManager, PnlStop, global monitor; tests `nonFinitePnl.test.ts`). The `trading` process must restart to load it (src edits are not applied in market hours); check open legs first per the project guide. Remove once the trading process runs it.
 - 2026-11-13: `/strategyPnl?opened=today` (status script default, `status all` for everything) is coded and unit-tested but NOT live: it needs a web-server (`frontend` child) restart. Until then the script prints a WARNING and shows all trades. After the restart run `scripts/strategy-status.sh` and `scripts/strategy-status.sh all` and confirm the 11-11 MomentumAtFixedTime legs drop out of the default. Remove this item once confirmed.
 
 ## Global exits and RuleBased fixes (2026-11-10)

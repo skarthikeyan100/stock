@@ -3,6 +3,7 @@ import Log from '../util/Log';
 import Mongo from '../tools/mongo';
 import { toPercentNumber } from '../prism/percentConfig';
 import { globalMaxProfit } from './effectiveMaxProfit';
+import { NonFiniteAlert } from './finiteGuard';
 
 // Day latch for one owner + scope (e.g. a BulkPcr broker). Tripped by a breach, it stays tripped for the rest of the
 // local day, including across restarts, until clear(). A latch that could not be read back after a restart fails
@@ -26,6 +27,7 @@ export class PnlStop {
     private tripped = false;
     private loadFailed = false;
     private unusableLogged = false;
+    private nonFiniteAlert = new NonFiniteAlert();
 
     constructor(private deps: PnlStopDeps) {}
 
@@ -61,6 +63,10 @@ export class PnlStop {
     evaluate(pnl: number): boolean {
         if (this.tripped) return false;
         if (!this.capEnabled()) return false;
+        if (!Number.isFinite(pnl)) { // fail safe: never trip (or release anything) on a P&L that is not a number; one alert per 10 min
+            this.nonFiniteAlert.report(`${this.deps.ownerType}:${this.deps.scope}:${this.deps.kind}`, `[${this.deps.ownerType}] [${this.deps.scope}] ${this.capKey} P&L is ${String(pnl)} - NOT evaluated, nothing tripped`);
+            return false;
+        }
         const globalCap = this.globalRupees();
         if (globalCap > 0) {
             if (!(pnl >= globalCap)) return false;
