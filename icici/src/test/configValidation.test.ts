@@ -116,14 +116,14 @@ async function main() {
         'a config with no settings block is rejected');
     assert(validateConfigFile({ settings: {}, strategies: { type: 'x' } }).length > 0,
         'strategies that is not a list is rejected');
-    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, quantity: 0 }] }).length > 0,
+    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, brokers: ['kite'], quantity: 0 }] }).length > 0,
         'an enabled strategy with an invalid value is rejected');
     assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: false, quantity: 0, maxLoss: 0 }] }).length === 0,
         'a stale invalid value in a DISABLED strategy block does not reject the file');
-    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, maxInvestment: '1,00,000' }] }).length > 0,
+    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, brokers: ['kite'], maxInvestment: '1,00,000' }] }).length > 0,
         'a non-numeric maxInvestment is rejected (would otherwise NaN-disable the stops)');
     // An enabled BulkPcr block must state its own size and distances: a missing quantity once fell back to a hidden live default.
-    const bulk = (over: Record<string, any>) => ({ settings: {}, strategies: [{ type: 'BulkPcrStrategy', enabled: true, quantity: -1, targetPoints: 2, slDistance: 10, index: 'NIFTY', ...over }] });
+    const bulk = (over: Record<string, any>) => ({ settings: {}, strategies: [{ type: 'BulkPcrStrategy', enabled: true, brokers: ['kite'], quantity: -1, targetPoints: 2, slDistance: 10, index: 'NIFTY', ...over }] });
     assert(validateConfigFile(bulk({})).length === 0, 'an enabled BulkPcr block with quantity/targetPoints/slDistance is accepted');
     for (const missing of ['quantity', 'targetPoints', 'slDistance']) {
         assert(validateConfigFile(bulk({ [missing]: undefined })).some((e) => e.includes(missing)), `an enabled BulkPcr block without ${missing} is rejected`);
@@ -132,16 +132,44 @@ async function main() {
         'a disabled BulkPcr block is not required to carry them');
     assert(validateConfigFile(bulk({ index: 'BANKNIFTY' })).some((e) => e.includes('index')), 'an unknown BulkPcr index is rejected, not treated as NIFTY');
     for (const [type, extra] of [['HourlyStrategy', {}], ['ButterflyStrategy', { targetPoints: 10, stopLossPoints: 15 }]] as [string, object][]) {
-        assert(validateConfigFile({ settings: {}, strategies: [{ type, enabled: true, quantity: 65, ...extra }] }).length === 0, `an enabled ${type} block with its required fields is accepted`);
-        assert(validateConfigFile({ settings: {}, strategies: [{ type, enabled: true, ...extra }] }).some((e) => e.includes('quantity')), `an enabled ${type} block without quantity is rejected (no hidden default size)`);
+        assert(validateConfigFile({ settings: {}, strategies: [{ type, enabled: true, brokers: ['kite'], quantity: 65, ...extra }] }).length === 0, `an enabled ${type} block with its required fields is accepted`);
+        assert(validateConfigFile({ settings: {}, strategies: [{ type, enabled: true, brokers: ['kite'], ...extra }] }).some((e) => e.includes('quantity')), `an enabled ${type} block without quantity is rejected (no hidden default size)`);
         assert(validateConfigFile({ settings: {}, strategies: [{ type, enabled: false }] }).length === 0, `a disabled ${type} block is not required to carry them`);
     }
-    assert(validateConfigFile({ settings: { eodCloseTime: '15:10' }, strategies: [{ type: 'A', enabled: true }] }).length === 0, "settings.eodCloseTime '15:10' is accepted");
-    assert(validateConfigFile({ settings: { eodCloseTime: '3:10pm' }, strategies: [{ type: 'A', enabled: true }] }).some((e) => e.includes('eodCloseTime')), "eodCloseTime '3:10pm' is rejected (it would silently fall back to the default)");
-    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, eodCloseTime: '15:10' }] }).some((e) => e.includes('global setting')),
+    assert(validateConfigFile({ settings: { eodCloseTime: '15:10' }, strategies: [{ type: 'A', enabled: true, brokers: ['kite'] }] }).length === 0, "settings.eodCloseTime '15:10' is accepted");
+    assert(validateConfigFile({ settings: { eodCloseTime: '3:10pm' }, strategies: [{ type: 'A', enabled: true, brokers: ['kite'] }] }).some((e) => e.includes('eodCloseTime')), "eodCloseTime '3:10pm' is rejected (it would silently fall back to the default)");
+    assert(validateConfigFile({ settings: {}, strategies: [{ type: 'A', enabled: true, brokers: ['kite'], eodCloseTime: '15:10' }] }).some((e) => e.includes('global setting')),
         'a strategy-level eodCloseTime is rejected (it is ignored now, so it would be a silent no-op)');
     assert(validateConfigFile({ settings: { maxDailyDrawdownPercent: '0%' }, strategies: [] }).length > 0,
         'a zero drawdown limit is rejected (would block every zero-P&L day)');
+
+    // --- brokers: every ENABLED block names them; settings.maxProfit stands in for SimpleContinuous/ScaledHedged maxProfit ---
+    const blk = (over: Record<string, any>, settings: Record<string, any> = {}) => ({ settings, strategies: [{ type: 'A', enabled: true, brokers: ['kite'], ...over }] });
+    assert(validateConfigFile(blk({})).length === 0, 'an enabled block with brokers: [kite] is accepted');
+    assert(validateConfigFile(blk({ brokers: undefined })).some((e) => e.includes('brokers')), 'an enabled block without brokers is rejected');
+    assert(validateConfigFile(blk({ brokers: [] })).some((e) => e.includes('brokers')), 'an enabled block with an empty brokers list is rejected');
+    assert(validateConfigFile(blk({ brokers: 'kite' })).some((e) => e.includes('brokers')), 'brokers that is not a list is rejected');
+    assert(validateConfigFile(blk({ brokers: ['nosuchbroker'] })).some((e) => e.includes('unknown broker')), 'an unknown broker in brokers is rejected');
+    assert(validateConfigFile(blk({ brokers: ['kite'], broker: 'kite' })).some((e) => e.includes('REMOVED')), 'the removed broker: key is rejected');
+    assert(validateConfigFile(blk({ enabled: false, brokers: undefined })).length === 0, 'a disabled block without brokers is exempt');
+    for (const type of ['SimpleContinuousStrategy', 'ScaledHedgedStrategy']) {
+        const sc = (over: Record<string, any>, settings: Record<string, any>) => blk({ type, maxInvestment: 100000, ...over }, settings);
+        assert(validateConfigFile(sc({ brokers: ['kite', 'ant'] }, { maxProfit: { kite: 5000, ant: 3000 } })).filter((e) => e.includes('maxProfit')).length === 0,
+            `${type} with no own maxProfit is accepted when settings.maxProfit caps each of its brokers`);
+        assert(validateConfigFile(sc({ brokers: ['kite', 'ant'] }, { maxProfit: { kite: 5000 } })).some((e) => e.includes("no cap for broker 'ant'")),
+            `${type} is rejected when a broker has neither a global cap nor its own maxProfit`);
+        assert(validateConfigFile(sc({ brokers: ['kite'] }, {})).some((e) => e.includes('settings.maxProfit has no cap')),
+            `${type} is rejected with no own maxProfit and no settings.maxProfit`);
+        assert(validateConfigFile(sc({ brokers: ['kite', 'ant'], maxProfit: 4000 }, {})).filter((e) => e.includes('maxProfit')).length === 0,
+            `${type} with its own maxProfit needs no global cap`);
+    }
+    assert(validateConfigFile({ settings: { maxProfit: { kite: 5000, ant: 3000 } }, strategies: [] }).length === 0, 'settings.maxProfit as a broker -> rupees map is accepted');
+    assert(validateConfigFile({ settings: { maxProfit: 5000 }, strategies: [] }).some((e) => e.includes('settings.maxProfit must be a map')), 'settings.maxProfit that is not a map is rejected');
+    assert(validateConfigFile({ settings: { maxProfit: [5000] }, strategies: [] }).some((e) => e.includes('settings.maxProfit')), 'settings.maxProfit as a list is rejected');
+    assert(validateConfigFile({ settings: { maxProfit: { nosuchbroker: 5000 } }, strategies: [] }).some((e) => e.includes('unknown broker')), 'settings.maxProfit with an unknown broker is rejected');
+    for (const bad of [0, -5, '5000', null]) {
+        assert(validateConfigFile({ settings: { maxProfit: { kite: bad } }, strategies: [] }).some((e) => e.includes('settings.maxProfit.kite')), `settings.maxProfit.kite = ${JSON.stringify(bad)} is rejected`);
+    }
 
     // --- drawdownLimit: shared default, percent parsing, safe with absent settings ---
     assert(drawdownLimit(undefined, 'maxDailyDrawdownPercent') === 25 && drawdownLimit({}, 'maxWeeklyDrawdownPercent') === 50,
