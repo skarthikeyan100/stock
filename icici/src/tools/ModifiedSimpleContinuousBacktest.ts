@@ -1,6 +1,6 @@
 /**
- * Backtest of ModifiedSimpleContinuousStrategy (a clone of SimpleContinuousStrategy; see its header): the root buys initialQuantity,
- * and a hedge buys initialQuantity + (entry - price now) / priceDiff * initialQuantity. Same replay engine as SimpleContinuousBacktest
+ * Backtest of ModifiedSimpleContinuousStrategy (a clone of SimpleContinuousStrategy; see its header for the rules: root = initialQuantity,
+ * scaled hedge quantity, no double-up, one fixed CE and PE contract per cycle, a profitable first order restarts the contract selection). Same replay engine as SimpleContinuousBacktest
  * (real ticks, buys fill at the last tick price, a resting sell fills at its limit on the first tick at or above it, PCR from Pcr.csv,
  * nothing closes at the end of the day: open legs are marked at their last price). Writes an HTML report with ONE ROW PER BUY FILL.
  *
@@ -86,18 +86,25 @@ async function runDay(niftyFile: string, optionFile: string, pcrFile: string, da
     // Buy fills in order, and the strategy's own log events (root / hedged / doubled) in order: the k-th buy pairs with the k-th event.
     const buys: BuyFill[] = [];
     const events: string[] = [];
+    let roots = 0;
     const logLines: string[] = [];
     const realLog = Log.log;
     (Log as any).log = (...a: any[]) => {
         const msg = a.map((x) => (x instanceof Error ? x.message : typeof x === 'object' ? JSON.stringify(x) : String(x))).join(' ');
         if (VERBOSE) logLines.push(`${fmtTime(mock.currentTime)} ${msg}`);
-        const m = msg.match(/\] (root (CE|PE) \S+|hedged \S+ \((.*?)\) with \S+|doubled \S+)/);
+        const m = msg.match(/\] (root (CE|PE) \S+|hedged \S+ \((.*?)\) with \S+|added to \S+)/);
         if (m) {
-            if (m[1].startsWith('root')) events.push('Root entry: PCR direction, initialQuantity');
-            else if (m[1].startsWith('hedged')) {
+            if (m[1].startsWith('root')) {
+                roots++;
+                events.push(roots === 1 ? 'Root entry: PCR direction, initialQuantity' : 'New root: the first order made its target with no hedge, so the contract selection ran again (PCR direction, ATM pick)');
+            } else if (m[1].startsWith('hedged')) {
                 const why = m[3];
-                events.push(why === 'target met' ? `Hedge after a target fill (${msg.match(/hedged (\S+)/)![1]} sold at profit): same right again` : `Hedge, ${why}: opposite right of ${msg.match(/hedged (\S+)/)![1]}, scaled quantity`);
-            } else events.push(`Double-up of ${msg.match(/doubled (\S+)/)![1]} (a hedge leg sold at a profit while it is still open)`);
+                const from = msg.match(/hedged (\S+)/)![1];
+                events.push(why === 'target met' ? `Same contract again after ${from} sold at a profit (quantity = initialQuantity)` : `${from} fell by priceDiff (${why}): buy the opposite contract, quantity scaled by the drop`);
+            } else {
+                const d = msg.match(/added to (\S+): \+(\d+) @\S+ \((\S+) fell/);
+                events.push(`${d ? d[3] : 'The other leg'} fell by priceDiff: buy ${d ? d[1] : 'the opposite contract'} again (the same contract, added to its open leg; quantity scaled by the drop)`);
+            }
         }
     };
     const origBuy = mock.buyContractBare.bind(mock);
@@ -128,7 +135,7 @@ async function runDay(niftyFile: string, optionFile: string, pcrFile: string, da
                 const pnl = (price - f.price) * f.qty;
                 realized += pnl;
                 rows.push({ tsym: open.tsym, qty: f.qty, buyAt: f.at, buyPx: f.price, buyReason: f.reason, sellAt: mock.currentTime, sellPx: price,
-                    sellReason: price > f.price ? 'Resting limit sell filled at target' : 'Sold below its buy price (resting sell at a blended average, or a forced close)', pnl: round2(pnl), realized: round2(realized), unreal });
+                    sellReason: price > f.price ? 'Resting limit sell filled at target (leg average + priceDiff)' : 'Resting sell of the blended leg (average + priceDiff) filled below this fill\'s own buy price', pnl: round2(pnl), realized: round2(realized), unreal });
             }
         }
         origClose(token, price);
@@ -218,9 +225,9 @@ table{border-collapse:collapse;width:100%;margin:8px 0}th,td{border:1px solid #d
 .n{text-align:right;font-variant-numeric:tabular-nums}.pos{color:#1a7f37}.neg{color:#cf222e}tr.sub td{font-weight:600;background:#f6f8fa}ul.notes{line-height:1.5}
 @media(prefers-color-scheme:dark){body{background:#0d1117;color:#e6edf3}th,tr.sub td{background:#161b22}th,td{border-color:#30363d}.pos{color:#3fb950}.neg{color:#f85149}}</style></head><body>`);
     parts.push(`<h1>ModifiedSimpleContinuousStrategy: backtest on stored ticks</h1><p>Config: initialQuantity ${c.initialQuantity}, priceDiff ${c.priceDiff}, maxInvestment ${c.maxInvestment}, maxProfit ${c.maxProfit}, onePositionPerSide ${c.onePositionPerSide}. One simulated broker. Net over ${results.length} day(s): <b class="${cl(tot)}">${fm(tot)}</b></p>`);
-    parts.push(`<div class="scroll"><table><thead><tr><th>Day</th><th>Root</th><th>Buys</th><th class="n">Realized</th><th class="n">Unrealized (open at last tick)</th><th class="n">Net</th><th class="n">Peak total P&amp;L</th><th>at</th><th class="n">Lowest total P&amp;L</th><th>maxProfit tripped</th></tr></thead><tbody>`);
-    for (const r of results) parts.push(`<tr><td>${r.day}</td><td>${esc(r.root)}</td><td class="n">${r.rows.length}</td><td class="n ${cl(r.realized)}">${fm(r.realized)}</td><td class="n ${cl(r.unrealized)}">${fm(r.unrealized)}</td><td class="n ${cl(r.realized + r.unrealized)}">${fm(r.realized + r.unrealized)}</td><td class="n">${fm(r.maxTotal)}</td><td>${fmtTime(r.maxTotalAt)}</td><td class="n">${fm(r.minTotal)}</td><td>${r.tripped ? 'YES' : '-'}</td></tr>`);
-    parts.push(`<tr class="sub"><td colspan="5">Total</td><td class="n ${cl(tot)}">${fm(tot)}</td><td colspan="4"></td></tr></tbody></table></div>`);
+    parts.push(`<div class="scroll"><table><thead><tr><th>Day</th><th>Root</th><th>Buys</th><th class="n">Realized</th><th class="n">Unrealized (open at last tick)</th><th class="n">Net</th><th class="n">Peak total P&amp;L</th><th>at</th><th class="n">Lowest total P&amp;L</th><th class="n">Peak cost of open legs</th><th>maxProfit tripped</th></tr></thead><tbody>`);
+    for (const r of results) parts.push(`<tr><td>${r.day}</td><td>${esc(r.root)}</td><td class="n">${r.rows.length}</td><td class="n ${cl(r.realized)}">${fm(r.realized)}</td><td class="n ${cl(r.unrealized)}">${fm(r.unrealized)}</td><td class="n ${cl(r.realized + r.unrealized)}">${fm(r.realized + r.unrealized)}</td><td class="n">${fm(r.maxTotal)}</td><td>${fmtTime(r.maxTotalAt)}</td><td class="n">${fm(r.minTotal)}</td><td class="n">${fm(r.maxInvested)}</td><td>${r.tripped ? 'YES' : '-'}</td></tr>`);
+    parts.push(`<tr class="sub"><td colspan="5">Total</td><td class="n ${cl(tot)}">${fm(tot)}</td><td colspan="5"></td></tr></tbody></table></div>`);
     for (const r of results) {
         parts.push(`<h2>${r.day}: ${fmtTime(r.first)} to ${fmtTime(r.last)}</h2><div class="scroll"><table><thead><tr><th>#</th><th>Contract</th><th class="n">Qty</th><th>Buy time</th><th class="n">Buy price</th><th>Reason for buy</th><th>Sell time</th><th class="n">Sell price</th><th>Reason for sell</th><th class="n">P&amp;L</th><th class="n">Realized (cumulative)</th><th class="n">Unrealized (other legs)</th></tr></thead><tbody>`);
         r.rows.forEach((x, i) => parts.push(`<tr><td>${i + 1}</td><td>${esc(x.tsym)}</td><td class="n">${x.qty}</td><td>${fmtTime(x.buyAt)}</td><td class="n">${x.buyPx.toFixed(2)}</td><td class="rs">${esc(x.buyReason)}</td><td>${x.sellAt ? fmtTime(x.sellAt) : '-'}</td><td class="n">${x.sellPx != null ? x.sellPx.toFixed(2) : '-'}</td><td class="rs">${esc(x.sellReason)}</td><td class="n ${cl(x.pnl)}">${fm(x.pnl)}</td><td class="n ${cl(x.realized)}">${fm(x.realized)}</td><td class="n ${cl(x.unreal)}">${fm(x.unreal)}</td></tr>`));

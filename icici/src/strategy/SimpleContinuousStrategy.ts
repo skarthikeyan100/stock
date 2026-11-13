@@ -49,6 +49,8 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //   8. A hedge buy whose outcome is unconfirmed (timeout) is resolved against the broker instead of freezing the strategy: the resting
 //      buy is cancelled and the live position read. Nothing bought -> the hedge flag is cleared and the hedge is retried; bought ->
 //      the position is adopted as the hedge leg; unreadable -> manual review, as before.
+//   10. First order (2026-11-13): a root whose sell fills at a profit with no hedge ever bought does not re-buy the same direction; it is marked
+//      `restarted`, the one-root gate opens and the contract selection runs again for a new root.
 //   9. The one-time double-up flag is set only when the double-up actually happens. A double-up skipped (cap, cancel failure, buy
 //      refused) stays due and is retried from the parent's ticks (every DOUBLE_RETRY_MS) until it happens or the parent closes.
 // State (hedged / doubled / quantities) is kept per day in a JSON file and checked against the broker's open trades at reconcile.
@@ -88,6 +90,7 @@ export interface SimpleLeg {
     doubleDue?: boolean; // a profitable hedge sell asked for this (parent) leg to be doubled and it has not happened yet
     pnlRef?: number;        // price the maxProfit total values this leg from (blended on a double-up); absent = its entry
     pnlRefPending?: boolean; // the maxProfit counting started while the leg was open: pnlRef is set from its next tick
+    restarted?: boolean;    // the FIRST order (root) closed at a profit with no hedge bought: no same-direction re-buy, the contract selection runs again for a new root
     lastLtp?: number;       // last option tick (in memory use only; refreshed by ticks)
 }
 
@@ -371,7 +374,8 @@ export default class SimpleContinuousStrategy extends Strategy {
         const maxInvestment = Number(cfg.maxInvestment);
         if ((!(qty > 0) && !this.onePerSide()) || !(maxInvestment > 0) || !(this.priceDiff() > 0) || !(this.maxProfit() > 0)) { this.gateLog.log('initialQuantity / maxInvestment / priceDiff / maxProfit not set'); return; }
         // One root per day: after it, every order is a hedge (or a double-up). Adopted legs count (reconcile gives them role 'root').
-        if (Object.values(this.state.legs).some((l) => l.role === 'root')) { this.gateLog.log('root already opened today'); return; }
+        // A root whose profit ended the first-order cycle (`restarted`) does not count: the selection starts over.
+        if (Object.values(this.state.legs).some((l) => l.role === 'root' && !l.restarted)) { this.gateLog.log('root already opened today'); return; }
 
         this.entering = true; // synchronous, before any await
         try {
@@ -691,7 +695,15 @@ export default class SimpleContinuousStrategy extends Strategy {
         // Closed at a profit: follow the direction (buy the same right again); closed at a loss: buy the opposite right. An adverse-move
         // hedge (the leg still open, the "stop" case) is always the opposite right. Fixed behaviour, deliberately not configurable.
         const same = avgSell > leg.entry;
-        if (!leg.hedged) await this.hedge(leg, 'target met', same);
+        if (!leg.hedged && !leg.hedgeWaiting && leg.role === 'root' && same) {
+            // The very first order made its target before any hedge was needed: do NOT buy the same direction again. It is marked hedged (nothing
+            // follows it) and `restarted`, so the root gate opens and the next Nifty tick runs the contract selection (PCR direction, premium floor,
+            // ATM pick) again for a fresh root.
+            leg.hedged = true;
+            leg.restarted = true;
+            this.save();
+            Log.log(`[SimpleContinuousStrategy] first order ${leg.tsym} closed at a profit with no hedge: no same-direction re-buy, the contract selection runs again for a new root`);
+        } else if (!leg.hedged) await this.hedge(leg, 'target met', same);
         if (leg.role === 'hedge' && avgSell > leg.entry && leg.parentId) {
             const parent = this.state.legs[leg.parentId];
             if (parent && parent.status === 'open' && !parent.doubled) {

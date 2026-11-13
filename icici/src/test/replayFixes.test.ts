@@ -217,7 +217,7 @@ function make<T>(Cls: new (id: string) => T, cfg: any): any {
     calls = [];
     sc = newSc('SCF-f', { onePositionPerSide: true });
     addLeg(sc.s, 'N23950CE', 'CE', 23950, 150, { hedged: true });
-    const ceLeg = addLeg(sc.s, 'N23900CE', 'CE', 23900, 180);
+    const ceLeg = addLeg(sc.s, 'N23900CE', 'CE', 23900, 180, { role: 'hedge' }); // a hedge leg (a root that makes its target restarts the selection instead)
     sc.s.state.legs[ceLeg.id].sellQty = 65;
     await sc.s.updateTrade(fill('N23900CE', 'Sell', 65, 190));
     assert(ceLeg.status === 'closed' && ceLeg.hedged === false && ceLeg.hedgeWaiting === true && count('buyContractBare') === 0, 'a profit exit would follow with a CE, but another CE is open -> waits');
@@ -256,7 +256,7 @@ function make<T>(Cls: new (id: string) => T, cfg: any): any {
     sc = newSc('SCF-s2', { maxLegsPerSide: 2 });
     addLeg(sc.s, 'N23950CE', 'CE', 23950, 150, { hedged: true, niftyAt: 23900 });
     addLeg(sc.s, 'N24000CE', 'CE', 24000, 120, { hedged: true, niftyAt: 23900 });
-    const ceLegS = addLeg(sc.s, 'N23900CE', 'CE', 23900, 180);
+    const ceLegS = addLeg(sc.s, 'N23900CE', 'CE', 23900, 180, { role: 'hedge' });
     sc.s.state.legs[ceLegS.id].sellQty = 65;
     await sc.s.updateTrade(fill('N23900CE', 'Sell', 65, 190));
     assert(ceLegS.status === 'closed' && ceLegS.hedged === false && ceLegS.hedgeWaiting === true && count('buyContractBare') === 0, 'a target-met hedge held back by the guard stays pending on the closed leg');
@@ -302,7 +302,26 @@ function make<T>(Cls: new (id: string) => T, cfg: any): any {
         return String(last('buyContractBare')?.args[1] ?? '');
     };
     assert((await closeAt(undefined, 'hedge', 190)).endsWith('CE'), 'default: a hedge leg sold at a profit is followed by the SAME right (CE)');
-    assert((await closeAt(undefined, 'root', 190)).endsWith('CE'), 'the root sold at a profit follows its direction too');
+    assert((await closeAt(undefined, 'root', 190)) === '', 'the FIRST order (root) sold at a profit does NOT buy the same direction again');
+    {
+        calls = [];
+        const x = newSc('SCF-first');
+        const l = addLeg(x.s, 'N23900CE', 'CE', 23900, 180);
+        l.sellQty = 65;
+        await x.s.updateTrade(fill('N23900CE', 'Sell', 65, 190));
+        assert(l.status === 'closed' && l.restarted === true && l.hedged === true && count('buyContractBare') === 0, 'first order at a profit: closed, marked restarted, nothing bought');
+        assert(!Object.values<any>(x.s.state.legs).some((v) => v.role === 'root' && !v.restarted), 'and the one-root gate is open again: the contract selection runs for a new root');
+        const y = newSc('SCF-first-hedged');
+        const l2 = addLeg(y.s, 'N23900CE', 'CE', 23900, 180, { hedged: true });
+        l2.sellQty = 65;
+        await y.s.updateTrade(fill('N23900CE', 'Sell', 65, 190));
+        assert(l2.restarted !== true, 'a root that already had its hedge bought is not a never-hedged first order');
+        const z = newSc('SCF-first-loss');
+        const l3 = addLeg(z.s, 'N23900CE', 'CE', 23900, 180);
+        l3.sellQty = 65;
+        await z.s.updateTrade(fill('N23900CE', 'Sell', 65, 170));
+        assert(l3.restarted !== true && String(last('buyContractBare')?.args[1]).endsWith('PE'), 'a first order sold at a loss still hedges with the opposite right');
+    }
     assert((await closeAt(undefined, 'hedge', 170)).endsWith('PE'), 'a hedge leg sold at a loss -> the opposite right');
     calls = [];
     sc = newSc('SCF-k');

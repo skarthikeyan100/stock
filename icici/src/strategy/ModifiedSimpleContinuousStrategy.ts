@@ -18,11 +18,17 @@ import { BrokerName, normalizeBrokerName } from '../util/brokerName';
 import { NOT_PLACED_TAG, OrderCancelledNotification } from '../ipc/orderProtocol';
 import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY } from '../constants';
 
-// ModifiedSimpleContinuousStrategy: a BACKTEST-ONLY clone of SimpleContinuousStrategy (not registered in StrategyFactory, not traded) with two changes:
+// ModifiedSimpleContinuousStrategy: a BACKTEST-ONLY clone of SimpleContinuousStrategy (not registered in StrategyFactory, not traded). Differences:
 //   A. The root buys `initialQuantity` (e.g. 65), never the whole maxInvestment (onePositionPerSide no longer sizes the root).
 //   B. A hedge buys initialQuantity + (leg entry - leg price now) / priceDiff * initialQuantity, floored to whole lots (never below
-//      initialQuantity): a CE that fell by priceDiff gets a PE of 2 x initialQuantity (65 + 10/10 x 65 = 130). A hedge opened by a
-//      target fill (the leg is at or above its entry) buys initialQuantity. Everything else is unchanged.
+//      initialQuantity): a CE that fell by priceDiff gets a PE of 2 x initialQuantity (65 + 10/10 x 65 = 130). A hedge opened by a target
+//      fill (the leg is at or above its entry) buys initialQuantity.
+//   C. NO double-up. Instead, when a leg falls by priceDiff the OPPOSITE option is bought again (a hedge leg that falls buys the CE again).
+//   D. Only ONE CE contract and ONE PE contract are used per cycle: the root's contract and the contract of the first hedge (ATM at that time).
+//      Every later buy of a right uses that same contract: if its leg is open the quantity is ADDED to it (blended entry, the resting sell is
+//      re-placed at the new average + priceDiff, and the leg's hedge trigger is re-armed from the new average); if it is closed a new leg opens.
+//   E. (also in SimpleContinuousStrategy) When the FIRST order (root) closes at a profit with no hedge ever bought, it does not buy the same
+//      direction again: the contract selection (PCR direction, premium floor, ATM pick) runs again for a new root and a new CE/PE pair.
 // ModifiedSimpleContinuousStrategy (config keys: initialQuantity, maxInvestment, priceDiff, plus enabled/brokers):
 //   1. PCR gives the direction of the ROOT entry (PCR > 1 -> PE, else CE), `initialQuantity` at market. There is ONE root per day;
 //      every later order is a hedge or a double-up. With `onePositionPerSide: true` `initialQuantity` is IGNORED: the root buys as many whole
@@ -93,10 +99,13 @@ export interface SimpleLeg {
     doubleDue?: boolean; // a profitable hedge sell asked for this (parent) leg to be doubled and it has not happened yet
     pnlRef?: number;        // price the maxProfit total values this leg from (blended on a double-up); absent = its entry
     pnlRefPending?: boolean; // the maxProfit counting started while the leg was open: pnlRef is set from its next tick
+    restarted?: boolean;    // the FIRST order (root) closed at a profit with no hedge bought: no same-direction re-buy, the contract selection runs again for a new root
+    added?: boolean;        // a later buy of the same contract was added to this leg (blended entry); the leg is no longer a never-hedged first order
     lastLtp?: number;       // last option tick (in memory use only; refreshed by ticks)
 }
 
-interface State { day: string; legs: Record<string, SimpleLeg>; seq: number; pnlStarted?: boolean; realizedPnl: number; profitTripped: boolean }
+interface PairContract { tradingSymbol: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; premium: number }
+interface State { day: string; legs: Record<string, SimpleLeg>; pair?: { CE?: PairContract; PE?: PairContract }; seq: number; pnlStarted?: boolean; realizedPnl: number; profitTripped: boolean }
 
 const opposite = (r: Right): Right => (r === 'CE' ? 'PE' : 'CE');
 
@@ -376,7 +385,8 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         const maxInvestment = Number(cfg.maxInvestment);
         if (!(qty > 0) || !(maxInvestment > 0) || !(this.priceDiff() > 0) || !(this.maxProfit() > 0)) { this.gateLog.log('initialQuantity / maxInvestment / priceDiff / maxProfit not set'); return; }
         // One root per day: after it, every order is a hedge (or a double-up). Adopted legs count (reconcile gives them role 'root').
-        if (Object.values(this.state.legs).some((l) => l.role === 'root')) { this.gateLog.log('root already opened today'); return; }
+        // A root whose profit ended the first-order cycle (`restarted`) does not count: the selection starts over.
+        if (Object.values(this.state.legs).some((l) => l.role === 'root' && !l.restarted)) { this.gateLog.log('root already opened today'); return; }
 
         this.entering = true; // synchronous, before any await
         try {
@@ -401,7 +411,7 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         const lot = INDEX_LOT_SIZE.NIFTY;
         qty = Math.min(Math.floor(qty / lot) * lot, Math.floor(NIFTY_FREEZE_QUANTITY / lot) * lot);
         if (!(qty > 0)) {
-            this.gateLog.log(`root ${contract.tradingSymbol}: initialQuantity ${qty} is below one lot (${lot})`);
+            this.gateLog.log(`root ${contract.tradingSymbol}: initialQuantity is below one lot (${lot})`);
             return;
         }
         if (this.invested() + contract.premium * qty > maxInvestment) {
@@ -418,6 +428,8 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
             return;
         }
         const leg = this.addLeg(trade, contract, right, 'root', false);
+        this.state.pair = { [right]: { tradingSymbol: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, premium: contract.premium } };
+        this.save();
         Log.log(`[ModifiedSimpleContinuousStrategy] root ${right} ${leg.tsym} qty=${leg.qty} @${leg.entry}`);
         await this.placeSell(leg);
     }
@@ -523,10 +535,6 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         if (!leg.hedged && quote.ltp <= leg.entry - this.priceDiff()) {
             await this.hedge(leg, 'adverse move');
         }
-        // A double-up that was due but did not happen (cap, cancel failure, refused buy) is retried here while the parent is open.
-        if (leg.doubleDue && !leg.doubled && leg.status === 'open' && !this.busy.has(leg.id) && Date.now() - (this.lastDoubleAttempt.get(leg.id) ?? 0) > DOUBLE_RETRY_MS) {
-            await this.doubleUp(leg);
-        }
     };
 
     // ---- hedge ----
@@ -607,7 +615,9 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
     private async hedge(leg: SimpleLeg, reason: string, same = false): Promise<void> {
         if (leg.hedged || this.busy.has(leg.id) || !this.enabled || this.manualReview || this.isStopped()) return;
         const right = same ? leg.right : opposite(leg.right);
-        if (this.sideBlocked(right)) {
+        const fixed = this.state.pair?.[right];
+        const openSame = fixed ? this.openLegs().find((l) => l.token === fixed.token) : undefined; // the fixed contract's leg is open: the buy is ADDED to it
+        if (!openSame && this.sideBlocked(right)) {
             // Stacking guard / side occupied: leave the leg un-hedged. An open leg is retried by its own ticks, a closed one from Nifty ticks.
             if (!leg.hedgeWaiting) {
                 leg.hedgeWaiting = true;
@@ -619,17 +629,27 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         }
         if (leg.hedgeWaiting) { leg.hedgeWaiting = false; Log.log(`[ModifiedSimpleContinuousStrategy] hedge of ${leg.tsym} released (${reason})`); }
         leg.hedged = true; // synchronous, before any await: a second tick must not buy a second hedge
-        if (this.onePerSide()) this.pendingSides.add(right); // same synchronous section as the sideBlocked check above
+        if (!openSame && this.onePerSide()) this.pendingSides.add(right); // same synchronous section as the sideBlocked check above
         this.busy.add(leg.id);
         this.save();
         try {
             const ops = brokerLegOps(() => this.cfg()?.broker);
             // The hedge is the opposite option at the strike nearest the money (pickContract walks ATM first, then out of / in the money). The
             // premium floor of 1 only skips a strike with no price. A strike already held on that side is skipped (one position per contract).
-            const contract = await ops.pickContract(this.userId, this.lastNiftyLtp, right, 1, this.excludeStrikes(right), expiryDayOverrideOf(this.cfg()));
+            const contract: PairContract = fixed ?? await ops.pickContract(this.userId, this.lastNiftyLtp, right, 1, this.excludeStrikes(right), expiryDayOverrideOf(this.cfg()));
+            if (!fixed) {
+                this.state.pair = { ...(this.state.pair ?? {}), [right]: { tradingSymbol: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, premium: contract.premium } };
+                this.save();
+            }
+            const hedgeQty = this.hedgeQuantity(leg);
+            if (openSame) {
+                const ok = await this.addToLeg(openSame, hedgeQty, leg, reason);
+                if (!ok) { leg.hedged = false; this.save(); } // nothing bought: the next tick retries
+                return;
+            }
             let trade: Trade;
             try {
-                trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, this.hedgeQuantity(leg), contract.exchange, contract.premium, this.broker(), { hedgeRebuy: true });
+                trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, hedgeQty, contract.exchange, contract.premium, this.broker(), { hedgeRebuy: true });
             } catch (e) {
                 if (this.noteBuyError(e, `hedge buy ${contract.tradingSymbol}`, false)) {
                     leg.hedged = false; // nothing was placed: the next tick may try again
@@ -704,15 +724,15 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         // Closed at a profit: follow the direction (buy the same right again); closed at a loss: buy the opposite right. An adverse-move
         // hedge (the leg still open, the "stop" case) is always the opposite right. Fixed behaviour, deliberately not configurable.
         const same = avgSell > leg.entry;
-        if (!leg.hedged) await this.hedge(leg, 'target met', same);
-        if (leg.role === 'hedge' && avgSell > leg.entry && leg.parentId) {
-            const parent = this.state.legs[leg.parentId];
-            if (parent && parent.status === 'open' && !parent.doubled) {
-                parent.doubleDue = true; // stays due until the double-up really happens (see doubleUp / the tick retry)
-                this.save();
-                await this.doubleUp(parent);
-            }
-        }
+        if (!leg.hedged && !leg.hedgeWaiting && !leg.added && leg.role === 'root' && same) { // `added`: a root that had quantity added is no longer a never-hedged first order
+            // The very first order made its target before any hedge was needed: do NOT buy the same direction again. It is marked hedged (nothing
+            // follows it) and `restarted`, so the root gate opens and the next Nifty tick runs the contract selection (PCR direction, premium floor,
+            // ATM pick) again for a fresh root.
+            leg.hedged = true;
+            leg.restarted = true;
+            this.save();
+            Log.log(`[ModifiedSimpleContinuousStrategy] first order ${leg.tsym} closed at a profit with no hedge: no same-direction re-buy, the contract selection runs again for a new root`);
+        } else if (!leg.hedged) await this.hedge(leg, 'target met', same);
     };
 
     onOrderCancelled = async (n: OrderCancelledNotification): Promise<void> => {
@@ -728,65 +748,57 @@ export default class ModifiedSimpleContinuousStrategy extends Strategy {
         }
     };
 
-    // ---- double-up ----
+    // ---- add to an open leg (Modified C/D: replaces the double-up) ----
 
-    private async doubleUp(parent: SimpleLeg): Promise<void> {
-        if (parent.doubled || this.busy.has(parent.id) || !this.enabled || this.manualReview || this.isStopped()) return;
-        // `doubled` is set only when the double-up actually happens (below), so a skip (cap, cancel failure, refused buy) can be retried by the
-        // parent's ticks. busy keeps two attempts from running at once; lastDoubleAttempt spaces the retries.
-        this.lastDoubleAttempt.set(parent.id, Date.now());
+    // Buys `addQty` more of the open leg's contract and re-places its resting sell for the new total at the new average + priceDiff. The leg's
+    // hedge trigger is re-armed (hedged = false) so it hedges again when it falls priceDiff below the NEW average; the leg that caused the add
+    // (`trigger`) stays hedged. Returns false when nothing was bought.
+    private async addToLeg(parent: SimpleLeg, addQty: number, trigger: SimpleLeg, reason: string): Promise<boolean> {
+        if (parent.status !== 'open' || this.busy.has(parent.id)) return false;
         this.busy.add(parent.id);
         const broker = this.brokerOrKite();
         try {
-            const addQty = parent.qty;
-            const ref = parent.entry;
-            // maxInvestment does not gate the double-up (user's decision 2026-11-11): with onePositionPerSide the root already costs about the whole
-            // budget, so a cap check could never pass. It is still at most once per leg (`doubled`), and maxProfit is the only brake.
-            // Free the position from its resting sell first (a limit sell plus a larger buy would leave the sell covering only part).
             let cancelledFilled = 0;
             if (parent.sellQty > 0) {
                 const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: parent.tsym, broker });
-                if (res.cancelFailed) {
-                    Log.log(`[ModifiedSimpleContinuousStrategy] double-up of ${parent.tsym} aborted: its resting sell could not be cancelled`);
-                    return;
-                }
+                if (res.cancelFailed) { Log.log(`[ModifiedSimpleContinuousStrategy] add to ${parent.tsym} aborted: its resting sell could not be cancelled`); return false; }
                 cancelledFilled = res.filledQty;
                 parent.sellQty = 0;
                 parent.sellShortfall = 0;
             }
             if (cancelledFilled > 0) {
-                // Part of the target sell filled while we were cancelling: its fill events will arrive; do not grow the position.
-                Log.log(`[ModifiedSimpleContinuousStrategy] double-up of ${parent.tsym} aborted: ${cancelledFilled} sold while cancelling`);
+                Log.log(`[ModifiedSimpleContinuousStrategy] add to ${parent.tsym} aborted: ${cancelledFilled} sold while cancelling`);
                 const left = parent.qty - parent.soldQty - cancelledFilled;
                 if (left > 0) await this.placeSellQty(parent, left);
-                return;
+                return false;
             }
             let trade: Trade;
             try {
-                // hedgeRebuy skips the order process's own investment-cap gate (the strategy-side check was removed 2026-11-11, but that gate refused it too: 14:11 live, kite 164264/100000).
-                trade = await OrderClient.getInstance().buyContractBare(this.userId, parent.tsym, parent.token, addQty, parent.exchange, ref, this.broker(), { hedgeRebuy: true });
+                trade = await OrderClient.getInstance().buyContractBare(this.userId, parent.tsym, parent.token, addQty, parent.exchange, parent.entry, this.broker(), { hedgeRebuy: true });
             } catch (e) {
-                const notPlaced = this.noteBuyError(e, `double-up buy ${parent.tsym}`);
-                Log.log('[ModifiedSimpleContinuousStrategy] double-up buy failed:', e);
-                if (notPlaced) await this.placeSellQty(parent, this.remaining(parent)); // refused: nothing bought, due again at the next retry
-                else { parent.doubled = true; parent.doubleDue = false; this.save(); } // may be live: never retried blind (a retry could double twice)
-                return;
+                const notPlaced = this.noteBuyError(e, `add buy ${parent.tsym}`, false);
+                Log.log('[ModifiedSimpleContinuousStrategy] add buy failed:', e);
+                if (notPlaced) await this.placeSellQty(parent, this.remaining(parent));
+                return false;
             }
             const got = Number(trade.quantity) > 0 ? Number(trade.quantity) : 0;
-            const price = Number(trade.price) > 0 ? Number(trade.price) : ref;
-            if (got > 0) { parent.doubled = true; parent.doubleDue = false; } // the double-up happened
+            const price = Number(trade.price) > 0 ? Number(trade.price) : parent.entry;
             if (got > 0) {
-                // The reference blends like the entry; a leg still waiting for its reference tick values the old quantity from this buy.
                 if (parent.pnlRefPending) { parent.pnlRef = price; parent.pnlRefPending = false; }
                 else if (parent.pnlRef != null) parent.pnlRef = (parent.pnlRef * parent.qty + price * got) / (parent.qty + got);
             }
             parent.entry = (parent.entry * parent.qty + price * got) / (parent.qty + got);
             parent.qty += got;
+            parent.added = true;
+            parent.hedged = false; // re-armed from the new average
+            parent.hedgeWaiting = false;
             this.save();
-            Log.log(`[ModifiedSimpleContinuousStrategy] doubled ${parent.tsym}: +${got} @${price}, now qty=${parent.qty} avg=${parent.entry.toFixed(2)}`);
+            Log.log(`[ModifiedSimpleContinuousStrategy] added to ${parent.tsym}: +${got} @${price} (${trigger.tsym} fell ${this.priceDiff()}: ${reason}), now qty=${parent.qty} avg=${parent.entry.toFixed(2)}`);
             await this.placeSellQty(parent, this.remaining(parent));
+            return got > 0;
         } catch (e) {
-            Log.log('[ModifiedSimpleContinuousStrategy] double-up failed:', e);
+            Log.log('[ModifiedSimpleContinuousStrategy] add to leg failed:', e);
+            return false;
         } finally {
             this.busy.delete(parent.id);
         }
