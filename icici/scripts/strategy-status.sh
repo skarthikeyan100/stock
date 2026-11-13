@@ -11,12 +11,80 @@
 # By default ONLY trades OPENED today (IST day of the trade's entry time) count, realized and unrealized: a trade bought on an earlier day and
 # sold today, or still open from an earlier day, is left out (?opened=today on /strategyPnl; a trade with no entry time counts as today).
 # With `all` it also counts trades opened on an earlier day but closed today and positions still open from earlier days (?opened=all).
-# Usage: scripts/strategy-status.sh [all] [port]      e.g.  scripts/strategy-status.sh   |  scripts/strategy-status.sh all 3000  |  scripts/strategy-status.sh 3000
+# `users` switches to the REAL USERS who trade from the frontend (Trade.user is an email; strategy pseudo-users are not): BY USER, BY BROKER,
+# OPEN POSITIONS by user (target/stop as stored on the position, "-" if none) and the day's closed TRADES one row each (?match=@ on /strategyPnl,
+# ?closed=1 for the closed rows). The admin email also carries the mirrored shares of other users buys (settings.mirrorPercentage); a trade row
+# does not record that, so admin rows are not marked. The strategy tables are not printed in this mode; `all` works the same way.
+# Usage: scripts/strategy-status.sh [users] [all] [port]
+#   e.g.  scripts/strategy-status.sh   |  scripts/strategy-status.sh all 3000  |  scripts/strategy-status.sh 3000  |  scripts/strategy-status.sh users  |  scripts/strategy-status.sh users all
 OPENED=today
+USERS=0
 ARGS=()
-for a in "$@"; do if [ "$a" = "all" ]; then OPENED=all; else ARGS+=("$a"); fi; done
+for a in "$@"; do if [ "$a" = "all" ]; then OPENED=all; elif [ "$a" = "users" ]; then USERS=1; else ARGS+=("$a"); fi; done
 PORT="${ARGS[0]:-3000}"
 HDR="$(mktemp)"; trap 'rm -f "$HDR"' EXIT
+if [ "$USERS" = 1 ]; then
+Q="opened=$OPENED&match=%40"
+BY_USER="$(curl -s -m10 -D "$HDR" "localhost:$PORT/strategyPnl?$Q")"
+FILTER_OK=0; grep -qi '^x-opened-filter: today' "$HDR" && FILTER_OK=1
+BY_BROKER="$(curl -s -m10 "localhost:$PORT/strategyPnl?by=broker&$Q")"
+DETAIL="$(curl -s -m20 "localhost:$PORT/strategyPnl?detail=1&$Q")"
+CLOSED="$(curl -s -m10 -D "$HDR" "localhost:$PORT/strategyPnl?closed=1&$Q")"
+CLOSED_OK=0; grep -qi '^x-closed-rows: 1' "$HDR" && CLOSED_OK=1
+OPENED="$OPENED" FILTER_OK="$FILTER_OK" CLOSED_OK="$CLOSED_OK" BY_USER="$BY_USER" BY_BROKER="$BY_BROKER" DETAIL="$DETAIL" CLOSED="$CLOSED" node -e '
+const f=n=>(n>=0?"+":"")+n.toFixed(2);
+const parse=s=>{try{const r=JSON.parse(s);return Array.isArray(r)?r:null}catch{return null}};
+const byUser=parse(process.env.BY_USER);
+if(!byUser){console.log("order process not reachable");process.exit(1)}
+if(process.env.OPENED==="today"&&process.env.FILTER_OK!=="1")console.log("WARNING: the web server predates the ?opened filter (needs a restart): the tables below count ALL trades, not only those opened today");
+console.log(process.env.OPENED==="all"?"(all trades: also those opened on an earlier day)":"(trades opened today only; "+String.fromCharCode(96)+"all"+String.fromCharCode(96)+" adds earlier-day trades closed or still open today)");
+const detail=parse(process.env.DETAIL)||[];
+// one ?detail=1 snapshot prices every table, so unrealized agrees across them (each endpoint call re-prices at its own moment)
+const snap=(rows,key)=>{for(const r of rows)r.unrealized=detail.filter(d=>key(d)===key(r)).reduce((a,d)=>a+d.unrealized,0)};
+snap(byUser,r=>r.strategy);
+const table=(title,rows,label)=>{
+  console.log(title);
+  let R=0,U=0;
+  for(const r of rows){R+=r.realized;U+=r.unrealized;
+    console.log(`  ${r.strategy.padEnd(label)} realized ${f(r.realized).padStart(11)}  unrealized ${f(r.unrealized).padStart(11)}  (open ${r.open}, closed ${r.closed})`)}
+  console.log(`  ${"TOTAL".padEnd(label)} realized ${f(R).padStart(11)}  unrealized ${f(U).padStart(11)}`);
+};
+byUser.sort((a,b)=>a.strategy.localeCompare(b.strategy));
+if(!byUser.length){console.log("no real-user trades");process.exit(0)}
+const lab=Math.max(10,...byUser.map(r=>r.strategy.length));
+table("BY USER",byUser,lab);
+const byBroker=parse(process.env.BY_BROKER)||[];
+snap(byBroker,r=>r.broker??r.strategy);
+byBroker.sort((a,b)=>a.strategy.localeCompare(b.strategy));
+if(byBroker.length){console.log("");table("BY BROKER",byBroker,lab)}
+const grid=(hdr,rows,left)=>{
+  const w=hdr.map((h,i)=>Math.max(h.length,...rows.map(r=>r[i].length)));
+  const line=r=>"  "+r.map((c,i)=>left.includes(i)?c.padEnd(w[i]):c.padStart(w[i])).join("  ");
+  console.log(line(hdr));for(const r of rows)console.log(line(r));
+};
+console.log("\nOPEN POSITIONS by user");
+if(!detail.length)console.log("  none open");
+else{
+  detail.sort((a,b)=>a.user.localeCompare(b.user)||a.broker.localeCompare(b.broker)||a.tsym.localeCompare(b.tsym));
+  grid(["user","broker","contract","qty","bought","ltp","target","stop","unrealized"],
+    detail.map(r=>[r.user,r.broker,r.tsym,String(r.quantity),r.price.toFixed(2),r.ltp==null?"?":r.ltp.toFixed(2)+(r.liveQuote?"":"*"),r.targetPrice!=null?r.targetPrice.toFixed(2):"-",r.stopLossPrice!=null?r.stopLossPrice.toFixed(2):"-",f(r.unrealized)]),[0,1,2]);
+  if(detail.some(r=>!r.liveQuote))console.log("  * no live quote, last known price");
+}
+console.log("\nTRADES (closed)");
+const closed=process.env.CLOSED_OK==="1"?parse(process.env.CLOSED):null;
+if(!closed)console.log("  (closed-trade list unavailable: the web server predates the ?closed=1 option - restart it)");
+else if(!closed.length)console.log("  none closed");
+else{
+  const hhmm=t=>t?new Date(t).toLocaleTimeString("en-GB",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit"}):"-";
+  const px=v=>v==null?"-":v.toFixed(2);
+  grid(["user","broker","contract","qty","entry","exit","in","out","realized"],
+    closed.map(r=>[r.user,r.broker,r.tsym,String(r.quantity),px(r.entryPrice),px(r.exitPrice),hhmm(r.entryTime),hhmm(r.exitTime),f(r.realizedPnL)]),[0,1,2]);
+  console.log(`  ${"TOTAL".padEnd(8)} ${closed.length} trades, realized ${f(closed.reduce((a,r)=>a+r.realizedPnL,0))}`);
+}
+console.log("\nNote: the admin email also holds mirrored shares of other users buys (settings.mirrorPercentage); the trade rows do not say which, so they are not marked.");
+'
+exit 0
+fi
 BY_STRATEGY="$(curl -s -m10 -D "$HDR" "localhost:$PORT/strategyPnl?opened=$OPENED")"
 if [ "$OPENED" = today ] && ! grep -qi '^x-opened-filter: today' "$HDR"; then echo "WARNING: the web server predates the ?opened filter (needs a restart): the tables below count ALL trades, not only today's"; fi
 DETAIL="$(curl -s -m20 "localhost:$PORT/strategyPnl?detail=1&opened=$OPENED")"

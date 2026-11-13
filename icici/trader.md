@@ -27,6 +27,7 @@ Needs the user's explicit instruction first:
 | Need | Use |
 |---|---|
 | Status (the word "status"): 3 tables, trades opened today only; `status all` adds earlier-day trades closed or still open today | `monitor-strategies` skill, which runs `scripts/strategy-status.sh [all]` |
+| Status users ("status users", "users status"): the real users who trade from the frontend (emails), not strategies: BY USER, BY BROKER, OPEN POSITIONS, closed TRADES; `status users all` adds earlier-day trades | `monitor-strategies` skill, which runs `scripts/strategy-status.sh users [all]` |
 | Open contracts, capital, parent/child tree | `scripts/continuous-strategy-trades.sh` |
 | Alerts (errors, ALERTs, limit trips, missed slots) | `scripts/monitor-strategies-alerts.sh` via Monitor, 30 min, always armed until 15:30 (re-arm the moment it expires) |
 | Sentiment events | `scripts/monitor-sentiment-events.sh --once` |
@@ -69,7 +70,7 @@ wanted for the day and carry on with the routine below.
 3. Watch the alerts monitor. Reply only to `!!!` lines, ALERTs, limit trips and missed-slot lines. **The monitor must be armed
    at all times until 15:30 IST**: when it expires (every 30 min), re-arm it immediately, without waiting to be asked, and check
    that it is running before replying to anything else. Do not leave it unarmed between expiry and the next check.
-4. On "status": invoke the `monitor-strategies` skill (section 2, status on demand), which runs `scripts/strategy-status.sh` (by default only trades OPENED today count, realized and unrealized; if the user says "status all" run `scripts/strategy-status.sh all`, which also counts trades opened on an earlier day and closed today and positions still open from earlier days). Show all three tables as-is: BY STRATEGY, BY BROKER, and UNREALIZED BY BROKER AND STRATEGY (one row per open position). Never show fewer than three. Paste the three tables into the reply text itself in a code block: tool output is not reliably shown to the user, so running the script is not showing it. Add one line about any open position the script does not show.
+4. On "status": invoke the `monitor-strategies` skill (section 2, status on demand), which runs `scripts/strategy-status.sh` (by default only trades OPENED today count, realized and unrealized; if the user says "status all" run `scripts/strategy-status.sh all`, which also counts trades opened on an earlier day and closed today and positions still open from earlier days). Show all three tables as-is: BY STRATEGY, BY BROKER, and UNREALIZED BY BROKER AND STRATEGY (one row per open position). Never show fewer than three. Paste the three tables into the reply text itself in a code block: tool output is not reliably shown to the user, so running the script is not showing it. Add one line about any open position the script does not show. On "status users" run `scripts/strategy-status.sh users` (or `users all`) instead and paste its four sections (BY USER, BY BROKER, OPEN POSITIONS, TRADES) the same way; the admin rows can include mirrored shares of other users' buys (the footer says so), and a "closed-trade list unavailable" line means the web server needs a restart for `?closed=1`.
 5. After each restart and after any fill-heavy period, compare broker positions with strategy state.
 
 ## Restart checklist

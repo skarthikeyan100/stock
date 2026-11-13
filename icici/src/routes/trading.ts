@@ -11,6 +11,7 @@ import { exchangeForIndex } from '../util/underlyings';
 import OrderClient from '../processes/strategies/OrderClient';
 import { asyncRouter } from './asyncRouter';
 import { isOpenedToday, openedFilterOf } from '../util/openedToday';
+import { closedTradeRows } from '../util/closedTradeRows';
 import { requireCsrfHeader, resolveUser, requireAuth, requireAdmin } from './session';
 
 const router = asyncRouter();
@@ -175,6 +176,13 @@ router.get('/strategyPnl', requireAdmin, async function (req: express.Request, r
         const todayOnly = openedFilterOf(req.query.opened) === 'today';
         const wanted = (t: Trade) => !todayOnly || isOpenedToday(t.entryTime);
         res.setHeader('X-Opened-Filter', todayOnly ? 'today' : 'all'); // lets the status script tell a server that predates ?opened from one that applied it
+        // ?closed=1: one row per CLOSED trade (user, broker, contract, qty, entry/exit price, realized P&L, times) instead of the grouped totals
+        // (scripts/strategy-status.sh users). The header tells the script a server that has this option from one that ignored it.
+        if (req.query.closed === '1') {
+            res.setHeader('X-Closed-Rows', '1');
+            res.json(closedTradeRows(stats.closedTrades as Trade[], re, todayOnly));
+            return;
+        }
         const rows = new Map<string, { strategy: string; realized: number; unrealized: number; open: number; closed: number }>();
         const row = (t: Trade) => {
             const key = byBroker ? String(t.broker || 'kite') : (t.strategy || t.user || '(none)');
