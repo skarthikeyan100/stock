@@ -23,7 +23,7 @@ import { setTargetStopLoss } from './kiteExecutor';
 
 export interface MirrorLeg {
     userId: string;
-    broker: 'kite' | 'ant';
+    broker: 'kite' | 'ant' | 'breeze';
     tsym: string;
     token: string;
     exchange: 'NFO' | 'BFO';
@@ -36,7 +36,7 @@ export interface MirrorLeg {
 export type MirrorHook = (leg: MirrorLeg) => Promise<void> | void;
 
 const COLLECTION = 'mirrorLegs';
-interface MirrorRow { userId: string; token: string; tsym: string; broker: 'kite' | 'ant'; exchange: 'NFO' | 'BFO'; adminQty: number }
+interface MirrorRow { userId: string; token: string; tsym: string; broker: 'kite' | 'ant' | 'breeze'; exchange: 'NFO' | 'BFO'; adminQty: number }
 
 /** Mirror percentage from config.yml, clamped to 0-100; absent or unparseable = 0 (no mirror). */
 export function mirrorPercentage(): number {

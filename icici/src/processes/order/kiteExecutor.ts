@@ -285,7 +285,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade> {
         const resolved = await KiteContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
         const price = await estimateOptionPrice(canonical.symbol, canonical.strike, canonical.optionType);
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity, resolved.lotSize);
         return buyContractOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
     }
 
@@ -301,12 +301,15 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade> {
         const contract = await KiteContractMaster.getInstance().findATMOption(req.strikePrice, optionType, index);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.strikePrice });
         const price = await estimateOptionPrice(index, req.strikePrice, optionType);
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity, contract.lotSize);
         return buyContractOnKite(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
     }
 
-    const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
-    return buyIndexOnKite({ userId: req.userId, index: req.index, niftyLtp: await getSpotLtp(index), right: req.right, quantity, targetPoints: req.targetPoints, stopLossPoints: req.stopLossPoints, mirror: req.mirror });
+    // Index-ATM path: resolve the entry strike every broker shares (ANT-sourced spot), then size and enter exactly like the strike branch
+    // above (findATMOption on a listed strike lands on it), so investmentAmount sizing applies here too - it used to default to one lot.
+    const optionType = req.right === CALL ? 'CE' : 'PE';
+    const entryStrike = AntContractMaster.getInstance().entryStrike(await getSpotLtp(index), optionType, index);
+    return manualBuyOnKite({ ...req, strikePrice: entryStrike, index });
 }
 
 async function buyContractOnKite(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', targetPoints?: number, stopLossPoints?: number, mirror?: MirrorHook): Promise<Trade> {
@@ -386,6 +389,10 @@ export async function setTargetStopLoss(userId: string, token: string, targetPoi
             trade.lastTradePrice || trade.price
         );
     }
+    // Breeze has no broker-side exit: the in-app exitMonitor is the only enforcement, so a target/stop set on a position bought without
+    // one (manual buy with no exit points) must start the watch here. Re-registering an already-watched trade just replaces its entry
+    // (the monitor reads trade.targetPrice/stopLossPrice live off the same object).
+    if (trade.broker === 'breeze' && trade.token) exitMonitor.registerTrade(trade, exchangeForTsym(trade.tsym), 'breeze');
     bookkeeping.notifyTargetStopLossChanged();
 }
 

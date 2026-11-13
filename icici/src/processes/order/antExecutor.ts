@@ -157,9 +157,9 @@ async function sizingQuote(exch: string, token: string): Promise<{ ltp: number; 
 }
 
 // Both manual-buy branches (contract and strike) size and enter the same way.
-async function enterManualBuy(req: ManualBuyRequest, tsym: string, token: string, exch: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number): Promise<Trade> {
+async function enterManualBuy(req: ManualBuyRequest, tsym: string, token: string, exch: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number, lotSize?: string | number): Promise<Trade> {
     const sized = req.quantity != null ? undefined : await sizingQuote(exch, token);
-    const quantity = sizeManualBuyOrRefuse(req, tsym, sized?.ltp);
+    const quantity = sizeManualBuyOrRefuse(req, tsym, sized?.ltp, Number(lotSize) || undefined);
     req.mirror?.({ userId: req.userId, broker: 'ant', tsym, token, exchange: exch, quantity,
         place: (adminId, qty) => enterPosition(adminId, tsym, token, qty, exch, targetPoints, stopLossPoints, 'bracket') });
     return enterPosition(req.userId, tsym, token, quantity, exch, targetPoints, stopLossPoints, 'bracket', sized);
@@ -168,8 +168,8 @@ async function enterManualBuy(req: ManualBuyRequest, tsym: string, token: string
 // An unsized buy needs a price to size from. Without one, refuse: the entry also needs a limit price,
 // so a quote outage blocks it either way. The one-lot default (resolveManualBuyQuantity) only applies when
 // a price is known but no investment amount is set.
-function sizeManualBuyOrRefuse(req: ManualBuyRequest, tsym: string, price: number | undefined): number {
-    const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, tsym, price ?? 0, req.quantity);
+function sizeManualBuyOrRefuse(req: ManualBuyRequest, tsym: string, price: number | undefined, contractLotSize?: number): number {
+    const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, tsym, price ?? 0, req.quantity, contractLotSize);
     if (req.quantity == null && !((price ?? 0) > 0)
         && bookkeeping.getUserContext(req.userId).investmentMode === 'investmentAmount') {
         throw new Error(`Manual buy ${tsym}: no ANT price to size an investment-amount order - not placed`);
@@ -718,7 +718,7 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
             strike: canonical.strike,
             optionType: canonical.optionType,
         });
-        return enterManualBuy(req, resolved.tradingSymbol, resolved.token, resolved.exch as 'NFO' | 'BFO', targetPoints, stopLossPoints);
+        return enterManualBuy(req, resolved.tradingSymbol, resolved.token, resolved.exch as 'NFO' | 'BFO', targetPoints, stopLossPoints, resolved.lotSize);
     }
 
     if (!req.right) throw new Error('manualBuy requires either contract or right');
@@ -728,12 +728,14 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
     if (req.strikePrice) {
         const optionType = req.right === CALL ? 'CE' : 'PE';
         const contract = AntContractMaster.getInstance().findATMOption(req.strikePrice, optionType, index);
-        return enterManualBuy(req, contract.tradingSymbol, contract.token, contract.exch as 'NFO' | 'BFO', targetPoints, stopLossPoints);
+        return enterManualBuy(req, contract.tradingSymbol, contract.token, contract.exch as 'NFO' | 'BFO', targetPoints, stopLossPoints, contract.lotSize);
     }
 
-    const quantity = req.quantity ?? bookkeeping.getInstrumentLotSize(index);
-
-    return buyIndexOnAnt({ userId: req.userId, index: req.index, niftyLtp: await getSpotLtp(index), right: req.right, quantity, targetPoints, stopLossPoints, mirror: req.mirror });
+    // Index-ATM path: resolve the shared entry strike, then size and enter like the strikePrice branch above (so investmentAmount sizing
+    // applies; it used to default to one lot).
+    const optionType = req.right === CALL ? 'CE' : 'PE';
+    const entryStrike = AntContractMaster.getInstance().entryStrike(await getSpotLtp(index), optionType, index);
+    return manualBuyOnAnt({ ...req, strikePrice: entryStrike, index });
 }
 
 // Returns immediately with {orderId} - fill arrives later via

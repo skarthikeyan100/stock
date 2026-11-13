@@ -5,7 +5,11 @@ import BreezeContractMaster, { FnoRecord, BreezeExchange, breezeShortNameFor, in
 import AntContractMaster from '../../ant/AntContractMaster';
 import BreezeOrderNotifyStream from '../../breeze/BreezeOrderNotifyStream';
 import { Trade } from '../../model/model';
-import { CALL } from '../../constants';
+import { CALL, PUT } from '../../constants';
+import type { MirrorHook } from './mirror';
+import configService from '../../prism/ConfigService';
+import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
+import { getSpotLtp } from './spotQuote';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { exchangeForTsym } from '../../util/underlyings';
@@ -979,4 +983,153 @@ export async function getContractByPriceRangeOnBreeze(
     }
 
     throw new Error(`No ${index} ${optionType} contract found with premium >= ${minPremium} (underlyingLtp=${underlyingLtp})`);
+}
+
+// --- Manual (frontend) buy: POST /order/buy -> IPC 'manualBuy' for a Breeze-account user -----------------------------------------
+// Same request contract as manualBuyOnKite/manualBuyOnAnt (three contract-resolution branches: canonical `contract`, `strikePrice`
+// (ATM-by-strike), else the index-ATM fallback), so the route and the frontend are unchanged.
+//  - Priced with the guarded quote (Breeze quote cross-checked against ANT's live quote, see getGuardedOptionQuote): the limit is the
+//    highest of every ask/ltp source, so a stale Breeze quote cannot park an unfillable order.
+//  - One order, like the Kite/ANT manual buys (no freeze-quantity chunking there either): a quantity over the exchange freeze limit is
+//    refused by the broker. The quantity must be a positive whole number of lots.
+//  - Fill wait is the IPC-budgeted plan (fillWaitPlan). The order is tracked as a pending Breeze limit order from placement, so a fill
+//    that lands after the wait gave up (cancel failed / state unknown) is still booked by the poller; a partial fill is booked and returned
+//    as the trade (quantity = what filled).
+//  - Breeze has no GTT/bracket (see file header), so `useGTT` is ignored: a target and/or stop-loss is always enforced by the in-app
+//    exitMonitor off live ticks (active, not watch-only). Neither set = deliberately unprotected, as buyIndexOnBreeze.
+//  - Admin mirror (settings.mirrorPercentage): same hook as the other brokers; the admin leg is a Breeze buy through this same path. The
+//    primary admin never mirrors itself (mirror.ts eligibleUser).
+export interface BreezeManualBuyRequest {
+    userId: string;
+    index?: 'NIFTY' | 'SENSEX';
+    right?: string;
+    contract?: string; // canonical symbol string, e.g. "NIFTY_24100_CE"
+    strikePrice?: number;
+    price?: number; // accepted for contract parity with Kite; the entry is always priced from the guarded quote
+    quantity?: number;
+    targetPoints?: number;
+    stopLossPoints?: number;
+    mirror?: MirrorHook;
+}
+
+// ANT's token for the same contract (the guarded quote's cross-check source), or undefined when ANT's master has no exact match.
+function antTokenForBreezeContract(contract: FnoRecord): string | undefined {
+    try {
+        const [day, mon, year] = contract.expiryDate.split('-');
+        const month = MONTHS.indexOf(mon);
+        if (month === -1) return undefined;
+        const expiry = new Date(Date.UTC(Number(year), month, Number(day))).toISOString(); // ANT stores midnight UTC of the expiry date
+        return AntContractMaster.getInstance().findExactOption({ symbol: indexNameFor(contract.shortName), strike: Number(contract.strikePrice), expiry, optionType: contract.optionType }).token;
+    } catch {
+        return undefined;
+    }
+}
+
+async function breezeQuoteWithCrossCheck(contract: FnoRecord): Promise<{ bestBid: number; bestAsk: number; ltp: number }> {
+    const antToken = antTokenForBreezeContract(contract);
+    if (antToken) return getGuardedOptionQuote(contract, antToken);
+    // No ANT token to cross-check against: at least Breeze's own ltp floors the limit.
+    const q = await getOptionQuote(contract);
+    return { ...q, bestAsk: crossCheckQuote(q, null).bestAsk };
+}
+
+function manualBuyExits(userId: string, targetPoints?: number, stopLossPoints?: number): { target: number; stop: number } {
+    const settings = configService.getConfig().settings;
+    return {
+        target: targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? settings.targetPoints ?? 0,
+        stop: stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? settings.stopLossPoints ?? 0,
+    };
+}
+
+async function enterManualBreezeBuy(userId: string, contract: FnoRecord, requestedQuantity: number | undefined, targetPoints: number | undefined, stopLossPoints: number | undefined, mirror?: MirrorHook): Promise<Trade> {
+    const breeze = Breeze.getInstance();
+    if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
+    const tsym = tsymFor(contract);
+    const { bestAsk } = await breezeQuoteWithCrossCheck(contract);
+    if (!(bestAsk > 0)) throw new Error(`Breeze quote unavailable for ${tsym} - manual buy not placed`);
+    const quantity = bookkeeping.resolveManualBuyQuantity(userId, tsym, bestAsk, requestedQuantity, contract.lotSize);
+    const lot = contract.lotSize;
+    if (!Number.isInteger(quantity) || !(quantity > 0) || (lot > 0 && quantity % lot !== 0)) {
+        throw new Error(`Manual buy ${tsym}: quantity ${quantity} must be a positive multiple of the lot size ${lot} - not placed`);
+    }
+    const { target, stop } = manualBuyExits(userId, targetPoints, stopLossPoints);
+
+    // The admin mirror starts now, in parallel with this order (it does not wait for the user's fill). The admin leg resolves its own exit
+    // points the same way (the user's request, else the user's own, else settings).
+    mirror?.({ userId, broker: 'breeze', tsym, token: contract.token, exchange: contract.exchange, quantity,
+        place: (adminId, qty) => enterManualBreezeBuy(adminId, contract, qty, target, stop) });
+
+    Log.log(`[order] Buying (manual) ${tsym} qty=${quantity} @ ${bestAsk} (limit, guarded quote) for ${userId} via Breeze`);
+    const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, bestAsk);
+    // Tracked from placement until the fill is settled (same as marketBuyBareOnBreeze): a fill that lands after the wait gave up is booked by the poller.
+    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol: tsym, antToken: contract.token, quantity, exchange: contract.exchange, action: 'Buy' });
+
+    const right = contract.optionType === 'CE' ? CALL : PUT;
+    const build = (qty: number, price: number): Trade => {
+        const t = new Trade();
+        t.tsym = tsym;
+        t.token = contract.token;
+        t.quantity = qty;
+        t.price = price;
+        t.lastTradePrice = price;
+        t.action = 'Buy';
+        t.status = 'COMPLETE';
+        t.right = right;
+        t.user = userId;
+        t.broker = 'breeze';
+        t.brokerOrderId = orderId;
+        // No broker-side exit on Breeze: a requested target and/or stop is enforced by the in-app exitMonitor.
+        if (target > 0) { t.targetPoints = target; t.targetPrice = roundToTick(price + target); }
+        if (stop > 0) t.stopLossPrice = Math.max(0.05, roundToTick(price - stop));
+        return t;
+    };
+    const book = async (t: Trade): Promise<void> => {
+        await bookkeeping.recordFill(t);
+        if ((t.targetPrice != null || t.stopLossPrice != null) && t.token) exitMonitor.registerTrade(t, contract.exchange, 'breeze');
+    };
+
+    let partial: Trade | undefined;
+    let entryPrice: number;
+    try {
+        entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, {}, async (t) => {
+            // The partial's own price/quantity come from the broker; rebuild with the exit levels so it is protected like a full fill.
+            partial = build(t.quantity, t.price);
+            await book(partial);
+        });
+    } catch (e: any) {
+        const live = !!(e?.orderMayBeLive || e?.fillStateUnknown);
+        if (!live) untrackPendingBreezeLimitOrder(orderId); // terminal at the broker, nothing more can fill; a partial was booked above
+        else Log.log(`[order] ALERT: manual Breeze buy ${orderId} (${tsym}, ${userId}) not confirmed ${e?.fillStateUnknown ? 'fill state unknown' : 'cancel failed'} - order may still be live, left on the pending poller, check the broker`);
+        if (partial) {
+            Log.log(`[order] manual Breeze buy ${orderId} (${tsym}) partially filled: ${partial.quantity}/${quantity} @ ${partial.price} - booked and protected`);
+            return partial;
+        }
+        throw e;
+    }
+    untrackPendingBreezeLimitOrder(orderId);
+    Log.log(`[order] Filled (manual) ${tsym} at ${entryPrice} for ${userId} via Breeze`);
+    const trade = build(quantity, entryPrice);
+    await book(trade);
+    return trade;
+}
+
+export async function manualBuyOnBreeze(req: BreezeManualBuyRequest): Promise<Trade> {
+    const master = BreezeContractMaster.getInstance();
+    if (req.contract) {
+        const canonical = parseCanonicalSymbol(req.contract);
+        const contract = await master.findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
+        return enterManualBreezeBuy(req.userId, contract, req.quantity, req.targetPoints, req.stopLossPoints, req.mirror);
+    }
+    if (!req.right) throw new Error('manualBuy requires either contract or right');
+    const index = req.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
+    const optionType: 'CE' | 'PE' = req.right === CALL ? 'CE' : 'PE';
+    if (req.strikePrice) {
+        // findATMOption rounds its arg to the strike step: a listed strike lands exactly on itself.
+        const contract = await master.findATMOption(req.strikePrice, optionType, index);
+        return enterManualBreezeBuy(req.userId, contract, req.quantity, req.targetPoints, req.stopLossPoints, req.mirror);
+    }
+    // Index-ATM fallback: the entry strike every broker shares (ANT-sourced spot), then sized and entered like the strikePrice branch
+    // (investmentAmount sizing applies; the default is one lot only when the user is not on investmentAmount).
+    const spot = await getSpotLtp(index);
+    return manualBuyOnBreeze({ ...req, strikePrice: AntContractMaster.getInstance().entryStrike(spot, optionType, index), index });
 }

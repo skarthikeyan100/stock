@@ -8,7 +8,7 @@ import Breeze from '../../breeze/Breeze';
 import BreezeContractMaster, { indexNameFor, breezeTsym, breezeLegacyTsym } from '../../breeze/BreezeContractMaster';
 import { Trade } from '../../model/model';
 import { UserContext, closeUserAccount } from '../../user';
-import { PUT, CALL, UNKNOWN_USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, INDEX_LOT_SIZE } from '../../constants';
+import { PUT, CALL, UNKNOWN_USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY } from '../../constants';
 import * as exitMonitor from './exitMonitor';
 import { collapseFillsByOrderId, netFifoLots, pairFillsFifo } from './fillNetting';
 import { recordOrderOwner, loadOrderOwners } from './orderOwners';
@@ -326,20 +326,35 @@ class OrderBookkeeping {
         return INDEX_LOT_SIZE.NIFTY;
     }
 
-    // Broker-agnostic manual-buy sizing: an explicit quantity always wins;
-    // otherwise a user on investmentMode='investmentAmount' gets as many
-    // lots as their remaining capital covers at the given price (at least
-    // one lot if they have any headroom at all), and everyone else falls
-    // back to a single lot - unchanged from the prior default behavior.
-    resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number): number {
+    // Broker-agnostic manual-buy sizing: an explicit quantity always wins; otherwise a user on investmentMode='investmentAmount' gets as
+    // many lots as their remaining capital (net of pending reservations) covers at the given price, and everyone else one lot. One lot
+    // is the documented floor, and every fallback to it is logged. The capital-derived lots are then clamped, each clamp logged, to what
+    // the account may actually place: the per-order cap and the exchange freeze quantity (a manual buy is one order, never chunked). There
+    // is deliberately NO lot-count cap in this mode (user decision 2026-11-13): only capital, per-order cap and the freeze limit apply. `contractLotSize` is the resolved contract's own lot size (preferred over the
+    // name-based guess, see getInstrumentLotSize).
+    resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number, contractLotSize?: number): number {
         if (explicitQuantity != null) return explicitQuantity;
-        const lotSize = this.getInstrumentLotSize(tsym);
+        const lotSize = contractLotSize && contractLotSize > 0 ? contractLotSize : this.getInstrumentLotSize(tsym);
         const ctx = this.getUserContext(userId);
-        if (ctx.investmentMode === 'investmentAmount' && ctx.availableAmount > 0 && price > 0) {
-            const lots = Math.max(1, Math.floor(ctx.availableAmount / (price * lotSize)));
-            return lots * lotSize;
+        if (ctx.investmentMode !== 'investmentAmount') return lotSize;
+        if (!(price > 0)) {
+            Log.log(`[order] manual buy sizing for ${userId} ${tsym}: no usable price (${price}) - falling back to one lot (${lotSize})`);
+            return lotSize;
         }
-        return lotSize;
+        const available = ctx.availableAmount - this.pendingValue(userId);
+        if (!(available > 0)) {
+            Log.log(`[order] manual buy sizing for ${userId} ${tsym}: no capital left (account ${ctx.accountCapital}, available ${available}) - falling back to one lot (${lotSize})`);
+            return lotSize;
+        }
+        const perLot = price * lotSize;
+        let lots = Math.max(1, Math.floor(available / perLot));
+        const capitalLots = lots;
+        const perOrderCap = this.getUserPerOrderCap(userId);
+        if (perOrderCap !== undefined && lots * perLot > perOrderCap) lots = Math.max(1, Math.floor(perOrderCap / perLot));
+        const freeze = tsym.startsWith('SENSEX') ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY;
+        lots = Math.max(1, Math.min(lots, Math.floor(freeze / lotSize)));
+        Log.log(`[order] manual buy sizing for ${userId} ${tsym}: ${lots} lot(s) x ${lotSize} @ ${price} (capital allows ${capitalLots}, available ${available}${perOrderCap !== undefined ? `, per-order cap ${perOrderCap}` : ''}${lots < capitalLots ? ' - clamped by the account limits' : ''})`);
+        return lots * lotSize;
     }
 
     // Used by chunkedBuyIndex (orderProcess.ts) when a caller passes
@@ -811,10 +826,21 @@ class OrderBookkeeping {
             }
             return { allowed: true };
         }
-        const tradedLots = this.getTradedLots(user) + this.pendingLots(user);
-        const lotLimit = this.getUserLotLimit(user);
-        if (tradedLots >= lotLimit) {
-            return { allowed: false, reason: `User '${user}' has reached the lot limit (${tradedLots}/${lotLimit} lots).` };
+        // The lot limit is a lotCount-mode rule. In investmentAmount mode ('as many lots as my capital allows') there is no lot-count cap:
+        // the account capital (net of open positions and pending orders) is the limit instead, checked just below.
+        const ctx = this.getUserContext(user);
+        // (An account with no capital configured has no capital limit to take the lot limit's place, so it keeps the lot limit.)
+        if (ctx.investmentMode === 'investmentAmount' && ctx.accountCapital > 0) {
+            const capitalLeft = ctx.accountCapital - this.getCurrentInvestment(user) - this.pendingValue(user);
+            if (!(capitalLeft > 0)) {
+                return { allowed: false, reason: `User '${user}' has no capital left (account capital ${ctx.accountCapital}, in use ${ctx.accountCapital - capitalLeft}).` };
+            }
+        } else {
+            const tradedLots = this.getTradedLots(user) + this.pendingLots(user);
+            const lotLimit = this.getUserLotLimit(user);
+            if (tradedLots >= lotLimit) {
+                return { allowed: false, reason: `User '${user}' has reached the lot limit (${tradedLots}/${lotLimit} lots).` };
+            }
         }
         const currentInvestment = this.getCurrentInvestment(user, broker) + this.pendingValue(user, broker);
         const maxInvestment = this.getUserMaxInvestment(user, broker);

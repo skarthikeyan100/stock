@@ -29,7 +29,7 @@ import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, ORDER_MAY_BE_LIVE_TAG, OrderRequest,
 import bookkeeping, { MongoRestoreResult, EodBrokerReport } from './order/bookkeeping';
 import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells } from './order/kiteExecutor';
 import * as antExecutor from './order/antExecutor';
-import { buyIndexOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
+import { buyIndexOnBreeze, manualBuyOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
 import { attachProtection, cancelProtection } from './order/attachProtection';
 import { buyChunked, marketBuyBareChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster, { breezeTsym } from '../breeze/BreezeContractMaster';
@@ -1096,14 +1096,15 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return await placeOrderWithPendingGuard(req, estimatedValue, () => {
                     const manualBuyBroker = bookkeeping.getUserBroker(req.userId);
-                    if (manualBuyBroker === 'breeze') throw new Error('manualBuy: no Breeze manual-buy primitive - refusing to route a Breeze user to Kite');
                     // mirror: a frontend user's buy is copied by the admin (mirror.ts; settings.mirrorPercentage). If the user's own order then
                     // fails, the admin's matching quantity is taken back so it does not sit open without the user's.
                     const started: Array<{ leg: MirrorLeg; done: Promise<void> | void }> = [];
                     const mirror: MirrorHook = (leg) => { const done = startMirrorBuy(leg); started.push({ leg, done }); return done; };
                     const buy = manualBuyBroker === 'ant'
                         ? antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload, mirror })
-                        : manualBuyOnKite({ userId: req.userId, ...req.payload, mirror });
+                        : manualBuyBroker === 'breeze'
+                            ? manualBuyOnBreeze({ userId: req.userId, ...req.payload, mirror })
+                            : manualBuyOnKite({ userId: req.userId, ...req.payload, mirror });
                     return buy.catch((e) => { for (const s of started) undoMirrorBuy(s.leg, s.done); throw e; });
                 });
             }
