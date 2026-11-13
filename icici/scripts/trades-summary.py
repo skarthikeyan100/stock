@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-day trades report (HTML): one row per closed buy+sell pair, with buy/sell reasons, the cumulative realized
+"""Per-day trades report (HTML): one row per trade (each buy fill with its sell; a blended double-up/average-add exit is split per buy fill), with buy/sell reasons, the cumulative realized
 and unrealized P&L at each exit. One table per strategy per broker (and per round when --reset is used).
 
 Usage:
@@ -132,14 +132,48 @@ def sell_reason(row):
     return 'Stop-loss / forced exit'
 
 
+def exact_fills(row, used):  # unused buy fills (newest first, any age) summing EXACTLY to the row's quantity, else None
+    cand = sorted([b for b in buys if id(b) not in used and b['user'] == row['strategy'] and b['broker'] == row['broker']
+                   and b['tsym'] == row['tsym'] and b['t'] <= row['exit']], key=lambda b: b['t'], reverse=True)
+    got, tot = [], 0
+    for b in cand:
+        if tot >= row['qty']: break
+        got.append(b); tot += b['qty']
+    return sorted(got, key=lambda b: b['t']) if tot == row['qty'] else None
+
+
+# A closed-trades row can blend several buys (double-up / average adds) into one exit. The report lists EACH buy fill as its
+# own trade (own buy time, price and quantity; the same sell), when the unused buy fills add up exactly to the row's quantity.
+# Otherwise the row stays whole, as before.
+used, split_rows = set(), []
+for r in rows:
+    ef = exact_fills(r, used)
+    if ef and len(ef) > 1:
+        for i, b in enumerate(ef):
+            used.add(id(b))
+            split_rows.append(dict(r, qty=b['qty'], ein=b['px'], entry=b['t'], pnl=round((r['eout'] - b['px']) * b['qty'], 2),
+                                   split=i, split_of=len(ef), split_fills=ef, split_fill=b))
+    else:
+        for b in (ef or []): used.add(id(b))
+        split_rows.append(dict(r, split=None))
+rows = split_rows
+rows.sort(key=lambda x: (x['exit'], x['entry']))
+
 prev = {}
 for r in rows:
     key = (r['strategy'], r['tsym'], r['broker'])
     prev.setdefault(key, [])
-    fl = buy_fills(r)
-    r['buy_t'] = fl[0]['t'] if fl else r['entry']
-    r['first_px'] = fl[0]['px'] if fl else r['ein']
-    r['buy_reason'] = buy_reason(r, prev[key], fl)
+    if r['split'] is not None:
+        b = r['split_fill']
+        fl = [b]
+        r['buy_t'], r['first_px'] = b['t'], b['px']
+        r['buy_reason'] = buy_reason(r, prev[key], fl) if r['split'] == 0 else \
+            f"Add to the still-open position ({r['qty']} @ {b['px']:.2f}; double-up / average add): fill {r['split'] + 1} of {r['split_of']} of the blended exit"
+    else:
+        fl = buy_fills(r)
+        r['buy_t'] = fl[0]['t'] if fl else r['entry']
+        r['first_px'] = fl[0]['px'] if fl else r['ein']
+        r['buy_reason'] = buy_reason(r, prev[key], fl)
     r['sell_reason'] = sell_reason(r)
     prev[key].append(r)
 
