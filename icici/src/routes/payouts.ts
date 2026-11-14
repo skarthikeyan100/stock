@@ -289,4 +289,20 @@ router.get('/users/:email/payouts/:id/proof', requireSelfOrAdmin('email'), async
 });
 
 
+// The admin has received the invoice a GSTIN-Advanced user owes for a paid payout (src/invoiceRule.ts).
+router.post('/admin/payouts/:id/invoice-received', requireAdmin, async function (req, res) {
+    try {
+        const id = new ObjectId(req.params.id);
+        const r: any = await Mongo.getInstance().db.collection('payouts').findOneAndUpdate(
+            { _id: id, invoiceStatus: 'pending' },
+            { $set: { invoiceStatus: 'received', invoiceReceivedAt: new Date(), invoiceReceivedBy: resolveUser(req) } },
+            { returnDocument: 'after' }
+        );
+        if (!r?.value) { res.status(404).json({ error: 'No payout of that id is waiting for an invoice' }); return; }
+        res.json(r.value);
+    } catch (e: any) {
+        res.status(400).json({ error: e?.message ?? 'Failed to mark the invoice received' });
+    }
+});
+
 export default router;

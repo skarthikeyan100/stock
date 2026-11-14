@@ -1,3 +1,4 @@
+import { invoiceRequired, invoiceDueAt } from './invoiceRule';
 import Mongo from './tools/mongo';
 import { getUser } from './user';
 import { computeTax } from './tax';
@@ -480,6 +481,13 @@ export async function markPayoutPaidWithProof(
     );
     const updated = res?.value ?? (res && res._id ? res : null);
     if (!updated) throw new Error(`Payout is already ${existing.status} - only a pending payout can be decided`);
+    // A user who became Advanced by giving a GSTIN owes an invoice for this payment within 2 days (src/invoiceRule.ts).
+    const payee = await getUser(updated.user);
+    if (payee && invoiceRequired(payee)) {
+        const invoiceFields = { invoiceStatus: 'pending', invoiceDueAt: invoiceDueAt(now) };
+        await payoutsCollection().updateOne({ _id: id }, { $set: invoiceFields });
+        Object.assign(updated, invoiceFields);
+    }
     await decisionLogCollection().insertOne({
         user: updated.user,
         payoutId: id,

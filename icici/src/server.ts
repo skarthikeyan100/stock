@@ -45,6 +45,7 @@ import tradingRoutes from './routes/trading';
 import streamsRoutes, { antStreamClients, niftyStreamClients, optionStreamClients, setLastNiftyQuote } from './routes/streams';
 import adminRoutes from './routes/admin';
 import levelsRoutes from './routes/levels';
+import { runInvoiceCheck } from './invoiceRule';
 import { requireCsrfHeader } from './routes/session';
 import { wrapAsyncHandlers } from './routes/asyncRouter';
 
@@ -173,6 +174,9 @@ async function main() {
         for (const res of antStreamClients) res.write(rawPayload);
     });
     DataLink.getInstance().connect();
+
+    // Invoice rule (src/invoiceRule.ts): hourly, remind a GSTIN-Advanced user whose invoice is due within a day and close the account of one past the deadline.
+    setInterval(() => { runInvoiceCheck().catch((e) => Log.log('[invoice] hourly check failed:', e)); }, 60 * 60 * 1000).unref();
 
     const port = Number(process.env.PORT) || 3000;
     const mainServer = app.listen(port, () => Log.log(`[frontend] Listening on ${port}`));
