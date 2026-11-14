@@ -14,6 +14,7 @@ export interface AuthUser {
   /** @deprecated use accountCapital */
   investmentAmount?: number;
   investmentMode: 'lotCount' | 'investmentAmount';
+  investmentModeLocked?: boolean;
   useGTT: boolean;
   role: string;
   enabled: boolean;
@@ -32,6 +33,11 @@ export interface AuthUser {
   allottedCapital?: number;
   targetPoints?: number;
   stopLossPoints?: number;
+  /** Platform defaults used when targetPoints / stopLossPoints are unset (from config.yml). */
+  /** Set while an admin is using the app as this user (from /auth/me). */
+  actingAs?: { admin: string; adminName?: string };
+  defaultTargetPoints?: number;
+  defaultStopLossPoints?: number;
   legalName?: string;
   aadharDocId?: string;
   aadharVerified: boolean;
@@ -49,6 +55,11 @@ export interface AuthUser {
   gstDocId?: string;
   gstVerified: boolean;
   companyRegisteredName?: string;
+  /** 'beginner' when absent. Advanced is permanent (server-enforced). */
+  proficiencyLevel?: 'beginner' | 'advanced';
+  advancedSince?: string;
+  advancedVia?: 'admin' | 'gstin';
+  accountClosed?: boolean;
 }
 
 interface AuthState {
@@ -57,7 +68,8 @@ interface AuthState {
   isLoggedIn: boolean;
   isAdmin: boolean;
   termsAccepted: boolean;
-  login: (credential: string) => Promise<void>;
+  /** Resolves to whether this account has already accepted the rules (then the Rules screen is skipped). */
+  login: (credential: string) => Promise<boolean>;
   logout: () => Promise<boolean>;
   refreshUser: () => Promise<void>;
   setTermsAccepted: (accepted: boolean) => void;
@@ -122,7 +134,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!res.ok) throw new Error('Login failed');
     const userData = await res.json();
     setUser(userData);
-    setTermsAcceptedState(readTermsAccepted(userData.email)); // see the mount effect's comment above
+    const accepted = readTermsAccepted(userData.email);
+    setTermsAcceptedState(accepted); // see the mount effect's comment above
+    return accepted;
   }, []);
 
   // Any 401 from the API (other than /auth/*) means the session is gone: show the login screen.

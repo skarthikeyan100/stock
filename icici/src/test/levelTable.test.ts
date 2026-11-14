@@ -2,7 +2,7 @@
  * The Beginner / Advanced comparison table (src/levelTable.ts): one source for the emails and GET /level-rules.
  * Run: npx tsc && node ./dist/test/levelTable.test.js
  */
-import { levelTableRows, renderLevelTableHtml, ADVANCED_TERMS_TEXT } from '../levelTable';
+import { levelTableRows, renderLevelTableHtml, ADVANCED_TERMS_TEXT, buildLevelRulesPayload } from '../levelTable';
 
 let failed = false;
 function assert(cond: boolean, msg: string) { console.log(`  ${cond ? 'PASS' : 'FAIL'}: ${msg}`); if (!cond) { failed = true; process.exitCode = 1; } }
@@ -24,6 +24,9 @@ const html = renderLevelTableHtml([{ label: '<b>x</b>', beginner: '<script>1</sc
 assert(!html.includes('<script>') && !html.includes('<b>x</b>') && html.includes('a&amp;b') && html.includes('Beginner') && html.includes('Advanced'), 'every cell is HTML-escaped; header names both levels');
 
 assert(ADVANCED_TERMS_TEXT.length >= 4 && ADVANCED_TERMS_TEXT.some((p) => /permanent/i.test(p)) && ADVANCED_TERMS_TEXT.some((p) => /invoice/i.test(p)) && /DRAFT/.test(ADVANCED_TERMS_TEXT[0]), 'Advanced terms: permanent, invoice obligation, marked DRAFT for the owner\'s review');
+
+const payload = buildLevelRulesPayload({ targetPoints: 2, stopLossPoints: 10 });
+assert(payload.rows.length === 12 && payload.limits.advanced.daily === 15 && payload.limits.advanced.weekly === 30 && payload.limits.beginner.perTrade === 10 && payload.limits.beginner.capital === 100000 && payload.limits.advanced.capital === 200000, 'GET /level-rules payload: the rows plus each level\'s daily / weekly / per-trade percent and capital');
 
 if (!failed) console.log('ALL PASS');
 process.exit(process.exitCode ?? 0);

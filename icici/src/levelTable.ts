@@ -52,3 +52,9 @@ export const ADVANCED_TERMS_TEXT: string[] = [
     'The Trader\'s own target and stop-loss are limited so that one stopped-out trade cannot lose more than the per-trade percentage of capital shown in the comparison table; positions are sized down automatically to respect it.',
     'All other terms of the Trading Participation Agreement, the Terms & Conditions and the Privacy Policy continue to apply.',
 ];
+
+/** The public payload of GET /level-rules (no secrets: only the published rules). */
+export function buildLevelRulesPayload(settings: Record<string, any> | undefined): { rows: LevelTableRow[]; limits: Record<'beginner' | 'advanced', { daily: number; weekly: number; perTrade: number; capital: number; profitShare: number }> } {
+    const lim = (level: 'beginner' | 'advanced') => { const r = levelRules(settings, level); return { daily: r.maxDailyDrawdownPercent, weekly: r.maxWeeklyDrawdownPercent, perTrade: r.maxLossPerTradePercent, capital: r.capital, profitShare: r.profitSplitPercent }; };
+    return { rows: levelTableRows(settings), limits: { beginner: lim('beginner'), advanced: lim('advanced') } };
+}

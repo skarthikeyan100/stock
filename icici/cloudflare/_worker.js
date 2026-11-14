@@ -2,7 +2,7 @@
 const ORIGIN = 'https://origin.nivedhatech.com';
 const API_PREFIXES = [
   '/order', '/optionstream', '/positionstream', '/niftystream', '/notificationstream', '/auth', '/users', '/admin', '/config',
-  '/strategies', '/prism', '/demo', '/ant', '/kite', '/breeze', '/shoonya', '/broker', '/reconcile',
+  '/strategies', '/prism', '/demo', '/ant', '/kite', '/breeze', '/shoonya', '/broker', '/reconcile', '/user', '/level-rules',
 ];
 const isApi = (p) => API_PREFIXES.some((x) => p === x || p.startsWith(x + '/'));
 

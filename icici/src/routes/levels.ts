@@ -1,4 +1,7 @@
 import { getUser } from '../user';
+import configService from '../prism/ConfigService';
+import { buildLevelRulesPayload } from '../levelTable';
+import { ADVANCED_TERMS_VERSION } from '../levelUpgrade';
 import { normalizeLevel } from '../levelRules';
 import { successfulWeeksFor } from '../successfulWeeks';
 import Mongo from '../tools/mongo';
@@ -18,6 +21,11 @@ const router = asyncRouter();
 async function hasPending(collection: string, email: string): Promise<boolean> {
     return !!(await Mongo.getInstance().db.collection(collection).findOne({ user: email, status: 'pending' }));
 }
+
+// PUBLIC (no login): the Beginner / Advanced comparison table and limits, for the rules page that logged-out visitors can read.
+router.get('/level-rules', async function (_req, res) {
+    res.json({ ...buildLevelRulesPayload((configService.getConfig()?.settings ?? {}) as Record<string, any>), termsVersion: ADVANCED_TERMS_VERSION });
+});
 
 // The caller's own level, their progress towards the capital-increase rule and whether a request of theirs is waiting.
 router.get('/user/level-status', requireAuth, async function (req, res) {

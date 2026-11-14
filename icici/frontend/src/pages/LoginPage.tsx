@@ -23,13 +23,14 @@ export default function LoginPage() {
     if (isLoggedIn && !termsAccepted) navigate('/rules', { replace: true });
   }, [isLoggedIn, termsAccepted, navigate]);
 
-  // One handler pair for every Google button (nav, hero and footer). /rules forwards a user who has already accepted the terms.
+  // One handler pair for every Google button (nav, hero and footer). A user who has already accepted the terms skips /rules.
   const onGoogleSuccess = (where: LoginSlot) => async (credentialResponse: CredentialResponse) => {
     setLoginError(null);
     try {
       if (!credentialResponse.credential) throw new Error('Google did not return a credential');
-      await login(credentialResponse.credential);
-      navigate('/rules');
+      // Rules are shown once per account on this device; a returning user who already accepted goes straight to trading.
+      const accepted = await login(credentialResponse.credential);
+      navigate(accepted ? '/trade' : '/rules');
     } catch (e: any) {
       console.error('Login failed:', e);
       setLoginError({ message: e?.message || 'Login failed - please try again', where });
@@ -219,6 +220,8 @@ export default function LoginPage() {
         <div className="landing-footer-content">
           <span>© {new Date().getFullYear()} PropFirm Trading. All rights reserved.</span>
           <div className="landing-footer-links">
+            <a href="/levels" target="_blank" rel="noopener noreferrer">Beginner &amp; Advanced rules</a>
+            <span className="divider">•</span>
             <a href="/privacy-policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
             <span className="divider">•</span>
             <a href="/terms-and-conditions" target="_blank" rel="noopener noreferrer">Terms & Conditions</a>

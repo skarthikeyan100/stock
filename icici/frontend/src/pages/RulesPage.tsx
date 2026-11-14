@@ -2,9 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { Container, Card, Button, ListGroup } from 'react-bootstrap';
 import { useAuth } from '../context/AuthContext';
 import ThemeToggle from '../components/ThemeToggle';
-
-const DAILY_DRAWDOWN_PERCENT = 25;
-const WEEKLY_LOSS_PERCENT = 50;
+import LevelTable, { useLevelRules } from '../components/LevelTable';
 
 export default function RulesPage() {
   const navigate = useNavigate();
@@ -23,14 +21,21 @@ export default function RulesPage() {
     if (await logout()) navigate('/');
   };
 
-  const investmentAmount = user?.accountCapital ?? user?.investmentAmount ?? 100000;
-  const dailyLimit = Math.round(investmentAmount * (DAILY_DRAWDOWN_PERCENT / 100));
-  const weeklyLimit = Math.round(investmentAmount * (WEEKLY_LOSS_PERCENT / 100));
+  const level = user?.proficiencyLevel === 'advanced' ? 'advanced' : 'beginner';
+  const { data } = useLevelRules();
+  // The percentages are the user's own level's (from the server, which reads config.yml), applied to their allocated capital.
+  const lim = data?.limits[level];
+  const investmentAmount = user?.accountCapital ?? user?.investmentAmount ?? lim?.capital ?? 100000;
+  const dailyPercent = lim?.daily;
+  const weeklyPercent = lim?.weekly;
+  const dailyLimit = dailyPercent != null ? Math.round(investmentAmount * (dailyPercent / 100)) : null;
+  const weeklyLimit = weeklyPercent != null ? Math.round(investmentAmount * (weeklyPercent / 100)) : null;
 
-  const rules = [
-    'The number of simultaneous trades depends on how your account is configured. If your account trades by fixed lot size, multiple positions can run at the same time. If it trades by total investment amount, your entire allocated capital is committed to one trade at a time. Additionally, a single user may place at most 10 trades in one day. These trade-count and investment limits are checked before every order is placed (on the first leg of the trade) and simply reject it if breached.',
-    `Maximum daily drawdown: your realized loss on any single day may not exceed ${DAILY_DRAWDOWN_PERCENT}% of your allocated investment amount (₹${dailyLimit.toLocaleString()} for your account). If this limit is reached, your active positions will be automatically squared off, further order placement will be restricted until the next trading day, and all profit accumulated since your last payout is forfeited, even if you had made 100% profit before that day.`,
-    `Maximum weekly loss: your total realized loss across a trading week (Wednesday through Tuesday) may not exceed ${WEEKLY_LOSS_PERCENT}% of your allocated investment amount (₹${weeklyLimit.toLocaleString()} for your account). If this limit is breached, remaining open positions will be automatically squared off and your account will be closed.`,
+  const rules = !lim ? [] : [
+    'The number of simultaneous trades depends on how your account is configured. If your account trades by fixed lot size, multiple positions can run at the same time. If it trades by total investment amount, your entire allocated capital is committed to each trade, and at most 3 trades per day are allowed. These trade-count and investment limits are checked before every order is placed (on the first leg of the trade) and simply reject it if breached.',
+    `Maximum daily drawdown: your realized loss on any single day may not exceed ${dailyPercent}% of your allocated investment amount (₹${dailyLimit!.toLocaleString('en-IN')} for your account). If this limit is reached, your active positions will be automatically squared off, further order placement will be restricted until the next trading day, and all profit accumulated since your last payout is forfeited, even if you had made 100% profit before that day.`,
+    `Maximum weekly loss: your total realized loss across a trading week (Wednesday through Tuesday) may not exceed ${weeklyPercent}% of your allocated investment amount (₹${weeklyLimit!.toLocaleString('en-IN')} for your account). If this limit is breached, remaining open positions will be automatically squared off and your account will be closed.`,
+    `Maximum loss on one trade: one trade that hits its stop-loss may not lose more than ${lim.perTrade}% of your allocated capital, so a cheap option or a wide stop-loss buys a smaller position.`,
   ];
 
   return (
@@ -38,11 +43,15 @@ export default function RulesPage() {
       <div className="position-absolute top-0 start-0 m-3">
         <ThemeToggle />
       </div>
-      <Container style={{ maxWidth: 600 }}>
+      <Container style={{ maxWidth: 780 }}>
         <Card className="shadow-lg border-0">
           <Card.Body className="p-4">
             <h2 className="text-center mb-1 fw-bold">PropFirm Trading Platform</h2>
             <p className="text-center text-muted mb-4">Trading Rules &amp; Guidelines</p>
+
+            <p className="text-center small text-muted mb-2">Your account is <strong>{level === 'advanced' ? 'Advanced' : 'Beginner'}</strong>.</p>
+            <LevelTable highlight={level} />
+            {level === 'beginner' && <p className="small text-muted">Want Search &amp; Buy and your own target and stop-loss? You can request Advanced on your <a href="/profile#upgrade">Profile</a> page. Advanced is permanent.</p>}
 
             <ListGroup variant="flush" className="mb-4">
               {rules.map((rule, i) => (
