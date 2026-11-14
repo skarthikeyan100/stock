@@ -1,92 +1,102 @@
-# Beginner / Advanced levels - design (2026-11-14)
+# Beginner / Advanced levels - design (2026-11-14, rev 2)
 
-Status: awaiting approval.
+Status: awaiting approval. Rev 2 supersedes the first version (self-service immediate upgrade, 10/20 limits, same capital).
 
 ## Intent
-Two kinds of users: beginners who know nothing about options, and advanced users who do. The platform bears the trading loss (prop-firm model), so
-the aim is to minimise losses from beginners' luck-driven trading, keep the trade count down (about 30 of every 100 of profit goes to tax,
-brokerage and STT), and give experienced users real control in exchange for taking on more risk.
+Two kinds of users: beginners who know nothing about options, and advanced users who do. The platform bears the trading loss (prop-firm model), so the
+aim is to minimise losses (luck does not always favour, for beginners or advanced users), keep trade volume down (about 30 of every 100 of profit goes to
+tax, brokerage and STT; more trades also breed greed), and give experienced users real control in exchange for more risk. Real swings are large: on 2L
+an advanced user sees +-1L days and 300% option winners, and dips of 20k that recover.
 
 ## Goals
-- Beginner: Flash Trade only, fixed target and stop-loss, tight loss limits.
-- Advanced: Flash Trade and Search & Buy, own target and stop-loss, wider loss limits, and the ability to ask for more capital.
-- A clear table showing the differences, available before login and inside the app.
-- Everyone starts as Beginner; upgrading is the user's own, permanent, immediate choice.
+- Beginner: Flash Trade only, fixed target and stop-loss, fixed position sizing, small capital, tight limits.
+- Advanced: Flash Trade and Search & Buy, own target/stop-loss within a bound, choice of position sizing, more capital.
+- A comparison table (below) before login and inside the app; the rules for each level are transparent.
+- Everyone starts Beginner. Advanced is granted by admin approval of a request, or automatically for a verified GST-registered company. Permanent.
 
-## Non-goals
-- No new instruments: Search & Buy already lists index options (NIFTY, SENSEX, BANKNIFTY, ...) and stock options (~17.5k contracts in `public/symbols.txt`).
-- No difference in profit split, and none in capital at the start. No daily trade cap per level in this project (considered, not decided).
-- No downgrade, by any route the user can reach.
-
-## Anti-goals
-- Advanced must not become a perk that everyone takes: it offers freedom and risk, not better terms. Hence no higher split or capital.
-- A user must not be able to get Search & Buy or wider limits without accepting the Advanced terms.
+## Non-goals / anti-goals
+- No new instruments: Search & Buy already lists index options (NIFTY, SENSEX, BANKNIFTY, ...) and stock options (~17.5k contracts, `public/symbols.txt`).
+- No max payout (removed). No daily profit lock (it would cut the 300% winners; the trade cap handles greed). No profit-split difference.
+- Advanced must not be a perk everyone takes: it is freedom plus risk, and it needs admin approval.
+- No downgrade by any route a user can reach.
 
 ## Decisions (by the user)
-1. Everyone starts Beginner. The user can upgrade to Advanced, permanently, with immediate effect.
+1. Everyone starts Beginner. A Beginner can request Advanced; an admin approves. A user whose GSTIN an admin has verified is Advanced immediately
+   (my call: key on `gstVerified`, not on the typed GSTIN, which is unchecked self-entry; permanent, never revoked if the GSTIN later changes).
 2. Try Demo shows both Flash Trade and Search & Buy.
-3. Same starting capital for both levels. Max payment is removed.
-4. Differences: Search & Buy (index incl. SENSEX, and stock options), target/stop-loss (fixed vs own), drawdown limits, capital-increase requests.
-5. Capital increase: Advanced only, the admin decides, minimum 2 successful weeks. A successful week = a completed payment week (Wed-Tue) with positive
-   net realized P&L and no daily or weekly drawdown breach. Any 2 weeks (not necessarily consecutive); weeks traded as Beginner count. The rule and
-   the user's progress ("successful weeks: 1 of 2") are shown to the user.
-6. Welcome email when the user first logs in (Beginner rules, a note about Advanced and that it is permanent). A second email on upgrade, with the
-   changed terms and agreement.
-7. Comparison table (below), shown on the public rules page, the in-app rules page, the upgrade confirmation and the welcome email.
+3. Same percentages for both levels, different capital: 1L / 2L. Daily loss limit 15% (15k / 30k), weekly 30% (30k / 60k). Max payout removed.
+4. Advanced can request more capital; admin decides; needs at least 2 successful weeks (a completed Wed-Tue payment week with positive net realized P&L
+   and no daily/weekly drawdown breach; any 2, weeks as Beginner count). The rule and the user's progress ("successful weeks: 1 of 2") are shown.
+5. Welcome email on first login (Beginner rules, a note about Advanced and that it is permanent); a second email on upgrade with the changed terms and
+   agreement. A GST-verified company gets the Advanced welcome/terms directly.
+6. Comparison table everywhere the rules are shown.
+
+## My calls (please check)
+- Trades per day: Beginner 2, Advanced 3, counted on entries, both investment modes (today's cap of 3 exists only in investmentAmount mode).
+- Max loss on one trade: 10% of capital for both (10k / 20k). Beginner's fixed stop-loss is sized under it; Advanced may set their own up to it.
+  The builder converts to points from quantity. Two stop-outs roughly use the daily limit.
+- The daily drawdown already counts open P&L at live prices and latches the breach for the day, so a 20k dip that would recover is liquidated by a 20k
+  limit: 30k for Advanced is what makes recoveries possible. The weekly limit counts realized P&L only.
+- investmentMode: Beginner locked to `investmentAmount` (predictable size). Advanced may choose `lotCount` too (a way to size down). `lotCount` today
+  checks only a lot limit (no capital-left check, no trade-count rule): add a capital check, a max-lots rule (lots x stop-loss within the per-trade cap)
+  and the trade cap before opening the choice.
+- Capital on approval: 2L by default (admin may adjust). Requires no 2-week history; the 2-week rule is for increases beyond that.
 
 ## Approaches considered
-- Upgrade timing: (A) immediate, (B) from the next payment week, (C) immediate unless traded this week. **User chose A.** Removing max payment closes the
-  payout-cap loophole; the remaining one (more loss room after a bad stretch) is covered by the guard below.
-- Who becomes Advanced: user chooses at first login only / admin approves / user chooses any time (one way). **User chose: starts Beginner, may
-  upgrade any time, no way back.**
+- Upgrade: immediate self-service (first choice, rev 1) -> replaced by request + admin approval, which stops unverified self-declaration from doubling
+  exposure (1L -> 2L) with one click; GST-verified companies skip it.
+- Greed control: payout cap / daily profit lock / trade cap. Chose the trade cap plus the per-trade loss cap; no payout cap (weekly, indirect),
+  no profit lock (cuts winners).
 
 ## Design
-**Level model.** `proficiencyLevel` already exists on the user (default beginner), with `settings.levelRules` per level in `config.yml`. Keep it; drop
-`maxPayment` everywhere (levelRules, payout.ts, eodEmail, welcomeEmail, agreement PDF, config validation, tests). Proposed limits (my call, tighter
-than today's 25/50 for both): Beginner 10% daily / 20% weekly, Advanced 20% / 40%.
+**Level model.** `proficiencyLevel` exists (default beginner); `settings.levelRules` per level in `config.yml`: maxDailyDrawdownPercent,
+maxWeeklyDrawdownPercent, plus new `maxTradesPerDay`, `maxLossPerTradePercent`, default `capital`. Drop `maxPayment` everywhere (levelRules,
+payout.ts, eodEmail, welcomeEmail, agreement PDF, configValidation, tests).
 
-**Upgrade.** New endpoint, user-callable (the generic settings route stays admin-only for `proficiencyLevel`): `POST /user/upgrade-level` with an explicit
-acceptance flag. Server checks: caller is Beginner; acceptance present; account not closed and no daily/weekly breach or forfeit in the current
-day/week (guard). On success: set `proficiencyLevel: advanced`, store `advancedSince` and the accepted terms version/hash, push the new level to the
-trading process (OrderClient.updateUserSettings already carries it), send the upgrade email. A downgrade is rejected server-side; only an admin
-can set a level (admin action stays possible for corrections and for existing users).
+**Upgrade request.** Beginner only: `POST /user/upgrade-request` with explicit acceptance of the Advanced terms (stored with timestamp and terms
+hash). Mongo `upgradeRequests` {user, status, acceptance, stats snapshot, timestamps}; one pending at a time; refused while the account is closed or
+breached. Admin page lists requests with the user's history; approve sets `proficiencyLevel: advanced`, `advancedSince`, capital (default 2L, editable),
+pushes it to the trading process, sends the upgrade email; reject records a reason, the user may request again. The generic settings route stays
+admin-only for the level. Server rejects any downgrade. GST path: when an admin verifies a company's GSTIN (gstVerified true), the same approval
+effects run automatically, with the Advanced terms accepted at that point or shown in the email (builder to settle; needs the user's call if it
+changes the agreement).
 
-**Gating.** Beginner: the trading page renders only Flash Trade; the Search & Buy order route rejects a Beginner server-side (UI hiding is not enough).
-Beginner's target/stop-loss are the global defaults, not editable (FlashSettingsModal read-only for Beginner; the server ignores a Beginner's override
-and any per-order target/stop on a Beginner's order). Advanced: defaults pre-filled, overridable within bounds (a maximum stop-loss, value left to the builder
-with the user to confirm). Demo (`demo` prop) shows both, as now.
+**Gating (server-side).** A Beginner's Search & Buy order is rejected by the server (UI hiding is not enough); a Beginner's own target/stop is ignored;
+Beginner investmentMode locked. Advanced: defaults pre-filled, override within the per-trade loss cap. Trade cap and per-trade cap enforced in the
+order path in both modes. Demo shows both.
 
-**Rules and comparison table.** One source (config levelRules plus a fixed feature list) feeds all four places; `RulesPage.tsx` stops hardcoding 25/50.
-Public route (no login) shows the table with percentages; logged in shows the user's rupee amounts and their own level. Table:
+**Rules and comparison table.** One source (config levelRules + fixed feature list) feeds the public rules page, the in-app rules page, the upgrade
+request screen and the welcome email; `RulesPage.tsx` stops hardcoding 25/50. Logged-out: percentages and ruppee amounts at default capital; logged in:
+own level and amounts.
 
 | | Beginner | Advanced |
 |---|---|---|
 | Flash Trade | Yes | Yes |
 | Search & Buy | No | Yes (index incl. SENSEX, and stock options, any strike/expiry) |
-| Target & stop-loss | Fixed | Your own (defaults, within limits) |
-| Daily loss limit | 10% of capital | 20% of capital |
-| Weekly loss limit | 20% of capital | 40% of capital |
-| Capital | Fixed | Can request an increase (admin decides; needs 2 successful weeks) |
+| Target & stop-loss | Fixed | Your own (defaults, up to the per-trade cap) |
+| Max loss on one trade | 10% of capital (10k) | up to 10% of capital (20k) |
+| Position sizing | Investment amount | Your choice: amount or fixed lots |
+| Trades per day | 2 | 3 |
+| Capital | 1L | 2L; more on request after 2 successful weeks |
+| Daily loss limit | 15% (15k) | 15% (30k) |
+| Weekly loss limit | 30% (30k) | 30% (60k) |
 | Profit split | Same | Same |
-| Can switch? | Yes, to Advanced | No |
+| Becoming Advanced | Request; admin approves (GST-verified companies: automatic) | - |
+| Can switch back? | - | No |
 
-**Capital-increase request.** Advanced users only. Profile button, disabled with the reason until 2 successful weeks. Stored in Mongo
-`capitalRequests` {user, requestedAmount, stats snapshot, status, timestamps}; one pending at a time. Admin page lists pending requests with the
-user's weekly history; approve writes the new capital through the existing admin-only capital setting; reject records a reason. Successful-week
-count is computed from closed trades with the same week/forfeit logic as `payout.ts` / `computeDrawdownForfeiture`.
+**Capital-increase request.** Advanced only; disabled with the reason until 2 successful weeks; Mongo `capitalRequests`; one pending; admin
+approves with the amount (existing admin-only capital setting) or rejects with a reason. Successful weeks computed with the same week/forfeit
+logic as payout.ts / computeDrawdownForfeiture.
 
-**Emails.** Welcome: sent on first login (a server-side trigger that calls the existing idempotent `sendWelcomeEmails([user])`; the storage/<user>
-folder stays the "already sent" marker; the `eodEmailTestRecipient` gate keeps applying). Content: Beginner rules, the table, the Advanced note.
-Upgrade: sent once on upgrade, with the table, the Advanced terms and an updated signed Agreement (Advanced addendum), through the same
-mailStorage/pdfSigning path. Acceptance is recorded in-app; the email is the copy.
+**Emails.** Welcome on first login: a server-side trigger calling the existing idempotent `sendWelcomeEmails([user])` (storage/<user> folder is the
+"already sent" marker; `eodEmailTestRecipient` gate stays). Upgrade email: table, Advanced terms, updated signed Agreement (Advanced addendum).
 
 ## Constraints
-- Live-trading code: level changes must reach the trading process (limits are enforced in bookkeeping.ts) before the user's next order.
-- Config rules: never delete `config.yml` keys, only change values (remove `maxPayment` from levelRules is a user-approved change in this design).
-  Editing `src/` hot-restarts the trading process: do it outside market hours.
-- Frontend changes need `cd frontend && npm run build`.
+- Live-trading code: level/capital changes must reach the trading process (limits are enforced in bookkeeping.ts) before the user's next order.
+- Never delete `config.yml` keys, only change values (removing `maxPayment` from levelRules is an approved change here).
+- Editing `src/` hot-restarts the trading process: outside market hours. Frontend changes need `cd frontend && npm run build`.
 
 ## Left to the builder
-Bounds for Advanced override; the exact wording of the Advanced terms/agreement addendum (needs the user's review); migration of existing users
-(all default to Beginner, so any user who trades Search & Buy today loses it until upgraded or set by an admin: check who that is before release);
-the global default 2/11 points (risking 11 to make 2) should be reviewed before it becomes the fixed Beginner setting.
+Wording of the Advanced terms/addendum (user to review); migration of existing users (all default Beginner: anyone using Search & Buy or other
+capital than 1L today loses it until set by an admin; list them before release); the global default target/stop 2/11 pts (risking 11 to make 2)
+must be revisited before it becomes the fixed Beginner setting and sized under the 10% per-trade cap; how the GST path records terms acceptance.
