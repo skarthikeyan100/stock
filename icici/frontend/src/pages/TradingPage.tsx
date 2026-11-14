@@ -23,6 +23,8 @@ export default function TradingPage() {
   const investmentAmount = user?.accountCapital ?? user?.investmentAmount ?? 100000;
   const availableAmount = investmentAmount - usedAmount;
   const [activeTab, setActiveTab] = useState('active');
+  // Search & Buy is an Advanced feature (the server refuses a Beginner's contract order too); admins see everything.
+  const canSearch = isAdmin || user?.proficiencyLevel === 'advanced';
 
   const totalColor = totalPnL >= 0 ? 'success' : 'danger';
   const openColor = openPnL >= 0 ? 'success' : 'danger';
@@ -46,6 +48,7 @@ export default function TradingPage() {
                 <span className="fw-bold">{user?.name || 'PropFirm Trading'}</span>
               </div>
               <ThemeToggle />
+              <TradingFaq />
               <NotificationBell />
               <Button variant="outline-secondary" size="sm" onClick={() => navigate('/profile')}>Profile</Button>
               {isAdmin && (
@@ -106,8 +109,7 @@ export default function TradingPage() {
               </Alert>
             )}
             <h6 className="text-muted mb-2">Place Order</h6>
-            <OrderEntry />
-            <TradingFaq />
+            <OrderEntry part="flash" />
           </>
         )}
 
@@ -134,7 +136,7 @@ export default function TradingPage() {
               ) : (
                 <div className="text-center text-muted py-4">
                   <p className="mb-1">No active positions</p>
-                  <small>Place an order using the buttons above</small>
+                  <small>Place an order using Flash Trade or Search & Buy</small>
                 </div>
               )}
             </Tab>
@@ -159,6 +161,19 @@ export default function TradingPage() {
             </Tab>
           </Tabs>
         </div>
+
+        {/* Search & Buy sits below the positions */}
+        {!tradingBlocked && canSearch && (
+          <div className="mt-4">
+            <OrderEntry part="search" />
+          </div>
+        )}
+        {!tradingBlocked && !canSearch && (
+          <div className="mt-4 p-3 border rounded text-center text-muted small">
+            <strong>Search &amp; Buy</strong> (pick any strike and expiry) is available at the Advanced level.{' '}
+            <a href="/levels">See what changes</a> or <a href="/profile#upgrade">request Advanced</a>.
+          </div>
+        )}
       </Container>
     </div>
   );
