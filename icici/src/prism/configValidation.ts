@@ -105,6 +105,22 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
         }
     }
 
+    // settings.levelRules: per proficiency level (beginner / advanced) the daily, weekly and per-trade loss limits (percent), the starting capital (rupees) and the profit share (percent).
+    if (label === 'settings' && obj.levelRules !== undefined && obj.levelRules !== null) {
+        const lr = obj.levelRules;
+        if (typeof lr !== 'object' || Array.isArray(lr)) errors.push('settings.levelRules must be a map of beginner / advanced');
+        else for (const [lv, rules] of Object.entries<any>(lr)) {
+            if (lv !== 'beginner' && lv !== 'advanced') { errors.push(`settings.levelRules.${lv} is not a known level (beginner, advanced)`); continue; }
+            if (!rules || typeof rules !== 'object' || Array.isArray(rules)) { errors.push(`settings.levelRules.${lv} must be a map`); continue; }
+            for (const k of ['maxDailyDrawdownPercent', 'maxWeeklyDrawdownPercent', 'maxLossPerTradePercent']) {
+                if (rules[k] === undefined) continue;
+                const n = toPercentNumber(rules[k]);
+                if (n === null || !(n > 0)) errors.push(`settings.levelRules.${lv}.${k} must be a positive percent, e.g. 25%`);
+            }
+            if (rules.capital !== undefined && !(typeof rules.capital === 'number' && Number.isFinite(rules.capital) && rules.capital > 0)) errors.push(`settings.levelRules.${lv}.capital must be a positive number of rupees`);
+            if (rules.profitSplitPercent !== undefined && !(typeof rules.profitSplitPercent === 'number' && Number.isFinite(rules.profitSplitPercent) && rules.profitSplitPercent > 0 && rules.profitSplitPercent <= 100)) errors.push(`settings.levelRules.${lv}.profitSplitPercent must be a number above 0 and at most 100`);
+        }
+    }
     // Global exits (settings) and per-strategy overrides share the same value format; an absent key is not an error here.
     for (const which of ['target', 'stopLoss'] as const) {
         const err = exitValueError(label, which, obj[which]);
@@ -322,6 +338,8 @@ export function validateConfigFile(parsed: any): string[] {
             if (s.quantity !== undefined) errors.push(`${s.type}.quantity is not used - size with maxInvestment (per broker)`);
             if (!isNum(s.maxInvestment)) errors.push(`${s.type}.maxInvestment is required for an enabled strategy`);
             if (!Array.isArray(s.times) || s.times.some((t: any) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(t)))) errors.push(`${s.type}.times must be a list of HH:mm times`);
+            // No-gain timeout: minutes after the entry, or 'none' / absent for off. A typo must not silently disable it.
+            if (s.noGainTimeoutMinutes !== undefined && s.noGainTimeoutMinutes !== null && s.noGainTimeoutMinutes !== 'none' && !(isNum(s.noGainTimeoutMinutes) && s.noGainTimeoutMinutes > 0)) errors.push(`${s.type}.noGainTimeoutMinutes must be a positive number of minutes or 'none' (got ${JSON.stringify(s.noGainTimeoutMinutes)})`);
         }
         if (s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy') {
             // A fixed quantity per broker (whole lots), not a rupee budget.

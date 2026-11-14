@@ -2,7 +2,8 @@ import Mongo from './tools/mongo';
 import { getUser } from './user';
 import { computeTax } from './tax';
 import configService from './prism/ConfigService';
-import { drawdownLimit, drawdownDecision } from './prism/percentConfig';
+import { drawdownDecision } from './prism/percentConfig';
+import { levelRules, ProficiencyLevel } from './levelRules';
 import myEmitter from './tools/emitter';
 import { weekKey, startOfWeek, endOfWeek } from './util/weekWindow';
 
@@ -23,6 +24,8 @@ export interface PayoutComputation {
     grossProfit: number;
     profitSplitPercent: number;
     splitAmount: number;
+    // The user's level at the time of the computation (it also picked the profit share and the drawdown limits).
+    proficiencyLevel: ProficiencyLevel;
     entityType: 'individual' | 'company';
     gstVerified: boolean;
     tdsAmount: number;
@@ -145,9 +148,9 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
         .toArray();
     const grossProfit = periodTrades.reduce((sum, t) => sum + (t.realizedPnL || 0), 0);
     const profitSplitPercent = userDoc.profitSplitPercent;
-    const splitAmount = Math.round(grossProfit * (profitSplitPercent / 100) * 100) / 100;
-
     const settings = configService.getConfig().settings as any;
+    const rules = levelRules(settings, userDoc.proficiencyLevel);
+    const splitAmount = Math.round(grossProfit * (profitSplitPercent / 100) * 100) / 100;
 
     let blocked = false;
     let blockReason: string | undefined;
@@ -165,9 +168,7 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
     // bookkeeping.ts's drawdownState blocks new orders and triggers
     // auto-squareoff for live, using the same config values.
     if (!blocked) {
-        const maxDailyDrawdownPercent: number = drawdownLimit(settings, 'maxDailyDrawdownPercent');
-        const maxWeeklyDrawdownPercent: number = drawdownLimit(settings, 'maxWeeklyDrawdownPercent');
-        const drawdown = computeDrawdownForfeiture(periodTrades, userDoc.investmentAmount, maxDailyDrawdownPercent, maxWeeklyDrawdownPercent);
+        const drawdown = computeDrawdownForfeiture(periodTrades, userDoc.investmentAmount, rules.maxDailyDrawdownPercent, rules.maxWeeklyDrawdownPercent);
         if (drawdown.forfeited) {
             blocked = true;
             blockReason = drawdown.reason;
@@ -186,6 +187,7 @@ export async function computePayout(user: string, periodStart: Date, periodEnd: 
         grossProfit,
         profitSplitPercent,
         splitAmount,
+        proficiencyLevel: rules.level,
         entityType: userDoc.entityType,
         gstVerified: userDoc.gstVerified,
         tdsAmount: tax.tdsAmount,
@@ -233,8 +235,7 @@ export async function computePnlSummary(user: string, from: Date, to: Date, brea
     if (!userDoc) throw new Error(`User not found: ${user}`);
 
     const settings = configService.getConfig().settings as any;
-    const maxDailyDrawdownPercent: number = drawdownLimit(settings, 'maxDailyDrawdownPercent');
-    const maxWeeklyDrawdownPercent: number = drawdownLimit(settings, 'maxWeeklyDrawdownPercent');
+    const { maxDailyDrawdownPercent, maxWeeklyDrawdownPercent } = levelRules(settings, userDoc.proficiencyLevel);
     const investmentAmount = userDoc.investmentAmount || 0;
 
     const periodTrades = await closedTradesCollection()

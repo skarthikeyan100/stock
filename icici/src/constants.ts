@@ -14,7 +14,7 @@ export const USER_LOSS_LIMIT = 150000000;
 export const UNKNOWN_USER_LOSS_LIMIT = 15000;
 export const DEFAULT_LOT_LIMIT = 10;
 export const DEFAULT_MAX_INVESTMENT = 100000;
-export const DEFAULT_PROFIT_SPLIT_PERCENT = 40;
+export const DEFAULT_PROFIT_SPLIT_PERCENT = 35; // the Beginner share (2026-11-14); levels carry their own in settings.levelRules
 export const TDS_RATE_PERCENT = 10;
 
 // Exchange-mandated max quantity per single NIFTY options order (27 lots x 65).

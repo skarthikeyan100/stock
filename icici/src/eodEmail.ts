@@ -1,6 +1,6 @@
 /**
- * End-of-day trading summary email (one per real user who traded that IST day), triggered through ONE API: POST /admin/eod-email/send
- * (routes/admin.ts). Nothing in this repo schedules it; another program calls the API. Template: templates/eodEmail.{html,subject.txt}.
+ * End-of-day trading summary email (one per real user who traded that IST day), run ONLY from this machine: `npm run eod-email -- [--date= --user= --dry-run --force]` (src/tools/sendEodEmails.ts; deliberately NO HTTP endpoint)
+ * Nothing in this repo schedules it. Template: templates/eodEmail.{html,subject.txt}.
  *
  * Who: users in the `users` collection (role != admin, enabled) with a closed trade exiting, or a fill, on that day. Strategy pseudo-users
  * and the admin's mirrored shares have no such user document / are the admin, so they never get one.
@@ -15,8 +15,11 @@ import Log from './util/Log';
 import configService from './prism/ConfigService';
 import { getAllUsers, normalizeEmail, User } from './user';
 import { computePayout } from './payout';
+import { levelLabel, normalizeLevel } from './levelRules';
 import { startOfWeek, endOfWeek } from './util/weekWindow';
 import { escapeHtml, isMailConfigured, renderTemplate, sendRenderedEmail } from './mailer';
+import { buildSignedEodPdf } from './eodPdf';
+import { storeUserFile } from './mailStorage';
 
 const TEMPLATE_DIR = path.resolve(__dirname, '..', 'templates');
 const IST_OFFSET_MS = 5.5 * 3600_000;
@@ -40,6 +43,7 @@ export interface EodPayment {
     grossProfit: number;
     profitSplitPercent: number;
     splitAmount: number;
+    level: string; // 'Beginner' | 'Advanced' at the time of the estimate
     tdsAmount: number;
     gstAmount: number;
     netAmount: number;
@@ -76,21 +80,21 @@ export function istDayBounds(date: string): { start: Date; end: Date } {
 
 // ---------- formatting ----------
 
-function inr(n: number): string {
+export function inr(n: number): string {
     return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-function signedInr(n: number): string {
+export function signedInr(n: number): string {
     return `${n < 0 ? '-' : n > 0 ? '+' : ''}₹${inr(Math.abs(n))}`;
 }
-function hhmm(d: Date | null): string {
+export function hhmm(d: Date | null): string {
     return d ? d.toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false }) : '-';
 }
-function dayLabel(d: Date): string {
+export function dayLabel(d: Date): string {
     return d.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' });
 }
 const GREEN = '#1a7f37';
 const RED = '#c62828';
-const pnlColor = (n: number | null) => (n === null ? '#555555' : n < 0 ? RED : n > 0 ? GREEN : '#555555');
+export const pnlColor = (n: number | null) => (n === null ? '#555555' : n < 0 ? RED : n > 0 ? GREEN : '#555555');
 
 function maskTail(v: string): string {
     return '*'.repeat(Math.max(0, v.length - 4)) + v.slice(-4);
@@ -116,8 +120,13 @@ export async function buildEodReports(date: string, onlyUser?: string): Promise<
         db.collection('Trade').distinct('user', { entryTime: { $gte: start, $lt: end } }),
     ]);
     const traded = new Set<string>([...closedUsers, ...openedUsers].map((u) => normalizeEmail(String(u))));
-    const users = (await getAllUsers()).filter((u) => u.role !== 'admin' && u.enabled !== false && traded.has(normalizeEmail(u.email)));
-    const wanted = onlyUser ? users.filter((u) => normalizeEmail(u.email) === normalizeEmail(onlyUser)) : users;
+    // Everyone is limited to users who traded that day, except a user named explicitly (npm run eod-email -- --user=...): that one is
+    // included even with no trades, so the operator can send/preview a single person's (empty-day) email on request.
+    // A named user may also be the admin (their own trades are recorded under the admin account); the unnamed run never emails the admin.
+    const everyone = (await getAllUsers()).filter((u) => u.enabled !== false);
+    const wanted = onlyUser
+        ? everyone.filter((u) => normalizeEmail(u.email) === normalizeEmail(onlyUser))
+        : everyone.filter((u) => u.role !== 'admin' && traded.has(normalizeEmail(u.email)));
 
     const reports: EodReport[] = [];
     for (const u of wanted) {
@@ -188,13 +197,14 @@ async function buildPayment(u: User, dayStart: Date): Promise<EodPayment> {
     const weekStart = startOfWeek(dayStart);
     const weekEnd = new Date(endOfWeek(dayStart).getTime() + 1); // exclusive, like every payout period
     const base: EodPayment = {
-        weekStart, weekEnd, available: false, grossProfit: 0, profitSplitPercent: u.profitSplitPercent ?? 0, splitAmount: 0, tdsAmount: 0, gstAmount: 0, netAmount: 0,
+        weekStart, weekEnd, available: false, grossProfit: 0, profitSplitPercent: u.profitSplitPercent ?? 0, splitAmount: 0, level: levelLabel(normalizeLevel(u.proficiencyLevel)), tdsAmount: 0, gstAmount: 0, netAmount: 0,
         blocked: false, destination: destinationOf(u), recent: [],
     };
     try {
         const c = await computePayout(u.email, weekStart, weekEnd);
         Object.assign(base, {
             available: true, grossProfit: c.grossProfit, profitSplitPercent: c.profitSplitPercent, splitAmount: c.splitAmount,
+            level: levelLabel(c.proficiencyLevel),
             tdsAmount: c.tdsAmount, gstAmount: c.gstAmount, netAmount: c.netAmount, blocked: c.blocked, blockReason: c.blockReason,
         });
     } catch (e: any) {
@@ -214,74 +224,16 @@ async function buildPayment(u: User, dayStart: Date): Promise<EodPayment> {
 
 // ---------- rendering ----------
 
-const td = 'padding:7px 8px;border-bottom:1px solid #eef0f2';
-
-function tradeRowsHtml(rows: EodTradeRow[]): string {
-    if (rows.length === 0) return `<tr><td colspan="6" style="${td};color:#666">No trades.</td></tr>`;
-    return rows.map((r) => {
-        const pnl = r.pnl === null ? 'Open' : signedInr(r.pnl);
-        return `<tr>`
-            + `<td style="${td}">${escapeHtml(hhmm(r.entryTime))}${r.exitTime ? ` &rarr; ${escapeHtml(hhmm(r.exitTime))}` : ''}</td>`
-            + `<td style="${td}">${escapeHtml(r.contract)}</td>`
-            + `<td style="${td};text-align:right">${r.quantity}</td>`
-            + `<td style="${td};text-align:right">${r.entryPrice === null ? '-' : inr(r.entryPrice)}</td>`
-            + `<td style="${td};text-align:right">${r.exitPrice === null ? '-' : inr(r.exitPrice)}</td>`
-            + `<td style="${td};text-align:right;font-weight:bold;color:${pnlColor(r.pnl)}">${escapeHtml(pnl)}</td>`
-            + `</tr>`;
-    }).join('');
-}
-
-function paymentRowsHtml(p: EodPayment): string {
-    const row = (label: string, value: string, bold = false) =>
-        `<tr><td style="${td};color:#666">${escapeHtml(label)}</td><td style="${td};text-align:right${bold ? ';font-weight:bold' : ''}">${escapeHtml(value)}</td></tr>`;
-    if (!p.available) return row('Estimate', 'Not available right now');
-    const rows = [row('Gross profit this week', signedInr(p.grossProfit))];
-    if (!p.blocked) {
-        rows.push(
-            row(`Your share (${p.profitSplitPercent}%)`, `₹${inr(p.splitAmount)}`),
-            row('TDS', `-₹${inr(p.tdsAmount)}`),
-            row('GST', p.gstAmount ? `₹${inr(p.gstAmount)}` : '₹0.00'),
-            row('Estimated net payout', `₹${inr(p.netAmount)}`, true),
-        );
-    } else {
-        rows.push(row('Estimated net payout', '₹0.00', true));
-    }
-    rows.push(row('Payout destination', p.destination || 'None on file'));
-    return rows.join('');
-}
-
-function paymentNote(p: EodPayment): string {
-    if (!p.available) return 'We could not compute your payout estimate for this week. It will be included in the next summary.';
-    if (p.blocked) return p.grossProfit <= 0 && !/forfeit|exceeds/i.test(p.blockReason ?? '')
-        ? 'No payout is due for this week so far: there is no net profit yet.'
-        : `No payout is due for this week: ${p.blockReason ?? 'it is blocked'}`;
-    if (!p.destination) return 'Add your bank account or UPI ID in your Profile so your payout can be paid.';
-    return 'Payouts are for the Wednesday to Tuesday trading week and are paid to the destination above once generated.';
-}
-
-function payoutHistoryHtml(p: EodPayment): string {
-    if (p.recent.length === 0) return '';
-    const items = p.recent.map((r) => {
-        const period = `${dayLabel(r.periodStart)} - ${dayLabel(new Date(r.periodEnd.getTime() - 1))}`;
-        return `<tr><td style="${td}">${escapeHtml(r.invoiceNumber)}</td><td style="${td}">${escapeHtml(period)}</td><td style="${td};text-align:right">₹${inr(r.netAmount)}</td><td style="${td};text-align:right">${escapeHtml(r.status)}</td></tr>`;
-    }).join('');
-    return `<h3 style="margin:0 0 8px;font-size:15px">Recent payouts</h3><table style="border-collapse:collapse;width:100%;font-size:13px;margin:0 0 24px">${items}</table>`;
-}
-
 export function renderEodEmail(r: EodReport): { subject: string; html: string } {
     const { start } = istDayBounds(r.date);
     const label = dayLabel(start);
-    const week = `Week ${dayLabel(r.payment.weekStart)} to ${dayLabel(new Date(r.payment.weekEnd.getTime() - 1))}`;
     const escaped: Record<string, string> = {
         name: r.name, dateLabel: label, dayPnlSigned: signedInr(r.dayPnl), pnlColor: pnlColor(r.dayPnl), closedCount: String(r.closedCount),
-        winLoss: `${r.wins} won / ${r.losses} lost`, openCount: String(r.openCount), paymentPeriod: week, paymentNote: paymentNote(r.payment),
+        winLoss: `${r.wins} won / ${r.losses} lost`, openCount: String(r.openCount),
     };
     // Plain values are escaped here; the HTML fragments are built from escaped parts above.
     const vars: Record<string, string> = {};
     for (const [k, v] of Object.entries(escaped)) vars[k] = escapeHtml(v);
-    vars.tradeRows = tradeRowsHtml(r.rows);
-    vars.paymentRows = paymentRowsHtml(r.payment);
-    vars.payoutHistory = payoutHistoryHtml(r.payment);
     const html = renderTemplate(fs.readFileSync(path.join(TEMPLATE_DIR, 'eodEmail.html'), 'utf8'), vars, false);
     const subject = renderTemplate(fs.readFileSync(path.join(TEMPLATE_DIR, 'eodEmail.subject.txt'), 'utf8'), { dateLabel: label, dayPnlSigned: signedInr(r.dayPnl) }, false)
         .replace(/\s+/g, ' ').trim();
@@ -297,6 +249,8 @@ export interface EodSendResult {
     reason?: string;
     subject?: string;
     html?: string; // dry run only
+    pdfSha256?: string; // SHA-256 of the signed PDF that was (or, on a dry run, would be) attached
+    pdfBytes?: number;
 }
 
 export function testRecipient(): string | null {
@@ -325,7 +279,11 @@ export async function sendEodEmails(opts: { date: string; dryRun?: boolean; forc
         const rendered = renderEodEmail(r);
         const to = test ?? r.user;
         const subject = test ? `[TEST for ${r.user}] ${rendered.subject}` : rendered.subject;
-        if (dryRun) { results.push({ user: r.user, to, status: 'dryRun', subject, html: rendered.html }); continue; }
+        if (dryRun) {
+            try { const p = await buildSignedEodPdf(r); results.push({ user: r.user, to, status: 'dryRun', subject, html: rendered.html, pdfSha256: p.sha256, pdfBytes: p.pdf.length }); }
+            catch (e: any) { results.push({ user: r.user, to, status: 'failed', reason: `PDF: ${e?.message ?? e}` }); }
+            continue;
+        }
         const key = `${date}|${r.user}|${mode}`;
         if (inFlight.has(key)) { results.push({ user: r.user, to, status: 'skipped', reason: 'a send for this user is already in progress' }); continue; }
         inFlight.add(key);
@@ -334,9 +292,17 @@ export async function sendEodEmails(opts: { date: string; dryRun?: boolean; forc
                 results.push({ user: r.user, to, status: 'skipped', reason: 'already sent (use force=true to resend)' });
                 continue;
             }
-            await sendRenderedEmail(to, subject, rendered.html);
-            await records.updateOne({ date, user: r.user, mode }, { $set: { to, subject, status: 'sent', sentAt: new Date() }, $unset: { error: '' } }, { upsert: true });
-            results.push({ user: r.user, to, status: 'sent', subject });
+            // The PDF is part of the email: if it cannot be built and signed, nothing is sent (never a body-only email).
+            const att = await buildSignedEodPdf(r);
+            await sendRenderedEmail(to, subject, rendered.html, [
+                { filename: 'logo.png', path: path.join(TEMPLATE_DIR, 'logo.png'), cid: 'nivedha-logo', contentDisposition: 'inline' },
+                { filename: att.filename, content: att.pdf, contentType: 'application/pdf' },
+            ]);
+            // Keep a copy of what was sent (./storage/<user>/). The email is already out, so a storage problem is recorded, never turned into a failed send.
+            let storedAt: string | undefined; let storageError: string | undefined;
+            try { storedAt = storeUserFile(r.user, !!test, { filename: att.filename, content: att.pdf }); } catch (e: any) { storageError = e?.message ?? String(e); Log.log(`[eod-email] could not store the PDF copy for ${r.user}: ${storageError}`); }
+            await records.updateOne({ date, user: r.user, mode }, { $set: { to, subject, status: 'sent', sentAt: new Date(), pdfSha256: att.sha256, pdfFilename: att.filename, ...(storedAt ? { storedAt } : {}), ...(storageError ? { storageError } : {}) }, $unset: { error: '' } }, { upsert: true });
+            results.push({ user: r.user, to, status: 'sent', subject, pdfSha256: att.sha256, pdfBytes: att.pdf.length });
         } catch (e: any) {
             const error = e?.message ?? String(e);
             Log.log(`[eod-email] send to ${to} (for ${r.user}) failed: ${error}`);

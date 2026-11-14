@@ -2,14 +2,14 @@ settings:
   minPrice: 20
   maxPrice: 30000
   targetPriceDiff: 2
-  stopLossPriceDiff: 11
+  stopLossPriceDiff: 10
   trailingDistance: 4
   cooldownSeconds: 0
   logQuotes: false
   maxDailyDrawdownPercent: 25%
   maxWeeklyDrawdownPercent: 50%
   targetPoints: 2
-  stopLossPoints: 11
+  stopLossPoints: 10
   target: 10              # global exit: points above entry, or "N%", or none (strategies override with their own target)
   stopLoss: 20            # global exit: points below entry, or "N%", or none
   maxHoldTimeMinutes: 60  # global timeout: minutes a position is held (winners and losers alike); 'none' = no timeout
@@ -19,11 +19,26 @@ settings:
   eodReconcileTime: '15:45'  # when the broker -> Mongo sync runs by itself each trading day (>= 15:30); `npm run sync` runs it on demand
   entryTimeoutMinutes: 5  # global: cancel an unfilled limit entry (LimitEntry family) after this many minutes; a strategy block's own entryTimeoutMinutes overrides it
   eodCloseTime: '23:59'  # 2026-11-11: moved from 15:50 so no strategy sells at the close; today's open positions carry overnight (user's instruction). Restore a real close time when wanted.
+  maxProfit: 5000         # global max profit in rupees, one value for every broker: each strategy on each of its brokers trips at this P&L (a strategy block's own maxProfit overrides it; absent = no global cap)
   mirrorPercentage: 100%  # admin mirrors this % of every frontend user's lots (floor to whole lots) with its own real order; 0 = no mirror
+  levelRules:             # rules per proficiency level (a user's `proficiencyLevel`, default beginner): loss limits and the per-trade loss cap (% of allocated capital), starting capital (rupees), the user's profit share (%). No maximum payment.
+    beginner:
+      maxDailyDrawdownPercent: 15%
+      maxWeeklyDrawdownPercent: 30%
+      maxLossPerTradePercent: 10%
+      capital: 100000
+      profitSplitPercent: 35
+    advanced:
+      maxDailyDrawdownPercent: 15%
+      maxWeeklyDrawdownPercent: 30%
+      maxLossPerTradePercent: 10%
+      capital: 200000
+      profitSplitPercent: 25
+  eodEmailTestRecipient: skarthikeyan100@gmail.com  # EVERY customer email (EOD summary, payout paid) goes only to this address until the content is approved; remove to email real users
 strategies:
-  eodEmailTestRecipient: skarthikeyan100@gmail.com  # EOD email API sends every user's email only to this address (testing); remove to email real users
   - type: SentimentStrategy
     enabled: false
+    brokers: [kite]
     averageThreshold: 40
     targetPrice: 10
     orderQuantity: 65
@@ -59,17 +74,18 @@ strategies:
   - type: RateOfChangeStrategy
     enabled: false
     brokers:
-      - kite
+      - prism
     pointsThreshold: 30
     accelerationThreshold: 5
     numberOfDatapointsReceived: 50
-    quantity: 65
+    quantity: 325
     targetPrice: 2
     stopLossPrice: 11
     maxHoldTimeMinutes: 30
     logEnabled: true
   - type: GapStrategy
     enabled: false
+    brokers: [kite]
     coverOrderEnabled: false
     coverOrderUserEmail: ''
     coverOrderQuantity: 0
@@ -90,6 +106,7 @@ strategies:
   # DISABLED: 4 days, all rising; the backtest does not show them beating always-CALL on net P&L. Enable deliberately only.
   - type: RuleBasedStrategy
     enabled: false
+    brokers: [kite]
     # Two single-indicator rules (2026-11-11). The earlier six-rule set is kept in strategies.md ("RuleBasedStrategy: previous rule set").
     indicators:
       - Bollinger_5_1
@@ -102,6 +119,7 @@ strategies:
     logEnabled: true
   - type: GoodMorningStrategy
     enabled: false
+    brokers: [kite]
     quantity: 65
     targetPoints: 10
     stopLossPoints: 10
@@ -112,6 +130,7 @@ strategies:
     minMovementPoints: 10
   - type: GoodMorningSensexStrategy
     enabled: false
+    brokers: [kite]
     quantity: 200
     targetPoints: 30
     stopLossPoints: 30
@@ -150,6 +169,7 @@ strategies:
     logEnabled: true
   - type: TargetReachStrategy
     enabled: false
+    brokers: [kite]
     symbol: NIFTY
     strike: 0
     expiry: '2026-01-01'
@@ -341,7 +361,7 @@ strategies:
     brokers:
       - kite
   - type: MomentumAtFixedTimeStrategy
-    enabled: true
+    enabled: false
     userId: MomentumAtFixedTime-NIFTY
     times:
       - '10:00'
@@ -374,16 +394,16 @@ strategies:
       - '14:30'
       - '14:40'
       - '14:50'
-    maxInvestment: 100000
+    maxInvestment: 50000
     minMovePoints: 10
     target: 5               # exit override: 5 points above the fill
-    stopLoss: none          # exit override: no stop-loss
+    stopLoss: "30%"         # exit override: stop 30% below the fill
+    noGainTimeoutMinutes: 30  # close at market 30 min after entry if the option LTP is not above the fill ('none' = off)
     upDownSampleMinutes: 1
     entryTimeoutMinutes: 5
     index: NIFTY
     brokers:
-      - kite
-      - prism
+      - ant
   - type: NextWeekStrategy
     enabled: false          # set true to trade (requested: enabled, quantity 65)
     userId: NextWeek-NIFTY
@@ -393,7 +413,7 @@ strategies:
     brokers:
       - kite
   - type: BreakoutStrategy
-    enabled: true           # set true to trade (requested: enabled, quantity 65)
+    enabled: false          # set true to trade (requested: enabled, quantity 65)
     userId: Breakout-NIFTY
     quantity: 65            # units per broker (one NIFTY lot), whole lots only
     # target / stopLoss / entryTimeoutMinutes are not set here: the global settings apply (set a key on this block to override)
@@ -401,24 +421,24 @@ strategies:
     brokers:
       - kite
   - type: SimpleContinuousStrategy
-    enabled: true
+    enabled: false
     brokers:
-      - breeze
+      - kite
     initialQuantity: 1300
     skipNearestExpiryOnExpiryDay: false
     onePositionPerSide: true
     maxInvestment: 100000
-    maxProfit: 20000
+    maxProfit: 5000
     priceDiff: 10
     maxLegsPerSide: 5
     stackRecoveryPoints: 20
   - type: ScaledHedgedStrategy
-    enabled: true           # false stops it; the root buys initialQuantity, a hedge buys initialQuantity + drop/priceDiff x initialQuantity, one CE and one PE contract per cycle (strategies.md)
+    enabled: false          # false stops it; the root buys initialQuantity, a hedge buys initialQuantity + drop/priceDiff x initialQuantity, one CE and one PE contract per cycle (strategies.md)
     brokers:
-      - kite
+      - breeze
     initialQuantity: 65
     skipNearestExpiryOnExpiryDay: false
     onePositionPerSide: true   # ignored: this strategy always keeps one open leg per side
     maxInvestment: 200000   # honoured by every buy (root, hedge, add), per broker
-    maxProfit: 20000
+    maxProfit: 5000
     priceDiff: 10
