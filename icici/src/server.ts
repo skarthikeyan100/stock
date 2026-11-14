@@ -44,6 +44,7 @@ import brokersRoutes from './routes/brokers';
 import tradingRoutes from './routes/trading';
 import streamsRoutes, { antStreamClients, niftyStreamClients, optionStreamClients, setLastNiftyQuote } from './routes/streams';
 import adminRoutes from './routes/admin';
+import levelsRoutes from './routes/levels';
 import { requireCsrfHeader } from './routes/session';
 import { wrapAsyncHandlers } from './routes/asyncRouter';
 
@@ -127,6 +128,7 @@ app.use(brokersRoutes);
 app.use(tradingRoutes);
 app.use(streamsRoutes);
 app.use(adminRoutes);
+app.use(levelsRoutes);
 
 // ============================== Static UI ==============================
 

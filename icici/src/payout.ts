@@ -51,7 +51,7 @@ function decisionLogCollection() {
     return Mongo.getInstance().db.collection('payoutDecisionLog');
 }
 
-function closedTradesCollection() {
+export function closedTradesCollection() {
     return Mongo.getInstance().db.collection('closedTrades');
 }
 

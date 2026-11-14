@@ -79,6 +79,10 @@ export interface User {
     profitSplitPercent: number;
     // 'beginner' (default) or 'advanced': picks the rules in config.yml settings.levelRules.
     proficiencyLevel?: 'beginner' | 'advanced';
+    // Set when the user becomes Advanced: when, and how ('admin' approved a request, 'gstin' = gave a GSTIN), plus the accepted Advanced terms.
+    advancedSince?: Date;
+    advancedVia?: 'admin' | 'gstin';
+    advancedAcceptance?: { acceptedAt: Date; termsSha256: string };
     bankAccountHolderName?: string;
     bankAccountNumber?: string; // full value stored; never echoed back raw
     bankIFSC?: string;
