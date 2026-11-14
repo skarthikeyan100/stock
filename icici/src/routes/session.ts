@@ -32,6 +32,7 @@ export function pushUserToOrderProcess(user: any, context: string): Promise<void
         targetPoints: user.targetPoints,
         stopLossPoints: user.stopLossPoints,
         accountClosed: user.accountClosed === true,
+        proficiencyLevel: user.proficiencyLevel,
     }).catch((e) => Log.log(`[frontend] updateUserSettings on ${context} failed:`, e));
 }
 
@@ -57,8 +58,35 @@ export function parseSession(req: express.Request): { email: string; issuedAt: n
     if (Date.now() - issuedAt > SESSION_MAX_AGE_MS) return null; // expired server-side, whatever the browser still holds
     return { email: raw.slice(0, i), issuedAt, legacy: false };
 }
-export function resolveUser(req: express.Request): string | null {
+
+// ---- Admin "use as another user" ----
+// A second signed cookie `actas` = `target|admin|issuedAtMs`, set only by POST /admin/act-as. The admin's own `session` cookie is left as
+// it is, so ending the mode is just dropping `actas`. It counts only while the real session belongs to the same admin and is under 8 h
+// old; authenticate() additionally re-checks (per request) that the admin is still an enabled, unrevoked admin and the target is an
+// enabled non-admin. resolveUser() returns the EFFECTIVE identity, so every route then acts as the target.
+export const ACTAS_MAX_AGE_MS = 8 * 60 * 60 * 1000;
+export function actAsCookieValue(target: string, admin: string): string { return `${target}|${admin}|${Date.now()}`; }
+export function parseActAs(req: express.Request): { target: string; admin: string; issuedAt: number } | null {
+    const raw = (req as any).signedCookies?.actas;
+    if (typeof raw !== 'string' || !raw) return null;
+    const parts = raw.split('|');
+    if (parts.length !== 3) return null;
+    const [target, admin, at] = parts;
+    const issuedAt = Number(at);
+    if (!target || !admin || !Number.isFinite(issuedAt) || Date.now() - issuedAt > ACTAS_MAX_AGE_MS) return null;
+    if (target === admin || parseSession(req)?.email !== admin) return null;
+    return { target, admin, issuedAt };
+}
+/** The admin's email while acting as another user, else null (also the hook for the Audit feature). */
+export function resolveActingAdmin(req: express.Request): string | null {
+    return parseActAs(req)?.admin ?? null;
+}
+/** The identity of the real `session` cookie, ignoring any acting-as. */
+export function resolveRealUser(req: express.Request): string | null {
     return parseSession(req)?.email ?? null;
+}
+export function resolveUser(req: express.Request): string | null {
+    return parseActAs(req)?.target ?? parseSession(req)?.email ?? null;
 }
 // True when the user's sessions were revoked (logout) after this cookie was issued.
 export function sessionRevoked(req: express.Request, user: { sessionsValidAfter?: number } | null | undefined): boolean {
@@ -99,13 +127,31 @@ export function invalidateUserCache(email?: string): void {
 
 // The one session check behind requireAuth / requireAdmin / requireSelfOrAdmin: a valid session cookie (not expired or revoked) for a
 // user that still exists and is enabled. Returns the user, or the status and message to answer with.
-export async function authenticate(req: express.Request): Promise<{ ok: true; email: string; user: NonNullable<Awaited<ReturnType<typeof getUser>>> } | { ok: false; status: number; error: string; noSession?: boolean }> {
+export async function authenticate(req: express.Request): Promise<{ ok: true; email: string; user: NonNullable<Awaited<ReturnType<typeof getUser>>>; actingAdmin?: string } | { ok: false; status: number; error: string; noSession?: boolean }> {
+    const act = parseActAs(req);
+    if (act) {
+        const admin = await getActiveUser(act.admin);
+        if (!admin || sessionRevoked(req, admin) || admin.enabled === false || admin.role !== 'admin') return { ok: false, status: 401, error: 'Acting-as session is no longer valid' };
+        const target = await getActiveUser(act.target);
+        if (!target || target.enabled === false || target.role === 'admin') return { ok: false, status: 401, error: 'Acting-as target is no longer valid' };
+        return { ok: true, email: act.target, user: target, actingAdmin: act.admin };
+    }
     const email = resolveUser(req);
     if (!email) return { ok: false, status: 401, error: 'Not logged in', noSession: true };
     const user = await getActiveUser(email);
     if (!user || sessionRevoked(req, user)) return { ok: false, status: 401, error: 'Unknown user' };
     if (user.enabled === false) return { ok: false, status: 403, error: 'Account disabled' };
     return { ok: true, email, user };
+}
+
+/** The real session must belong to an enabled, unrevoked admin (ignores any acting-as): used by the routes that start / stop it. */
+export async function authenticateRealAdmin(req: express.Request): Promise<{ ok: true; admin: string } | { ok: false; status: number; error: string }> {
+    const s = parseSession(req);
+    if (!s) return { ok: false, status: 401, error: 'Not logged in' };
+    const user = await getActiveUser(s.email);
+    if (!user || sessionRevoked(req, user)) return { ok: false, status: 401, error: 'Unknown user' };
+    if (user.enabled === false || user.role !== 'admin') return { ok: false, status: 403, error: 'Forbidden' };
+    return { ok: true, admin: user.email };
 }
 
 export async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {

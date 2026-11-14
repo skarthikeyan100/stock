@@ -1338,6 +1338,7 @@ async function loadUserLimits() {
             targetPoints: user.targetPoints,
             stopLossPoints: user.stopLossPoints,
             accountClosed: user.accountClosed,
+            proficiencyLevel: user.proficiencyLevel,
         });
     }
 }
