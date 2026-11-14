@@ -13,7 +13,9 @@ import * as exitMonitor from './exitMonitor';
 import { collapseFillsByOrderId, netFifoLots, pairFillsFifo } from './fillNetting';
 import { recordOrderOwner, loadOrderOwners } from './orderOwners';
 import configService from '../../prism/ConfigService';
-import { drawdownLimit, drawdownDecision } from '../../prism/percentConfig';
+import { drawdownDecision } from '../../prism/percentConfig';
+import { levelRules } from '../../levelRules';
+import { maxLotsForLossCap } from '../../levelLimits';
 import { startOfWeek } from '../../util/weekWindow';
 import AntContractMaster from '../../ant/AntContractMaster';
 import { normalizeBrokerName } from '../../util/brokerName';
@@ -86,6 +88,7 @@ interface UserSettings {
     strategyCapital?: number;
     targetPoints?: number;
     stopLossPoints?: number;
+    proficiencyLevel?: 'beginner' | 'advanced'; // picks settings.levelRules
     accountClosed?: boolean;
     closedAtMs?: number; // when this process closed the account (see updateUserSettings)
 }
@@ -333,7 +336,7 @@ class OrderBookkeeping {
     // the account may actually place: the per-order cap and the exchange freeze quantity (a manual buy is one order, never chunked). There
     // is deliberately NO lot-count cap in this mode (user decision 2026-11-13): only capital, per-order cap and the freeze limit apply. `contractLotSize` is the resolved contract's own lot size (preferred over the
     // name-based guess, see getInstrumentLotSize).
-    resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number, contractLotSize?: number): number {
+    resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number, contractLotSize?: number, stopLossPoints?: number): number {
         if (explicitQuantity != null) return explicitQuantity;
         const lotSize = contractLotSize && contractLotSize > 0 ? contractLotSize : this.getInstrumentLotSize(tsym);
         const ctx = this.getUserContext(userId);
@@ -352,9 +355,20 @@ class OrderBookkeeping {
         const capitalLots = lots;
         const perOrderCap = this.getUserPerOrderCap(userId);
         if (perOrderCap !== undefined && lots * perLot > perOrderCap) lots = Math.max(1, Math.floor(perOrderCap / perLot));
+        // Per-trade loss cap (levelRules.maxLossPerTradePercent): one stop-out may not lose more than that % of the account capital, so a cheap
+        // option with a wide stop buys fewer lots. The stop used is the order's own, else the user's, else the global default; one lot is the floor.
+        const lvSettings = configService.getConfig().settings as any;
+        const lossCapLots = maxLotsForLossCap({
+            capital: ctx.accountCapital,
+            maxLossPercent: levelRules(lvSettings, this.userSettingsCache.get(userId)?.proficiencyLevel).maxLossPerTradePercent,
+            stopPoints: stopLossPoints ?? this.getUserStopLossPoints(userId) ?? Number(lvSettings?.stopLossPoints),
+            lotSize,
+        });
+        const beforeLossCap = lots;
+        if (lossCapLots !== undefined && lots > lossCapLots) lots = Math.max(1, lossCapLots);
         const freeze = tsym.startsWith('SENSEX') ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY;
         lots = Math.max(1, Math.min(lots, Math.floor(freeze / lotSize)));
-        Log.log(`[order] manual buy sizing for ${userId} ${tsym}: ${lots} lot(s) x ${lotSize} @ ${price} (capital allows ${capitalLots}, available ${available}${perOrderCap !== undefined ? `, per-order cap ${perOrderCap}` : ''}${lots < capitalLots ? ' - clamped by the account limits' : ''})`);
+        Log.log(`[order] manual buy sizing for ${userId} ${tsym}: ${lots} lot(s) x ${lotSize} @ ${price} (capital allows ${capitalLots}, available ${available}${perOrderCap !== undefined ? `, per-order cap ${perOrderCap}` : ''}${lots < capitalLots ? ' - clamped by the account limits' : ''}${lots < beforeLossCap ? ' - clamped by the per-trade loss cap' : ''})`);
         return lots * lotSize;
     }
 
@@ -593,9 +607,8 @@ class OrderBookkeeping {
         // Once today's daily breach is latched it stays breached for the day, even if the position that caused it closed at a better price.
         if (window === 'daily' && this.drawdownLatched(user)) return 'breached';
         const settings = configService.getConfig().settings as any;
-        const limitPercent = window === 'daily'
-            ? drawdownLimit(settings, 'maxDailyDrawdownPercent')
-            : drawdownLimit(settings, 'maxWeeklyDrawdownPercent');
+        const rules = levelRules(settings, this.userSettingsCache.get(user)?.proficiencyLevel);
+        const limitPercent = window === 'daily' ? rules.maxDailyDrawdownPercent : rules.maxWeeklyDrawdownPercent;
         const since = window === 'daily' ? OrderBookkeeping.startOfDay() : startOfWeek();
         const pnl = await this.getRealizedPnLSince(user, since);
         // Daily only: open P&L at live prices counts toward the daily loss (maxloss.md B4.2). A failed price adds 0.
@@ -726,7 +739,7 @@ class OrderBookkeeping {
         if (!settings || settings.accountClosed) return;
         settings.accountClosed = true;
         settings.closedAtMs = Date.now();
-        const reason = `Weekly loss limit of ${drawdownLimit(configService.getConfig().settings as any, 'maxWeeklyDrawdownPercent')}% breached`;
+        const reason = `Weekly loss limit of ${levelRules(configService.getConfig().settings as any, settings.proficiencyLevel).maxWeeklyDrawdownPercent}% breached`;
         Log.log(`[order] Account closed for ${user}: ${reason}`);
         closeUserAccount(user, reason).catch((e) => {
             settings.accountClosed = false;

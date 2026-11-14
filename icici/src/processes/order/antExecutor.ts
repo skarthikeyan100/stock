@@ -169,7 +169,7 @@ async function enterManualBuy(req: ManualBuyRequest, tsym: string, token: string
 // so a quote outage blocks it either way. The one-lot default (resolveManualBuyQuantity) only applies when
 // a price is known but no investment amount is set.
 function sizeManualBuyOrRefuse(req: ManualBuyRequest, tsym: string, price: number | undefined, contractLotSize?: number): number {
-    const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, tsym, price ?? 0, req.quantity, contractLotSize);
+    const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, tsym, price ?? 0, req.quantity, contractLotSize, req.stopLossPoints);
     if (req.quantity == null && !((price ?? 0) > 0)
         && bookkeeping.getUserContext(req.userId).investmentMode === 'investmentAmount') {
         throw new Error(`Manual buy ${tsym}: no ANT price to size an investment-amount order - not placed`);
