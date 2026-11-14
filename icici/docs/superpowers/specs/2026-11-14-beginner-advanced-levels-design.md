@@ -1,6 +1,6 @@
 # Beginner / Advanced levels - design (2026-11-14, rev 2)
 
-Status: awaiting approval. Rev 4. Rev 4: trade cap 3 for both levels, profit split 35% / 25%. Supersedes rev 1 (self-service immediate upgrade, 10/20 limits, same capital) and rev 2 (GST upgrade only after admin verification).
+Status: APPROVED (rev 5, 2026-11-14). Rev 4: trade cap 3 for both levels, profit split 35% / 25%. Supersedes rev 1 (self-service immediate upgrade, 10/20 limits, same capital) and rev 2 (GST upgrade only after admin verification).
 
 ## Intent
 Two kinds of users: beginners who know nothing about options, and advanced users who do. The platform bears the trading loss (prop-firm model), so the
@@ -32,14 +32,16 @@ an advanced user sees +-1L days and 300% option winners, and dips of 20k that re
 5. Welcome email on first login (Beginner rules, a note about Advanced and that it is permanent); a second email on upgrade with the changed terms and
    agreement (also for the GSTIN path).
 7. The only existing user is Ramaraj: set the level, capital and limits directly through the admin settings, no migration code.
-9. Trades per day: 3 for both levels (counted on entries, in both investment modes).
+9. Trades per day: 3 for both levels, counted on entries, enforced ONLY in investmentAmount mode (as today; lotCount mode has no trade cap, a user decision).
+   The Help/FAQ section tells Advanced users this (they are the only ones who can choose lotCount). The FAQ also links Zerodha Varsity's option theory
+   module: https://zerodha.com/varsity/module/option-theory/
 10. Profit share (the user's share of gross profit, today `DEFAULT_PROFIT_SPLIT_PERCENT` = 40): 35% for Beginner, 25% for Advanced. The lower share
    is deliberate: it deters upgrading unless the user is really sure. TDS and GST are still computed on the user's share.
 8. Default target / stop-loss: 2 / 10 points (`settings.targetPoints` 2, `settings.stopLossPoints` 10; today 11).
 6. Comparison table everywhere the rules are shown.
 
 ## My calls (please check)
-- Trade cap of 3 is enforced in both investment modes (today's cap of 3 exists only in investmentAmount mode).
+- Trade cap of 3 stays an investmentAmount-mode rule (user decision, rev 5); no change to lotCount's trade-count behaviour.
 - Max loss on one trade: 10% of capital for both (10k / 20k). Beginner's fixed stop-loss is sized under it; Advanced may set their own up to it.
   The builder converts to points from quantity. Two stop-outs roughly use the daily limit, so the third trade of a bad day is usually stopped by it.
 - Profit share is stored per user (`profitSplitPercent`, admin-controlled today). The level sets the default: new users get 35; an approved upgrade
@@ -49,7 +51,7 @@ an advanced user sees +-1L days and 300% option winners, and dips of 20k that re
   limit: 30k for Advanced is what makes recoveries possible. The weekly limit counts realized P&L only.
 - investmentMode: Beginner locked to `investmentAmount` (predictable size). Advanced may choose `lotCount` too (a way to size down). `lotCount` today
   checks only a lot limit (no capital-left check, no trade-count rule): add a capital check, a max-lots rule (lots x stop-loss within the per-trade cap)
-  and the trade cap before opening the choice.
+  before opening the choice (the trade cap is NOT added to lotCount).
 - Capital on approval (admin or GSTIN path): 2L by default (admin may adjust). Requires no 2-week history; the 2-week rule is for increases beyond that.
 - Per-trade cap arithmetic: in investmentAmount mode quantity = capital / price, so a fixed 10-point stop loses quantity x 10: 10k on 1L only when the
   premium is 100 or more; at a premium of 50 it is 20k (20%). So the cap is enforced by reducing the quantity (the Beginner's position is
@@ -84,8 +86,7 @@ mechanism as a weekly breach (positions squared off, trading blocked); an admin 
 terms the GSTIN user accepts and in the upgrade email.
 
 **Gating (server-side).** A Beginner's Search & Buy order is rejected by the server (UI hiding is not enough); a Beginner's own target/stop is ignored;
-Beginner investmentMode locked. Advanced: defaults pre-filled, override within the per-trade loss cap. Trade cap and per-trade cap enforced in the
-order path in both modes. Demo shows both.
+Beginner investmentMode locked. Advanced: defaults pre-filled, override within the per-trade loss cap. Trade cap enforced in investmentAmount mode only; per-trade cap in both modes. Demo shows both.
 
 **Rules and comparison table.** One source (config levelRules + fixed feature list) feeds the public rules page, the in-app rules page, the upgrade
 request screen and the welcome email; `RulesPage.tsx` stops hardcoding 25/50. Logged-out: percentages and ruppee amounts at default capital; logged in:
@@ -98,7 +99,7 @@ own level and amounts.
 | Target & stop-loss | Fixed | Your own (defaults, up to the per-trade cap) |
 | Max loss on one trade | 10% of capital (10k) | up to 10% of capital (20k) |
 | Position sizing | Investment amount | Your choice: amount or fixed lots |
-| Trades per day | 3 | 3 |
+| Trades per day | 3 | 3 (investment-amount mode only; fixed-lot mode has no trade cap) |
 | Capital | 1L | 2L; more on request after 2 successful weeks |
 | Daily loss limit | 15% (15k) | 15% (30k) |
 | Weekly loss limit | 30% (30k) | 30% (60k) |
