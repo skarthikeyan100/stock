@@ -28,10 +28,33 @@ Base URL: `http://localhost:3000` (also listens on 80, and 443 when `key.pem`/`c
 | `DELETE /users/:email` | admin | Delete an account. |
 | `PATCH /users/:email/role` | admin | Change role. |
 | `PATCH /users/:email/verify` | admin | Body `{ field, verified }`: set one verification flag (email, phone, address, dob, pan, aadhar, gst). |
-| `POST /users/:email/settings` | self/admin | Trading settings (loss limit, lots, investment mode, capital, `useGTT`, broker, caps, target/stop points). Every change is pushed in full to the trading process. A non-admin may send only `investmentMode`, `targetPoints` and `stopLossPoints` (the Flash Trade settings popup; targets/stops must be > 0 or null to clear); every other field is admin-only (403). |
-| `PATCH /users/:email/profile`, `/kyc-numbers`, `/bank-details`, `/entity-type`, `/company-profile` | self/admin | Profile, PAN/Aadhaar numbers, bank details, entity type, company profile. |
+| `POST /admin/act-as` | admin (real session) | Body `{ email }`: use the app as that user. Sets a signed `actas` cookie (8 h); every route then acts as the target (so admin-only routes are refused until exit) and orders mirror as for any trader. Refused for yourself, another admin, a disabled or unknown user. |
+| `POST /act-as/stop` | admin (real session) | Drops the `actas` cookie. `GET /auth/me` returns the effective user plus `actingAs: { admin, adminName }` while acting. `POST /auth/logout` revokes only the real session and clears `actas`. |
+| `GET /admin/erasure-log` | admin | Account-erasure log (Mongo `erasureLog`, newest first, max 500): pseudonym, HMAC of the email, requester (self or admin), per-collection counts, status. Holds no personal data. |
+| `POST /users/:email/settings` | self/admin | Trading settings (loss limit, lots, investment mode, capital, `useGTT`, broker, caps, target/stop points). Every change is pushed in full to the trading process. A non-admin may send only `investmentMode`, `targetPoints` and `stopLossPoints` (the Flash Trade settings popup; targets/stops must be > 0 or null to clear); every other field is admin-only (403). A **Beginner** is refused (403) a `lotCount` mode and any own target / stop-loss (Flash Trade uses the global ones); an Advanced user is not. Admin-only `proficiencyLevel` (`beginner` default, or `advanced`): picks the loss limits and maximum payment in `config.yml` `settings.levelRules`. Admin-only `investmentModeLocked` (boolean): while true the user's own `investmentMode` change is refused with 403 (sending the unchanged value is fine); an admin can still set `investmentMode`. |
+| `PATCH /users/:email/profile`, `/kyc-numbers`, `/bank-details`, `/entity-type`, `/company-profile` | self/admin | Profile, PAN/Aadhaar numbers, bank details, entity type, company profile. `/company-profile`: a Beginner who sends a non-empty `gstin` becomes Advanced immediately and permanently, and the body must carry `acceptAdvancedTerms: true` (else 400; a closed Beginner also gets 400, before the GSTIN is saved). An admin editing someone's profile never changes the level. |
 | `POST /users/:email/documents/:docType` | self/admin | Upload a KYC document (multipart `file`, 5 MB, type sniffed; PAN/Aadhaar numbers are OCR-checked). |
 | `GET /users/:email/documents/:docType` | self/admin | Download it. |
+
+## Levels (2026-11-14)
+
+A user is **Beginner** (default) or **Advanced**; Advanced is permanent. The numbers (loss limits, capital, profit share, per-trade loss cap) live in `settings.levelRules` in `config.yml`. Code: `src/routes/levels.ts`, `levelUpgrade.ts`, `capitalRequests.ts`, `invoiceRule.ts`, `levelGate.ts`.
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /level-rules` | none | The level table (both levels' numbers) plus `termsVersion` of the Advanced terms. Public: the logged-out `/levels` page uses it. |
+| `GET /user/level-status` | auth | `{ level, advancedSince, successfulWeeks, requiredWeeks, pendingUpgradeRequest, pendingCapitalRequest, accountClosed }` for the caller. A successful week is a completed Wednesday-Tuesday week with a net profit and no daily or weekly loss-limit breach. |
+| `POST /user/upgrade-request` | auth | Body `{ acceptTerms: true }` (else 400). A Beginner asks to become Advanced; one pending request per user (400 on a duplicate, an Advanced user or a closed account). |
+| `GET /admin/upgrade-requests?status=` | admin | `pending`, `approved` or `rejected` (400 otherwise); rows carry `id`, `user`, `userName`, `successfulWeeks`, `currentCapital`, `createdAt`. |
+| `POST /admin/upgrade-requests/:id/decision` | admin | Body `{ decision: 'approve'\|'reject', capital?, note? }`. Approve makes the user Advanced (capital defaults to the Advanced level's), pushes it to the trading process, notifies (`level_status`) and sends the upgrade email; reject notifies with the note. 409 if already decided. |
+| `POST /user/capital-request` | auth | Body `{ amount }` (number). Advanced users only, with at least `requiredWeeks` successful weeks, one pending request, at most 10x current capital; 400 with the reason otherwise. |
+| `GET /admin/capital-requests?status=` | admin | Same shape as the upgrade list, plus `amount`. |
+| `POST /admin/capital-requests/:id/decision` | admin | Body `{ decision, amount?, note? }`: approve sets the capital (the requested amount unless `amount` overrides it). 409 if already decided. |
+| `POST /admin/payouts/:id/invoice-received` | admin | Marks the invoice of a paid payout received (`invoiceStatus: 'received'`). 404 if no payout of that id is waiting for one. |
+
+**Invoice rule.** A GSTIN-Advanced user owes an invoice for every paid payout within 2 days (end of Friday for a Wednesday payment): `invoiceStatus: 'pending'`, `invoiceDueAt` are set on the payout when it is marked paid; an hourly job reminds, then closes the account (no new orders; open positions are not squared off) once it is overdue. Reopening the account sticks.
+
+**Gating (server-side).** `POST /order/buy`: a Beginner gets 403 for a buy that names a `contract` (Search & Buy is Advanced-only) and the global target / stop-loss apply whatever the request carries. The per-trade loss cap (`maxLossPerTradePercent` of capital) clamps the quantity of a manual buy.
 
 ## Payouts
 
@@ -60,12 +83,13 @@ Base URL: `http://localhost:3000` (also listens on 80, and 443 when `key.pem`/`c
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `POST /order/buy` | auth | Manual buy through the user's broker (kite, ant or breeze; risk limits apply). Quantity: `investmentMode` `investmentAmount` buys as many lots as the remaining capital covers (net of open positions and pending orders; no lot-count cap; clamped to the per-order cap and the exchange freeze quantity, one lot minimum), `lotCount` buys one lot. Applies to the `contract`, `strikePrice` and plain `right` (ATM) forms alike. Breeze has no GTT/bracket: a target/stop is enforced by the in-app exit monitor whatever `useGTT` says; the order is a limit at the widest of Breeze's and ANT's ask. |
+| `POST /order/buy` | auth | Manual buy through the user's broker (kite, ant or breeze; risk limits apply). Quantity: `investmentMode` `investmentAmount` buys as many lots as the remaining capital covers (net of open positions and pending orders; no lot-count cap; clamped to the per-order cap and the exchange freeze quantity, one lot minimum), `lotCount` buys one lot. For a non-admin user in `investmentAmount` mode, this endpoint refuses the 4th trade of the day with a 403 (counted from open + closed trades opened today; a position closed in pieces counts once). Admins and `lotCount` users are not capped; strategies and other order paths are unaffected. Applies to the `contract`, `strikePrice` and plain `right` (ATM) forms alike. Breeze has no GTT/bracket: a target/stop is enforced by the in-app exit monitor whatever `useGTT` says; the order is a limit at the widest of Breeze's and ANT's ask. |
 | `POST /order/squareoff` | auth | Square off a position. |
 | `POST /order/settarget` | auth | Body `{ token, targetPoints, stopLossPoints }` (numbers >= 0): set target / stop-loss points on an open position. |
 | `GET /order/can-place` | auth | `{ allowed, reason? }` from the risk gate (loss limit, lot limit, accountClosed). The lot limit applies in `lotCount` mode only; in `investmentAmount` mode (with an account capital set) there is no lot-count cap and the account capital, net of open positions and pending orders, blocks instead ("no capital left"). |
 | `POST /order/lock-profits` | admin | See below. |
 | `GET /strategyPnl` | admin | Realized and unrealized P&L per strategy (`?match=` regex; `?by=broker` groups by broker instead; `?detail=1` one row per open position; `?opened=today` counts only trades opened today, IST day of `entryTime`, realized and unrealized, a trade with no `entryTime` counts as today; absent or `all` keeps every trade; the response carries `X-Opened-Filter`; `?closed=1` returns one row per CLOSED trade (`strategy, user, broker, tsym, quantity, entryPrice, exitPrice, realizedPnL, entryTime, exitTime`, oldest exit first, same `match`/`opened` filters, response carries `X-Closed-Rows: 1`; no mirrored flag exists on a trade row)); used by `scripts/strategy-status.sh`. |
+| `GET /users/:email/trades/open`, `/trades/closed?from&to`, `/trades/pnl-summary?from&to&breakdown` | self/admin | A trader's own open trades, closed trades (IST calendar-day range, `to` inclusive) and eligible-P&L summary: the data behind Profile > Trades. |
 | `GET /admin/trades/open`, `/admin/trades/closed`, `/admin/trades/pnl-summary` | admin | Open trades, closed trades, P&L summary across users. `from`/`to` (YYYY-MM-DD) are IST calendar days, `to` inclusive of its whole day. |
 
 ### POST /order/lock-profits
@@ -85,10 +109,10 @@ Notes: `lockedPnl` is measured from the bookkeeping row's cost, which a reconcil
 | `GET /positionstream` | auth | The user's open positions and P&L, re-pushed on every change. |
 | `GET /notificationstream`, `GET /users/:email/notifications`, `PATCH /users/:email/notifications/:id/read` | auth, self/admin | Notifications: live stream, history, mark read. |
 | `GET /demo/niftystream`, `/demo/optionstream`, `/demo/subscribe`, `/demo/resolve`, `/demo/symbols` | none (rate limited per IP) | The logged-out demo page: ANT-token market data for a small allow-listed set of contracts. |
+| `GET /demo/health` | none | `{ ok: true }`. Liveness probe for the static site (Cloudflare Pages): an answer means the trading server is up, so the home page offers Google sign-in and the demo uses live prices during market hours. The demo does not need the server otherwise: outside market hours, or when this probe fails, it replays `frontend/public/demo-ticks.txt` in the browser (regenerate with `node dist/tools/makeDemoTicks.js <Mon-DD> [every=10]` after `npx tsc`). |
 
 A comment line is written to every stream every 20 s so a proxy never sees it as idle.
 
-| `GET /demo/health` | none | `{ ok: true }`. Liveness probe for the static site (Cloudflare Pages): an answer means the trading server is up, so the home page offers Google sign-in and the demo uses live prices during market hours. The demo does not need the server otherwise: outside market hours, or when this probe fails, it replays `frontend/public/demo-ticks.txt` in the browser (regenerate with `node dist/tools/makeDemoTicks.js <Mon-DD> [every=10]` after `npx tsc`). |
 ## Strategies, reconcile and configuration (admin)
 
 | Route | Purpose |
@@ -100,7 +124,6 @@ A comment line is written to every stream every 20 s so a proxy never sees it as
 | `GET /config`, `POST /config` | The configuration in flattened form; a save is validated (`configValidation`) and rejected rather than written when the reload would reject it. `settings.hotRestartDuringMarketHours` (default `false`) decides whether a compiled-code change is applied during market hours (09:00-15:35 weekdays); the orchestrator reads it at the moment of each change. `settings.mirrorPercentage` (0-100, `N` or `N%`) is the share of every frontend user's lots (`POST /order/buy`) that the admin account mirrors with its own real order, rounded down to whole lots; 0 = off. |
 
 ## Frontend
-| `POST /admin/eod-email/send` | End-of-day trading summary email, one per real user (not the admin, not strategy pseudo-users, enabled accounts) who had a closed trade or a fill that IST day: trades table, realized day P&L, open positions, and a payment section (current Wed-Tue week payout estimate: gross, split %, TDS, GST, net, blocked/forfeited reason; masked bank/UPI destination; latest payouts). NOT scheduled by this repo: another program calls it. Query: `date=YYYY-MM-DD` (default today IST, not in the future), `dryRun=true` (renders only; each result carries `subject` and `html`), `force=true` (resend users already sent), `user=<email>` (one user). While `settings.eodEmailTestRecipient` is set every email goes only to that address with a `[TEST for <user>]` subject prefix (recorded separately from live sends); remove the key to email real users. Sent from `GMAIL_USER` (admin@nivedhatech.com) via the Gmail OAuth `GMAIL_*` vars in `.env`; 503 when they are unset (dry runs still work). Sent records live in Mongo `eodEmails` (`date`+`user`+`mode`), so a repeat call skips them. 200 `{ date, mode: 'test'\|'live', testRecipient, results: [{ user, to, status: 'sent'\|'skipped'\|'failed'\|'dryRun', reason?, subject?, html? }] }`. Template: `templates/eodEmail.{html,subject.txt}`. |
 
 `GET *` serves the React shell (`public/index.html`) to browser navigations; an unknown API-style path (no `Accept: text/html`, or with a file extension) is a JSON 404.
 
