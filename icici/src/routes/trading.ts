@@ -1,6 +1,7 @@
 import Log from '../util/Log';
 import express from 'express';
 import { Trade } from '../model/model';
+import { getUser } from '../user';
 import configService from '../prism/ConfigService';
 import { computePnlSummary, periodFromInputs } from '../payout';
 import Mongo from '../tools/mongo';
@@ -12,7 +13,8 @@ import OrderClient from '../processes/strategies/OrderClient';
 import { asyncRouter } from './asyncRouter';
 import { isOpenedToday, openedFilterOf } from '../util/openedToday';
 import { closedTradeRows } from '../util/closedTradeRows';
-import { requireCsrfHeader, resolveUser, requireAuth, requireAdmin } from './session';
+import { gateBuy } from '../levelGate';
+import { requireCsrfHeader, resolveUser, requireAuth, requireAdmin, requireSelfOrAdmin } from './session';
 
 const router = asyncRouter();
 const orderClient = OrderClient.getInstance();
@@ -44,6 +46,8 @@ function validateBuyQuery(q: Record<string, unknown>): string | null {
 // old name, none of these ever called prismExecutor.ts; the "prism" prefix
 // was actively misleading now that Prism is a real third broker with its own
 // distinct routes elsewhere.
+const MAX_FRONTEND_TRADES_PER_DAY = 3;
+
 router.post('/order/buy', requireAuth, async function (req: express.Request, res) {
     try {
         const { right, index, strikePrice, price, contract, targetPoints, stopLossPoints } = req.query;
@@ -51,14 +55,37 @@ router.post('/order/buy', requireAuth, async function (req: express.Request, res
         const invalid = validateBuyQuery({ right, index, strikePrice, price, contract, targetPoints, stopLossPoints });
         if (invalid) { res.status(400).json({ error: invalid }); return; }
         Log.log('Resolved order while placing an order ', user);
+        // A user sized by investmentAmount may start at most MAX_FRONTEND_TRADES_PER_DAY trades a day from the frontend; admins are exempt.
+        const buyer = await getUser(user ?? '');
+        // Level gating (src/levelGate.ts): a Beginner gets Flash Trade only, with the global target / stop-loss whatever the request carries.
+        const settings = configService.getConfig().settings as any;
+        const gate = gateBuy({
+            role: buyer?.role, level: buyer?.proficiencyLevel, contract: contract as string | undefined,
+            targetPoints: targetPoints ? parseFloat(targetPoints as string) : undefined,
+            stopLossPoints: stopLossPoints ? parseFloat(stopLossPoints as string) : undefined,
+            globalTarget: Number(settings?.targetPoints), globalStopLoss: Number(settings?.stopLossPoints),
+        });
+        if (!gate.allowed) { res.status(403).json({ error: gate.error }); return; }
+        if (buyer && buyer.role !== 'admin' && buyer.investmentMode === 'investmentAmount') {
+            const { trades, closedTrades } = await orderClient.stats(user);
+            // One trade = one (broker, token, entryTime): a position closed in several pieces counts once.
+            const started = new Set<string>();
+            for (const t of [...trades, ...closedTrades]) {
+                if (t.user === user && isOpenedToday(t.entryTime)) started.add(`${t.broker}|${t.token}|${new Date(t.entryTime).getTime()}`);
+            }
+            if (started.size >= MAX_FRONTEND_TRADES_PER_DAY) {
+                res.status(403).json({ error: `Trade limit reached: at most ${MAX_FRONTEND_TRADES_PER_DAY} trades a day in investment-amount mode (${started.size} today)` });
+                return;
+            }
+        }
         const result = await orderClient.manualBuy(user, {
             index: index as any,
             right: right as string,
             contract: contract as string,
             strikePrice: strikePrice ? parseInt(strikePrice as string) : undefined,
             price: price ? parseFloat(price as string) : undefined,
-            targetPoints: targetPoints ? parseFloat(targetPoints as string) : undefined,
-            stopLossPoints: stopLossPoints ? parseFloat(stopLossPoints as string) : undefined,
+            targetPoints: gate.targetPoints,
+            stopLossPoints: gate.stopLossPoints,
         });
         res.json(result);
     } catch (e: any) {
@@ -237,29 +264,68 @@ router.get('/strategyPnl', requireAdmin, async function (req: express.Request, r
 
 
 
+// Closed-trade filter shared by the admin and the per-user routes. Date-only from/to are IST calendar days (a plain new Date('YYYY-MM-DD')
+// is UTC midnight = 05:30 IST, which made a Day filter a zero-width window and dropped the last day of Week/Month). `to` is inclusive of
+// its whole day: [from 00:00 IST, to+1 00:00 IST). Returns an error message for an unparseable date.
+function closedTradesQuery(user: string | undefined, from?: string, to?: string): { query: any } | { error: string } {
+    const query: any = {};
+    if (user) query.user = user;
+    if (from || to) {
+        const dateOnly = /^\d{4}-\d{2}-\d{2}$/;
+        const range: any = {};
+        if (from) range.$gte = dateOnly.test(from) ? new Date(`${from}T00:00:00+05:30`) : new Date(from);
+        if (to) range.$lt = dateOnly.test(to) ? new Date(new Date(`${to}T00:00:00+05:30`).getTime() + 24 * 60 * 60 * 1000) : new Date(to);
+        if ((range.$gte && Number.isNaN(range.$gte.getTime())) || (range.$lt && Number.isNaN(range.$lt.getTime()))) return { error: 'from/to must be valid dates' };
+        query.exitTime = range;
+    }
+    return { query };
+}
+
 router.get('/admin/trades/closed', requireAdmin, async function (req, res) {
     try {
         const { user, from, to } = req.query as { user?: string; from?: string; to?: string };
-        const query: any = {};
-        if (user) query.user = user;
-        // Date-only from/to are IST calendar days (a plain new Date('YYYY-MM-DD') is UTC midnight = 05:30 IST, which made a Day filter a
-        // zero-width window and dropped the last day of Week/Month). `to` is inclusive of its whole day: [from 00:00 IST, to+1 00:00 IST).
-        if (from || to) {
-            const dateOnly = /^\d{4}-\d{2}-\d{2}$/;
-            const istStart = (d: string) => (dateOnly.test(d) ? new Date(`${d}T00:00:00+05:30`) : new Date(d));
-            const range: any = {};
-            if (from) range.$gte = istStart(from);
-            if (to) range.$lt = dateOnly.test(to) ? new Date(new Date(`${to}T00:00:00+05:30`).getTime() + 24 * 60 * 60 * 1000) : new Date(to);
-            if ((range.$gte && Number.isNaN(range.$gte.getTime())) || (range.$lt && Number.isNaN(range.$lt.getTime()))) {
-                res.status(400).json({ error: 'from/to must be valid dates' });
-                return;
-            }
-            query.exitTime = range;
-        }
-        const trades = await Mongo.getInstance().db.collection('closedTrades').find(query).sort({ exitTime: -1 }).toArray();
+        const q = closedTradesQuery(user, from, to);
+        if ('error' in q) { res.status(400).json({ error: q.error }); return; }
+        const trades = await Mongo.getInstance().db.collection('closedTrades').find(q.query).sort({ exitTime: -1 }).toArray();
         res.json(trades);
     } catch (e) {
         Log.log('Admin get closed trade history error:', e);
+        res.sendStatus(500);
+    }
+});
+
+// A trader's own trades, for the Profile > Trades tab (same shapes as the admin routes above, scoped to :email; an admin may read any).
+router.get('/users/:email/trades/closed', requireSelfOrAdmin('email'), async function (req, res) {
+    try {
+        const { from, to } = req.query as { from?: string; to?: string };
+        const q = closedTradesQuery(req.params.email, from, to);
+        if ('error' in q) { res.status(400).json({ error: q.error }); return; }
+        res.json(await Mongo.getInstance().db.collection('closedTrades').find(q.query).sort({ exitTime: -1 }).toArray());
+    } catch (e) {
+        Log.log('Get user closed trades error:', e);
+        res.sendStatus(500);
+    }
+});
+
+router.get('/users/:email/trades/open', requireSelfOrAdmin('email'), async function (req, res) {
+    try {
+        const stats = await orderClient.stats();
+        res.json(stats.trades.filter((t: Trade) => t.user === req.params.email));
+    } catch (e) {
+        Log.log('Get user open trades error:', e);
+        res.sendStatus(500);
+    }
+});
+
+router.get('/users/:email/trades/pnl-summary', requireSelfOrAdmin('email'), async function (req, res) {
+    try {
+        const { from, to, breakdown } = req.query as { from?: string; to?: string; breakdown?: string };
+        if (!from || !to) { res.status(400).json({ error: 'from and to are required' }); return; }
+        let period: { start: Date; end: Date };
+        try { period = periodFromInputs(from, to); } catch (e: any) { res.status(400).json({ error: e.message }); return; }
+        res.json(await computePnlSummary(req.params.email, period.start, period.end, breakdown === 'week'));
+    } catch (e) {
+        Log.log('Get user P&L summary error:', e);
         res.sendStatus(500);
     }
 });

@@ -1,4 +1,6 @@
+import { gateSettings } from '../levelGate';
 import { getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields } from '../user';
+import { eraseUser } from '../accountDeletion';
 import multer from 'multer';
 import { GridFSBucket, ObjectId } from 'mongodb';
 import Tesseract from 'tesseract.js';
@@ -7,7 +9,7 @@ import Mongo from '../tools/mongo';
 import OrderClient from '../processes/strategies/OrderClient';
 import { USER_BROKERS_TEXT, isUserBroker } from '../util/brokerName';
 import { asyncRouter } from './asyncRouter';
-import { pushUserToOrderProcess, resolveUser, requestIsLoopback, invalidateUserCache, requireAdmin, requireSelfOrAdmin } from './session';
+import { pushUserToOrderProcess, parseSession, sessionRevoked, resolveUser, requestIsLoopback, invalidateUserCache, requireAdmin, requireSelfOrAdmin } from './session';
 const MAX_INVESTMENT_AMOUNT = 100_000_000; // server-side ceiling for a user-set investmentAmount
 
 const router = asyncRouter();
@@ -75,11 +77,8 @@ router.delete('/users/:email', requireAdmin, async function (req, res) {
         }
         const target = await getUser(email);
         if (target?.role === 'admin') {
-            const admins = (await getAllUsers()).filter((u) => u.role === 'admin');
-            if (admins.length <= 1) {
-                res.status(400).json({ error: 'Cannot delete the last admin' });
-                return;
-            }
+            res.status(400).json({ error: 'An admin account cannot be deleted' });
+            return;
         }
         // A user with an open position must be squared off first - deleting them would orphan it.
         const stats = await orderClient.stats();
@@ -87,13 +86,13 @@ router.delete('/users/:email', requireAdmin, async function (req, res) {
             res.status(409).json({ error: 'User has open trades - square them off before deleting the account' });
             return;
         }
-        // Uploaded KYC documents are deleted with the account (payout records stay: they are financial history).
+        // A trader is erased the same way as a self-delete (DPDP: no personal data kept, trade records pseudonymised).
         if (target) {
-            const bucket = new GridFSBucket(Mongo.getInstance().db, { bucketName: 'documents' });
-            for (const f of ['addressProofId', 'dobProofId', 'panCardId', 'aadharDocId', 'gstDocId']) {
-                const id = (target as any)[f];
-                if (id && ObjectId.isValid(id)) await bucket.delete(new ObjectId(id)).catch(() => undefined);
-            }
+            const result = await eraseUser(target.email, new Set(stats.trades.map((t: any) => String(t.user))), { by: 'admin', admin: caller ?? 'unknown' });
+            invalidateUserCache(email);
+            if (result.ok === false) { res.status(result.status).json({ error: result.error }); return; }
+            res.sendStatus(200);
+            return;
         }
         const success = await deleteUser(email);
         invalidateUserCache(email);
@@ -106,6 +105,36 @@ router.delete('/users/:email', requireAdmin, async function (req, res) {
         console.error('Delete user error:', e);
         res.sendStatus(500);
     }
+});
+
+// A user deletes their own account (profile page). DPDP Act: the user row and all personal data are erased and the trade/payout records are kept
+// under a random pseudonym (src/accountDeletion.ts); the same email can sign up again. Only the real session owner can do it (an admin
+// acting as a trader cannot), and not an admin account.
+router.post('/users/:email/delete-account', async function (req, res) {
+    try {
+        const email = String(req.params.email ?? '').trim().toLowerCase();
+        const session = parseSession(req);
+        if (!session || session.email.toLowerCase() !== email) { res.status(403).json({ error: 'You can only delete your own account' }); return; }
+        if (req.body?.confirm !== 'DELETE') { res.status(400).json({ error: 'Type DELETE to confirm' }); return; }
+        const target = await getUser(email);
+        if (target && sessionRevoked(req, target)) { res.status(401).json({ error: 'Session expired - log in again' }); return; }
+        const stats = await orderClient.stats();
+        const result = await eraseUser(email, new Set(stats.trades.map((t: any) => String(t.user))));
+        if (result.ok === false) { res.status(result.status).json({ error: result.error }); return; }
+        invalidateUserCache(email);
+        res.clearCookie('session');
+        res.clearCookie('actas');
+        res.json({ ok: true });
+    } catch (e) {
+        console.error('Delete account error:', e);
+        res.status(500).json({ error: 'Could not delete the account - try again' });
+    }
+});
+
+// Read-only list of account erasures (no personal data in it: see src/accountDeletion.ts).
+router.get('/admin/erasure-log', requireAdmin, async function (_req, res) {
+    const rows = await Mongo.getInstance().db.collection('erasureLog').find({}).sort({ startedAt: -1 }).limit(500).toArray();
+    res.json(rows);
 });
 
 router.patch('/users/:email/role', requireAdmin, async function (req, res) {
@@ -129,7 +158,7 @@ router.patch('/users/:email/role', requireAdmin, async function (req, res) {
             res.status(404).json({ error: 'User not found' });
             return;
         }
-        res.json(toClientUser(user));
+               res.json(toClientUser(user));
     } catch (e: any) {
         console.error('Update role error:', e);
         if (e.message.includes('Invalid role')) {
@@ -143,7 +172,7 @@ router.patch('/users/:email/role', requireAdmin, async function (req, res) {
 router.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
-        const { lossLimit, investmentMode, useGTT, broker, perOrderCap, targetPoints, stopLossPoints, profitSplitPercent, enabled } = req.body;
+        const { lossLimit, investmentMode, useGTT, broker, perOrderCap, targetPoints, stopLossPoints, profitSplitPercent, enabled, investmentModeLocked, proficiencyLevel } = req.body;
         // Canonical names win; the old ones (lotCount / investmentAmount / allottedCapital) are still accepted (REFACTOR_PLAN.md section 3).
         const lotCount = req.body.lotLimit ?? req.body.lotCount;
         const investmentAmount = req.body.accountCapital ?? req.body.investmentAmount;
@@ -153,11 +182,22 @@ router.post('/users/:email/settings', requireSelfOrAdmin('email'), async functio
         if (!requestIsLoopback(req)) {
             const caller = await getUser(resolveUser(req) ?? '');
             if (caller?.role !== 'admin') {
-                const restricted = { lossLimit, lotCount, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, profitSplitPercent, enabled };
+                const restricted = { lossLimit, lotCount, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, profitSplitPercent, enabled, investmentModeLocked, proficiencyLevel };
                 const attempted = Object.entries(restricted).filter(([, v]) => v !== undefined).map(([k]) => k);
                 if (attempted.length > 0) {
                     res.status(403).json({ error: `Only an admin can change: ${attempted.join(', ')}` });
                     return;
+                }
+                // Level gating (src/levelGate.ts): a Beginner cannot choose fixed lots or set their own target / stop-loss.
+                const gate = gateSettings({ role: caller?.role, level: (await getUser(email))?.proficiencyLevel, investmentMode, targetPoints, stopLossPoints });
+                if (!gate.allowed) { res.status(403).json({ error: gate.error }); return; }
+                // An admin can lock a user's investment mode; a locked user cannot change it (sending the unchanged value is harmless).
+                if (investmentMode !== undefined) {
+                    const target = await getUser(email);
+                    if (target?.investmentModeLocked === true && investmentMode !== target.investmentMode) {
+                        res.status(403).json({ error: 'Your investment mode has been locked by an admin' });
+                        return;
+                    }
                 }
             }
         }
@@ -169,6 +209,7 @@ router.post('/users/:email/settings', requireSelfOrAdmin('email'), async functio
         if (investmentAmount !== undefined && !(finite(investmentAmount) && investmentAmount > 0 && investmentAmount <= MAX_INVESTMENT_AMOUNT)) return bad(`investmentAmount must be a number in (0, ${MAX_INVESTMENT_AMOUNT}]`);
         if (useGTT !== undefined && typeof useGTT !== 'boolean') return bad('useGTT must be a boolean');
         if (enabled !== undefined && typeof enabled !== 'boolean') return bad('enabled must be a boolean');
+        if (investmentModeLocked !== undefined && typeof investmentModeLocked !== 'boolean') return bad('investmentModeLocked must be a boolean');
         for (const [k, v] of Object.entries({ perOrderCap, allottedCapital, targetPoints, stopLossPoints })) {
             // null clears the override
             if (v !== undefined && v !== null && !(finite(v) && (v as number) >= 0)) return bad(`${k} must be a number >= 0 (or null to clear)`);
@@ -177,13 +218,14 @@ router.post('/users/:email/settings', requireSelfOrAdmin('email'), async functio
             if (v !== undefined && v !== null && !((v as number) > 0)) return bad(`${k} must be greater than 0 (or null to clear)`);
         }
         if (profitSplitPercent !== undefined && !(finite(profitSplitPercent) && profitSplitPercent >= 0)) return bad('profitSplitPercent must be a number >= 0');
+        if (proficiencyLevel !== undefined && proficiencyLevel !== 'beginner' && proficiencyLevel !== 'advanced') return bad("proficiencyLevel must be 'beginner' or 'advanced'");
         if (profitSplitPercent !== undefined && profitSplitPercent > 100) return bad('profitSplitPercent must be <= 100');
-        if (Object.values({ lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled }).every((v) => v === undefined)) return bad('No settings supplied');
+        if (Object.values({ lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled, investmentModeLocked, proficiencyLevel }).every((v) => v === undefined)) return bad('No settings supplied');
         if (broker !== undefined && !isUserBroker(broker)) {
             res.status(400).json({ error: `Invalid broker '${broker}' (expected ${USER_BROKERS_TEXT})` });
             return;
         }
-        const user = await updateUserSettings(email, { lossLimit, lotLimit: lotCount, investmentMode, accountCapital: investmentAmount, useGTT, broker, perOrderCap, strategyCapital: allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled });
+        const user = await updateUserSettings(email, { lossLimit, lotLimit: lotCount, investmentMode, investmentModeLocked, accountCapital: investmentAmount, useGTT, broker, perOrderCap, strategyCapital: allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled, proficiencyLevel });
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;
