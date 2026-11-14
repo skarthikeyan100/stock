@@ -6,6 +6,7 @@ import DateRangeFilter, { DateRange, resolveDateRange, formatRangeLabel } from '
 import { apiFetch, apiPost, readError } from '../utils/api';
 import { periodEndShown } from '../utils/period';
 import ThemeToggle from '../components/ThemeToggle';
+import LevelRequestsPanel from '../components/LevelRequestsPanel';
 
 interface UserRow extends AuthUser {
   sessionPnL: number;
@@ -324,6 +325,20 @@ export default function AdminPage() {
       setDecisionNote('');
     } catch (e: any) {
       setComputeError(e.message || 'Failed to update payout');
+    } finally {
+      setDecidingId(null);
+      fetchAdminPayouts();
+    }
+  };
+
+  const markInvoiceReceived = async (id: string) => {
+    if (decidingId) return;
+    setDecidingId(id);
+    try {
+      const res = await apiPost(`/admin/payouts/${encodeURIComponent(id)}/invoice-received`);
+      if (!res.ok) throw new Error(await readError(res));
+    } catch (e: any) {
+      setComputeError(e.message || 'Failed to mark the invoice received');
     } finally {
       setDecidingId(null);
       fetchAdminPayouts();
@@ -1793,6 +1808,14 @@ export default function AdminPage() {
                           </td>
                           <td className="small text-muted">{p.adminNote || '—'}</td>
                           <td>
+                            {p.invoiceStatus && (
+                              <div className="small mb-1">
+                                Invoice: {p.invoiceStatus === 'received' ? <span className="text-success">received</span>
+                                  : <>due {p.invoiceDueAt ? new Date(p.invoiceDueAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }) : '?'}
+                                    {p.invoiceDueAt && new Date(p.invoiceDueAt).getTime() < Date.now() && <strong className="text-danger"> OVERDUE</strong>}
+                                    <Button size="sm" variant="outline-primary" className="ms-2 py-0" disabled={decidingId === p._id} onClick={() => markInvoiceReceived(p._id)}>Mark received</Button></>}
+                              </div>
+                            )}
                             {p.status === 'pending' && (
                               <div className="d-flex gap-1">
                                 <Button size="sm" variant="success" disabled={decidingId === p._id} onClick={() => navigate(`/admin/payouts/${p._id}`)}>Pay</Button>
@@ -1807,6 +1830,10 @@ export default function AdminPage() {
                 )}
               </Card.Body>
             </Card>
+          </Tab>
+
+          <Tab eventKey="levels" title="Level Requests" mountOnEnter>
+            <LevelRequestsPanel />
           </Tab>
 
           <Tab eventKey="trades" title="Trades">

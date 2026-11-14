@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Container, Card, Form, Button, Badge, Alert, Spinner, Row, Col, Table } from 'react-bootstrap';
+import AccountLevelCard from '../components/AccountLevelCard';
 import { useAuth } from '../context/AuthContext';
 import NotificationBell from '../components/NotificationBell';
 import ThemeToggle from '../components/ThemeToggle';
@@ -36,6 +37,8 @@ interface Payout {
   status: 'pending' | 'paid' | 'rejected';
   adminNote?: string;
   invoiceNumber: string;
+  invoiceStatus?: 'pending' | 'received';
+  invoiceDueAt?: string;
 }
 
 interface DecisionLogEntry {
@@ -79,6 +82,7 @@ export default function ProfilePage() {
   const [companyName, setCompanyName] = useState(user?.companyRegisteredName ?? '');
   const [companySaving, setCompanySaving] = useState(false);
   const [companySaved, setCompanySaved] = useState(false);
+  const [acceptAdvancedTerms, setAcceptAdvancedTerms] = useState(false);
 
   // PAN/Aadhaar numbers are OCR-extracted from the uploaded document, not
   // typed by the user (see uploadDocument) - this only tracks whether the
@@ -266,18 +270,26 @@ export default function ProfilePage() {
     }
   };
 
+  // A Beginner who types a GSTIN becomes Advanced on save, so the terms must be accepted first (the server enforces it too).
+  const gstinMakesAdvanced = user?.proficiencyLevel !== 'advanced' && user?.role !== 'admin' && gstin.trim() !== '';
   const saveCompanyProfile = async () => {
     setCompanySaved(false);
     setCompanyError(null);
+    if (gstinMakesAdvanced && !acceptAdvancedTerms) {
+      setCompanyError('Please accept the Advanced terms to save a GSTIN');
+      return;
+    }
     setCompanySaving(true);
     try {
       const res = await apiFetch(`/users/${encodeURIComponent(user!.email)}/company-profile`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gstin, companyRegisteredName: companyName }),
+        body: JSON.stringify({ gstin, companyRegisteredName: companyName, ...(gstinMakesAdvanced ? { acceptAdvancedTerms: true } : {}) }),
       });
       if (!res.ok) throw new Error(await readError(res));
       setCompanySaved(true);
+      setAcceptAdvancedTerms(false);
+      refreshUser().catch((err: unknown) => console.error('refreshUser after company save failed:', err));
       setTimeout(() => setCompanySaved(false), 3000);
     } catch (e: any) {
       setCompanyError(e?.message || 'Failed to save company profile');
@@ -473,6 +485,8 @@ export default function ProfilePage() {
           </Card.Body>
         </Card>
 
+        <AccountLevelCard />
+
         {/* Investment Mode */}
         <Card className="mb-3">
           <Card.Header className="fw-bold">Trading Mode</Card.Header>
@@ -564,8 +578,12 @@ export default function ProfilePage() {
                     </Form.Group>
                   </Col>
                 </Row>
+                {gstinMakesAdvanced && (
+                  <Form.Check id="accept-advanced-gstin" type="checkbox" className="small mb-2" checked={acceptAdvancedTerms} onChange={e => setAcceptAdvancedTerms(e.target.checked)}
+                    label="I accept the Advanced terms and understand I must give an invoice for every payment within 2 days (by end of Friday for a Wednesday payment) or my account will be closed. Giving a GSTIN makes my account Advanced immediately and permanently." />
+                )}
                 <div className="d-flex align-items-center gap-2 mb-3">
-                  <Button size="sm" onClick={saveCompanyProfile} disabled={companySaving}>
+                  <Button size="sm" onClick={saveCompanyProfile} disabled={companySaving || (gstinMakesAdvanced && !acceptAdvancedTerms)}>
                     {companySaving ? <Spinner animation="border" size="sm" /> : 'Save Company Details'}
                   </Button>
                   {companySaved && <span className="text-success small">Saved</span>}
@@ -777,6 +795,10 @@ export default function ProfilePage() {
                           ) : p.status === 'rejected' ? (
                             <Button size="sm" variant="link" className="p-0" onClick={() => togglePayoutDetail(p)}>why?</Button>
                           ) : '—'}
+                          {p.invoiceStatus === 'pending' && p.invoiceDueAt && (
+                            <div className="small text-danger">Your invoice is due {new Date(p.invoiceDueAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' })}</div>
+                          )}
+                          {p.invoiceStatus === 'received' && <div className="small text-success">Invoice received</div>}
                         </td>
                       </tr>
                       {expandedPayoutId === p._id && (
