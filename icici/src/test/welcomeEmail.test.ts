@@ -21,6 +21,8 @@ assert(r.html.includes('Asha &lt;b&gt;K&lt;/b&gt;') && !r.html.includes('<b>K</b
 assert(r.html.includes('cid:nivedha-logo') && r.html.includes('Agreement') && r.html.includes('Privacy Policy'), 'logo and the three attachments are named');
 assert(r.html.includes('Getting started') && r.html.includes('Keeping your account safe') && r.html.includes('admin@nivedhatech.com') && !/password:|Password:/.test(r.html), 'general information, safety tips and support contact; no credentials in the email');
 assert(!/\{\{\w+\}\}/.test(r.html + r.subject), 'no unreplaced placeholders');
+assert(r.html.includes('Search &amp; Buy') && r.html.includes('Daily loss limit') && r.html.includes('Your profit share'), 'the Beginner / Advanced comparison table is in the body');
+assert(r.html.includes('Advanced is permanent') && r.html.includes('cannot go back to Beginner'), 'the note that Advanced is permanent');
 
 assert(r.html.includes('35%') && r.html.includes('25%') && !r.html.includes('Maximum payment'), 'profit share rule shows both levels, no max payment');
 

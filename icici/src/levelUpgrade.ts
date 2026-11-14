@@ -12,11 +12,12 @@ import Log from './util/Log';
 import { getUser, markAdvanced, levelDefaultsFor } from './user';
 import { normalizeLevel } from './levelRules';
 import { successfulWeeksFor } from './successfulWeeks';
+import { ADVANCED_TERMS_TEXT } from './levelTable';
 
 export const ADVANCED_TERMS_VERSION = '2026-11-14';
 /** Hash of the Advanced terms the user accepted (stored with the acceptance time). */
 export function advancedTermsSha256(): string {
-    return crypto.createHash('sha256').update(`advanced-terms:${ADVANCED_TERMS_VERSION}`).digest('hex');
+    return crypto.createHash('sha256').update(`${ADVANCED_TERMS_VERSION}\n${ADVANCED_TERMS_TEXT.join('\n')}`).digest('hex');
 }
 
 const requests = () => Mongo.getInstance().db.collection('upgradeRequests');

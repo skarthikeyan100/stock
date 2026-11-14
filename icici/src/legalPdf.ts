@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { LegalBlock, LegalDoc } from './tools/extractLegal';
 import { TEMPLATE_DIR, newSignableDoc, signDoc } from './pdfSigning';
+import { ADVANCED_TERMS_TEXT } from './levelTable';
 
 const NAVY = '#1f3a5f';
 const GREY = '#666666';
@@ -93,6 +94,11 @@ export function agreementBlocks(a: AgreementInput): LegalBlock[] {
         h2('7. Acceptance'),
         p('This Agreement takes effect when the Trader accepts the Terms & Conditions on the Platform. By accepting, the Trader confirms having read and understood this Agreement, the Terms & Conditions and the Privacy Policy.'),
     ];
+}
+
+/** The Advanced-level addendum (src/levelTable.ts ADVANCED_TERMS_TEXT), attached to the upgrade email. */
+export function buildAdvancedAddendumPdf(date: string): Promise<LegalPdf> {
+    return buildPdf('Advanced Level Addendum', `Issued ${date}`, ADVANCED_TERMS_TEXT.map((text): LegalBlock => ({ t: 'p', text })), date, 'Advanced-Terms.pdf');
 }
 
 export function buildAgreementPdf(a: AgreementInput): Promise<LegalPdf> {

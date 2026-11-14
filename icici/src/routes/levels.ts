@@ -6,6 +6,7 @@ import { asyncRouter } from './asyncRouter';
 import { resolveUser, requireAuth, requireAdmin, requireCsrfHeader, invalidateUserCache, pushUserToOrderProcess } from './session';
 import { createUpgradeRequest, listUpgradeRequests, decideUpgradeRequest } from '../levelUpgrade';
 import { createCapitalRequest, listCapitalRequests, decideCapitalRequest } from '../capitalRequests';
+import { sendUpgradeEmail } from '../upgradeEmail';
 import myEmitter from '../tools/emitter';
 import Log from '../util/Log';
 
@@ -68,6 +69,7 @@ router.post('/admin/upgrade-requests/:id/decision', requireAdmin, async function
             invalidateUserCache(out.user.email);
             await pushUserToOrderProcess(out.user, 'upgrade');
             notifyLevelUser(out.user.email, 'Your Advanced upgrade was approved: Search & Buy and your new limits are active').catch((e) => Log.log('[levels] notify failed', e));
+            sendUpgradeEmail(out.user.email).catch((e) => Log.log('[levels] upgrade email failed', e?.message ?? e));
         } else if (decision === 'reject') {
             notifyLevelUser(out.request.user, `Your Advanced upgrade request was not approved${note ? `: ${note}` : ''}`).catch((e) => Log.log('[levels] notify failed', e));
         }

@@ -1,5 +1,7 @@
+import Log from '../util/Log';
 import { gateSettings } from '../levelGate';
 import { gstinUpgradeDecision, applyAdvanced } from '../levelUpgrade';
+import { sendUpgradeEmail } from '../upgradeEmail';
 import { getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields } from '../user';
 import { eraseUser } from '../accountDeletion';
 import multer from 'multer';
@@ -316,6 +318,7 @@ router.patch('/users/:email/company-profile', requireSelfOrAdmin('email'), async
             user = await applyAdvanced(email, { via: 'gstin' });
             invalidateUserCache(email);
             await pushUserToOrderProcess(user, 'gstin-upgrade');
+            sendUpgradeEmail(email).catch((e) => Log.log('[users] upgrade email failed', e?.message ?? e));
         }
         res.json(toClientUser(user));
     } catch (e: any) {

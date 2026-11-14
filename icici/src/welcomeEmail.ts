@@ -14,7 +14,8 @@ import Log from './util/Log';
 import configService from './prism/ConfigService';
 import { levelRules } from './levelRules';
 import { DEFAULT_PROFIT_SPLIT_PERCENT } from './constants';
-import { getAllUsers, normalizeEmail, User } from './user';
+import { getAllUsers, getUser, normalizeEmail, User } from './user';
+import { levelTableRows, renderLevelTableHtml } from './levelTable';
 import { escapeHtml, isMailConfigured, renderTemplate, sendRenderedEmail } from './mailer';
 import { testRecipient, todayIst } from './eodEmail';
 import { claimWelcome, commitClaim, releaseClaim, writeFiles } from './mailStorage';
@@ -52,7 +53,8 @@ export function tradingRules(f: WelcomeFacts): string[] {
 export function renderWelcomeEmail(f: WelcomeFacts): { subject: string; html: string } {
     const td = 'padding:8px;border-bottom:1px solid #eef0f2;vertical-align:top';
     const rulesRows = tradingRules(f).map((r, i) => `<tr><td style="${td};width:28px;font-weight:bold;color:#1f3a5f">${i + 1}</td><td style="${td}">${escapeHtml(r)}</td></tr>`).join('');
-    const html = renderTemplate(fs.readFileSync(path.join(TEMPLATE_DIR, 'welcomeEmail.html'), 'utf8'), { name: escapeHtml(f.name), rulesRows }, false);
+    const levelTable = renderLevelTableHtml(levelTableRows((configService.getConfig()?.settings ?? {}) as Record<string, any>));
+    const html = renderTemplate(fs.readFileSync(path.join(TEMPLATE_DIR, 'welcomeEmail.html'), 'utf8'), { name: escapeHtml(f.name), rulesRows, levelTable }, false);
     const subject = fs.readFileSync(path.join(TEMPLATE_DIR, 'welcomeEmail.subject.txt'), 'utf8').replace(/\s+/g, ' ').trim();
     return { subject, html };
 }
@@ -66,7 +68,9 @@ export async function sendWelcomeEmails(onlyUsers?: string[]): Promise<{ mode: '
     const today = todayIst();
     if (!isMailConfigured()) throw new Error('Gmail is not configured (set GMAIL_USER, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN in .env)');
     const only = onlyUsers?.map(normalizeEmail);
-    const wanted = (await getAllUsers()).filter((u) => u.enabled !== false && u.role !== 'admin' && (!only || only.includes(normalizeEmail(u.email))));
+    // One named user (the login hook) is read directly instead of loading every user on each login.
+    const candidates = only ? (await Promise.all(only.map((e) => getUser(e)))).filter((u): u is User => !!u) : await getAllUsers();
+    const wanted = candidates.filter((u) => u.enabled !== false && u.role !== 'admin' && (!only || only.includes(normalizeEmail(u.email))));
     const results: WelcomeSendResult[] = [];
     for (const u of wanted) {
         const f = welcomeFacts(u, today);
