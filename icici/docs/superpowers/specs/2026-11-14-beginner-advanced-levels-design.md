@@ -1,6 +1,6 @@
 # Beginner / Advanced levels - design (2026-11-14, rev 2)
 
-Status: awaiting approval. Rev 3. Supersedes rev 1 (self-service immediate upgrade, 10/20 limits, same capital) and rev 2 (GST upgrade only after admin verification).
+Status: awaiting approval. Rev 4. Rev 4: trade cap 3 for both levels, profit split 35% / 25%. Supersedes rev 1 (self-service immediate upgrade, 10/20 limits, same capital) and rev 2 (GST upgrade only after admin verification).
 
 ## Intent
 Two kinds of users: beginners who know nothing about options, and advanced users who do. The platform bears the trading loss (prop-firm model), so the
@@ -16,8 +16,8 @@ an advanced user sees +-1L days and 300% option winners, and dips of 20k that re
 
 ## Non-goals / anti-goals
 - No new instruments: Search & Buy already lists index options (NIFTY, SENSEX, BANKNIFTY, ...) and stock options (~17.5k contracts, `public/symbols.txt`).
-- No max payout (removed). No daily profit lock (it would cut the 300% winners; the trade cap handles greed). No profit-split difference.
-- Advanced must not be a perk everyone takes: it is freedom plus risk, and it needs admin approval.
+- No max payout (removed). No daily profit lock (it would cut the 300% winners; the trade cap handles greed).
+- Advanced must not be a perk everyone takes: it is freedom plus risk, it needs admin approval, and it pays a lower profit share.
 - No downgrade by any route a user can reach.
 
 ## Decisions (by the user)
@@ -32,13 +32,19 @@ an advanced user sees +-1L days and 300% option winners, and dips of 20k that re
 5. Welcome email on first login (Beginner rules, a note about Advanced and that it is permanent); a second email on upgrade with the changed terms and
    agreement (also for the GSTIN path).
 7. The only existing user is Ramaraj: set the level, capital and limits directly through the admin settings, no migration code.
+9. Trades per day: 3 for both levels (counted on entries, in both investment modes).
+10. Profit share (the user's share of gross profit, today `DEFAULT_PROFIT_SPLIT_PERCENT` = 40): 35% for Beginner, 25% for Advanced. The lower share
+   is deliberate: it deters upgrading unless the user is really sure. TDS and GST are still computed on the user's share.
 8. Default target / stop-loss: 2 / 10 points (`settings.targetPoints` 2, `settings.stopLossPoints` 10; today 11).
 6. Comparison table everywhere the rules are shown.
 
 ## My calls (please check)
-- Trades per day: Beginner 2, Advanced 3, counted on entries, both investment modes (today's cap of 3 exists only in investmentAmount mode).
+- Trade cap of 3 is enforced in both investment modes (today's cap of 3 exists only in investmentAmount mode).
 - Max loss on one trade: 10% of capital for both (10k / 20k). Beginner's fixed stop-loss is sized under it; Advanced may set their own up to it.
-  The builder converts to points from quantity. Two stop-outs roughly use the daily limit.
+  The builder converts to points from quantity. Two stop-outs roughly use the daily limit, so the third trade of a bad day is usually stopped by it.
+- Profit share is stored per user (`profitSplitPercent`, admin-controlled today). The level sets the default: new users get 35; an approved upgrade
+  (admin or GSTIN) sets 25. Payout uses the value at payment time for the whole payment week, so a user who upgrades mid-week gets 25% on that whole
+  week; the upgrade confirmation says so. Admin can still override a user by hand. The Agreement PDF and welcome/upgrade emails state the share per level.
 - The daily drawdown already counts open P&L at live prices and latches the breach for the day, so a 20k dip that would recover is liquidated by a 20k
   limit: 30k for Advanced is what makes recoveries possible. The weekly limit counts realized P&L only.
 - investmentMode: Beginner locked to `investmentAmount` (predictable size). Advanced may choose `lotCount` too (a way to size down). `lotCount` today
@@ -60,7 +66,7 @@ an advanced user sees +-1L days and 300% option winners, and dips of 20k that re
 
 ## Design
 **Level model.** `proficiencyLevel` exists (default beginner); `settings.levelRules` per level in `config.yml`: maxDailyDrawdownPercent,
-maxWeeklyDrawdownPercent, plus new `maxTradesPerDay`, `maxLossPerTradePercent`, default `capital`. Drop `maxPayment` everywhere (levelRules,
+maxWeeklyDrawdownPercent, plus new `maxTradesPerDay`, `maxLossPerTradePercent`, default `capital`, `profitSplitPercent`. Drop `maxPayment` everywhere (levelRules,
 payout.ts, eodEmail, welcomeEmail, agreement PDF, configValidation, tests).
 
 **Upgrade request.** Beginner only: `POST /user/upgrade-request` with explicit acceptance of the Advanced terms (stored with timestamp and terms
@@ -92,11 +98,11 @@ own level and amounts.
 | Target & stop-loss | Fixed | Your own (defaults, up to the per-trade cap) |
 | Max loss on one trade | 10% of capital (10k) | up to 10% of capital (20k) |
 | Position sizing | Investment amount | Your choice: amount or fixed lots |
-| Trades per day | 2 | 3 |
+| Trades per day | 3 | 3 |
 | Capital | 1L | 2L; more on request after 2 successful weeks |
 | Daily loss limit | 15% (15k) | 15% (30k) |
 | Weekly loss limit | 30% (30k) | 30% (60k) |
-| Profit split | Same | Same |
+| Your profit share | 35% | 25% |
 | Becoming Advanced | Request; admin approves. Give a GSTIN: immediate, but an invoice is due for every payment or the account is closed | - |
 | Can switch back? | - | No |
 
