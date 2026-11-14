@@ -1,7 +1,14 @@
 import Log from './util/Log';
 import Mongo from './tools/mongo';
-import { DEFAULT_PROFIT_SPLIT_PERCENT } from './constants';
+import configService from './prism/ConfigService';
+import { levelRules, ProficiencyLevel } from './levelRules';
 import { USER_BROKERS_TEXT, isUserBroker, normalizeBrokerName } from './util/brokerName';
+
+/** Starting capital and profit share of a level, from config.yml settings.levelRules (built-in defaults when absent). */
+export function levelDefaultsFor(level: ProficiencyLevel): { accountCapital: number; profitSplitPercent: number } {
+    const r = levelRules((configService.getConfig()?.settings ?? {}) as Record<string, any>, level);
+    return { accountCapital: r.capital, profitSplitPercent: r.profitSplitPercent };
+}
 
 export interface User {
     email: string;
@@ -15,6 +22,8 @@ export interface User {
     /** @deprecated use lotLimit */
     lotCount: number;
     investmentMode: 'lotCount' | 'investmentAmount';
+    // Admin-set: when true the user cannot change investmentMode themselves (only an admin can; see routes/users.ts).
+    investmentModeLocked?: boolean;
     accountCapital: number;
     /** @deprecated use accountCapital */
     investmentAmount: number;
@@ -68,6 +77,8 @@ export interface User {
     aadharVerified: boolean;
     // Payments & payouts
     profitSplitPercent: number;
+    // 'beginner' (default) or 'advanced': picks the rules in config.yml settings.levelRules.
+    proficiencyLevel?: 'beginner' | 'advanced';
     bankAccountHolderName?: string;
     bankAccountNumber?: string; // full value stored; never echoed back raw
     bankIFSC?: string;
@@ -97,14 +108,23 @@ export function toClientUser(user: User): Omit<User, 'aadharNumber' | 'panNumber
     aadharNumberMasked?: string;
     panNumberMasked?: string;
     bankAccountNumberMasked?: string;
+    defaultTargetPoints?: number;
+    defaultStopLossPoints?: number;
 } {
     const { aadharNumber: aadharRaw, panNumber: panRaw, bankAccountNumber: bankRaw, ...rest } = user;
     // Stored values are not guaranteed to be strings (older writes were unvalidated): never let a malformed one throw.
     const aadharNumber = aadharRaw == null ? undefined : String(aadharRaw);
     const panNumber = panRaw == null ? undefined : String(panRaw);
     const bankAccountNumber = bankRaw == null ? undefined : String(bankRaw);
+    // The platform-wide target / stop-loss a buy falls back to when the user has none of their own (config.yml settings; /config itself is
+    // admin-only), so the trader's Flash Trade popup can pre-fill them.
+    let settings: any = {};
+    try { settings = configService.getConfig().settings ?? {}; } catch { /* config unreadable: no defaults shown */ }
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
     return {
         ...rest,
+        defaultTargetPoints: num(settings.targetPoints) ?? num(settings.targetPriceDiff),
+        defaultStopLossPoints: num(settings.stopLossPoints) ?? num(settings.stopLossPriceDiff),
         aadharNumberMasked: maskLast4(aadharNumber),
         panNumberMasked: panNumber ? panNumber.slice(0, -4).replace(/./g, 'X') + panNumber.slice(-4) : undefined,
         bankAccountNumberMasked: bankAccountNumber ? '*'.repeat(Math.max(0, bankAccountNumber.length - 4)) + bankAccountNumber.slice(-4) : undefined,
@@ -198,10 +218,10 @@ export async function getOrCreateUser(rawEmail: string, name: string, picture: s
         if (existing.name !== name || existing.picture !== picture) { updates.name = name; updates.picture = picture; }
         if ((existing.lotCount ?? existing.lotLimit) === undefined) updates.lotCount = existing.lotSize ?? 10;
         if (existing.investmentMode === undefined) updates.investmentMode = 'investmentAmount';
-        if ((existing.investmentAmount ?? existing.accountCapital) === undefined) updates.investmentAmount = 100000;
+        if ((existing.investmentAmount ?? existing.accountCapital) === undefined) updates.investmentAmount = levelDefaultsFor('beginner').accountCapital;
         if (existing.useGTT === undefined) updates.useGTT = true;
         if (existing.aadharVerified === undefined) updates.aadharVerified = false;
-        if (existing.profitSplitPercent === undefined) updates.profitSplitPercent = DEFAULT_PROFIT_SPLIT_PERCENT;
+        if (existing.profitSplitPercent === undefined) updates.profitSplitPercent = levelDefaultsFor('beginner').profitSplitPercent;
         if (existing.entityType === undefined) updates.entityType = 'individual';
         if (existing.gstVerified === undefined) updates.gstVerified = false;
         if (Object.keys(updates).length > 0) await col.updateOne({ email }, { $set: updates });
@@ -229,8 +249,8 @@ export async function getOrCreateUser(rawEmail: string, name: string, picture: s
         lotLimit: 10,
         lotCount: 10,
         investmentMode: 'investmentAmount',
-        accountCapital: 100000,
-        investmentAmount: 100000,
+        accountCapital: levelDefaultsFor('beginner').accountCapital,
+        investmentAmount: levelDefaultsFor('beginner').accountCapital,
         useGTT: true,
         role,
         createdAt: new Date(),
@@ -241,7 +261,7 @@ export async function getOrCreateUser(rawEmail: string, name: string, picture: s
         dobVerified: false,
         panVerified: false,
         aadharVerified: false,
-        profitSplitPercent: DEFAULT_PROFIT_SPLIT_PERCENT,
+        profitSplitPercent: levelDefaultsFor('beginner').profitSplitPercent,
         entityType: 'individual',
         gstVerified: false,
     };
@@ -261,12 +281,13 @@ export async function getAllUsers(): Promise<User[]> {
     return docs.map((d) => withCanonicalFields(d as unknown as User));
 }
 
-export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotLimit?: number; lotCount?: number; investmentMode?: string; accountCapital?: number; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; enabled?: boolean; perOrderCap?: number | null; strategyCapital?: number | null; allottedCapital?: number | null; targetPoints?: number | null; stopLossPoints?: number | null; profitSplitPercent?: number }): Promise<User | null> {
+export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotLimit?: number; lotCount?: number; investmentMode?: string; investmentModeLocked?: boolean; accountCapital?: number; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; enabled?: boolean; perOrderCap?: number | null; strategyCapital?: number | null; allottedCapital?: number | null; targetPoints?: number | null; stopLossPoints?: number | null; profitSplitPercent?: number; proficiencyLevel?: 'beginner' | 'advanced' }): Promise<User | null> {
     const update: any = {};
     if (settings.lossLimit !== undefined) update.lossLimit = settings.lossLimit;
     const lotLimit = settings.lotLimit ?? settings.lotCount;
     if (lotLimit !== undefined) { update.lotLimit = lotLimit; update.lotCount = lotLimit; }
     if (settings.investmentMode !== undefined) update.investmentMode = settings.investmentMode;
+    if (settings.investmentModeLocked !== undefined) update.investmentModeLocked = settings.investmentModeLocked;
     const accountCapital = settings.accountCapital ?? settings.investmentAmount;
     if (accountCapital !== undefined) { update.accountCapital = accountCapital; update.investmentAmount = accountCapital; }
     if (settings.useGTT !== undefined) update.useGTT = settings.useGTT;
@@ -287,6 +308,7 @@ export async function updateUserSettings(email: string, settings: { lossLimit?: 
     if (strategyCapital === null) { unset.strategyCapital = ''; unset.allottedCapital = ''; }
     else if (strategyCapital !== undefined) { update.strategyCapital = strategyCapital; update.allottedCapital = strategyCapital; }
     if (settings.profitSplitPercent !== undefined) update.profitSplitPercent = settings.profitSplitPercent;
+    if (settings.proficiencyLevel !== undefined) update.proficiencyLevel = settings.proficiencyLevel;
     const ops: any = {};
     if (Object.keys(update).length > 0) ops.$set = update;
     if (Object.keys(unset).length > 0) ops.$unset = unset;
@@ -393,7 +415,7 @@ export async function updateCompanyProfile(email: string, profile: { gstin?: str
     return getUser(email);
 }
 
-export async function createUser(email: string, name: string, lossLimit: number, lotCount: number, role: string, investmentMode: 'lotCount' | 'investmentAmount' = 'investmentAmount', investmentAmount: number = 100000, useGTT: boolean = true): Promise<User> {
+export async function createUser(email: string, name: string, lossLimit: number, lotCount: number, role: string, investmentMode: 'lotCount' | 'investmentAmount' = 'investmentAmount', investmentAmount: number = levelDefaultsFor('beginner').accountCapital, useGTT: boolean = true): Promise<User> {
     if (role !== 'admin' && role !== 'user') throw new Error('Invalid role. Must be "admin" or "user"');
     email = normalizeEmail(email);
     name = String(name ?? '').trim();
@@ -423,7 +445,7 @@ export async function createUser(email: string, name: string, lossLimit: number,
         dobVerified: false,
         panVerified: false,
         aadharVerified: false,
-        profitSplitPercent: DEFAULT_PROFIT_SPLIT_PERCENT,
+        profitSplitPercent: levelDefaultsFor('beginner').profitSplitPercent,
         entityType: 'individual',
         gstVerified: false,
     };
