@@ -5,6 +5,7 @@ import Mongo from '../tools/mongo';
 import { asyncRouter } from './asyncRouter';
 import { resolveUser, requireAuth, requireAdmin, requireCsrfHeader, invalidateUserCache, pushUserToOrderProcess } from './session';
 import { createUpgradeRequest, listUpgradeRequests, decideUpgradeRequest } from '../levelUpgrade';
+import { createCapitalRequest, listCapitalRequests, decideCapitalRequest } from '../capitalRequests';
 import myEmitter from '../tools/emitter';
 import Log from '../util/Log';
 
@@ -71,6 +72,44 @@ router.post('/admin/upgrade-requests/:id/decision', requireAdmin, async function
             notifyLevelUser(out.request.user, `Your Advanced upgrade request was not approved${note ? `: ${note}` : ''}`).catch((e) => Log.log('[levels] notify failed', e));
         }
         res.json({ request: out.request });
+    } catch (e: any) {
+        const msg = e?.message ?? 'Could not decide the request';
+        res.status(/already decided/.test(msg) ? 409 : 400).json({ error: msg });
+    }
+});
+
+// An Advanced user with enough successful weeks asks for more capital; an admin decides.
+router.post('/user/capital-request', requireAuth, requireCsrfHeader, async function (req, res) {
+    const amount = req.body?.amount;
+    if (typeof amount !== 'number') { res.status(400).json({ error: 'amount must be a number' }); return; }
+    try {
+        res.json(await createCapitalRequest(resolveUser(req) ?? '', amount));
+    } catch (e: any) {
+        res.status(400).json({ error: e?.message ?? 'Could not create the request' });
+    }
+});
+
+router.get('/admin/capital-requests', requireAdmin, async function (req, res) {
+    const status = req.query.status;
+    if (status !== undefined && status !== 'pending' && status !== 'approved' && status !== 'rejected') { res.status(400).json({ error: 'status must be pending, approved or rejected' }); return; }
+    res.json(await listCapitalRequests(status as string | undefined));
+});
+
+router.post('/admin/capital-requests/:id/decision', requireAdmin, async function (req, res) {
+    const { decision, amount, note } = req.body ?? {};
+    if (decision !== 'approve' && decision !== 'reject') { res.status(400).json({ error: "decision must be 'approve' or 'reject'" }); return; }
+    if (note !== undefined && typeof note !== 'string') { res.status(400).json({ error: 'note must be a string' }); return; }
+    try {
+        const request = await decideCapitalRequest(req.params.id, decision, resolveUser(req) ?? '', { amount, note });
+        const user = await getUser(request.user);
+        if (decision === 'approve' && user) {
+            invalidateUserCache(user.email);
+            await pushUserToOrderProcess(user, 'capital');
+            notifyLevelUser(user.email, `Your capital was increased to ₹${(user.accountCapital ?? 0).toLocaleString('en-IN')}`).catch((e) => Log.log('[levels] notify failed', e));
+        } else if (decision === 'reject') {
+            notifyLevelUser(request.user, `Your capital request was not approved${note ? `: ${note}` : ''}`).catch((e) => Log.log('[levels] notify failed', e));
+        }
+        res.json({ request });
     } catch (e: any) {
         const msg = e?.message ?? 'Could not decide the request';
         res.status(/already decided/.test(msg) ? 409 : 400).json({ error: msg });
