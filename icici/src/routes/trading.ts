@@ -13,7 +13,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import { asyncRouter } from './asyncRouter';
 import { isOpenedToday, openedFilterOf } from '../util/openedToday';
 import { closedTradeRows } from '../util/closedTradeRows';
-import { gateBuy } from '../levelGate';
+import { gateBuy, gateSetTarget } from '../levelGate';
 import { requireCsrfHeader, resolveUser, requireAuth, requireAdmin, requireSelfOrAdmin } from './session';
 
 const router = asyncRouter();
@@ -149,6 +149,9 @@ router.post('/order/settarget', requireAuth, requireCsrfHeader, async function (
             return;
         }
         const user = resolveUser(req);
+        const caller = user ? await getUser(user) : null;
+        const gate = gateSetTarget({ role: caller?.role, level: caller?.proficiencyLevel, targetPoints, stopLossPoints });
+        if (!gate.allowed) { res.status(403).json({ error: gate.error }); return; }
         await orderClient.setTargetStopLoss(user, token, targetPoints, stopLossPoints);
         res.sendStatus(200);
     } catch (e) {

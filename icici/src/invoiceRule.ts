@@ -20,8 +20,10 @@ export function invoiceDueAt(paidAt: Date): Date {
     return new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate() + 2, 23, 59, 59) - IST_OFFSET_MS);
 }
 
+// Keyed on HOW the user became Advanced, not on the GSTIN still being on file: Advanced is permanent "even if the GSTIN is later changed or removed", so
+// blanking the GSTIN or switching the entity type back must not switch the invoice duty off.
 export function invoiceRequired(u: { advancedVia?: string; gstin?: string; entityType?: string; proficiencyLevel?: unknown }): boolean {
-    return u.advancedVia === 'gstin' && typeof u.gstin === 'string' && u.gstin.trim() !== '' && u.entityType === 'company' && normalizeLevel(u.proficiencyLevel) === 'advanced';
+    return u.advancedVia === 'gstin' && normalizeLevel(u.proficiencyLevel) === 'advanced';
 }
 
 export function overduePayouts<T extends { invoiceStatus?: string; invoiceDueAt?: Date; invoiceClosedAt?: Date }>(payouts: T[], now: Date): T[] {

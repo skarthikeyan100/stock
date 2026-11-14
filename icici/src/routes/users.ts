@@ -1,5 +1,6 @@
 import Log from '../util/Log';
-import { gateSettings } from '../levelGate';
+import { gateSettings, gateLevelChange } from '../levelGate';
+import { normalizeLevel } from '../levelRules';
 import { gstinUpgradeDecision, applyAdvanced } from '../levelUpgrade';
 import { sendUpgradeEmail } from '../upgradeEmail';
 import { getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields } from '../user';
@@ -228,7 +229,17 @@ router.post('/users/:email/settings', requireSelfOrAdmin('email'), async functio
             res.status(400).json({ error: `Invalid broker '${broker}' (expected ${USER_BROKERS_TEXT})` });
             return;
         }
-        const user = await updateUserSettings(email, { lossLimit, lotLimit: lotCount, investmentMode, investmentModeLocked, accountCapital: investmentAmount, useGTT, broker, perOrderCap, strategyCapital: allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled, proficiencyLevel });
+        // Advanced is permanent (no downgrade, any caller) and is reached through applyAdvanced (advancedSince/Via, the Advanced share and capital), never by writing the level directly;
+        // the other fields of this same request are applied after it, so an explicit capital / split still wins.
+        let levelToWrite: 'beginner' | 'advanced' | undefined = undefined;
+        if (proficiencyLevel !== undefined) {
+            const target = await getUser(email);
+            if (!target) { res.status(404).json({ error: 'User not found' }); return; }
+            const change = gateLevelChange(target.proficiencyLevel, proficiencyLevel);
+            if (!change.allowed) { res.status(403).json({ error: change.error }); return; }
+            if (proficiencyLevel === 'advanced' && normalizeLevel(target.proficiencyLevel) !== 'advanced') await applyAdvanced(email, { via: 'admin' });
+        }
+        const user = await updateUserSettings(email, { lossLimit, lotLimit: lotCount, investmentMode, investmentModeLocked, accountCapital: investmentAmount, useGTT, broker, perOrderCap, strategyCapital: allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled, proficiencyLevel: levelToWrite });
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;

@@ -20,7 +20,9 @@ async function main() {
     console.log('invoiceRequired');
     const g = { advancedVia: 'gstin', gstin: '27AAAAA0000A1Z5', entityType: 'company', proficiencyLevel: 'advanced' };
     assert(invoiceRequired(g) === true, 'GSTIN-Advanced company: required');
-    for (const [k, v] of [['advancedVia', 'admin'], ['gstin', ''], ['gstin', undefined], ['entityType', 'individual'], ['proficiencyLevel', 'beginner']] as const) assert(invoiceRequired({ ...g, [k]: v }) === false, `not required when ${k} is ${JSON.stringify(v)}`);
+    for (const [k, v] of [['advancedVia', 'admin'], ['proficiencyLevel', 'beginner']] as const) assert(invoiceRequired({ ...g, [k]: v }) === false, `not required when ${k} is ${JSON.stringify(v)}`);
+
+    for (const [k, v] of [['gstin', ''], ['gstin', undefined], ['entityType', 'individual']] as const) assert(invoiceRequired({ ...g, [k]: v }) === true, `still required after the user clears/changes ${k} (advanced-by-GSTIN is permanent)`);
 
     console.log('overduePayouts');
     const now = new Date('2026-11-14T00:00:00+05:30');

@@ -2,7 +2,7 @@
  * Beginner gating (src/levelGate.ts): Search & Buy and own target/stop/investment mode are Advanced features.
  * Run: npx tsc && node ./dist/test/levelGate.test.js
  */
-import { gateBuy, gateSettings } from '../levelGate';
+import { gateBuy, gateSettings, gateSetTarget, gateLevelChange } from '../levelGate';
 
 let failed = false;
 function assert(cond: boolean, msg: string) { console.log(`  ${cond ? 'PASS' : 'FAIL'}: ${msg}`); if (!cond) { failed = true; process.exitCode = 1; } }
@@ -31,3 +31,14 @@ assert(gateSettings({ role: 'admin', level: 'beginner', investmentMode: 'lotCoun
 
 if (!failed) console.log('ALL PASS');
 process.exit(process.exitCode ?? 0);
+
+console.log('review fixes');
+const a0 = gateBuy({ role: 'user', level: 'advanced', stopLossPoints: 0, targetPoints: 5, ...globals });
+assert(a0.allowed && a0.stopLossPoints === 10 && a0.targetPoints === 5, 'advanced stop-loss 0 falls back to the global stop (never an unprotected full-capital buy)');
+assert(gateSetTarget({ role: 'user', level: 'beginner', targetPoints: 50, stopLossPoints: 200 }).allowed === false, 'beginner cannot change target/stop after the buy (settarget)');
+assert(gateSetTarget({ role: 'user', level: 'advanced', targetPoints: 5, stopLossPoints: 0 }).allowed === false, 'advanced cannot remove the stop (0)');
+assert(gateSetTarget({ role: 'user', level: 'advanced', targetPoints: 5, stopLossPoints: 8 }).allowed === true, 'advanced can set a stop above 0');
+assert(gateSetTarget({ role: 'admin', level: 'beginner', targetPoints: 5, stopLossPoints: 0 }).allowed === true, 'admin unrestricted');
+assert(gateLevelChange('advanced', 'beginner').allowed === false, 'advanced -> beginner refused');
+assert(gateLevelChange('beginner', 'advanced').allowed === true && gateLevelChange('beginner', 'beginner').allowed === true && gateLevelChange('advanced', 'advanced').allowed === true, 'other transitions allowed');
+
