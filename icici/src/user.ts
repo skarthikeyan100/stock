@@ -320,6 +320,15 @@ export async function updateUserSettings(email: string, settings: { lossLimit?: 
     return getUser(email);
 }
 
+/** Makes the user Advanced (once: a no-op when they already are) and sets the Advanced capital and profit share. Returns whether this call did it. */
+export async function markAdvanced(email: string, f: { accountCapital: number; profitSplitPercent: number; via: 'admin' | 'gstin'; acceptance: { acceptedAt: Date; termsSha256: string } }): Promise<boolean> {
+    const res: any = await collection().updateOne(
+        { email, proficiencyLevel: { $ne: 'advanced' } },
+        { $set: { proficiencyLevel: 'advanced', advancedSince: new Date(), advancedVia: f.via, advancedAcceptance: f.acceptance, accountCapital: f.accountCapital, investmentAmount: f.accountCapital, profitSplitPercent: f.profitSplitPercent } }
+    );
+    return (res?.modifiedCount ?? res?.result?.nModified ?? 0) > 0;
+}
+
 // Flags the account closed without removing the user. Idempotent: an already
 // closed account keeps its original closedAt/reason.
 export async function revokeSessions(email: string): Promise<void> {

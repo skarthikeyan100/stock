@@ -1,4 +1,5 @@
 import { gateSettings } from '../levelGate';
+import { gstinUpgradeDecision, applyAdvanced } from '../levelUpgrade';
 import { getUser, getAllUsers, updateUserSettings, createUser, deleteUser, updateUserRole, toClientUser, updateSensitiveField, updateBankDetails, updateEntityType, updateCompanyProfile, updateProfileFields } from '../user';
 import { eraseUser } from '../accountDeletion';
 import multer from 'multer';
@@ -303,9 +304,19 @@ router.patch('/users/:email/entity-type', requireSelfOrAdmin('email'), async fun
 router.patch('/users/:email/company-profile', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
-        const { gstin, companyRegisteredName } = req.body;
-        const user = await updateCompanyProfile(email, { gstin, companyRegisteredName });
+        const { gstin, companyRegisteredName, acceptAdvancedTerms } = req.body;
+        // Giving a GSTIN makes a company Beginner Advanced at once (src/levelUpgrade.ts gstinUpgradeDecision); an invoice is then due for every payment.
+        const before = await getUser(email);
+        if (!before) { res.status(404).json({ error: 'User not found' }); return; }
+        const decision = gstinUpgradeDecision({ callerEmail: resolveUser(req), email, user: before, gstin, accepted: acceptAdvancedTerms });
+        if (decision.action === 'reject') { res.status(400).json({ error: decision.reason }); return; }
+        let user = await updateCompanyProfile(email, { gstin, companyRegisteredName });
         if (!user) { res.status(404).json({ error: 'User not found' }); return; }
+        if (decision.action === 'upgrade') {
+            user = await applyAdvanced(email, { via: 'gstin' });
+            invalidateUserCache(email);
+            await pushUserToOrderProcess(user, 'gstin-upgrade');
+        }
         res.json(toClientUser(user));
     } catch (e: any) {
         console.error('Company profile update error:', e);
