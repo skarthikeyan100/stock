@@ -9,12 +9,13 @@ import { asyncRouter } from './asyncRouter';
 import { getActiveUser, invalidateUserCache, requireAuth, resolveUser } from './session';
 import { levelDefaultsFor } from '../user';
 import configService from '../prism/ConfigService';
-import { AcceptanceDoc, consumeInvite, contractorsCol, ensureContractorUser, findInviteByToken, getContractor, getContractorByEmail, inviteState, invitesCol, newContractor, recordAcceptance, submissionBlock } from '../contractors/store';
+import { AcceptanceDoc, activeCount, maxActiveContractors, consumeInvite, contractorsCol, ensureContractorUser, findInviteByToken, getContractor, getContractorByEmail, inviteState, invitesCol, newContractor, recordAcceptance, submissionBlock } from '../contractors/store';
 import { BusinessKyc, Contractor, ContractorType, IndividualKyc } from '../contractors/types';
 import { currentVersion, istDate, readAgreement, upcomingVersion } from '../contractors/agreements';
 import { encryptField, isKycCryptoConfigured } from '../contractors/kycCrypto';
 import { gstinMatchesPan, normAccount, normGstin, normIfsc, normPan, normSebi, validAccount, validEmail, validIfsc, validIsoDate, validPan, validSebi } from '../contractors/validate';
 import { RateLimiter } from '../contractors/rateLimit';
+import { ensureSlot } from '../contractors/slots';
 import { setContractorCookie } from '../contractors/session';
 import { toContractorClient } from '../contractors/clientUser';
 import { notifyAdmins } from '../contractors/notify';
@@ -189,11 +190,17 @@ router.post('/invite/:token/accept', async function (req, res) {
         await contractorsCol().updateOne({ id: c.id }, { $set: { status: 'TERMINATED', statusReason: 'accept failed' } }).catch(() => undefined);
         res.status(500).json({ error: 'Could not complete the acceptance. Try the link again.' }); return;
     }
+    // No owner approval step: a contractor who has accepted is active at once, unless the cap of active contractors is reached (then they wait for a free place).
+    if ((await activeCount()) < maxActiveContractors()) {
+        await contractorsCol().updateOne({ id: c.id, status: 'INVITED' }, { $set: { status: 'ACTIVE', activatedAt: new Date() } });
+        await ensureSlot(c).catch((e) => Log.log('[contractor] slot assignment failed:', e));
+        c.status = 'ACTIVE';
+    }
     invalidateUserCache(email);
     setContractorCookie(res, email, c.type);
     sendWelcomeIfDue(c).catch(() => undefined); // never blocks or fails the acceptance
     if (c.type === 'BUSINESS' && !confirmed) await notifyAdmins('fee_model', `${name} did not confirm clause 6A.5: the fixed fee applies from today. Set its amount on the Fees tab.`, { contractorId: c.id });
-    await notifyAdmins('contractor_accepted', `${name} (${c.type === 'INDIVIDUAL' ? 'Beginner' : 'Advanced'}) accepted the invite and is awaiting activation.`, { contractorId: c.id });
+    await notifyAdmins('contractor_accepted', `${name} (${c.type === 'INDIVIDUAL' ? 'Beginner' : 'Advanced'}) accepted the invite${c.status === 'ACTIVE' ? ' and is active.' : `, but the cap of ${maxActiveContractors()} active contractors is reached: activate them when a place is free.`}`, { contractorId: c.id });
     res.json(await contractorClientView(c));
 });
 

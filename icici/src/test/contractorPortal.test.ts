@@ -158,13 +158,13 @@ async function main() {
     assert(inviteState(await findInviteByToken(inv1.token)) === 'ok' && (await contractorsCol().find({}).toArray()).length === 0, 'failed attempts neither consume the invite nor create a record');
 
     r = await request(app).post(`/invite/${inv1.token}/accept`).set('User-Agent', 'JestAgent/1').send(good());
-    assert(r.status === 200 && r.body.role === 'contractor' && r.body.type === 'INDIVIDUAL' && r.body.status === 'INVITED', 'a valid acceptance creates the contractor (awaiting activation)');
+    assert(r.status === 200 && r.body.role === 'contractor' && r.body.type === 'INDIVIDUAL' && r.body.status === 'ACTIVE', 'a valid acceptance creates the contractor, active at once (no owner approval)');
     const cookie1 = cookieFromRes(r);
     assert(cookie1.startsWith('session=') && decodeURIComponent(cookie1).includes('|365'), 'the session cookie carries the 365-day Individual lifetime');
     assert(!JSON.stringify(r.body).includes('ABCDE1234F') && r.body.kyc.panMasked === 'XXXXXX234F' && r.body.accountCapital === undefined, 'the response masks the PAN and carries no capital/limits');
     const stored: any = (await contractorsCol().find({}).toArray())[0];
     assert(!JSON.stringify(stored).includes('ABCDE1234F') && !JSON.stringify(stored).includes('123456789012') && decryptField(stored.kyc.panEnc) === 'ABCDE1234F', 'PAN and bank account are stored encrypted');
-    assert(stored.email === 'person@example.com' && stored.pseudoUserId === '', 'email lower-cased; the strategy slot is assigned at activation, not before');
+    assert(stored.email === 'person@example.com' && stored.pseudoUserId === 'Forecast-S01' && !!stored.activatedAt, 'email lower-cased; activated at once and given the first free strategy slot');
     const userDoc: any = await db.collection('users').findOne({ email: 'person@example.com' });
     assert(userDoc.role === 'contractor' && userDoc.proficiencyLevel === 'beginner' && userDoc.accountCapital === 0, 'a users record with role contractor exists');
     const acc: any[] = await db.collection('agreementAcceptances').find({}).toArray();
@@ -278,8 +278,20 @@ async function main() {
     r = await request(app).post(`/invite/${bad.token}/accept`).send({ email: 'bad@acme.com', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc: { gstin: '33ABCDE1234F1Z5', bankAccount: '12' } });
     assert(r.status === 400, 'what IS given is still checked (a bad account number)');
 
+    console.log('auto-activation and the cap:');
+    const activeNow = (await contractorsCol().find({ status: 'ACTIVE' }).toArray()).length;
+    assert(activeNow >= 3, `accepted contractors were active at once (${activeNow})`);
+    (db.collection('contractors') as any).docs.length = 0; // a clean slate for the cap cases
+    for (let i = 0; i < 5; i++) await contractorsCol().insertOne({ id: `fill${i}`, email: `fill${i}@x.com`, status: 'ACTIVE', type: 'INDIVIDUAL' });
+    const full = await createInvite({ type: 'INDIVIDUAL', createdBy: 'o' });
+    r = await request(app).post(`/invite/${full.token}/accept`).send({ email: 'sixth@x.com', name: 'Sixth', acceptTerms: true, dpdpConsent: true, kyc: indKyc });
+    assert(r.status === 200 && r.body.status === 'INVITED', 'with 5 active contractors a new acceptance waits (INVITED): the cap is never exceeded');
+    assert((await db.collection('notifications').find({ type: 'contractor_accepted', user: 'boss@x.com' }).toArray()).some((n: any) => /cap of 5/.test(n.message)), 'and the owner is told a place is needed');
+    (db.collection('contractors') as any).docs.length = 0;
     console.log('owner: cap and statuses:');
-    const bizContractor: any = (await contractorsCol().find({ email: 'forecaster@acme.com' }).toArray())[0];
+    const bizContractor: any = { ...bizStored, status: 'INVITED', pseudoUserId: '' };
+    await contractorsCol().insertOne(bizContractor);
+    await contractorsCol().insertOne({ ...stored, status: 'INVITED' }); // the first Individual, for the KYC reveal below
     for (let i = 0; i < 5; i++) await contractorsCol().insertOne({ id: `fill${i}`, email: `fill${i}@x.com`, status: 'ACTIVE', type: 'INDIVIDUAL' });
     await contractorsCol().insertOne({ id: 'testu', email: 'test@x.com', status: 'ACTIVE', type: 'INDIVIDUAL', isTest: true });
     assert(await activeCount() === 5, 'the test user is not counted against the cap');

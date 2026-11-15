@@ -1,5 +1,6 @@
-import { FormEvent, useCallback, useEffect, useState } from 'react';
-import { Alert, Badge, Button, Card, Col, Form, Row, Table } from 'react-bootstrap';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, Badge, Button, Card, Col, Form, ListGroup, Row, Table } from 'react-bootstrap';
+import { matchSymbols, SYMBOL_SEARCH_MIN_CHARS } from '../components/orderEntryShared';
 import ContractorLayout from '../components/ContractorLayout';
 import ContractorTrades from '../components/ContractorTrades';
 import { useAuth } from '../context/AuthContext';
@@ -12,7 +13,21 @@ const VARIANT: Record<Rec['status'], string> = { PENDING: 'warning', APPROVED: '
 export default function RecommendPage() {
   const { user } = useAuth();
   const [recs, setRecs] = useState<Rec[]>([]);
-  const [form, setForm] = useState({ index: 'NIFTY', strike: '', right: 'CE', entry: '', target: '', stop: '' });
+  const [form, setForm] = useState({ entry: '', target: '', stop: '' });
+  // Contract search, exactly like Search & Buy: type 3 letters (TCS, NIFTY, ...), pick from the suggestions (index and stock options; the nearest expiry).
+  const [symbols, setSymbols] = useState<string[]>([]);
+  const [query, setQuery] = useState('');
+  const [picked, setPicked] = useState<{ index: string; strike: number; right: 'CE' | 'PE'; label: string } | null>(null);
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    apiFetch(import.meta.env.BASE_URL + 'symbols.txt').then((r) => r.text()).then((t) => setSymbols(t.split('\n').map((l) => l.trim()).filter((l) => /^[A-Z0-9&-]+_\d+(\.\d+)?_(CE|PE)$/.test(l)).sort())).catch(() => undefined);
+    const away = (e: MouseEvent) => { if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', away);
+    return () => document.removeEventListener('mousedown', away);
+  }, []);
+  const suggestions = open ? matchSymbols(query.toUpperCase().replace(/[ ]+/g, '_'), symbols, (x) => x) : [];
+  const pick = (label: string) => { const parts = label.split('_'); const right = parts[parts.length - 1]; const strike = parts[parts.length - 2]; const index = parts.slice(0, -2).join('_'); setPicked({ index: index as string, strike: Number(strike), right: right as 'CE' | 'PE', label }); setQuery(label); setOpen(false); };
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const load = useCallback(() => apiFetch('/recommendations').then((r) => (r.ok ? r.json() : [])).then(setRecs).catch(() => undefined), []);
@@ -21,12 +36,13 @@ export default function RecommendPage() {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!picked) { setMsg({ ok: false, text: `Search for the contract (type at least ${SYMBOL_SEARCH_MIN_CHARS} letters) and pick one from the list.` }); return; }
     setBusy(true); setMsg(null);
     try {
-      const res = await apiPost('/recommendations', { index: form.index, strike: Number(form.strike), right: form.right, entry: Number(form.entry), target: Number(form.target), stop: Number(form.stop) });
+      const res = await apiPost('/recommendations', { symbol: picked.label, entry: Number(form.entry), target: Number(form.target), stop: Number(form.stop) });
       if (!res.ok) { setMsg({ ok: false, text: await readError(res) }); return; }
       setMsg({ ok: true, text: 'Recorded. It is waiting for approval.' });
-      setForm({ ...form, strike: '', entry: '', target: '', stop: '' });
+      setForm({ entry: '', target: '', stop: '' }); setPicked(null); setQuery('');
       load();
     } finally { setBusy(false); }
   };
@@ -43,9 +59,19 @@ export default function RecommendPage() {
             <Card.Body>
               <Form onSubmit={submit}>
                 <Row className="g-2">
-                  <Col xs={6}><Form.Label className="small mb-0">Index</Form.Label><Form.Select value={form.index} onChange={set('index')}><option>NIFTY</option><option>SENSEX</option></Form.Select></Col>
-                  <Col xs={6}><Form.Label className="small mb-0">Option type</Form.Label><Form.Select value={form.right} onChange={set('right')}><option value="CE">CE (call)</option><option value="PE">PE (put)</option></Form.Select></Col>
-                  <Col xs={12}><Form.Label className="small mb-0">Strike</Form.Label><Form.Control inputMode="numeric" value={form.strike} onChange={set('strike')} required placeholder="e.g. 24150" /></Col>
+                  <Col xs={12}>
+                    <Form.Label className="small mb-0">Contract</Form.Label>
+                    <div ref={boxRef} style={{ position: 'relative' }}>
+                      <Form.Control value={query} placeholder="Type 3 letters, e.g. TCS or NIFTY_24150_CE" autoComplete="off"
+                        onChange={(e) => { setQuery(e.target.value); setPicked(null); setOpen(true); }} onFocus={() => setOpen(true)} />
+                      {suggestions.length > 0 && (
+                        <ListGroup style={{ position: 'absolute', zIndex: 1000, width: '100%', maxHeight: 300, overflowY: 'auto' }}>
+                          {suggestions.map((x) => <ListGroup.Item key={x} action onClick={() => pick(x)} style={{ cursor: 'pointer' }}>{x}</ListGroup.Item>)}
+                        </ListGroup>
+                      )}
+                    </div>
+                    {picked && <div className="small text-success mt-1">{picked.index} {picked.strike} {picked.right} (nearest expiry)</div>}
+                  </Col>
                   <Col xs={4}><Form.Label className="small mb-0">Entry</Form.Label><Form.Control inputMode="decimal" value={form.entry} onChange={set('entry')} required /></Col>
                   <Col xs={4}><Form.Label className="small mb-0">Target</Form.Label><Form.Control inputMode="decimal" value={form.target} onChange={set('target')} required /></Col>
                   <Col xs={4}><Form.Label className="small mb-0">Stop loss</Form.Label><Form.Control inputMode="decimal" value={form.stop} onChange={set('stop')} required /></Col>

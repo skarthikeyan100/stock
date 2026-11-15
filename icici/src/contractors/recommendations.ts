@@ -13,7 +13,9 @@ import { istDate } from './agreements';
 export const DEFAULT_ENTRY_OFFSET = 5;
 export type RecStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
 
-export interface RecommendationInput { index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE'; entry: number; target: number; stop: number }
+export const INDEX_UNDERLYINGS = ['NIFTY', 'SENSEX'];
+/** `index` is the underlying: NIFTY / SENSEX (an index option, tradable by the strategy) or a stock symbol (a stock option, see kind). */
+export interface RecommendationInput { index: string; strike: number; right: 'CE' | 'PE'; entry: number; target: number; stop: number; kind: 'INDEX' | 'STOCK' }
 export interface RecommendationDoc extends RecommendationInput {
     _id?: any; contractorId: string; contractorName: string; contractorEmail: string; slot: string; contract: string; orderPrice: number; day: string;
     status: RecStatus; createdAt: Date; decidedAt?: Date; decidedBy?: string; note?: string;
@@ -32,18 +34,29 @@ export function keyOf(contract: string, entry: number, target: number, stop: num
     return `${contract}|${Number(entry)}|${Number(target)}|${Number(stop)}|${Number(maxInvestment)}|${offset}`;
 }
 
-export function validateRecommendation(raw: any, offset = DEFAULT_ENTRY_OFFSET): { ok: true; value: RecommendationInput; contract: string; orderPrice: number } | { ok: false; error: string } {
-    const index = String(raw?.index ?? 'NIFTY').toUpperCase();
-    if (index !== 'NIFTY' && index !== 'SENSEX') return { ok: false, error: 'index must be NIFTY or SENSEX' };
+/** Splits a Search & Buy style contract name (TCS_3500_CE, NIFTY_24150_PE). */
+export function parseSymbol(symbol: unknown): { underlying: string; strike: number; right: 'CE' | 'PE' } | null {
+    const m = /^([A-Z0-9&-]+)_(\d+(?:\.\d+)?)_(CE|PE)$/.exec(String(symbol ?? '').trim().toUpperCase());
+    return m ? { underlying: m[1], strike: Number(m[2]), right: m[3] as 'CE' | 'PE' } : null;
+}
+
+export function validateRecommendation(rawIn: any, offset = DEFAULT_ENTRY_OFFSET): { ok: true; value: RecommendationInput; contract: string; orderPrice: number } | { ok: false; error: string } {
+    const sym = rawIn?.symbol !== undefined ? parseSymbol(rawIn.symbol) : null;
+    if (rawIn?.symbol !== undefined && !sym) return { ok: false, error: 'pick the contract from the list (like TCS_3500_CE)' };
+    const raw = sym ? { ...rawIn, index: sym.underlying, strike: sym.strike, right: sym.right } : rawIn;
+    const underlying = String(raw?.index ?? 'NIFTY').trim().toUpperCase();
+    if (!/^[A-Z0-9&-]{1,20}$/.test(underlying)) return { ok: false, error: 'the underlying is not valid' };
+    const isIndex = INDEX_UNDERLYINGS.includes(underlying);
     const right = String(raw?.right ?? '').toUpperCase();
+    if (right !== 'CE' && right !== 'PE') return { ok: false, error: 'the option type must be CE or PE' };
     const strike = Number(raw?.strike);
-    const parsed = parseContract(`${strike} ${right}`);
-    if (!parsed || !Number.isInteger(strike)) return { ok: false, error: 'strike must be 3 to 6 digits and right CE or PE' };
+    // An index option follows the strategy's rules exactly (3 to 6 digit strike); a stock option may have any positive strike (some are fractional).
+    if (isIndex ? !(Number.isInteger(strike) && parseContract(`${strike} ${right}`)) : !(Number.isFinite(strike) && strike > 0)) return { ok: false, error: isIndex ? 'strike must be 3 to 6 digits and right CE or PE' : 'the strike is not valid' };
     const entry = Number(raw?.entry), target = Number(raw?.target), stop = Number(raw?.stop);
     if (!(entry > 0 && target > 0 && stop > 0) || ![entry, target, stop].every(Number.isFinite)) return { ok: false, error: 'entry, target and stop must be positive numbers' };
     const orderPrice = roundToTick(entry - offset);
     if (!(stop < orderPrice && orderPrice < target)) return { ok: false, error: `need stop (${stop}) < order price (${orderPrice} = entry - ${offset}) < target (${target})` };
-    return { ok: true, value: { index: index as 'NIFTY' | 'SENSEX', strike, right: parsed.right, entry, target, stop }, contract: contractLabel(strike, parsed.right), orderPrice };
+    return { ok: true, value: { index: underlying, strike, right: right as 'CE' | 'PE', entry, target, stop, kind: isIndex ? 'INDEX' : 'STOCK' }, contract: contractLabel(strike, right), orderPrice };
 }
 
 /** forecast.recommendationHours {start,end} (default 09:20 to 15:00 IST) and forecast.recommendationsPerDay (default 1). */

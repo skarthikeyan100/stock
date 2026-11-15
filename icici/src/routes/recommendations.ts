@@ -4,6 +4,7 @@ import Log from '../util/Log';
 import { asyncRouter } from './asyncRouter';
 import { requireAdmin, requireAuth, resolveRealUser, resolveUser } from './session';
 import OrderClient from '../processes/strategies/OrderClient';
+import { primaryAdminEmail } from '../user';
 import Mongo from '../tools/mongo';
 import { ObjectId } from 'mongodb';
 import { getContractorByEmail, getContractor, submissionBlock } from '../contractors/store';
@@ -25,7 +26,7 @@ async function me(req: express.Request): Promise<Contractor | null> {
     const email = resolveUser(req);
     return email ? getContractorByEmail(email) : null;
 }
-const ownView = (r: RecommendationDoc) => ({ id: String(r._id), contract: r.contract, index: r.index, entry: r.entry, target: r.target, stop: r.stop, status: r.status, note: r.note ?? null, createdAt: r.createdAt, decidedAt: r.decidedAt ?? null });
+const ownView = (r: RecommendationDoc) => ({ id: String(r._id), contract: r.contract, index: r.index, kind: (r as any).kind ?? 'INDEX', entry: r.entry, target: r.target, stop: r.stop, status: r.status, note: r.note ?? null, createdAt: r.createdAt, decidedAt: r.decidedAt ?? null });
 
 // ---------- contractor ----------
 router.post('/recommendations', requireAuth, async function (req, res) {
@@ -47,7 +48,7 @@ router.post('/recommendations', requireAuth, async function (req, res) {
     const mine = (await recommendationsCol().find({ contractorId: c.id, day }).toArray()) as RecommendationDoc[];
     if (mine.some((r) => r.status === 'PENDING')) { res.status(409).json({ error: 'You already have a recommendation waiting for approval.' }); return; }
     if (mine.length >= rules.perDay) { res.status(409).json({ error: `At most ${rules.perDay} recommendation(s) per day.` }); return; }
-    const refusal = slotRefusal(slot, { contract: ok.contract, entry: ok.value.entry, target: ok.value.target, stop: ok.value.stop });
+    const refusal = ok.value.kind === 'STOCK' ? null : slotRefusal(slot, { contract: ok.contract, entry: ok.value.entry, target: ok.value.target, stop: ok.value.stop });
     if (refusal) { res.status(409).json({ error: `Not accepted: ${refusal}.` }); return; }
     const doc: RecommendationDoc = { ...ok.value, contractorId: c.id, contractorName: c.name, contractorEmail: c.email, slot, contract: ok.contract, orderPrice: ok.orderPrice, day, status: 'PENDING', createdAt: new Date() };
     const ins = await recommendationsCol().insertOne(doc);
@@ -92,18 +93,24 @@ router.post('/owner/recommendations/:id/decision', requireAdmin, async function 
         if (!c || c.status !== 'ACTIVE') { res.status(409).json({ error: 'The contractor is no longer active' }); return; }
         if (rec.day !== istDate()) { res.status(409).json({ error: 'This recommendation is from an earlier day' }); return; }
         if (!sebiUsable(c.sebi, istDate())) { res.status(409).json({ error: 'The contractor SEBI registration is not verified or has expired' }); return; }
-        const refusal = slotRefusal(rec.slot, rec);
+        const refusal = (rec as any).kind === 'STOCK' ? null : slotRefusal(rec.slot, rec);
         if (refusal) { res.status(409).json({ error: `Cannot approve now: ${refusal}.` }); return; }
     }
     // compare-and-set so a double click or two tabs cannot decide twice
     const r: any = await recommendationsCol().findOneAndUpdate({ _id: rec._id, status: 'PENDING' }, { $set: { status: decision === 'approve' ? 'APPROVED' : 'REJECTED', decidedAt: new Date(), decidedBy: actor, note } }, { returnOriginal: true });
     if (!r?.value) { res.status(409).json({ error: 'Already decided' }); return; }
     if (decision === 'approve') {
-        try { armSlot(rec.slot, rec); }
+        try {
+            if ((rec as any).kind === 'STOCK') {
+                // A stock option goes through the same path as Search & Buy (a limit buy with target and stop in points), under the owner's account.
+                const orderPrice = rec.orderPrice;
+                await orderClient.manualBuy(primaryAdminEmail(), { contract: `${rec.index}_${rec.strike}_${rec.right}`, price: orderPrice, targetPoints: Math.round((rec.target - orderPrice) * 100) / 100, stopLossPoints: Math.round((orderPrice - rec.stop) * 100) / 100 } as any);
+            } else armSlot(rec.slot, rec);
+        }
         catch (e: any) {
-            Log.log('[recommendations] arming the slot failed; reverting the approval:', e);
+            Log.log('[recommendations] placing the approved recommendation failed; reverting the approval:', e);
             await recommendationsCol().updateOne({ _id: rec._id }, { $set: { status: 'PENDING' }, $unset: { decidedAt: '', decidedBy: '' } });
-            res.status(500).json({ error: `Could not arm the strategy: ${e?.message ?? e}` }); return;
+            res.status(500).json({ error: `Could not place it: ${e?.message ?? e}` }); return;
         }
     }
     await appendDecision({ kind: 'recommendation', recommendationId: String(rec._id), contractorId: rec.contractorId, decision, actor, note, slot: rec.slot, contract: rec.contract, entry: rec.entry, target: rec.target, stop: rec.stop });

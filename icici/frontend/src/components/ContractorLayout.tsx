@@ -18,7 +18,7 @@ export default function ContractorLayout({ children }: { children: ReactNode }) 
   };
   const statusBanner = (): ReactNode => {
     switch (user.status) {
-      case 'INVITED': return <Alert variant="info" className="mb-3">Your account is waiting for activation. We will let you know once it is active.</Alert>;
+      case 'INVITED': return <Alert variant="info" className="mb-3">All places in the programme are taken at the moment. We will let you know as soon as a place is free and your account is active.</Alert>;
       case 'AGREEMENT_PENDING': return <Alert variant="warning" className="mb-3">A new agreement (v{user.agreementVersionRequired}) is in force. Please read and accept it on your <Link to="/my/profile">profile</Link> to continue.</Alert>;
       case 'PAUSED': return <Alert variant="warning" className="mb-3">Your account is paused{user.statusReason ? `: ${user.statusReason}` : ''}.</Alert>;
       case 'PAUSED_INVOICE': return <Alert variant="warning" className="mb-3">Paused: an invoice is overdue. Upload it to continue.</Alert>;

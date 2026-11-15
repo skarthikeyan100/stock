@@ -123,7 +123,7 @@ export function newContractor(o: { email: string; name: string; type: Contractor
 export function submissionBlock(c: Contractor | null, currentAgreementVersion: string): string | null {
     if (!c) return 'No contractor record';
     if (c.status === 'PAUSED_INVOICE') return 'Paused: an invoice is overdue. Upload it to continue.';
-    if (c.status === 'INVITED') return 'Your account is waiting for activation by the owner.';
+    if (c.status === 'INVITED') return 'Your account is not active yet: all places in the programme are taken.';
     if (c.status !== 'ACTIVE') return c.status === 'AGREEMENT_PENDING' ? 'Please accept the current agreement first.' : `Your account is ${c.status.toLowerCase().replace('_', ' ')}.`;
     if (c.agreementVersion !== currentAgreementVersion) return `Please accept the current agreement (v${currentAgreementVersion}) first`;
     return null;

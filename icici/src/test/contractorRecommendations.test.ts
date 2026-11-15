@@ -25,7 +25,7 @@ const SECRET = 'test-secret';
 import { installFakeDb } from './fakeDb';
 import configService from '../prism/ConfigService';
 import RecommendationStrategy from '../strategy/RecommendationStrategy';
-import { DEFAULT_ENTRY_OFFSET, keyOf, parseContract, readSlotState, tradeInProgress, validateRecommendation, withinHours } from '../contractors/recommendations';
+import { DEFAULT_ENTRY_OFFSET, keyOf, parseContract, parseSymbol, readSlotState, tradeInProgress, validateRecommendation, withinHours } from '../contractors/recommendations';
 import { expireStaleRecommendations } from '../contractors/jobs';
 import { contractorsCol } from '../contractors/store';
 import { sessionCookieValue } from '../routes/session';
@@ -63,6 +63,14 @@ async function main() {
     assert(JSON.stringify(parseContract('24150 ce')) === JSON.stringify(RecommendationStrategy.parseContract('24150 ce')) && parseContract('24150') === null && RecommendationStrategy.parseContract('24150') === null, 'contract parsing equals the strategy');
     const cfg = { contract: '24150 CE', entryPrice: 140, targetPrice: 160, stopLoss: 120, maxInvestment: 100000, entryOffset: 5 };
     assert(keyOf('24150 CE', 140, 160, 120, 100000, 5) === RecommendationStrategy.keyOf(cfg), 'the per-day key equals RecommendationStrategy.keyOf');
+
+    console.log('Search & Buy style symbols (index and stock options):');
+    assert(JSON.stringify(parseSymbol('tcs_3500_ce')) === JSON.stringify({ underlying: 'TCS', strike: 3500, right: 'CE' }) && parseSymbol('M&M_2500_PE')?.underlying === 'M&M' && parseSymbol('BAJAJ-AUTO_9000_CE')?.strike === 9000 && parseSymbol('NIFTY_24150_PE')?.right === 'PE' && parseSymbol('TCS') === null && parseSymbol('TCS_35_XX') === null, 'contract names split into underlying, strike and type');
+    let vs: any = validateRecommendation({ symbol: 'TCS_3500_CE', entry: 100, target: 130, stop: 80 });
+    assert(vs.ok && vs.value.kind === 'STOCK' && vs.value.index === 'TCS' && vs.contract === '3500 CE', 'a stock option is accepted and marked STOCK');
+    vs = validateRecommendation({ symbol: 'NIFTY_24150_CE', entry: 140, target: 160, stop: 120 });
+    assert(vs.ok && vs.value.kind === 'INDEX' && vs.value.strike === 24150, 'an index option through the same field is INDEX');
+    assert(!validateRecommendation({ symbol: 'TCS_3500_CE', entry: 100, target: 90, stop: 80 }).ok && !validateRecommendation({ symbol: 'nonsense', entry: 1, target: 2, stop: 0.5 }).ok, 'the same price rules and a bad symbol is refused');
 
     console.log('trade in progress (the skill\'s rule):');
     assert(!tradeInProgress(null) && !tradeInProgress({ day: '2000-01-01', legs: { a: { status: 'resting' } } }, '2026-11-16'), 'none / an old day: not in progress');
@@ -135,6 +143,17 @@ async function main() {
     assert(r.status === 409, 'a second recommendation the same day is over the daily limit');
     r = await request(app).get('/recommendations').set('Cookie', c1);
     assert(r.status === 200 && r.body.length === 1 && r.body[0].status === 'APPROVED', 'the contractor sees their own list');
+
+    console.log('stock option recommendation:');
+    setPerDay(5);
+    await contractorsCol().updateOne({ id: 'c2' }, { $set: { status: 'ACTIVE', agreementVersion: '1.1', sebi: verifiedSebi } });
+    r = await request(app).post('/recommendations').set('Cookie', c2).send({ symbol: 'TCS_3500_CE', entry: 100, target: 130, stop: 80 });
+    assert(r.status === 200 && r.body.kind === 'STOCK' && r.body.contract === '3500 CE', 'a stock-option recommendation is accepted for approval');
+    const stockId = r.body.id;
+    r = await request(app).post(`/owner/recommendations/${stockId}/decision`).set('Cookie', admin).send({ decision: 'approve' });
+    assert(r.status === 500 && /Could not place it/.test(r.body.error) && (await db.collection('recommendations').findOne({ _id: new (require('mongodb').ObjectId)(stockId) }) as any).status === 'PENDING', 'approval places it through the Search & Buy path; without a live order process it fails and stays PENDING (nothing is half-approved)');
+    r = await request(app).post(`/owner/recommendations/${stockId}/decision`).set('Cookie', admin).send({ decision: 'reject', note: 'test' });
+    assert(r.status === 200, 'it can be rejected');
 
     console.log('reject, busy slot, expiry:');
     setPerDay(5);
