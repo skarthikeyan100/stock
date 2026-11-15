@@ -19,7 +19,7 @@ async function main() {
     Object.assign(manifest, existing);
     for (const [type, doc, file] of [
         ['INDIVIDUAL', INDIVIDUAL_V1_1, 'Forecasting-Agreement-Individual-PAN-v1.1.pdf'],
-        ['BUSINESS', BUSINESS_V1_1, 'Forecasting-Agreement-Business-GSTIN-v1.1.pdf'],
+        ['BUSINESS', BUSINESS_V1_1, 'Research-Analyst-Agreement-Business-GSTIN-v1.1.pdf'],
     ] as const) {
         if (only && only !== type) continue;
         const { pdf, sha256 } = await buildAgreementPdf(doc, date);

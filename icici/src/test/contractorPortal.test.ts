@@ -235,8 +235,14 @@ async function main() {
     assert(r.status === 200 && r.body.type === 'BUSINESS' && r.body.sebi.verified === false && decodeURIComponent(cookieFromRes(r)).includes('|90'), 'Business accepted; SEBI recorded but unverified; 90-day session');
     const bizStored: any = (await contractorsCol().find({ email: 'forecaster@acme.com' }).toArray())[0];
     const tb = require('child_process').spawnSync('pdftotext', ['-layout', '-', '-'], { input: fs.readFileSync(bizStored.agreementFile) }).stdout.toString().replace(/\s+/g, ' ');
-    assert(/The Contractor: Acme Research LLP, registered office 5 Market Road, Mumbai \(PAN ABCDE1234F; GSTIN 33ABCDE1234F1Z5\), acting through D Forecaster, its Research Analyst/.test(tb) && /registration number INH000012345, valid until 2027-03-31/.test(tb), 'Business: entity, address, PAN (derived from the GSTIN), GSTIN, the one Research Analyst name and SEBI details fill the Parties clause');
+    assert(/The Contractor: Acme Research LLP, registered office 5 Market Road, Mumbai \(PAN ABCDE1234F; GSTIN 33ABCDE1234F1Z5\), acting through D Forecaster, its Research Analyst \(the “Contractor”\)/.test(tb) && /registration number INH000012345, valid until 2027-03-31/.test(tb), 'Business: entity, address, PAN (derived from the GSTIN), GSTIN, the one Research Analyst name and SEBI details fill the Parties clause');
     assert(/through its Research Analyst, D Forecaster/.test(tb) && !/Signatures/.test(tb) && !/third part/i.test(tb) && !/7 days’ notice/.test(tb) && !/not give the same Recommendation/.test(tb), 'clause 3.4 names the forecaster; no Signatures section, no 4.3 third-party clause, no 7-day notice, no old 9.3');
+    const noBlanks = (t: string) => !/\[[^\]]*\]/.test(t) && !/_{3,}/.test(t) && !/undefined|null|NaN/.test(t);
+    assert(noBlanks(tb) && noBlanks(t1.replace(/\s+/g, ' ')), 'no placeholder, blank line or "undefined" in either personalised PDF');
+    assert(/Research Analyst Services Agreement/.test(tb) && !/Forecasting Services Agreement/.test(tb) && /Forecasting Services Agreement/.test(t1), 'the Business document is a Research Analyst Services Agreement; the Individual one stays a Forecasting Services Agreement');
+    assert(/Karthikeyan S, an individual resident in Chennai, Tamil Nadu, carrying on business under the name “Nivedha Tech”; and/.test(tb) && !/PAN:/.test(tb.split('The Contractor:')[0]), 'the owner is named without an address or PAN');
+    assert(/25% of net Trade Profit per Settlement Week/.test(tb) && /3 per Trading Day/.test(tb) && /09:20 to 15:00 IST/.test(tb) && /Term\s+6 months/.test(tb), 'the Schedule carries real values from config');
+    assert(!/Signatures/.test(t1), 'the Individual agreement has no Signatures section either');
     const bizUser: any = await db.collection('users').findOne({ email: 'forecaster@acme.com' });
     assert(bizUser.advancedVia === 'gstin' && bizUser.proficiencyLevel === 'advanced' && bizUser.entityType === 'company', 'the users record is set up for the existing GSTIN invoice rule');
     r = await request(app).post(`/invite/${(await createInvite({ type: 'INDIVIDUAL', createdBy: 'o' })).token}/accept`).send(good());
@@ -249,6 +255,9 @@ async function main() {
     r = await request(app).post(`/invite/${min.token}/accept`).send({ email: 'min@acme.com', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc: { gstin: '33ABCDE1234F1Z5' } });
     assert(r.status === 200 && r.body.name === 'min' && r.body.missingDetails.includes('bank account') && r.body.missingDetails.includes('address'), 'with only the GSTIN (and email) it is accepted, and the profile lists what is still missing ' + r.status + ' ' + JSON.stringify(r.body).slice(0, 200));
     const minCk = cookieFromRes(r);
+    const minDoc: any = (await contractorsCol().find({ email: 'min@acme.com' }).toArray())[0];
+    const tm = require('child_process').spawnSync('pdftotext', ['-layout', '-', '-'], { input: fs.readFileSync(minDoc.agreementFile) }).stdout.toString().replace(/\s+/g, ' ');
+    assert(!/\[[^\]]*\]/.test(tm) && !/_{3,}/.test(tm) && !/undefined|null/.test(tm) && /GSTIN 33ABCDE1234F1Z5/.test(tm) && !/registered office/.test(tm) && !/registration number/.test(tm), 'with only the GSTIN given the PDF simply leaves out what is unknown: no blanks');
     r = await request(app).post('/contractor/profile').set('Cookie', minCk).send({ entityName: 'Min Research LLP', analystName: 'Mina Analyst', address: '7 Late Street, Pune', bankHolder: 'Min Research LLP', bankAccount: '555555555555', bankIfsc: 'HDFC0001234' });
     assert(r.status === 200 && r.body.name === 'Mina Analyst' && r.body.kyc.bankAccountMasked === 'XXXXXXXX5555' && !r.body.missingDetails.includes('bank account'), 'the rest is completed on the profile page');
     r = await request(app).post('/contractor/profile').set('Cookie', minCk).send({ bankAccount: '666666666666', bankHolder: 'X', bankIfsc: 'HDFC0001234' });

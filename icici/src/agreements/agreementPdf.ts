@@ -19,9 +19,14 @@ export interface AgreementDetails {
     entityName?: string; analystName?: string;
     sebiNumber?: string; sebiValidUntil?: string;
     company?: { name?: string; address?: string; pan?: string };
+    // Schedule values, from config at the time the agreement is prepared (so no blank remains in the PDF)
+    profitSharePercent?: number; recHours?: { start: string; end: string }; perDay?: number; fixedFee?: number; acceptedOn?: string;
+    fees?: { retainer?: number; feePerCorrect?: number; monthlyCap?: number; minDays?: number; windowMinutes?: number; neutral?: number; dailyLimit?: number; hours?: { start: string; end: string; expiryEnd: string } };
 }
 
 export interface AgreementDoc {
+    /** The document title, e.g. "Research Analyst Services Agreement". */
+    title: string;
     /** e.g. "Business Contractor (GSTIN)" */
     kind: string;
     version: string;
@@ -34,7 +39,7 @@ const NAVY = '#1f3a5f';
 const GREY = '#666666';
 
 export async function buildAgreementPdf(a: AgreementDoc, date: string): Promise<{ pdf: Buffer; sha256: string }> {
-    const title = `Forecasting Services Agreement - ${a.kind}`;
+    const title = `${a.title} - ${a.kind}`;
     const sd = newSignableDoc(`${title} v${a.version} - Nivedha Tech`, date);
     const doc = sd.doc;
     const left = doc.page.margins.left;
@@ -46,7 +51,7 @@ export async function buildAgreementPdf(a: AgreementDoc, date: string): Promise<
     doc.fillColor('#222222');
     doc.y = 90;
     doc.x = left;
-    doc.font('B').fontSize(16).fillColor(NAVY).text('Forecasting Services Agreement', left, doc.y, { width });
+    doc.font('B').fontSize(16).fillColor(NAVY).text(a.title, left, doc.y, { width });
     doc.font('B').fontSize(12).text(a.kind, left, doc.y + 2, { width });
     doc.font('R').fontSize(9).fillColor(GREY).text(a.cover, left, doc.y + 2, { width });
     doc.moveDown(0.8).fillColor('#222222');

@@ -158,7 +158,7 @@ export default function MyProfilePage() {
               {needAccept && (
                 <Form onSubmit={acceptNew} className="mt-3">
                   <Alert variant="warning" className="small">A newer agreement is in force. Please read and accept it.</Alert>
-                  <Form.Check id="a" checked={agree.a} onChange={(e) => setAgree({ ...agree, a: e.target.checked })} label={`I have read and accept the Forecasting Services Agreement v${user.agreementVersionRequired}`} />
+                  <Form.Check id="a" checked={agree.a} onChange={(e) => setAgree({ ...agree, a: e.target.checked })} label={`I have read and accept the ${user.agreementName ?? 'agreement'} v${user.agreementVersionRequired}`} />
                   <Form.Check id="d" checked={agree.d} onChange={(e) => setAgree({ ...agree, d: e.target.checked })} label="I consent to the data processing in Section 12." />
                   {business && <Form.Check id="r" checked={agree.r} onChange={(e) => setAgree({ ...agree, r: e.target.checked })} label="I confirm clause 6A.5 (registration and compliance)." />}
                   <Button type="submit" size="sm" className="mt-2" disabled={!agree.a || !agree.d || (business && !agree.r)}>Accept</Button>

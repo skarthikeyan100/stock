@@ -72,6 +72,7 @@ export interface AuthUser {
   blockedReason?: string | null;
   kyc?: Record<string, any> | null;
   missingDetails?: string[];
+  agreementName?: string;
   sebi?: { number: string; validUntil: string; verified: boolean } | null;
 }
 

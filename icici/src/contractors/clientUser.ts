@@ -7,6 +7,7 @@ export function toContractorClient(c: Contractor, extra: { agreementVersionRequi
     const k: any = c.kyc ?? {};
     return {
         role: 'contractor',
+        agreementName: c.type === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Forecasting Services Agreement',
         id: c.id, email: c.email, name: c.name, type: c.type, level: levelOf(c.type), status: c.status, statusReason: c.statusReason,
         isTest: c.isTest === true,
         agreementVersion: c.agreementVersion, agreementVersionRequired: extra.agreementVersionRequired, upcomingAgreement: extra.upcomingAgreement ?? null,

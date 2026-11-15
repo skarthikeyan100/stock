@@ -24,6 +24,7 @@ import { canPersonalise, detailsFromContractor, detailsFromForm, readStored, ren
 const router = asyncRouter();
 const acceptLimiter = new RateLimiter(Number(process.env.INVITE_RATE_LIMIT) || 20, 60_000); // per IP per minute (the env override is for tests)
 const clientIp = (req: express.Request) => String(req.get('cf-connecting-ip') || req.ip || req.socket.remoteAddress || '');
+const agreementName = (t: ContractorType) => (t === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Forecasting Services Agreement');
 const str = (v: unknown, max = 300) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
 function limited(req: express.Request, res: express.Response): boolean {
@@ -52,7 +53,7 @@ router.get('/invite/:token', async function (req, res) {
         if (!c || c.status === 'TERMINATED') { res.json({ state: 'revoked' }); return; }
         reinvite = { email: c.email, name: c.name, needsAgreement: c.agreementVersion !== version };
     }
-    res.json({ state: 'ok', type: invite.type, emailLock: invite.emailLock ?? null, reinvite, agreement: { version, sha256: ag.sha256, filename: ag.filename } });
+    res.json({ state: 'ok', type: invite.type, agreementName: agreementName(invite.type), emailLock: invite.emailLock ?? null, reinvite, agreement: { version, sha256: ag.sha256, filename: ag.filename } });
 });
 
 router.get('/invite/:token/agreement', async function (req, res) {
@@ -156,7 +157,7 @@ router.post('/invite/:token/accept', async function (req, res) {
     const name = str(body.name, 120) || str(body.kyc?.entityName, 120) || email.split('@')[0]; // a name can be added later on the profile page
     if (!validEmail(email)) { res.status(400).json({ error: 'A valid email is required' }); return; }
     if (invite.emailLock && invite.emailLock !== email) { res.status(400).json({ error: 'This invite was issued to a different email address.' }); return; }
-    if (body.acceptTerms !== true) { res.status(400).json({ error: `Please accept the Forecasting Services Agreement v${version}` }); return; }
+    if (body.acceptTerms !== true) { res.status(400).json({ error: `Please accept the ${agreementName(invite.type)} v${version}` }); return; }
     if (body.dpdpConsent !== true) { res.status(400).json({ error: 'Please give the data-processing consent (agreement Section 12)' }); return; }
     if (invite.type === 'BUSINESS' && body.representation6A5 !== true) { res.status(400).json({ error: 'Please confirm the Registration representation (agreement clause 6A.5)' }); return; }
     const k = buildKyc(invite.type, body.kyc, email);
@@ -205,7 +206,7 @@ async function sendOwnAgreement(req: express.Request, res: express.Response) {
     if (!c) { res.status(404).json({ error: 'Not a contractor' }); return; }
     const version = await currentVersion();
     const mine = c.agreementVersion === version ? readStored(c.agreementFile) : null; // the copy they accepted, with their details filled in
-    if (mine) { res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="Forecasting-Agreement.pdf"', 'X-Agreement-Sha256': sha256Of(mine), 'Cache-Control': 'no-store' }).send(mine); return; }
+    if (mine) { res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="Agreement.pdf"', 'X-Agreement-Sha256': sha256Of(mine), 'Cache-Control': 'no-store' }).send(mine); return; }
     if (canPersonalise(version) && c.kyc) { const r = await renderPersonalised(c.type, detailsFromContractor(c)); res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${r.filename}"`, 'Cache-Control': 'no-store' }).send(r.pdf); return; }
     const ag = readAgreement(c.type, version);
     res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${ag.filename}"`, 'X-Agreement-Sha256': ag.sha256, 'Cache-Control': 'no-store' }).send(ag.bytes);

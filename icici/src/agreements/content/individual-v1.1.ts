@@ -5,21 +5,26 @@
  */
 import type { AgreementDoc, AgreementDetails } from '../agreementPdf';
 
-const ph = (v: string | undefined, placeholder: string) => (v && v.trim() ? v.trim() : placeholder);
+const ph = (v: string | undefined, fallback: string) => (v && v.trim() ? v.trim() : fallback);
 
 /** The Individual agreement; `d` fills the Parties clause once the contractor has given the details. */
 export function individualDoc(d: AgreementDetails = {}): AgreementDoc {
   const co = d.company ?? {};
+  const f = d.fees ?? {};
+  const notified = 'As notified by Karthikeyan S in writing before it applies';
+  const inr = (n: number | undefined, unit: string) => (n && n > 0 ? `₹${n} ${unit}` : notified);
+  const hrs = f.hours ?? { start: '09:20', end: '15:00', expiryEnd: '14:30' };
   return {
+    title: 'Forecasting Services Agreement',
     kind: 'Individual Contractor (PAN)',
     version: '1.1',
     cover: 'Version 1.1 · November 2026 · Pilot programme · By invitation only',
     blocks: [
         { t: 'h2', text: '1. Parties' },
         { t: 'p', text: 'This Agreement is between:' },
-        { t: 'li', text: `${ph(co.name, 'Karthikeyan S')}, an individual resident at ${ph(co.address, '[address]')}, Chennai, Tamil Nadu, carrying on business under the name “Nivedha Tech” (PAN: ${ph(co.pan, '[__________]')}); and` },
-        { t: 'li', text: `The Contractor: ${ph(d.name, '[Full legal name]')}, resident at ${ph(d.address, '[address]')} (PAN: ${ph(d.pan, '[__________]')}) (the “Contractor”).` },
-        { t: 'p', text: 'This Agreement takes effect when both parties sign it, or when the Contractor accepts it electronically on the Platform after receiving a personal invitation from Karthikeyan S (the “Effective Date”). Electronic acceptance is valid under the Information Technology Act, 2000. Access to the Platform is by personal invitation only; no person may participate without an executed or accepted copy of this Agreement.' },
+        { t: 'li', text: `${ph(co.name, 'Karthikeyan S')}, an individual resident in Chennai, Tamil Nadu, carrying on business under the name “Nivedha Tech”; and` },
+        { t: 'li', text: `The Contractor: ${ph(d.name, 'the individual named on the Platform')}${d.address ? `, resident at ${d.address}` : ''}${d.pan ? ` (PAN: ${d.pan})` : ''} (the “Contractor”).` },
+        { t: 'p', text: 'This Agreement takes effect when the Contractor accepts it electronically on the Platform after receiving a personal invitation from Karthikeyan S (the “Effective Date”). Electronic acceptance is valid under the Information Technology Act, 2000. Access to the Platform is by personal invitation only; no person may participate without an accepted copy of this Agreement.' },
 
         { t: 'h2', text: '2. Definitions' },
         { t: 'li', text: '“Platform” means Karthikeyan S’s web application at nivedhatech.com through which the Contractor submits Forecasts.' },
@@ -111,22 +116,19 @@ export function individualDoc(d: AgreementDetails = {}): AgreementDoc {
         { t: 'h2', text: 'Schedule 1 – Fee and Forecast Schedule' },
         { t: 'table', rows: [
             ['Item', 'Value'],
-            ['Monthly Retainer', '₹[__________] per month'],
-            ['Minimum Participation', 'At least [1] Forecast on at least [15] Trading Days in the month'],
-            ['Accuracy Fee', '₹[_____] per Correct Forecast'],
-            ['Monthly Accuracy Fee Cap', '₹[__________] per calendar month'],
-            ['Forecast Window', '[15] minutes from the recorded Forecast time'],
-            ['Neutral Threshold', '[5] index points'],
-            ['Daily Forecast Limit', '[3] Forecasts per Trading Day; one open Forecast at a time'],
-            ['Forecasting Hours', '[09:20] to [15:00] IST on Trading Days (to [14:30] on NIFTY expiry days)'],
-            ['Retainer payment date', 'By the [7th] day of the following month'],
+            ['Monthly Retainer', inr(f.retainer, 'per month')],
+            ['Minimum Participation', `At least 1 Forecast on at least ${f.minDays ?? 15} Trading Days in the month`],
+            ['Accuracy Fee', inr(f.feePerCorrect, 'per Correct Forecast')],
+            ['Monthly Accuracy Fee Cap', f.monthlyCap && f.monthlyCap > 0 ? `₹${f.monthlyCap} per calendar month` : 'No cap'],
+            ['Forecast Window', `${f.windowMinutes ?? 15} minutes from the recorded Forecast time`],
+            ['Neutral Threshold', `${f.neutral ?? 5} index points`],
+            ['Daily Forecast Limit', `${f.dailyLimit ?? 3} Forecasts per Trading Day; one open Forecast at a time`],
+            ['Forecasting Hours', `${hrs.start} to ${hrs.end} IST on Trading Days (to ${hrs.expiryEnd} on NIFTY expiry days)`],
+            ['Retainer payment date', 'By the 7th day of the following month'],
             ['Accuracy Fee payment', 'Weekly, every Wednesday, for the previous Wednesday–Tuesday week'],
-            ['Pilot Term', '[3] months from the Effective Date'],
+            ['Pilot Term', '3 months from the Effective Date'],
         ] },
 
-        { t: 'h2', text: 'Signatures' },
-        { t: 'sig', left: ['For Karthikeyan S', 'Name: [__________________]', 'Signature: __________________', 'Date: __________'], right: ['For the Contractor', 'Name: [__________________]', 'Signature: __________________', 'Date: __________'] },
-        { t: 'p', text: 'Or accepted electronically on the Platform: the Contractor’s email, timestamp, IP address and agreement version are recorded by the Platform.' },
     ],
   };
 }

@@ -3,11 +3,11 @@
   "files": {
     "INDIVIDUAL": {
       "file": "Forecasting-Agreement-Individual-PAN-v1.1.pdf",
-      "sha256": "894cedc53613da9570bfde1a0bd41e6e3941cc76c9d6cd5ab77fa26dafb76c66"
+      "sha256": "8dc3c8483a1c62ad354cf7b555b9700ff715728d6b7b0f5cbdd2414d1ec5fcb3"
     },
     "BUSINESS": {
-      "file": "Forecasting-Agreement-Business-GSTIN-v1.1.pdf",
-      "sha256": "5c0dd3c069eafb2b26619060d19e613c4225f40d7a8b9d496d033cffc56611aa"
+      "file": "Research-Analyst-Agreement-Business-GSTIN-v1.1.pdf",
+      "sha256": "a76aca9c76bf596ce3fe4fe2d31e1ae24b3eb4f1a6f1dbcb5c369a9b1215e387"
     }
   }
 }

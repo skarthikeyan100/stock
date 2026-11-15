@@ -15,7 +15,7 @@ export const DEFAULT_AGREEMENT_VERSION = '1.1';
 export const VERSION_RE = /^[0-9]+\.[0-9]+$/;
 const FILE_FOR: Record<ContractorType, (v: string) => string> = {
     INDIVIDUAL: (v) => `Forecasting-Agreement-Individual-PAN-v${v}.pdf`,
-    BUSINESS: (v) => `Forecasting-Agreement-Business-GSTIN-v${v}.pdf`,
+    BUSINESS: (v) => `Research-Analyst-Agreement-Business-GSTIN-v${v}.pdf`,
 };
 
 export interface AgreementFile { version: string; type: ContractorType; filename: string; bytes: Buffer; sha256: string }

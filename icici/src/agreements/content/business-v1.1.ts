@@ -1,24 +1,33 @@
 /**
- * Forecasting Services Agreement, Business Contractor (GSTIN), v1.1. Source of the text: Business-Agreement-v1.1-amendment-text.md (the owner's
+ * Research Analyst Services Agreement, Business Contractor (GSTIN), v1.1. Source of the text: Business-Agreement-v1.1-amendment-text.md (the owner's
  * reviewed clauses) applied to the v1.0 PDF. Sections the amendment leaves alone (8, 10, 12, 16, 17 and Schedule 2) are v1.0 verbatim except for
  * the consequential wording changes listed in agreements/v1.1/BUILD-NOTES.md (marked there as "consequential").
  */
 import type { AgreementDoc, AgreementDetails } from '../agreementPdf';
 
-const ph = (v: string | undefined, placeholder: string) => (v && v.trim() ? v.trim() : placeholder);
+const ph = (v: string | undefined, fallback: string) => (v && v.trim() ? v.trim() : fallback);
 
 /** The Business agreement; `d` fills the Parties clause, 3.4 and Schedule 1 once the contractor has given the details (anything missing stays a placeholder). */
 export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
   const co = d.company ?? {};
+  // Nothing is left blank: a detail the contractor has not given yet is simply not mentioned.
+  const analyst = ph(d.analystName, 'the Research Analyst named on the Platform');
+  const ids = [d.pan ? `PAN ${d.pan}` : '', d.gstin ? `GSTIN ${d.gstin}` : ''].filter(Boolean).join('; ');
+  const contractorParty = d.entityName
+    ? `${d.entityName}${d.address ? `, registered office ${d.address}` : ''}${ids ? ` (${ids})` : ''}, acting through ${analyst}, its Research Analyst`
+    : `${analyst}${d.address ? `, of ${d.address}` : ''}${ids ? ` (${ids})` : ''}, a Research Analyst`;
+  const pct = d.profitSharePercent ?? 25;
+  const hours = d.recHours ?? { start: '09:20', end: '15:00' };
   return {
+    title: 'Research Analyst Services Agreement',
     kind: 'Business Contractor (GSTIN)',
     version: '1.1',
     cover: 'Version 1.1 · November 2026 · Pilot programme · By invitation only',
     blocks: [
         { t: 'h2', text: '1. Parties' },
         { t: 'p', text: 'This Agreement is between:' },
-        { t: 'li', text: `${ph(co.name, 'Karthikeyan S')}, an individual resident at ${ph(co.address, '[address]')}, Chennai, Tamil Nadu, carrying on business under the name “Nivedha Tech” (PAN: ${ph(co.pan, '[__________]')}); and` },
-        { t: 'li', text: `The Contractor: ${ph(d.entityName, '[Legal name of company / LLP / firm]')}, registered office ${ph(d.address, '[address]')} (PAN ${ph(d.pan, '[__________]')}; GSTIN ${ph(d.gstin, '[__________]')}), acting through ${ph(d.analystName, '[name]')}, its Research Analyst (the “Contractor”). The Contractor is registered with the Securities and Exchange Board of India as a Research Analyst, registration number ${ph(d.sebiNumber, 'INH[_________]')}, valid until ${ph(d.sebiValidUntil, '[date]')} (the “Registration”).` },
+        { t: 'li', text: `${ph(co.name, 'Karthikeyan S')}, an individual resident in Chennai, Tamil Nadu, carrying on business under the name “Nivedha Tech”; and` },
+        { t: 'li', text: `The Contractor: ${contractorParty} (the “Contractor”). The Contractor is registered with the Securities and Exchange Board of India as a Research Analyst${d.sebiNumber ? `, registration number ${d.sebiNumber}${d.sebiValidUntil ? `, valid until ${d.sebiValidUntil}` : ''}` : ''} (the “Registration”).` },
         { t: 'p', text: 'This Agreement takes effect when the Contractor accepts it electronically on the Platform after receiving a personal invitation from Karthikeyan S (the “Effective Date”). Electronic acceptance is valid under the Information Technology Act, 2000. Access to the Platform is by personal invitation only; no person may participate without an accepted copy of this Agreement.' },
 
         { t: 'h2', text: '2. Definitions' },
@@ -36,7 +45,7 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
         { t: 'num', n: '3.1', text: 'The Contractor is engaged as an independent contractor to provide research recommendations. Nothing in this Agreement creates an employment, partnership, joint venture, agency or investment-management relationship.' },
         { t: 'num', n: '3.2', text: 'The Contractor is not a client of Karthikeyan S, invests no money, holds no interest in Karthikeyan S’s account or capital, and does not share in any loss. The Contractor’s only entitlement is the Fees under Section 6A.' },
         { t: 'num', n: '3.3', text: 'The Contractor has no authority to place, direct, modify, approve or cancel any order, no access to any broker or trading account of Karthikeyan S, and no authority to bind Karthikeyan S.' },
-        { t: 'num', n: '3.4', text: `The Contractor shall provide the services through its Research Analyst, ${ph(d.analystName, '[name]')}, who must hold a separate personal invitation to the Platform. The Contractor may not change that person without Karthikeyan S’s written consent and is responsible for that person’s compliance with this Agreement.` },
+        { t: 'num', n: '3.4', text: `The Contractor shall provide the services through its Research Analyst${d.analystName ? `, ${d.analystName},` : ''} who must hold a separate personal invitation to the Platform. The Contractor may not change that person without Karthikeyan S’s written consent and is responsible for that person’s compliance with this Agreement.` },
 
         { t: 'h2', text: '4. The Services' },
         { t: 'num', n: '4.1', text: 'The Contractor will submit Recommendations on the Platform. Each Recommendation must be the Contractor’s own research, prepared in compliance with the SEBI (Research Analysts) Regulations, 2014 and any circulars issued under them, and with the disclosures, records and rationale those rules require.' },
@@ -120,14 +129,14 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
         { t: 'h2', text: 'Schedule 1 – Fee and Recommendation Schedule' },
         { t: 'table', rows: [
             ['Item', 'Value'],
-            ['Fee model (clause 6A)', 'Profit Share [switch to “Fixed fee per Approved Recommendation” under clause 6A.6]'],
-            ['Profit Share', '[25]% of net Trade Profit per Settlement Week'],
-            ['Fixed fee per Approved Recommendation (only under clause 6A.6; paid to the extent the suggested profit is achieved)', '₹[_____]'],
-            ['Retainer', 'None [or ₹[_____] per month]'],
+            ['Fee model (clause 6A)', 'Profit Share (or, under clause 6A.6, the fixed fee per Approved Recommendation)'],
+            ['Profit Share', `${pct}% of net Trade Profit per Settlement Week`],
+            ['Fixed fee per Approved Recommendation (only under clause 6A.6; paid to the extent the suggested profit is achieved)', d.fixedFee ? `₹${d.fixedFee} per Approved Recommendation` : 'The amount notified by Karthikeyan S in writing under Section 15 before clause 6A.6 applies'],
+            ['Retainer', 'None'],
             ['Settlement Week', 'Wednesday to Tuesday; paid the following Wednesday'],
-            ['Recommendation hours', '[09:20] to [15:00] IST on Trading Days'],
-            ['Recommendations per day', '[3] per Trading Day; one open at a time'],
-            ['Registration valid until', ph(d.sebiValidUntil, '[date]')],
+            ['Recommendation hours', `${hours.start} to ${hours.end} IST on Trading Days`],
+            ['Recommendations per day', `${d.perDay ?? 3} per Trading Day; one open at a time`],
+            ...(d.sebiValidUntil ? [['Registration valid until', d.sebiValidUntil] as [string, string]] : []),
             ['Term', '6 months from the Effective Date'],
         ] },
 
@@ -136,7 +145,7 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
         { t: 'li', text: 'Contractor’s legal name, address, PAN and GSTIN;' },
         { t: 'li', text: 'invoice number (unique, serial) and date, and place of supply;' },
         { t: 'li', text: 'bill-to: Karthikeyan S, trading as Nivedha Tech, address and PAN;' },
-        { t: 'li', text: 'description: “Research recommendation services under Forecasting Services Agreement dated [__], period [__] to [__]”;' },
+        { t: 'li', text: `description: “Research recommendation services under the Research Analyst Services Agreement accepted on ${d.acceptedOn ?? 'the date of acceptance'}, for the period shown in the Platform statement”;` },
         { t: 'li', text: 'SAC code (to be chosen by the Contractor’s accountant);' },
         { t: 'li', text: 'breakdown: the Profit Share for the Settlement Week(s) concerned (or the number of Approved Recommendations × the fixed fee, where clause 6A.6 applies), as shown in the Platform statement;' },
         { t: 'li', text: 'taxable value, GST shown separately (CGST + SGST, or IGST), and invoice total;' },

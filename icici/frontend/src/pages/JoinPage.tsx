@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { apiFetch, apiPost, readError } from '../utils/api';
 
 interface InviteInfo {
+  agreementName?: string;
   state: 'ok' | 'used' | 'revoked' | 'expired' | 'unknown';
   type?: 'INDIVIDUAL' | 'BUSINESS';
   emailLock?: string | null;
@@ -69,6 +70,16 @@ export default function JoinPage() {
   };
   useEffect(() => { if (re && re.needsAgreement) void preview(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [re?.needsAgreement]);
 
+  // The agreement is prepared by itself as soon as the required details are in (and again, after a short pause, whenever a detail changes).
+  const ready = !re && !!f.email && (business ? (f.gstin ?? '').trim().length === 15 : (f.pan ?? '').trim().length === 10 && chk.notGst);
+  const detailsKey = JSON.stringify([f, chk.notGst]);
+  useEffect(() => {
+    if (!ready) return;
+    const t = setTimeout(() => { void preview(); }, 700);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailsKey, ready]);
+
   if (loadErr) return <Container className="py-5"><Alert variant="danger">{loadErr}</Alert></Container>;
   if (!info) return <Container className="py-5 text-muted">Loading…</Container>;
   if (info.state !== 'ok') return <Container className="py-5" style={{ maxWidth: 560 }}><Alert variant="secondary">{GONE[info.state]} If you need access, ask for a new invitation.</Alert></Container>;
@@ -115,26 +126,26 @@ export default function JoinPage() {
           </Card>
         )}
         {needsAgreement && !pdfUrl && !re && (
-          <div className="mb-3">
-            <Button variant="outline-primary" disabled={previewing} onClick={preview}>{previewing ? 'Preparing…' : 'Review the agreement'}</Button>
-            {err && <div className="text-danger small mt-2">{err}</div>}
-            <span className="small text-muted ms-2">{business ? 'Needs your email and the GSTIN; the agreement is prepared with the details you give.' : 'Needs your email, the PAN and the GST tick; the agreement is prepared with the details you give.'}</span>
+          <div className="mb-3 small text-muted">
+            {previewing ? 'Preparing your agreement…' : business ? 'Enter your email and a 15-character GSTIN: your agreement is then prepared here with your details.' : 'Enter your email, your PAN and tick the GST box: your agreement is then prepared here with your details.'}
+            {err && <div className="text-danger mt-1">{err}</div>}
           </div>
         )}
         {needsAgreement && pdfUrl && (
           <Card className="mb-3">
-            <Card.Header>Forecasting Services Agreement v{version} · <a href={pdfUrl} target="_blank" rel="noreferrer">open in a new tab</a></Card.Header>
+            <Card.Header>{info.agreementName} v{version} · <a href={pdfUrl} target="_blank" rel="noreferrer">open in a new tab</a></Card.Header>
             <Card.Body className="p-0"><iframe title="Agreement" src={pdfUrl} style={{ width: '100%', height: 460, border: 0 }} /></Card.Body>
           </Card>
         )}
         {needsAgreement && pdfUrl && (
           <Card className="mb-3"><Card.Body>
-            <Form.Check id="acc" className="mb-2" checked={chk.accept} onChange={(e) => setChk({ ...chk, accept: e.target.checked })} label={`I have read and accept the Forecasting Services Agreement v${version}`} />
+            <Form.Check id="acc" className="mb-2" checked={chk.accept} onChange={(e) => setChk({ ...chk, accept: e.target.checked })} label={`I have read and accept the ${info.agreementName} v${version}`} />
             <Form.Check id="dp" className="mb-2" checked={chk.dpdp} onChange={(e) => setChk({ ...chk, dpdp: e.target.checked })} label="I consent to the processing of my personal data as described in Section 12 of the agreement (DPDP Act, 2023)." />
             {business && <Form.Check id="rep" checked={chk.rep} onChange={(e) => setChk({ ...chk, rep: e.target.checked })} label="I confirm clause 6A.5: our SEBI registration is valid, and our compliance function has confirmed that receiving the Profit Share under this agreement is permitted for us." />}
           </Card.Body></Card>
         )}
         {err && <Alert variant="danger">{err}</Alert>}
+        {needsAgreement && (!pdfUrl || !chk.accept || !chk.dpdp || (business && !chk.rep)) && <div className="small text-muted mb-2">To continue: {[!pdfUrl && 'the agreement must be prepared (it appears above once your details are in)', pdfUrl && !chk.accept && 'tick the agreement', pdfUrl && !chk.dpdp && 'tick the data consent', pdfUrl && business && !chk.rep && 'tick the registration confirmation'].filter(Boolean).join('; ')}.</div>}
         <Button type="submit" disabled={busy || (needsAgreement && (!pdfUrl || !chk.accept || !chk.dpdp || (business && !chk.rep)))}>{busy ? 'Please wait…' : re && !needsAgreement ? 'Continue' : 'Accept and continue'}</Button>
       </Form>
     </Container>

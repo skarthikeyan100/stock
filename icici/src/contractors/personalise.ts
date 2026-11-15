@@ -13,10 +13,25 @@ import { storageRoot } from '../mailStorage';
 import { decryptField } from './kycCrypto';
 import { istDate } from './agreements';
 import { Contractor, ContractorType } from './types';
+import { levelDefaultsFor } from '../user';
+import { recommendationRules } from './recommendations';
+import { feeCfg } from './statements';
+import { getForecastConfig } from '../forecast/rules';
 import * as crypto from 'crypto';
 
 export const BUILT_IN_VERSION = '1.1';
 export const canPersonalise = (version: string) => version === BUILT_IN_VERSION;
+
+/** The values of the Schedule that come from config: the agreement carries real numbers, never blanks. */
+export function scheduleDetails(): AgreementDetails {
+    const rr = recommendationRules(), fc = getForecastConfig(), fees = feeCfg();
+    const fixed = Number(((configService.getConfig() as any)?.forecast ?? {}).fixedFeePerApproved);
+    return {
+        company: companyDetails(), acceptedOn: istDate(),
+        profitSharePercent: levelDefaultsFor('advanced').profitSplitPercent, recHours: { start: rr.start, end: rr.end }, perDay: rr.perDay, fixedFee: fixed > 0 ? fixed : undefined,
+        fees: { retainer: Number(fees.retainerMonthly), feePerCorrect: Number(fees.feePerCorrect), monthlyCap: Number(fees.monthlyCap), minDays: Number(fees.minParticipationDays), windowMinutes: fc.windowMinutes, neutral: fc.neutralThresholdPoints, dailyLimit: fc.dailyLimit, hours: fc.hours },
+    };
+}
 
 export function companyDetails(): { name?: string; address?: string; pan?: string } {
     const c: any = (configService.getConfig() as any)?.forecast?.company ?? {};
@@ -27,7 +42,7 @@ export function companyDetails(): { name?: string; address?: string; pan?: strin
 /** Details from what the contractor typed (plain values) while they fill in the form. */
 export function detailsFromForm(type: ContractorType, name: string, k: any): AgreementDetails {
     const up = (v: unknown) => String(v ?? '').trim().toUpperCase();
-    const base: AgreementDetails = { address: String(k?.address ?? '').trim() || undefined, company: companyDetails() };
+    const base: AgreementDetails = { ...scheduleDetails(), address: String(k?.address ?? '').trim() || undefined };
     if (type === 'INDIVIDUAL') return { ...base, name: String(k?.legalName ?? name ?? '').trim() || undefined, pan: up(k?.pan) || undefined };
     const gstin = up(k?.gstin);
     return { ...base, entityName: String(k?.entityName ?? '').trim() || undefined, gstin: gstin || undefined, pan: gstin.length >= 12 ? gstin.slice(2, 12) : undefined,
@@ -38,7 +53,7 @@ export function detailsFromForm(type: ContractorType, name: string, k: any): Agr
 export function detailsFromContractor(c: Contractor): AgreementDetails {
     const k: any = c.kyc ?? {};
     const dec = (v?: string) => { try { return v ? decryptField(v) : undefined; } catch { return undefined; } };
-    const base: AgreementDetails = { address: k.address, company: companyDetails() };
+    const base: AgreementDetails = { ...scheduleDetails(), address: k.address };
     if (c.type === 'INDIVIDUAL') return { ...base, name: k.legalName ?? c.name, pan: dec(k.panEnc) };
     return { ...base, entityName: k.entityName, gstin: dec(k.gstinEnc), pan: dec(k.panEnc), 
         analystName: k.analystName ?? c.name, sebiNumber: c.sebi?.number, sebiValidUntil: c.sebi?.validUntil };
@@ -47,7 +62,7 @@ export function detailsFromContractor(c: Contractor): AgreementDetails {
 export async function renderPersonalised(type: ContractorType, d: AgreementDetails, date = istDate()): Promise<{ pdf: Buffer; sha256: string; filename: string }> {
     const doc = type === 'BUSINESS' ? businessDoc(d) : individualDoc(d);
     const { pdf, sha256 } = await buildAgreementPdf(doc, date);
-    return { pdf, sha256, filename: `Forecasting-Agreement-${type === 'BUSINESS' ? 'Business-GSTIN' : 'Individual-PAN'}-v${BUILT_IN_VERSION}.pdf` };
+    return { pdf, sha256, filename: `${type === 'BUSINESS' ? 'Research-Analyst-Agreement-Business-GSTIN' : 'Forecasting-Agreement-Individual-PAN'}-v${BUILT_IN_VERSION}.pdf` };
 }
 
 export const agreementDir = (contractorId: string) => path.join(storageRoot(false), '_agreements', contractorId.replace(/[^a-z0-9]/gi, '_'));
