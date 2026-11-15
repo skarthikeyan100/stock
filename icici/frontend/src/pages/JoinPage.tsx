@@ -55,7 +55,12 @@ export default function JoinPage() {
 
   // Fetches the agreement with the details filled in (nothing is stored until Accept).
   const preview = async () => {
-    setErr(''); setPreviewing(true);
+    setErr('');
+    if (!re) {
+      const missing = [!f.email && 'your email', business && !f.gstin && 'the GSTIN', !business && !f.pan && 'the PAN', !business && !chk.notGst && 'the "not registered under GST" tick'].filter(Boolean);
+      if (missing.length) { setErr(`Please give ${missing.join(' and ')} first.`); return; }
+    }
+    setPreviewing(true);
     try {
       const res = await apiPost(`/invite/${encodeURIComponent(token)}/preview`, re ? {} : { name: f.name, kyc: kycBody() });
       if (!res.ok) { setErr(await readError(res)); return; }
@@ -63,7 +68,6 @@ export default function JoinPage() {
     } finally { setPreviewing(false); }
   };
   useEffect(() => { if (re && re.needsAgreement) void preview(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [re?.needsAgreement]);
-  const detailsReady = !!(f.email && (business ? f.gstin : f.pan && chk.notGst)); // only the tax identity is required: the rest can be completed later on the profile page
 
   if (loadErr) return <Container className="py-5"><Alert variant="danger">{loadErr}</Alert></Container>;
   if (!info) return <Container className="py-5 text-muted">Loading…</Container>;
@@ -112,8 +116,9 @@ export default function JoinPage() {
         )}
         {needsAgreement && !pdfUrl && !re && (
           <div className="mb-3">
-            <Button variant="outline-primary" disabled={!detailsReady || previewing} onClick={preview}>{previewing ? 'Preparing…' : 'Review the agreement'}</Button>
-            <span className="small text-muted ms-2">{detailsReady ? 'The agreement is prepared with the details you gave.' : 'Fill in all the details above first: the agreement is prepared with them.'}</span>
+            <Button variant="outline-primary" disabled={previewing} onClick={preview}>{previewing ? 'Preparing…' : 'Review the agreement'}</Button>
+            {err && <div className="text-danger small mt-2">{err}</div>}
+            <span className="small text-muted ms-2">{business ? 'Needs your email and the GSTIN; the agreement is prepared with the details you give.' : 'Needs your email, the PAN and the GST tick; the agreement is prepared with the details you give.'}</span>
           </div>
         )}
         {needsAgreement && pdfUrl && (
