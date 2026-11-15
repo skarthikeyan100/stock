@@ -108,13 +108,10 @@ async function main() {
     assert(r.status === 409, 'a second recommendation while one is waiting is refused');
     r = await request(app).post('/recommendations').set('Cookie', c2).send({ ...body, stop: 139 });
     assert(r.status === 400, 'an invalid price band is refused');
-    await contractorsCol().updateOne({ id: 'c2' }, { $set: { sebi: { ...verifiedSebi, verifiedAt: undefined } } });
-    await contractorsCol().updateOne({ id: 'c2' }, { $unset: { 'sebi.verifiedAt': '' } });
+    await contractorsCol().updateOne({ id: 'c2' }, { $unset: { sebi: '' } });
     r = await request(app).post('/recommendations').set('Cookie', c2).send(body);
-    assert(r.status === 403 && /SEBI/.test(r.body.error), 'an unverified SEBI registration cannot submit');
-    await contractorsCol().updateOne({ id: 'c2' }, { $set: { sebi: { number: 'INH000012345', validUntil: '2020-01-01', verifiedAt: new Date() } } });
-    r = await request(app).post('/recommendations').set('Cookie', c2).send(body);
-    assert(r.status === 403 && /expired/.test(r.body.error), 'an expired SEBI registration cannot submit');
+    assert(r.status === 200, 'no SEBI registration is needed to submit (it is optional on the profile)');
+    await db.collection('recommendations').updateOne({ contractorId: 'c2', status: 'PENDING' }, { $set: { status: 'EXPIRED' } });
     await contractorsCol().updateOne({ id: 'c2' }, { $set: { status: 'PAUSED_INVOICE' } });
     r = await request(app).post('/recommendations').set('Cookie', c2).send(body);
     assert(r.status === 403 && /invoice/i.test(r.body.error), 'PAUSED_INVOICE blocks new recommendations');

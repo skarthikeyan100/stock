@@ -10,7 +10,6 @@ import { ObjectId } from 'mongodb';
 import { getContractorByEmail, getContractor, submissionBlock } from '../contractors/store';
 import { Contractor } from '../contractors/types';
 import { currentVersion } from '../contractors/agreements';
-import { sebiUsable } from '../contractors/validate';
 import { istDate } from '../contractors/agreements';
 import { notifyAdmins, notifyUser } from '../contractors/notify';
 import { RateLimiter } from '../contractors/rateLimit';
@@ -35,7 +34,6 @@ router.post('/recommendations', requireAuth, async function (req, res) {
     if (!submitLimiter.allow(c.id)) { res.status(429).json({ error: 'Too many attempts. Try again in a minute.' }); return; }
     const blocked = submissionBlock(c, await currentVersion());
     if (blocked) { res.status(403).json({ error: blocked }); return; }
-    if (!sebiUsable(c.sebi, istDate())) { res.status(403).json({ error: 'Your SEBI Registration No. must be recorded, verified by the owner and not expired before you can submit.' }); return; }
     const rules = recommendationRules();
     if (!withinHours(rules)) { res.status(422).json({ error: `Recommendations are accepted from ${rules.start} to ${rules.end} IST (it is ${istHHMM()} now).` }); return; }
     const slot = await ensureSlot(c);
@@ -92,7 +90,6 @@ router.post('/owner/recommendations/:id/decision', requireAdmin, async function 
         const c = await getContractor(rec.contractorId);
         if (!c || c.status !== 'ACTIVE') { res.status(409).json({ error: 'The contractor is no longer active' }); return; }
         if (rec.day !== istDate()) { res.status(409).json({ error: 'This recommendation is from an earlier day' }); return; }
-        if (!sebiUsable(c.sebi, istDate())) { res.status(409).json({ error: 'The contractor SEBI registration is not verified or has expired' }); return; }
         const refusal = (rec as any).kind === 'STOCK' ? null : slotRefusal(rec.slot, rec);
         if (refusal) { res.status(409).json({ error: `Cannot approve now: ${refusal}.` }); return; }
     }

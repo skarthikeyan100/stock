@@ -140,6 +140,7 @@ app.use(tradingRoutes);
 app.use(streamsRoutes);
 app.use(adminRoutes);
 app.use(levelsRoutes);
+// (recommendations no longer need a SEBI number: it is optional on the profile)
 app.use(inviteRoutes);
 app.use(ownerContractorsRoutes);
 app.use(recommendationsRoutes);

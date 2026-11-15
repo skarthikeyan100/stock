@@ -52,7 +52,7 @@ Only the owner's own system places orders, in the owner's own broker account. No
 ## 5. KYC and profile
 
 - **Individual:** legal name, address, PAN (format-validated), bank account + IFSC, and a declaration "Not registered under GST". If unchecked, activation is blocked with: "Contact admin to switch to the Business agreement."
-- **Business:** legal entity name, registered address, GSTIN (format-validated; the entity PAN is **derived from the GSTIN**, not asked for twice), Research Analyst name and email, bank details, and **`SEBI Registration No.`** (Research Analyst, `INH` followed by nine digits; **`INA` (Investment Adviser) is not accepted**, because strike/entry/target/stop calls on index options are research-analyst activity), plus the **registration valid-until date**. The owner marks it verified against SEBI's published list. A recommendation can be submitted only while the number is verified and unexpired; on the valid-until date the contractor is blocked from submitting, and the owner is alerted 30 days earlier.
+- **Business:** legal entity name, registered address, GSTIN (format-validated; the entity PAN is **derived from the GSTIN**, not asked for twice), Research Analyst name and email, bank details, and **`SEBI Registration No.`** (Research Analyst, `INH` followed by nine digits; **`INA` (Investment Adviser) is not accepted**, because strike/entry/target/stop calls on index options are research-analyst activity), plus the **registration valid-until date**. The owner marks it verified against SEBI's published list. The SEBI number is **optional**: it does not block submitting or approving a recommendation (the owner is still alerted 30 days before a recorded registration expires).
 - **Storage:** PAN, GSTIN and bank fields are AES-256-GCM encrypted at rest, readable only by the admin role, and masked in the UI except the last four characters.
 
 ## 6. What contractors can and cannot see
@@ -88,7 +88,7 @@ Every forecast is evaluated by two filters (interface `Filter.evaluate(context) 
 
 ## 9. Advanced: recommendations (approval always)
 
-- Up to **3 recommendations a day** (`forecast.recommendationsPerDay`), one open at a time. A recommendation has: index, strike, CE/PE, entry, target, stop. Validation: stop < order price < target; contract format; not already traded today; no open trade for that contractor; SEBI number present.
+- Up to **3 recommendations a day** (`forecast.recommendationsPerDay`), one open at a time. A recommendation has: index, strike, CE/PE, entry, target, stop. Validation: stop < order price < target; contract format; not already traded today; no open trade for that contractor
 - It is stored as `PENDING` and the owner gets a **persistent pop-up** (Approve / Reject, optional note) that stays until acted on and reappears after a reload. **No filters apply to a recommendation**: it is taken as submitted and the owner's approval is applied on top of it; the decision is the owner's alone.
 - **Approve** arms the contractor's own recommendation strategy in the existing strategy configuration; **Reject** records the note and notifies the contractor. Unactioned recommendations become `EXPIRED` at the end of the day. Nothing is ever approved automatically, and no timer exists near the approval code.
 - Every decision is appended to `decisions`.

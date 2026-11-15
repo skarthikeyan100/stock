@@ -47,10 +47,8 @@ export default function RecommendPage() {
     } finally { setBusy(false); }
   };
 
-  const sebiOk = !!user?.sebi?.verified;
   return (
     <ContractorLayout>
-      {!sebiOk && <Alert variant="warning">Your SEBI Registration No. {user?.sebi ? 'is waiting for the owner to verify it' : 'is not recorded'}. Add it on your profile; you can submit once it is verified and valid.</Alert>}
       {user?.blockedReason && user.status === 'ACTIVE' && <Alert variant="warning">{user.blockedReason}</Alert>}
       <Row className="g-3">
         <Col lg={5}>
