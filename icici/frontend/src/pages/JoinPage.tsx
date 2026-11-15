@@ -106,7 +106,7 @@ export default function JoinPage() {
       <Form onSubmit={submit}>
         {!re && (
           <Card className="mb-3">
-            <Card.Header>Your details <span className="small text-muted ms-2">{business ? 'Only the GSTIN is required now' : 'Only the PAN is required now'}; the rest can be added later on your profile page.</span></Card.Header>
+            <Card.Header>Your details <span className="small text-muted ms-2">{business ? 'Your email and the GSTIN are required' : 'Your email, the PAN and the GST declaration are required'}; everything else can be added later on your profile page.</span></Card.Header>
             <Card.Body>
               <Row className="g-2">
                 <Field f={f} set={set} required={false} k="name" label={business ? 'Research Analyst name' : 'Full legal name'} />
