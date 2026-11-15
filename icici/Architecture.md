@@ -84,3 +84,17 @@ Proposal: two processes, `strategies` and "others". Rejected as stated, because 
 | Two: `strategies` + everything else | Only viable if `server.ts` is rarely edited during market hours, or its hot-restart is turned off. |
 
 Revisit if the IPC layer becomes a real maintenance or latency problem.
+
+
+## Contractor portal (2026-11-16)
+
+Where the portal's code runs, so a restart or a hot-restart is predictable:
+
+| Piece | Process | Notes |
+|---|---|---|
+| Invites, acceptance, `/owner/*`, `/contractor/*`, `/recommendations`, `/forecast`, statements, the contractor guard | `frontend` (`server.ts`) | Editing these restarts `frontend` only. The guard (`src/contractors/guard.ts`) is an `app.use` before every route and acts only on `role: 'contractor'`. |
+| Forecast engine (`src/forecast/engine.ts`): latest NIFTY, 1-minute candles, the 1-per-second tick store, the future's depth, both filters, scoring every 30 s | `frontend` | It reads the same ticks as the SSE streams (`DataLink.onTick`) and asks `data` for the NIFTY future's depth feed (`subscribeDepth`). Not in `trading`, so a trading restart does not lose it; a `frontend` restart rebuilds the candles from the stored ticks. |
+| Orders | `trading` (existing `RecommendationStrategy`) | The portal only writes a contractor's **slot block** in `config.yml` (`Recommendation-S01..` for approved recommendations, `Forecast-S01..` for forecasts that passed both filters); the strategy places the LIMIT entry and its exits. A strategy block added while running needs a restart, hence the pre-defined slot pool (`src/contractors/slots.ts`). |
+| `data` | additive only | `AntDataStream.onFutTick` also carries `tbq`/`tsq` on the `fut` tick when the depth feed is subscribed. Nothing else reads them. |
+
+Data flow of a Beginner forecast: `POST /forecast` -> record (write-once) -> both filters -> `decisions` row -> (only if `forecast.orders.enabled`) arm the slot block -> `RecommendationStrategy` places the order. Nothing in the response tells the contractor whether or how it was used. An Advanced recommendation waits as PENDING until the owner approves it on `/console` (persistent pop-up), which arms the slot the same way.
