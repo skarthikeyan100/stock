@@ -17,6 +17,8 @@ Unchanged from v1.0: 8 (Taxes and Invoicing), 10, 16, 17 and the rest of 12 and 
 8. Signature note: "Contractor's Google account email" changed to "the Contractor's email" because contractors no longer sign in with Google; the note also mentions the clause 6A.5 confirmation (from the amendment text).
 9. Numbering: clauses in 3, 4, 5, 5A, 6A and 9 are numbered (3.1 ...) as the amendment text numbers them; other sections keep v1.0 bullets.
 
+**Owner's later edit (2026-11-16):** clause 4.3 ("must not copy, resell or relay calls from third parties") was removed from the Business agreement; the old 4.4 and 4.5 are now 4.3 and 4.4. Section 9.3 (no giving the same Recommendation to another person for the Company's trade) is unchanged. Nobody had accepted Business v1.1 yet, so the file was rebuilt in place (new SHA-256 in `manifest.json`).
+
 ## Individual (PAN) v1.1
 v1.0 verbatim except:
 1. Section 3, second bullet: replaced as in the amendment text.

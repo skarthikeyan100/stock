@@ -14,10 +14,14 @@ async function main() {
     fs.mkdirSync(outDir, { recursive: true });
     const date = '2026-11-16';
     const manifest: Record<string, { file: string; sha256: string }> = {};
+    const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null; // rebuild one type without touching the other PDF
+    const existing = fs.existsSync(path.join(outDir, 'manifest.json')) ? JSON.parse(fs.readFileSync(path.join(outDir, 'manifest.json'), 'utf8')).files : {};
+    Object.assign(manifest, existing);
     for (const [type, doc, file] of [
         ['INDIVIDUAL', INDIVIDUAL_V1_1, 'Forecasting-Agreement-Individual-PAN-v1.1.pdf'],
         ['BUSINESS', BUSINESS_V1_1, 'Forecasting-Agreement-Business-GSTIN-v1.1.pdf'],
     ] as const) {
+        if (only && only !== type) continue;
         const { pdf, sha256 } = await buildAgreementPdf(doc, date);
         fs.writeFileSync(path.join(outDir, file), pdf);
         manifest[type] = { file, sha256 };

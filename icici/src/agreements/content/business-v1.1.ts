@@ -36,9 +36,8 @@ export const BUSINESS_V1_1: AgreementDoc = {
         { t: 'h2', text: '4. The Services' },
         { t: 'num', n: '4.1', text: 'The Contractor will submit Recommendations on the Platform. Each Recommendation must be the Contractor’s own research, prepared in compliance with the SEBI (Research Analysts) Regulations, 2014 and any circulars issued under them, and with the disclosures, records and rationale those rules require.' },
         { t: 'num', n: '4.2', text: 'A Recommendation is valid only if the stop-loss is below the entry price and the entry price is below the target, and it is made for a contract not already traded that day. The Contractor may have one open Recommendation at a time, and may submit Recommendations only during the Recommendation hours and up to the daily number stated in Schedule 1.' },
-        { t: 'num', n: '4.3', text: 'The Contractor must not copy, resell or relay calls from third parties.' },
-        { t: 'num', n: '4.4', text: 'A Recommendation cannot be edited or withdrawn once recorded, but it lapses at the end of the day if not approved.' },
-        { t: 'num', n: '4.5', text: 'The Contractor must not access the Platform through bots or scripts without the Company’s written consent.' },
+        { t: 'num', n: '4.3', text: 'A Recommendation cannot be edited or withdrawn once recorded, but it lapses at the end of the day if not approved.' },
+        { t: 'num', n: '4.4', text: 'The Contractor must not access the Platform through bots or scripts without the Company’s written consent.' },
 
         { t: 'h2', text: '5. How the Company Uses Recommendations' },
         { t: 'num', n: '5.1', text: 'The Company decides. The Company reviews every Recommendation and may approve or reject it, with or without giving reasons, in its sole discretion. The Company has no obligation to approve, to trade on, or to continue trading on any Recommendation.' },
