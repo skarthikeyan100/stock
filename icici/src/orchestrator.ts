@@ -301,7 +301,11 @@ async function main() {
     frontend.start();
     hotRestart('frontend', frontend, [
         path.join(DIST, 'server.js'), path.join(DIST, 'middleware'),
-        ...sharedDirs(), ...topLevel('user.js', 'payout.js', 'tax.js', 'constants.js', 'nse_index.js', 'orderList.js'),
+        // The route modules and the contractor portal (invites, forecast engine, agreements) run in this process too: without them an edit there never restarted it.
+        path.join(DIST, 'routes'), path.join(DIST, 'contractors'), path.join(DIST, 'forecast'), path.join(DIST, 'agreements'),
+        ...sharedDirs(), ...topLevel('user.js', 'payout.js', 'tax.js', 'constants.js', 'nse_index.js', 'orderList.js',
+            'invoiceRule.js', 'levelGate.js', 'levelRules.js', 'levelTable.js', 'levelUpgrade.js', 'levelLimits.js', 'capitalRequests.js', 'successfulWeeks.js',
+            'mailer.js', 'mailStorage.js', 'eodEmail.js', 'eodPdf.js', 'welcomeEmail.js', 'upgradeEmail.js', 'legalPdf.js', 'pdfSigning.js', 'accountDeletion.js'),
     ]);
 }
 
