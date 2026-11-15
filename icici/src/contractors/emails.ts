@@ -9,6 +9,7 @@ import { Contractor } from './types';
 import { contractorsCol } from './store';
 import { readAgreement } from './agreements';
 import { sendContractorEmail } from './email';
+import { readStored } from './personalise';
 
 const TEMPLATE_DIR = path.resolve(__dirname, '..', '..', 'templates');
 const kindOf = (c: Contractor) => (c.type === 'INDIVIDUAL' ? 'Individual (PAN)' : 'Business (GSTIN)');
@@ -43,12 +44,13 @@ export async function sendWelcomeIfDue(c: Contractor): Promise<void> {
         if (!fresh || fresh.welcomeEmailSentAt) return;
         const version = fresh.agreementVersion as string;
         const ag = readAgreement(c.type, version);
+        const mine = readStored(fresh.agreementFile); // the copy with their details filled in, when there is one
         const { subject, html } = renderWelcome(c, version, fresh.agreementAcceptedAt ?? new Date());
         // claim first so two quick accepts cannot both send
         const claim = await contractorsCol().updateOne({ id: c.id, welcomeEmailSentAt: { $exists: false } }, { $set: { welcomeEmailSentAt: new Date() } });
         if (!claim.matchedCount) return;
         try {
-            const sent = await sendContractorEmail(c.email, subject, html, [{ filename: ag.filename, content: ag.bytes, contentType: 'application/pdf' }]);
+            const sent = await sendContractorEmail(c.email, subject, html, [{ filename: ag.filename, content: mine ?? ag.bytes, contentType: 'application/pdf' }]);
             Log.log(`[contractor] welcome email sent to ${sent.redirectedTo ? `${sent.redirectedTo} (test redirect for ${c.email})` : c.email}`);
         } catch (e) {
             await contractorsCol().updateOne({ id: c.id }, { $unset: { welcomeEmailSentAt: '' } }); // release, so a retry is possible

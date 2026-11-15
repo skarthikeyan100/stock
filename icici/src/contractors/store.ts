@@ -130,7 +130,7 @@ export function submissionBlock(c: Contractor | null, currentAgreementVersion: s
 }
 
 /** Append-only: acceptances are only ever inserted or read. */
-export interface AcceptanceDoc { contractorId: string; email: string; agreementType: ContractorType; agreementVersion: string; fileSha256: string; acceptedAtUtc: string; acceptedAtIst: string; ip: string; userAgent: string; source?: 'owner-migration'; representation6A5?: boolean; dpdpConsent: boolean }
+export interface AcceptanceDoc { contractorId: string; email: string; agreementType: ContractorType; agreementVersion: string; fileSha256: string; templateSha256?: string; acceptedAtUtc: string; acceptedAtIst: string; ip: string; userAgent: string; source?: 'owner-migration'; representation6A5?: boolean; dpdpConsent: boolean }
 export async function recordAcceptance(a: AcceptanceDoc): Promise<void> {
     await acceptancesCol().insertOne({ ...a });
     Log.log(`[contractor] agreement v${a.agreementVersion} accepted by ${a.email} (${a.contractorId})`);

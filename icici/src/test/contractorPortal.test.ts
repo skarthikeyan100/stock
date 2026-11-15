@@ -13,7 +13,9 @@ const request = require('supertest');
 const signature = require('cookie-signature');
 import { installFakeDb } from './fakeDb';
 
+require('dotenv').config(); // the PDF signing certificate settings (personalised agreements are signed)
 process.env.KYC_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+process.env.STORAGE_DIR = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'stor-')); // personalised agreements are written here, not into the repo's storage/
 // Never send a real email from a test (the welcome email fires after an acceptance).
 for (const k of ['GMAIL_USER', 'GMAIL_CLIENT_ID', 'GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN']) delete process.env[k];
 const SECRET = 'test-secret';
@@ -24,7 +26,7 @@ import { contractorMayCall, contractorGuard } from '../contractors/guard';
 import { parseSession, sessionCookieValue } from '../routes/session';
 import { contractorCookieValue } from '../contractors/session';
 import { agreementPath, currentVersion, readAgreement, scheduleVersion, upcomingVersion } from '../contractors/agreements';
-import { createInvite, consumeInvite, findInviteByToken, inviteState, submissionBlock, hashToken, activeCount, contractorsCol } from '../contractors/store';
+import { createInvite, consumeInvite, findInviteByToken, inviteState, submissionBlock, hashToken, activeCount, contractorsCol, invitesCol } from '../contractors/store';
 import inviteRoutes from '../routes/invite';
 import ownerRoutes from '../routes/ownerContractors';
 import { RateLimiter } from '../contractors/rateLimit';
@@ -136,6 +138,11 @@ async function main() {
     assert(r.status === 200 && r.body.state === 'ok' && r.body.type === 'INDIVIDUAL' && r.body.agreement.version === '1.1', 'GET invite shows its type and the agreement version');
     r = await request(app).get(`/invite/${inv1.token}/agreement`);
     assert(r.status === 200 && r.headers['content-type'].startsWith('application/pdf') && r.headers['x-agreement-sha256'] === ind.sha256, 'the invite serves the Individual agreement with its hash');
+    const binary = (res: any, cb: any) => { const c: Buffer[] = []; res.on('data', (d: Buffer) => c.push(d)); res.on('end', () => cb(null, Buffer.concat(c))); };
+    r = await request(app).post(`/invite/${inv1.token}/preview`).buffer(true).parse(binary).send({ name: 'Preview Person', kyc: { legalName: 'Preview Person', address: '9 Preview Lane', pan: 'ABCDE1234F' } });
+    assert(r.status === 200 && r.headers['content-type'].startsWith('application/pdf'), 'the preview returns the agreement as a PDF');
+    assert(/Preview Person, resident at 9 Preview Lane/.test(require('child_process').spawnSync('pdftotext', ['-layout', '-', '-'], { input: r.body }).stdout.toString().replace(/\s+/g, ' ')), 'and it already carries the details typed so far');
+    assert((await invitesCol().findOne({ tokenHash: hashToken(inv1.token) }) as any).usedAt === undefined && (await contractorsCol().find({}).toArray()).length === 0, 'a preview consumes nothing and stores nothing');
     r = await request(app).get('/invite/' + 'z'.repeat(40));
     assert(r.status === 200 && r.body.state === 'unknown', 'an unknown link says so');
 
@@ -160,7 +167,14 @@ async function main() {
     const userDoc: any = await db.collection('users').findOne({ email: 'person@example.com' });
     assert(userDoc.role === 'contractor' && userDoc.proficiencyLevel === 'beginner' && userDoc.accountCapital === 0, 'a users record with role contractor exists');
     const acc: any[] = await db.collection('agreementAcceptances').find({}).toArray();
-    assert(acc.length === 1 && acc[0].fileSha256 === ind.sha256 && acc[0].agreementVersion === '1.1' && acc[0].userAgent === 'JestAgent/1' && acc[0].dpdpConsent === true && !!acc[0].acceptedAtUtc && !!acc[0].acceptedAtIst, 'the acceptance record has the file hash, version, time, IP and user agent');
+    assert(acc.length === 1 && acc[0].fileSha256 !== ind.sha256 && acc[0].templateSha256 === ind.sha256 && acc[0].agreementVersion === '1.1' && acc[0].userAgent === 'JestAgent/1' && acc[0].dpdpConsent === true && !!acc[0].acceptedAtUtc && !!acc[0].acceptedAtIst, 'the acceptance record has the hash of the personalised copy (and of the template), version, time, IP and user agent');
+    const sha = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
+    const text = (b: Buffer) => require('child_process').spawnSync('pdftotext', ['-layout', '-', '-'], { input: b }).stdout.toString();
+    const storedPdf = fs.readFileSync(stored.agreementFile);
+    assert(sha(storedPdf) === acc[0].fileSha256 && sha(storedPdf) === stored.agreementSha256, 'the stored personalised PDF is exactly the file whose hash was recorded');
+    const t1 = text(storedPdf);
+    assert(/The Contractor: Test Person, resident at 12 Some Street, Chennai \(PAN: ABCDE1234F\)/.test(t1.replace(/\s+/g, ' ')), 'the Parties clause is filled with the name, address and PAN they gave');
+    assert(/Karthikeyan S/.test(t1) && !/\bthe Company\b/.test(t1), 'the other party is named, not "the Company"');
     r = await request(app).post(`/invite/${inv1.token}/accept`).send(good());
     assert(r.status === 410, 'the same link cannot be used twice');
 
@@ -204,7 +218,7 @@ async function main() {
     assert(r.status === 410, 'the re-invite link is single use too');
 
     console.log('business accept:');
-    const bizKyc = { entityName: 'Acme Research LLP', address: '5 Market Road, Mumbai', pan: 'ABCDE1234F', gstin: '33ABCDE1234F1Z5', signatoryName: 'A Signatory', signatoryDesignation: 'Partner', designatedForecasterName: 'D Forecaster',
+    const bizKyc = { entityName: 'Acme Research LLP', address: '5 Market Road, Mumbai', gstin: '33ABCDE1234F1Z5', signatoryName: 'A Signatory', signatoryDesignation: 'Partner', designatedForecasterName: 'D Forecaster',
         bankHolder: 'Acme Research LLP', bankAccount: '998877665544', bankIfsc: 'ICIC0000123', sebiNumber: 'INH000012345', sebiValidUntil: '2027-03-31' };
     const biz = await createInvite({ type: 'BUSINESS', createdBy: 'owner@x.com', emailLock: 'forecaster@acme.com' });
     const bgood = (kyc: any = bizKyc, extra: any = {}) => ({ email: 'forecaster@acme.com', name: 'D Forecaster', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc, ...extra });
@@ -212,12 +226,16 @@ async function main() {
     assert(r.status === 400 && /different email/.test(r.body.error), 'an email-locked invite refuses another email');
     r = await request(app).post(`/invite/${biz.token}/accept`).send(bgood(bizKyc, { representation6A5: false }));
     assert(r.status === 400 && /6A\.5/.test(r.body.error), 'a Business acceptance needs the clause 6A.5 confirmation');
-    r = await request(app).post(`/invite/${biz.token}/accept`).send(bgood({ ...bizKyc, gstin: '33ABCDE1234G1Z5' }));
-    assert(r.status === 400, 'a GSTIN whose PAN does not match is refused');
+    r = await request(app).post(`/invite/${biz.token}/accept`).send(bgood({ ...bizKyc, gstin: '33ABCDE1234F1Y5' }));
+    assert(r.status === 400, 'a malformed GSTIN is refused');
     r = await request(app).post(`/invite/${biz.token}/accept`).send(bgood({ ...bizKyc, sebiNumber: 'INA000012345' }));
     assert(r.status === 400 && /INH/.test(r.body.error), 'an INA registration is refused');
     r = await request(app).post(`/invite/${biz.token}/accept`).send(bgood());
     assert(r.status === 200 && r.body.type === 'BUSINESS' && r.body.sebi.verified === false && decodeURIComponent(cookieFromRes(r)).includes('|90'), 'Business accepted; SEBI recorded but unverified; 90-day session');
+    const bizStored: any = (await contractorsCol().find({ email: 'forecaster@acme.com' }).toArray())[0];
+    const tb = require('child_process').spawnSync('pdftotext', ['-layout', '-', '-'], { input: fs.readFileSync(bizStored.agreementFile) }).stdout.toString().replace(/\s+/g, ' ');
+    assert(/The Contractor: Acme Research LLP, registered office 5 Market Road, Mumbai \(PAN ABCDE1234F; GSTIN 33ABCDE1234F1Z5\), acting through its authorised signatory A Signatory, Partner/.test(tb) && /registration number INH000012345, valid until 2027-03-31/.test(tb), 'Business: entity, address, PAN (derived from the GSTIN), GSTIN, signatory and SEBI details fill the Parties clause');
+    assert(/designated individual, D Forecaster/.test(tb) && !/Signatures/.test(tb) && !/third part/i.test(tb) && !/7 days’ notice/.test(tb) && !/not give the same Recommendation/.test(tb), 'clause 3.4 names the forecaster; no Signatures section, no 4.3 third-party clause, no 7-day notice, no old 9.3');
     const bizUser: any = await db.collection('users').findOne({ email: 'forecaster@acme.com' });
     assert(bizUser.advancedVia === 'gstin' && bizUser.proficiencyLevel === 'advanced' && bizUser.entityType === 'company', 'the users record is set up for the existing GSTIN invoice rule');
     r = await request(app).post(`/invite/${(await createInvite({ type: 'INDIVIDUAL', createdBy: 'o' })).token}/accept`).send(good());

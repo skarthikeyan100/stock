@@ -106,7 +106,7 @@ export default function MyProfilePage() {
                 <Row className="g-2">
                   <Col md={6}><Form.Control placeholder="Bank account number" value={chg.bankAccount ?? ''} onChange={(e) => setChg({ ...chg, bankAccount: e.target.value })} /></Col>
                   <Col md={6}><Form.Control placeholder="IFSC" value={chg.bankIfsc ?? ''} onChange={(e) => setChg({ ...chg, bankIfsc: e.target.value })} /></Col>
-                  <Col md={6}><Form.Control placeholder="PAN" value={chg.pan ?? ''} onChange={(e) => setChg({ ...chg, pan: e.target.value })} /></Col>
+                  {!business && <Col md={6}><Form.Control placeholder="PAN" value={chg.pan ?? ''} onChange={(e) => setChg({ ...chg, pan: e.target.value })} /></Col>}
                   {business && <Col md={6}><Form.Control placeholder="GSTIN" value={chg.gstin ?? ''} onChange={(e) => setChg({ ...chg, gstin: e.target.value })} /></Col>}
                 </Row>
                 <Button type="submit" size="sm" className="mt-2" variant="outline-primary">Request change</Button>

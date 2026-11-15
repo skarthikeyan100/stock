@@ -37,6 +37,8 @@ export interface Contractor {
     invitedBy: string;
     agreementVersion?: string;
     agreementAcceptedAt?: Date;
+    agreementFile?: string;   // the personalised, signed copy accepted (storage/_agreements/...)
+    agreementSha256?: string; // its SHA-256
     dpdpConsentAt?: Date;
     representation6A5At?: Date; // Business: the clause 6A.5 confirmation
     kyc?: IndividualKyc | BusinessKyc;

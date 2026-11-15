@@ -19,6 +19,7 @@ import { toContractorClient } from '../contractors/clientUser';
 import { notifyAdmins } from '../contractors/notify';
 import Mongo from '../tools/mongo';
 import { sendWelcomeIfDue } from '../contractors/emails';
+import { canPersonalise, detailsFromContractor, detailsFromForm, readStored, renderPersonalised, sha256Of, storePersonalised } from '../contractors/personalise';
 
 const router = asyncRouter();
 const acceptLimiter = new RateLimiter(20, 60_000);
@@ -66,27 +67,22 @@ type KycResult = { ok: true; kyc: IndividualKyc | BusinessKyc; sebi?: Contractor
 
 export function buildKyc(type: ContractorType, body: any, email: string): KycResult {
     const k = body ?? {};
-    const pan = normPan(k.pan);
+    const gstin = normGstin(k.gstin);
+    // A Business contractor gives its GSTIN only: the entity PAN is characters 3 to 12 of it, so it is derived (and stored encrypted) rather than asked for twice.
+    const pan = type === 'BUSINESS' ? gstin.slice(2, 12) : normPan(k.pan);
     const bankAccount = normAccount(k.bankAccount);
     const ifsc = normIfsc(k.bankIfsc);
-    const common = (): string | null => {
-        if (!str(k.address) || str(k.address).length < 8) return 'Address is required';
-        if (!validPan(pan)) return 'PAN is not valid (format AAAAA9999A)';
-        if (!str(k.bankHolder)) return 'Bank account holder name is required';
-        if (!validAccount(bankAccount)) return 'Bank account number must be 9 to 18 digits';
-        if (!validIfsc(ifsc)) return 'IFSC is not valid';
-        return null;
-    };
-    const bad = common();
-    if (bad) return { ok: false, status: 400, error: bad };
+    if (!str(k.address) || str(k.address).length < 8) return { ok: false, status: 400, error: 'Address is required' };
+    if (type === 'BUSINESS' ? !gstinMatchesPan(gstin, pan) : !validPan(pan)) return { ok: false, status: 400, error: type === 'BUSINESS' ? 'GSTIN is not valid' : 'PAN is not valid (format AAAAA9999A)' };
+    if (!str(k.bankHolder)) return { ok: false, status: 400, error: 'Bank account holder name is required' };
+    if (!validAccount(bankAccount)) return { ok: false, status: 400, error: 'Bank account number must be 9 to 18 digits' };
+    if (!validIfsc(ifsc)) return { ok: false, status: 400, error: 'IFSC is not valid' };
     if (type === 'INDIVIDUAL') {
         if (!str(k.legalName)) return { ok: false, status: 400, error: 'Legal name is required' };
         if (k.notGstRegistered !== true) return { ok: false, status: 422, error: 'Contact admin to switch to the Business agreement.' };
         return { ok: true, kyc: { legalName: str(k.legalName), address: str(k.address, 500), panEnc: encryptField(pan), bankHolder: str(k.bankHolder), bankAccountEnc: encryptField(bankAccount), bankIfsc: ifsc, notGstRegistered: true } };
     }
-    const gstin = normGstin(k.gstin);
     if (!str(k.entityName)) return { ok: false, status: 400, error: 'Legal entity name is required' };
-    if (!gstinMatchesPan(gstin, pan)) return { ok: false, status: 400, error: 'GSTIN is not valid, or the PAN inside it does not match the PAN given' };
     if (!str(k.signatoryName) || !str(k.signatoryDesignation)) return { ok: false, status: 400, error: 'Authorised signatory name and designation are required' };
     if (!str(k.designatedForecasterName)) return { ok: false, status: 400, error: 'Designated Forecaster name is required' };
     let sebi: Contractor['sebi'];
@@ -100,6 +96,22 @@ export function buildKyc(type: ContractorType, body: any, email: string): KycRes
         designatedForecasterName: str(k.designatedForecasterName), designatedForecasterEmail: email, bankHolder: str(k.bankHolder), bankAccountEnc: encryptField(bankAccount), bankIfsc: ifsc } };
 }
 
+/** The agreement with the details typed so far filled in (nothing is stored): shown before the contractor accepts. A re-invite previews from the stored details. */
+router.post('/invite/:token/preview', async function (req, res) {
+    if (limited(req, res)) return;
+    const invite = await findInviteByToken(req.params.token);
+    if (inviteState(invite) !== 'ok' || !invite) { res.status(404).json({ error: 'Invite not valid' }); return; }
+    const version = await currentVersion();
+    let pdf: Buffer, filename: string;
+    if (!canPersonalise(version)) { const ag = readAgreement(invite.type, version); pdf = ag.bytes; filename = ag.filename; }
+    else {
+        const target = invite.targetContractorId ? await getContractor(invite.targetContractorId) : null;
+        const d = target ? detailsFromContractor(target) : detailsFromForm(invite.type, str(req.body?.name), req.body?.kyc);
+        ({ pdf, filename } = await renderPersonalised(invite.type, d));
+    }
+    res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${filename}"`, 'Cache-Control': 'no-store' }).send(pdf);
+});
+
 router.post('/invite/:token/accept', async function (req, res) {
     if (limited(req, res)) return;
     if (!isKycCryptoConfigured()) { res.status(503).json({ error: 'The portal is not ready (encryption key missing). Tell the owner.' }); return; }
@@ -109,9 +121,9 @@ router.post('/invite/:token/accept', async function (req, res) {
     const body = req.body ?? {};
     const version = await currentVersion();
     const ag = readAgreement(invite.type, version);
-    const acceptance = (c: Contractor, email: string): AcceptanceDoc => {
+    const acceptance = (c: Contractor, email: string, personalisedSha?: string): AcceptanceDoc => {
         const now = new Date();
-        return { contractorId: c.id, email, agreementType: c.type, agreementVersion: version, fileSha256: ag.sha256, acceptedAtUtc: now.toISOString(),
+        return { contractorId: c.id, email, agreementType: c.type, agreementVersion: version, fileSha256: personalisedSha ?? ag.sha256, templateSha256: personalisedSha ? ag.sha256 : undefined, acceptedAtUtc: now.toISOString(),
             acceptedAtIst: now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }), ip: clientIp(req), userAgent: String(req.get('user-agent') ?? '').slice(0, 300),
             representation6A5: c.type === 'BUSINESS' ? true : undefined, dpdpConsent: true };
     };
@@ -126,8 +138,9 @@ router.post('/invite/:token/accept', async function (req, res) {
         }
         if (!(await consumeInvite(invite._id, c.id))) { res.status(410).json({ error: 'This invite link has already been used.' }); return; }
         if (needsAgreement) {
-            await recordAcceptance(acceptance(c, c.email));
-            const set: any = { agreementVersion: version, agreementAcceptedAt: new Date() };
+            const pr = await storePersonalised(c, detailsFromContractor(c), version);
+            await recordAcceptance(acceptance(c, c.email, pr?.sha256));
+            const set: any = { agreementVersion: version, agreementAcceptedAt: new Date(), ...(pr ? { agreementFile: pr.file, agreementSha256: pr.sha256 } : {}) };
             if (c.status === 'AGREEMENT_PENDING') set.status = 'ACTIVE';
             await contractorsCol().updateOne({ id: c.id }, { $set: set });
         }
@@ -156,9 +169,11 @@ router.post('/invite/:token/accept', async function (req, res) {
     try {
         c.kyc = k.kyc; c.sebi = k.sebi; c.agreementVersion = version; c.agreementAcceptedAt = new Date(); c.dpdpConsentAt = new Date();
         if (c.type === 'BUSINESS') c.representation6A5At = new Date();
+        const pr = await storePersonalised(c, detailsFromForm(c.type, name, body.kyc), version); // the agreement with their details filled in: this is what they accepted
+        if (pr) { c.agreementFile = pr.file; c.agreementSha256 = pr.sha256; }
         await ensureContractorUser(c, levelDefaultsFor(c.type === 'INDIVIDUAL' ? 'beginner' : 'advanced').profitSplitPercent);
         await contractorsCol().insertOne(c);
-        await recordAcceptance(acceptance(c, email));
+        await recordAcceptance(acceptance(c, email, pr?.sha256));
     } catch (e) {
         Log.log('[contractor] accept failed after the invite was consumed; releasing the invite:', e);
         await invitesCol().updateOne({ _id: invite._id }, { $unset: { usedAt: '', contractorId: '' } }).catch(() => undefined);
@@ -188,7 +203,11 @@ router.get('/contractor/me', requireAuth, async function (req, res) {
 async function sendOwnAgreement(req: express.Request, res: express.Response) {
     const c = await me(req);
     if (!c) { res.status(404).json({ error: 'Not a contractor' }); return; }
-    const ag = readAgreement(c.type, await currentVersion());
+    const version = await currentVersion();
+    const mine = c.agreementVersion === version ? readStored(c.agreementFile) : null; // the copy they accepted, with their details filled in
+    if (mine) { res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="Forecasting-Agreement.pdf"', 'X-Agreement-Sha256': sha256Of(mine), 'Cache-Control': 'no-store' }).send(mine); return; }
+    if (canPersonalise(version) && c.kyc) { const r = await renderPersonalised(c.type, detailsFromContractor(c)); res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${r.filename}"`, 'Cache-Control': 'no-store' }).send(r.pdf); return; }
+    const ag = readAgreement(c.type, version);
     res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${ag.filename}"`, 'X-Agreement-Sha256': ag.sha256, 'Cache-Control': 'no-store' }).send(ag.bytes);
 }
 router.get('/contractor/agreement', requireAuth, sendOwnAgreement);
@@ -202,11 +221,12 @@ router.post('/contractor/accept-agreement', requireAuth, async function (req, re
     if (body.acceptTerms !== true || body.dpdpConsent !== true || (c.type === 'BUSINESS' && body.representation6A5 !== true)) { res.status(400).json({ error: 'Please accept the agreement and the confirmations' }); return; }
     if (c.agreementVersion === version) { res.json(await contractorClientView(c)); return; }
     const ag = readAgreement(c.type, version);
+    const pr = await storePersonalised(c, detailsFromContractor(c), version);
     const now = new Date();
-    await recordAcceptance({ contractorId: c.id, email: c.email, agreementType: c.type, agreementVersion: version, fileSha256: ag.sha256, acceptedAtUtc: now.toISOString(),
+    await recordAcceptance({ contractorId: c.id, email: c.email, agreementType: c.type, agreementVersion: version, fileSha256: pr?.sha256 ?? ag.sha256, templateSha256: pr ? ag.sha256 : undefined, acceptedAtUtc: now.toISOString(),
         acceptedAtIst: now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }), ip: clientIp(req), userAgent: String(req.get('user-agent') ?? '').slice(0, 300),
         representation6A5: c.type === 'BUSINESS' ? true : undefined, dpdpConsent: true });
-    const set: any = { agreementVersion: version, agreementAcceptedAt: now };
+    const set: any = { agreementVersion: version, agreementAcceptedAt: now, ...(pr ? { agreementFile: pr.file, agreementSha256: pr.sha256 } : {}) };
     if (c.status === 'AGREEMENT_PENDING') set.status = 'ACTIVE';
     await contractorsCol().updateOne({ id: c.id }, { $set: set });
     res.json(await contractorClientView((await getContractor(c.id)) as Contractor));
@@ -232,24 +252,21 @@ router.post('/contractor/kyc-change', requireAuth, async function (req, res) {
     if (!isKycCryptoConfigured()) { res.status(503).json({ error: 'Not ready' }); return; }
     const b = req.body ?? {};
     const change: Record<string, string> = {};
-    if (b.pan !== undefined) { const v = normPan(b.pan); if (!validPan(v)) { res.status(400).json({ error: 'PAN is not valid' }); return; } change.panEnc = encryptField(v); }
+    if (b.pan !== undefined) {
+        if (c.type === 'BUSINESS') { res.status(400).json({ error: 'A business does not give a PAN: it comes from the GSTIN. Change the GSTIN instead.' }); return; }
+        const v = normPan(b.pan); if (!validPan(v)) { res.status(400).json({ error: 'PAN is not valid' }); return; } change.panEnc = encryptField(v);
+    }
     if (b.gstin !== undefined) {
         if (c.type !== 'BUSINESS') { res.status(400).json({ error: 'GSTIN applies to Business contractors only' }); return; }
-        change.gstinEnc = encryptField(normGstin(b.gstin));
-        change.__gstin = normGstin(b.gstin);
+        const g = normGstin(b.gstin);
+        if (!gstinMatchesPan(g, g.slice(2, 12))) { res.status(400).json({ error: 'GSTIN is not valid' }); return; }
+        change.gstinEnc = encryptField(g);
+        change.panEnc = encryptField(g.slice(2, 12)); // the PAN follows the GSTIN
     }
     if (b.bankAccount !== undefined) { const v = normAccount(b.bankAccount); if (!validAccount(v)) { res.status(400).json({ error: 'Bank account number must be 9 to 18 digits' }); return; } change.bankAccountEnc = encryptField(v); }
     if (b.bankIfsc !== undefined) { const v = normIfsc(b.bankIfsc); if (!validIfsc(v)) { res.status(400).json({ error: 'IFSC is not valid' }); return; } change.bankIfsc = v; }
     if (b.bankHolder !== undefined) { if (!str(b.bankHolder)) { res.status(400).json({ error: 'Bank account holder name is required' }); return; } change.bankHolder = str(b.bankHolder); }
     if (Object.keys(change).length === 0) { res.status(400).json({ error: 'Nothing to change' }); return; }
-    // A GSTIN must still match the PAN (the new one if both change). Checked here on the plain values, then not stored in plain.
-    if (change.__gstin) {
-        const pan = change.panEnc ? normPan(b.pan) : null;
-        const { decryptField } = await import('../contractors/kycCrypto');
-        const effectivePan = pan ?? decryptField((c.kyc as BusinessKyc).panEnc);
-        if (!gstinMatchesPan(change.__gstin, effectivePan)) { res.status(400).json({ error: 'GSTIN is not valid, or the PAN inside it does not match the PAN' }); return; }
-        delete change.__gstin;
-    }
     const col = Mongo.getInstance().db.collection('kycChanges');
     await col.updateOne({ contractorId: c.id, status: 'PENDING' }, { $set: { status: 'SUPERSEDED' } });
     await col.insertOne({ contractorId: c.id, email: c.email, name: c.name, change, fields: Object.keys(change), status: 'PENDING', createdAt: new Date() });

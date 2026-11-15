@@ -709,6 +709,7 @@ strategies:
 
 # Contractor portal (spec SPEC-forecast-contractor-portal-v2.1.md). Read by the frontend process (src/forecast/*, src/contractors/*); hot-reloaded.
 forecast:
+  company: { name: 'Karthikeyan S', address: '', pan: '' }   # the owner as the contracting party (no registered company): fills the Parties clause of every agreement; empty = a [placeholder] is shown
   maxActiveContractors: 5
   sessionDays: { individual: 365, business: 90 }
   hours: { start: '09:20', end: '15:00', expiryEnd: '14:30' }   # Beginner forecasting hours (IST); expiry day ends earlier
@@ -717,7 +718,7 @@ forecast:
   neutralThresholdPoints: 5        # a move smaller than this is NEUTRAL
   holidays: []                     # exchange holidays, YYYY-MM-DD (there is no calendar elsewhere): keep it up to date
   recommendationHours: { start: '09:20', end: '15:00' }  # Advanced: when a recommendation is accepted
-  recommendationsPerDay: 1
+  recommendationsPerDay: 3
   filters:
     orderBook: { upRatio: 1.2, downRatio: 1.2, maxAgeMs: 3000 }   # NIFTY future total buy/sell quantity
     trend: { emaPeriod: 9, minCandles: 10, maxStaleMinutes: 2 }   # 1-minute candles

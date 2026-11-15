@@ -2,8 +2,8 @@
  * Fee statements (spec v2.1 section 10; amounts are GROSS, tax is out of scope and arrives with the tax phase). Kept in their own collection
  * `contractorStatements`: the existing `payouts` collection and its Admin screens are not touched.
  *   Beginner: ACCURACY_WEEK (correct forecasts x the fee snapshotted on each forecast, capped by the month's remaining cap) and RETAINER_MONTH.
- *   Advanced: PROFIT_SHARE_WEEK (a percentage of the net profit of the closed trades of its approved recommendations; a losing week pays 0, nothing carries
- *             forward, nothing is ever charged to the contractor) or, from an effective date, FIXED_PER_APPROVED_WEEK (a fixed amount per approved recommendation).
+ *   Advanced: PROFIT_SHARE_WEEK (a percentage of the net profit of the closed trades of its approved recommendations; a losing week pays 0 and the loss is CARRIED FORWARD
+ *             and set off against later weeks before any share is paid, clause 6A.2; nothing is ever charged to the contractor) or, from an effective date, FIXED_PER_APPROVED_WEEK (a fixed amount per approved recommendation, earned pro rata to the suggested profit achieved, clause 6A.6).
  * Invariants (tested): no amount is negative, only CORRECT forecasts earn an accuracy fee, no input is the Company's P&L for a Beginner statement,
  * and a fee-model change applies only from its effective date, never to an earlier period.
  */
@@ -97,18 +97,28 @@ export async function weeklyAdvancedStatement(c: Contractor, week: { from: strin
     const model = feeModelOn((c as any).feeModels, week.to, defaultSharePercent);
     // the model in force on the LAST day of the week applies to the whole week (a change takes effect from its date: a week that spans it uses the new one only if the date is on or before the week's end)
     const approved = await db.collection('recommendations').find({ contractorId: c.id, status: 'APPROVED', day: { $gte: week.from, $lte: week.to } }).toArray() as any[];
+    const trades = c.pseudoUserId ? await db.collection('closedTrades').find({ user: c.pseudoUserId, exitTime: { $gte: istStart(week.from), $lt: istEndExcl(week.to) } }).toArray() as any[] : [];
     if (model.model === 'FIXED_PER_APPROVED') {
         if (approved.length === 0) return null;
         const per = Number(model.fixedAmount) > 0 ? Number(model.fixedAmount) : 0;
-        return create(c, 'FIXED_PER_APPROVED_WEEK', week.from, week.to, { approvedRecommendations: approved.length, fixedPerApproved: per, effectiveFrom: model.from }, approved.length * per);
+        // Clause 6A.6: the fixed fee is earned to the extent the suggested profit (target - order price, in option points) is achieved by the trades closed in the week:
+        // in full once it is, pro rata when only part is, nothing without a profit. Weekly approximation: points achieved by this week's closed trades / points suggested by this week's approved recommendations.
+        const suggested = approved.reduce((a, r) => a + Math.max(0, Number(r.target) - Number(r.orderPrice)), 0);
+        const achieved = Math.max(0, trades.reduce((a, t) => a + (Number(t.quantity) > 0 && Number.isFinite(Number(t.realizedPnL)) ? Number(t.realizedPnL) / Number(t.quantity) : 0), 0));
+        const ratio = suggested > 0 ? Math.min(1, achieved / suggested) : 0;
+        return create(c, 'FIXED_PER_APPROVED_WEEK', week.from, week.to, { approvedRecommendations: approved.length, fixedPerApproved: per, suggestedPoints: Math.round(suggested * 100) / 100, achievedPoints: Math.round(achieved * 100) / 100, earnedFraction: Math.round(ratio * 10000) / 10000, effectiveFrom: model.from }, approved.length * per * ratio);
     }
     if (!c.pseudoUserId) return null;
-    const trades = await db.collection('closedTrades').find({ user: c.pseudoUserId, exitTime: { $gte: istStart(week.from), $lt: istEndExcl(week.to) } }).toArray() as any[];
     if (trades.length === 0 && approved.length === 0) return null;
     const net = trades.reduce((a, t) => a + (Number.isFinite(Number(t.realizedPnL)) ? Number(t.realizedPnL) : 0), 0);
     const pct = Number(model.sharePercent) > 0 ? Number(model.sharePercent) : defaultSharePercent;
-    const gross = net > 0 ? net * pct / 100 : 0; // a zero or losing week pays nothing, is never carried forward, and never costs the contractor anything
-    return create(c, 'PROFIT_SHARE_WEEK', week.from, week.to, { closedTrades: trades.length, netTradeProfit: Math.round(net * 100) / 100, sharePercent: pct, effectiveFrom: model.from }, gross);
+    // Clause 6A.2: a loss is carried forward and set off against later weeks' profit before any share is paid; it never reduces an amount already paid and never makes the contractor owe anything.
+    const prev = (await statementsCol().find({ contractorId: c.id, kind: 'PROFIT_SHARE_WEEK' }).toArray() as StatementDoc[]).filter((x) => x.periodTo < week.from).sort((a, b) => (a.periodTo < b.periodTo ? -1 : 1)).pop();
+    const lossIn = Math.max(0, Number(prev?.lines.lossCarriedForward) || 0);
+    const effective = net - lossIn;
+    const gross = effective > 0 ? effective * pct / 100 : 0;
+    const lossOut = effective < 0 ? -effective : 0;
+    return create(c, 'PROFIT_SHARE_WEEK', week.from, week.to, { closedTrades: trades.length, netTradeProfit: Math.round(net * 100) / 100, lossBroughtForward: Math.round(lossIn * 100) / 100, lossCarriedForward: Math.round(lossOut * 100) / 100, sharePercent: pct, effectiveFrom: model.from }, gross);
 }
 
 /** The Wednesday job: previous Wednesday-to-Tuesday statements for every non-test contractor that is not terminated (or ended inside the week). Idempotent. */

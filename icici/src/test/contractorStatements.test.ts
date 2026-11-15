@@ -77,18 +77,39 @@ async function main() {
     assert(p2.lines.netTradeProfit === 4100 && p2.gross === 1025, 'a later week stands on its own');
     await T('t5', -2000, '2026-11-25T11:00:00');
     const p3: any = await weeklyAdvancedStatement(biz, { from: '2026-11-25', to: '2026-12-01' }, 25);
-    assert(p3.gross === 0 && p3.lines.netTradeProfit === -2000, 'a losing week pays 0 and is a statement of 0, not a debt');
+    assert(p3.gross === 0 && p3.lines.netTradeProfit === -2000 && p3.lines.lossCarriedForward === 2000, 'a losing week pays 0 (not a debt) and the loss is carried forward');
     const p4: any = await weeklyAdvancedStatement(biz, { from: '2026-12-02', to: '2026-12-08' }, 25);
-    assert(p4 === null, 'a week with no trades and no approved recommendations: no statement');
-    assert((await weeklyAdvancedStatement(biz, { from: '2026-11-25', to: '2026-12-01' }, 25)) === null && (await statementsCol().find({ contractorId: 'b1' }).toArray() as any[]).every((x) => x.gross >= 0), 'the loss was not carried into any other week; nothing is negative');
+    assert(p4 === null, 'a week with no trades and no approved recommendations: no statement, and the carried loss waits');
+    await T('t6', 3000, '2026-12-10T11:00:00');
+    const p5: any = await weeklyAdvancedStatement(biz, { from: '2026-12-09', to: '2026-12-15' }, 25);
+    assert(p5.lines.lossBroughtForward === 2000 && p5.lines.lossCarriedForward === 0 && p5.gross === 250, 'the next profit (3000) first recovers the carried loss (2000): share is 25% of the remaining 1000');
+    await T('t7', 800, '2026-12-17T11:00:00');
+    const p6: any = await weeklyAdvancedStatement(biz, { from: '2026-12-16', to: '2026-12-22' }, 25);
+    assert(p6.lines.lossBroughtForward === 0 && p6.gross === 200, 'once recovered nothing is brought forward');
+    await T('t8', -500, '2026-12-24T11:00:00'); await T('t9', 200, '2026-12-31T11:00:00');
+    const p7: any = await weeklyAdvancedStatement(biz, { from: '2026-12-23', to: '2026-12-29' }, 25);
+    const p8: any = await weeklyAdvancedStatement(biz, { from: '2026-12-30', to: '2027-01-05' }, 25);
+    assert(p7.lines.lossCarriedForward === 500 && p8.lines.lossBroughtForward === 500 && p8.gross === 0 && p8.lines.lossCarriedForward === 300, 'a partly recovered loss keeps carrying (500 - 200 = 300)');
+    assert((await statementsCol().find({ contractorId: 'b1' }).toArray() as any[]).every((x) => x.gross >= 0), 'nothing is ever negative: a carried loss is never a debt');
     const fixed: any = { ...biz, id: 'b2', email: 'b2@x.com', pseudoUserId: 'Recommendation-S02', feeModels: [{ from: '2026-11-18', model: 'FIXED_PER_APPROVED', fixedAmount: 400 }] };
     await contractorsCol().insertOne(fixed);
-    const R = (id: string, day: string, status = 'APPROVED') => db.collection('recommendations').insertOne({ id, contractorId: 'b2', day, status });
+    const R = (id: string, day: string, status = 'APPROVED') => db.collection('recommendations').insertOne({ id, contractorId: 'b2', day, status, orderPrice: 100, target: 120 });
+    const T2 = (id: string, pnl: number, qty: number, exit: string) => db.collection('closedTrades').insertOne({ id, user: 'Recommendation-S02', realizedPnL: pnl, quantity: qty, exitTime: new Date(`${exit}+05:30`) });
     await R('x1', '2026-11-12'); await R('x2', '2026-11-13'); await R('x3', '2026-11-19'); await R('x4', '2026-11-20'); await R('x5', '2026-11-21', 'REJECTED');
     const f1: any = await weeklyAdvancedStatement(fixed, w, 25);
     assert(f1 === null || f1.kind === 'PROFIT_SHARE_WEEK', 'before the effective date the old model (profit share) applies to that week: no fixed fee');
+    await T2('y1', 1300, 65, '2026-11-20T11:00:00'); // +20 points on one trade
     const f2: any = await weeklyAdvancedStatement(fixed, { from: '2026-11-18', to: '2026-11-24' }, 25);
-    assert(f2.kind === 'FIXED_PER_APPROVED_WEEK' && f2.lines.approvedRecommendations === 2 && f2.gross === 800, 'from the effective date a fixed amount per APPROVED recommendation (rejected ones earn nothing)');
+    assert(f2.kind === 'FIXED_PER_APPROVED_WEEK' && f2.lines.approvedRecommendations === 2 && f2.lines.suggestedPoints === 40 && f2.lines.achievedPoints === 20 && f2.gross === 400, 'half of the suggested profit (20 of 40 points) achieved: half of 2 x 400 is paid, pro rata');
+    await R('x6', '2026-11-25'); await T2('y2', 2600, 65, '2026-11-26T11:00:00'); // +40 points, suggested 20
+    const f3: any = await weeklyAdvancedStatement(fixed, { from: '2026-11-25', to: '2026-12-01' }, 25);
+    assert(f3.lines.earnedFraction === 1 && f3.gross === 400, 'profit above the suggested profit pays the full fee, never more');
+    await R('x7', '2026-12-02'); await T2('y3', -650, 65, '2026-12-03T11:00:00');
+    const f4: any = await weeklyAdvancedStatement(fixed, { from: '2026-12-02', to: '2026-12-08' }, 25);
+    assert(f4.gross === 0 && f4.lines.earnedFraction === 0, 'a losing trade earns nothing (and costs the contractor nothing)');
+    await R('x8', '2026-12-09');
+    const f5: any = await weeklyAdvancedStatement(fixed, { from: '2026-12-09', to: '2026-12-15' }, 25);
+    assert(f5.gross === 0, 'approved but not yet profitable (no closed trade): nothing yet');
     assert((await statementsCol().find({ contractorId: 'b2', kind: 'PROFIT_SHARE_WEEK' }).toArray()).length <= 1, 'switching the model altered no earlier statement');
 
     console.log('jobs:');

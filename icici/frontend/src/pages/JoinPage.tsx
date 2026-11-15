@@ -29,7 +29,10 @@ export default function JoinPage() {
   const [err, setErr] = useState('');
   const [f, setF] = useState<Record<string, string>>({});
   const [chk, setChk] = useState({ accept: false, dpdp: false, rep: false, notGst: false });
-  const set = (k: string) => (e: React.ChangeEvent<any>) => setF((x) => ({ ...x, [k]: e.target.value }));
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null); // the agreement with the details typed so far, from the server
+  const [previewing, setPreviewing] = useState(false);
+  // Changing a detail invalidates the preview: what is accepted must be exactly what was shown.
+  const set = (k: string) => (e: React.ChangeEvent<any>) => { setPdfUrl(null); setChk((c) => ({ ...c, accept: false, dpdp: false, rep: false })); setF((x) => ({ ...x, [k]: e.target.value })); };
 
   useEffect(() => {
     apiFetch(`/invite/${encodeURIComponent(token)}`).then(async (r) => {
@@ -49,17 +52,30 @@ export default function JoinPage() {
   const re = info.reinvite;
   const needsAgreement = re ? re.needsAgreement : true;
 
+  const kycBody = () => (business
+    ? { entityName: f.entityName, address: f.address, gstin: f.gstin, signatoryName: f.signatoryName, signatoryDesignation: f.signatoryDesignation, designatedForecasterName: f.name,
+        bankHolder: f.bankHolder, bankAccount: f.bankAccount, bankIfsc: f.bankIfsc, sebiNumber: f.sebiNumber || undefined, sebiValidUntil: f.sebiValidUntil || undefined }
+    : { legalName: f.name, address: f.address, pan: f.pan, bankHolder: f.bankHolder, bankAccount: f.bankAccount, bankIfsc: f.bankIfsc, notGstRegistered: chk.notGst });
+
+  // Fetches the agreement with the details filled in (nothing is stored until Accept).
+  const preview = async () => {
+    setErr(''); setPreviewing(true);
+    try {
+      const res = await apiPost(`/invite/${encodeURIComponent(token)}/preview`, re ? {} : { name: f.name, kyc: kycBody() });
+      if (!res.ok) { setErr(await readError(res)); return; }
+      setPdfUrl(URL.createObjectURL(await res.blob()));
+    } finally { setPreviewing(false); }
+  };
+  useEffect(() => { if (re && re.needsAgreement) void preview(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [re?.needsAgreement]);
+  const detailsReady = !!(f.name && f.email && f.address && (business ? f.entityName && f.gstin && f.signatoryName && f.signatoryDesignation : f.pan) && f.bankHolder && f.bankAccount && f.bankIfsc && (business || chk.notGst));
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setErr(''); setBusy(true);
     try {
       const body = re
         ? { acceptTerms: chk.accept, dpdpConsent: chk.dpdp, representation6A5: chk.rep }
-        : { email: f.email, name: f.name, acceptTerms: chk.accept, dpdpConsent: chk.dpdp, representation6A5: chk.rep,
-            kyc: business
-              ? { entityName: f.entityName, address: f.address, pan: f.pan, gstin: f.gstin, signatoryName: f.signatoryName, signatoryDesignation: f.signatoryDesignation, designatedForecasterName: f.name,
-                  bankHolder: f.bankHolder, bankAccount: f.bankAccount, bankIfsc: f.bankIfsc, sebiNumber: f.sebiNumber || undefined, sebiValidUntil: f.sebiValidUntil || undefined }
-              : { legalName: f.name, address: f.address, pan: f.pan, bankHolder: f.bankHolder, bankAccount: f.bankAccount, bankIfsc: f.bankIfsc, notGstRegistered: chk.notGst } };
+        : { email: f.email, name: f.name, acceptTerms: chk.accept, dpdpConsent: chk.dpdp, representation6A5: chk.rep, kyc: kycBody() };
       const res = await apiPost(`/invite/${encodeURIComponent(token)}/accept`, body);
       if (!res.ok) { setErr(await readError(res)); return; }
       await refreshUser();
@@ -70,15 +86,9 @@ export default function JoinPage() {
   return (
     <Container className="py-4" style={{ maxWidth: 900 }}>
       <h1 className="h4 mb-1">Nivedha Tech – Forecasting programme</h1>
-      <p className="text-muted">{re ? `Welcome back, ${re.name}.` : `You are invited as a ${business ? 'Business (GSTIN)' : 'Individual (PAN)'} contractor.`} This link works once and signs this browser in.</p>
+      <p className="text-muted">{re ? `Welcome back, ${re.name}.` : `You are invited as a ${business ? 'Business (GSTIN)' : 'Individual (PAN)'} contractor.`} This link works once and signs this browser in. Give your details first; the agreement is then prepared with them for you to read and accept.</p>
       <Alert variant="warning" className="small">There is no login page. If you log out or clear your browser data you will need a new invitation, so keep using this browser.</Alert>
       <Form onSubmit={submit}>
-        {needsAgreement && (
-          <Card className="mb-3">
-            <Card.Header>Forecasting Services Agreement v{version} · <a href={`/invite/${encodeURIComponent(token)}/agreement`} target="_blank" rel="noreferrer">open in a new tab</a></Card.Header>
-            <Card.Body className="p-0"><iframe title="Agreement" src={`/invite/${encodeURIComponent(token)}/agreement`} style={{ width: '100%', height: 460, border: 0 }} /></Card.Body>
-          </Card>
-        )}
         {!re && (
           <Card className="mb-3">
             <Card.Header>Your details</Card.Header>
@@ -88,8 +98,8 @@ export default function JoinPage() {
                 <Field f={f} set={set} k="email" label={business ? 'Designated Forecaster email' : 'Email'} type="email" readOnly={!!info.emailLock} />
                 {business && <Field f={f} set={set} k="entityName" label="Legal entity name" />}
                 <Field f={f} set={set} k="address" label={business ? 'Registered address' : 'Address'} />
-                <Field f={f} set={set} k="pan" label={business ? 'Entity PAN' : 'PAN'} maxLength={10} style={{ textTransform: 'uppercase' }} />
-                {business && <Field f={f} set={set} k="gstin" label="GSTIN (its PAN must match)" maxLength={15} style={{ textTransform: 'uppercase' }} />}
+                {!business && <Field f={f} set={set} k="pan" label="PAN" maxLength={10} style={{ textTransform: 'uppercase' }} />}
+                {business && <Field f={f} set={set} k="gstin" label="GSTIN" maxLength={15} style={{ textTransform: 'uppercase' }} />}
                 {business && <Field f={f} set={set} k="signatoryName" label="Authorised signatory name" />}
                 {business && <Field f={f} set={set} k="signatoryDesignation" label="Signatory designation" />}
                 {business && <Field f={f} set={set} k="sebiNumber" label="SEBI Registration No. (Research Analyst, INH + 9 digits)" required={false} maxLength={12} style={{ textTransform: 'uppercase' }} />}
@@ -102,7 +112,19 @@ export default function JoinPage() {
             </Card.Body>
           </Card>
         )}
-        {needsAgreement && (
+        {needsAgreement && !pdfUrl && !re && (
+          <div className="mb-3">
+            <Button variant="outline-primary" disabled={!detailsReady || previewing} onClick={preview}>{previewing ? 'Preparing…' : 'Review the agreement'}</Button>
+            <span className="small text-muted ms-2">{detailsReady ? 'The agreement is prepared with the details you gave.' : 'Fill in all the details above first: the agreement is prepared with them.'}</span>
+          </div>
+        )}
+        {needsAgreement && pdfUrl && (
+          <Card className="mb-3">
+            <Card.Header>Forecasting Services Agreement v{version} · <a href={pdfUrl} target="_blank" rel="noreferrer">open in a new tab</a></Card.Header>
+            <Card.Body className="p-0"><iframe title="Agreement" src={pdfUrl} style={{ width: '100%', height: 460, border: 0 }} /></Card.Body>
+          </Card>
+        )}
+        {needsAgreement && pdfUrl && (
           <Card className="mb-3"><Card.Body>
             <Form.Check id="acc" className="mb-2" checked={chk.accept} onChange={(e) => setChk({ ...chk, accept: e.target.checked })} label={`I have read and accept the Forecasting Services Agreement v${version}`} />
             <Form.Check id="dp" className="mb-2" checked={chk.dpdp} onChange={(e) => setChk({ ...chk, dpdp: e.target.checked })} label="I consent to the processing of my personal data as described in Section 12 of the agreement (DPDP Act, 2023)." />
@@ -110,7 +132,7 @@ export default function JoinPage() {
           </Card.Body></Card>
         )}
         {err && <Alert variant="danger">{err}</Alert>}
-        <Button type="submit" disabled={busy || (needsAgreement && (!chk.accept || !chk.dpdp || (business && !chk.rep)))}>{busy ? 'Please wait…' : re && !needsAgreement ? 'Continue' : 'Accept and continue'}</Button>
+        <Button type="submit" disabled={busy || (needsAgreement && (!pdfUrl || !chk.accept || !chk.dpdp || (business && !chk.rep)))}>{busy ? 'Please wait…' : re && !needsAgreement ? 'Continue' : 'Accept and continue'}</Button>
       </Form>
     </Container>
   );

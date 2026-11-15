@@ -19,6 +19,15 @@ Unchanged from v1.0: 8 (Taxes and Invoicing), 10, 16, 17 and the rest of 12 and 
 
 **Owner's later edit (2026-11-16):** clause 4.3 ("must not copy, resell or relay calls from third parties") was removed from the Business agreement; the old 4.4 and 4.5 are now 4.3 and 4.4. Section 9.3 (no giving the same Recommendation to another person for the Company's trade) is unchanged. Nobody had accepted Business v1.1 yet, so the file was rebuilt in place (new SHA-256 in `manifest.json`).
 
+**Owner's edits of 2026-11-16 (Business):**
+- 6A.2 now **carries losses forward**: a loss is set off against later weeks' Trade Profit before any Profit Share is paid; it never reduces an amount already paid and is never owed by the Contractor. 6A.1 refers to it. (The statements code does the same: `lossBroughtForward` / `lossCarriedForward` on each weekly statement.)
+- 6A.6 fixed fee: payable **only to the extent the suggested profit (target minus entry price) is achieved**; in full once achieved, pro rata when only part is, in the weekly statement of the week the trade closes; nothing for a trade without a profit. Weekly approximation in code: points achieved by the week's closed trades / points suggested by the week's approved recommendations. Please confirm that reading.
+- Schedule 1: Recommendations per day **[3]** (config `forecast.recommendationsPerDay: 3`).
+- Section 13: the bullet "Either party may end it at any time by giving 7 days' notice by email" is removed. Clause 9.3 (same Recommendation to another person) removed; 9.4 to 9.6 renumbered 9.3 to 9.5.
+- Signatures section removed. Consequential: the Effective Date paragraph no longer says "when both parties sign it" (acceptance on the Platform only).
+- **The party is named "Karthikeyan S" instead of "the Company"** everywhere (there is no registered company). Applied to the Individual agreement too. His address and PAN come from `forecast.company` in config.yml (empty = `[address]` / `[__________]` placeholders show).
+- **The Parties clause (and 3.4, Schedule 1 "Registration valid until") is filled from the contractor's own details.** The contractor gives the details first, the portal prepares the agreement with them, they read it and accept that file; it is signed, stored under `storage/_agreements/<contractor>/`, and the acceptance record holds its SHA-256 (and the template's). The files in this folder are the generic templates with placeholders. A PAN is no longer asked of a Business contractor: it is read from the GSTIN (characters 3 to 12).
+
 ## Individual (PAN) v1.1
 v1.0 verbatim except:
 1. Section 3, second bullet: replaced as in the amendment text.

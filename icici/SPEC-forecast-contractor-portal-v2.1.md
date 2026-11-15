@@ -10,7 +10,7 @@ Contractors are engaged by invitation only. They never trade, never connect to a
 
 | | Beginner (Individual, PAN) | Advanced (Business, GSTIN) |
 |---|---|---|
-| Agreement | Forecasting Services Agreement, Individual (PAN) | Forecasting Services Agreement, Business (GSTIN), amended for recommendations and profit share (v1.1) |
+| Agreement | Forecasting Services Agreement, Individual (PAN) | Forecasting Services Agreement, Business (GSTIN), amended for recommendations and profit share, with loss carry-forward (v1.1) |
 | What they submit | **Forecasts**: NIFTY 50 Up or Down, optional confidence Low/Medium/High | **Recommendations**: index, strike, CE/PE, entry, target, stop |
 | What decides if a trade is taken | **Two filters, always**, then the order is placed with no owner approval | **The owner approves or rejects every recommendation**, always |
 | How they are paid | Monthly retainer + a fixed fee per correct forecast | Configurable fee model (default: a percentage of the profit on trades taken from their approved recommendations), against an invoice |
@@ -42,6 +42,7 @@ Only the owner's own system places orders, in the owner's own broker account. No
 ## 4. Agreements
 
 - Serve the PDF that matches the contractor type. Individual: `Forecasting-Agreement-Individual-PAN`. Business: `Forecasting-Agreement-Business-GSTIN` (v1.1).
+- **The agreement is personalised:** the contractor gives their details first; the portal then prepares the agreement with them (Parties clause, designated forecaster, registration) and the contractor reads and accepts **that** signed file, whose SHA-256 is recorded. The owner is named as **Karthikeyan S** (no registered company).
 - **Acceptance screen:** embedded PDF viewer, a checkbox "I have read and accept the Forecasting Services Agreement v<version>", a DPDP consent checkbox linked to the agreement's data-protection section, and an Accept button.
 - **Append-only acceptance record:** contractor, agreement type and version, SHA-256 of the PDF file, email, timestamps (UTC and IST), IP address, user agent.
 - **Gate:** forecast and recommendation APIs reject any contractor without an acceptance of the current version.
@@ -51,7 +52,7 @@ Only the owner's own system places orders, in the owner's own broker account. No
 ## 5. KYC and profile
 
 - **Individual:** legal name, address, PAN (format-validated), bank account + IFSC, and a declaration "Not registered under GST". If unchecked, activation is blocked with: "Contact admin to switch to the Business agreement."
-- **Business:** legal entity name, registered address, PAN, GSTIN (format-validated, and the PAN inside the GSTIN must match), authorised signatory name and designation, Designated Forecaster name and email, bank details, and **`SEBI Registration No.`** (Research Analyst, `INH` followed by nine digits; **`INA` (Investment Adviser) is not accepted**, because strike/entry/target/stop calls on index options are research-analyst activity), plus the **registration valid-until date**. The owner marks it verified against SEBI's published list. A recommendation can be submitted only while the number is verified and unexpired; on the valid-until date the contractor is blocked from submitting, and the owner is alerted 30 days earlier.
+- **Business:** legal entity name, registered address, GSTIN (format-validated; the entity PAN is **derived from the GSTIN**, not asked for twice), authorised signatory name and designation, Designated Forecaster name and email, bank details, and **`SEBI Registration No.`** (Research Analyst, `INH` followed by nine digits; **`INA` (Investment Adviser) is not accepted**, because strike/entry/target/stop calls on index options are research-analyst activity), plus the **registration valid-until date**. The owner marks it verified against SEBI's published list. A recommendation can be submitted only while the number is verified and unexpired; on the valid-until date the contractor is blocked from submitting, and the owner is alerted 30 days earlier.
 - **Storage:** PAN, GSTIN and bank fields are AES-256-GCM encrypted at rest, readable only by the admin role, and masked in the UI except the last four characters.
 
 ## 6. What contractors can and cannot see
@@ -87,7 +88,7 @@ Every forecast is evaluated by two filters (interface `Filter.evaluate(context) 
 
 ## 9. Advanced: recommendations (approval always)
 
-- A recommendation has: index, strike, CE/PE, entry, target, stop. Validation: stop < order price < target; contract format; not already traded today; no open trade for that contractor; SEBI number present.
+- Up to **3 recommendations a day** (`forecast.recommendationsPerDay`), one open at a time. A recommendation has: index, strike, CE/PE, entry, target, stop. Validation: stop < order price < target; contract format; not already traded today; no open trade for that contractor; SEBI number present.
 - It is stored as `PENDING` and the owner gets a **persistent pop-up** (Approve / Reject, optional note) that stays until acted on and reappears after a reload. **No filters apply to a recommendation**: it is taken as submitted and the owner's approval is applied on top of it; the decision is the owner's alone.
 - **Approve** arms the contractor's own recommendation strategy in the existing strategy configuration; **Reject** records the note and notifies the contractor. Unactioned recommendations become `EXPIRED` at the end of the day. Nothing is ever approved automatically, and no timer exists near the approval code.
 - Every decision is appended to `decisions`.
@@ -102,7 +103,7 @@ Every forecast is evaluated by two filters (interface `Filter.evaluate(context) 
 
 **Advanced:**
 - **Fee model is configuration**, `ADVANCED_FEE_MODEL`, set per contractor with an effective date, never retroactive: `PROFIT_SHARE` (default; a percentage, currently 25%, of the profit on closed trades produced by that contractor's approved recommendations, using the existing profit-share payout flow) or `FIXED_PER_APPROVED` (a fixed amount per approved recommendation). Switching the model changes no other code. Loss-limit forfeiture is not applied to this source because the contractor does not size the trades.
-- Under either model: no negative amount is ever owed by the contractor, nothing is charged to the contractor, and there is no loss carry-forward.
+- Under either model: no negative amount is ever owed by the contractor and nothing is charged to the contractor. **Under `PROFIT_SHARE` a loss is carried forward** and set off against later weeks' profit before any share is paid (clause 6A.2). **Under `FIXED_PER_APPROVED` the fixed amount is earned only to the extent the suggested profit (target minus entry) is achieved**, pro rata when partly achieved, in the weekly statement of the week the trade closes (clause 6A.6).
 - **Written confirmation:** the Business contractor's acceptance screen records the representation in the agreement (clause 6A.5) that its own registration terms and compliance function permit this fee arrangement. Acceptance without it is not possible.
 - **Invoice:** within 2 days of each paid payout (end of day IST) the contractor uploads an invoice (PDF, invoice number, date). If it is late the contractor is `PAUSED_INVOICE`: new recommendations are blocked, fees are never clawed back, and uploading restores access automatically.
 
@@ -142,7 +143,7 @@ Tabs: **Contractors** (create invite, copy link, send by Gmail, statuses, activa
 6. Every route other than the allowlist returns 403 for a contractor token (route-enumeration test); the two scoped trade endpoints return only the caller's own trades.
 7. Scoring with synthetic ticks gives CORRECT, INCORRECT, NEUTRAL and VOID; scored and write-once fields cannot be edited.
 8. Beginner fees: correct × fee, capped by the monthly cap; Incorrect/Neutral/Void contribute 0; never negative; unchanged when owner P&L is mocked large profit or loss; retainer pro-rated and zero below minimum participation.
-9. Advanced: an invoice not uploaded within 2 days gives `PAUSED_INVOICE` and blocks new recommendations; an upload restores access; fees unchanged. Under both `PROFIT_SHARE` and `FIXED_PER_APPROVED`: no negative payout, nothing charged to the contractor, no loss-limit forfeiture, no loss carry-forward; switching the model with an effective date does not alter earlier statements.
+9. Advanced: an invoice not uploaded within 2 days gives `PAUSED_INVOICE` and blocks new recommendations; an upload restores access; fees unchanged. Under both `PROFIT_SHARE` and `FIXED_PER_APPROVED`: no negative payout, nothing charged to the contractor, no loss-limit forfeiture; a loss is carried forward under PROFIT_SHARE and never reduces a payment already made; switching the model with an effective date does not alter earlier statements.
 10. The engine refuses to start without the order-book filter. Synthetic depth (buy 1,30,000 / sell 1,00,000) passes UP and rejects DOWN; a stale snapshot rejects; the trend filter passes and rejects on synthetic candles; the pass-through alarm fires under 10% rejections over 30 evaluations.
 11. A Beginner forecast that passes both filters places an order with no approval step; one that fails either filter places none. An Advanced recommendation places no order until the owner approves; there is no timer-based approval code (grep test).
 12. The recommendation validation module gives the same results as the existing recommendation strategy on a shared test set (parity test).
