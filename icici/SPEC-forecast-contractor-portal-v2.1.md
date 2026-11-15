@@ -88,7 +88,7 @@ Every forecast is evaluated by two filters (interface `Filter.evaluate(context) 
 ## 9. Advanced: recommendations (approval always)
 
 - A recommendation has: index, strike, CE/PE, entry, target, stop. Validation: stop < order price < target; contract format; not already traded today; no open trade for that contractor; SEBI number present.
-- It is stored as `PENDING` and the owner gets a **persistent pop-up** (Approve / Reject, optional note) that stays until acted on and reappears after a reload. The pop-up shows the direction filters' results (CE as Up, PE as Down) **for information only**; the decision is the owner's.
+- It is stored as `PENDING` and the owner gets a **persistent pop-up** (Approve / Reject, optional note) that stays until acted on and reappears after a reload. **No filters apply to a recommendation**: it is taken as submitted and the owner's approval is applied on top of it; the decision is the owner's alone.
 - **Approve** arms the contractor's own recommendation strategy in the existing strategy configuration; **Reject** records the note and notifies the contractor. Unactioned recommendations become `EXPIRED` at the end of the day. Nothing is ever approved automatically, and no timer exists near the approval code.
 - Every decision is appended to `decisions`.
 

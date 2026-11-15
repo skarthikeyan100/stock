@@ -16,7 +16,7 @@ export type RecStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
 export interface RecommendationInput { index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE'; entry: number; target: number; stop: number }
 export interface RecommendationDoc extends RecommendationInput {
     _id?: any; contractorId: string; contractorName: string; contractorEmail: string; slot: string; contract: string; orderPrice: number; day: string;
-    status: RecStatus; createdAt: Date; decidedAt?: Date; decidedBy?: string; note?: string; filters?: unknown;
+    status: RecStatus; createdAt: Date; decidedAt?: Date; decidedBy?: string; note?: string;
 }
 
 export const recommendationsCol = () => Mongo.getInstance().db.collection('recommendations');

@@ -56,7 +56,6 @@ export default function ApprovalPopup() {
           <tr><td>Stop loss</td><td className="text-end">{cur.stop}</td></tr>
         </tbody></table>
         <div className="small text-muted mb-2">Received {new Date(cur.createdAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false })}. It lapses at the end of the day if you do nothing.</div>
-        {cur.filters && <pre className="small bg-body-tertiary p-2 rounded">{JSON.stringify(cur.filters, null, 1)}</pre>}
         <Form.Control size="sm" placeholder="Note (optional, shown to the contractor)" value={note} onChange={(e) => setNote(e.target.value)} />
         {err && <div className="text-danger small mt-2">{err}</div>}
       </Modal.Body>

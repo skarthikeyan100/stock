@@ -65,7 +65,7 @@ router.get('/recommendations', requireAuth, async function (req, res) {
 });
 
 // ---------- owner ----------
-const ownerView = (r: RecommendationDoc) => ({ ...ownView(r), kind: 'recommendation', contractorId: r.contractorId, contractorName: r.contractorName, slot: r.slot, orderPrice: r.orderPrice, filters: r.filters ?? null, decidedBy: r.decidedBy ?? null });
+const ownerView = (r: RecommendationDoc) => ({ ...ownView(r), kind: 'recommendation', contractorId: r.contractorId, contractorName: r.contractorName, slot: r.slot, orderPrice: r.orderPrice, decidedBy: r.decidedBy ?? null });
 
 router.get('/owner/recommendations', requireAdmin, async function (req, res) {
     const status = str(req.query.status);
@@ -106,7 +106,7 @@ router.post('/owner/recommendations/:id/decision', requireAdmin, async function 
             res.status(500).json({ error: `Could not arm the strategy: ${e?.message ?? e}` }); return;
         }
     }
-    await appendDecision({ kind: 'recommendation', recommendationId: String(rec._id), contractorId: rec.contractorId, decision, actor, note, slot: rec.slot, contract: rec.contract, entry: rec.entry, target: rec.target, stop: rec.stop, filters: rec.filters ?? null });
+    await appendDecision({ kind: 'recommendation', recommendationId: String(rec._id), contractorId: rec.contractorId, decision, actor, note, slot: rec.slot, contract: rec.contract, entry: rec.entry, target: rec.target, stop: rec.stop });
     await notifyUser(rec.contractorEmail, 'recommendation_decision', decision === 'approve' ? `${rec.contract} was approved.` : `${rec.contract} was not approved${note ? `: ${note}` : '.'}`);
     await notifyAdmins('approval_resolved', `${rec.contractorName} ${rec.contract}: ${decision === 'approve' ? 'approved' : 'rejected'}.`, { recommendationId: String(rec._id) });
     res.json(ownerView({ ...rec, status: decision === 'approve' ? 'APPROVED' : 'REJECTED', note }));
