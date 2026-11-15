@@ -130,3 +130,35 @@ A comment line is written to every stream every 20 s so a proxy never sees it as
 ## Data models
 
 See `src/model/model.ts` (`Trade`, `OptionQuote`, `NiftyQuote`, `SensexQuote`) and `src/user.ts` (the user document). Per-user risk state lives in the trading process (`src/processes/order/bookkeeping.ts`).
+
+---
+
+## Contractor portal (invite-only; spec `SPEC-forecast-contractor-portal-v2.1.md`)
+
+Contractors have **no login**: a single-use invite link (`/join/<token>` in the UI, `/invite/<token>` in the API) creates the contractor and sets a long-lived signed `session` cookie (`email|issuedAt|days`, 365 days Individual / 90 Business, re-issued at most daily). A logout or cleared cookie means a new invite. `POST /auth/login` (Google) now accepts **admin emails only**. A session whose user has `role: 'contractor'` is fenced by `src/contractors/guard.ts` (default deny): it may call only the routes marked **C** below plus `/auth/me`, `/auth/logout`, `/niftystream`, `/notificationstream` and its own `/users/:email/notifications*`; everything else is 403. `GET /auth/me` answers a contractor with a contractor-safe view (no capital, limits or broker fields).
+
+### Public (the invite link is the credential; rate-limited)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/invite/:token` | `{state: ok|used|revoked|expired|unknown, type, emailLock, reinvite, agreement{version,sha256,filename}}` |
+| GET | `/invite/:token/agreement` | The agreement PDF for the invite's type, with `X-Agreement-Sha256` |
+| POST | `/invite/:token/accept` | New: `{email, name, acceptTerms, dpdpConsent, representation6A5 (Business), kyc{...}}`. Re-invite: `{acceptTerms, dpdpConsent, representation6A5}` only when the agreement version changed. Sets the cookie. 410 once used. |
+
+### Contractor (C)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/contractor/me` | Contractor-safe profile (masked PAN/GSTIN/bank), status, agreement versions, `blockedReason` |
+| GET | `/contractor/agreement`, `/agreements/current` | Own agreement PDF (current version) |
+| POST | `/contractor/accept-agreement` | `{acceptTerms, dpdpConsent, representation6A5}` for a new version |
+| POST | `/contractor/sebi` | Business: `{number (INH+9 digits), validUntil}`; unverified until the owner verifies |
+| POST | `/contractor/kyc-change` | `{pan?, gstin?, bankAccount?, bankIfsc?, bankHolder?}`: pending until the owner approves |
+| GET | `/contractor/trades`, `/contractor/positionstream` | Read-only entry price and live P&L of trades from the caller's own slot only |
+| POST/GET | `/recommendations` | Advanced only. POST `{index, strike, right, entry, target, stop}` -> PENDING; GET own list |
+
+### Owner (admin only)
+`GET /owner/summary`; `POST /owner/invites {type, email?, send?}` (returns the link once), `GET /owner/invites`, `POST /owner/invites/:id/revoke`; `GET /owner/contractors`, `GET /owner/contractors/:id`, `GET /owner/contractors/:id/kyc` (decrypted, logged), `POST /owner/contractors/:id/{activate,pause,terminate,reinvite,revoke-sessions,sebi-verify}`; `GET /owner/kyc-changes`, `POST /owner/kyc-changes/:id/decision`; `GET /owner/agreements`, `POST /owner/agreements` (multipart `version`, `effectiveDate`, `individual`, `business` PDFs); `GET /owner/recommendations`, `GET /owner/approvals/pending`, `POST /owner/recommendations/:id/decision {decision: approve|reject, note?}`.
+Approving a recommendation writes the contractor's strategy **slot** block (`Recommendation-S01..` in `config.yml`, a normal `RecommendationStrategy`) exactly as the `recommend` skill does; the strategy then trades it. Strategy blocks only exist if they were in `config.yml` at start-up, so contractors get a slot from a pre-defined pool at activation (`src/contractors/slots.ts`).
+
+Mongo collections: `contractors`, `invites`, `agreementAcceptances` (append-only), `agreementVersions`, `recommendations`, `kycChanges`, `decisions` (append-only), `contractorDailyEmails`. Env: `KYC_ENCRYPTION_KEY` (AES-256-GCM key for PAN/GSTIN/bank; losing it makes stored KYC unreadable), optional `PUBLIC_BASE_URL` (invite link base, default https://www.nivedhatech.com).
+New API prefixes (`/invite /contractor /forecast /recommendations /agreements /owner`) are in `frontend/vite.config.ts` and `cloudflare/_worker.js`: redeploy the Worker. UI pages: `/join/:token`, `/my/*`, `/console`, `/owner-login`.
+Emails (from this machine; test-recipient redirect honoured): the contractor welcome (sent after the first acceptance, agreement PDF attached) and `npm run contractor-email -- [--date] [--dry-run] [--force]`.

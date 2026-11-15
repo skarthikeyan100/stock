@@ -14,6 +14,8 @@ const signature = require('cookie-signature');
 import { installFakeDb } from './fakeDb';
 
 process.env.KYC_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+// Never send a real email from a test (the welcome email fires after an acceptance).
+for (const k of ['GMAIL_USER', 'GMAIL_CLIENT_ID', 'GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN']) delete process.env[k];
 const SECRET = 'test-secret';
 
 import { gstinMatchesPan, sebiUsable, validPan, validSebi, validIfsc, validAccount, daysUntil } from '../contractors/validate';

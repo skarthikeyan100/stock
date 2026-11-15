@@ -9,6 +9,7 @@
     "sync": "scripts/sync.sh",
     "eod-email": "tsc && node ./dist/tools/sendEodEmails.js",
     "welcome-email": "tsc && node ./dist/tools/sendWelcomeEmails.js",
+    "contractor-email": "tsc && node ./dist/tools/sendContractorEmails.js",
     "check-invoices": "tsc && node ./dist/tools/checkInvoices.js",
     "processes:once": "scripts/kill-stale-orchestrator.sh && tsc && node ./dist/orchestrator.js",
     "server:mock": "PORT=3001 MOCK_DATE=2026-02-24 MOCK_BROKER=true MOCK_QUOTES=true CONFIG_PATH=./config.mock.yml node ./dist/server.js 2>&1 | tee server.log",

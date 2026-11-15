@@ -18,6 +18,7 @@ import { setContractorCookie } from '../contractors/session';
 import { toContractorClient } from '../contractors/clientUser';
 import { notifyAdmins } from '../contractors/notify';
 import Mongo from '../tools/mongo';
+import { sendWelcomeIfDue } from '../contractors/emails';
 
 const router = asyncRouter();
 const acceptLimiter = new RateLimiter(20, 60_000);
@@ -166,6 +167,7 @@ router.post('/invite/:token/accept', async function (req, res) {
     }
     invalidateUserCache(email);
     setContractorCookie(res, email, c.type);
+    sendWelcomeIfDue(c).catch(() => undefined); // never blocks or fails the acceptance
     await notifyAdmins('contractor_accepted', `${name} (${c.type === 'INDIVIDUAL' ? 'Beginner' : 'Advanced'}) accepted the invite and is awaiting activation.`, { contractorId: c.id });
     res.json(await contractorClientView(c));
 });
