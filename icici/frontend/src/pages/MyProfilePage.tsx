@@ -1,8 +1,54 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { Alert, Badge, Button, Card, Col, Form, Row } from 'react-bootstrap';
 import ContractorLayout from '../components/ContractorLayout';
 import { useAuth } from '../context/AuthContext';
-import { apiPost, readError } from '../utils/api';
+import { apiFetch, apiPost, readError } from '../utils/api';
+
+interface Stmt { id: string; kind: string; periodFrom: string; periodTo: string; gross: number; status: string; utr: string | null; paidAt: string | null; invoiceDueAt: string | null; invoice: { number: string; date: string } | null }
+
+// My fee statements (approved by the owner), a CSV of each, and for Business contractors the invoice upload for a paid statement.
+function Statements({ business }: { business: boolean }) {
+  const [rows, setRows] = useState<Stmt[]>([]);
+  const [err, setErr] = useState('');
+  const load = useCallback(() => apiFetch('/contractor/statements').then((r) => (r.ok ? r.json() : [])).then(setRows).catch(() => undefined), []);
+  useEffect(() => { load(); }, [load]);
+  const upload = async (e: FormEvent<HTMLFormElement>, id: string) => {
+    e.preventDefault(); setErr('');
+    const r = await apiFetch(`/contractor/statements/${id}/invoice`, { method: 'POST', body: new FormData(e.currentTarget) });
+    if (!r.ok) { setErr(await readError(r)); return; }
+    load();
+  };
+  return (
+    <Card className="mb-3">
+      <Card.Header>Statements</Card.Header>
+      <Card.Body>
+        {rows.length === 0 && <div className="text-muted">No statements yet.</div>}
+        {rows.map((s) => (
+          <div key={s.id} className="border-bottom py-2">
+            <div className="d-flex justify-content-between flex-wrap gap-2">
+              <span>{s.periodFrom} to {s.periodTo} · {s.kind.replace(/_/g, ' ').toLowerCase()}</span>
+              <span><strong>₹{s.gross.toLocaleString('en-IN')}</strong> <Badge bg={s.status === 'PAID' ? 'success' : 'info'}>{s.status.toLowerCase()}</Badge> <a href={`/contractor/statements/${s.id}/csv`}>CSV</a></span>
+            </div>
+            {s.utr && <div className="small text-muted">Paid {s.paidAt ? new Date(s.paidAt).toLocaleDateString('en-IN') : ''}, UTR {s.utr}</div>}
+            {business && s.invoiceDueAt && !s.invoice && (
+              <Form onSubmit={(e) => upload(e, s.id)} className="mt-2">
+                <div className="small mb-1">Invoice due by {new Date(s.invoiceDueAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false })} IST</div>
+                <Row className="g-2">
+                  <Col md={3}><Form.Control name="number" placeholder="Invoice number" required /></Col>
+                  <Col md={3}><Form.Control name="date" type="date" required /></Col>
+                  <Col md={4}><Form.Control name="invoice" type="file" accept="application/pdf" required /></Col>
+                  <Col md={2}><Button type="submit" size="sm">Upload</Button></Col>
+                </Row>
+              </Form>
+            )}
+            {s.invoice && <div className="small text-success">Invoice {s.invoice.number} received.</div>}
+          </div>
+        ))}
+        {err && <div className="text-danger small mt-2">{err}</div>}
+      </Card.Body>
+    </Card>
+  );
+}
 
 // A contractor's own profile: masked KYC, the agreement, SEBI registration (Business), and requests to change bank / PAN / GSTIN (owner approves).
 export default function MyProfilePage() {
@@ -51,6 +97,7 @@ export default function MyProfilePage() {
               {business && row('Signatory', k.signatoryName ? `${k.signatoryName}, ${k.signatoryDesignation}` : '')}
             </Card.Body>
           </Card>
+          <Statements business={business} />
           <Card className="mb-3">
             <Card.Header>Change bank / tax details</Card.Header>
             <Card.Body>

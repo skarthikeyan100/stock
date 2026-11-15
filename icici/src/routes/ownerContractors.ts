@@ -13,6 +13,7 @@ import { decryptField, maskedField } from '../contractors/kycCrypto';
 import { publicBaseUrl, sendInviteEmail } from '../contractors/email';
 import { validEmail, validIsoDate } from '../contractors/validate';
 import { notifyUser } from '../contractors/notify';
+import { ensureSlot } from '../contractors/slots';
 import Mongo from '../tools/mongo';
 import { ObjectId } from 'mongodb';
 
@@ -95,13 +96,15 @@ async function transition(req: express.Request, res: express.Response, to: Contr
     const r = await contractorsCol().updateOne({ id: c.id, status: c.status }, { $set: { status: to, ...extra } });
     if (!r.matchedCount) { res.status(409).json({ error: 'Status changed meanwhile; reload' }); return; }
     if (to === 'TERMINATED') { await setUserEnabled(c.email, false); await revokeOpenInvitesFor(c.id); }
-    if (to === 'ACTIVE') await setUserEnabled(c.email, true);
+    if (to === 'ACTIVE') { await setUserEnabled(c.email, true); await ensureSlot(c).catch((e) => Log.log('[contractor] slot assignment failed:', e)); }
     invalidateUserCache(c.email);
     res.json(adminView((await getContractor(c.id)) as Contractor));
 }
 
+async function firstActivation(id: string): Promise<Record<string, unknown>> { const c = await getContractor(id); return c && !c.activatedAt ? { activatedAt: new Date() } : {}; }
+
 router.post('/owner/contractors/:id/activate', requireAdmin, async function (req, res) {
-    await transition(req, res, 'ACTIVE', { statusReason: null }, async (c) => {
+    await transition(req, res, 'ACTIVE', { statusReason: null, ...(await firstActivation(req.params.id)) }, async (c) => {
         if (!c.kyc) return 'KYC is missing';
         if (c.agreementVersion !== await currentVersion()) return 'The contractor has not accepted the current agreement version';
         if (!c.isTest && c.status !== 'PAUSED' && c.status !== 'PAUSED_INVOICE' && (await activeCount()) >= maxActiveContractors()) return `The cap of ${maxActiveContractors()} active contractors is reached`;

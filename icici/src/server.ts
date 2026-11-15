@@ -48,6 +48,9 @@ import levelsRoutes from './routes/levels';
 import inviteRoutes from './routes/invite';
 import ownerContractorsRoutes from './routes/ownerContractors';
 import recommendationsRoutes from './routes/recommendations';
+import forecastRoutes from './routes/forecast';
+import statementsRoutes from './routes/statements';
+import { ForecastEngine } from './forecast/engine';
 import { contractorGuard } from './contractors/guard';
 import { runContractorHourlyJobs } from './contractors/jobs';
 import { runInvoiceCheck } from './invoiceRule';
@@ -140,6 +143,8 @@ app.use(levelsRoutes);
 app.use(inviteRoutes);
 app.use(ownerContractorsRoutes);
 app.use(recommendationsRoutes);
+app.use(forecastRoutes);
+app.use(statementsRoutes);
 
 // ============================== Static UI ==============================
 
@@ -184,6 +189,10 @@ async function main() {
         for (const res of antStreamClients) res.write(rawPayload);
     });
     DataLink.getInstance().connect();
+
+    // Contractor portal: the Beginner forecast engine reads the same ticks (NIFTY value, candles, the future's depth) and scores closed windows every 30 s.
+    ForecastEngine.getInstance().start(DataLink.getInstance()).catch((e) => Log.log('[forecast] engine start failed:', e));
+    setInterval(() => { ForecastEngine.getInstance().scoreDue().catch((e) => Log.log('[forecast] scoring failed:', e)); }, 30 * 1000).unref();
 
     // Invoice rule (src/invoiceRule.ts): hourly, remind a GSTIN-Advanced user whose invoice is due within a day and close the account of one past the deadline.
     setInterval(() => { runInvoiceCheck().catch((e) => Log.log('[invoice] hourly check failed:', e)); }, 60 * 60 * 1000).unref();

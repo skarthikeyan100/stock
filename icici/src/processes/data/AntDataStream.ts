@@ -284,6 +284,9 @@ class AntDataStream implements DataStream {
         quote.ownVwap = st.ownVwap;
         quote.vwap = best?.vwap;
         quote.vwapSource = best?.source;
+        // Additive (forecast engine): the depth feed's total buy/sell quantity when this update carries it. Nothing else reads these fields.
+        if (data.tbq !== undefined && Number.isFinite(parseInt(data.tbq))) quote.tbq = parseInt(data.tbq);
+        if (data.tsq !== undefined && Number.isFinite(parseInt(data.tsq))) quote.tsq = parseInt(data.tsq);
         this.writeTick({ type: 'fut', quote });
     }
 

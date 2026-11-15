@@ -305,6 +305,8 @@ export class FutQuote {
     ownVwap?: number         // the same figure computed from volume deltas (see FutVwapTracker)
     vwap?: number            // exchangeVwap when present, else ownVwap
     vwapSource?: 'ap' | 'own'
+    tbq?: number             // total buy quantity of the depth feed (only when the depth feed is subscribed for the future; used by the forecast engine)
+    tsq?: number             // total sell quantity of the depth feed
 }
 
 export class Message {

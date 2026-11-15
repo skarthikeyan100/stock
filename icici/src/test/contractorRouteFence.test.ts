@@ -15,6 +15,8 @@ import levelsRoutes from '../routes/levels';
 import inviteRoutes from '../routes/invite';
 import ownerRoutes from '../routes/ownerContractors';
 import recommendationRoutes from '../routes/recommendations';
+import forecastRouter from '../routes/forecast';
+import statementsRouter from '../routes/statements';
 
 let failed = 0;
 function assert(condition: boolean, message: string) {
@@ -22,7 +24,7 @@ function assert(condition: boolean, message: string) {
     if (!condition) { failed++; process.exitCode = 1; }
 }
 
-const routers: Record<string, any> = { auth: authRoutes, users: usersRoutes, payouts: payoutsRoutes, brokers: brokersRoutes, trading: tradingRoutes, streams: streamsRoutes, admin: adminRoutes, levels: levelsRoutes, invite: inviteRoutes, owner: ownerRoutes, recommendations: recommendationRoutes };
+const routers: Record<string, any> = { auth: authRoutes, users: usersRoutes, payouts: payoutsRoutes, brokers: brokersRoutes, trading: tradingRoutes, streams: streamsRoutes, admin: adminRoutes, levels: levelsRoutes, invite: inviteRoutes, owner: ownerRoutes, recommendations: recommendationRoutes, forecast: forecastRouter, statements: statementsRouter };
 
 function routesOf(router: any): { method: string; path: string }[] {
     const out: { method: string; path: string }[] = [];
@@ -39,6 +41,8 @@ const EXPECTED_ALLOWED = new Set([
     'GET /users/:email/notifications', 'PATCH /users/:email/notifications/:id/read',
     'GET /agreements/current', 'GET /demo/health',
     'GET /contractor/me', 'GET /contractor/agreement', 'POST /contractor/accept-agreement', 'POST /contractor/sebi', 'POST /contractor/kyc-change',
+    'GET /contractor/statements', 'GET /contractor/statements/:id/csv', 'POST /contractor/statements/:id/invoice',
+    'POST /forecast', 'GET /forecast/state', 'GET /forecast/history', 'GET /forecast/accuracy',
     'POST /recommendations', 'GET /recommendations', 'GET /contractor/trades', 'GET /contractor/positionstream',
 ]);
 

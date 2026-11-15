@@ -472,6 +472,138 @@ strategies:
     brokers:
       - kite
     startTime: '09:20'
+  # Contractor portal (Beginner contractors): one slot per contractor, armed by the forecast engine when a forecast passes both filters (src/forecast/engine.ts).
+  # Same rules as the Recommendation-S slots above.
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Forecast-S01
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Forecast-S02
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Forecast-S03
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Forecast-S04
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Forecast-S05
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Forecast-S06
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Forecast-S07
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Forecast-S08
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Forecast-S09
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Forecast-S10
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
   - type: NiftyChangeStrategy
     enabled: false
     userId: NiftyChange-NIFTY
@@ -574,3 +706,31 @@ strategies:
     maxInvestment: 200000   # honoured by every buy (root, hedge, add), per broker
     maxProfit: 5000
     priceDiff: 10
+
+# Contractor portal (spec SPEC-forecast-contractor-portal-v2.1.md). Read by the frontend process (src/forecast/*, src/contractors/*); hot-reloaded.
+forecast:
+  maxActiveContractors: 5
+  sessionDays: { individual: 365, business: 90 }
+  hours: { start: '09:20', end: '15:00', expiryEnd: '14:30' }   # Beginner forecasting hours (IST); expiry day ends earlier
+  dailyLimit: 3                    # forecasts per contractor per trading day
+  windowMinutes: 15                # a forecast is scored this long after it is recorded
+  neutralThresholdPoints: 5        # a move smaller than this is NEUTRAL
+  holidays: []                     # exchange holidays, YYYY-MM-DD (there is no calendar elsewhere): keep it up to date
+  recommendationHours: { start: '09:20', end: '15:00' }  # Advanced: when a recommendation is accepted
+  recommendationsPerDay: 1
+  filters:
+    orderBook: { upRatio: 1.2, downRatio: 1.2, maxAgeMs: 3000 }   # NIFTY future total buy/sell quantity
+    trend: { emaPeriod: 9, minCandles: 10, maxStaleMinutes: 2 }   # 1-minute candles
+    minRejectionRate: 0.1          # pass-through alarm: alert when fewer than this share of the last 30 forecasts were rejected
+  orders:
+    enabled: false                 # MASTER switch for placing orders from passed forecasts. false = decisions are logged, nothing is traded.
+    noNewAfter: '14:45'            # no new position after this time (IST)
+    maxOpenPositions: 3            # across all contractor slots
+    dailyLossLimit: 0              # rupees; when the contractor slots' P&L today reaches -limit no new position is armed (0 = off)
+    targetPoints: 10               # option points above the entry
+    stopLossPoints: 20             # option points below the entry
+  fees:
+    feePerCorrect: 0               # rupees per correct forecast (Beginner); set before the first statement
+    monthlyCap: 0                  # rupees per month; 0 = no cap
+    retainerMonthly: 0
+    minParticipationDays: 15

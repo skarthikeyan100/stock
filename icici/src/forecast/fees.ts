@@ -6,6 +6,14 @@ export interface FeeRates { feePerCorrect: number; monthlyCap: number; retainerM
 
 const nonNeg = (n: number) => (Number.isFinite(n) && n > 0 ? n : 0);
 
+/** What is left of a monthly cap after `alreadyEarned`; a cap of 0 (or absent) means no cap. Never negative. */
+export function applyMonthlyCap(raw: number, monthlyCap: number, alreadyEarned: number): { gross: number; capped: boolean } {
+    const r = nonNeg(raw);
+    const remaining = monthlyCap > 0 ? Math.max(0, monthlyCap - nonNeg(alreadyEarned)) : Infinity;
+    const gross = Math.min(r, remaining);
+    return { gross: Math.round(gross * 100) / 100, capped: gross < r };
+}
+
 /** Weekly accuracy fee: correct x fee, capped by what is left of the month's cap. */
 export function weeklyAccuracyFee(correctCount: number, rates: Pick<FeeRates, 'feePerCorrect' | 'monthlyCap'>, alreadyEarnedThisMonth: number): { gross: number; cappedBy: 'none' | 'monthlyCap' } {
     const raw = Math.floor(nonNeg(correctCount)) * nonNeg(rates.feePerCorrect);

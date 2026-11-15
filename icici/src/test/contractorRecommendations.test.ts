@@ -17,7 +17,7 @@ const signature = require('cookie-signature');
 // A temp copy of config.yml, set BEFORE ConfigService loads, so approving never touches the real file.
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'recs-'));
 fs.copyFileSync(path.resolve(__dirname, '..', '..', 'config.yml'), path.join(tmp, 'config.yml'));
-fs.appendFileSync(path.join(tmp, 'config.yml'), "\nforecast:\n  recommendationHours: { start: '00:00', end: '23:59' }\n  recommendationsPerDay: 1\n");
+{ const f = path.join(tmp, 'config.yml'); const t = fs.readFileSync(f, 'utf8'); const w = t.replace("recommendationHours: { start: '09:20', end: '15:00' }", "recommendationHours: { start: '00:00', end: '23:59' }"); if (w === t) throw new Error('forecast.recommendationHours not found in config.yml'); fs.writeFileSync(f, w); }
 process.env.CONFIG_PATH = path.join(tmp, 'config.yml');
 process.env.KYC_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
 const SECRET = 'test-secret';
@@ -73,7 +73,7 @@ async function main() {
 
     console.log('slots in config.yml:');
     assert(configuredSlots('BUSINESS').length === 10 && configuredSlots('BUSINESS')[0] === 'Recommendation-S01', 'ten recommendation slots are configured');
-    assert(configuredSlots('INDIVIDUAL').length === 0, 'no forecast slots yet (that strategy type is not registered)');
+    assert(configuredSlots('INDIVIDUAL').length === 10 && configuredSlots('INDIVIDUAL')[0] === 'Forecast-S01' && configuredSlots('BUSINESS').every((s) => !s.startsWith('Forecast')), 'ten forecast slots, kept apart from the recommendation slots');
 
     console.log('submit and approve:');
     const db = installFakeDb();

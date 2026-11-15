@@ -2,7 +2,7 @@
  * Strategy slots. A strategy instance exists only if its block was in config.yml when the strategies process STARTED (a block added while
  * running needs a restart), so contractors cannot get a block created on demand. Instead config.yml carries a pool of disabled blocks:
  *   Recommendation-S01..  (type RecommendationStrategy)  for Advanced contractors' approved recommendations
- *   Forecast-S01..        (type ForecastEntryStrategy)    for Beginner forecasts that pass the filters
+ *   Forecast-S01..        (type RecommendationStrategy)  for Beginner forecasts that pass the filters (the engine writes an ATM contract and prices into it)
  * A contractor is assigned a free slot when activated; the slot id is the strategy user id its trades are booked under, so its P&L is isolated.
  * Slots are never reused after a contractor leaves (their history stays attributable); add more blocks (and restart) if the pool runs out.
  */
@@ -11,7 +11,7 @@ import { contractorsCol } from './store';
 import { Contractor, ContractorType } from './types';
 
 export const SLOT_SPEC: Record<ContractorType, { strategyType: string; prefix: string }> = {
-    INDIVIDUAL: { strategyType: 'ForecastEntryStrategy', prefix: 'Forecast-S' },
+    INDIVIDUAL: { strategyType: 'RecommendationStrategy', prefix: 'Forecast-S' },
     BUSINESS: { strategyType: 'RecommendationStrategy', prefix: 'Recommendation-S' },
 };
 

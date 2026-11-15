@@ -4,6 +4,7 @@ import { contractorsCol } from './store';
 import { currentVersion, istDate } from './agreements';
 import { recommendationsCol, istHHMM } from './recommendations';
 import { notifyAdmins } from './notify';
+import { StatementDoc, runMonthlyRetainers, runWeeklyStatements, statementsCol } from './statements';
 import { notifyUser } from './notify';
 
 /** When a new agreement version takes effect every contractor on an older one goes to AGREEMENT_PENDING and must accept it (spec section 4). */
@@ -32,7 +33,28 @@ export async function expireStaleRecommendations(now = new Date()): Promise<numb
     return n;
 }
 
-export async function runContractorHourlyJobs(): Promise<void> {
+/** PAID Advanced statements whose invoice is overdue (paid date + 2 days, 23:59 IST) pause the contractor: new recommendations are blocked, fees are never clawed back (spec section 8). */
+export async function runInvoiceChecks(now = new Date()): Promise<number> {
+    let n = 0;
+    for (const s of (await statementsCol().find({ status: 'PAID' }).toArray()) as StatementDoc[]) {
+        if (!s.invoiceDueAt || s.invoice || s.invoiceFlagged || s.invoiceDueAt.getTime() >= now.getTime()) continue;
+        await statementsCol().updateOne({ id: s.id }, { $set: { invoiceFlagged: true } });
+        const r = await contractorsCol().updateOne({ id: s.contractorId, status: 'ACTIVE' }, { $set: { status: 'PAUSED_INVOICE', statusReason: 'Invoice overdue' } });
+        const c: any = await contractorsCol().findOne({ id: s.contractorId });
+        if (r.matchedCount && c) { n++; await notifyUser(c.email, 'status', 'An invoice is overdue, so new recommendations are paused. Upload it to continue.'); await notifyAdmins('invoice_overdue', `${c.name}: invoice overdue for statement ${s.periodFrom} to ${s.periodTo}.`, { contractorId: c.id }); }
+    }
+    return n;
+}
+
+export async function runContractorHourlyJobs(now = new Date()): Promise<void> {
     await runAgreementVersionSwitch();
     await expireStaleRecommendations();
+    await runInvoiceChecks(now);
+    // Statements are created idempotently, so running these every hour from 06:00 on the right day is safe (a missed hour is caught by the next).
+    const day = istDate(now);
+    if (istHHMM(now) >= '06:00') {
+        const wd = new Date(day + 'T00:00:00Z').getUTCDay();
+        if (wd === 3) await runWeeklyStatements(day);
+        if (day.endsWith('-01')) await runMonthlyRetainers(day);
+    }
 }

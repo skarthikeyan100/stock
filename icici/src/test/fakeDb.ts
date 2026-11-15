@@ -15,7 +15,10 @@ function matches(doc: Doc, filter: Doc): boolean {
             if ('$ne' in v) return String(actual) !== String(v.$ne);
             if ('$in' in v) return (v.$in as any[]).map(String).includes(String(actual));
             if ('$exists' in v) return (actual !== undefined) === v.$exists;
-            if ('$lt' in v) return actual < v.$lt;
+            if ('$lt' in v || '$gte' in v || '$lte' in v || '$gt' in v) {
+                const n = (x: any) => (x instanceof Date ? x.getTime() : x);
+                return (!('$lt' in v) || n(actual) < n(v.$lt)) && (!('$gte' in v) || n(actual) >= n(v.$gte)) && (!('$lte' in v) || n(actual) <= n(v.$lte)) && (!('$gt' in v) || n(actual) > n(v.$gt));
+            }
         }
         return String(actual) === String(v);
     });
@@ -36,6 +39,7 @@ class FakeCollection {
         let out = this.docs.filter((d) => matches(d, filter));
         const api = {
             sort: (spec: Doc) => { const [[k, dir]] = Object.entries(spec); out = [...out].sort((a, b) => (a[k] > b[k] ? 1 : a[k] < b[k] ? -1 : 0) * (dir as number)); return api; },
+            limit: (n: number) => { out = out.slice(0, n); return api; },
             toArray: async () => out,
         };
         return api;

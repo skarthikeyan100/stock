@@ -160,6 +160,117 @@ function RecommendationsTab() {
   );
 }
 
+function PilotTab() {
+  const [eng, setEng] = useState<Json | null>(null);
+  const [data, setData] = useState<Json | null>(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    const load = () => Promise.all([getJson('/owner/engine'), getJson('/owner/forecasts')]).then(([e, d]) => { setEng(e); setData(d); setErr(''); }).catch((e) => setErr(e.message));
+    load(); const t = setInterval(load, 15000); return () => clearInterval(t);
+  }, []);
+  return (
+    <>
+      {err && <Alert variant="danger">{err}</Alert>}
+      {eng && (
+        <div className="d-flex gap-2 flex-wrap mb-3">
+          <Badge bg={eng.ready ? 'success' : 'danger'}>engine {eng.ready ? 'running' : eng.startFailure ? 'refused to start' : 'starting'}</Badge>
+          <Badge bg={eng.ordersEnabled ? 'warning' : 'secondary'} text={eng.ordersEnabled ? 'dark' : undefined}>orders {eng.ordersEnabled ? 'ON' : 'OFF (decisions only)'}</Badge>
+          <Badge bg={eng.niftyAgeMs != null && eng.niftyAgeMs < 10000 ? 'success' : 'danger'}>NIFTY feed {eng.niftyAgeMs == null ? 'none' : `${Math.round(eng.niftyAgeMs / 1000)}s old`}</Badge>
+          {eng.passThroughAlarm.rejectionRate != null && <Badge bg={eng.passThroughAlarm.firing ? 'danger' : 'secondary'}>rejection rate {Math.round(eng.passThroughAlarm.rejectionRate * 100)}% (last 30)</Badge>}
+        </div>
+      )}
+      {eng?.startFailure && <Alert variant="danger">{eng.startFailure}</Alert>}
+      {eng?.passThroughAlarm.firing && <Alert variant="danger">Pass-through alarm: your filters are rejecting too few forecasts. Review the thresholds in config.yml (they are never lowered automatically).</Alert>}
+      {data && (
+        <>
+          <h6>{data.day}</h6>
+          <Table size="sm" responsive>
+            <thead><tr><th>Contractor</th><th className="text-end">Forecasts</th><th className="text-end">Passed filters</th><th className="text-end">Rejected</th><th className="text-end">Orders armed</th><th className="text-end">Accuracy (scored)</th></tr></thead>
+            <tbody>
+              {data.per.length === 0 && <tr><td colSpan={6} className="text-muted">No Beginner contractors yet.</td></tr>}
+              {data.per.map((p: Json) => <tr key={p.contractorId}><td>{p.name}</td><td className="text-end">{p.forecasts}</td><td className="text-end">{p.accepted}</td><td className="text-end">{p.rejected}</td><td className="text-end">{p.ordersPlaced}</td><td className="text-end">{p.accuracy.accuracyPct == null ? '–' : `${p.accuracy.accuracyPct}% of ${p.accuracy.scored}`}</td></tr>)}
+            </tbody>
+          </Table>
+          <Table size="sm" responsive>
+            <thead><tr><th>Time</th><th>Contractor</th><th>Call</th><th>Decision</th><th>Why</th><th>Order</th><th>Outcome</th></tr></thead>
+            <tbody>
+              {data.recent.map((r: Json) => (
+                <tr key={r.id}>
+                  <td>{when(r.submittedAt)}</td><td>{r.contractor}</td><td>{r.direction}</td>
+                  <td>{r.decision ? <Badge bg={r.decision.accepted ? 'success' : 'secondary'}>{r.decision.accepted ? 'passed' : 'rejected'}</Badge> : '…'}</td>
+                  <td className="small">{r.decision?.filters?.map((f: Json) => <div key={f.name}>{f.pass ? '✓' : '✗'} {f.name}: {f.reason}</div>)}</td>
+                  <td className="small">{r.decision ? (r.decision.orderPlaced ? 'armed' : r.decision.orderNote) : ''}</td>
+                  <td><Badge bg={r.outcome === 'CORRECT' ? 'success' : r.outcome === 'INCORRECT' ? 'danger' : 'secondary'}>{r.outcome.toLowerCase()}</Badge></td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </>
+      )}
+    </>
+  );
+}
+
+function FeesTab() {
+  const [data, setData] = useState<Json | null>(null);
+  const [contractors, setContractors] = useState<Json[]>([]);
+  const [err, setErr] = useState('');
+  const [fm, setFm] = useState({ contractor: '', from: '', model: 'PROFIT_SHARE', value: '' });
+  const load = useCallback(() => Promise.all([getJson('/owner/statements'), getJson('/owner/contractors')]).then(([d, c]) => { setData(d); setContractors(c); setErr(''); }).catch((e) => setErr(e.message)), []);
+  useEffect(() => { load(); }, [load]);
+  const post = async (url: string, body: Json = {}) => { const r = await apiPost(url, body); if (!r.ok) { setErr(await readError(r)); return null; } setErr(''); load(); return r.json().catch(() => ({})); };
+  const advanced = contractors.filter((c) => c.type === 'BUSINESS' && c.status !== 'TERMINATED');
+  const saveModel = async (e: FormEvent) => {
+    e.preventDefault();
+    await post(`/owner/contractors/${fm.contractor}/fee-model`, { from: fm.from, model: fm.model, ...(fm.model === 'PROFIT_SHARE' ? { sharePercent: Number(fm.value) } : { fixedAmount: Number(fm.value) }) });
+  };
+  return (
+    <>
+      {err && <Alert variant="danger" onClose={() => setErr('')} dismissible>{err}</Alert>}
+      {data && !data.taxPhaseComplete && <Alert variant="warning">Payments are locked for real contractors until the tax phase is complete (<code>forecast.taxPhaseComplete</code> in config.yml). Statements are created and can be reviewed; Approve and Mark paid are refused. The TEST user is not affected.</Alert>}
+      <div className="d-flex gap-2 mb-3 flex-wrap">
+        <Button size="sm" variant="outline-primary" onClick={() => post('/owner/statements/run', { kind: 'weekly' })}>Run weekly statements now</Button>
+        <Button size="sm" variant="outline-primary" onClick={() => post('/owner/statements/run', { kind: 'monthly' })}>Run monthly retainers now</Button>
+        <span className="small text-muted align-self-center">They also run by themselves: weekly on Wednesday from 06:00 IST, retainers on the 1st. Running again creates nothing twice.</span>
+      </div>
+      <Table size="sm" responsive className="align-middle">
+        <thead><tr><th>Contractor</th><th>Kind</th><th>Period</th><th className="text-end">Gross (₹)</th><th>Details</th><th>Status</th><th /></tr></thead>
+        <tbody>
+          {(data?.statements ?? []).length === 0 && <tr><td colSpan={7} className="text-muted">No statements yet.</td></tr>}
+          {(data?.statements ?? []).map((s: Json) => (
+            <tr key={s.id}>
+              <td>{s.contractor}{s.isTest && <Badge bg="warning" text="dark" className="ms-1">TEST</Badge>}</td>
+              <td className="small">{s.kind.replace(/_/g, ' ').toLowerCase()}</td>
+              <td>{s.periodFrom} to {s.periodTo}</td>
+              <td className="text-end">{s.gross.toLocaleString('en-IN')}</td>
+              <td className="small">{Object.entries(s.lines).map(([k, v]) => `${k}: ${v}`).join(' · ')}{s.invoice ? ` · invoice ${s.invoice.number}` : s.invoiceDueAt ? ` · invoice due ${when(s.invoiceDueAt)}` : ''}</td>
+              <td><Badge bg={s.status === 'PAID' ? 'success' : s.status === 'APPROVED' ? 'info' : 'secondary'}>{s.status}</Badge>{s.utr && <div className="small">UTR {s.utr}</div>}</td>
+              <td className="text-end text-nowrap">
+                {s.status === 'DRAFT' && <Button size="sm" variant="outline-success" onClick={() => post(`/owner/statements/${s.id}/approve`)}>Approve</Button>}
+                {s.status === 'APPROVED' && <Button size="sm" variant="success" onClick={() => { const utr = window.prompt('UTR reference of the payment?'); if (utr) post(`/owner/statements/${s.id}/paid`, { utr }); }}>Mark paid</Button>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+      <Card style={{ maxWidth: 640 }}>
+        <Card.Header>Advanced fee model (effective-dated; never applies to an earlier period)</Card.Header>
+        <Card.Body>
+          <Form onSubmit={saveModel}>
+            <Row className="g-2">
+              <Col md={6}><Form.Select value={fm.contractor} onChange={(e) => setFm({ ...fm, contractor: e.target.value })} required><option value="">Contractor…</option>{advanced.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Form.Select></Col>
+              <Col md={6}><Form.Control type="date" value={fm.from} onChange={(e) => setFm({ ...fm, from: e.target.value })} required /></Col>
+              <Col md={6}><Form.Select value={fm.model} onChange={(e) => setFm({ ...fm, model: e.target.value })}><option value="PROFIT_SHARE">Profit share (%)</option><option value="FIXED_PER_APPROVED">Fixed amount per approved recommendation (₹)</option></Form.Select></Col>
+              <Col md={6}><Form.Control inputMode="decimal" placeholder={fm.model === 'PROFIT_SHARE' ? 'Percent, e.g. 25' : 'Rupees, e.g. 500'} value={fm.value} onChange={(e) => setFm({ ...fm, value: e.target.value })} required /></Col>
+            </Row>
+            <Button type="submit" size="sm" className="mt-2">Set from that date</Button>
+          </Form>
+        </Card.Body>
+      </Card>
+    </>
+  );
+}
+
 function KycChangesTab() {
   const [rows, setRows] = useState<Json[]>([]);
   const [err, setErr] = useState('');
@@ -233,6 +344,8 @@ export default function OwnerPage() {
       <Tabs defaultActiveKey="contractors" className="mb-3" mountOnEnter>
         <Tab eventKey="contractors" title="Contractors"><ContractorsTab /></Tab>
         <Tab eventKey="recs" title="Recommendations"><RecommendationsTab /></Tab>
+        <Tab eventKey="pilot" title="Pilot (forecasts)"><PilotTab /></Tab>
+        <Tab eventKey="fees" title="Fees"><FeesTab /></Tab>
         <Tab eventKey="kyc" title="KYC changes"><KycChangesTab /></Tab>
         <Tab eventKey="agreements" title="Agreements"><AgreementsTab /></Tab>
       </Tabs>
