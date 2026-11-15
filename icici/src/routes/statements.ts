@@ -99,7 +99,9 @@ router.post('/owner/contractors/:id/fee-model', requireAdmin, async function (re
     const c = await getContractor(req.params.id);
     if (!c || c.type !== 'BUSINESS') { res.status(404).json({ error: 'Not an Advanced contractor' }); return; }
     const from = str(req.body?.from), model = str(req.body?.model);
-    if (!validIsoDate(from) || from < istDate()) { res.status(400).json({ error: 'The effective date must be today or later (a change never applies to an earlier period)' }); return; }
+    // The one exception to "never retroactive": giving the AMOUNT to a fixed-fee entry that was created without one (a contractor who did not confirm clause 6A.5) on its own date.
+    const amountless = (c.feeModels ?? []).some((e) => e.from === from && e.model === 'FIXED_PER_APPROVED' && !(Number(e.fixedAmount) > 0));
+    if (!validIsoDate(from) || (from < istDate() && !(amountless && model === 'FIXED_PER_APPROVED'))) { res.status(400).json({ error: 'The effective date must be today or later (a change never applies to an earlier period)' }); return; }
     if (model !== 'PROFIT_SHARE' && model !== 'FIXED_PER_APPROVED') { res.status(400).json({ error: 'model must be PROFIT_SHARE or FIXED_PER_APPROVED' }); return; }
     const entry: any = { from, model };
     if (model === 'PROFIT_SHARE') { const p = Number(req.body?.sharePercent); if (!(p > 0 && p <= 100)) { res.status(400).json({ error: 'sharePercent must be between 0 and 100' }); return; } entry.sharePercent = p; }

@@ -31,6 +31,8 @@ Unchanged from v1.0: 8 (Taxes and Invoicing), 10, 16, 17 and the rest of 12 and 
 - **Term is 6 months** from the Effective Date (Section 13 and Schedule 1 "Term"); no "then month to month", and no end date is computed or shown anywhere in the portal. (Business only; the Individual agreement still says 3 months then month to month.)
 - **One name:** the Contractor acts through one **Research Analyst** (named in the Parties clause and 3.4); there is no separate authorised signatory or "Designated Forecaster". The join form and profile ask for that one name.
 
+- **6A.5 confirmation is optional.** Not giving it is allowed: the personalised agreement then shows the fixed fee (6A.6) from the Effective Date (Schedule 1: Fee model, Profit Share "Not applicable") and 6A.5 ends with: "If the Contractor does not give this confirmation when accepting this Agreement, clause 6A.6 applies from the Effective Date and no Profit Share is payable."
+
 ## Individual (PAN) v1.1
 v1.0 verbatim except:
 1. Section 3, second bullet: replaced as in the amendment text.

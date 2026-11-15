@@ -8,6 +8,7 @@ import Log from '../util/Log';
 import { asyncRouter } from './asyncRouter';
 import { getActiveUser, invalidateUserCache, requireAuth, resolveUser } from './session';
 import { levelDefaultsFor } from '../user';
+import configService from '../prism/ConfigService';
 import { AcceptanceDoc, consumeInvite, contractorsCol, ensureContractorUser, findInviteByToken, getContractor, getContractorByEmail, inviteState, invitesCol, newContractor, recordAcceptance, submissionBlock } from '../contractors/store';
 import { BusinessKyc, Contractor, ContractorType, IndividualKyc } from '../contractors/types';
 import { currentVersion, istDate, readAgreement, upcomingVersion } from '../contractors/agreements';
@@ -19,12 +20,17 @@ import { toContractorClient } from '../contractors/clientUser';
 import { notifyAdmins } from '../contractors/notify';
 import Mongo from '../tools/mongo';
 import { sendWelcomeIfDue } from '../contractors/emails';
-import { canPersonalise, detailsFromContractor, detailsFromForm, readStored, renderPersonalised, sha256Of, storePersonalised } from '../contractors/personalise';
+import { canPersonalise, detailsFromContractor, detailsFromForm, readStored, renderPersonalised, sha256Of, storePersonalised, usesFixedFee } from '../contractors/personalise';
 
 const router = asyncRouter();
 const acceptLimiter = new RateLimiter(Number(process.env.INVITE_RATE_LIMIT) || 20, 60_000); // per IP per minute (the env override is for tests)
 const clientIp = (req: express.Request) => String(req.get('cf-connecting-ip') || req.ip || req.socket.remoteAddress || '');
 const agreementName = (t: ContractorType) => (t === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Forecasting Services Agreement');
+/** Not confirming clause 6A.5 is allowed: the fixed fee of clause 6A.6 then applies from today (the amount is the owner's to set; config forecast.fixedFeePerApproved is the default). */
+function fixedFeeEntry() {
+    const amount = Number(((configService.getConfig() as any)?.forecast ?? {}).fixedFeePerApproved);
+    return { from: istDate(), model: 'FIXED_PER_APPROVED' as const, ...(amount > 0 ? { fixedAmount: amount } : {}) };
+}
 const str = (v: unknown, max = 300) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
 function limited(req: express.Request, res: express.Response): boolean {
@@ -108,7 +114,7 @@ router.post('/invite/:token/preview', async function (req, res) {
     if (!canPersonalise(version)) { const ag = readAgreement(invite.type, version); pdf = ag.bytes; filename = ag.filename; }
     else {
         const target = invite.targetContractorId ? await getContractor(invite.targetContractorId) : null;
-        const d = target ? detailsFromContractor(target) : detailsFromForm(invite.type, str(req.body?.name), req.body?.kyc);
+        const d = target ? detailsFromContractor(target, usesFixedFee(target) || (invite.type === 'BUSINESS' && req.body?.representation6A5 === false)) : detailsFromForm(invite.type, str(req.body?.name), req.body?.kyc, invite.type === 'BUSINESS' && req.body?.representation6A5 !== true);
         ({ pdf, filename } = await renderPersonalised(invite.type, d));
     }
     res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${filename}"`, 'Cache-Control': 'no-store' }).send(pdf);
@@ -123,11 +129,12 @@ router.post('/invite/:token/accept', async function (req, res) {
     const body = req.body ?? {};
     const version = await currentVersion();
     const ag = readAgreement(invite.type, version);
+    const confirmed = body.representation6A5 === true; // clause 6A.5 (Business); not confirming means the fixed fee applies
     const acceptance = (c: Contractor, email: string, personalisedSha?: string): AcceptanceDoc => {
         const now = new Date();
         return { contractorId: c.id, email, agreementType: c.type, agreementVersion: version, fileSha256: personalisedSha ?? ag.sha256, templateSha256: personalisedSha ? ag.sha256 : undefined, acceptedAtUtc: now.toISOString(),
             acceptedAtIst: now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }), ip: clientIp(req), userAgent: String(req.get('user-agent') ?? '').slice(0, 300),
-            representation6A5: c.type === 'BUSINESS' ? true : undefined, dpdpConsent: true };
+            representation6A5: c.type === 'BUSINESS' ? confirmed : undefined, dpdpConsent: true };
     };
 
     // ---- a re-invite of an existing contractor: same record, history kept ----
@@ -135,11 +142,13 @@ router.post('/invite/:token/accept', async function (req, res) {
         const c = await getContractor(invite.targetContractorId);
         if (!c || c.status === 'TERMINATED') { res.status(410).json({ error: 'This invite link is no longer valid.' }); return; }
         const needsAgreement = c.agreementVersion !== version;
-        if (needsAgreement && (body.acceptTerms !== true || body.dpdpConsent !== true || (c.type === 'BUSINESS' && body.representation6A5 !== true))) {
+        if (needsAgreement && (body.acceptTerms !== true || body.dpdpConsent !== true)) {
             res.status(400).json({ error: 'Please read and accept the agreement (and the confirmations) to continue.' }); return;
         }
         if (!(await consumeInvite(invite._id, c.id))) { res.status(410).json({ error: 'This invite link has already been used.' }); return; }
         if (needsAgreement) {
+            const switchToFixed = c.type === 'BUSINESS' && !confirmed && !usesFixedFee(c);
+            if (switchToFixed) { c.feeModels = [...(c.feeModels ?? []), fixedFeeEntry()]; await contractorsCol().updateOne({ id: c.id }, { $set: { feeModels: c.feeModels } }); await notifyAdmins('fee_model', `${c.name} did not confirm clause 6A.5: the fixed fee applies from today. Set its amount on the Fees tab.`, { contractorId: c.id }); }
             const pr = await storePersonalised(c, detailsFromContractor(c), version);
             await recordAcceptance(acceptance(c, c.email, pr?.sha256));
             const set: any = { agreementVersion: version, agreementAcceptedAt: new Date(), ...(pr ? { agreementFile: pr.file, agreementSha256: pr.sha256 } : {}) };
@@ -159,7 +168,6 @@ router.post('/invite/:token/accept', async function (req, res) {
     if (invite.emailLock && invite.emailLock !== email) { res.status(400).json({ error: 'This invite was issued to a different email address.' }); return; }
     if (body.acceptTerms !== true) { res.status(400).json({ error: `Please accept the ${agreementName(invite.type)} v${version}` }); return; }
     if (body.dpdpConsent !== true) { res.status(400).json({ error: 'Please give the data-processing consent (agreement Section 12)' }); return; }
-    if (invite.type === 'BUSINESS' && body.representation6A5 !== true) { res.status(400).json({ error: 'Please confirm the Registration representation (agreement clause 6A.5)' }); return; }
     const k = buildKyc(invite.type, body.kyc, email);
     if (!k.ok) { const f = k as Extract<KycResult, { ok: false }>; res.status(f.status).json({ error: f.error }); return; }
     if ((await getContractorByEmail(email)) || (await Mongo.getInstance().db.collection('users').findOne({ email }))) {
@@ -169,8 +177,8 @@ router.post('/invite/:token/accept', async function (req, res) {
     if (!(await consumeInvite(invite._id, c.id))) { res.status(410).json({ error: 'This invite link has already been used.' }); return; }
     try {
         c.kyc = k.kyc; c.sebi = k.sebi; c.agreementVersion = version; c.agreementAcceptedAt = new Date(); c.dpdpConsentAt = new Date();
-        if (c.type === 'BUSINESS') c.representation6A5At = new Date();
-        const pr = await storePersonalised(c, detailsFromForm(c.type, name, body.kyc), version); // the agreement with their details filled in: this is what they accepted
+        if (c.type === 'BUSINESS') { if (confirmed) c.representation6A5At = new Date(); else c.feeModels = [fixedFeeEntry()]; }
+        const pr = await storePersonalised(c, detailsFromForm(c.type, name, body.kyc, c.type === 'BUSINESS' && !confirmed), version); // the agreement with their details filled in: this is what they accepted
         if (pr) { c.agreementFile = pr.file; c.agreementSha256 = pr.sha256; }
         await ensureContractorUser(c, levelDefaultsFor(c.type === 'INDIVIDUAL' ? 'beginner' : 'advanced').profitSplitPercent);
         await contractorsCol().insertOne(c);
@@ -184,6 +192,7 @@ router.post('/invite/:token/accept', async function (req, res) {
     invalidateUserCache(email);
     setContractorCookie(res, email, c.type);
     sendWelcomeIfDue(c).catch(() => undefined); // never blocks or fails the acceptance
+    if (c.type === 'BUSINESS' && !confirmed) await notifyAdmins('fee_model', `${name} did not confirm clause 6A.5: the fixed fee applies from today. Set its amount on the Fees tab.`, { contractorId: c.id });
     await notifyAdmins('contractor_accepted', `${name} (${c.type === 'INDIVIDUAL' ? 'Beginner' : 'Advanced'}) accepted the invite and is awaiting activation.`, { contractorId: c.id });
     res.json(await contractorClientView(c));
 });
@@ -219,14 +228,16 @@ router.post('/contractor/accept-agreement', requireAuth, async function (req, re
     if (!c || c.status === 'TERMINATED') { res.status(404).json({ error: 'Not a contractor' }); return; }
     const version = await currentVersion();
     const body = req.body ?? {};
-    if (body.acceptTerms !== true || body.dpdpConsent !== true || (c.type === 'BUSINESS' && body.representation6A5 !== true)) { res.status(400).json({ error: 'Please accept the agreement and the confirmations' }); return; }
+    if (body.acceptTerms !== true || body.dpdpConsent !== true) { res.status(400).json({ error: 'Please accept the agreement and the data consent' }); return; }
     if (c.agreementVersion === version) { res.json(await contractorClientView(c)); return; }
     const ag = readAgreement(c.type, version);
+    const confirmed6A5 = body.representation6A5 === true;
+    if (c.type === 'BUSINESS' && !confirmed6A5 && !usesFixedFee(c)) { c.feeModels = [...(c.feeModels ?? []), fixedFeeEntry()]; await contractorsCol().updateOne({ id: c.id }, { $set: { feeModels: c.feeModels } }); await notifyAdmins('fee_model', `${c.name} did not confirm clause 6A.5: the fixed fee applies from today. Set its amount on the Fees tab.`, { contractorId: c.id }); }
     const pr = await storePersonalised(c, detailsFromContractor(c), version);
     const now = new Date();
     await recordAcceptance({ contractorId: c.id, email: c.email, agreementType: c.type, agreementVersion: version, fileSha256: pr?.sha256 ?? ag.sha256, templateSha256: pr ? ag.sha256 : undefined, acceptedAtUtc: now.toISOString(),
         acceptedAtIst: now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }), ip: clientIp(req), userAgent: String(req.get('user-agent') ?? '').slice(0, 300),
-        representation6A5: c.type === 'BUSINESS' ? true : undefined, dpdpConsent: true });
+        representation6A5: c.type === 'BUSINESS' ? confirmed6A5 : undefined, dpdpConsent: true });
     const set: any = { agreementVersion: version, agreementAcceptedAt: now, ...(pr ? { agreementFile: pr.file, agreementSha256: pr.sha256 } : {}) };
     if (c.status === 'AGREEMENT_PENDING') set.status = 'ACTIVE';
     await contractorsCol().updateOne({ id: c.id }, { $set: set });

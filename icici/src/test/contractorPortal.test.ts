@@ -225,8 +225,16 @@ async function main() {
     const bgood = (kyc: any = bizKyc, extra: any = {}) => ({ email: 'forecaster@acme.com', name: 'D Forecaster', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc, ...extra });
     r = await request(app).post(`/invite/${biz.token}/accept`).send(bgood(bizKyc, { email: 'someone@else.com' }));
     assert(r.status === 400 && /different email/.test(r.body.error), 'an email-locked invite refuses another email');
-    r = await request(app).post(`/invite/${biz.token}/accept`).send(bgood(bizKyc, { representation6A5: false }));
-    assert(r.status === 400 && /6A\.5/.test(r.body.error), 'a Business acceptance needs the clause 6A.5 confirmation');
+    const fx = await createInvite({ type: 'BUSINESS', createdBy: 'o' });
+    r = await request(app).post(`/invite/${fx.token}/accept`).send({ email: 'fixed@acme.com', acceptTerms: true, dpdpConsent: true, kyc: { gstin: '33ABCDE1234F1Z5' } });
+    assert(r.status === 200, 'clause 6A.5 is optional: an Advanced contractor can accept without confirming it');
+    const fxDoc: any = (await contractorsCol().find({ email: 'fixed@acme.com' }).toArray())[0];
+    assert(fxDoc.feeModels?.length === 1 && fxDoc.feeModels[0].model === 'FIXED_PER_APPROVED' && !fxDoc.representation6A5At, 'not confirming 6A.5 puts the contractor on the fixed fee (6A.6) from the acceptance date');
+    const fxAcc: any = (await db.collection('agreementAcceptances').find({ email: 'fixed@acme.com' }).toArray())[0];
+    assert(fxAcc.representation6A5 === false, 'and the acceptance record says the confirmation was not given');
+    const tfx = require('child_process').spawnSync('pdftotext', ['-layout', '-', '-'], { input: fs.readFileSync(fxDoc.agreementFile) }).stdout.toString().replace(/\s+/g, ' ');
+    assert(/Fixed fee per Approved Recommendation under clause 6A\.6, from the Effective Date/.test(tfx) && /Not applicable \(the fixed fee applies\)/.test(tfx) && /If the Contractor does not give this confirmation when accepting this Agreement, clause 6A\.6 applies/.test(tfx), 'the agreement they accepted shows the fixed fee, not the Profit Share');
+    assert((await db.collection('notifications').find({ type: 'fee_model' }).toArray()).length === 1, 'the owner is told to set the fixed amount');
     r = await request(app).post(`/invite/${biz.token}/accept`).send(bgood({ ...bizKyc, gstin: '33ABCDE1234F1Y5' }));
     assert(r.status === 400, 'a malformed GSTIN is refused');
     r = await request(app).post(`/invite/${biz.token}/accept`).send(bgood({ ...bizKyc, sebiNumber: 'INA000012345' }));

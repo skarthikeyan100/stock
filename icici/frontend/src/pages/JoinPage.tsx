@@ -33,7 +33,7 @@ export default function JoinPage() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null); // the agreement with the details typed so far, from the server
   const [previewing, setPreviewing] = useState(false);
   // Changing a detail invalidates the preview: what is accepted must be exactly what was shown.
-  const set = (k: string) => (e: React.ChangeEvent<any>) => { setPdfUrl(null); setChk((c) => ({ ...c, accept: false, dpdp: false, rep: false })); setF((x) => ({ ...x, [k]: e.target.value })); };
+  const set = (k: string) => (e: React.ChangeEvent<any>) => { setPdfUrl(null); setChk((c) => ({ ...c, accept: false, dpdp: false })); setF((x) => ({ ...x, [k]: e.target.value })); };
 
   useEffect(() => {
     apiFetch(`/invite/${encodeURIComponent(token)}`).then(async (r) => {
@@ -63,7 +63,7 @@ export default function JoinPage() {
     }
     setPreviewing(true);
     try {
-      const res = await apiPost(`/invite/${encodeURIComponent(token)}/preview`, re ? {} : { name: f.name, kyc: kycBody() });
+      const res = await apiPost(`/invite/${encodeURIComponent(token)}/preview`, re ? { representation6A5: chk.rep } : { name: f.name, kyc: kycBody(), representation6A5: chk.rep });
       if (!res.ok) { setErr(await readError(res)); return; }
       setPdfUrl(URL.createObjectURL(await res.blob()));
     } finally { setPreviewing(false); }
@@ -72,7 +72,7 @@ export default function JoinPage() {
 
   // The agreement is prepared by itself as soon as the required details are in (and again, after a short pause, whenever a detail changes).
   const ready = !re && (business ? (f.gstin ?? '').trim().length === 15 : (f.pan ?? '').trim().length === 10 && chk.notGst);
-  const detailsKey = JSON.stringify([f, chk.notGst]);
+  const detailsKey = JSON.stringify([f, chk.notGst, chk.rep]);
   useEffect(() => {
     if (!ready) return;
     const t = setTimeout(() => { void preview(); }, 700);
@@ -141,12 +141,15 @@ export default function JoinPage() {
           <Card className="mb-3"><Card.Body>
             <Form.Check id="acc" className="mb-2" checked={chk.accept} onChange={(e) => setChk({ ...chk, accept: e.target.checked })} label={`I have read and accept the ${info.agreementName} v${version}`} />
             <Form.Check id="dp" className="mb-2" checked={chk.dpdp} onChange={(e) => setChk({ ...chk, dpdp: e.target.checked })} label="I consent to the processing of my personal data as described in Section 12 of the agreement (DPDP Act, 2023)." />
-            {business && <Form.Check id="rep" checked={chk.rep} onChange={(e) => setChk({ ...chk, rep: e.target.checked })} label="I confirm clause 6A.5: our SEBI registration is valid, and our compliance function has confirmed that receiving the Profit Share under this agreement is permitted for us." />}
+            {business && <>
+              <Form.Check id="rep" checked={chk.rep} onChange={(e) => { setPdfUrl(null); setChk({ ...chk, rep: e.target.checked, accept: false, dpdp: false }); }} label="I confirm clause 6A.5: our SEBI registration is valid, and our compliance function has confirmed that receiving the Profit Share under this agreement is permitted for us." />
+              <div className="small text-muted ms-4">Optional. If you do not tick this, the fixed fee in clause 6A.6 applies from the start instead of the Profit Share; the agreement above is prepared accordingly.</div>
+            </>}
           </Card.Body></Card>
         )}
         {err && <Alert variant="danger">{err}</Alert>}
-        {(!re && !f.email || (needsAgreement && (!pdfUrl || !chk.accept || !chk.dpdp || (business && !chk.rep)))) && <div className="small text-muted mb-2">To continue: {[!re && !f.email && 'enter your email (at the top of the form)', !pdfUrl && 'the agreement must be prepared (it appears above once your details are in)', pdfUrl && !chk.accept && 'tick the agreement', pdfUrl && !chk.dpdp && 'tick the data consent', pdfUrl && business && !chk.rep && 'tick the registration confirmation'].filter(Boolean).join('; ')}.</div>}
-        <Button type="submit" disabled={busy || (!re && !f.email) || (needsAgreement && (!pdfUrl || !chk.accept || !chk.dpdp || (business && !chk.rep)))}>{busy ? 'Please wait…' : re && !needsAgreement ? 'Continue' : 'Accept and continue'}</Button>
+        {(!re && !f.email || (needsAgreement && (!pdfUrl || !chk.accept || !chk.dpdp))) && <div className="small text-muted mb-2">To continue: {[!re && !f.email && 'enter your email (at the top of the form)', !pdfUrl && 'the agreement must be prepared (it appears above once your details are in)', pdfUrl && !chk.accept && 'tick the agreement', pdfUrl && !chk.dpdp && 'tick the data consent'].filter(Boolean).join('; ')}.</div>}
+        <Button type="submit" disabled={busy || (!re && !f.email) || (needsAgreement && (!pdfUrl || !chk.accept || !chk.dpdp))}>{busy ? 'Please wait…' : re && !needsAgreement ? 'Continue' : 'Accept and continue'}</Button>
       </Form>
     </Container>
   );

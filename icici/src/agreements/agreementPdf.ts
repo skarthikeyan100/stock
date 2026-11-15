@@ -20,6 +20,7 @@ export interface AgreementDetails {
     sebiNumber?: string; sebiValidUntil?: string;
     company?: { name?: string; address?: string; pan?: string };
     // Schedule values, from config at the time the agreement is prepared (so no blank remains in the PDF)
+    fixedFeeFromStart?: boolean; // the clause 6A.5 confirmation was not given: the fixed fee of 6A.6 applies from the Effective Date
     profitSharePercent?: number; recHours?: { start: string; end: string }; perDay?: number; fixedFee?: number; acceptedOn?: string;
     fees?: { retainer?: number; feePerCorrect?: number; monthlyCap?: number; minDays?: number; windowMinutes?: number; neutral?: number; dailyLimit?: number; hours?: { start: string; end: string; expiryEnd: string } };
 }
