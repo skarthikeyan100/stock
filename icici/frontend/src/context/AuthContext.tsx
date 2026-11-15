@@ -60,6 +60,18 @@ export interface AuthUser {
   advancedSince?: string;
   advancedVia?: 'admin' | 'gstin';
   accountClosed?: boolean;
+  // Contractor portal (/auth/me answers a contractor with this contractor-safe view; none of the trading fields above are present for them).
+  type?: 'INDIVIDUAL' | 'BUSINESS';
+  level?: 'beginner' | 'advanced';
+  status?: 'INVITED' | 'AGREEMENT_PENDING' | 'ACTIVE' | 'PAUSED' | 'PAUSED_INVOICE' | 'TERMINATED';
+  statusReason?: string;
+  isTest?: boolean;
+  agreementVersion?: string;
+  agreementVersionRequired?: string;
+  upcomingAgreement?: { version: string; effectiveDate: string; daysLeft: number } | null;
+  blockedReason?: string | null;
+  kyc?: Record<string, any> | null;
+  sebi?: { number: string; validUntil: string; verified: boolean } | null;
 }
 
 interface AuthState {
@@ -67,6 +79,7 @@ interface AuthState {
   loading: boolean;
   isLoggedIn: boolean;
   isAdmin: boolean;
+  isContractor: boolean;
   termsAccepted: boolean;
   /** Resolves to whether this account has already accepted the rules (then the Rules screen is skipped). */
   login: (credential: string) => Promise<boolean>;
@@ -186,9 +199,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const isLoggedIn = !!user;
   const isAdmin = user?.role === 'admin';
+  const isContractor = user?.role === 'contractor';
 
   return (
-    <AuthContext.Provider value={{ user, loading, isLoggedIn, isAdmin, termsAccepted, login, logout, refreshUser, setTermsAccepted }}>
+    <AuthContext.Provider value={{ user, loading, isLoggedIn, isAdmin, isContractor, termsAccepted, login, logout, refreshUser, setTermsAccepted }}>
       {children}
     </AuthContext.Provider>
   );
