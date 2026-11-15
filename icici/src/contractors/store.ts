@@ -3,7 +3,7 @@ import * as crypto from 'crypto';
 import Log from '../util/Log';
 import Mongo from '../tools/mongo';
 import configService from '../prism/ConfigService';
-import { CONTRACTOR_ROLE, Contractor, ContractorStatus, ContractorType, levelOf, pseudoUserIdFor } from './types';
+import { CONTRACTOR_ROLE, Contractor, ContractorStatus, ContractorType, levelOf } from './types';
 
 const db = () => Mongo.getInstance().db;
 export const contractorsCol = () => db().collection('contractors');
@@ -116,7 +116,7 @@ export const STATUS_TRANSITIONS: Record<ContractorStatus, ContractorStatus[]> = 
 export function newContractor(o: { email: string; name: string; type: ContractorType; invitedBy: string; isTest?: boolean }): Contractor {
     const id = newContractorId();
     return { id, email: o.email.toLowerCase(), name: o.name, type: o.type, status: 'INVITED', isTest: o.isTest || undefined, createdAt: new Date(), invitedBy: o.invitedBy,
-        pseudoUserId: pseudoUserIdFor(o.type, id) };
+        pseudoUserId: '' }; // a strategy slot is assigned at activation (src/contractors/slots.ts)
 }
 
 /** Why a contractor may not submit a forecast / recommendation right now, or null when they may. Shared by the forecast and recommendation APIs. */

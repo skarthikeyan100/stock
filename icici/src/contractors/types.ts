@@ -39,8 +39,7 @@ export interface Contractor {
     representation6A5At?: Date; // Business: the clause 6A.5 confirmation
     kyc?: IndividualKyc | BusinessKyc;
     sebi?: SebiRegistration;  // Business only
-    pseudoUserId: string;     // the strategy user id its trades are booked under (Forecast-<id> or Recommendation-<id>)
+    pseudoUserId: string;     // the strategy slot (Forecast-S01 / Recommendation-S01) its trades are booked under; '' until assigned at activation
 }
 
 export const levelOf = (t: ContractorType): 'beginner' | 'advanced' => (t === 'INDIVIDUAL' ? 'beginner' : 'advanced');
-export const pseudoUserIdFor = (t: ContractorType, id: string): string => `${t === 'INDIVIDUAL' ? 'Forecast' : 'Recommendation'}-${id}`;

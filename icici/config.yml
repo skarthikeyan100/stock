@@ -340,6 +340,138 @@ strategies:
     brokers:
       - kite
     startTime: '09:20'
+  # Contractor portal (Advanced contractors): one slot per contractor, assigned at activation (src/contractors/slots.ts). Armed by the owner's approval of a
+  # recommendation (the portal writes enabled/contract/prices here); never enable or delete these by hand. A slot of a contractor who left is not reused.
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Recommendation-S01
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Recommendation-S02
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Recommendation-S03
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Recommendation-S04
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Recommendation-S05
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Recommendation-S06
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Recommendation-S07
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Recommendation-S08
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Recommendation-S09
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
+  - type: RecommendationStrategy
+    enabled: false
+    userId: Recommendation-S10
+    contract: 25600 CE
+    entryPrice: 160
+    targetPrice: 180
+    stopLoss: 140
+    entryOffset: 5
+    maxInvestment: 100000
+    index: NIFTY
+    brokers:
+      - kite
+    startTime: '09:20'
   - type: NiftyChangeStrategy
     enabled: false
     userId: NiftyChange-NIFTY

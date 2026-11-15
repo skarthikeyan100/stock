@@ -154,7 +154,7 @@ async function main() {
     assert(!JSON.stringify(r.body).includes('ABCDE1234F') && r.body.kyc.panMasked === 'XXXXXX234F' && r.body.accountCapital === undefined, 'the response masks the PAN and carries no capital/limits');
     const stored: any = (await contractorsCol().find({}).toArray())[0];
     assert(!JSON.stringify(stored).includes('ABCDE1234F') && !JSON.stringify(stored).includes('123456789012') && decryptField(stored.kyc.panEnc) === 'ABCDE1234F', 'PAN and bank account are stored encrypted');
-    assert(stored.email === 'person@example.com' && stored.pseudoUserId === `Forecast-${stored.id}`, 'email lower-cased; pseudo user id set');
+    assert(stored.email === 'person@example.com' && stored.pseudoUserId === '', 'email lower-cased; the strategy slot is assigned at activation, not before');
     const userDoc: any = await db.collection('users').findOne({ email: 'person@example.com' });
     assert(userDoc.role === 'contractor' && userDoc.proficiencyLevel === 'beginner' && userDoc.accountCapital === 0, 'a users record with role contractor exists');
     const acc: any[] = await db.collection('agreementAcceptances').find({}).toArray();

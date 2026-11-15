@@ -47,8 +47,9 @@ import adminRoutes from './routes/admin';
 import levelsRoutes from './routes/levels';
 import inviteRoutes from './routes/invite';
 import ownerContractorsRoutes from './routes/ownerContractors';
+import recommendationsRoutes from './routes/recommendations';
 import { contractorGuard } from './contractors/guard';
-import { runAgreementVersionSwitch } from './contractors/jobs';
+import { runContractorHourlyJobs } from './contractors/jobs';
 import { runInvoiceCheck } from './invoiceRule';
 import { requireCsrfHeader } from './routes/session';
 import { wrapAsyncHandlers } from './routes/asyncRouter';
@@ -138,6 +139,7 @@ app.use(adminRoutes);
 app.use(levelsRoutes);
 app.use(inviteRoutes);
 app.use(ownerContractorsRoutes);
+app.use(recommendationsRoutes);
 
 // ============================== Static UI ==============================
 
@@ -187,7 +189,7 @@ async function main() {
     setInterval(() => { runInvoiceCheck().catch((e) => Log.log('[invoice] hourly check failed:', e)); }, 60 * 60 * 1000).unref();
 
     // Contractor portal: when a new agreement version takes effect, contractors on an older one go to AGREEMENT_PENDING.
-    setInterval(() => { runAgreementVersionSwitch().catch((e) => Log.log('[contractor] agreement version check failed:', e)); }, 60 * 60 * 1000).unref();
+    setInterval(() => { runContractorHourlyJobs().catch((e) => Log.log('[contractor] hourly jobs failed:', e)); }, 60 * 60 * 1000).unref();
 
     const port = Number(process.env.PORT) || 3000;
     const mainServer = app.listen(port, () => Log.log(`[frontend] Listening on ${port}`));
