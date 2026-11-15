@@ -43,13 +43,9 @@ export default function JoinPage() {
     }).catch(() => setLoadErr('Could not reach the server. Try again in a moment.'));
   }, [token]);
 
-  if (loadErr) return <Container className="py-5"><Alert variant="danger">{loadErr}</Alert></Container>;
-  if (!info) return <Container className="py-5 text-muted">Loading…</Container>;
-  if (info.state !== 'ok') return <Container className="py-5" style={{ maxWidth: 560 }}><Alert variant="secondary">{GONE[info.state]} If you need access, ask for a new invitation.</Alert></Container>;
-
-  const business = info.type === 'BUSINESS';
-  const version = info.agreement?.version ?? '';
-  const re = info.reinvite;
+  const business = info?.type === 'BUSINESS';
+  const version = info?.agreement?.version ?? '';
+  const re = info?.reinvite;
   const needsAgreement = re ? re.needsAgreement : true;
 
   const kycBody = () => (business
@@ -68,6 +64,10 @@ export default function JoinPage() {
   };
   useEffect(() => { if (re && re.needsAgreement) void preview(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [re?.needsAgreement]);
   const detailsReady = !!(f.name && f.email && f.address && (business ? f.entityName && f.gstin && f.signatoryName && f.signatoryDesignation : f.pan) && f.bankHolder && f.bankAccount && f.bankIfsc && (business || chk.notGst));
+
+  if (loadErr) return <Container className="py-5"><Alert variant="danger">{loadErr}</Alert></Container>;
+  if (!info) return <Container className="py-5 text-muted">Loading…</Container>;
+  if (info.state !== 'ok') return <Container className="py-5" style={{ maxWidth: 560 }}><Alert variant="secondary">{GONE[info.state]} If you need access, ask for a new invitation.</Alert></Container>;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
