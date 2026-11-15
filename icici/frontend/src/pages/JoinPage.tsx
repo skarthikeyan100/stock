@@ -58,7 +58,7 @@ export default function JoinPage() {
   const preview = async () => {
     setErr('');
     if (!re) {
-      const missing = [!f.email && 'your email', business && !f.gstin && 'the GSTIN', !business && !f.pan && 'the PAN', !business && !chk.notGst && 'the "not registered under GST" tick'].filter(Boolean);
+      const missing = [business && !f.gstin && 'the GSTIN', !business && !f.pan && 'the PAN', !business && !chk.notGst && 'the "not registered under GST" tick'].filter(Boolean);
       if (missing.length) { setErr(`Please give ${missing.join(' and ')} first.`); return; }
     }
     setPreviewing(true);
@@ -71,7 +71,7 @@ export default function JoinPage() {
   useEffect(() => { if (re && re.needsAgreement) void preview(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [re?.needsAgreement]);
 
   // The agreement is prepared by itself as soon as the required details are in (and again, after a short pause, whenever a detail changes).
-  const ready = !re && !!f.email && (business ? (f.gstin ?? '').trim().length === 15 : (f.pan ?? '').trim().length === 10 && chk.notGst);
+  const ready = !re && (business ? (f.gstin ?? '').trim().length === 15 : (f.pan ?? '').trim().length === 10 && chk.notGst);
   const detailsKey = JSON.stringify([f, chk.notGst]);
   useEffect(() => {
     if (!ready) return;
@@ -127,7 +127,7 @@ export default function JoinPage() {
         )}
         {needsAgreement && !pdfUrl && !re && (
           <div className="mb-3 small text-muted">
-            {previewing ? 'Preparing your agreement…' : business ? 'Enter your email and a 15-character GSTIN: your agreement is then prepared here with your details.' : 'Enter your email, your PAN and tick the GST box: your agreement is then prepared here with your details.'}
+            {previewing ? 'Preparing your agreement…' : business ? 'Enter a 15-character GSTIN: your agreement is then prepared here with your details.' : 'Enter your PAN and tick the GST box: your agreement is then prepared here with your details.'}
             {err && <div className="text-danger mt-1">{err}</div>}
           </div>
         )}
@@ -145,8 +145,8 @@ export default function JoinPage() {
           </Card.Body></Card>
         )}
         {err && <Alert variant="danger">{err}</Alert>}
-        {needsAgreement && (!pdfUrl || !chk.accept || !chk.dpdp || (business && !chk.rep)) && <div className="small text-muted mb-2">To continue: {[!pdfUrl && 'the agreement must be prepared (it appears above once your details are in)', pdfUrl && !chk.accept && 'tick the agreement', pdfUrl && !chk.dpdp && 'tick the data consent', pdfUrl && business && !chk.rep && 'tick the registration confirmation'].filter(Boolean).join('; ')}.</div>}
-        <Button type="submit" disabled={busy || (needsAgreement && (!pdfUrl || !chk.accept || !chk.dpdp || (business && !chk.rep)))}>{busy ? 'Please wait…' : re && !needsAgreement ? 'Continue' : 'Accept and continue'}</Button>
+        {(!re && !f.email || (needsAgreement && (!pdfUrl || !chk.accept || !chk.dpdp || (business && !chk.rep)))) && <div className="small text-muted mb-2">To continue: {[!re && !f.email && 'enter your email (at the top of the form)', !pdfUrl && 'the agreement must be prepared (it appears above once your details are in)', pdfUrl && !chk.accept && 'tick the agreement', pdfUrl && !chk.dpdp && 'tick the data consent', pdfUrl && business && !chk.rep && 'tick the registration confirmation'].filter(Boolean).join('; ')}.</div>}
+        <Button type="submit" disabled={busy || (!re && !f.email) || (needsAgreement && (!pdfUrl || !chk.accept || !chk.dpdp || (business && !chk.rep)))}>{busy ? 'Please wait…' : re && !needsAgreement ? 'Continue' : 'Accept and continue'}</Button>
       </Form>
     </Container>
   );
