@@ -33,3 +33,10 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 - **Prism (legacy, low priority):** cover-order flow (`product_type: 'H'`, `blprc` as absolute price, `exit_order(orderno,'H')`), `getPositions` field names, and the fact that Prism `hasValidSession()` always returns `true`.
 - **`SupportResistanceStrategy`** self-monitored mode: live smoke test with a small quantity before enabling it (`supportResistanceStrategy.enabled` is `false`).
 - **Frontend manual pass** in a browser (`npm run dev`): admin Trades/Payments tabs, square-off confirm+error, Allotted Capital and Target/Stop-Loss Pts columns, new leg-manager fields, SSE reconnect after a backend restart, and the 2026-10-26 changes (explicit Save for config, POST-based actions, one-sided target/SL).
+
+## Forecasting contractor portal (added 2026-11-15)
+- Regulation: users must not use the trading API directly; our own strategies may. Keep contractor roles fenced from all order/position endpoints.
+- Tax implications and tax work (TDS, GST, rates, quarterly export, invoice tax fields): discuss and build next; agreements' section 8 untouched until then.
+- Review trail: `SPEC-forecast-contractor-portal-v2.md` and `SPEC-differences.md` are with the other reviewer; open items are in section 4 of the differences file.
+- Business agreement v1.1 (and Individual section 3/5 wording) redline needs approval before PDFs are regenerated.
+- NSE holiday list upkeep (`forecast.holidays`) and SEBI Registration No. verification process.
