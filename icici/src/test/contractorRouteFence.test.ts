@@ -40,7 +40,7 @@ const EXPECTED_ALLOWED = new Set([
     'GET /niftystream', 'GET /notificationstream',
     'GET /users/:email/notifications', 'PATCH /users/:email/notifications/:id/read',
     'GET /agreements/current', 'GET /demo/health',
-    'GET /contractor/me', 'GET /contractor/agreement', 'POST /contractor/accept-agreement', 'POST /contractor/sebi', 'POST /contractor/kyc-change',
+    'GET /contractor/me', 'GET /contractor/agreement', 'POST /contractor/accept-agreement', 'POST /contractor/sebi', 'POST /contractor/profile', 'POST /contractor/kyc-change',
     'GET /contractor/statements', 'GET /contractor/statements/:id/csv', 'POST /contractor/statements/:id/invoice',
     'POST /forecast', 'GET /forecast/state', 'GET /forecast/history', 'GET /forecast/accuracy',
     'POST /recommendations', 'GET /recommendations', 'GET /contractor/trades', 'GET /contractor/positionstream',

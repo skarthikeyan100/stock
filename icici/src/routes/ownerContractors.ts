@@ -7,7 +7,7 @@ import { asyncRouter } from './asyncRouter';
 import { invalidateUserCache, requireAdmin, resolveRealUser } from './session';
 import { upload } from './users';
 import { activeCount, contractorsCol, createInvite, getContractor, invitesCol, listAcceptances, listContractors, maxActiveContractors, revokeOpenInvitesFor, revokeUserSessions, setUserEnabled, STATUS_TRANSITIONS } from '../contractors/store';
-import { Contractor, ContractorStatus, ContractorType } from '../contractors/types';
+import { Contractor, ContractorStatus, ContractorType, missingDetails } from '../contractors/types';
 import { AGREEMENTS_DIR, agreementPath, currentVersion, istDate, listVersions, scheduleVersion, upcomingVersion, VERSION_RE, versionAvailable } from '../contractors/agreements';
 import { decryptField, maskedField } from '../contractors/kycCrypto';
 import { publicBaseUrl, sendInviteEmail } from '../contractors/email';
@@ -28,8 +28,9 @@ export function adminView(c: Contractor) {
         id: c.id, email: c.email, name: c.name, type: c.type, status: c.status, statusReason: c.statusReason, terminatedAt: c.terminatedAt, isTest: c.isTest === true,
         createdAt: c.createdAt, agreementVersion: c.agreementVersion, agreementAcceptedAt: c.agreementAcceptedAt, pseudoUserId: c.pseudoUserId,
         kycMasked: c.kyc ? { legalName: k.legalName ?? k.entityName, address: k.address, pan: maskedField(k.panEnc), gstin: maskedField(k.gstinEnc), bankAccount: maskedField(k.bankAccountEnc), bankIfsc: k.bankIfsc, bankHolder: k.bankHolder,
-            signatoryName: k.signatoryName, signatoryDesignation: k.signatoryDesignation, designatedForecasterName: k.designatedForecasterName, designatedForecasterEmail: k.designatedForecasterEmail, notGstRegistered: k.notGstRegistered } : null,
+            analystName: k.analystName, analystEmail: k.analystEmail, notGstRegistered: k.notGstRegistered } : null,
         sebi: c.sebi ? { ...c.sebi, verified: !!c.sebi.verifiedAt } : null,
+        missing: missingDetails(c.type, c.kyc, c.sebi),
     };
 }
 
@@ -83,7 +84,7 @@ router.get('/owner/contractors/:id/kyc', requireAdmin, async function (req, res)
     if (!c || !c.kyc) { res.status(404).json({ error: 'Not found' }); return; }
     Log.log(`[contractor] ${resolveRealUser(req)} revealed KYC of ${c.id}`);
     const k: any = c.kyc;
-    res.json({ ...k, panEnc: undefined, gstinEnc: undefined, bankAccountEnc: undefined, pan: decryptField(k.panEnc), gstin: k.gstinEnc ? decryptField(k.gstinEnc) : undefined, bankAccount: decryptField(k.bankAccountEnc) });
+    res.json({ ...k, panEnc: undefined, gstinEnc: undefined, bankAccountEnc: undefined, pan: decryptField(k.panEnc), gstin: k.gstinEnc ? decryptField(k.gstinEnc) : undefined, bankAccount: k.bankAccountEnc ? decryptField(k.bankAccountEnc) : undefined });
 });
 
 async function transition(req: express.Request, res: express.Response, to: ContractorStatus, extra: Record<string, unknown> = {}, guard?: (c: Contractor) => Promise<string | null>) {

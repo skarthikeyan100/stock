@@ -258,7 +258,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
         }
         bulkPcrCfg.quantity = cfg.quantity;
         bulkPcrCfg.targetPoints = cfg.targetPoints;
-        bulkPcrCfg.brokers = [...armable]; // always the resolved list: a block using the legacy single `broker:` key has no `brokers` array
+        bulkPcrCfg.brokers = [...armable]; // always the resolved list (the block's `brokers`, default [kite])
         // Unconditional, like every other field above - found on review: `if (cfg.index)` left a
         // previous slot's persisted `index: SENSEX` write in place for a later slot that omits
         // `index` (reverting to NIFTY), silently continuing to trade SENSEX under a NIFTY-intended

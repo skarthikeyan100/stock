@@ -278,7 +278,7 @@ function isStillWithinSameTradingSession(epochMs: number): boolean {
 // largest lot-aligned quantity that fits under `maxInvestment` once that
 // broker's option premium is known) of a NIFTY option independently and in
 // FULL on every configured broker (config `brokers: [kite, breeze]`,
-// falling back to a single legacy `broker:` field) - not a split of one
+// defaulting to kite) - not a split of one
 // pooled quantity. One PCR-driven direction decision drives every broker's
 // entry; each broker then runs its own entirely independent chunked
 // buy -> immediate resting-limit exit -> fill-tracking lifecycle, tracked in
@@ -467,8 +467,7 @@ export default class BulkPcrStrategy extends Strategy {
     }
 
     // `brokers: [kite, breeze]` (new, multi-broker) takes priority when
-    // present and non-empty; falls back to the legacy single `broker:`
-    // field (defaulting to kite) for backward compatibility. Deduped and
+    // present and non-empty; defaults to kite (the single `broker:` key is removed). Deduped and
     // lowercased so a config typo/duplicate can't silently double-run a
     // broker.
     private configuredBrokers(): BrokerName[] {

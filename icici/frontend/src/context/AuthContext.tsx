@@ -71,6 +71,7 @@ export interface AuthUser {
   upcomingAgreement?: { version: string; effectiveDate: string; daysLeft: number } | null;
   blockedReason?: string | null;
   kyc?: Record<string, any> | null;
+  missingDetails?: string[];
   sebi?: { number: string; validUntil: string; verified: boolean } | null;
 }
 

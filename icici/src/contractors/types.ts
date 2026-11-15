@@ -8,23 +8,33 @@ export type ContractorStatus = 'INVITED' | 'AGREEMENT_PENDING' | 'ACTIVE' | 'PAU
 
 export const CONTRACTOR_ROLE = 'contractor';
 
+// Only the tax identity is required to accept the agreement (PAN for an Individual, GSTIN for a Business); everything else can be completed later on the profile page.
 export interface IndividualKyc {
-    legalName: string; address: string;
-    panEnc: string; bankHolder: string; bankAccountEnc: string; bankIfsc: string;
+    legalName?: string; address?: string;
+    panEnc: string; bankHolder?: string; bankAccountEnc?: string; bankIfsc?: string;
     notGstRegistered: boolean;
 }
 export interface BusinessKyc {
-    entityName: string; address: string;
+    entityName?: string; address?: string;
     panEnc: string; gstinEnc: string;
-    signatoryName: string; signatoryDesignation: string;
-    designatedForecasterName: string; designatedForecasterEmail: string;
-    bankHolder: string; bankAccountEnc: string; bankIfsc: string;
+    analystName?: string; analystEmail: string;
+    bankHolder?: string; bankAccountEnc?: string; bankIfsc?: string;
+}
+/** The details still missing from a contractor's profile (shown to the owner and to the contractor). */
+export function missingDetails(type: ContractorType, kyc: any, sebi?: unknown): string[] {
+    const k = kyc ?? {};
+    const out: string[] = [];
+    const need = (v: unknown, label: string) => { if (!(typeof v === 'string' && v.trim())) out.push(label); };
+    if (type === 'INDIVIDUAL') need(k.legalName, 'legal name'); else { need(k.entityName, 'entity name'); need(k.analystName, 'Research Analyst name'); }
+    need(k.address, 'address'); need(k.bankAccountEnc, 'bank account'); need(k.bankIfsc, 'IFSC'); need(k.bankHolder, 'account holder');
+    if (type === 'BUSINESS' && !sebi) out.push('SEBI registration');
+    return out;
 }
 export interface SebiRegistration { number: string; validUntil: string /* YYYY-MM-DD */; verifiedAt?: Date; verifiedBy?: string; expiryAlertSentAt?: Date }
 
 export interface Contractor {
     id: string;
-    email: string;            // the session identity; for a Business contractor, the Designated Forecaster's email
+    email: string;            // the session identity; for a Business contractor, the Research Analyst's email
     name: string;
     type: ContractorType;
     status: ContractorStatus;

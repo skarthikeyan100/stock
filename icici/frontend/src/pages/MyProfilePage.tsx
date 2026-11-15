@@ -50,6 +50,39 @@ function Statements({ business }: { business: boolean }) {
   );
 }
 
+// Details that were optional at acceptance: filled in here. Bank details can be set once; a later change waits for the owner.
+function CompleteProfile({ business, missing, hasBank, onDone }: { business: boolean; missing: string[]; hasBank: boolean; onDone: () => Promise<void> }) {
+  const [v, setV] = useState<Record<string, string>>({});
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  if (missing.length === 0) return null;
+  const set = (k: string) => (e: React.ChangeEvent<any>) => setV((x) => ({ ...x, [k]: e.target.value }));
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const body = Object.fromEntries(Object.entries(v).filter(([, x]) => x.trim() !== ''));
+    const res = await apiPost('/contractor/profile', body);
+    if (!res.ok) { setMsg({ ok: false, text: await readError(res) }); return; }
+    setV({}); setMsg({ ok: true, text: 'Saved.' }); await onDone();
+  };
+  const inp = (k: string, ph: string, col = 6) => <Col md={col}><Form.Control placeholder={ph} value={v[k] ?? ''} onChange={set(k)} /></Col>;
+  return (
+    <Card className="mb-3 border-warning">
+      <Card.Header>Complete your profile <span className="small text-muted ms-2">Still needed: {missing.join(', ')}</span></Card.Header>
+      <Card.Body>
+        <Form onSubmit={save}>
+          <Row className="g-2">
+            {business ? <>{inp('entityName', 'Legal entity name')}{inp('analystName', 'Research Analyst name')}</> : inp('legalName', 'Full legal name')}
+            {inp('address', business ? 'Registered address' : 'Address', 12)}
+            {!hasBank && <>{inp('bankHolder', 'Bank account holder name')}{inp('bankAccount', 'Bank account number')}{inp('bankIfsc', 'IFSC')}</>}
+          </Row>
+          <Button type="submit" size="sm" className="mt-2">Save</Button>
+          {msg && <span className={`small ms-2 ${msg.ok ? 'text-success' : 'text-danger'}`}>{msg.text}</span>}
+        </Form>
+        {business && missing.includes('SEBI registration') && <div className="small text-muted mt-2">Add your SEBI Registration No. in the box below; you cannot submit recommendations until it is recorded and verified.</div>}
+      </Card.Body>
+    </Card>
+  );
+}
+
 // A contractor's own profile: masked KYC, the agreement, SEBI registration (Business), and requests to change bank / PAN / GSTIN (owner approves).
 export default function MyProfilePage() {
   const { user, refreshUser } = useAuth();
@@ -94,9 +127,10 @@ export default function MyProfilePage() {
               {row('Name', user.name)}{row('Email', user.email)}{row('Agreement', business ? 'Business (GSTIN)' : 'Individual (PAN)')}
               {row(business ? 'Entity' : 'Legal name', k.legalName)}{row('Address', k.address)}{row('PAN', k.panMasked)}{row('GSTIN', k.gstinMasked)}
               {row('Bank account', k.bankAccountMasked)}{row('IFSC', k.bankIfsc)}{row('Account holder', k.bankHolder)}
-              {business && row('Signatory', k.signatoryName ? `${k.signatoryName}, ${k.signatoryDesignation}` : '')}
+              {business && row('Research Analyst', k.analystName)}
             </Card.Body>
           </Card>
+          <CompleteProfile business={business} missing={(user.missingDetails as string[] | undefined) ?? []} hasBank={!!k.bankAccountMasked} onDone={refreshUser} />
           <Statements business={business} />
           <Card className="mb-3">
             <Card.Header>Change bank / tax details</Card.Header>

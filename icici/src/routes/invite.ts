@@ -22,7 +22,7 @@ import { sendWelcomeIfDue } from '../contractors/emails';
 import { canPersonalise, detailsFromContractor, detailsFromForm, readStored, renderPersonalised, sha256Of, storePersonalised } from '../contractors/personalise';
 
 const router = asyncRouter();
-const acceptLimiter = new RateLimiter(20, 60_000);
+const acceptLimiter = new RateLimiter(Number(process.env.INVITE_RATE_LIMIT) || 20, 60_000); // per IP per minute (the env override is for tests)
 const clientIp = (req: express.Request) => String(req.get('cf-connecting-ip') || req.ip || req.socket.remoteAddress || '');
 const str = (v: unknown, max = 300) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
@@ -70,33 +70,34 @@ export function buildKyc(type: ContractorType, body: any, email: string): KycRes
     const gstin = normGstin(k.gstin);
     // A Business contractor gives its GSTIN only: the entity PAN is characters 3 to 12 of it, so it is derived (and stored encrypted) rather than asked for twice.
     const pan = type === 'BUSINESS' ? gstin.slice(2, 12) : normPan(k.pan);
-    const bankAccount = normAccount(k.bankAccount);
-    const ifsc = normIfsc(k.bankIfsc);
-    if (!str(k.address) || str(k.address).length < 8) return { ok: false, status: 400, error: 'Address is required' };
+    // Only the tax identity is required here. Everything else is optional now and can be completed on the profile page; whatever IS given is checked.
     if (type === 'BUSINESS' ? !gstinMatchesPan(gstin, pan) : !validPan(pan)) return { ok: false, status: 400, error: type === 'BUSINESS' ? 'GSTIN is not valid' : 'PAN is not valid (format AAAAA9999A)' };
-    if (!str(k.bankHolder)) return { ok: false, status: 400, error: 'Bank account holder name is required' };
-    if (!validAccount(bankAccount)) return { ok: false, status: 400, error: 'Bank account number must be 9 to 18 digits' };
-    if (!validIfsc(ifsc)) return { ok: false, status: 400, error: 'IFSC is not valid' };
-    if (type === 'INDIVIDUAL') {
-        if (!str(k.legalName)) return { ok: false, status: 400, error: 'Legal name is required' };
-        if (k.notGstRegistered !== true) return { ok: false, status: 422, error: 'Contact admin to switch to the Business agreement.' };
-        return { ok: true, kyc: { legalName: str(k.legalName), address: str(k.address, 500), panEnc: encryptField(pan), bankHolder: str(k.bankHolder), bankAccountEnc: encryptField(bankAccount), bankIfsc: ifsc, notGstRegistered: true } };
-    }
-    if (!str(k.entityName)) return { ok: false, status: 400, error: 'Legal entity name is required' };
-    if (!str(k.signatoryName) || !str(k.signatoryDesignation)) return { ok: false, status: 400, error: 'Authorised signatory name and designation are required' };
-    if (!str(k.designatedForecasterName)) return { ok: false, status: 400, error: 'Designated Forecaster name is required' };
+    if (type === 'INDIVIDUAL' && k.notGstRegistered !== true) return { ok: false, status: 422, error: 'Contact admin to switch to the Business agreement.' };
+    const bank = bankFrom(k);
+    if (bank.ok === false) return { ok: false, status: 400, error: (bank as { error: string }).error };
+    const address = str(k.address, 500) || undefined;
     let sebi: Contractor['sebi'];
-    if (k.sebiNumber || k.sebiValidUntil) {
+    if (type === 'BUSINESS' && (k.sebiNumber || k.sebiValidUntil)) {
         const num = normSebi(k.sebiNumber);
         if (!validSebi(num)) return { ok: false, status: 400, error: 'SEBI Registration No. must be a Research Analyst number: INH followed by 9 digits' };
         if (!validIsoDate(str(k.sebiValidUntil))) return { ok: false, status: 400, error: 'SEBI registration valid-until date is required (YYYY-MM-DD)' };
         sebi = { number: num, validUntil: str(k.sebiValidUntil) };
     }
-    return { ok: true, sebi, kyc: { entityName: str(k.entityName), address: str(k.address, 500), panEnc: encryptField(pan), gstinEnc: encryptField(gstin), signatoryName: str(k.signatoryName), signatoryDesignation: str(k.signatoryDesignation),
-        designatedForecasterName: str(k.designatedForecasterName), designatedForecasterEmail: email, bankHolder: str(k.bankHolder), bankAccountEnc: encryptField(bankAccount), bankIfsc: ifsc } };
+    const b = (bank as { ok: true; value: { bankHolder?: string; bankAccountEnc?: string; bankIfsc?: string } }).value;
+    if (type === 'INDIVIDUAL') return { ok: true, kyc: { legalName: str(k.legalName) || undefined, address, panEnc: encryptField(pan), ...b, notGstRegistered: true } };
+    return { ok: true, sebi, kyc: { entityName: str(k.entityName) || undefined, address, panEnc: encryptField(pan), gstinEnc: encryptField(gstin), analystName: str(k.analystName) || undefined, analystEmail: email, ...b } };
 }
 
-/** The agreement with the details typed so far filled in (nothing is stored): shown before the contractor accepts. A re-invite previews from the stored details. */
+/** Bank details are all-or-nothing: none given is fine; if any is given, all three must be valid. */
+function bankFrom(k: any): { ok: true; value: { bankHolder?: string; bankAccountEnc?: string; bankIfsc?: string } } | { ok: false; error: string } {
+    const holder = str(k.bankHolder), account = normAccount(k.bankAccount), ifsc = normIfsc(k.bankIfsc);
+    if (!holder && !account && !ifsc) return { ok: true, value: {} };
+    if (!holder) return { ok: false, error: 'Bank account holder name is required with the account number' };
+    if (!validAccount(account)) return { ok: false, error: 'Bank account number must be 9 to 18 digits' };
+    if (!validIfsc(ifsc)) return { ok: false, error: 'IFSC is not valid' };
+    return { ok: true, value: { bankHolder: holder, bankAccountEnc: encryptField(account), bankIfsc: ifsc } };
+}
+
 router.post('/invite/:token/preview', async function (req, res) {
     if (limited(req, res)) return;
     const invite = await findInviteByToken(req.params.token);
@@ -152,10 +153,9 @@ router.post('/invite/:token/accept', async function (req, res) {
 
     // ---- a new contractor ----
     const email = str(body.email, 254).toLowerCase();
-    const name = str(body.name, 120);
+    const name = str(body.name, 120) || str(body.kyc?.entityName, 120) || email.split('@')[0]; // a name can be added later on the profile page
     if (!validEmail(email)) { res.status(400).json({ error: 'A valid email is required' }); return; }
     if (invite.emailLock && invite.emailLock !== email) { res.status(400).json({ error: 'This invite was issued to a different email address.' }); return; }
-    if (!name) { res.status(400).json({ error: 'Your name is required' }); return; }
     if (body.acceptTerms !== true) { res.status(400).json({ error: `Please accept the Forecasting Services Agreement v${version}` }); return; }
     if (body.dpdpConsent !== true) { res.status(400).json({ error: 'Please give the data-processing consent (agreement Section 12)' }); return; }
     if (invite.type === 'BUSINESS' && body.representation6A5 !== true) { res.status(400).json({ error: 'Please confirm the Registration representation (agreement clause 6A.5)' }); return; }
@@ -242,6 +242,32 @@ router.post('/contractor/sebi', requireAuth, async function (req, res) {
     if (!validIsoDate(validUntil) || validUntil < istDate()) { res.status(400).json({ error: 'Valid-until must be a date (YYYY-MM-DD) that has not passed' }); return; }
     await contractorsCol().updateOne({ id: c.id }, { $set: { sebi: { number, validUntil } } }); // a fresh record: unverified again, alert stage reset
     await notifyAdmins('sebi_unverified', `${c.name} updated its SEBI registration (${number}, valid until ${validUntil}); please verify it.`, { contractorId: c.id });
+    res.json(await contractorClientView((await getContractor(c.id)) as Contractor));
+});
+
+// Completes the optional details after acceptance. Descriptive fields can be set at any time; BANK details only while none is on file (a later change goes through
+// /contractor/kyc-change and waits for the owner). The tax identity (PAN / GSTIN) is never edited here.
+router.post('/contractor/profile', requireAuth, async function (req, res) {
+    const c = await me(req);
+    if (!c || c.status === 'TERMINATED' || !c.kyc) { res.status(403).json({ error: 'Forbidden' }); return; }
+    if (!isKycCryptoConfigured()) { res.status(503).json({ error: 'Not ready' }); return; }
+    const b = req.body ?? {};
+    const set: Record<string, unknown> = {};
+    const text = (key: string, max = 300) => { if (b[key] !== undefined) { const v = str(b[key], max); if (v) set[`kyc.${key}`] = v; } };
+    if (c.type === 'INDIVIDUAL') text('legalName'); else { text('entityName'); text('analystName'); }
+    text('address', 500);
+    const k: any = c.kyc;
+    if (b.bankAccount !== undefined || b.bankIfsc !== undefined || b.bankHolder !== undefined) {
+        if (k.bankAccountEnc) { res.status(409).json({ error: 'Bank details are already on file. Use "Request change": the owner approves a change.' }); return; }
+        const bank = bankFrom(b);
+        if (bank.ok === false) { res.status(400).json({ error: (bank as { error: string }).error }); return; }
+        for (const [key, v] of Object.entries((bank as { ok: true; value: Record<string, string> }).value)) set[`kyc.${key}`] = v;
+    }
+    if (Object.keys(set).length === 0) { res.status(400).json({ error: 'Nothing to save' }); return; }
+    if (set['kyc.legalName'] || set['kyc.entityName'] || set['kyc.analystName']) set.name = (set['kyc.analystName'] ?? set['kyc.legalName'] ?? set['kyc.entityName'] ?? c.name) as string;
+    await contractorsCol().updateOne({ id: c.id }, { $set: set });
+    if (set.name) await Mongo.getInstance().db.collection('users').updateOne({ email: c.email }, { $set: { name: set.name } });
+    invalidateUserCache(c.email);
     res.json(await contractorClientView((await getContractor(c.id)) as Contractor));
 });
 

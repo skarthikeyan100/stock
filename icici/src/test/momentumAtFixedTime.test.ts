@@ -8,6 +8,7 @@ import MomentumAtFixedTimeStrategy from '../strategy/MomentumAtFixedTimeStrategy
 import { Trade, OptionQuote } from '../model/model';
 import configService from '../prism/ConfigService';
 import { settingFor } from '../prism/configVocabulary';
+import { validateConfigFile } from '../prism/configValidation';
 // eodCloseTime is a global setting (not a strategy key): 23:59 so the end-of-day close never fires during a test, whatever time it is run.
 (configService.getConfig().settings as any).eodCloseTime = '23:59';
 
@@ -17,6 +18,8 @@ function assert(condition: boolean, message: string) {
 }
 
 let calls: { fn: string; args: any[] }[] = [];
+// getOptionLtp stub: a number, or a function (args) => number that may throw, to model an unreadable quote for one broker's contract.
+let optionLtp: number | ((args: any[]) => number) = 100;
 const fake: any = new Proxy({}, {
     get: (_t, fn: string) => async (...args: any[]) => {
         calls.push({ fn, args });
@@ -24,7 +27,7 @@ const fake: any = new Proxy({}, {
             case 'resolveOptionContract': return { tsym: `NIFTY${args[1].strike}${args[1].right}`, token: `${args[1].right}-T`, exchange: 'NFO' };
             case 'placeLimitBuyBare': return { orderId: 'B1' };
             case 'brokerPlaceLimitSellBare': return { orderId: 'S1' };
-            case 'getOptionLtp': return 100;
+            case 'getOptionLtp': return typeof optionLtp === 'function' ? optionLtp(args) : optionLtp;
             case 'cancelRestingLimitBuys': case 'cancelRestingLimitSells': return { filledQty: 0, cancelFailed: false };
             default: return {};
         }
@@ -160,6 +163,111 @@ async function runTwoSlots(userId: string, refLtp: number, ltp: number, ce: { tb
     restarted.stateFile = s.stateFile;
     await restarted.processNiftyQuote({ ltp: 22010, prevClose: 22000 });
     assert(restarted.canHandleOptionQuote(tick('CE-T', 103)), 'after a restart a leg with a tick-driven stop still receives its option ticks');
+
+    console.log('  30% stop is sent with the target');
+    s = await runTwoSlots('MAT-stop30', 22000, 22010, { tbq: 900, tsq: 100 }, { tbq: 300, tsq: 200 });
+    s.cfg().target = 5;
+    s.cfg().stopLoss = '30%';
+    calls = [];
+    await s.updateTrade(fill('NIFTY22050CE', 'Buy', 975, 100));
+    const prot = last('attachProtection');
+    assert(!!prot && prot.args[1].targetPrice === 105 && prot.args[1].stopLossPrice === 70, `fill 100: target 105 and a 30% stop at 70 go in together (got ${prot?.args[1].targetPrice} / ${prot?.args[1].stopLossPrice})`);
+
+    console.log('  no-gain timeout');
+    const ngCfg = (id: string, extra: any = {}) => ({ type: 'MomentumAtFixedTimeStrategy', userId: id, times: [slotA], maxInvestment: 100000, target: 3, stopLoss: 'none', entryTimeoutMinutes: 5, brokers: ['kite'], noGainTimeoutMinutes: 30, ...extra });
+    const filledLeg = async (id: string, extra: any = {}, minutesOld = 31) => {
+        calls = [];
+        depth = { 'CE-T': { tbq: 900, tsq: 100 }, 'PE-T': { tbq: 300, tsq: 200 } };
+        const cfg: any = ngCfg(id, extra);
+        const st = make(cfg);
+        await st.processNiftyQuote({ ltp: 22000, prevClose: 22000 });
+        cfg.times = [slotA, slotB];
+        await st.processNiftyQuote({ ltp: 22010, prevClose: 22000 });
+        await st.updateTrade(fill('NIFTY22050CE', 'Buy', 975, 100));
+        for (const l of st.legs()) l.placedAt = Date.now() - minutesOld * 60_000;
+        calls = [];
+        st.lastNoGainCheck = 0;
+        return st;
+    };
+    const sold = () => calls.filter((c) => c.fn === 'chunkedSquareOff');
+
+    optionLtp = 100; // not above the fill of 100
+    s = await filledLeg('MAT-ng-flat');
+    await s.checkNoGainTimeouts();
+    assert(sold().length === 1 && sold()[0].args[1].quantity === 975, `31 min old, LTP 100 <= fill 100 -> closed at market, all 975 sold (got ${sold().map((c) => c.args[1].quantity)})`);
+    assert(count('cancelRestingLimitSells') === 1, 'the resting target sell is cancelled before the market sell');
+
+    optionLtp = 90;
+    s = await filledLeg('MAT-ng-down');
+    await s.checkNoGainTimeouts();
+    assert(sold().length === 1, 'LTP below the fill -> closed');
+
+    optionLtp = 100.05;
+    s = await filledLeg('MAT-ng-up');
+    await s.checkNoGainTimeouts();
+    assert(sold().length === 0 && count('getOptionLtp') === 1, 'LTP above the fill -> kept (LTP was read, nothing sold)');
+
+    optionLtp = 90;
+    s = await filledLeg('MAT-ng-early', {}, 29);
+    await s.checkNoGainTimeouts();
+    assert(sold().length === 0 && count('getOptionLtp') === 0, '29 min old -> not due: the LTP is not even read');
+
+    s = await filledLeg('MAT-ng-off', { noGainTimeoutMinutes: 'none' });
+    await s.checkNoGainTimeouts();
+    assert(sold().length === 0 && count('getOptionLtp') === 0, "noGainTimeoutMinutes 'none' -> off");
+
+    s = await filledLeg('MAT-ng-bad', { noGainTimeoutMinutes: 'abc' });
+    let threw = false;
+    try { await s.checkNoGainTimeouts(); } catch { threw = true; }
+    assert(threw && sold().length === 0, 'a bad value is an error and sells nothing');
+    await s.processNiftyQuote({ ltp: 22010, prevClose: 22000 }); // the tick path swallows it (logs an ALERT) and keeps working
+    assert(sold().length === 0, 'a bad value on a tick logs and does not crash the tick handler');
+
+    optionLtp = 0;
+    s = await filledLeg('MAT-ng-noquote');
+    await s.checkNoGainTimeouts();
+    assert(sold().length === 0, 'an unreadable LTP (0) keeps the leg: no exit on a guess');
+
+    optionLtp = 90;
+    s = await filledLeg('MAT-ng-throttle');
+    await s.checkNoGainTimeouts();
+    await s.checkNoGainTimeouts();
+    assert(count('getOptionLtp') === 1, 'checks are throttled to one per 30 s');
+
+    s = await filledLeg('MAT-ng-closed');
+    s.legs()[0].soldQty = 975; // the target sell already filled
+    await s.checkNoGainTimeouts();
+    assert(sold().length === 0 && count('getOptionLtp') === 0, 'a fully sold leg is skipped');
+
+    // Two brokers: an LTP failure on the first leg must not stop the second from being closed.
+    calls = [];
+    depth = { 'CE-T': { tbq: 900, tsq: 100 }, 'PE-T': { tbq: 300, tsq: 200 } };
+    const cfg2: any = ngCfg('MAT-ng-two', { brokers: ['kite', 'ant'] });
+    const two = make(cfg2);
+    await two.processNiftyQuote({ ltp: 22000, prevClose: 22000 });
+    cfg2.times = [slotA, slotB];
+    await two.processNiftyQuote({ ltp: 22010, prevClose: 22000 });
+    await two.updateTrade(fill('NIFTY22050CE', 'Buy', 975, 100, 'kite'));
+    await two.updateTrade(fill('NIFTY22050CE', 'Buy', 975, 100, 'ant'));
+    for (const l of two.legs()) l.placedAt = Date.now() - 31 * 60_000;
+    calls = [];
+    two.lastNoGainCheck = 0;
+    optionLtp = (a: any[]) => { if (calls.filter((c) => c.fn === 'getOptionLtp').length === 1) throw new Error('quote down'); return 90; };
+    await two.checkNoGainTimeouts();
+    assert(two.legs().length === 2 && sold().length === 1, `first leg's LTP read fails, the second broker's leg is still closed (legs ${two.legs().length}, sells ${sold().length})`);
+    assert(two.noGainBusy === false, 'the busy flag is released after a failure');
+    optionLtp = 100;
+
+    console.log('  config validation of noGainTimeoutMinutes');
+    const baseCfg = (extra: any) => ({ settings: { target: 10, stopLoss: 'none', eodCloseTime: '15:50' }, strategies: [{ type: 'MomentumAtFixedTimeStrategy', enabled: true, userId: 'MAT-v', times: ['10:10'], maxInvestment: 50000, minMovePoints: 10, target: 5, stopLoss: '30%', index: 'NIFTY', brokers: ['kite'], ...extra }] });
+    // The validator skips disabled blocks by design (a stale value in a block that is not running must not stop startup), so test an enabled one.
+    const errs = (extra: any) => validateConfigFile(baseCfg(extra)).filter((e: string) => e.includes('noGainTimeoutMinutes'));
+    assert(errs({ noGainTimeoutMinutes: 30 }).length === 0, '30 is accepted');
+    assert(errs({ noGainTimeoutMinutes: 'none' }).length === 0, "'none' is accepted");
+    assert(errs({}).length === 0, 'absent is accepted (off)');
+    assert(errs({ noGainTimeoutMinutes: 0 }).length === 1, '0 is rejected');
+    assert(errs({ noGainTimeoutMinutes: -5 }).length === 1, 'a negative value is rejected');
+    assert(errs({ noGainTimeoutMinutes: 'abc' }).length === 1, 'a string other than none is rejected');
 
     console.log('  disabled strategy');
     calls = [];

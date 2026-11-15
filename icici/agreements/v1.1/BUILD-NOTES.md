@@ -28,6 +28,9 @@ Unchanged from v1.0: 8 (Taxes and Invoicing), 10, 16, 17 and the rest of 12 and 
 - **The party is named "Karthikeyan S" instead of "the Company"** everywhere (there is no registered company). Applied to the Individual agreement too. His address and PAN come from `forecast.company` in config.yml (empty = `[address]` / `[__________]` placeholders show).
 - **The Parties clause (and 3.4, Schedule 1 "Registration valid until") is filled from the contractor's own details.** The contractor gives the details first, the portal prepares the agreement with them, they read it and accept that file; it is signed, stored under `storage/_agreements/<contractor>/`, and the acceptance record holds its SHA-256 (and the template's). The files in this folder are the generic templates with placeholders. A PAN is no longer asked of a Business contractor: it is read from the GSTIN (characters 3 to 12).
 
+- **Term is 6 months** from the Effective Date (Section 13 and Schedule 1 "Term"); no "then month to month", and no end date is computed or shown anywhere in the portal. (Business only; the Individual agreement still says 3 months then month to month.)
+- **One name:** the Contractor acts through one **Research Analyst** (named in the Parties clause and 3.4); there is no separate authorised signatory or "Designated Forecaster". The join form and profile ask for that one name.
+
 ## Individual (PAN) v1.1
 v1.0 verbatim except:
 1. Section 3, second bullet: replaced as in the amendment text.

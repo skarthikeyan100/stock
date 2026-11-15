@@ -49,7 +49,7 @@ export default function JoinPage() {
   const needsAgreement = re ? re.needsAgreement : true;
 
   const kycBody = () => (business
-    ? { entityName: f.entityName, address: f.address, gstin: f.gstin, signatoryName: f.signatoryName, signatoryDesignation: f.signatoryDesignation, designatedForecasterName: f.name,
+    ? { entityName: f.entityName, address: f.address, gstin: f.gstin, analystName: f.name,
         bankHolder: f.bankHolder, bankAccount: f.bankAccount, bankIfsc: f.bankIfsc, sebiNumber: f.sebiNumber || undefined, sebiValidUntil: f.sebiValidUntil || undefined }
     : { legalName: f.name, address: f.address, pan: f.pan, bankHolder: f.bankHolder, bankAccount: f.bankAccount, bankIfsc: f.bankIfsc, notGstRegistered: chk.notGst });
 
@@ -63,7 +63,7 @@ export default function JoinPage() {
     } finally { setPreviewing(false); }
   };
   useEffect(() => { if (re && re.needsAgreement) void preview(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [re?.needsAgreement]);
-  const detailsReady = !!(f.name && f.email && f.address && (business ? f.entityName && f.gstin && f.signatoryName && f.signatoryDesignation : f.pan) && f.bankHolder && f.bankAccount && f.bankIfsc && (business || chk.notGst));
+  const detailsReady = !!(f.email && (business ? f.gstin : f.pan && chk.notGst)); // only the tax identity is required: the rest can be completed later on the profile page
 
   if (loadErr) return <Container className="py-5"><Alert variant="danger">{loadErr}</Alert></Container>;
   if (!info) return <Container className="py-5 text-muted">Loading…</Container>;
@@ -91,22 +91,20 @@ export default function JoinPage() {
       <Form onSubmit={submit}>
         {!re && (
           <Card className="mb-3">
-            <Card.Header>Your details</Card.Header>
+            <Card.Header>Your details <span className="small text-muted ms-2">{business ? 'Only the GSTIN is required now' : 'Only the PAN is required now'}; the rest can be added later on your profile page.</span></Card.Header>
             <Card.Body>
               <Row className="g-2">
-                <Field f={f} set={set} k="name" label={business ? 'Designated Forecaster name' : 'Full legal name'} />
-                <Field f={f} set={set} k="email" label={business ? 'Designated Forecaster email' : 'Email'} type="email" readOnly={!!info.emailLock} />
-                {business && <Field f={f} set={set} k="entityName" label="Legal entity name" />}
-                <Field f={f} set={set} k="address" label={business ? 'Registered address' : 'Address'} />
+                <Field f={f} set={set} required={false} k="name" label={business ? 'Research Analyst name' : 'Full legal name'} />
+                <Field f={f} set={set} k="email" label={business ? 'Research Analyst email' : 'Email'} type="email" readOnly={!!info.emailLock} />
+                {business && <Field f={f} set={set} required={false} k="entityName" label="Legal entity name" />}
+                <Field f={f} set={set} required={false} k="address" label={business ? 'Registered address' : 'Address'} />
                 {!business && <Field f={f} set={set} k="pan" label="PAN" maxLength={10} style={{ textTransform: 'uppercase' }} />}
                 {business && <Field f={f} set={set} k="gstin" label="GSTIN" maxLength={15} style={{ textTransform: 'uppercase' }} />}
-                {business && <Field f={f} set={set} k="signatoryName" label="Authorised signatory name" />}
-                {business && <Field f={f} set={set} k="signatoryDesignation" label="Signatory designation" />}
                 {business && <Field f={f} set={set} k="sebiNumber" label="SEBI Registration No. (Research Analyst, INH + 9 digits)" required={false} maxLength={12} style={{ textTransform: 'uppercase' }} />}
                 {business && <Field f={f} set={set} k="sebiValidUntil" label="Registration valid until" type="date" required={false} />}
-                <Field f={f} set={set} k="bankHolder" label="Bank account holder name" />
-                <Field f={f} set={set} k="bankAccount" label="Bank account number" inputMode="numeric" />
-                <Field f={f} set={set} k="bankIfsc" label="IFSC" maxLength={11} style={{ textTransform: 'uppercase' }} />
+                <Field f={f} set={set} required={false} k="bankHolder" label="Bank account holder name" />
+                <Field f={f} set={set} required={false} k="bankAccount" label="Bank account number" inputMode="numeric" />
+                <Field f={f} set={set} required={false} k="bankIfsc" label="IFSC" maxLength={11} style={{ textTransform: 'uppercase' }} />
               </Row>
               {!business && <Form.Check className="mt-3" id="gst" checked={chk.notGst} onChange={(e) => setChk({ ...chk, notGst: e.target.checked })} label="I am not registered under GST." />}
             </Card.Body>

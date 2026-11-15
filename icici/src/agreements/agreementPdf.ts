@@ -16,7 +16,7 @@ export type AgreementBlock =
 /** The contractor's details (and the Company's) that fill the Parties clause and the other [placeholders]; anything missing stays as a bracketed placeholder. */
 export interface AgreementDetails {
     name?: string; address?: string; pan?: string; gstin?: string;
-    entityName?: string; signatoryName?: string; signatoryDesignation?: string; designatedForecasterName?: string;
+    entityName?: string; analystName?: string;
     sebiNumber?: string; sebiValidUntil?: string;
     company?: { name?: string; address?: string; pan?: string };
 }

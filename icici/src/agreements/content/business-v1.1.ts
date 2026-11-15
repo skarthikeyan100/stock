@@ -18,7 +18,7 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
         { t: 'h2', text: '1. Parties' },
         { t: 'p', text: 'This Agreement is between:' },
         { t: 'li', text: `${ph(co.name, 'Karthikeyan S')}, an individual resident at ${ph(co.address, '[address]')}, Chennai, Tamil Nadu, carrying on business under the name “Nivedha Tech” (PAN: ${ph(co.pan, '[__________]')}); and` },
-        { t: 'li', text: `The Contractor: ${ph(d.entityName, '[Legal name of company / LLP / firm]')}, registered office ${ph(d.address, '[address]')} (PAN ${ph(d.pan, '[__________]')}; GSTIN ${ph(d.gstin, '[__________]')}), acting through its authorised signatory ${d.signatoryName ? `${d.signatoryName}${d.signatoryDesignation ? `, ${d.signatoryDesignation}` : ''}` : '[name, designation]'} (the “Contractor”). The Contractor is registered with the Securities and Exchange Board of India as a Research Analyst, registration number ${ph(d.sebiNumber, 'INH[_________]')}, valid until ${ph(d.sebiValidUntil, '[date]')} (the “Registration”).` },
+        { t: 'li', text: `The Contractor: ${ph(d.entityName, '[Legal name of company / LLP / firm]')}, registered office ${ph(d.address, '[address]')} (PAN ${ph(d.pan, '[__________]')}; GSTIN ${ph(d.gstin, '[__________]')}), acting through ${ph(d.analystName, '[name]')}, its Research Analyst (the “Contractor”). The Contractor is registered with the Securities and Exchange Board of India as a Research Analyst, registration number ${ph(d.sebiNumber, 'INH[_________]')}, valid until ${ph(d.sebiValidUntil, '[date]')} (the “Registration”).` },
         { t: 'p', text: 'This Agreement takes effect when the Contractor accepts it electronically on the Platform after receiving a personal invitation from Karthikeyan S (the “Effective Date”). Electronic acceptance is valid under the Information Technology Act, 2000. Access to the Platform is by personal invitation only; no person may participate without an accepted copy of this Agreement.' },
 
         { t: 'h2', text: '2. Definitions' },
@@ -36,7 +36,7 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
         { t: 'num', n: '3.1', text: 'The Contractor is engaged as an independent contractor to provide research recommendations. Nothing in this Agreement creates an employment, partnership, joint venture, agency or investment-management relationship.' },
         { t: 'num', n: '3.2', text: 'The Contractor is not a client of Karthikeyan S, invests no money, holds no interest in Karthikeyan S’s account or capital, and does not share in any loss. The Contractor’s only entitlement is the Fees under Section 6A.' },
         { t: 'num', n: '3.3', text: 'The Contractor has no authority to place, direct, modify, approve or cancel any order, no access to any broker or trading account of Karthikeyan S, and no authority to bind Karthikeyan S.' },
-        { t: 'num', n: '3.4', text: `The Contractor shall provide the services through one designated individual, ${ph(d.designatedForecasterName, '[name]')} (the “Designated Forecaster”), who must hold a separate personal invitation to the Platform. The Contractor may not change that person without Karthikeyan S’s written consent and is responsible for that person’s compliance with this Agreement.` },
+        { t: 'num', n: '3.4', text: `The Contractor shall provide the services through its Research Analyst, ${ph(d.analystName, '[name]')}, who must hold a separate personal invitation to the Platform. The Contractor may not change that person without Karthikeyan S’s written consent and is responsible for that person’s compliance with this Agreement.` },
 
         { t: 'h2', text: '4. The Services' },
         { t: 'num', n: '4.1', text: 'The Contractor will submit Recommendations on the Platform. Each Recommendation must be the Contractor’s own research, prepared in compliance with the SEBI (Research Analysts) Regulations, 2014 and any circulars issued under them, and with the disclosures, records and rationale those rules require.' },
@@ -94,7 +94,7 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
         { t: 'p', text: 'Karthikeyan S collects the Contractor’s name, contact details, PAN, GSTIN, Registration details, address, bank details and Platform activity only to perform this Agreement, pay Fees and meet tax and legal obligations. The Contractor consents to this processing under the Digital Personal Data Protection Act, 2023. Karthikeyan S will store this data securely, keep it no longer than the law requires, and not sell or share it except with its bank, tax authorities or as required by law. Requests to access or correct data can be sent to admin@nivedhatech.com.' },
 
         { t: 'h2', text: '13. Term and Termination' },
-        { t: 'li', text: 'This Agreement runs for the Pilot Term in Schedule 1 and then continues month to month.' },
+        { t: 'li', text: 'This Agreement runs for the Term in Schedule 1: 6 months from the Effective Date.' },
         { t: 'li', text: 'Karthikeyan S may end it immediately by email if the Contractor breaches Section 4, 9 or 10, or provided false information during onboarding.' },
         { t: 'li', text: 'Karthikeyan S may end this Agreement immediately by email if the Registration lapses, is suspended or cancelled, or if the representation in clause 6A.5 is untrue.' },
         { t: 'li', text: 'When this Agreement ends, Karthikeyan S will pay the Fees earned up to the end date (and any Retainer, pro-rated), and Platform access will end. Sections 6 and 6A (for Fees earned), 8, 10, 11, 12, 14 and 16 continue to apply.' },
@@ -128,7 +128,7 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
             ['Recommendation hours', '[09:20] to [15:00] IST on Trading Days'],
             ['Recommendations per day', '[3] per Trading Day; one open at a time'],
             ['Registration valid until', ph(d.sebiValidUntil, '[date]')],
-            ['Pilot Term', '[3] months, then month to month'],
+            ['Term', '6 months from the Effective Date'],
         ] },
 
         { t: 'h2', text: 'Schedule 2 – Invoice Requirements' },

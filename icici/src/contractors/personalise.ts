@@ -31,8 +31,7 @@ export function detailsFromForm(type: ContractorType, name: string, k: any): Agr
     if (type === 'INDIVIDUAL') return { ...base, name: String(k?.legalName ?? name ?? '').trim() || undefined, pan: up(k?.pan) || undefined };
     const gstin = up(k?.gstin);
     return { ...base, entityName: String(k?.entityName ?? '').trim() || undefined, gstin: gstin || undefined, pan: gstin.length >= 12 ? gstin.slice(2, 12) : undefined,
-        signatoryName: String(k?.signatoryName ?? '').trim() || undefined, signatoryDesignation: String(k?.signatoryDesignation ?? '').trim() || undefined,
-        designatedForecasterName: String(name ?? '').trim() || undefined, sebiNumber: up(k?.sebiNumber) || undefined, sebiValidUntil: String(k?.sebiValidUntil ?? '').trim() || undefined };
+        analystName: String(name ?? '').trim() || undefined, sebiNumber: up(k?.sebiNumber) || undefined, sebiValidUntil: String(k?.sebiValidUntil ?? '').trim() || undefined };
 }
 
 /** Details from a stored contractor (encrypted KYC decrypted here). */
@@ -41,8 +40,8 @@ export function detailsFromContractor(c: Contractor): AgreementDetails {
     const dec = (v?: string) => { try { return v ? decryptField(v) : undefined; } catch { return undefined; } };
     const base: AgreementDetails = { address: k.address, company: companyDetails() };
     if (c.type === 'INDIVIDUAL') return { ...base, name: k.legalName ?? c.name, pan: dec(k.panEnc) };
-    return { ...base, entityName: k.entityName, gstin: dec(k.gstinEnc), pan: dec(k.panEnc), signatoryName: k.signatoryName, signatoryDesignation: k.signatoryDesignation,
-        designatedForecasterName: k.designatedForecasterName ?? c.name, sebiNumber: c.sebi?.number, sebiValidUntil: c.sebi?.validUntil };
+    return { ...base, entityName: k.entityName, gstin: dec(k.gstinEnc), pan: dec(k.panEnc), 
+        analystName: k.analystName ?? c.name, sebiNumber: c.sebi?.number, sebiValidUntil: c.sebi?.validUntil };
 }
 
 export async function renderPersonalised(type: ContractorType, d: AgreementDetails, date = istDate()): Promise<{ pdf: Buffer; sha256: string; filename: string }> {

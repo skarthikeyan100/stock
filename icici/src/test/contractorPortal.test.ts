@@ -15,6 +15,7 @@ import { installFakeDb } from './fakeDb';
 
 require('dotenv').config(); // the PDF signing certificate settings (personalised agreements are signed)
 process.env.KYC_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+process.env.INVITE_RATE_LIMIT = '1000';
 process.env.STORAGE_DIR = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'stor-')); // personalised agreements are written here, not into the repo's storage/
 // Never send a real email from a test (the welcome email fires after an acceptance).
 for (const k of ['GMAIL_USER', 'GMAIL_CLIENT_ID', 'GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN']) delete process.env[k];
@@ -218,7 +219,7 @@ async function main() {
     assert(r.status === 410, 'the re-invite link is single use too');
 
     console.log('business accept:');
-    const bizKyc = { entityName: 'Acme Research LLP', address: '5 Market Road, Mumbai', gstin: '33ABCDE1234F1Z5', signatoryName: 'A Signatory', signatoryDesignation: 'Partner', designatedForecasterName: 'D Forecaster',
+    const bizKyc = { entityName: 'Acme Research LLP', address: '5 Market Road, Mumbai', gstin: '33ABCDE1234F1Z5', analystName: 'D Forecaster',
         bankHolder: 'Acme Research LLP', bankAccount: '998877665544', bankIfsc: 'ICIC0000123', sebiNumber: 'INH000012345', sebiValidUntil: '2027-03-31' };
     const biz = await createInvite({ type: 'BUSINESS', createdBy: 'owner@x.com', emailLock: 'forecaster@acme.com' });
     const bgood = (kyc: any = bizKyc, extra: any = {}) => ({ email: 'forecaster@acme.com', name: 'D Forecaster', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc, ...extra });
@@ -234,12 +235,31 @@ async function main() {
     assert(r.status === 200 && r.body.type === 'BUSINESS' && r.body.sebi.verified === false && decodeURIComponent(cookieFromRes(r)).includes('|90'), 'Business accepted; SEBI recorded but unverified; 90-day session');
     const bizStored: any = (await contractorsCol().find({ email: 'forecaster@acme.com' }).toArray())[0];
     const tb = require('child_process').spawnSync('pdftotext', ['-layout', '-', '-'], { input: fs.readFileSync(bizStored.agreementFile) }).stdout.toString().replace(/\s+/g, ' ');
-    assert(/The Contractor: Acme Research LLP, registered office 5 Market Road, Mumbai \(PAN ABCDE1234F; GSTIN 33ABCDE1234F1Z5\), acting through its authorised signatory A Signatory, Partner/.test(tb) && /registration number INH000012345, valid until 2027-03-31/.test(tb), 'Business: entity, address, PAN (derived from the GSTIN), GSTIN, signatory and SEBI details fill the Parties clause');
-    assert(/designated individual, D Forecaster/.test(tb) && !/Signatures/.test(tb) && !/third part/i.test(tb) && !/7 days’ notice/.test(tb) && !/not give the same Recommendation/.test(tb), 'clause 3.4 names the forecaster; no Signatures section, no 4.3 third-party clause, no 7-day notice, no old 9.3');
+    assert(/The Contractor: Acme Research LLP, registered office 5 Market Road, Mumbai \(PAN ABCDE1234F; GSTIN 33ABCDE1234F1Z5\), acting through D Forecaster, its Research Analyst/.test(tb) && /registration number INH000012345, valid until 2027-03-31/.test(tb), 'Business: entity, address, PAN (derived from the GSTIN), GSTIN, the one Research Analyst name and SEBI details fill the Parties clause');
+    assert(/through its Research Analyst, D Forecaster/.test(tb) && !/Signatures/.test(tb) && !/third part/i.test(tb) && !/7 days’ notice/.test(tb) && !/not give the same Recommendation/.test(tb), 'clause 3.4 names the forecaster; no Signatures section, no 4.3 third-party clause, no 7-day notice, no old 9.3');
     const bizUser: any = await db.collection('users').findOne({ email: 'forecaster@acme.com' });
     assert(bizUser.advancedVia === 'gstin' && bizUser.proficiencyLevel === 'advanced' && bizUser.entityType === 'company', 'the users record is set up for the existing GSTIN invoice rule');
     r = await request(app).post(`/invite/${(await createInvite({ type: 'INDIVIDUAL', createdBy: 'o' })).token}/accept`).send(good());
     assert(r.status === 409, 'an already-registered email is told to ask for a re-invite');
+
+    console.log('only the tax identity is required:');
+    const min = await createInvite({ type: 'BUSINESS', createdBy: 'o' });
+    r = await request(app).post(`/invite/${min.token}/accept`).send({ email: 'min@acme.com', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc: {} });
+    assert(r.status === 400 && /GSTIN/.test(r.body.error), 'without a GSTIN a Business contractor cannot accept');
+    r = await request(app).post(`/invite/${min.token}/accept`).send({ email: 'min@acme.com', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc: { gstin: '33ABCDE1234F1Z5' } });
+    assert(r.status === 200 && r.body.name === 'min' && r.body.missingDetails.includes('bank account') && r.body.missingDetails.includes('address'), 'with only the GSTIN (and email) it is accepted, and the profile lists what is still missing ' + r.status + ' ' + JSON.stringify(r.body).slice(0, 200));
+    const minCk = cookieFromRes(r);
+    r = await request(app).post('/contractor/profile').set('Cookie', minCk).send({ entityName: 'Min Research LLP', analystName: 'Mina Analyst', address: '7 Late Street, Pune', bankHolder: 'Min Research LLP', bankAccount: '555555555555', bankIfsc: 'HDFC0001234' });
+    assert(r.status === 200 && r.body.name === 'Mina Analyst' && r.body.kyc.bankAccountMasked === 'XXXXXXXX5555' && !r.body.missingDetails.includes('bank account'), 'the rest is completed on the profile page');
+    r = await request(app).post('/contractor/profile').set('Cookie', minCk).send({ bankAccount: '666666666666', bankHolder: 'X', bankIfsc: 'HDFC0001234' });
+    assert(r.status === 409, 'bank details already on file can only be changed through the owner-approved request');
+    r = await request(app).post('/contractor/profile').set('Cookie', minCk).send({ gstin: '33ZZZZZ9999Z1Z5', pan: 'ZZZZZ9999Z' });
+    assert(r.status === 400, 'the tax identity cannot be edited here');
+    r = await request(app).post('/contractor/profile').set('Cookie', minCk).send({ bankAccount: '12' });
+    assert(r.status === 409 || r.status === 400, 'a bad bank value is refused');
+    const bad = await createInvite({ type: 'BUSINESS', createdBy: 'o' });
+    r = await request(app).post(`/invite/${bad.token}/accept`).send({ email: 'bad@acme.com', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc: { gstin: '33ABCDE1234F1Z5', bankAccount: '12' } });
+    assert(r.status === 400, 'what IS given is still checked (a bad account number)');
 
     console.log('owner: cap and statuses:');
     const bizContractor: any = (await contractorsCol().find({ email: 'forecaster@acme.com' }).toArray())[0];

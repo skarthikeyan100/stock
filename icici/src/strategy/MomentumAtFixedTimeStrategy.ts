@@ -37,7 +37,9 @@ import { exitDistance, exitRulesFrom, legacyExitKeysIn, ExitRules } from './exit
 //   maxInvestment: 100000   - per broker; the lot count is computed at runtime (no quantity key)
 //   minMovePoints: 10       - skip a slot whose |Nifty move since the previous slot| is below this (0 / omitted: any move)
 //   target: 5               - take-profit: points above the fill, or "5%" (overrides settings.target; 'none' = no target)
-//   stopLoss: none          - stop: points below the fill, or "25%" (overrides settings.stopLoss; 'none' = no stop)
+//   stopLoss: "30%"         - stop: points below the fill, or "25%" (overrides settings.stopLoss; 'none' = no stop)
+//   noGainTimeoutMinutes: 30 - no-gain timeout: a filled leg whose entry is this old, and whose option LTP is NOT above its average fill,
+//                             is closed at market. A leg above its fill is kept. 'none' or absent = off.
 //   upDownSampleMinutes: 1  - interval of the logged up/down sampling
 //   entryTimeoutMinutes: 5  - cancel an unfilled entry after this long
 //   index: NIFTY
@@ -59,6 +61,8 @@ export default class MomentumAtFixedTimeStrategy extends LimitEntryStrategy {
     private downs = 0;
     private flats = 0;
     private lastSampleAt = 0; // ms of the last up/down sample
+    private lastNoGainCheck = 0; // ms of the last no-gain timeout check (throttled; in memory only, the timeout itself is from leg.placedAt)
+    private noGainBusy = false;
 
     constructor(userId?: string) {
         super(userId);
@@ -109,8 +113,48 @@ export default class MomentumAtFixedTimeStrategy extends LimitEntryStrategy {
         this.lastSampleAt = nowMs;
     }
 
+    // Configured no-gain timeout (noGainTimeoutMinutes). 'none' or absent = off. A bad value throws, so the check logs an ALERT and does nothing.
+    private noGainTimeoutMinutes(): number | null {
+        const raw = (this.cfg() as any).noGainTimeoutMinutes;
+        if (raw === undefined || raw === null || raw === 'none') return null;
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n <= 0) throw new Error(`noGainTimeoutMinutes must be a positive number of minutes or 'none' (got ${JSON.stringify(raw)})`);
+        return n;
+    }
+
+    // Closes a filled leg at market once it is `noGainTimeoutMinutes` old and its option LTP is not above its average fill. Runs at most every
+    // 30 s, one check at a time. A leg that is already closing, or fully sold, is skipped. An LTP that cannot be read keeps the leg (retried
+    // on the next check) - no exit is taken on a guess. closeLeg cancels the protection and the resting target before it sells.
+    private async checkNoGainTimeouts(): Promise<void> {
+        const now = Date.now();
+        if (this.noGainBusy || now - this.lastNoGainCheck < 30_000) return;
+        this.lastNoGainCheck = now; // throttled before the config is read, so a bad value logs at most every 30 s
+        const minutes = this.noGainTimeoutMinutes();
+        if (minutes === null) return;
+        const due = this.legs().filter((l) => l.status === 'filled' && !l.closing && l.filledQty > (l.soldQty || 0) && now - l.placedAt >= minutes * 60_000);
+        if (due.length === 0) return;
+        this.noGainBusy = true;
+        try {
+            // One leg per broker: each is judged on its own, and a failure on one (an unreadable LTP, a refused close) must not stop the others.
+            for (const leg of due) {
+                try {
+                    const ltp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: leg.tsym, token: leg.token, exchange: leg.exchange });
+                    const avg = this.avgPrice(leg);
+                    if (!(ltp > 0)) { Log.log(`[${this.logTag}] ALERT: no-gain check on ${leg.broker} ${leg.tsym}: LTP not readable (${ltp}) - kept, retried`); continue; }
+                    if (ltp > avg) continue; // above the fill: the leg is improving, keep it
+                    await this.closeLeg(leg, `no gain after ${minutes} min (LTP ${ltp} <= fill ${avg.toFixed(2)})`);
+                } catch (e: any) {
+                    Log.log(`[${this.logTag}] ALERT: no-gain check on ${leg.broker} ${leg.tsym} failed, retried: ${e?.message ?? e}`);
+                }
+            }
+        } finally {
+            this.noGainBusy = false;
+        }
+    }
+
     protected async onNiftyTick(quote: NiftyQuote): Promise<void> {
         const cfg = this.cfg() as any;
+        try { await this.checkNoGainTimeouts(); } catch (e: any) { Log.log(`[${this.logTag}] ALERT: ${e?.message ?? e}`); }
         const today = localDayKey();
         if (this.tradingDay !== today) {
             // The first tick after a (re)start keeps the persisted slot price (the state file is per-day). Only a real rollover in a running

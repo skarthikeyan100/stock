@@ -52,7 +52,7 @@ export async function chunkedLegSell(userId: string, tradingSymbol: string, quan
 // LegManager's order routing for one broker, through the generic 'Bare' IPC family with an explicit `broker` on every call, so a
 // strategy never names a broker's own API (the ANT-only ops with their option-chain strike pick are gone: the order side now resolves
 // the contract for every broker, see getContractByPriceRange in brokerExecutors.ts). `brokerOf` is read at call time: it is the
-// strategy's own `broker:` config key, or undefined to route by the user's configured broker as before.
+// strategy's own derived broker (the per-broker instance's `broker`, set from `brokers:` by util/strategyInstances.ts), or undefined to route by the user's configured broker as before.
 // placeLimitBuyBare's own parameter order is (userId, tsym, token, quantity, price, exchange) - price BEFORE exchange, unlike every
 // other method here - so the forwarding call below deliberately does not just spread args through in LegBrokerOps.buyLimit's order.
 export function brokerLegOps(brokerOf: () => unknown = () => undefined): LegBrokerOps {

@@ -1,5 +1,5 @@
 /** What a contractor's browser may know about itself: no capital, limits, broker or any trading field (unlike toClientUser in src/user.ts). */
-import { Contractor } from './types';
+import { Contractor, missingDetails } from './types';
 import { levelOf } from './types';
 import { maskedField } from './kycCrypto';
 
@@ -14,10 +14,10 @@ export function toContractorClient(c: Contractor, extra: { agreementVersionRequi
         kyc: c.kyc ? {
             legalName: k.legalName ?? k.entityName, address: k.address, panMasked: maskedField(k.panEnc), gstinMasked: maskedField(k.gstinEnc),
             bankAccountMasked: maskedField(k.bankAccountEnc), bankIfsc: k.bankIfsc, bankHolder: k.bankHolder,
-            signatoryName: k.signatoryName, signatoryDesignation: k.signatoryDesignation,
-            designatedForecasterName: k.designatedForecasterName, designatedForecasterEmail: k.designatedForecasterEmail,
+            analystName: k.analystName, analystEmail: k.analystEmail,
             notGstRegistered: k.notGstRegistered,
         } : null,
+        missingDetails: missingDetails(c.type, c.kyc, c.sebi),
         sebi: c.sebi ? { number: c.sebi.number, validUntil: c.sebi.validUntil, verified: !!c.sebi.verifiedAt } : null,
     };
 }
