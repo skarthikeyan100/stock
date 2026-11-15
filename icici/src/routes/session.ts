@@ -51,6 +51,15 @@ export function sessionCookieValue(email: string): string { return `${email}|${D
 export function parseSession(req: express.Request): { email: string; issuedAt: number; legacy: boolean } | null {
     const raw = (req as any).signedCookies?.session;
     if (typeof raw !== 'string' || !raw) return null;
+    // A contractor cookie carries its own lifetime: `email|issuedAtMs|days` (src/contractors/session.ts). Every other cookie is the two-part form.
+    const parts = raw.split('|');
+    if (parts.length === 3) {
+        const issuedAt = Number(parts[1]);
+        const days = Number(parts[2]);
+        if (!parts[0] || !Number.isFinite(issuedAt) || !Number.isFinite(days) || days < 1 || days > 400) return null;
+        if (Date.now() - issuedAt > days * 24 * 60 * 60 * 1000) return null;
+        return { email: parts[0], issuedAt, legacy: false };
+    }
     const i = raw.lastIndexOf('|');
     if (i < 0) return { email: raw, issuedAt: 0, legacy: true };
     const issuedAt = Number(raw.slice(i + 1));

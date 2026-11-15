@@ -45,6 +45,10 @@ import tradingRoutes from './routes/trading';
 import streamsRoutes, { antStreamClients, niftyStreamClients, optionStreamClients, setLastNiftyQuote } from './routes/streams';
 import adminRoutes from './routes/admin';
 import levelsRoutes from './routes/levels';
+import inviteRoutes from './routes/invite';
+import ownerContractorsRoutes from './routes/ownerContractors';
+import { contractorGuard } from './contractors/guard';
+import { runAgreementVersionSwitch } from './contractors/jobs';
 import { runInvoiceCheck } from './invoiceRule';
 import { requireCsrfHeader } from './routes/session';
 import { wrapAsyncHandlers } from './routes/asyncRouter';
@@ -107,6 +111,8 @@ app.use((req, res, next) => {
     }
     next();
 });
+// Contractor portal: a contractor session may reach only its allowlist (src/contractors/guard.ts); every other session passes through untouched.
+app.use(contractorGuard);
 app.disable('etag');
 
 // Express 4 does not catch a rejected promise from an async handler/middleware (it becomes an unhandled rejection that can take the
@@ -130,6 +136,8 @@ app.use(tradingRoutes);
 app.use(streamsRoutes);
 app.use(adminRoutes);
 app.use(levelsRoutes);
+app.use(inviteRoutes);
+app.use(ownerContractorsRoutes);
 
 // ============================== Static UI ==============================
 
@@ -177,6 +185,9 @@ async function main() {
 
     // Invoice rule (src/invoiceRule.ts): hourly, remind a GSTIN-Advanced user whose invoice is due within a day and close the account of one past the deadline.
     setInterval(() => { runInvoiceCheck().catch((e) => Log.log('[invoice] hourly check failed:', e)); }, 60 * 60 * 1000).unref();
+
+    // Contractor portal: when a new agreement version takes effect, contractors on an older one go to AGREEMENT_PENDING.
+    setInterval(() => { runAgreementVersionSwitch().catch((e) => Log.log('[contractor] agreement version check failed:', e)); }, 60 * 60 * 1000).unref();
 
     const port = Number(process.env.PORT) || 3000;
     const mainServer = app.listen(port, () => Log.log(`[frontend] Listening on ${port}`));

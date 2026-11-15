@@ -1,6 +1,12 @@
 import { sendWelcomeEmails } from '../welcomeEmail';
 import Log from '../util/Log';
-import { revokeSessions, getOrCreateUser, getUser, toClientUser } from '../user';
+import { revokeSessions, getOrCreateUser, getUser, toClientUser, isAdminEmail } from '../user';
+import { CONTRACTOR_ROLE } from '../contractors/types';
+import { getContractorByEmail } from '../contractors/store';
+import { currentVersion, upcomingVersion } from '../contractors/agreements';
+import { submissionBlock } from '../contractors/store';
+import { toContractorClient } from '../contractors/clientUser';
+import { setContractorCookie, shouldRotate } from '../contractors/session';
 import { OAuth2Client } from 'google-auth-library';
 import { asyncRouter } from './asyncRouter';
 import { pushUserToOrderProcess, sessionCookieValue, parseSession, parseActAs, actAsCookieValue, authenticateRealAdmin, getActiveUser, sessionRevoked, invalidateUserCache, SESSION_MAX_AGE_MS, ACTAS_MAX_AGE_MS } from './session';
@@ -37,6 +43,13 @@ router.post('/auth/login', async function (req, res) {
             res.status(401).json({ error: 'Google account email is not verified' });
             return;
         }
+        // Invite-only (spec v2.1 section 3): Google sign-in is for the owner/admin accounts alone; nobody else is created or signed in here.
+        // Contractors enter through their invite link. Only a minimal log line is kept for an unlisted email.
+        if (!isAdminEmail(email)) {
+            Log.log('[auth] Google sign-in refused: not an admin account (invitation only)');
+            res.status(403).json({ error: 'This portal is by invitation only.' });
+            return;
+        }
         const user = await getOrCreateUser(email, name as string, picture as string);
         if (user.enabled === false) {
             res.status(403).json({ error: 'Account disabled' });
@@ -65,6 +78,15 @@ router.get('/auth/me', async function (req, res) {
     const user = await getUser(email);
     if (!user || sessionRevoked(req, user)) {
         res.status(401).json({ error: 'Unknown user' });
+        return;
+    }
+    // A contractor gets a contractor-safe view (no capital, limits or broker fields), and a sliding, rotated cookie (src/contractors/session.ts).
+    if (user.role === CONTRACTOR_ROLE && user.enabled !== false) {
+        const c = await getContractorByEmail(user.email);
+        if (!c) { res.status(401).json({ error: 'Unknown user' }); return; }
+        if (shouldRotate(session.issuedAt)) setContractorCookie(res, user.email, c.type);
+        const required = await currentVersion();
+        res.json(toContractorClient(c, { agreementVersionRequired: required, upcomingAgreement: await upcomingVersion(), blockedReason: submissionBlock(c, required) }));
         return;
     }
     // Re-issue a legacy (timestamp-less) cookie so it picks up server-side expiry and revocation.

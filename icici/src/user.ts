@@ -187,7 +187,7 @@ export function primaryAdminEmail(): string {
     return ADMIN_EMAILS[0];
 }
 
-function isAdminEmail(email: string): boolean {
+export function isAdminEmail(email: string): boolean {
     return ADMIN_EMAILS.includes(email.trim().toLowerCase());
 }
 
