@@ -2,6 +2,7 @@
 import Log from '../util/Log';
 import { contractorsCol } from './store';
 import { currentVersion, istDate } from './agreements';
+import { daysUntil } from './validate';
 import { recommendationsCol, istHHMM } from './recommendations';
 import { notifyAdmins } from './notify';
 import { StatementDoc, runMonthlyRetainers, runWeeklyStatements, statementsCol } from './statements';
@@ -46,8 +47,27 @@ export async function runInvoiceChecks(now = new Date()): Promise<number> {
     return n;
 }
 
+/** Alerts the owner 30 days before an Advanced contractor's SEBI registration expires (once), and again once it has expired (spec section 5). Submission is blocked on the valid-until date by sebiUsable(). */
+export async function runSebiExpiryAlerts(now = new Date()): Promise<number> {
+    const today = istDate(now);
+    let n = 0;
+    for (const c of (await contractorsCol().find({ type: 'BUSINESS' }).toArray()) as any[]) {
+        if (c.status === 'TERMINATED' || !c.sebi?.validUntil) continue;
+        const days = daysUntil(c.sebi.validUntil, today);
+        const stage = days < 0 ? 'expired' : days <= 30 ? 'soon' : null;
+        if (!stage || c.sebi.alertStage === stage) continue;
+        const r = await contractorsCol().updateOne({ id: c.id }, { $set: { 'sebi.alertStage': stage, 'sebi.expiryAlertSentAt': now } });
+        if (!r.matchedCount) continue;
+        n++;
+        await notifyAdmins('sebi_expiry', stage === 'soon' ? `${c.name}: the SEBI registration ${c.sebi.number} expires on ${c.sebi.validUntil} (${days} days). Ask for the renewed date.` : `${c.name}: the SEBI registration ${c.sebi.number} EXPIRED on ${c.sebi.validUntil}. Recommendations are blocked until a renewed date is recorded and verified.`, { contractorId: c.id });
+        if (stage === 'expired') await notifyUser(c.email, 'status', 'Your SEBI registration has expired, so new recommendations are blocked. Record the renewed date on your profile.');
+    }
+    return n;
+}
+
 export async function runContractorHourlyJobs(now = new Date()): Promise<void> {
     await runAgreementVersionSwitch();
+    await runSebiExpiryAlerts(now);
     await expireStaleRecommendations();
     await runInvoiceChecks(now);
     // Statements are created idempotently, so running these every hour from 06:00 on the right day is safe (a missed hour is caught by the next).

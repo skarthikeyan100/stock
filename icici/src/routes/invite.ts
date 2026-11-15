@@ -220,7 +220,7 @@ router.post('/contractor/sebi', requireAuth, async function (req, res) {
     const validUntil = str(req.body?.validUntil);
     if (!validSebi(number)) { res.status(400).json({ error: 'SEBI Registration No. must be a Research Analyst number: INH followed by 9 digits' }); return; }
     if (!validIsoDate(validUntil) || validUntil < istDate()) { res.status(400).json({ error: 'Valid-until must be a date (YYYY-MM-DD) that has not passed' }); return; }
-    await contractorsCol().updateOne({ id: c.id }, { $set: { sebi: { number, validUntil } } });
+    await contractorsCol().updateOne({ id: c.id }, { $set: { sebi: { number, validUntil } } }); // a fresh record: unverified again, alert stage reset
     await notifyAdmins('sebi_unverified', `${c.name} updated its SEBI registration (${number}, valid until ${validUntil}); please verify it.`, { contractorId: c.id });
     res.json(await contractorClientView((await getContractor(c.id)) as Contractor));
 });

@@ -30,8 +30,15 @@ class FakeCollection {
     async findOne(filter: Doc = {}) { return this.docs.find((d) => matches(d, filter)) ?? null; }
     async insertOne(doc: Doc) { const d = { _id: new ObjectId(), ...doc }; this.docs.push(d); return { insertedId: d._id }; }
     private apply(d: Doc, update: Doc) {
-        Object.assign(d, update.$set ?? {});
-        for (const k of Object.keys(update.$unset ?? {})) delete d[k];
+        // dotted keys ('kyc.bankIfsc') reach into a nested object, like Mongo's $set / $unset
+        const walk = (path: string, create: boolean): [Doc, string] | null => {
+            const parts = path.split('.');
+            let cur: Doc = d;
+            for (const p of parts.slice(0, -1)) { if (cur[p] == null || typeof cur[p] !== 'object') { if (!create) return null; cur[p] = {}; } cur = cur[p]; }
+            return [cur, parts[parts.length - 1]];
+        };
+        for (const [k, v] of Object.entries(update.$set ?? {})) { const t = walk(k, true) as [Doc, string]; t[0][t[1]] = v; }
+        for (const k of Object.keys(update.$unset ?? {})) { const t = walk(k, false); if (t) delete t[0][t[1]]; }
     }
     async updateOne(filter: Doc, update: Doc) { const d = this.docs.find((x) => matches(x, filter)); if (d) this.apply(d, update); return { matchedCount: d ? 1 : 0, modifiedCount: d ? 1 : 0 }; }
     async findOneAndUpdate(filter: Doc, update: Doc, _opts?: Doc) { const d = this.docs.find((x) => matches(x, filter)); if (d) this.apply(d, update); return { value: d ?? null, ok: 1 }; }

@@ -95,7 +95,7 @@ const AuthContext = createContext<AuthState | null>(null);
 // more than one account log in over time. Read/write both wrapped in
 // try/catch: private-browsing/blocked-storage/quota failures must fall back
 // to "not accepted yet" (asks again) rather than throwing and breaking login.
-const TERMS_KEY_PREFIX = 'propfirm.termsAccepted.';
+const TERMS_KEY_PREFIX = 'nivedha.termsAccepted.';
 
 function termsKeyFor(email: string): string {
   return `${TERMS_KEY_PREFIX}${email}`;

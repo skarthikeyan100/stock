@@ -17,6 +17,7 @@ export default defineConfig({
   build: {
     outDir: '../public',
     emptyOutDir: true,
+    manifest: true, // scripts/check-contractor-bundle.js reads it to find the chunks a contractor can load
   },
   server: {
     host: '0.0.0.0',

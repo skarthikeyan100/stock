@@ -1,20 +1,21 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { TradingProvider } from './context/TradingContext';
 import { ThemeProvider } from './context/ThemeContext';
-import TradingPage from './pages/TradingPage';
-import AdminPage from './pages/AdminPage';
-import PayoutPaymentPage from './pages/PayoutPaymentPage';
-import ProfilePage from './pages/ProfilePage';
-import PrivacyPolicyPage from './pages/PrivacyPolicyPage';
+const TradingPage = lazy(() => import('./pages/TradingPage'));
+const AdminPage = lazy(() => import('./pages/AdminPage'));
+const PayoutPaymentPage = lazy(() => import('./pages/PayoutPaymentPage'));
+const ProfilePage = lazy(() => import('./pages/ProfilePage'));
+const PrivacyNoticePage = lazy(() => import('./pages/PrivacyNoticePage'));
 import LandingPage from './pages/LandingPage';
 import OwnerLoginPage from './pages/OwnerLoginPage';
 import JoinPage from './pages/JoinPage';
 import RecommendPage from './pages/RecommendPage';
 import ForecastPage from './pages/ForecastPage';
 import MyProfilePage from './pages/MyProfilePage';
-import OwnerPage from './pages/OwnerPage';
+const OwnerPage = lazy(() => import('./pages/OwnerPage'));
 import ApprovalPopup, { OwnerConsoleLink } from './components/ApprovalPopup';
 import { Spinner, Button } from 'react-bootstrap';
 import { apiFetch } from './utils/api';
@@ -78,6 +79,8 @@ export default function App() {
             <ActingAsBanner />
             <ApprovalPopup />
             <OwnerConsoleLink />
+            {/* The trading, admin, owner and profile pages are separate chunks: a contractor never downloads them (and scripts/check-contractor-bundle.js scans only what a contractor can load). */}
+            <Suspense fallback={<div className="d-flex justify-content-center align-items-center min-vh-100"><Spinner animation="border" /></div>}>
             <Routes>
               {/* Invitation-only: the public page has no sign-in. The owner signs in at the unlinked /owner-login; contractors enter through /join/:token. */}
               <Route path="/" element={<LandingPage />} />
@@ -111,10 +114,11 @@ export default function App() {
                 }
               />
               <Route path="/admin/payouts/:id" element={<RequireAdmin><PayoutPaymentPage /></RequireAdmin>} />
-              <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
+              <Route path="/privacy-policy" element={<PrivacyNoticePage />} />
               <Route path="/terms-and-conditions" element={<Navigate to="/" replace />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
+            </Suspense>
           </AuthProvider>
         </ThemeProvider>
       </BrowserRouter>
