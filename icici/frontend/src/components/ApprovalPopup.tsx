@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { useEventSource } from '../hooks/useEventSource';
 import { apiFetch, apiPost, readError } from '../utils/api';
 
-export interface PendingApproval { id: string; kind: 'recommendation'; contractorName: string; index: string; contract: string; entry: number; target: number; stop: number; orderPrice: number; createdAt: string; filters: any }
+export interface PendingApproval { id: string; kind: 'recommendation'; contractorName: string; index: string; contract: string; entry: number; target: number; stop: number; orderPrice: number; createdAt: string }
 
 export function usePendingApprovals(enabled: boolean) {
   const [items, setItems] = useState<PendingApproval[]>([]);
