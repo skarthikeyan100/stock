@@ -78,6 +78,7 @@ async function main() {
         ['POST', '/forecast'], ['GET', '/forecast/history'], ['POST', '/recommendations'], ['GET', '/contractor/trades'], ['GET', '/agreements/current']] as const) {
         assert(contractorMayCall(m, p), `allowed: ${m} ${p}`);
     }
+    assert(contractorMayCall('GET', '/my/recommend') && contractorMayCall('GET', '/my') && contractorMayCall('GET', '/privacy-policy') && contractorMayCall('GET', '/') && !contractorMayCall('POST', '/my/recommend') && !contractorMayCall('GET', '/myx') && !contractorMayCall('GET', '/console'), 'the app pages reload for a contractor (GET only); nothing else opens');
     assert(!contractorMayCall('GET', '/forecastx') && !contractorMayCall('GET', '/contractorx/trades'), 'prefixes match whole path segments');
 
     // ---------- session cookies ----------

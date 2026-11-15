@@ -26,8 +26,13 @@ export const CONTRACTOR_ALLOWLIST: Rule[] = [
     { method: 'GET', test: exact('/demo/health') },
 ];
 
+// The pages of the app itself (the SPA shell answered by the catch-all in server.ts): a contractor reloading /my/recommend must get the page, not a 403. None of these
+// paths is an API route, so allowing them opens nothing.
+export const CONTRACTOR_PAGES = (path: string) => path === '/' || path === '/privacy-policy' || path === '/my' || path.startsWith('/my/');
+
 export function contractorMayCall(method: string, path: string): boolean {
     const m = method.toUpperCase();
+    if ((m === 'GET' || m === 'HEAD') && CONTRACTOR_PAGES(path)) return true;
     return CONTRACTOR_ALLOWLIST.some((r) => (r.method === '*' || r.method === m) && r.test(path));
 }
 
