@@ -53,7 +53,10 @@ export interface Contractor {
     representation6A5At?: Date; // Business: the clause 6A.5 confirmation
     kyc?: IndividualKyc | BusinessKyc;
     sebi?: SebiRegistration;  // Business only
-    pseudoUserId: string;     // the strategy slot (Forecast-S01 / Recommendation-S01) its trades are booked under; '' until assigned at activation
+    pseudoUserId?: string;    // LEGACY (before 2026-11-16): the strategy slot its trades were booked under. Orders are now placed as the contractor's own user id (their email).
 }
 
 export const levelOf = (t: ContractorType): 'beginner' | 'advanced' => (t === 'INDIVIDUAL' ? 'beginner' : 'advanced');
+
+/** The user ids a contractor's trades are booked under: their own (email), plus the legacy strategy slot of trades made before 2026-11-16. */
+export const tradeUsers = (c: { email: string; pseudoUserId?: string }): string[] => [c.email, ...(c.pseudoUserId ? [c.pseudoUserId] : [])];

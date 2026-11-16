@@ -9,8 +9,8 @@ function assert(condition: boolean, message: string) { console.log(`  ${conditio
 
 async function main() {
     const db = installFakeDb();
-    const ind: any = { id: 'i1', email: 'ind@x.com', name: 'Ind <script>', type: 'INDIVIDUAL', status: 'ACTIVE', agreementVersion: '1.1', pseudoUserId: 'Forecast-S01' };
-    const biz: any = { id: 'b1', email: 'biz@x.com', name: 'Biz Co', type: 'BUSINESS', status: 'ACTIVE', agreementVersion: '1.1', pseudoUserId: 'Recommendation-S01' };
+    const ind: any = { id: 'i1', email: 'ind@x.com', name: 'Ind <script>', type: 'INDIVIDUAL', status: 'ACTIVE', agreementVersion: '1.1' };
+    const biz: any = { id: 'b1', email: 'biz@x.com', name: 'Biz Co', type: 'BUSINESS', status: 'ACTIVE', agreementVersion: '1.1' };
 
     console.log('welcome:');
     const wi = renderWelcome(ind, '1.1', new Date('2026-11-16T05:00:00Z'));

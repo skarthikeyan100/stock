@@ -33,6 +33,7 @@ export function pushUserToOrderProcess(user: any, context: string): Promise<void
         stopLossPoints: user.stopLossPoints,
         accountClosed: user.accountClosed === true,
         proficiencyLevel: user.proficiencyLevel,
+        contractor: user.role === 'contractor',
     }).catch((e) => Log.log(`[frontend] updateUserSettings on ${context} failed:`, e));
 }
 

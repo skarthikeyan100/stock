@@ -11,7 +11,7 @@ import { setTargetStopLoss } from './kiteExecutor';
 // Admin mirror trades. Every buy a user starts from the FRONTEND (orderProcess's 'manualBuy') is copied by the admin user as
 // its own real order on the same broker, for floor(userLots * settings.mirrorPercentage / 100) lots (0 lots = no trade). The
 // admin leg carries the same target/stop-loss points, so it exits on its own, and follows the user's sells proportionally
-// (onUserSell) so the two legs never diverge. Strategy pseudo-users never mirror (they are not frontend trades) and the admin's
+// (onUserSell) so the two legs never diverge. Strategy pseudo-users and contractor-portal users never mirror (they are not frontend trades) and the admin's
 // own trades never mirror (no recursion).
 //
 // The admin order goes straight to the broker executor, NOT through placeOrderWithPendingGuard: the admin's own lot/investment/
@@ -52,7 +52,7 @@ export function mirrorQuantityFor(userQty: number, lotSize: number, pct: number)
 }
 
 function eligibleUser(userId: string): boolean {
-    return !!userId && userId.toLowerCase() !== primaryAdminEmail() && !bookkeeping.isStrategyUser(userId);
+    return !!userId && userId.toLowerCase() !== primaryAdminEmail() && !bookkeeping.isStrategyUser(userId) && !bookkeeping.isContractorUser(userId);
 }
 
 const col = () => Mongo.getInstance()?.db?.collection(COLLECTION);

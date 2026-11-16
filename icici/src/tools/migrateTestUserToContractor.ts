@@ -47,7 +47,7 @@ async function main() {
     const ag = readAgreement(type, version);
     const c: any = newContractor({ email, name: user.name || email, type, invitedBy: 'owner-migration', isTest: true });
     c.status = 'ACTIVE'; c.agreementVersion = version; c.agreementAcceptedAt = new Date(); c.dpdpConsentAt = new Date(); c.previousRole = user.role;
-    console.log(`migrate: ${email} (${user.name}) role ${user.role} -> contractor ${type}, ACTIVE, is_test, agreement v${version} sha ${ag.sha256.slice(0, 12)}…, pseudo user ${c.pseudoUserId}`);
+    console.log(`migrate: ${email} (${user.name}) role ${user.role} -> contractor ${type}, ACTIVE, is_test, agreement v${version} sha ${ag.sha256.slice(0, 12)}…, trades booked as ${email}`);
     if (apply) {
         const now = new Date();
         await contractorsCol().insertOne(c);

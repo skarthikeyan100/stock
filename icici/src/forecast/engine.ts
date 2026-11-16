@@ -3,8 +3,7 @@
  *   - keeps the latest NIFTY value, 1-minute candles and a once-a-second tick store (Mongo niftyTicks) for scoring;
  *   - keeps the NIFTY future's depth (total buy/sell quantity) and subscribes the depth feed for it;
  *   - submit(): records the forecast (write-once), runs BOTH filters, logs the decision (append-only), and, only if every filter passed AND the master
- *     switch forecast.orders.enabled is on, arms the contractor's strategy slot (a RecommendationStrategy block) with an ATM option: the existing
- *     strategy then places the LIMIT entry and its target/stop. No approval step exists for a Beginner forecast. Nothing is shown to the contractor
+ *     switch forecast.orders.enabled is on, buys an ATM option as the contractor's own user (a normal user order, src/contractors/order.ts) with a target and stop. No approval step exists for a Beginner forecast. Nothing is shown to the contractor
  *     about whether or how a forecast was used (agreement section 5);
  *   - scoreDue(): scores forecasts whose window has closed.
  * Not a strategy and not in the order process: nothing here touches an existing strategy class.
@@ -21,9 +20,10 @@ import { ForecastDoc, forecastsOfDay, insertForecast, niftyTicksCol, openForecas
 import { Outcome, Tick, scoreFromTicks } from './scorer';
 import { Contractor } from '../contractors/types';
 import { currentVersion } from '../contractors/agreements';
-import { submissionBlock } from '../contractors/store';
-import { ensureSlot } from '../contractors/slots';
-import { appendDecision, armSlot, slotRefusal } from '../contractors/recommendations';
+import { contractorsCol, submissionBlock } from '../contractors/store';
+import { placeContractorBuy, tradeInProgress } from '../contractors/order';
+import { appendDecision } from '../contractors/recommendations';
+import { roundToTick } from '../util/tick';
 import { notifyAdmins } from '../contractors/notify';
 import { istDate } from '../contractors/agreements';
 import { RateLimiter } from '../contractors/rateLimit';
@@ -160,7 +160,7 @@ export class ForecastEngine {
 
     private depthForFilters(nowMs: number): DepthSnapshot | null { return this.depth ? { ...this.depth, ts: this.depth.ts } : null; }
 
-    /** Runs both filters, appends the decision, feeds the pass-through alarm and, when allowed, arms the slot. */
+    /** Runs both filters, appends the decision, feeds the pass-through alarm and, when allowed, places the order. */
     async decide(c: Contractor, f: ForecastDoc): Promise<void> {
         const nowMs = this.clock();
         const ctx: FilterContext = { direction: f.direction, nowMs, depth: this.depthForFilters(nowMs), candles: this.candles.all() };
@@ -183,30 +183,28 @@ export class ForecastEngine {
         if (!this.ordersEnabled()) return { placed: false, reason: 'order placing is off (forecast.orders.enabled)' };
         const o: any = (configService.getConfig() as any)?.forecast?.orders ?? {};
         if (istParts(new Date(this.clock())).hhmm > String(o.noNewAfter ?? '14:45')) return { placed: false, reason: 'past the no-new-positions cut-off' };
-        const slot = await ensureSlot(c);
-        if (!slot) return { placed: false, reason: 'no strategy slot available' };
         const spot = this.last?.ltp; if (!spot) return { placed: false, reason: 'no spot' };
         const strike = Math.round(spot / ATM_STEP) * ATM_STEP;
         const right = f.direction === 'UP' ? 'CE' : 'PE';
         const contract = `${strike} ${right}`;
         const risk = await this.riskRefusal(o);
         if (risk) return { placed: false, reason: risk };
+        if (await tradeInProgress(c)) return { placed: false, reason: 'a trade of this contractor is still in progress' };
         const ltp = await this.optionLtp(spot, right);
         if (!ltp) return { placed: false, reason: 'option price unavailable' };
         const target = Number(o.targetPoints) > 0 ? Number(o.targetPoints) : 10, stop = Number(o.stopLossPoints) > 0 ? Number(o.stopLossPoints) : 20;
-        const offset = 5; // the slot block's entryOffset (orderPrice = entry - offset): entry is set so the limit buy sits at the current price
-        const entry = ltp + offset, targetPrice = ltp + target, stopPrice = ltp - stop;
+        const price = roundToTick(ltp), targetPrice = roundToTick(ltp + target), stopPrice = roundToTick(ltp - stop);
         if (!(stopPrice > 0)) return { placed: false, reason: 'stop would be non-positive' };
-        const refusal = slotRefusal(slot, { contract, entry, target: targetPrice, stop: stopPrice });
-        if (refusal) return { placed: false, reason: refusal };
-        armSlot(slot, { index: 'NIFTY', contract, entry, target: targetPrice, stop: stopPrice });
-        return { placed: true, reason: `armed ${slot} with ${contract} entry ${entry} target ${targetPrice} stop ${stopPrice}` };
+        // A normal user order (the same path as Search & Buy) under the contractor's own id; the order process sizes it (forecast.orders.maxInvestment) and attaches target and stop.
+        await placeContractorBuy(c, { underlying: 'NIFTY', strike, right, price, target: targetPrice, stop: stopPrice });
+        return { placed: true, reason: `bought ${contract} at ${price}, target ${targetPrice}, stop ${stopPrice} as ${c.email}` };
     }
 
     private async riskRefusal(o: any): Promise<string | null> {
         try {
             const stats = await (await import('../processes/strategies/OrderClient')).default.getInstance().stats();
-            const mine = (t: any) => /^(Forecast|Recommendation)-S\d+$/.test(String(t.user ?? ''));
+            const emails = new Set<string>(((await contractorsCol().find({}).toArray()) as any[]).map((x) => String(x.email)));
+            const mine = (t: any) => emails.has(String(t.user ?? ''));
             const open = (stats.trades ?? []).filter((t: any) => mine(t) && t.open !== false).length;
             if (Number(o.maxOpenPositions) > 0 && open >= Number(o.maxOpenPositions)) return `max open positions reached (${open})`;
             const limit = Number(o.dailyLossLimit);
@@ -214,7 +212,7 @@ export class ForecastEngine {
                 const today = istDate();
                 const pnl = [...(stats.closedTrades ?? []).filter((t: any) => mine(t) && t.exitTime && istDate(new Date(t.exitTime)) === today).map((t: any) => Number(t.realizedPnL) || 0),
                     ...(stats.trades ?? []).filter((t: any) => mine(t)).map((t: any) => Number(t.unrealizedPnL) || 0)].reduce((a: number, b: number) => a + b, 0);
-                if (pnl <= -limit) { await notifyAdmins('kill_switch', `Contractor slots are down ₹${Math.round(-pnl)} today (limit ₹${limit}): no new forecast positions are being armed.`); return `daily loss limit reached (${Math.round(pnl)})`; }
+                if (pnl <= -limit) { await notifyAdmins('kill_switch', `Contractors' trades are down ₹${Math.round(-pnl)} today (limit ₹${limit}): no new forecast positions are being placed.`); return `daily loss limit reached (${Math.round(pnl)})`; }
             }
             return null;
         } catch (e: any) { return `risk check unavailable: ${e?.message ?? e}`; } // fail closed

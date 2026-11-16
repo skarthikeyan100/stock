@@ -10,7 +10,7 @@
 import * as crypto from 'crypto';
 import Mongo from '../tools/mongo';
 import configService from '../prism/ConfigService';
-import { Contractor } from './types';
+import { Contractor, tradeUsers } from './types';
 import { applyMonthlyCap, monthlyRetainer } from '../forecast/fees';
 
 export type StatementKind = 'ACCURACY_WEEK' | 'RETAINER_MONTH' | 'PROFIT_SHARE_WEEK' | 'FIXED_PER_APPROVED_WEEK';
@@ -97,7 +97,7 @@ export async function weeklyAdvancedStatement(c: Contractor, week: { from: strin
     const model = feeModelOn((c as any).feeModels, week.to, defaultSharePercent);
     // the model in force on the LAST day of the week applies to the whole week (a change takes effect from its date: a week that spans it uses the new one only if the date is on or before the week's end)
     const approved = await db.collection('recommendations').find({ contractorId: c.id, status: 'APPROVED', day: { $gte: week.from, $lte: week.to } }).toArray() as any[];
-    const trades = c.pseudoUserId ? await db.collection('closedTrades').find({ user: c.pseudoUserId, exitTime: { $gte: istStart(week.from), $lt: istEndExcl(week.to) } }).toArray() as any[] : [];
+    const trades = await db.collection('closedTrades').find({ user: { $in: tradeUsers(c) }, exitTime: { $gte: istStart(week.from), $lt: istEndExcl(week.to) } }).toArray() as any[];
     if (model.model === 'FIXED_PER_APPROVED') {
         if (approved.length === 0) return null;
         const per = Number(model.fixedAmount) > 0 ? Number(model.fixedAmount) : 0;
@@ -108,7 +108,6 @@ export async function weeklyAdvancedStatement(c: Contractor, week: { from: strin
         const ratio = suggested > 0 ? Math.min(1, achieved / suggested) : 0;
         return create(c, 'FIXED_PER_APPROVED_WEEK', week.from, week.to, { approvedRecommendations: approved.length, fixedPerApproved: per, suggestedPoints: Math.round(suggested * 100) / 100, achievedPoints: Math.round(achieved * 100) / 100, earnedFraction: Math.round(ratio * 10000) / 10000, effectiveFrom: model.from }, approved.length * per * ratio);
     }
-    if (!c.pseudoUserId) return null;
     if (trades.length === 0 && approved.length === 0) return null;
     const net = trades.reduce((a, t) => a + (Number.isFinite(Number(t.realizedPnL)) ? Number(t.realizedPnL) : 0), 0);
     const pct = Number(model.sharePercent) > 0 ? Number(model.sharePercent) : defaultSharePercent;

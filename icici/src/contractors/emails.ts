@@ -5,7 +5,7 @@ import Log from '../util/Log';
 import Mongo from '../tools/mongo';
 import { escapeHtml, renderTemplate } from '../mailer';
 import { istDayBounds, todayIst } from '../eodEmail';
-import { Contractor } from './types';
+import { Contractor, tradeUsers } from './types';
 import { contractorsCol } from './store';
 import { readAgreement } from './agreements';
 import { sendContractorEmail } from './email';
@@ -88,7 +88,7 @@ export async function gatherDay(c: Contractor, date: string): Promise<DayItems> 
     const { start, end } = istDayBounds(date);
     const forecasts = c.type === 'INDIVIDUAL' ? await db.collection('forecasts').find({ contractorId: c.id, submittedAt: { $gte: start, $lt: end } }).sort({ submittedAt: 1 }).toArray() : [];
     const recs = c.type === 'BUSINESS' ? await db.collection('recommendations').find({ contractorId: c.id, day: date }).sort({ createdAt: 1 }).toArray() : [];
-    const trades = c.pseudoUserId ? await db.collection('closedTrades').find({ user: c.pseudoUserId, exitTime: { $gte: start, $lt: end } }).sort({ exitTime: 1 }).toArray() : [];
+    const trades = await db.collection('closedTrades').find({ user: { $in: tradeUsers(c) }, exitTime: { $gte: start, $lt: end } }).sort({ exitTime: 1 }).toArray();
     return {
         forecasts: forecasts.map((f: any) => ({ submittedAt: f.submittedAt, direction: f.direction, confidence: f.confidence ?? undefined, outcome: f.outcome })),
         recommendations: recs.map((r: any) => ({ createdAt: r.createdAt, contract: `${r.index} ${r.contract}`, entry: r.entry, target: r.target, stop: r.stop, status: r.status })),

@@ -1339,6 +1339,7 @@ async function loadUserLimits() {
             stopLossPoints: user.stopLossPoints,
             accountClosed: user.accountClosed,
             proficiencyLevel: user.proficiencyLevel,
+            contractor: user.role === 'contractor',
         });
     }
 }

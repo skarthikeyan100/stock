@@ -115,8 +115,7 @@ export const STATUS_TRANSITIONS: Record<ContractorStatus, ContractorStatus[]> = 
 
 export function newContractor(o: { email: string; name: string; type: ContractorType; invitedBy: string; isTest?: boolean }): Contractor {
     const id = newContractorId();
-    return { id, email: o.email.toLowerCase(), name: o.name, type: o.type, status: 'INVITED', isTest: o.isTest || undefined, createdAt: new Date(), invitedBy: o.invitedBy,
-        pseudoUserId: '' }; // a strategy slot is assigned at activation (src/contractors/slots.ts)
+    return { id, email: o.email.toLowerCase(), name: o.name, type: o.type, status: 'INVITED', isTest: o.isTest || undefined, createdAt: new Date(), invitedBy: o.invitedBy };
 }
 
 /** Why a contractor may not submit a forecast / recommendation right now, or null when they may. Shared by the forecast and recommendation APIs. */

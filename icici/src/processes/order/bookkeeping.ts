@@ -89,6 +89,7 @@ interface UserSettings {
     targetPoints?: number;
     stopLossPoints?: number;
     proficiencyLevel?: 'beginner' | 'advanced'; // picks settings.levelRules
+    contractor?: boolean; // a contractor-portal user (role 'contractor'): sized from forecast.orders.maxInvestment, never mirrored by the admin
     accountClosed?: boolean;
     closedAtMs?: number; // when this process closed the account (see updateUserSettings)
 }
@@ -339,6 +340,7 @@ class OrderBookkeeping {
     resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number, contractLotSize?: number, stopLossPoints?: number): number {
         if (explicitQuantity != null) return explicitQuantity;
         const lotSize = contractLotSize && contractLotSize > 0 ? contractLotSize : this.getInstrumentLotSize(tsym);
+        if (this.isContractorUser(userId)) return this.resolveContractorQuantity(userId, tsym, price, lotSize);
         const ctx = this.getUserContext(userId);
         if (ctx.investmentMode !== 'investmentAmount') return lotSize;
         if (!(price > 0)) {
@@ -594,6 +596,22 @@ class OrderBookkeeping {
     // anything other than 'ok'; the sell-side liquidation trigger acts only on
     // a definite 'breached' - an unreadable ledger must never close positions.
     // True when `user` is a configured strategy instance (a pseudo-user), not a real account.
+    isContractorUser(user: string): boolean {
+        return this.userSettingsCache.get(user)?.contractor === true;
+    }
+
+    // A contractor has no account capital: each of their trades is sized from the budget in config.yml (forecast.orders.maxInvestment, rupees
+    // per trade, default 100000 as the old per-contractor strategy blocks had), as many whole lots as it buys (at least one), under the freeze quantity.
+    resolveContractorQuantity(userId: string, tsym: string, price: number, lotSize: number): number {
+        const configured = Number((configService.getConfig() as any)?.forecast?.orders?.maxInvestment);
+        const budget = Number.isFinite(configured) && configured > 0 ? configured : 100000;
+        const freeze = tsym.startsWith('SENSEX') ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY;
+        const freezeLots = Math.max(1, Math.floor(freeze / lotSize));
+        const lots = price > 0 ? Math.max(1, Math.min(freezeLots, Math.floor(budget / (price * lotSize)))) : 1;
+        Log.log(`[order] contractor buy sizing for ${userId} ${tsym}: ${lots} lot(s) x ${lotSize} @ ${price} (budget ${budget})`);
+        return lots * lotSize;
+    }
+
     isStrategyUser(user: string): boolean {
         return configService.getInstances().some((s) => (s.userId || s.type) === user);
     }

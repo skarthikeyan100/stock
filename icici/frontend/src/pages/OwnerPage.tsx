@@ -110,7 +110,7 @@ function ContractorsTab() {
         <Card.Header>Contractors</Card.Header>
         <Card.Body className="p-0">
           <Table size="sm" responsive className="mb-0 align-middle">
-            <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Agreement</th><th>SEBI</th><th>Slot</th><th /></tr></thead>
+            <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Agreement</th><th>SEBI</th><th>Trades as</th><th /></tr></thead>
             <tbody>
               {contractors.length === 0 && <tr><td colSpan={7} className="text-muted p-3">No contractors yet.</td></tr>}
               {contractors.map((c) => (
@@ -120,7 +120,7 @@ function ContractorsTab() {
                   <td><Badge bg={STATUS_BG[c.status] ?? 'secondary'}>{c.status}</Badge>{c.statusReason && <div className="small text-muted">{c.statusReason}</div>}</td>
                   <td>{c.agreementVersion ? `v${c.agreementVersion}` : '–'}</td>
                   <td>{c.type === 'BUSINESS' ? (c.sebi ? <>{c.sebi.number}<div className="small">until {c.sebi.validUntil} {c.sebi.verified ? <Badge bg="success">verified</Badge> : <Button size="sm" variant="outline-success" onClick={() => act(`/owner/contractors/${c.id}/sebi-verify`, { verified: true })}>Verify</Button>}</div></> : '–') : ''}</td>
-                  <td>{c.pseudoUserId || '–'}</td>
+                  <td>{c.tradeUser || c.email}</td>
                   <td className="text-end text-nowrap">
                     {['INVITED', 'AGREEMENT_PENDING', 'PAUSED', 'PAUSED_INVOICE'].includes(c.status) && <Button size="sm" className="me-1" variant="success" onClick={() => act(`/owner/contractors/${c.id}/activate`)}>Activate</Button>}
                     {c.status === 'ACTIVE' && <Button size="sm" className="me-1" variant="outline-warning" onClick={() => { const reason = window.prompt('Reason for pausing?'); if (reason) act(`/owner/contractors/${c.id}/pause`, { reason }); }}>Pause</Button>}

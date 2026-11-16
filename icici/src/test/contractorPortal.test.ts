@@ -165,7 +165,7 @@ async function main() {
     assert(!JSON.stringify(r.body).includes('ABCDE1234F') && r.body.kyc.panMasked === 'XXXXXX234F' && r.body.accountCapital === undefined, 'the response masks the PAN and carries no capital/limits');
     const stored: any = (await contractorsCol().find({}).toArray())[0];
     assert(!JSON.stringify(stored).includes('ABCDE1234F') && !JSON.stringify(stored).includes('123456789012') && decryptField(stored.kyc.panEnc) === 'ABCDE1234F', 'PAN and bank account are stored encrypted');
-    assert(stored.email === 'person@example.com' && stored.pseudoUserId === 'Forecast-S01' && !!stored.activatedAt, 'email lower-cased; activated at once and given the first free strategy slot');
+    assert(stored.email === 'person@example.com' && !!stored.activatedAt && stored.pseudoUserId === undefined, 'email lower-cased; activated at once (no strategy slot is assigned any more)');
     const userDoc: any = await db.collection('users').findOne({ email: 'person@example.com' });
     assert(userDoc.role === 'contractor' && userDoc.proficiencyLevel === 'beginner' && userDoc.accountCapital === 0, 'a users record with role contractor exists');
     const acc: any[] = await db.collection('agreementAcceptances').find({}).toArray();
@@ -290,7 +290,7 @@ async function main() {
     assert((await db.collection('notifications').find({ type: 'contractor_accepted', user: 'boss@x.com' }).toArray()).some((n: any) => /cap of 5/.test(n.message)), 'and the owner is told a place is needed');
     (db.collection('contractors') as any).docs.length = 0;
     console.log('owner: cap and statuses:');
-    const bizContractor: any = { ...bizStored, status: 'INVITED', pseudoUserId: '' };
+    const bizContractor: any = { ...bizStored, status: 'INVITED' };
     await contractorsCol().insertOne(bizContractor);
     await contractorsCol().insertOne({ ...stored, status: 'INVITED' }); // the first Individual, for the KYC reveal below
     for (let i = 0; i < 5; i++) await contractorsCol().insertOne({ id: `fill${i}`, email: `fill${i}@x.com`, status: 'ACTIVE', type: 'INDIVIDUAL' });
@@ -300,7 +300,7 @@ async function main() {
     assert(r.status === 409 && /cap of 5/.test(r.body.error), 'the 6th activation is blocked while 5 are active');
     await contractorsCol().updateOne({ id: 'fill0' }, { $set: { status: 'PAUSED' } });
     r = await request(app).post(`/owner/contractors/${bizContractor.id}/activate`).set('Cookie', adminCookie).send({});
-    assert(r.status === 200 && r.body.status === 'ACTIVE', 'activation succeeds once a slot is free');
+    assert(r.status === 200 && r.body.status === 'ACTIVE', 'activation succeeds once a place is free');
     r = await request(app).post(`/owner/contractors/${bizContractor.id}/pause`).set('Cookie', adminCookie).send({});
     assert(r.status === 400, 'pausing needs a reason');
     r = await request(app).post(`/owner/contractors/${bizContractor.id}/pause`).set('Cookie', adminCookie).send({ reason: 'review' });

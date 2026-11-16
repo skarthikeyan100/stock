@@ -4,7 +4,6 @@ import Log from '../util/Log';
 import { asyncRouter } from './asyncRouter';
 import { requireAdmin, requireAuth, resolveRealUser, resolveUser } from './session';
 import OrderClient from '../processes/strategies/OrderClient';
-import { primaryAdminEmail } from '../user';
 import Mongo from '../tools/mongo';
 import { ObjectId } from 'mongodb';
 import { getContractorByEmail, getContractor, submissionBlock } from '../contractors/store';
@@ -13,8 +12,8 @@ import { currentVersion } from '../contractors/agreements';
 import { istDate } from '../contractors/agreements';
 import { notifyAdmins, notifyUser } from '../contractors/notify';
 import { RateLimiter } from '../contractors/rateLimit';
-import { ensureSlot } from '../contractors/slots';
-import { DEFAULT_ENTRY_OFFSET, RecommendationDoc, appendDecision, armSlot, contractLabel, recommendationRules, recommendationsCol, slotBlock, slotRefusal, validateRecommendation, withinHours, istHHMM } from '../contractors/recommendations';
+import { placeContractorBuy, tradeInProgress } from '../contractors/order';
+import { DEFAULT_ENTRY_OFFSET, RecommendationDoc, appendDecision, recommendationRules, recommendationsCol, validateRecommendation, withinHours, istHHMM } from '../contractors/recommendations';
 
 const router = asyncRouter();
 const orderClient = OrderClient.getInstance();
@@ -36,19 +35,15 @@ router.post('/recommendations', requireAuth, async function (req, res) {
     if (blocked) { res.status(403).json({ error: blocked }); return; }
     const rules = recommendationRules();
     if (!withinHours(rules)) { res.status(422).json({ error: `Recommendations are accepted from ${rules.start} to ${rules.end} IST (it is ${istHHMM()} now).` }); return; }
-    const slot = await ensureSlot(c);
-    if (!slot || !slotBlock(slot)) { res.status(503).json({ error: 'No trading slot is available for you yet. The owner has been told.' }); await notifyAdmins('slot_missing', `No strategy slot available for ${c.name}.`, { contractorId: c.id }); return; }
-    const block = slotBlock(slot);
-    const v = validateRecommendation(req.body, block.entryOffset == null ? DEFAULT_ENTRY_OFFSET : Number(block.entryOffset));
+    const v = validateRecommendation(req.body, DEFAULT_ENTRY_OFFSET);
     if (!v.ok) { res.status(400).json({ error: (v as { error: string }).error }); return; }
     const ok = v as Extract<typeof v, { ok: true }>;
     const day = istDate();
     const mine = (await recommendationsCol().find({ contractorId: c.id, day }).toArray()) as RecommendationDoc[];
     if (mine.some((r) => r.status === 'PENDING')) { res.status(409).json({ error: 'You already have a recommendation waiting for approval.' }); return; }
     if (mine.length >= rules.perDay) { res.status(409).json({ error: `At most ${rules.perDay} recommendation(s) per day.` }); return; }
-    const refusal = ok.value.kind === 'STOCK' ? null : slotRefusal(slot, { contract: ok.contract, entry: ok.value.entry, target: ok.value.target, stop: ok.value.stop });
-    if (refusal) { res.status(409).json({ error: `Not accepted: ${refusal}.` }); return; }
-    const doc: RecommendationDoc = { ...ok.value, contractorId: c.id, contractorName: c.name, contractorEmail: c.email, slot, contract: ok.contract, orderPrice: ok.orderPrice, day, status: 'PENDING', createdAt: new Date() };
+    if (await tradeInProgress(c)) { res.status(409).json({ error: 'Not accepted: a trade of yours is still in progress.' }); return; }
+    const doc: RecommendationDoc = { ...ok.value, contractorId: c.id, contractorName: c.name, contractorEmail: c.email, contract: ok.contract, orderPrice: ok.orderPrice, day, status: 'PENDING', createdAt: new Date() };
     const ins = await recommendationsCol().insertOne(doc);
     doc._id = ins.insertedId;
     await appendDecision({ kind: 'recommendation_submitted', recommendationId: String(doc._id), contractorId: c.id, contract: doc.contract, entry: doc.entry, target: doc.target, stop: doc.stop });
@@ -64,7 +59,7 @@ router.get('/recommendations', requireAuth, async function (req, res) {
 });
 
 // ---------- owner ----------
-const ownerView = (r: RecommendationDoc) => ({ ...ownView(r), kind: 'recommendation', contractorId: r.contractorId, contractorName: r.contractorName, slot: r.slot, orderPrice: r.orderPrice, decidedBy: r.decidedBy ?? null });
+const ownerView = (r: RecommendationDoc) => ({ ...ownView(r), kind: 'recommendation', contractorId: r.contractorId, contractorName: r.contractorName, orderPrice: r.orderPrice, decidedBy: r.decidedBy ?? null });
 
 router.get('/owner/recommendations', requireAdmin, async function (req, res) {
     const status = str(req.query.status);
@@ -86,23 +81,19 @@ router.post('/owner/recommendations/:id/decision', requireAdmin, async function 
     const rec = (await recommendationsCol().findOne({ _id: new ObjectId(req.params.id) })) as RecommendationDoc | null;
     if (!rec || rec.status !== 'PENDING') { res.status(404).json({ error: 'No pending recommendation with that id' }); return; }
     const actor = resolveRealUser(req) ?? 'admin';
+    const c = decision === 'approve' ? await getContractor(rec.contractorId) : null;
     if (decision === 'approve') {
-        const c = await getContractor(rec.contractorId);
         if (!c || c.status !== 'ACTIVE') { res.status(409).json({ error: 'The contractor is no longer active' }); return; }
         if (rec.day !== istDate()) { res.status(409).json({ error: 'This recommendation is from an earlier day' }); return; }
-        const refusal = (rec as any).kind === 'STOCK' ? null : slotRefusal(rec.slot, rec);
-        if (refusal) { res.status(409).json({ error: `Cannot approve now: ${refusal}.` }); return; }
+        if (await tradeInProgress(c)) { res.status(409).json({ error: 'Cannot approve now: a trade of this contractor is still in progress.' }); return; }
     }
     // compare-and-set so a double click or two tabs cannot decide twice
     const r: any = await recommendationsCol().findOneAndUpdate({ _id: rec._id, status: 'PENDING' }, { $set: { status: decision === 'approve' ? 'APPROVED' : 'REJECTED', decidedAt: new Date(), decidedBy: actor, note } }, { returnOriginal: true });
     if (!r?.value) { res.status(409).json({ error: 'Already decided' }); return; }
     if (decision === 'approve') {
         try {
-            if ((rec as any).kind === 'STOCK') {
-                // A stock option goes through the same path as Search & Buy (a limit buy with target and stop in points), under the owner's account.
-                const orderPrice = rec.orderPrice;
-                await orderClient.manualBuy(primaryAdminEmail(), { contract: `${rec.index}_${rec.strike}_${rec.right}`, price: orderPrice, targetPoints: Math.round((rec.target - orderPrice) * 100) / 100, stopLossPoints: Math.round((orderPrice - rec.stop) * 100) / 100 } as any);
-            } else armSlot(rec.slot, rec);
+            // A normal user order (the same path as Search & Buy) under the contractor's own id: a limit buy at the order price with the target and stop in points from it.
+            await placeContractorBuy(c as Contractor, { underlying: rec.index, strike: rec.strike, right: rec.right, price: rec.orderPrice, target: rec.target, stop: rec.stop });
         }
         catch (e: any) {
             Log.log('[recommendations] placing the approved recommendation failed; reverting the approval:', e);
@@ -110,7 +101,7 @@ router.post('/owner/recommendations/:id/decision', requireAdmin, async function 
             res.status(500).json({ error: `Could not place it: ${e?.message ?? e}` }); return;
         }
     }
-    await appendDecision({ kind: 'recommendation', recommendationId: String(rec._id), contractorId: rec.contractorId, decision, actor, note, slot: rec.slot, contract: rec.contract, entry: rec.entry, target: rec.target, stop: rec.stop });
+    await appendDecision({ kind: 'recommendation', recommendationId: String(rec._id), contractorId: rec.contractorId, decision, actor, note, contract: rec.contract, entry: rec.entry, target: rec.target, stop: rec.stop });
     await notifyUser(rec.contractorEmail, 'recommendation_decision', decision === 'approve' ? `${rec.contract} was approved.` : `${rec.contract} was not approved${note ? `: ${note}` : '.'}`);
     await notifyAdmins('approval_resolved', `${rec.contractorName} ${rec.contract}: ${decision === 'approve' ? 'approved' : 'rejected'}.`, { recommendationId: String(rec._id) });
     res.json(ownerView({ ...rec, status: decision === 'approve' ? 'APPROVED' : 'REJECTED', note }));
@@ -121,38 +112,38 @@ export function safeTrade(t: any, open: boolean) {
     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
     return { contract: t.tsym ?? null, entryPrice: num(t.price), ltp: open ? num(Number(t.ltp)) : null, pnl: num(open ? t.unrealizedPnL : t.realizedPnL), open, entryTime: t.entryTime ?? null, exitTime: open ? null : (t.exitTime ?? null) };
 }
-async function tradesOf(slot: string) {
-    if (!slot) return [];
+async function tradesOf(user: string) {
+    if (!user) return [];
     const stats = await orderClient.stats();
-    const open = (stats.trades ?? []).filter((t: any) => t.user === slot && t.open !== false).map((t: any) => safeTrade(t, true));
+    const open = (stats.trades ?? []).filter((t: any) => t.user === user && t.open !== false).map((t: any) => safeTrade(t, true));
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const closed = (await Mongo.getInstance().db.collection('closedTrades').find({ user: slot, exitTime: { $gte: since } }).sort({ exitTime: -1 }).toArray()).map((t: any) => safeTrade(t, false));
+    const closed = (await Mongo.getInstance().db.collection('closedTrades').find({ user, exitTime: { $gte: since } }).sort({ exitTime: -1 }).toArray()).map((t: any) => safeTrade(t, false));
     return [...open, ...closed];
 }
 router.get('/contractor/trades', requireAuth, async function (req, res) {
     const c = await me(req);
     if (!c) { res.status(403).json({ error: 'Forbidden' }); return; }
-    res.json(await tradesOf(c.pseudoUserId));
+    res.json(await tradesOf(c.email));
 });
 
-const streamClients = new Map<express.Response, string>(); // res -> the contractor's slot
+const streamClients = new Map<express.Response, string>(); // res -> the contractor's user id (email)
 router.get('/contractor/positionstream', requireAuth, async function (req, res) {
     const c = await me(req);
     if (!c) { res.status(403).json({ error: 'Forbidden' }); return; }
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.flushHeaders?.();
     req.on('close', () => streamClients.delete(res));
-    streamClients.set(res, c.pseudoUserId);
-    res.write(`data: ${JSON.stringify(await tradesOf(c.pseudoUserId))}\n\n`);
+    streamClients.set(res, c.email);
+    res.write(`data: ${JSON.stringify(await tradesOf(c.email))}\n\n`);
 });
 orderClient.onPositionsChanged(async () => {
     if (streamClients.size === 0) return;
     try {
         const stats = await orderClient.stats();
-        for (const [res, slot] of streamClients) {
-            if (!slot) continue;
-            const open = (stats.trades ?? []).filter((t: any) => t.user === slot && t.open !== false).map((t: any) => safeTrade(t, true));
-            const closed = (stats.closedTrades ?? []).filter((t: any) => t.user === slot).map((t: any) => safeTrade(t, false));
+        for (const [res, user] of streamClients) {
+            if (!user) continue;
+            const open = (stats.trades ?? []).filter((t: any) => t.user === user && t.open !== false).map((t: any) => safeTrade(t, true));
+            const closed = (stats.closedTrades ?? []).filter((t: any) => t.user === user).map((t: any) => safeTrade(t, false));
             res.write(`data: ${JSON.stringify([...open, ...closed])}\n\n`);
         }
     } catch (e) { Log.log('[contractor] positionstream push failed:', e); }

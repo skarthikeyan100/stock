@@ -1,6 +1,6 @@
 /**
  * The forecast engine end to end on an in-memory Mongo: submit rules, the write-once record, both filters with their logged inputs, the master
- * order switch, arming a slot in a TEMP config, scoring (incl. VOID) and the contractor routes. Run: npx tsc, then node ./dist/test/forecastEngineFlow.test.js
+ * order switch, placing a normal user order for the contractor (stubbed order client), scoring (incl. VOID) and the contractor routes. Run: npx tsc, then node ./dist/test/forecastEngineFlow.test.js
  */
 import * as fs from 'fs';
 import * as os from 'os';
@@ -24,6 +24,7 @@ const SECRET = 'test-secret';
 import { installFakeDb } from './fakeDb';
 import configService from '../prism/ConfigService';
 import { ForecastEngine } from '../forecast/engine';
+import OrderClient from '../processes/strategies/OrderClient';
 import { forecastsCol, scoreOpenForecast, accuracyOf } from '../forecast/store';
 import { contractorsCol } from '../contractors/store';
 import { sessionCookieValue } from '../routes/session';
@@ -49,7 +50,7 @@ async function main() {
     nowMs = start; tickNifty(24030);
     tickFut(130000, 100000);
 
-    const ind: any = { id: 'i1', email: 'ind@x.com', name: 'Ind', type: 'INDIVIDUAL', status: 'ACTIVE', agreementVersion: '1.1', pseudoUserId: '' };
+    const ind: any = { id: 'i1', email: 'ind@x.com', name: 'Ind', type: 'INDIVIDUAL', status: 'ACTIVE', agreementVersion: '1.1' };
     await contractorsCol().insertOne(ind);
     await db.collection('users').insertOne({ email: 'ind@x.com', role: 'contractor', enabled: true });
     await db.collection('users').insertOne({ email: 'boss@x.com', role: 'admin', enabled: true });
@@ -115,7 +116,7 @@ async function main() {
     const dec6: any = (await db.collection('decisions').find({ kind: 'forecast', contractorId: 'i6' }).toArray())[0];
     assert(dec6 && dec6.accepted === false && /snapshot is 4000 ms old/.test(dec6.reason), 'a depth snapshot older than 3 s rejects');
 
-    console.log('orders (master switch) and slot arming:');
+    console.log('orders (master switch) and the contractor\'s own order:');
     setCfg((t) => t.replace('    enabled: false                 # MASTER switch', '    enabled: true                 # MASTER switch'));
     assert(engine.ordersEnabled(), 'the master switch reads from config');
     // the real option price needs ANT; the engine reports it as unavailable here and places nothing
@@ -125,9 +126,27 @@ async function main() {
     r = await engine.submit({ ...ind, id: 'i7' }, { direction: 'UP' });
     await new Promise((res) => setTimeout(res, 50));
     const dec7: any = (await db.collection('decisions').find({ kind: 'forecast', contractorId: 'i7' }).toArray())[0];
-    assert(dec7.accepted === true && dec7.orderPlaced === false && /slot|option price|risk check/.test(dec7.orderNote), 'accepted but not armed without a slot / live option price (fails closed): ' + dec7.orderNote);
-    const armed = (configService.getConfig() as any).strategies.filter((s: any) => /^Forecast-S/.test(s.userId) && s.enabled);
-    assert(armed.length === 0, 'no slot block was armed');
+    assert(dec7.accepted === true && dec7.orderPlaced === false && /option price|risk check/.test(dec7.orderNote), 'accepted but nothing ordered without a live option price / risk check (fails closed): ' + dec7.orderNote);
+    assert(!((configService.getConfig() as any).strategies ?? []).some((b: any) => /^(Forecast|Recommendation)-S\d+$/.test(String(b.userId ?? ''))), 'there are no strategy slot blocks to arm');
+    // With a price and an order client the same forecast becomes a normal user order under the contractor's own id.
+    const oc: any = OrderClient.getInstance();
+    const orders: any[] = []; let open: any[] = [];
+    oc.manualBuy = async (user: string, payload: any) => { orders.push({ user, payload }); return { ok: true }; };
+    oc.updateUserSettings = async () => undefined;
+    oc.stats = async () => ({ trades: open, closedTrades: [], userPnL: {} });
+    (engine as any).optionLtp = async () => 100;
+    nowMs = t1130 + 20 * 60_000; for (let m = 12; m >= 1; m--) { const t = nowMs - m * 60_000; const keep = nowMs; nowMs = t; tickNifty(24000 + (12 - m) * 2); nowMs = keep; } tickNifty(24030); tickFut(130000, 100000);
+    r = await engine.submit({ ...ind, id: 'i8' }, { direction: 'UP' });
+    await new Promise((res) => setTimeout(res, 50));
+    const dec8: any = (await db.collection('decisions').find({ kind: 'forecast', contractorId: 'i8' }).toArray())[0];
+    assert(dec8.accepted === true && dec8.orderPlaced === true && orders.length === 1 && orders[0].user === 'ind@x.com' && orders[0].payload.contract === 'NIFTY_24050_CE' && orders[0].payload.price === 100 && orders[0].payload.targetPoints === 10 && orders[0].payload.stopLossPoints === 20,
+        'accepted UP forecast: a limit buy of the ATM CE as the contractor (target +10, stop -20 from config): ' + dec8.orderNote);
+    open = [{ user: 'ind@x.com', open: true }];
+    nowMs += 20 * 60_000; for (let m = 12; m >= 1; m--) { const t = nowMs - m * 60_000; const keep = nowMs; nowMs = t; tickNifty(24000 + (12 - m) * 2); nowMs = keep; } tickNifty(24030); tickFut(130000, 100000);
+    r = await engine.submit({ ...ind, id: 'i9' }, { direction: 'UP' });
+    await new Promise((res) => setTimeout(res, 50));
+    const dec9: any = (await db.collection('decisions').find({ kind: 'forecast', contractorId: 'i9' }).toArray())[0];
+    assert(dec9.accepted === true && dec9.orderPlaced === false && /still in progress/.test(dec9.orderNote) && orders.length === 1, 'a contractor with an open trade gets no second order');
 
     console.log('scoring:');
     (db.collection('forecasts') as any).docs.length = 0; // the earlier forecasts of this test are not part of the scoring cases

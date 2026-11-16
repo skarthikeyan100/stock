@@ -15,7 +15,6 @@ import { currentVersion, istDate, readAgreement, upcomingVersion } from '../cont
 import { encryptField, isKycCryptoConfigured } from '../contractors/kycCrypto';
 import { gstinMatchesPan, normAccount, normGstin, normIfsc, normPan, normSebi, validAccount, validEmail, validIfsc, validIsoDate, validPan, validSebi } from '../contractors/validate';
 import { RateLimiter } from '../contractors/rateLimit';
-import { ensureSlot } from '../contractors/slots';
 import { setContractorCookie } from '../contractors/session';
 import { toContractorClient } from '../contractors/clientUser';
 import { notifyAdmins } from '../contractors/notify';
@@ -193,7 +192,6 @@ router.post('/invite/:token/accept', async function (req, res) {
     // No owner approval step: a contractor who has accepted is active at once, unless the cap of active contractors is reached (then they wait for a free place).
     if ((await activeCount()) < maxActiveContractors()) {
         await contractorsCol().updateOne({ id: c.id, status: 'INVITED' }, { $set: { status: 'ACTIVE', activatedAt: new Date() } });
-        await ensureSlot(c).catch((e) => Log.log('[contractor] slot assignment failed:', e));
         c.status = 'ACTIVE';
     }
     invalidateUserCache(email);

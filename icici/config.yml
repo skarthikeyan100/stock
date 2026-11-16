@@ -340,270 +340,6 @@ strategies:
     brokers:
       - kite
     startTime: '09:20'
-  # Contractor portal (Advanced contractors): one slot per contractor, assigned at activation (src/contractors/slots.ts). Armed by the owner's approval of a
-  # recommendation (the portal writes enabled/contract/prices here); never enable or delete these by hand. A slot of a contractor who left is not reused.
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Recommendation-S01
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Recommendation-S02
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Recommendation-S03
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Recommendation-S04
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Recommendation-S05
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Recommendation-S06
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Recommendation-S07
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Recommendation-S08
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Recommendation-S09
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Recommendation-S10
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  # Contractor portal (Beginner contractors): one slot per contractor, armed by the forecast engine when a forecast passes both filters (src/forecast/engine.ts).
-  # Same rules as the Recommendation-S slots above.
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Forecast-S01
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Forecast-S02
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Forecast-S03
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Forecast-S04
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Forecast-S05
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Forecast-S06
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Forecast-S07
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Forecast-S08
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Forecast-S09
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
-  - type: RecommendationStrategy
-    enabled: false
-    userId: Forecast-S10
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
-    entryOffset: 5
-    maxInvestment: 100000
-    index: NIFTY
-    brokers:
-      - kite
-    startTime: '09:20'
   - type: NiftyChangeStrategy
     enabled: false
     userId: NiftyChange-NIFTY
@@ -625,7 +361,7 @@ strategies:
     brokers:
       - kite
   - type: MomentumAtFixedTimeStrategy
-    enabled: false
+    enabled: true
     userId: MomentumAtFixedTime-NIFTY
     times:
       - '10:00'
@@ -667,6 +403,8 @@ strategies:
     entryTimeoutMinutes: 5
     index: NIFTY
     brokers:
+      - kite
+      - prism
       - ant
   - type: NextWeekStrategy
     enabled: false          # set true to trade (requested: enabled, quantity 65)
@@ -685,9 +423,10 @@ strategies:
     brokers:
       - kite
   - type: SimpleContinuousStrategy
-    enabled: false
+    enabled: true
     brokers:
       - kite
+      - breeze
     initialQuantity: 1300
     skipNearestExpiryOnExpiryDay: false
     onePositionPerSide: true
@@ -697,8 +436,9 @@ strategies:
     maxLegsPerSide: 5
     stackRecoveryPoints: 20
   - type: ScaledHedgedStrategy
-    enabled: false          # false stops it; the root buys initialQuantity, a hedge buys initialQuantity + drop/priceDiff x initialQuantity, one CE and one PE contract per cycle (strategies.md)
+    enabled: true          # false stops it; the root buys initialQuantity, a hedge buys initialQuantity + drop/priceDiff x initialQuantity, one CE and one PE contract per cycle (strategies.md)
     brokers:
+      - kite
       - breeze
     initialQuantity: 65
     skipNearestExpiryOnExpiryDay: false
@@ -726,8 +466,9 @@ forecast:
   orders:
     enabled: false                 # MASTER switch for placing orders from passed forecasts. false = decisions are logged, nothing is traded.
     noNewAfter: '14:45'            # no new position after this time (IST)
-    maxOpenPositions: 3            # across all contractor slots
-    dailyLossLimit: 0              # rupees; when the contractor slots' P&L today reaches -limit no new position is armed (0 = off)
+    maxOpenPositions: 3            # across all contractors
+    dailyLossLimit: 0              # rupees; when the contractors' P&L today reaches -limit no new forecast position is placed (0 = off)
+    maxInvestment: 100000          # rupees per contractor trade (forecast and approved recommendation): as many whole lots as this buys, at least one
     targetPoints: 10               # option points above the entry
     stopLossPoints: 20             # option points below the entry
   fees:

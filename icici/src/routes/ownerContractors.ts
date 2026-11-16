@@ -13,7 +13,6 @@ import { decryptField, maskedField } from '../contractors/kycCrypto';
 import { publicBaseUrl, sendInviteEmail } from '../contractors/email';
 import { validEmail, validIsoDate } from '../contractors/validate';
 import { notifyUser } from '../contractors/notify';
-import { ensureSlot } from '../contractors/slots';
 import Mongo from '../tools/mongo';
 import { ObjectId } from 'mongodb';
 
@@ -26,7 +25,7 @@ export function adminView(c: Contractor) {
     const k: any = c.kyc ?? {};
     return {
         id: c.id, email: c.email, name: c.name, type: c.type, status: c.status, statusReason: c.statusReason, terminatedAt: c.terminatedAt, isTest: c.isTest === true,
-        createdAt: c.createdAt, agreementVersion: c.agreementVersion, agreementAcceptedAt: c.agreementAcceptedAt, pseudoUserId: c.pseudoUserId,
+        createdAt: c.createdAt, agreementVersion: c.agreementVersion, agreementAcceptedAt: c.agreementAcceptedAt, tradeUser: c.email,
         kycMasked: c.kyc ? { legalName: k.legalName ?? k.entityName, address: k.address, pan: maskedField(k.panEnc), gstin: maskedField(k.gstinEnc), bankAccount: maskedField(k.bankAccountEnc), bankIfsc: k.bankIfsc, bankHolder: k.bankHolder,
             analystName: k.analystName, analystEmail: k.analystEmail, notGstRegistered: k.notGstRegistered } : null,
         sebi: c.sebi ? { ...c.sebi, verified: !!c.sebi.verifiedAt } : null,
@@ -97,7 +96,7 @@ async function transition(req: express.Request, res: express.Response, to: Contr
     const r = await contractorsCol().updateOne({ id: c.id, status: c.status }, { $set: { status: to, ...extra } });
     if (!r.matchedCount) { res.status(409).json({ error: 'Status changed meanwhile; reload' }); return; }
     if (to === 'TERMINATED') { await setUserEnabled(c.email, false); await revokeOpenInvitesFor(c.id); }
-    if (to === 'ACTIVE') { await setUserEnabled(c.email, true); await ensureSlot(c).catch((e) => Log.log('[contractor] slot assignment failed:', e)); }
+    if (to === 'ACTIVE') { await setUserEnabled(c.email, true); }
     invalidateUserCache(c.email);
     res.json(adminView((await getContractor(c.id)) as Contractor));
 }

@@ -31,7 +31,7 @@ async function main() {
     assert(feeModelOn(models, '2026-12-01', 25).model === 'FIXED_PER_APPROVED' && feeModelOn(undefined, '2026-12-01', 25).model === 'PROFIT_SHARE', 'on the date the new model applies; no entries means the default');
 
     console.log('Beginner accuracy:');
-    const ind: any = { id: 'i1', email: 'i@x.com', name: 'Ind', type: 'INDIVIDUAL', status: 'ACTIVE', pseudoUserId: 'Forecast-S01', activatedAt: new Date('2026-10-01') };
+    const ind: any = { id: 'i1', email: 'i@x.com', name: 'Ind', type: 'INDIVIDUAL', status: 'ACTIVE', activatedAt: new Date('2026-10-01') };
     await contractorsCol().insertOne(ind);
     const F = (id: string, day: string, outcome: string, fee = 100) => db.collection('forecasts').insertOne({ id, contractorId: 'i1', day, outcome, feeAmount: fee });
     await F('a', '2026-11-11', 'CORRECT'); await F('b', '2026-11-12', 'CORRECT'); await F('c', '2026-11-13', 'INCORRECT'); await F('d', '2026-11-16', 'NEUTRAL'); await F('e', '2026-11-17', 'VOID'); await F('f', '2026-11-10', 'CORRECT'); await F('g', '2026-11-18', 'CORRECT');
@@ -65,9 +65,9 @@ async function main() {
     assert(await monthlyRetainerStatement(ind, '2026-10') === null, 'idempotent');
 
     console.log('Advanced:');
-    const biz: any = { id: 'b1', email: 'b@x.com', name: 'Biz', type: 'BUSINESS', status: 'ACTIVE', pseudoUserId: 'Recommendation-S01' };
+    const biz: any = { id: 'b1', email: 'b@x.com', name: 'Biz', type: 'BUSINESS', status: 'ACTIVE' };
     await contractorsCol().insertOne(biz);
-    const T = (id: string, pnl: number, exit: string) => db.collection('closedTrades').insertOne({ id, user: 'Recommendation-S01', realizedPnL: pnl, exitTime: new Date(`${exit}+05:30`) });
+    const T = (id: string, pnl: number, exit: string) => db.collection('closedTrades').insertOne({ id, user: 'b@x.com', realizedPnL: pnl, exitTime: new Date(`${exit}+05:30`) });
     await T('t1', 1000, '2026-11-12T11:00:00'); await T('t2', -300, '2026-11-13T11:00:00'); await T('t3', 5000, '2026-11-18T11:00:00');
     const w = { from: '2026-11-11', to: '2026-11-17' };
     const p1: any = await weeklyAdvancedStatement(biz, w, 25);
@@ -91,10 +91,10 @@ async function main() {
     const p8: any = await weeklyAdvancedStatement(biz, { from: '2026-12-30', to: '2027-01-05' }, 25);
     assert(p7.lines.lossCarriedForward === 500 && p8.lines.lossBroughtForward === 500 && p8.gross === 0 && p8.lines.lossCarriedForward === 300, 'a partly recovered loss keeps carrying (500 - 200 = 300)');
     assert((await statementsCol().find({ contractorId: 'b1' }).toArray() as any[]).every((x) => x.gross >= 0), 'nothing is ever negative: a carried loss is never a debt');
-    const fixed: any = { ...biz, id: 'b2', email: 'b2@x.com', pseudoUserId: 'Recommendation-S02', feeModels: [{ from: '2026-11-18', model: 'FIXED_PER_APPROVED', fixedAmount: 400 }] };
+    const fixed: any = { ...biz, id: 'b2', email: 'b2@x.com', feeModels: [{ from: '2026-11-18', model: 'FIXED_PER_APPROVED', fixedAmount: 400 }] };
     await contractorsCol().insertOne(fixed);
     const R = (id: string, day: string, status = 'APPROVED') => db.collection('recommendations').insertOne({ id, contractorId: 'b2', day, status, orderPrice: 100, target: 120 });
-    const T2 = (id: string, pnl: number, qty: number, exit: string) => db.collection('closedTrades').insertOne({ id, user: 'Recommendation-S02', realizedPnL: pnl, quantity: qty, exitTime: new Date(`${exit}+05:30`) });
+    const T2 = (id: string, pnl: number, qty: number, exit: string) => db.collection('closedTrades').insertOne({ id, user: 'b2@x.com', realizedPnL: pnl, quantity: qty, exitTime: new Date(`${exit}+05:30`) });
     await R('x1', '2026-11-12'); await R('x2', '2026-11-13'); await R('x3', '2026-11-19'); await R('x4', '2026-11-20'); await R('x5', '2026-11-21', 'REJECTED');
     const f1: any = await weeklyAdvancedStatement(fixed, w, 25);
     assert(f1 === null || f1.kind === 'PROFIT_SHARE_WEEK', 'before the effective date the old model (profit share) applies to that week: no fixed fee');
@@ -115,7 +115,7 @@ async function main() {
     console.log('jobs:');
     const made = await runWeeklyStatements('2026-12-02');
     assert(Array.isArray(made), 'the weekly runner runs (idempotent)');
-    await contractorsCol().insertOne({ id: 'tst', email: 't@x.com', name: 'Test', type: 'INDIVIDUAL', status: 'ACTIVE', isTest: true, pseudoUserId: '' });
+    await contractorsCol().insertOne({ id: 'tst', email: 't@x.com', name: 'Test', type: 'INDIVIDUAL', status: 'ACTIVE', isTest: true });
     await db.collection('forecasts').insertOne({ id: 'tf', contractorId: 'tst', day: '2026-11-12', outcome: 'CORRECT', feeAmount: 100 });
     await runWeeklyStatements('2026-11-18'); await runMonthlyRetainers('2026-11-01');
     assert((await statementsCol().find({ contractorId: 'tst' }).toArray()).length === 0, 'the test user gets no statements');
