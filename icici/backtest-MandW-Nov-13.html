@@ -1,0 +1,207 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MandWStrategy backtest Nov-13</title><style>
+body{font:14px system-ui,sans-serif;margin:16px;color:#1b1f24;background:#fff}h1{font-size:20px}h2{font-size:16px;margin-top:24px}.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;margin:8px 0}th,td{border:1px solid #d0d7de;padding:4px 8px;text-align:left;white-space:nowrap}td.w{white-space:normal}th{background:#f6f8fa}
+.n{text-align:right;font-variant-numeric:tabular-nums}.pos{color:#1a7f37}.neg{color:#cf222e}pre{white-space:pre-wrap;line-height:1.45;font-size:13px}
+@media(prefers-color-scheme:dark){body{background:#0d1117;color:#e6edf3}th{background:#161b22}th,td{border-color:#30363d}.pos{color:#3fb950}.neg{color:#f85149}}</style></head><body>
+<h1>MandWStrategy backtest: Nov-13, 09:15:00 to 15:28:04</h1><p>One broker (each broker is its own instance). Config: {"quantity":65,"startSide":"CE","startTime":"09:20","target":10,"stopLoss":10,"patternTimeoutMinutes":30,"lastEntryTime":"15:00","brokers":["kite"],"index":"NIFTY"}; global maxProfit 5000.</p>
+<p>24 trades, 8 winners. Realized <b class="neg">-5,850.00</b>, open at the last tick <b class="">0.00</b>, net <b class="neg">-5,850.00</b>. Peak total 188.50, lowest -8,131.50.</p>
+<h2>Trades</h2><div class="scroll"><table><thead><tr><th>#</th><th>Contract</th><th class="n">Qty</th><th>Buy time</th><th class="n">Buy</th><th>Sell time</th><th class="n">Sell</th><th>Exit</th><th class="n">P&amp;L</th><th class="n">Cumulative</th></tr></thead><tbody>
+<tr><td>1</td><td>NIFTY17NOV26C25100</td><td class="n">65</td><td>09:20:00</td><td class="n">177.40</td><td>09:20:37</td><td class="n">167.30</td><td class="w">stop loss</td><td class="n neg">-656.50</td><td class="n neg">-656.50</td></tr>
+<tr><td>2</td><td>NIFTY17NOV26P25100</td><td class="n">65</td><td>09:20:38</td><td class="n">167.00</td><td>09:22:03</td><td class="n">177.00</td><td class="w">resting limit sell filled at the target</td><td class="n pos">650.00</td><td class="n neg">-6.50</td></tr>
+<tr><td>3</td><td>NIFTY17NOV26C25100</td><td class="n">65</td><td>09:25:24</td><td class="n">177.90</td><td>09:27:20</td><td class="n">167.30</td><td class="w">stop loss</td><td class="n neg">-689.00</td><td class="n neg">-695.50</td></tr>
+<tr><td>4</td><td>NIFTY17NOV26P25100</td><td class="n">65</td><td>09:27:21</td><td class="n">163.05</td><td>09:29:14</td><td class="n">152.00</td><td class="w">stop loss</td><td class="n neg">-718.25</td><td class="n neg">-1,413.75</td></tr>
+<tr><td>5</td><td>NIFTY17NOV26C25150</td><td class="n">65</td><td>09:29:15</td><td class="n">155.00</td><td>09:31:41</td><td class="n">145.00</td><td class="w">stop loss</td><td class="n neg">-650.00</td><td class="n neg">-2,063.75</td></tr>
+<tr><td>6</td><td>NIFTY17NOV26P25100</td><td class="n">65</td><td>09:31:44</td><td class="n">160.50</td><td>09:33:16</td><td class="n">148.50</td><td class="w">stop loss</td><td class="n neg">-780.00</td><td class="n neg">-2,843.75</td></tr>
+<tr><td>7</td><td>NIFTY17NOV26C25150</td><td class="n">65</td><td>09:33:58</td><td class="n">156.00</td><td>09:34:58</td><td class="n">166.00</td><td class="w">resting limit sell filled at the target</td><td class="n pos">650.00</td><td class="n neg">-2,193.75</td></tr>
+<tr><td>8</td><td>NIFTY17NOV26C25200</td><td class="n">65</td><td>10:04:59</td><td class="n">171.40</td><td>10:11:27</td><td class="n">161.30</td><td class="w">stop loss</td><td class="n neg">-656.50</td><td class="n neg">-2,850.25</td></tr>
+<tr><td>9</td><td>NIFTY17NOV26P25200</td><td class="n">65</td><td>10:11:28</td><td class="n">167.00</td><td>10:13:54</td><td class="n">156.75</td><td class="w">stop loss</td><td class="n neg">-666.25</td><td class="n neg">-3,516.50</td></tr>
+<tr><td>10</td><td>NIFTY17NOV26C25200</td><td class="n">65</td><td>10:13:56</td><td class="n">168.50</td><td>10:17:30</td><td class="n">157.90</td><td class="w">stop loss</td><td class="n neg">-689.00</td><td class="n neg">-4,205.50</td></tr>
+<tr><td>11</td><td>NIFTY17NOV26P25200</td><td class="n">65</td><td>10:17:47</td><td class="n">165.70</td><td>10:21:48</td><td class="n">155.15</td><td class="w">stop loss</td><td class="n neg">-685.75</td><td class="n neg">-4,891.25</td></tr>
+<tr><td>12</td><td>NIFTY17NOV26C25200</td><td class="n">65</td><td>10:21:49</td><td class="n">168.70</td><td>10:26:50</td><td class="n">157.35</td><td class="w">stop loss</td><td class="n neg">-737.75</td><td class="n neg">-5,629.00</td></tr>
+<tr><td>13</td><td>NIFTY17NOV26P25200</td><td class="n">65</td><td>10:26:55</td><td class="n">164.80</td><td>10:31:00</td><td class="n">154.15</td><td class="w">stop loss</td><td class="n neg">-692.25</td><td class="n neg">-6,321.25</td></tr>
+<tr><td>14</td><td>NIFTY17NOV26C25200</td><td class="n">65</td><td>10:31:01</td><td class="n">167.30</td><td>10:34:19</td><td class="n">177.30</td><td class="w">resting limit sell filled at the target</td><td class="n pos">650.00</td><td class="n neg">-5,671.25</td></tr>
+<tr><td>15</td><td>NIFTY17NOV26P25200</td><td class="n">65</td><td>10:40:16</td><td class="n">145.30</td><td>10:45:17</td><td class="n">134.60</td><td class="w">stop loss</td><td class="n neg">-695.50</td><td class="n neg">-6,366.75</td></tr>
+<tr><td>16</td><td>NIFTY17NOV26C25250</td><td class="n">65</td><td>10:45:18</td><td class="n">161.95</td><td>10:56:35</td><td class="n">151.00</td><td class="w">stop loss</td><td class="n neg">-711.75</td><td class="n neg">-7,078.50</td></tr>
+<tr><td>17</td><td>NIFTY17NOV26P25200</td><td class="n">65</td><td>10:56:42</td><td class="n">145.55</td><td>11:00:21</td><td class="n">155.55</td><td class="w">resting limit sell filled at the target</td><td class="n pos">650.00</td><td class="n neg">-6,428.50</td></tr>
+<tr><td>18</td><td>NIFTY17NOV26P25150</td><td class="n">65</td><td>11:30:40</td><td class="n">142.05</td><td>11:55:09</td><td class="n">152.05</td><td class="w">resting limit sell filled at the target</td><td class="n pos">650.00</td><td class="n neg">-5,778.50</td></tr>
+<tr><td>19</td><td>NIFTY17NOV26P25100</td><td class="n">65</td><td>12:25:09</td><td class="n">148.00</td><td>12:28:48</td><td class="n">137.60</td><td class="w">stop loss</td><td class="n neg">-676.00</td><td class="n neg">-6,454.50</td></tr>
+<tr><td>20</td><td>NIFTY17NOV26C25100</td><td class="n">65</td><td>12:28:49</td><td class="n">159.90</td><td>12:49:58</td><td class="n">149.20</td><td class="w">stop loss</td><td class="n neg">-695.50</td><td class="n neg">-7,150.00</td></tr>
+<tr><td>21</td><td>NIFTY17NOV26P25100</td><td class="n">65</td><td>12:49:59</td><td class="n">143.00</td><td>12:52:24</td><td class="n">133.00</td><td class="w">stop loss</td><td class="n neg">-650.00</td><td class="n neg">-7,800.00</td></tr>
+<tr><td>22</td><td>NIFTY17NOV26C25100</td><td class="n">65</td><td>12:52:25</td><td class="n">159.00</td><td>13:19:52</td><td class="n">169.00</td><td class="w">resting limit sell filled at the target</td><td class="n pos">650.00</td><td class="n neg">-7,150.00</td></tr>
+<tr><td>23</td><td>NIFTY17NOV26P25100</td><td class="n">65</td><td>13:42:06</td><td class="n">131.95</td><td>13:55:00</td><td class="n">141.95</td><td class="w">resting limit sell filled at the target</td><td class="n pos">650.00</td><td class="n neg">-6,500.00</td></tr>
+<tr><td>24</td><td>NIFTY17NOV26C25100</td><td class="n">65</td><td>13:57:40</td><td class="n">138.00</td><td>13:59:06</td><td class="n">148.00</td><td class="w">resting limit sell filled at the target</td><td class="n pos">650.00</td><td class="n neg">-5,850.00</td></tr>
+</tbody></table></div><h2>Strategy events (pattern / flip / watch)</h2><pre>09:20:00 first entry: BUY CE 25100 (nearest expiry), quantity 65 per broker [2026-11-13 MW1]
+09:20:00 2026-11-13 MW1 kite: limit BUY NIFTY17NOV26C25100 qty=65 @ 177.4 placed (order B1)
+09:20:00 kite NIFTY17NOV26C25100: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+09:20:00 kite NIFTY17NOV26C25100: resting sell 65 @ 187.4, stop 167.4 watched on ticks
+09:20:37 STOP hit on kite NIFTY17NOV26C25100: ltp 167.3 &lt;= 167.4
+09:20:37 closing kite NIFTY17NOV26C25100 qty=65 (stop loss)
+09:20:37 STOP-FLIP: CE NIFTY17NOV26C25100 bought @ 177.40, sold @ 167.30 (stop 167.4) -> reverse at once: BUY PE
+09:20:38 stop hit: BUY PE 25100 (nearest expiry), quantity 65 per broker [2026-11-13 MW2]
+09:20:38 2026-11-13 MW2 kite: limit BUY NIFTY17NOV26P25100 qty=65 @ 167 placed (order B4)
+09:20:38 kite NIFTY17NOV26P25100: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+09:20:38 kite NIFTY17NOV26P25100: resting sell 65 @ 177, stop 157 watched on ticks
+09:22:03 TARGET hit: PE NIFTY17NOV26P25100 bought @ 167.00, sold @ 177.00 (target 177) - watching it for the W: valley at or below 167.00, then 177 again; failed below 157
+09:24:01 W valley on PE NIFTY17NOV26P25100 (P 167.00, target 177, stop 157): price 166.55 is back at or below P - waiting for 177 again
+09:25:21 W FAILED on PE NIFTY17NOV26P25100 (P 167.00, target 177, stop 157): price 156.85 fell to the stop level 157 before the second peak -> reverse at once: BUY CE
+09:25:22 W failed: BUY CE 25100 (nearest expiry), quantity 65 per broker [2026-11-13 MW3]
+09:25:22 2026-11-13 MW3 kite: limit BUY NIFTY17NOV26C25100 qty=65 @ 177.9 placed (order B7)
+09:25:24 kite NIFTY17NOV26C25100: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+09:25:24 kite NIFTY17NOV26C25100: resting sell 65 @ 187.9, stop 167.9 watched on ticks
+09:27:20 STOP hit on kite NIFTY17NOV26C25100: ltp 167.3 &lt;= 167.9
+09:27:20 closing kite NIFTY17NOV26C25100 qty=65 (stop loss)
+09:27:20 STOP-FLIP: CE NIFTY17NOV26C25100 bought @ 177.90, sold @ 167.30 (stop 167.9) -> reverse at once: BUY PE
+09:27:21 stop hit: BUY PE 25100 (nearest expiry), quantity 65 per broker [2026-11-13 MW4]
+09:27:21 2026-11-13 MW4 kite: limit BUY NIFTY17NOV26P25100 qty=65 @ 163.05 placed (order B10)
+09:27:21 kite NIFTY17NOV26P25100: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+09:27:21 kite NIFTY17NOV26P25100: resting sell 65 @ 173.05, stop 153.05 watched on ticks
+09:29:14 STOP hit on kite NIFTY17NOV26P25100: ltp 152 &lt;= 153.05
+09:29:14 closing kite NIFTY17NOV26P25100 qty=65 (stop loss)
+09:29:14 STOP-FLIP: PE NIFTY17NOV26P25100 bought @ 163.05, sold @ 152.00 (stop 153.05) -> reverse at once: BUY CE
+09:29:15 stop hit: BUY CE 25150 (nearest expiry), quantity 65 per broker [2026-11-13 MW5]
+09:29:15 2026-11-13 MW5 kite: limit BUY NIFTY17NOV26C25150 qty=65 @ 155 placed (order B13)
+09:29:15 kite NIFTY17NOV26C25150: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+09:29:15 kite NIFTY17NOV26C25150: resting sell 65 @ 165, stop 145 watched on ticks
+09:31:41 STOP hit on kite NIFTY17NOV26C25150: ltp 145 &lt;= 145
+09:31:41 closing kite NIFTY17NOV26C25150 qty=65 (stop loss)
+09:31:41 STOP-FLIP: CE NIFTY17NOV26C25150 bought @ 155.00, sold @ 145.00 (stop 145) -> reverse at once: BUY PE
+09:31:42 stop hit: BUY PE 25100 (nearest expiry), quantity 65 per broker [2026-11-13 MW6]
+09:31:42 2026-11-13 MW6 kite: limit BUY NIFTY17NOV26P25100 qty=65 @ 160.5 placed (order B16)
+09:31:44 kite NIFTY17NOV26P25100: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+09:31:44 kite NIFTY17NOV26P25100: resting sell 65 @ 170.5, stop 150.5 watched on ticks
+09:33:16 STOP hit on kite NIFTY17NOV26P25100: ltp 148.5 &lt;= 150.5
+09:33:16 closing kite NIFTY17NOV26P25100 qty=65 (stop loss)
+09:33:16 STOP-FLIP: PE NIFTY17NOV26P25100 bought @ 160.50, sold @ 148.50 (stop 150.5) -> reverse at once: BUY CE
+09:33:17 stop hit: BUY CE 25150 (nearest expiry), quantity 65 per broker [2026-11-13 MW7]
+09:33:17 2026-11-13 MW7 kite: limit BUY NIFTY17NOV26C25150 qty=65 @ 156 placed (order B19)
+09:33:58 kite NIFTY17NOV26C25150: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+09:33:58 kite NIFTY17NOV26C25150: resting sell 65 @ 166, stop 146 watched on ticks
+09:34:58 TARGET hit: CE NIFTY17NOV26C25150 bought @ 156.00, sold @ 166.00 (target 166) - watching it for the M: valley at or below 156.00, then 166 again; failed below 146
+10:04:58 M watch on CE NIFTY17NOV26C25150 (P 156.00, target 166, stop 146) timed out after 30 min without the pattern or the stop (phase peak) -> abandoned, BUY CE again
+10:04:58 pattern timeout: BUY CE 25200 (nearest expiry), quantity 65 per broker [2026-11-13 MW8]
+10:04:58 2026-11-13 MW8 kite: limit BUY NIFTY17NOV26C25200 qty=65 @ 171.4 placed (order B22)
+10:04:59 kite NIFTY17NOV26C25200: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+10:04:59 kite NIFTY17NOV26C25200: resting sell 65 @ 181.4, stop 161.4 watched on ticks
+10:11:27 STOP hit on kite NIFTY17NOV26C25200: ltp 161.3 &lt;= 161.4
+10:11:27 closing kite NIFTY17NOV26C25200 qty=65 (stop loss)
+10:11:27 STOP-FLIP: CE NIFTY17NOV26C25200 bought @ 171.40, sold @ 161.30 (stop 161.4) -> reverse at once: BUY PE
+10:11:28 stop hit: BUY PE 25200 (nearest expiry), quantity 65 per broker [2026-11-13 MW9]
+10:11:28 2026-11-13 MW9 kite: limit BUY NIFTY17NOV26P25200 qty=65 @ 167 placed (order B25)
+10:11:28 kite NIFTY17NOV26P25200: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+10:11:28 kite NIFTY17NOV26P25200: resting sell 65 @ 177, stop 157 watched on ticks
+10:13:54 STOP hit on kite NIFTY17NOV26P25200: ltp 156.75 &lt;= 157
+10:13:54 closing kite NIFTY17NOV26P25200 qty=65 (stop loss)
+10:13:54 STOP-FLIP: PE NIFTY17NOV26P25200 bought @ 167.00, sold @ 156.75 (stop 157) -> reverse at once: BUY CE
+10:13:55 stop hit: BUY CE 25200 (nearest expiry), quantity 65 per broker [2026-11-13 MW10]
+10:13:55 2026-11-13 MW10 kite: limit BUY NIFTY17NOV26C25200 qty=65 @ 168.5 placed (order B28)
+10:13:56 kite NIFTY17NOV26C25200: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+10:13:56 kite NIFTY17NOV26C25200: resting sell 65 @ 178.5, stop 158.5 watched on ticks
+10:17:30 STOP hit on kite NIFTY17NOV26C25200: ltp 157.9 &lt;= 158.5
+10:17:30 closing kite NIFTY17NOV26C25200 qty=65 (stop loss)
+10:17:30 STOP-FLIP: CE NIFTY17NOV26C25200 bought @ 168.50, sold @ 157.90 (stop 158.5) -> reverse at once: BUY PE
+10:17:31 stop hit: BUY PE 25200 (nearest expiry), quantity 65 per broker [2026-11-13 MW11]
+10:17:31 2026-11-13 MW11 kite: limit BUY NIFTY17NOV26P25200 qty=65 @ 165.7 placed (order B31)
+10:17:47 kite NIFTY17NOV26P25200: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+10:17:47 kite NIFTY17NOV26P25200: resting sell 65 @ 175.7, stop 155.7 watched on ticks
+10:21:48 STOP hit on kite NIFTY17NOV26P25200: ltp 155.15 &lt;= 155.7
+10:21:48 closing kite NIFTY17NOV26P25200 qty=65 (stop loss)
+10:21:48 STOP-FLIP: PE NIFTY17NOV26P25200 bought @ 165.70, sold @ 155.15 (stop 155.7) -> reverse at once: BUY CE
+10:21:49 stop hit: BUY CE 25200 (nearest expiry), quantity 65 per broker [2026-11-13 MW12]
+10:21:49 2026-11-13 MW12 kite: limit BUY NIFTY17NOV26C25200 qty=65 @ 168.7 placed (order B34)
+10:21:49 kite NIFTY17NOV26C25200: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+10:21:49 kite NIFTY17NOV26C25200: resting sell 65 @ 178.7, stop 158.7 watched on ticks
+10:26:50 STOP hit on kite NIFTY17NOV26C25200: ltp 157.35 &lt;= 158.7
+10:26:50 closing kite NIFTY17NOV26C25200 qty=65 (stop loss)
+10:26:50 STOP-FLIP: CE NIFTY17NOV26C25200 bought @ 168.70, sold @ 157.35 (stop 158.7) -> reverse at once: BUY PE
+10:26:51 stop hit: BUY PE 25200 (nearest expiry), quantity 65 per broker [2026-11-13 MW13]
+10:26:51 2026-11-13 MW13 kite: limit BUY NIFTY17NOV26P25200 qty=65 @ 164.8 placed (order B37)
+10:26:55 kite NIFTY17NOV26P25200: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+10:26:55 kite NIFTY17NOV26P25200: resting sell 65 @ 174.8, stop 154.8 watched on ticks
+10:31:00 STOP hit on kite NIFTY17NOV26P25200: ltp 154.15 &lt;= 154.8
+10:31:00 closing kite NIFTY17NOV26P25200 qty=65 (stop loss)
+10:31:00 STOP-FLIP: PE NIFTY17NOV26P25200 bought @ 164.80, sold @ 154.15 (stop 154.8) -> reverse at once: BUY CE
+10:31:01 stop hit: BUY CE 25200 (nearest expiry), quantity 65 per broker [2026-11-13 MW14]
+10:31:01 2026-11-13 MW14 kite: limit BUY NIFTY17NOV26C25200 qty=65 @ 167.3 placed (order B40)
+10:31:01 kite NIFTY17NOV26C25200: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+10:31:01 kite NIFTY17NOV26C25200: resting sell 65 @ 177.3, stop 157.3 watched on ticks
+10:34:19 TARGET hit: CE NIFTY17NOV26C25200 bought @ 167.30, sold @ 177.30 (target 177.3) - watching it for the M: valley at or below 167.30, then 177.3 again; failed below 157.3
+10:37:12 M valley on CE NIFTY17NOV26C25200 (P 167.30, target 177.3, stop 157.3): price 166.8 is back at or below P - waiting for 177.3 again
+10:40:11 M PATTERN IDENTIFIED on CE NIFTY17NOV26C25200 (P 167.30, target 177.3, stop 157.3): peak at 177.3, valley at or below 167.30, second peak at 177.3 -> reverse: BUY PE
+10:40:12 M pattern: BUY PE 25200 (nearest expiry), quantity 65 per broker [2026-11-13 MW15]
+10:40:12 2026-11-13 MW15 kite: limit BUY NIFTY17NOV26P25200 qty=65 @ 145.3 placed (order B43)
+10:40:16 kite NIFTY17NOV26P25200: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+10:40:16 kite NIFTY17NOV26P25200: resting sell 65 @ 155.3, stop 135.3 watched on ticks
+10:45:17 STOP hit on kite NIFTY17NOV26P25200: ltp 134.6 &lt;= 135.3
+10:45:17 closing kite NIFTY17NOV26P25200 qty=65 (stop loss)
+10:45:17 STOP-FLIP: PE NIFTY17NOV26P25200 bought @ 145.30, sold @ 134.60 (stop 135.3) -> reverse at once: BUY CE
+10:45:18 stop hit: BUY CE 25250 (nearest expiry), quantity 65 per broker [2026-11-13 MW16]
+10:45:18 2026-11-13 MW16 kite: limit BUY NIFTY17NOV26C25250 qty=65 @ 161.95 placed (order B46)
+10:45:18 kite NIFTY17NOV26C25250: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+10:45:18 kite NIFTY17NOV26C25250: resting sell 65 @ 171.95, stop 151.95 watched on ticks
+10:56:35 STOP hit on kite NIFTY17NOV26C25250: ltp 151 &lt;= 151.95
+10:56:35 closing kite NIFTY17NOV26C25250 qty=65 (stop loss)
+10:56:35 STOP-FLIP: CE NIFTY17NOV26C25250 bought @ 161.95, sold @ 151.00 (stop 151.95) -> reverse at once: BUY PE
+10:56:36 stop hit: BUY PE 25200 (nearest expiry), quantity 65 per broker [2026-11-13 MW17]
+10:56:36 2026-11-13 MW17 kite: limit BUY NIFTY17NOV26P25200 qty=65 @ 145.55 placed (order B49)
+10:56:42 kite NIFTY17NOV26P25200: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+10:56:42 kite NIFTY17NOV26P25200: resting sell 65 @ 155.55, stop 135.55 watched on ticks
+11:00:21 TARGET hit: PE NIFTY17NOV26P25200 bought @ 145.55, sold @ 155.55 (target 155.55) - watching it for the W: valley at or below 145.55, then 155.55 again; failed below 135.55
+11:30:21 W watch on PE NIFTY17NOV26P25200 (P 145.55, target 155.55, stop 135.55) timed out after 30 min without the pattern or the stop (phase peak) -> abandoned, BUY PE again
+11:30:21 pattern timeout: BUY PE 25150 (nearest expiry), quantity 65 per broker [2026-11-13 MW18]
+11:30:21 2026-11-13 MW18 kite: limit BUY NIFTY17NOV26P25150 qty=65 @ 142.05 placed (order B52)
+11:30:40 kite NIFTY17NOV26P25150: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+11:30:40 kite NIFTY17NOV26P25150: resting sell 65 @ 152.05, stop 132.05 watched on ticks
+11:55:09 TARGET hit: PE NIFTY17NOV26P25150 bought @ 142.05, sold @ 152.05 (target 152.05) - watching it for the W: valley at or below 142.05, then 152.05 again; failed below 132.05
+12:25:09 W watch on PE NIFTY17NOV26P25150 (P 142.05, target 152.05, stop 132.05) timed out after 30 min without the pattern or the stop (phase peak) -> abandoned, BUY PE again
+12:25:09 pattern timeout: BUY PE 25100 (nearest expiry), quantity 65 per broker [2026-11-13 MW19]
+12:25:09 2026-11-13 MW19 kite: limit BUY NIFTY17NOV26P25100 qty=65 @ 148 placed (order B55)
+12:25:09 kite NIFTY17NOV26P25100: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+12:25:09 kite NIFTY17NOV26P25100: resting sell 65 @ 158, stop 138 watched on ticks
+12:28:48 STOP hit on kite NIFTY17NOV26P25100: ltp 137.6 &lt;= 138
+12:28:48 closing kite NIFTY17NOV26P25100 qty=65 (stop loss)
+12:28:48 STOP-FLIP: PE NIFTY17NOV26P25100 bought @ 148.00, sold @ 137.60 (stop 138) -> reverse at once: BUY CE
+12:28:49 stop hit: BUY CE 25100 (nearest expiry), quantity 65 per broker [2026-11-13 MW20]
+12:28:49 2026-11-13 MW20 kite: limit BUY NIFTY17NOV26C25100 qty=65 @ 159.9 placed (order B58)
+12:28:49 kite NIFTY17NOV26C25100: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+12:28:49 kite NIFTY17NOV26C25100: resting sell 65 @ 169.9, stop 149.9 watched on ticks
+12:49:58 STOP hit on kite NIFTY17NOV26C25100: ltp 149.2 &lt;= 149.9
+12:49:58 closing kite NIFTY17NOV26C25100 qty=65 (stop loss)
+12:49:58 STOP-FLIP: CE NIFTY17NOV26C25100 bought @ 159.90, sold @ 149.20 (stop 149.9) -> reverse at once: BUY PE
+12:49:59 stop hit: BUY PE 25100 (nearest expiry), quantity 65 per broker [2026-11-13 MW21]
+12:49:59 2026-11-13 MW21 kite: limit BUY NIFTY17NOV26P25100 qty=65 @ 143 placed (order B61)
+12:49:59 kite NIFTY17NOV26P25100: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+12:49:59 kite NIFTY17NOV26P25100: resting sell 65 @ 153, stop 133 watched on ticks
+12:52:24 STOP hit on kite NIFTY17NOV26P25100: ltp 133 &lt;= 133
+12:52:24 closing kite NIFTY17NOV26P25100 qty=65 (stop loss)
+12:52:24 STOP-FLIP: PE NIFTY17NOV26P25100 bought @ 143.00, sold @ 133.00 (stop 133) -> reverse at once: BUY CE
+12:52:25 stop hit: BUY CE 25100 (nearest expiry), quantity 65 per broker [2026-11-13 MW22]
+12:52:25 2026-11-13 MW22 kite: limit BUY NIFTY17NOV26C25100 qty=65 @ 159 placed (order B64)
+12:52:25 kite NIFTY17NOV26C25100: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+12:52:25 kite NIFTY17NOV26C25100: resting sell 65 @ 169, stop 149 watched on ticks
+13:19:52 TARGET hit: CE NIFTY17NOV26C25100 bought @ 159.00, sold @ 169.00 (target 169) - watching it for the M: valley at or below 159.00, then 169 again; failed below 149
+13:29:59 M valley on CE NIFTY17NOV26C25100 (P 159.00, target 169, stop 149): price 159 is back at or below P - waiting for 169 again
+13:42:05 M FAILED on CE NIFTY17NOV26C25100 (P 159.00, target 169, stop 149): price 148.75 fell to the stop level 149 before the second peak -> reverse at once: BUY PE
+13:42:06 M failed: BUY PE 25100 (nearest expiry), quantity 65 per broker [2026-11-13 MW23]
+13:42:06 2026-11-13 MW23 kite: limit BUY NIFTY17NOV26P25100 qty=65 @ 131.95 placed (order B67)
+13:42:06 kite NIFTY17NOV26P25100: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+13:42:06 kite NIFTY17NOV26P25100: resting sell 65 @ 141.95, stop 121.95 watched on ticks
+13:55:00 TARGET hit: PE NIFTY17NOV26P25100 bought @ 131.95, sold @ 141.95 (target 141.95) - watching it for the W: valley at or below 131.95, then 141.95 again; failed below 121.95
+13:56:39 W valley on PE NIFTY17NOV26P25100 (P 131.95, target 141.95, stop 121.95): price 131.9 is back at or below P - waiting for 141.95 again
+13:57:39 W PATTERN IDENTIFIED on PE NIFTY17NOV26P25100 (P 131.95, target 141.95, stop 121.95): peak at 141.95, valley at or below 131.95, second peak at 142.25 -> reverse: BUY CE
+13:57:40 W pattern: BUY CE 25100 (nearest expiry), quantity 65 per broker [2026-11-13 MW24]
+13:57:40 2026-11-13 MW24 kite: limit BUY NIFTY17NOV26C25100 qty=65 @ 138 placed (order B70)
+13:57:40 kite NIFTY17NOV26C25100: no broker-side protection (no broker-side protection in the backtest) - using a resting target sell + tick-driven stop here
+13:57:40 kite NIFTY17NOV26C25100: resting sell 65 @ 148, stop 128 watched on ticks
+13:59:06 TARGET hit: CE NIFTY17NOV26C25100 bought @ 138.00, sold @ 148.00 (target 148) - watching it for the M: valley at or below 138.00, then 148 again; failed below 128
+14:03:30 M valley on CE NIFTY17NOV26C25100 (P 138.00, target 148, stop 128): price 138 is back at or below P - waiting for 148 again
+14:15:45 M FAILED on CE NIFTY17NOV26C25100 (P 138.00, target 148, stop 128): price 127.65 fell to the stop level 128 before the second peak -> reverse at once: BUY PE
+14:15:46 M failed: BUY PE 25050 (nearest expiry), quantity 65 per broker [2026-11-13 MW25]
+14:15:46 2026-11-13 MW25 kite: could not start entry: no ticks for 25050PE in the stored data
+14:15:46 cycle 2026-11-13 MW25 ended with nothing filled (entry refused, cancelled or unaffordable) - trying PE again (1/2)
+14:15:46 entry not filled: BUY PE 25050 (nearest expiry), quantity 65 per broker [2026-11-13 MW26]
+14:15:46 2026-11-13 MW26 kite: could not start entry: no ticks for 25050PE in the stored data
+14:15:46 cycle 2026-11-13 MW26 ended with nothing filled (entry refused, cancelled or unaffordable) - trying PE again (2/2)
+14:15:46 entry not filled: BUY PE 25050 (nearest expiry), quantity 65 per broker [2026-11-13 MW27]
+14:15:46 2026-11-13 MW27 kite: could not start entry: no ticks for 25050PE in the stored data
+14:15:46 ALERT: cycle 2026-11-13 MW27 ended with nothing filled 2 times in a row - no further entry today</pre>
+<h2>Notes</h2><ul><li>Real stored ticks of one day. Buys are limit orders at the option's LTP and fill at the limit on the first later tick at or below it; the target is a resting limit sell filled at its limit on the first tick at or above it; the stop and the end-of-day close sell at the last tick price. No slippage, spread or brokerage; no broker-side GTT.</li><li>Only the strikes present in the stored OptionQuote data can be bought: a reversal whose ATM strike has no ticks is logged as "could not start entry".</li><li>The max profit cap is simulated by selling the open position at the last price when total P&amp;L reaches it.</li></ul></body></html>

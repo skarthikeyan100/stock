@@ -70,6 +70,12 @@ async function enterAndFill(s: any, tsym = 'NIFTY23500CE') {
 
 (async () => {
     console.log('MandWStrategy');
+
+    console.log('  every broker is its own instance');
+    const { expandBrokerInstances } = require('../util/strategyInstances');
+    const inst = expandBrokerInstances({ type: 'MandWStrategy', userId: 'MandW-NIFTY', brokers: ['kite', 'ant', 'breeze'], quantity: 65 });
+    assert(inst.length === 3 && inst.map((c: any) => c.userId).join(',') === 'MandW-NIFTY,MandW-NIFTY-ANT,MandW-NIFTY-Breeze' && inst.every((c: any) => c.brokers.length === 1), 'one instance per broker, each with its own userId and a single broker');
+
     MandWStrategy.processStartedAt = moment().subtract(1, 'hour');
 
     console.log('  first entry at the start time');

@@ -10,6 +10,7 @@ import { isPastEodClose } from '../util/eodClose';
 import { normalizeBrokerName } from '../util/brokerName';
 import { isGlobalMaxProfitLatched } from './globalMaxProfitLatch';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
+import { StrategyInstanceConfig } from '../prism/AppConfig';
 import { MwState, MwWatch, Right, WatchEvent, MAX_ENTRY_RETRIES, PENDING_MAX_AGE_MS, classifyExit, opposite, patternName, stepWatch } from './mandwCycle';
 
 // M and W pattern strategy on NIFTY options, traded on the OPTION price (pure rules: mandwCycle.ts).
@@ -24,8 +25,8 @@ import { MwState, MwWatch, Right, WatchEvent, MAX_ENTRY_RETRIES, PENDING_MAX_AGE
 //   4. It goes on until the profit cap trips (`settings.maxProfit`, the global rupee cap: the global monitor locks it and the order process then refuses
 //      every new buy of this strategy on that broker), `lastEntryTime`, or the end-of-day close.
 //
-// Several brokers: each broker has its own leg of every cycle (`quantity` per broker). The decision at the end of a cycle (target / stop) is taken
-// from the FIRST broker with a fill (the order of `brokers:`); the watched contract is that broker's.
+// Several brokers: every broker acts on its own. `brokers: [kite, ant]` is expanded into one instance per broker (`<id>`, `<id>-ANT`, ...: util/strategyInstances.ts),
+// each with its own state file, cycles, watch, reversals, retries and profit cap, so one broker's stop, target or pattern never decides for another.
 //
 // Restart: the watch (and a reversal not yet placed) is kept in the state file and resumed; a reversal older than two minutes is dropped, never
 // placed late. The first entry fires only in [startTime, startTime + 5 min) and never for a start time before this process started (no catch-up).
@@ -55,6 +56,11 @@ export default class MandWStrategy extends CandleEntryStrategy {
     constructor(userId?: string) {
         super(userId);
         this.warnLegacyExitKeys();
+    }
+
+    // The EXPANDED config of this instance (a per-broker child has its own userId and `brokers: [its broker]`), not the raw block.
+    protected cfg(): StrategyInstanceConfig {
+        return this.instanceConfig();
     }
 
     reset(): void {

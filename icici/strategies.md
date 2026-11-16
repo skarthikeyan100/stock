@@ -44,7 +44,7 @@ unset stop is never read as "no stop". Helper: `src/strategy/exitRules.ts`; vali
 **The amount is per broker:** `maxInvestment` is what EACH listed broker trades with, and
 `maxInvestmentByBroker: {ant: 70000}` overrides one broker (helper `investmentForBroker`, `prism/configVocabulary.ts`).
 Two ways a block fans out over its brokers:
-- `BulkPcr`, `BulkPcrAutoStart`, `Hourly`, `Butterfly`, `TopStock`, `Recommendation`, `NiftyChange`, `MomentumAtFixedTime`, `NextWeek`, `Breakout`, `MandW` fan out inside one
+- `BulkPcr`, `BulkPcrAutoStart`, `Hourly`, `Butterfly`, `TopStock`, `Recommendation`, `NiftyChange`, `MomentumAtFixedTime`, `NextWeek`, `Breakout`, `GammaBurst` fan out inside one
   instance (`configuredBrokersOf`); the order-side cap is per (user, broker) (`maxInvestmentByBroker`).
 - Every other type (Continuous, SupportResistance, Sentiment, RateOfChange, Gap, RuleBased, GoodMorning*, TargetReach) is
   expanded in memory into ONE INSTANCE PER BROKER (`util/strategyInstances.ts`, `expandBrokerInstances`): kite keeps the
@@ -203,7 +203,7 @@ Every trip decision (SimpleContinuous / ScaledHedged `checkMaxProfit`, LegManage
 ## Global maxProfit (`settings.maxProfit`, 2026-11-13)
 `settings.maxProfit` is ONE positive number of rupees (`maxProfit: 5000`), the same for every broker; absent, 0 or non-positive = no global cap (a map, list, string, percent, 0 or negative value is rejected by the validator). It applies to **every strategy**; the evaluation granularity is each strategy instance on each of its brokers separately: that instance's own P&L on that broker is compared with the one value (a multi-broker block, e.g. `brokers: [kite, ant]`, gets one cap per broker, 5000 each, not 5000 in total, and not a pool shared between strategies). A strategy block's own `maxProfit` overrides it for that strategy (rupees for SimpleContinuous/ScaledHedged, a % of maxInvestment for Continuous/SupportResistance, BulkPcr's own rule; an own 0 means off for BulkPcr). Behaviour is SimpleContinuous's: on a trip the open positions of that strategy on that broker are sold by ONE limit sell each at the price that locks the cap (`clearPrice`, `src/strategy/maxProfitLock.ts`, never the live bid) and no new buy of any kind is placed for the rest of the day. The latch is durable in Mongo (`strategyLatches`, ownerType `GlobalMaxProfit`, per strategy+broker+day): it survives a restart, keeps blocking after the strategy is disabled or the setting removed until `reset()`. The config is read at each call (hot-reload). Code: `src/strategy/effectiveMaxProfit.ts` (the resolver: own value, else the global one).
 - **Own latch (read the global value through the resolver):** SimpleContinuous, ScaledHedged (rupees; the block's `maxProfit` is then optional, but the config validator requires one or a positive `settings.maxProfit`, one error per block), Continuous / SupportResistance (`LegManager.checkAndMaybeTripMaxProfit`; the block's own value is a % of `maxInvestment`, the global one is rupees) and BulkPcr (`PnlStop`, per broker).
-- **Every other strategy** (Hourly, Butterfly, Recommendation, NiftyChange, MomentumAtFixedTime, NextWeek, Breakout, MandW, TopStock, the legacy seven): the monitor `src/processes/strategies/globalMaxProfit.ts` (strategies process, every 5 s inside the trading window, enabled + loaded strategies only) judges the strategy's day P&L on each of its `brokers` (realized + open trades marked at the live price, trades opened today), latches the trip durably in Mongo `strategyLatches` (`ownerType: 'GlobalMaxProfit'`, `src/strategy/globalMaxProfitLatch.ts`) and rests the locking sells, re-priced every 20 s. The order process refuses every new buy of a latched strategy+broker (`bookkeeping.canPlaceOrder`). Butterfly's short legs are not counted. A latch set earlier today keeps blocking buys even if the cap is edited or removed; `POST /strategies/<type>/reset` clears it.
+- **Every other strategy** (Hourly, Butterfly, Recommendation, NiftyChange, MomentumAtFixedTime, NextWeek, Breakout, TopStock, the legacy seven): the monitor `src/processes/strategies/globalMaxProfit.ts` (strategies process, every 5 s inside the trading window, enabled + loaded strategies only) judges the strategy's day P&L on each of its `brokers` (realized + open trades marked at the live price, trades opened today), latches the trip durably in Mongo `strategyLatches` (`ownerType: 'GlobalMaxProfit'`, `src/strategy/globalMaxProfitLatch.ts`) and rests the locking sells, re-priced every 20 s. The order process refuses every new buy of a latched strategy+broker (`bookkeeping.canPlaceOrder`). Butterfly's short legs are not counted. A latch set earlier today keeps blocking buys even if the cap is edited or removed; `POST /strategies/<type>/reset` clears it.
 - Every strategy block must list `brokers: [...]` (validator: required, known brokers); the single `broker:` key is removed and rejected.
 
 ## Strategy reference
@@ -663,6 +663,22 @@ or `none`), placed on fill exactly as MomentumAtFixedTime does (`protectLeg` wit
 `lastEntryTime` (optional, default 15:00), `index` (NIFTY), `brokers`. An unfilled entry is cancelled after the global `settings.entryTimeoutMinutes`. Next-week options are less liquid than the nearest expiry: expect wider spreads.
 Test: `node dist/test/nextWeekStrategy.test.js`, `node dist/test/candleLibs.test.js`.
 
+### GammaBurstStrategy (`GammaBurstStrategy.ts`, on `CandleEntryStrategy` -> `LimitEntryStrategy`) — config: `enabled: false`, multi-broker
+NextWeek's signal with a 9 EMA, on THIS week's expiry, only on the NIFTY expiry day, only from 14:00. 15-minute NIFTY candles (built from the ticks, seeded
+from Yahoo like NextWeek). Trend: candle close above the 9 EMA = `call`, below = `put`. Breakout: `BreakoutData.from(c1, c2)` (`lib/breakoutData.ts`).
+Both must agree. The candle that closes at 14:00 (13:45-14:00) is the first one that can trade; `lastEntryTime` (default 15:00) ends entries.
+Entry: one LIMIT buy per broker of the ATM option at the prevailing LTP, sized from the broker's investment: whole lots that fit `maxInvestment`
+(per broker; `maxInvestmentByBroker` overrides one broker) at that price. `quantity` is not used (the validator refuses it).
+Expiry: `expiryOffset: 0` with `skipNearestExpiryDay()` forced to `false` (the global `settings.skipNearestExpiryOnExpiryDay` is true in config.yml and would
+move an expiry-day buy to next week). Not an expiry day: candles are still built, no entry (logged once at the first tick).
+Exit: target only (`target`, points on the option, required), `stopLoss: 'none'` required ON THE BLOCK (a settings stop is not inherited; the strategy
+refuses to trade with any stop). A resting sell at entry + target; an unsold leg at the EOD close.
+One trade at a time. After a trade (a cycle that filled) closes, no entry for 60 s (`COOLDOWN_MS`, saved in state as `cycleEndedAt`, so a restart keeps it).
+Entries are evaluated on candle closes only, so the 60 s only matters when a trade closes within a minute before a candle closes; the next agreeing candle
+after the wait is taken.
+Config keys: `maxInvestment`, `target`, `stopLoss: 'none'`, `lastEntryTime` (optional, default 15:00), `index` (NIFTY), `brokers`.
+Code: `GammaBurstStrategy.ts`; shared engine change: `LimitEntryStrategy.skipNearestExpiryDay()` (overridable), `cycleEndedAt` in state.
+
 ### BreakoutStrategy (`BreakoutStrategy.ts`, on `CandleEntryStrategy` -> `LimitEntryStrategy`) — config: `enabled: true`, multi-broker
 First-candle VWAP breakout. Only the day's first 15-minute candle (09:15-09:30) matters, no history. The index has no traded volume, so the candle AND the
 VWAP both come from the **current-month NIFTY future** (the future trades at a premium over the index, so comparing an index close with futures VWAP would favour
@@ -691,7 +707,7 @@ open; already traded today (persisted key, a restart does not redo it); `lastEnt
 Config keys: `quantity`, `target`, `stopLoss`, `lastEntryTime` (optional, default 15:00), `index` (NIFTY), `brokers`; the entry timeout is the global `settings.entryTimeoutMinutes`.
 Test: `node dist/test/breakoutStrategy.test.js`, `node dist/test/candleLibs.test.js`.
 
-### MandWStrategy (`MandWStrategy.ts`, rules in `mandwCycle.ts`, on `CandleEntryStrategy` -> `LimitEntryStrategy`) — config: `enabled: false`, multi-broker
+### MandWStrategy (`MandWStrategy.ts`, rules in `mandwCycle.ts`, on `CandleEntryStrategy` -> `LimitEntryStrategy`) — config: `enabled: false`, one instance per broker
 An M / W pattern on the OPTION price decides when to reverse. (Despite the base class there are no candles: ticks of the option are watched.) Cycle, shown for a CE (a PE is the
 mirror image; the shape is an M on a CE, a W on a PE, only the log says so):
 1. At `startTime` buy the ATM option of `startSide` at P (nearest expiry, `quantity` per broker, one LIMIT buy at the option's LTP). Target P+T, stop P-S, in option points
@@ -706,7 +722,7 @@ mirror image; the shape is an M on a CE, a W on a PE, only the log says so):
    close) ends the strategy for the day.
 `maxProfit` must be `settings.maxProfit`: the global monitor reads only that for strategies without a profit stop of their own, so a block-level `maxProfit` is rejected by the
 validator, which also requires `startSide` (CE/PE), `startTime`, a lot-multiple `quantity`, `index: NIFTY`, and a positive `settings.maxProfit` for an enabled block.
-Several brokers: each has its own leg per cycle; the cycle's outcome is read from the FIRST broker with a fill, and the watched contract is that broker's.
+Several brokers: **each broker acts independently.** The block is expanded into one instance per broker (`MandW-NIFTY`, `MandW-NIFTY-ANT`, `MandW-NIFTY-Breeze`; `util/strategyInstances.ts`), each with its own state file, cycles, watch, reversals, retries and global-profit-cap latch: one broker's stop, target or pattern never decides for another, and `maxInvestment`-style sizing is `quantity` per broker. Not in `MULTI_BROKER_TYPES`.
 State (the watch, a reversal not yet placed, retry count) is in the strategy's state file (`state.mw`) and survives a restart; the watch's tick feed is re-armed on the first NIFTY tick.
 A reversal older than 2 minutes is dropped, never placed late. The first entry fires only in [startTime, startTime + 5 min) and never for a time before the process started.
 A cycle that ends with nothing filled (entry refused or cancelled unfilled) is retried up to twice in a row, then an `ALERT` and no further entry that day. Reconcile places nothing:

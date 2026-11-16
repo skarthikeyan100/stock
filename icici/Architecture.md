@@ -104,7 +104,7 @@ Data flow of a Beginner forecast: `POST /forecast` -> record (write-once) -> bot
 **How a strategy gets registered** (all of these, for a new type `FooStrategy`):
 - `src/strategy/StrategyFactory.ts`: `STRATEGY_REGISTRY.set('FooStrategy', FooStrategy)` (type name -> class; the constructor takes the `userId`). `createStrategy` sets `enabled` from the block.
 - `src/util/strategyInstances.ts`: a type in `MULTI_BROKER_TYPES` is ONE instance that fans out over `brokers:` itself (per-broker legs inside its state); any other type is expanded in
-  memory into `<id>`, `<id>-ANT`, `<id>-Breeze` instances. The LimitEntry family (Recommendation, NiftyChange, MomentumAtFixedTime, NextWeek, Breakout, MandW) is multi-broker.
+  memory into `<id>`, `<id>-ANT`, `<id>-Breeze` instances. The LimitEntry family (Recommendation, NiftyChange, MomentumAtFixedTime, NextWeek, Breakout, GammaBurst) is multi-broker; MandW is not (each broker must act on its own, so it is expanded per broker and overrides `cfg()` to read the expanded instance config).
 - `src/prism/configValidation.ts`: per-type required keys (`requiredByType`, the global target/stop list, the fixed-`quantity` NIFTY-lot check). Only enabled blocks are validated.
 - `config.yml`: a block with `type`, `enabled`, `userId`, `brokers: [...]`. Blocks are never deleted, only disabled. Global keys under `settings` apply unless the block sets its own.
 - `enabled` is the one switch and is enforced centrally (`strategiesProcess.ts` / `tokenRouter.ts`): a disabled strategy gets no ticks, fills or cancellations. A new strategy gets it for free.
