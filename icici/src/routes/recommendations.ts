@@ -13,6 +13,7 @@ import { istDate } from '../contractors/agreements';
 import { notifyAdmins, notifyUser } from '../contractors/notify';
 import { RateLimiter } from '../contractors/rateLimit';
 import { placeContractorBuy, tradeInProgress } from '../contractors/order';
+import { drawdownRefusal } from '../contractors/drawdown';
 import { ENTRY_OFFSET, RecommendationDoc, appendDecision, recommendationRules, recommendationsCol, validateRecommendation, withinHours, istHHMM } from '../contractors/recommendations';
 
 const router = asyncRouter();
@@ -86,6 +87,8 @@ router.post('/owner/recommendations/:id/decision', requireAdmin, async function 
         if (!c || c.status !== 'ACTIVE') { res.status(409).json({ error: 'The contractor is no longer active' }); return; }
         if (rec.day !== istDate()) { res.status(409).json({ error: 'This recommendation is from an earlier day' }); return; }
         if (await tradeInProgress(c)) { res.status(409).json({ error: 'Cannot approve now: a trade of this contractor is still in progress.' }); return; }
+        const drawdown = await drawdownRefusal(c as Contractor); // Schedule 2: no new order past the contractor's daily or weekly drawdown limit
+        if (drawdown) { res.status(409).json({ error: `Cannot approve now: ${drawdown}.` }); return; }
     }
     // compare-and-set so a double click or two tabs cannot decide twice
     const r: any = await recommendationsCol().findOneAndUpdate({ _id: rec._id, status: 'PENDING' }, { $set: { status: decision === 'approve' ? 'APPROVED' : 'REJECTED', decidedAt: new Date(), decidedBy: actor, note } }, { returnOriginal: true });

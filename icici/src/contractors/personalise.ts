@@ -16,6 +16,7 @@ import { Contractor, ContractorType } from './types';
 import { levelDefaultsFor } from '../user';
 import { recommendationRules } from './recommendations';
 import { feeCfg, feeModelOn, fixedFeeMonths, referenceInvestment } from './statements';
+import { levelRules } from '../levelRules';
 import { getForecastConfig } from '../forecast/rules';
 import * as crypto from 'crypto';
 
@@ -32,7 +33,8 @@ export function scheduleDetails(): AgreementDetails {
         company: companyDetails(), acceptedOn: istDate(),
         profitSharePercent: levelDefaultsFor('advanced').profitSplitPercent, recHours: { start: rr.start, end: rr.end }, perDay: rr.perDay,
         fixedFee: fixed > 0 ? fixed : undefined, fixedFeeMonths: fixedFeeMonths(), referenceInvestment: referenceInvestment(),
-        rules: { maxOpenPositions: Number(orders.maxOpenPositions) || 0, noNewAfter: orders.noNewAfter ? String(orders.noNewAfter) : undefined, maxInvestment: referenceInvestment(), dailyLossLimit: Number(orders.dailyLossLimit) || 0 },
+        rules: { maxOpenPositions: Number(orders.maxOpenPositions) || 0, noNewAfter: orders.noNewAfter ? String(orders.noNewAfter) : undefined, maxInvestment: referenceInvestment(), dailyLossLimit: Number(orders.dailyLossLimit) || 0,
+            dailyDrawdownPercent: levelRules((configService.getConfig() as any)?.settings, 'advanced').maxDailyDrawdownPercent, weeklyDrawdownPercent: levelRules((configService.getConfig() as any)?.settings, 'advanced').maxWeeklyDrawdownPercent },
         fees: { retainer: Number(fees.retainerMonthly), feePerCorrect: Number(fees.feePerCorrect), monthlyCap: Number(fees.monthlyCap), minDays: Number(fees.minParticipationDays), windowMinutes: fc.windowMinutes, neutral: fc.neutralThresholdPoints, dailyLimit: fc.dailyLimit, hours: fc.hours },
     };
 }

@@ -22,6 +22,7 @@ import { Contractor } from '../contractors/types';
 import { currentVersion } from '../contractors/agreements';
 import { contractorsCol, submissionBlock } from '../contractors/store';
 import { placeContractorBuy, tradeInProgress } from '../contractors/order';
+import { drawdownRefusal } from '../contractors/drawdown';
 import { appendDecision } from '../contractors/recommendations';
 import { roundToTick } from '../util/tick';
 import { notifyAdmins } from '../contractors/notify';
@@ -189,6 +190,8 @@ export class ForecastEngine {
         const contract = `${strike} ${right}`;
         const risk = await this.riskRefusal(o);
         if (risk) return { placed: false, reason: risk };
+        const drawdown = await drawdownRefusal(c); // Schedule 2: the contractor's daily and weekly drawdown limits
+        if (drawdown) return { placed: false, reason: drawdown };
         if (await tradeInProgress(c)) return { placed: false, reason: 'a trade of this contractor is still in progress' };
         const ltp = await this.optionLtp(spot, right);
         if (!ltp) return { placed: false, reason: 'option price unavailable' };

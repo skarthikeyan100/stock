@@ -75,7 +75,8 @@ async function create(c: Contractor, kind: StatementKind, from: string, to: stri
     return doc;
 }
 
-const istStart = (d: string) => new Date(`${d}T00:00:00+05:30`), istEndExcl = (d: string) => new Date(`${addDays(d, 1)}T00:00:00+05:30`);
+export const istStart = (d: string) => new Date(`${d}T00:00:00+05:30`);
+const istEndExcl = (d: string) => new Date(`${addDays(d, 1)}T00:00:00+05:30`);
 
 // ---------- Beginner ----------
 export async function weeklyAccuracyStatement(c: Contractor, week: { from: string; to: string }): Promise<StatementDoc | null> {
