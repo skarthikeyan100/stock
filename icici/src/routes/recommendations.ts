@@ -14,7 +14,7 @@ import { notifyAdmins, notifyUser } from '../contractors/notify';
 import { RateLimiter } from '../contractors/rateLimit';
 import { placeContractorBuy, tradeInProgress } from '../contractors/order';
 import { drawdownRefusal } from '../contractors/drawdown';
-import { ENTRY_OFFSET, RecommendationDoc, appendDecision, recommendationRules, recommendationsCol, validateRecommendation, withinHours, istHHMM } from '../contractors/recommendations';
+import { ENTRY_OFFSET, RecommendationDoc, appendDecision, firstOrderBudget, investmentLimit, recommendationRules, recommendationsCol, validateRecommendation, withinHours, istHHMM } from '../contractors/recommendations';
 
 const router = asyncRouter();
 const orderClient = OrderClient.getInstance();
@@ -59,6 +59,56 @@ router.get('/recommendations', requireAuth, async function (req, res) {
     res.json(rows.map(ownView));
 });
 
+/**
+ * Add More (Research Analyst only, once per recommendation): buys the rest of the investment limit (maxInvestment minus what the open trade already cost) in the same option,
+ * at the live price, with the recommendation's own target and stop. Only while the trade is open and the price is between its stop and target, inside the recommendation hours.
+ * The use is claimed atomically before anything is placed (addOn), so two clicks or two tabs cannot both add; a refusal releases the claim.
+ */
+router.post('/recommendations/:id/add-more', requireAuth, async function (req, res) {
+    if (!ObjectId.isValid(req.params.id)) { res.status(400).json({ error: 'bad id' }); return; }
+    const c = await me(req);
+    if (!c || c.type !== 'BUSINESS') { res.status(403).json({ error: 'Add More is for Research Analysts (Business, GSTIN)' }); return; }
+    if (!submitLimiter.allow(c.id)) { res.status(429).json({ error: 'Too many attempts. Try again in a minute.' }); return; }
+    const blocked = submissionBlock(c, await currentVersion());
+    if (blocked) { res.status(403).json({ error: blocked }); return; }
+    const rules = recommendationRules();
+    if (!withinHours(rules)) { res.status(422).json({ error: `Add More is accepted from ${rules.start} to ${rules.end} IST (it is ${istHHMM()} now).` }); return; }
+    const id = new ObjectId(req.params.id);
+    const claimed: any = await recommendationsCol().findOneAndUpdate({ _id: id, contractorId: c.id, status: 'APPROVED', addOn: { $exists: false } }, { $set: { addOn: { at: new Date(), state: 'PLACING' } } }, { returnOriginal: true });
+    if (!claimed?.value) {
+        const r = (await recommendationsCol().findOne({ _id: id, contractorId: c.id })) as RecommendationDoc | null;
+        if (!r) { res.status(404).json({ error: 'No recommendation of yours with that id' }); return; }
+        res.status(409).json({ error: r.addOn ? 'Add More was already used for this recommendation.' : 'Add More is only for an approved recommendation.' }); return;
+    }
+    const rec = claimed.value as RecommendationDoc;
+    const release = () => recommendationsCol().updateOne({ _id: rec._id, 'addOn.state': 'PLACING' }, { $unset: { addOn: '' } });
+    const refuse = async (status: number, error: string) => { await release(); res.status(status).json({ error }); };
+    let placed = false; // once the order is in, the claim stays whatever happens after (a second add would double the position)
+    try {
+        const stats = await orderClient.stats();
+        const trade = (stats.trades ?? []).find((t: any) => t.user === c.email && t.open !== false && t.tsym === rec.tsym);
+        if (!trade || !rec.tsym) { await refuse(409, 'The trade of this recommendation is not open, so Add More is not available.'); return; }
+        const ltp = Number(trade.ltp);
+        if (!inBand(rec, Number.isFinite(ltp) ? ltp : null)) { await refuse(409, `Add More needs the price between the stop (${rec.stop}) and the target (${rec.target}); it is ${Number.isFinite(ltp) ? ltp : 'unknown'} now.`); return; }
+        const spent = Number(trade.price) * Number(trade.quantity);
+        const budget = Math.round((investmentLimit() - spent) * 100) / 100;
+        if (!(budget > 0)) { await refuse(409, `The trade already uses the whole investment limit (${investmentLimit()}).`); return; }
+        const drawdown = await drawdownRefusal(c as Contractor); // Schedule 2, as for the approval
+        if (drawdown) { await refuse(409, `Cannot add now: ${drawdown}.`); return; }
+        // A normal user order at the live price, under the contractor's id; the admin mirrors it. Strict: the rest must buy at least one whole lot.
+        await placeContractorBuy(c as Contractor, { underlying: rec.index, strike: rec.strike, right: rec.right, price: ltp, target: rec.target, stop: rec.stop, contractorBudget: { amount: budget, strict: true } });
+        placed = true;
+        await recommendationsCol().updateOne({ _id: rec._id }, { $set: { addOn: { at: rec.addOn?.at ?? new Date(), state: 'PLACED', budget, spent } } });
+        await appendDecision({ kind: 'recommendation_add_more', recommendationId: String(rec._id), contractorId: c.id, contract: rec.contract, tsym: rec.tsym, budget, spent });
+        res.json({ ok: true, budget });
+    } catch (e: any) {
+        Log.log(`[recommendations] add more to ${rec._id} ${placed ? 'was placed but its record failed' : 'refused or failed'}:`, e);
+        if (placed) { res.status(500).json({ error: 'The order was placed; the record of it failed. Check your trades and do not retry.' }); return; }
+        await release();
+        res.status(409).json({ error: `Could not add more: ${e?.message ?? e}` });
+    }
+});
+
 // ---------- owner ----------
 const ownerView = (r: RecommendationDoc) => ({ ...ownView(r), kind: 'recommendation', contractorId: r.contractorId, contractorName: r.contractorName, orderPrice: r.orderPrice, decidedBy: r.decidedBy ?? null });
 
@@ -94,15 +144,19 @@ router.post('/owner/recommendations/:id/decision', requireAdmin, async function 
     const r: any = await recommendationsCol().findOneAndUpdate({ _id: rec._id, status: 'PENDING' }, { $set: { status: decision === 'approve' ? 'APPROVED' : 'REJECTED', decidedAt: new Date(), decidedBy: actor, note } }, { returnOriginal: true });
     if (!r?.value) { res.status(409).json({ error: 'Already decided' }); return; }
     if (decision === 'approve') {
+        let buy: any;
         try {
             // A normal user order under the contractor's own id: a limit buy RESTING at the recommended entry price, target and stop attached when it fills; the admin mirrors it.
-            await placeContractorBuy(c as Contractor, { underlying: rec.index, strike: rec.strike, right: rec.right, price: rec.orderPrice, target: rec.target, stop: rec.stop, limit: true });
+            // A Research Analyst (GSTIN) gets only their share of the investment limit here; Add More takes the rest (firstOrderBudget).
+            buy = await placeContractorBuy(c as Contractor, { underlying: rec.index, strike: rec.strike, right: rec.right, price: rec.orderPrice, target: rec.target, stop: rec.stop, limit: true, contractorBudget: firstOrderBudget(c as Contractor) });
         }
         catch (e: any) {
             Log.log('[recommendations] placing the approved recommendation failed; reverting the approval:', e);
             await recommendationsCol().updateOne({ _id: rec._id }, { $set: { status: 'PENDING' }, $unset: { decidedAt: '', decidedBy: '' } });
             res.status(500).json({ error: `Could not place it: ${e?.message ?? e}` }); return;
         }
+        // The order is in: the option is recorded so its trade can be linked to this recommendation (Add More). Not a reason to revert: the order is live.
+        if (buy?.tsym) await recommendationsCol().updateOne({ _id: rec._id }, { $set: { tsym: buy.tsym } }).catch((e) => Log.log(`[recommendations] ALERT: ${rec._id} placed as ${buy.tsym} but the link could not be stored:`, e));
     }
     await appendDecision({ kind: 'recommendation', recommendationId: String(rec._id), contractorId: rec.contractorId, decision, actor, note, contract: rec.contract, entry: rec.entry, target: rec.target, stop: rec.stop });
     await notifyUser(rec.contractorEmail, 'recommendation_decision', decision === 'approve' ? `${rec.contract} was approved.` : `${rec.contract} was not approved${note ? `: ${note}` : '.'}`);
@@ -115,38 +169,54 @@ export function safeTrade(t: any, open: boolean) {
     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
     return { contract: t.tsym ?? null, entryPrice: num(t.price), ltp: open ? num(Number(t.ltp)) : null, pnl: num(open ? t.unrealizedPnL : t.realizedPnL), open, entryTime: t.entryTime ?? null, exitTime: open ? null : (t.exitTime ?? null) };
 }
-async function tradesOf(user: string) {
-    if (!user) return [];
+/** Add More is offered on an open trade of an approved recommendation that has not used it, inside the recommendation hours, with the live price between its stop and target. */
+const inBand = (rec: RecommendationDoc, ltp: number | null) => ltp != null && rec.stop < ltp && ltp < rec.target;
+/** The contractor's open trades, each with the recommendation it came from (recommendationId, null for a forecast) and whether Add More is offered (addMore) or was used (addedMore). */
+async function openRowsOf(c: Contractor, stats: any) {
+    const open = (stats.trades ?? []).filter((t: any) => t.user === c.email && t.open !== false);
+    if (open.length === 0) return [];
+    const recs = (await recommendationsCol().find({ contractorId: c.id, status: 'APPROVED', tsym: { $in: open.map((t: any) => t.tsym) } }).sort({ decidedAt: -1 }).toArray()) as RecommendationDoc[];
+    const hours = withinHours(recommendationRules());
+    const remaining = (t: any) => investmentLimit() - Number(t.price) * Number(t.quantity);
+    return open.map((t: any) => {
+        const entry = t.entryTime ? new Date(t.entryTime).getTime() : Infinity;
+        // the latest approved recommendation on this option whose approval came before the entry (one trade at a time makes this the one)
+        const rec = recs.find((r) => r.tsym === t.tsym && (!r.decidedAt || new Date(r.decidedAt).getTime() <= entry)) ?? null;
+        const ltp = Number.isFinite(Number(t.ltp)) ? Number(t.ltp) : null;
+        const addMore = !!rec && !rec.addOn && hours && inBand(rec, ltp) && remaining(t) > 0;
+        return { ...safeTrade(t, true), recommendationId: rec ? String(rec._id) : null, addMore, addedMore: !!rec?.addOn };
+    });
+}
+async function tradesOf(c: Contractor) {
     const stats = await orderClient.stats();
-    const open = (stats.trades ?? []).filter((t: any) => t.user === user && t.open !== false).map((t: any) => safeTrade(t, true));
+    const open = await openRowsOf(c, stats);
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const closed = (await Mongo.getInstance().db.collection('closedTrades').find({ user, exitTime: { $gte: since } }).sort({ exitTime: -1 }).toArray()).map((t: any) => safeTrade(t, false));
+    const closed = (await Mongo.getInstance().db.collection('closedTrades').find({ user: c.email, exitTime: { $gte: since } }).sort({ exitTime: -1 }).toArray()).map((t: any) => safeTrade(t, false));
     return [...open, ...closed];
 }
 router.get('/contractor/trades', requireAuth, async function (req, res) {
     const c = await me(req);
     if (!c) { res.status(403).json({ error: 'Forbidden' }); return; }
-    res.json(await tradesOf(c.email));
+    res.json(await tradesOf(c));
 });
 
-const streamClients = new Map<express.Response, string>(); // res -> the contractor's user id (email)
+const streamClients = new Map<express.Response, Contractor>();
 router.get('/contractor/positionstream', requireAuth, async function (req, res) {
     const c = await me(req);
     if (!c) { res.status(403).json({ error: 'Forbidden' }); return; }
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.flushHeaders?.();
     req.on('close', () => streamClients.delete(res));
-    streamClients.set(res, c.email);
-    res.write(`data: ${JSON.stringify(await tradesOf(c.email))}\n\n`);
+    streamClients.set(res, c);
+    res.write(`data: ${JSON.stringify(await tradesOf(c))}\n\n`);
 });
 orderClient.onPositionsChanged(async () => {
     if (streamClients.size === 0) return;
     try {
         const stats = await orderClient.stats();
-        for (const [res, user] of streamClients) {
-            if (!user) continue;
-            const open = (stats.trades ?? []).filter((t: any) => t.user === user && t.open !== false).map((t: any) => safeTrade(t, true));
-            const closed = (stats.closedTrades ?? []).filter((t: any) => t.user === user).map((t: any) => safeTrade(t, false));
+        for (const [res, c] of streamClients) {
+            const open = await openRowsOf(c, stats);
+            const closed = (stats.closedTrades ?? []).filter((t: any) => t.user === c.email).map((t: any) => safeTrade(t, false));
             res.write(`data: ${JSON.stringify([...open, ...closed])}\n\n`);
         }
     } catch (e) { Log.log('[contractor] positionstream push failed:', e); }

@@ -280,6 +280,8 @@ export interface ManualBuyRequest {
     mirror?: MirrorHook; // set by orderProcess for a frontend user's buy: the admin mirrors it (mirror.ts)
     /** A resting LIMIT entry at exactly this price (a contractor's recommendation), with target/stop attached on the fill. `contract` only. Returns {orderId}, not a Trade. */
     limitPrice?: number;
+    /** Contractors only: the rupees this order may use (see bookkeeping.resolveManualBuyQuantity). */
+    contractorBudget?: { amount: number; strict?: boolean };
 }
 
 /** Places a resting limit buy at `limitPrice` for `userId` and records its target/stop (absolute: limit + targetPoints, limit - stopLossPoints) to attach on the fill. */
@@ -305,7 +307,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { 
         const canonical = parseCanonicalSymbol(req.contract);
         const resolved = await KiteContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, req.limitPrice, req.quantity, resolved.lotSize, req.stopLossPoints);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, req.limitPrice, req.quantity, resolved.lotSize, req.stopLossPoints, req.contractorBudget);
         const placed = await restingLimitBuyOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.limitPrice, req.targetPoints, req.stopLossPoints);
         // The mirror starts only once the user's own order is in (a resting order cannot be "undone" like a fill): the admin rests the same limit with the same exits.
         req.mirror?.({ userId: req.userId, broker: 'kite', tsym: resolved.tradingSymbol, token: commonToken, exchange: resolved.exchange, quantity, resting: true,
@@ -317,7 +319,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { 
         const resolved = await KiteContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
         const price = await estimateOptionPrice(canonical.symbol, canonical.strike, canonical.optionType);
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity, resolved.lotSize, req.stopLossPoints);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity, resolved.lotSize, req.stopLossPoints, req.contractorBudget);
         return buyContractOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
     }
 
@@ -333,7 +335,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { 
         const contract = await KiteContractMaster.getInstance().findATMOption(req.strikePrice, optionType, index);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.strikePrice });
         const price = await estimateOptionPrice(index, req.strikePrice, optionType);
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity, contract.lotSize, req.stopLossPoints);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity, contract.lotSize, req.stopLossPoints, req.contractorBudget);
         return buyContractOnKite(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
     }
 

@@ -43,7 +43,7 @@ const EXPECTED_ALLOWED = new Set([
     'GET /contractor/me', 'GET /contractor/agreement', 'POST /contractor/accept-agreement', 'POST /contractor/sebi', 'POST /contractor/profile', 'POST /contractor/kyc-change',
     'GET /contractor/statements', 'GET /contractor/statements/:id/csv', 'POST /contractor/statements/:id/invoice',
     'POST /forecast', 'GET /forecast/state', 'GET /forecast/history', 'GET /forecast/accuracy',
-    'POST /recommendations', 'GET /recommendations', 'GET /contractor/trades', 'GET /contractor/positionstream',
+    'POST /recommendations', 'GET /recommendations', 'POST /recommendations/:id/add-more', 'GET /contractor/trades', 'GET /contractor/positionstream',
 ]);
 
 const all: { src: string; method: string; path: string }[] = [];

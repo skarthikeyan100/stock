@@ -169,7 +169,7 @@ async function enterManualBuy(req: ManualBuyRequest, tsym: string, token: string
 // so a quote outage blocks it either way. The one-lot default (resolveManualBuyQuantity) only applies when
 // a price is known but no investment amount is set.
 function sizeManualBuyOrRefuse(req: ManualBuyRequest, tsym: string, price: number | undefined, contractLotSize?: number): number {
-    const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, tsym, price ?? 0, req.quantity, contractLotSize, req.stopLossPoints);
+    const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, tsym, price ?? 0, req.quantity, contractLotSize, req.stopLossPoints, req.contractorBudget);
     if (req.quantity == null && !((price ?? 0) > 0)
         && bookkeeping.getUserContext(req.userId).investmentMode === 'investmentAmount') {
         throw new Error(`Manual buy ${tsym}: no ANT price to size an investment-amount order - not placed`);
@@ -568,6 +568,7 @@ export interface ManualBuyRequest {
     targetPoints?: number;
     stopLossPoints?: number;
     mirror?: MirrorHook; // set by orderProcess for a frontend user's buy: the admin mirrors it (mirror.ts)
+    contractorBudget?: { amount: number; strict?: boolean }; // contractors only (see bookkeeping.resolveManualBuyQuantity)
 }
 
 // Quote retry schedules (ms between attempts after the first). Only HTTP 429 is retried, by

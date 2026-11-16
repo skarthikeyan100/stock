@@ -74,7 +74,7 @@ export default function RecommendPage() {
                   <Col xs={4}><Form.Label className="small mb-0">Target</Form.Label><Form.Control inputMode="decimal" value={form.target} onChange={set('target')} required /></Col>
                   <Col xs={4}><Form.Label className="small mb-0">Stop loss</Form.Label><Form.Control inputMode="decimal" value={form.stop} onChange={set('stop')} required /></Col>
                 </Row>
-                <div className="small text-muted mt-2">Prices are option prices. A recommendation cannot be edited or withdrawn once recorded, and lapses at the end of the day if it is not approved.</div>
+                <div className="small text-muted mt-2">Prices are option prices. A recommendation cannot be edited or withdrawn once recorded, and lapses at the end of the day if it is not approved. An approved recommendation is sized at part of your investment limit; once its trade is open you can use Add More (once) in your trades list to bring the total up to the limit.</div>
                 <Button type="submit" className="mt-3" disabled={busy || user?.status !== 'ACTIVE'}>{busy ? 'Sending…' : 'Submit recommendation'}</Button>
                 {msg && <div className={`mt-2 small ${msg.ok ? 'text-success' : 'text-danger'}`}>{msg.text}</div>}
               </Form>

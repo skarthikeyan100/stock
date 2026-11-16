@@ -337,10 +337,12 @@ class OrderBookkeeping {
     // the account may actually place: the per-order cap and the exchange freeze quantity (a manual buy is one order, never chunked). There
     // is deliberately NO lot-count cap in this mode (user decision 2026-11-13): only capital, per-order cap and the freeze limit apply. `contractLotSize` is the resolved contract's own lot size (preferred over the
     // name-based guess, see getInstrumentLotSize).
-    resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number, contractLotSize?: number, stopLossPoints?: number): number {
+    // `contractorBudget` (contractors only): the rupees this one order may use, replacing forecast.orders.maxInvestment for it (a Research Analyst's first
+    // recommendation order gets a share of it, Add More the rest). `strict`: refuse when it does not buy one whole lot, instead of the one-lot floor.
+    resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number, contractLotSize?: number, stopLossPoints?: number, contractorBudget?: { amount: number; strict?: boolean }): number {
         if (explicitQuantity != null) return explicitQuantity;
         const lotSize = contractLotSize && contractLotSize > 0 ? contractLotSize : this.getInstrumentLotSize(tsym);
-        if (this.isContractorUser(userId)) return this.resolveContractorQuantity(userId, tsym, price, lotSize);
+        if (this.isContractorUser(userId)) return this.resolveContractorQuantity(userId, tsym, price, lotSize, contractorBudget);
         const ctx = this.getUserContext(userId);
         if (ctx.investmentMode !== 'investmentAmount') return lotSize;
         if (!(price > 0)) {
@@ -602,11 +604,14 @@ class OrderBookkeeping {
 
     // A contractor has no account capital: each of their trades is sized from the budget in config.yml (forecast.orders.maxInvestment, rupees
     // per trade, default 100000 as the old per-contractor strategy blocks had), as many whole lots as it buys (at least one), under the freeze quantity.
-    resolveContractorQuantity(userId: string, tsym: string, price: number, lotSize: number): number {
+    resolveContractorQuantity(userId: string, tsym: string, price: number, lotSize: number, override?: { amount: number; strict?: boolean }): number {
         const configured = Number((configService.getConfig() as any)?.forecast?.orders?.maxInvestment);
-        const budget = Number.isFinite(configured) && configured > 0 ? configured : 100000;
+        const budget = override ? override.amount : Number.isFinite(configured) && configured > 0 ? configured : 100000;
         const freeze = tsym.startsWith('SENSEX') ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY;
         const freezeLots = Math.max(1, Math.floor(freeze / lotSize));
+        if (override?.strict && !(price > 0 && budget >= price * lotSize)) {
+            throw new Error(`the budget left (${Math.round(budget)}) does not buy one lot of ${tsym} (${lotSize} x ${price}) - not placed`);
+        }
         const lots = price > 0 ? Math.max(1, Math.min(freezeLots, Math.floor(budget / (price * lotSize)))) : 1;
         Log.log(`[order] contractor buy sizing for ${userId} ${tsym}: ${lots} lot(s) x ${lotSize} @ ${price} (budget ${budget})`);
         return lots * lotSize;

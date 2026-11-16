@@ -1010,6 +1010,7 @@ export interface BreezeManualBuyRequest {
     targetPoints?: number;
     stopLossPoints?: number;
     mirror?: MirrorHook;
+    contractorBudget?: { amount: number; strict?: boolean }; // contractors only (see bookkeeping.resolveManualBuyQuantity)
 }
 
 // ANT's token for the same contract (the guarded quote's cross-check source), or undefined when ANT's master has no exact match.
@@ -1041,13 +1042,13 @@ function manualBuyExits(userId: string, targetPoints?: number, stopLossPoints?: 
     };
 }
 
-async function enterManualBreezeBuy(userId: string, contract: FnoRecord, requestedQuantity: number | undefined, targetPoints: number | undefined, stopLossPoints: number | undefined, mirror?: MirrorHook): Promise<Trade> {
+async function enterManualBreezeBuy(userId: string, contract: FnoRecord, requestedQuantity: number | undefined, targetPoints: number | undefined, stopLossPoints: number | undefined, mirror?: MirrorHook, contractorBudget?: { amount: number; strict?: boolean }): Promise<Trade> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const tsym = tsymFor(contract);
     const { bestAsk } = await breezeQuoteWithCrossCheck(contract);
     if (!(bestAsk > 0)) throw new Error(`Breeze quote unavailable for ${tsym} - manual buy not placed`);
-    const quantity = bookkeeping.resolveManualBuyQuantity(userId, tsym, bestAsk, requestedQuantity, contract.lotSize, stopLossPoints);
+    const quantity = bookkeeping.resolveManualBuyQuantity(userId, tsym, bestAsk, requestedQuantity, contract.lotSize, stopLossPoints, contractorBudget);
     const lot = contract.lotSize;
     if (!Number.isInteger(quantity) || !(quantity > 0) || (lot > 0 && quantity % lot !== 0)) {
         throw new Error(`Manual buy ${tsym}: quantity ${quantity} must be a positive multiple of the lot size ${lot} - not placed`);
@@ -1118,7 +1119,7 @@ export async function manualBuyOnBreeze(req: BreezeManualBuyRequest): Promise<Tr
     if (req.contract) {
         const canonical = parseCanonicalSymbol(req.contract);
         const contract = await master.findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
-        return enterManualBreezeBuy(req.userId, contract, req.quantity, req.targetPoints, req.stopLossPoints, req.mirror);
+        return enterManualBreezeBuy(req.userId, contract, req.quantity, req.targetPoints, req.stopLossPoints, req.mirror, req.contractorBudget);
     }
     if (!req.right) throw new Error('manualBuy requires either contract or right');
     const index = req.index === 'SENSEX' ? 'SENSEX' : 'NIFTY';
@@ -1126,7 +1127,7 @@ export async function manualBuyOnBreeze(req: BreezeManualBuyRequest): Promise<Tr
     if (req.strikePrice) {
         // findATMOption rounds its arg to the strike step: a listed strike lands exactly on itself.
         const contract = await master.findATMOption(req.strikePrice, optionType, index);
-        return enterManualBreezeBuy(req.userId, contract, req.quantity, req.targetPoints, req.stopLossPoints, req.mirror);
+        return enterManualBreezeBuy(req.userId, contract, req.quantity, req.targetPoints, req.stopLossPoints, req.mirror, req.contractorBudget);
     }
     // Index-ATM fallback: the entry strike every broker shares (ANT-sourced spot), then sized and entered like the strikePrice branch
     // (investmentAmount sizing applies; the default is one lot only when the user is not on investmentAmount).

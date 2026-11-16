@@ -26,7 +26,7 @@ export async function tradeInProgress(c: Contractor): Promise<boolean> {
  * Buys as the user `c.email`: `price` is the entry (sizing reference; with `limit` also the exact limit price), `target` and `stop` are absolute option prices. Throws on a refusal
  * (the order process's own checks, an inactive account, a broker error): the caller decides what that means (the approval is reverted, the forecast is logged).
  */
-export async function placeContractorBuy(c: Contractor, o: { underlying: string; strike: number; right: 'CE' | 'PE'; price: number; target: number; stop: number; limit?: boolean }): Promise<any> {
+export async function placeContractorBuy(c: Contractor, o: { underlying: string; strike: number; right: 'CE' | 'PE'; price: number; target: number; stop: number; limit?: boolean; contractorBudget?: { amount: number; strict?: boolean } }): Promise<any> {
     const user = await getUser(c.email);
     if (!user || user.role !== 'contractor') throw new Error(`no contractor user for ${c.email}`);
     if (user.enabled === false) throw new Error(`the account of ${c.email} is disabled`);
@@ -35,6 +35,7 @@ export async function placeContractorBuy(c: Contractor, o: { underlying: string;
     return OrderClient.getInstance().manualBuy(c.email, {
         contract: canonicalContract(o.underlying, o.strike, o.right), price: o.price, ...(o.limit ? { limitPrice: o.price } : {}),
         targetPoints: round2(o.target - o.price), stopLossPoints: round2(o.price - o.stop),
+        ...(o.contractorBudget ? { contractorBudget: o.contractorBudget } : {}),
     } as any);
 }
 

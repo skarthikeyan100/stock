@@ -470,6 +470,7 @@ forecast:
     maxInvestment: 200000          # rupees per contractor trade (forecast and approved recommendation): as many whole lots as this buys, at least one
     targetPoints: 10               # option points above the entry
     stopLossPoints: 20             # option points below the entry
+    recommendationSharePercent: 50 # Research Analyst (GSTIN) recommendations: the first order uses this % of maxInvestment; Add More (once per recommendation) takes the rest, so the total reaches maxInvestment
   fees:
     feePerCorrect: 0               # rupees per correct forecast (Beginner); set before the first statement
     monthlyCap: 0                  # rupees per month; 0 = no cap

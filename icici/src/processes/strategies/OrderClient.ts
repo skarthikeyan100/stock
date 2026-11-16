@@ -262,7 +262,7 @@ class OrderClient {
         return this.call('stats', userId, {});
     }
 
-    async manualBuy(userId: string, payload: { index?: 'NIFTY' | 'SENSEX'; right?: string; contract?: string; strikePrice?: number; price?: number; quantity?: number; targetPoints?: number; stopLossPoints?: number; limitPrice?: number }): Promise<any> {
+    async manualBuy(userId: string, payload: { index?: 'NIFTY' | 'SENSEX'; right?: string; contract?: string; strikePrice?: number; price?: number; quantity?: number; targetPoints?: number; stopLossPoints?: number; limitPrice?: number; contractorBudget?: { amount: number; strict?: boolean } }): Promise<any> {
         return this.call('manualBuy', userId, payload);
     }
 

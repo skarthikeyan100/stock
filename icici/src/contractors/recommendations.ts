@@ -7,6 +7,7 @@ import configService from '../prism/ConfigService';
 import Mongo from '../tools/mongo';
 import { roundToTick } from '../util/tick';
 import { istDate } from './agreements';
+import { Contractor } from './types';
 
 export const DEFAULT_ENTRY_OFFSET = 5; // RecommendationStrategy's (the parity test); contractor recommendations use ENTRY_OFFSET
 /** A contractor's recommendation is bought AT the recommended price: no offset (owner's rule, 2026-11-16). */
@@ -19,6 +20,10 @@ export interface RecommendationInput { index: string; strike: number; right: 'CE
 export interface RecommendationDoc extends RecommendationInput {
     _id?: any; contractorId: string; contractorName: string; contractorEmail: string; slot?: string /* legacy: the strategy slot of recommendations made before 2026-11-16 */; contract: string; orderPrice: number; day: string;
     status: RecStatus; createdAt: Date; decidedAt?: Date; decidedBy?: string; note?: string;
+    /** The option the approved recommendation was placed on (the nearest expiry), set at approval: links the resulting trade to this recommendation. */
+    tsym?: string;
+    /** Add More (Research Analyst, once per recommendation): state PLACING while the order goes in, PLACED after; present at all = used. */
+    addOn?: { at: Date; state: 'PLACING' | 'PLACED'; budget?: number; spent?: number };
 }
 
 export const recommendationsCol = () => Mongo.getInstance().db.collection('recommendations');
@@ -65,6 +70,22 @@ export function istHHMM(d = new Date()): string {
     return new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
 }
 export function withinHours(rules: { start: string; end: string }, now = new Date()): boolean { const t = istHHMM(now); return t >= rules.start && t <= rules.end; }
+
+/** The investment limit per contractor trade: forecast.orders.maxInvestment (rupees; 100000 when unset, as in bookkeeping). */
+export function investmentLimit(): number {
+    const v = Number((configService.getConfig() as any)?.forecast?.orders?.maxInvestment);
+    return Number.isFinite(v) && v > 0 ? v : 100000;
+}
+/**
+ * The budget of a contractor's recommendation order (its first order, the approval): a Research Analyst (Business, GSTIN) gets
+ * forecast.orders.recommendationSharePercent (default 50) of the investment limit; Add More takes the rest. Other contractors: undefined (the whole limit).
+ */
+export function firstOrderBudget(c: Contractor): { amount: number } | undefined {
+    if (c.type !== 'BUSINESS') return undefined;
+    const pct = Number((configService.getConfig() as any)?.forecast?.orders?.recommendationSharePercent);
+    const share = Number.isFinite(pct) && pct > 0 && pct <= 100 ? pct : 50;
+    return { amount: Math.round((investmentLimit() * share) / 100 * 100) / 100 };
+}
 
 export async function appendDecision(d: Record<string, unknown>): Promise<void> { await decisionsCol().insertOne({ ...d, at: new Date() }); }
 export const today = () => istDate();
