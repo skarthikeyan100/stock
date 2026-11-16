@@ -116,15 +116,13 @@ export default function PrivacyPolicyPage() {
 
           <h3>5.2 We May Share Your Data With:</h3>
           <ul>
-            <li><strong>Broker Partners:</strong> ICICI Direct, Zerodha (Kite), Alice Blue (ANT) - to execute your trading orders and manage your positions</li>
             <li><strong>Bank Partners:</strong> For fund transfers, withdrawals, and verification purposes</li>
             <li><strong>Legal Authorities:</strong> When compelled by court order, subpoena, or legal process</li>
-            <li><strong>Compliance/KYC Partners:</strong> KYC verification services (masked identity data only)</li>
           </ul>
 
           <h3>5.3 Data Processing Agreements</h3>
           <p>
-            All broker partners and third-party service providers are contractually bound to maintain data confidentiality and use data only for the purposes specified in this Privacy Policy.
+            All third-party service providers are contractually bound to maintain data confidentiality and use data only for the purposes specified in this Privacy Policy.
           </p>
         </section>
 
@@ -142,7 +140,7 @@ export default function PrivacyPolicyPage() {
 
           <h3>6.2 Exercising Your Rights</h3>
           <p>
-            To exercise any of these rights, please contact us at [support email]. We will respond to verified requests within 30 days.
+            To exercise any of these rights, please contact us at admin@nivedhatech.com. We will respond to verified requests within 30 days.
           </p>
 
           <h3>6.3 Data Retention for Account History</h3>
@@ -212,15 +210,11 @@ export default function PrivacyPolicyPage() {
             If you have questions about this Privacy Policy, please contact us at:
           </p>
           <ul>
-            <li><strong>Email:</strong> [support@propfirm.com]</li>
-            <li><strong>Address:</strong> [Company Address]</li>
+            <li><strong>Email:</strong> admin@nivedhatech.com</li>
             <li><strong>Response Time:</strong> 30 days for privacy-related inquiries</li>
           </ul>
         </section>
 
-        <p className="policy-footer">
-          This Privacy Policy is provided in English. In case of any conflicts between the English version and any translated versions, the English version shall prevail.
-        </p>
       </Container>
     </div>
   );

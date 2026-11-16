@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Card, Button, Badge, Row, Col, Form, InputGroup } from 'react-bootstrap';
 import { useTrading, Trade } from '../context/TradingContext';
 import DemoHelpTip from './DemoHelpTip';
+import { optionRight } from '../utils/optionRight';
 
 // `demo`: the anonymous demo page renders this same card (its provider supplies the same trading context), with help bubbles on the
 // target/stop-loss controls and the pending-points hint while a fill waits for a price.
@@ -14,7 +15,7 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
     ? (trade.realizedPnL || 0)
     : trade.lastTradePrice ? (trade.lastTradePrice - trade.price) * trade.quantity : 0;
   const pnlColor = pnl >= 0 ? 'text-success' : 'text-danger';
-  const rightLabel = trade.right === 'call' || trade.right === 'CE' ? 'CE' : 'PE';
+  const rightLabel = optionRight(trade);
 
   const hasTarget = !!trade.targetPrice;
   const hasStopLoss = !!trade.stopLossPrice;
@@ -57,9 +58,11 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
           <Col>
             <h5 className="mb-1">
               {trade.tsym}
-              <Badge bg={rightLabel === 'CE' ? 'primary' : 'warning'} className="ms-2">
-                {rightLabel}
-              </Badge>
+              {rightLabel && (
+                <Badge bg={rightLabel === 'CE' ? 'primary' : 'warning'} className="ms-2">
+                  {rightLabel}
+                </Badge>
+              )}
               {closed && (
                 <Badge bg="secondary" className="ms-2">Closed</Badge>
               )}

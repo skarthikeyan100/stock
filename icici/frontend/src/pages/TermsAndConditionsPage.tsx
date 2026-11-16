@@ -58,7 +58,7 @@ export default function TermsAndConditionsPage() {
           <ul>
             <li>You retain 40% of net profits generated through your trades</li>
             <li>PropFirm retains 60% of net profits</li>
-            <li>Every trade is placed from PropFirm's own account and capital. PropFirm may place its own parallel trades alongside yours, on the same contracts</li>
+            <li>Every trade is placed from PropFirm's own account and capital</li>
             <li>There is no upfront capital contribution required from you</li>
             <li>Profits are calculated and payable on a weekly basis (every Wednesday)</li>
           </ul>
@@ -87,7 +87,7 @@ export default function TermsAndConditionsPage() {
                 <li>If configured by <strong>total investment amount</strong>: Your entire allocated capital is committed to one trade at a time (only one open position allowed)</li>
               </ul>
             </li>
-            <li><strong>Daily Trade Limit:</strong> You may place at most 10 trades in one calendar day</li>
+            <li><strong>Daily Trade Limit:</strong> If your account trades by total investment amount, you may place at most 3 trades in one calendar day</li>
             <li>These limits are checked before every order is placed (on the first leg of the trade) and violations will result in order rejection</li>
           </ul>
 
@@ -192,6 +192,7 @@ export default function TermsAndConditionsPage() {
           <ul>
             <li>Profits are calculated based on closed trades (realized P&L only)</li>
             <li>Payouts are processed every Wednesday</li>
+            <li>Your proficiency level (Beginner or Advanced) at the time of payment applies to the entire payment week. Payout estimates shown before the payment date are indicative and can change if your proficiency level changes</li>
             <li>Minimum payout threshold may apply</li>
             <li>Payouts are made to the bank account registered during account opening via NEFT/IMPS</li>
             <li>Processing time: 1-3 business days after payout date</li>
@@ -400,8 +401,7 @@ export default function TermsAndConditionsPage() {
             For questions about these Terms & Conditions or to report compliance concerns, please contact:
           </p>
           <ul>
-            <li><strong>Email:</strong> [support@propfirm.com]</li>
-            <li><strong>Address:</strong> [Company Address]</li>
+            <li><strong>Email:</strong> admin@nivedhatech.com</li>
             <li><strong>Response Time:</strong> 7 business days for formal inquiries</li>
           </ul>
         </section>

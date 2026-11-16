@@ -4,6 +4,7 @@ import { Container, Table, Form, Button, Spinner, Tabs, Tab, Card, Row, Col, Ale
 import { useAuth, AuthUser } from '../context/AuthContext';
 import DateRangeFilter, { DateRange, resolveDateRange, formatRangeLabel } from '../components/DateRangeFilter';
 import { apiFetch, apiPost, readError } from '../utils/api';
+import TradeTables from '../components/TradeTables';
 import { periodEndShown } from '../utils/period';
 import ThemeToggle from '../components/ThemeToggle';
 import LevelRequestsPanel from '../components/LevelRequestsPanel';
@@ -74,7 +75,7 @@ function setIn(target: any, path: string[], value: any) {
 }
 
 // Pins the Actions column to the right edge of the horizontally-scrollable
-// users table so Save/Cancel stay reachable without scrolling, regardless of
+// users table so Done/Edit stay reachable without scrolling, regardless of
 // how many columns precede it.
 const stickyActionsStyle: CSSProperties = {
   position: 'sticky',
@@ -95,6 +96,7 @@ interface UserEditRow {
   lossLimit: string; lotLimit: string; role: string; enabled: boolean; useGTT: boolean;
   profitSplitPercent: string; perOrderCap: string; strategyCapital: string; targetPoints: string;
   stopLossPoints: string; accountCapital: string;
+  investmentMode: 'lotCount' | 'investmentAmount'; investmentModeLocked: boolean;
 }
 
 // Legacy broker names still present in older config.yml files; mirrors src/util/brokerName.ts.
@@ -357,6 +359,15 @@ export default function AdminPage() {
 
   // Per-row debounce timers for the Users table's autosave.
   const editAutoSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Per-row save status shown next to the Done button: 'saving' = debounce timer or request pending.
+  const [rowSave, setRowSave] = useState<Record<string, { state: 'saving' | 'saved' | 'error'; msg?: string }>>({});
+  const rowInflight = useRef<Record<string, number>>({});
+  const settleRowSave = (email: string, state: 'saved' | 'error', msg?: string) => {
+    rowInflight.current[email] = Math.max(0, (rowInflight.current[email] ?? 1) - 1);
+    // A newer change is still waiting or in flight: stay on 'saving' until that one settles.
+    if (rowInflight.current[email] > 0 || editAutoSaveTimers.current[email]) return;
+    setRowSave(prev => ({ ...prev, [email]: { state, msg } }));
+  };
 
 
   useEffect(() => {
@@ -395,10 +406,23 @@ export default function AdminPage() {
     stopLossPoints: config?.settings?.stopLossPoints ?? config?.settings?.stopLossPriceDiff,
   };
 
+  // Admin "use as another user": the server sets an acting-as cookie; a full page load then starts every context fresh as that user.
+  const handleActAs = async (u: UserRow) => {
+    if (!window.confirm(`Use the app as ${u.name} (${u.email})?\n\nOrders you place are real orders in their account and are mirrored as usual.`)) return;
+    try {
+      const res = await apiPost('/admin/act-as', { email: u.email });
+      if (!res.ok) throw new Error(await readError(res));
+      window.location.assign('/trade');
+    } catch (e: any) {
+      setUserError(e.message || 'Could not start acting as this user');
+    }
+  };
+
   const startEdit = (u: UserRow) => {
     setEditing(prev => ({
       ...prev,
       [u.email]: {
+        investmentMode: u.investmentMode ?? 'investmentAmount', investmentModeLocked: u.investmentModeLocked === true,
         lossLimit: String(u.lossLimit), lotLimit: String(u.lotLimit ?? u.lotCount ?? ''), role: u.role, enabled: u.enabled ?? true, useGTT: u.useGTT ?? true,
         profitSplitPercent: String(u.profitSplitPercent ?? 40), perOrderCap: u.perOrderCap !== undefined ? String(u.perOrderCap) : '',
         // Show the actual value in effect (override, else the resolved
@@ -418,6 +442,7 @@ export default function AdminPage() {
       delete editAutoSaveTimers.current[email];
       saveEdit(email);
     }
+    setRowSave(prev => { const next = { ...prev }; delete next[email]; return next; });
     setEditing(prev => {
       const next = { ...prev };
       delete next[email];
@@ -434,6 +459,8 @@ export default function AdminPage() {
   const saveEdit = (email: string, valsOverride?: UserEditRow): Promise<void> => {
     const vals = valsOverride ?? editing[email];
     if (!vals) return Promise.resolve();
+    rowInflight.current[email] = (rowInflight.current[email] ?? 0) + 1;
+    setRowSave(prev => ({ ...prev, [email]: { state: 'saving' } }));
     const run = saveChainRef.current.then(() => doSaveEdit(email, vals));
     saveChainRef.current = run.catch(() => undefined);
     return run;
@@ -458,6 +485,8 @@ export default function AdminPage() {
       };
       const body: Record<string, unknown> = {
         enabled: vals.enabled,
+        investmentMode: vals.investmentMode,
+        investmentModeLocked: vals.investmentModeLocked,
         useGTT: vals.useGTT,
         lossLimit: numOrUndef(vals.lossLimit),
         lotLimit: numOrUndef(vals.lotLimit),
@@ -488,10 +517,12 @@ export default function AdminPage() {
         }
       }
       setUserError(null);
+      settleRowSave(email, 'saved');
       fetchUsers();
     } catch (err: any) {
       console.error('Save failed:', err);
       setUserError(`Saving ${email} failed: ${err?.message ?? err}`);
+      settleRowSave(email, 'error', String(err?.message ?? err));
       fetchUsers(); // show what the server actually has
     }
   };
@@ -503,6 +534,7 @@ export default function AdminPage() {
   const updateEditingField = (email: string, patch: Partial<UserEditRow>) => {
     const merged = { ...editing[email], ...patch };
     setEditing(prev => ({ ...prev, [email]: merged }));
+    setRowSave(prev => ({ ...prev, [email]: { state: 'saving' } }));
     if (editAutoSaveTimers.current[email]) clearTimeout(editAutoSaveTimers.current[email]);
     editAutoSaveTimers.current[email] = setTimeout(() => {
       delete editAutoSaveTimers.current[email];
@@ -658,6 +690,10 @@ export default function AdminPage() {
     'settings.minPrice': { description: "Skip generating a buy signal when the option's LTP is below this floor.", values: 'Integer, in ₹ (e.g. 20).' },
     'settings.maxPrice': { description: "Skip generating a buy signal when the option's LTP is above this ceiling.", values: 'Integer, in ₹ (e.g. 30000).' },
     'settings.cooldownSeconds': { description: 'Minimum wait after an exit before a new entry can be attempted.', values: 'Integer seconds (e.g. 60).' },
+    'settings.maxProfit.kite': { description: 'Global max profit in ₹ for the kite broker, applied to EVERY strategy on it separately (each strategy gets its own cap). When a strategy reaches it, its open positions are sold at the price that locks the cap and it places no new orders for the day. A strategy block\'s own maxProfit overrides it. Absent = off (remove that broker line in config.yml to turn it off).', values: 'Positive number of ₹, e.g. 5000.' },
+    'settings.maxProfit.ant': { description: 'Global max profit in ₹ for the ant broker, applied to EVERY strategy on it separately (each strategy gets its own cap). When a strategy reaches it, its open positions are sold at the price that locks the cap and it places no new orders for the day. A strategy block\'s own maxProfit overrides it. Absent = off (remove that broker line in config.yml to turn it off).', values: 'Positive number of ₹, e.g. 5000.' },
+    'settings.maxProfit.breeze': { description: 'Global max profit in ₹ for the breeze broker, applied to EVERY strategy on it separately (each strategy gets its own cap). When a strategy reaches it, its open positions are sold at the price that locks the cap and it places no new orders for the day. A strategy block\'s own maxProfit overrides it. Absent = off (remove that broker line in config.yml to turn it off).', values: 'Positive number of ₹, e.g. 5000.' },
+    'settings.maxProfit.prism': { description: 'Global max profit in ₹ for the prism broker, applied to EVERY strategy on it separately (each strategy gets its own cap). When a strategy reaches it, its open positions are sold at the price that locks the cap and it places no new orders for the day. A strategy block\'s own maxProfit overrides it. Absent = off (remove that broker line in config.yml to turn it off).', values: 'Positive number of ₹, e.g. 5000.' },
     'settings.mirrorPercentage': { description: 'Share of every frontend user\'s lots that the admin account mirrors with its own real order (same contract, same target/stop-loss, follows the user\'s exits). Whole lots only, rounded down: at 30%, 1-3 lots mirror nothing and 4 lots mirror 1.', values: '0-100 (0 = no mirror), e.g. 100 or 30%.' },
     'settings.trailingDistance': { description: 'Distance the trailing stop trails behind the best price seen since entry.', values: 'Integer points.' },
     'settings.logQuotes': { description: "Persist every incoming option tick to Mongo's OptionQuote collection.", values: 'On/Off — heavy write volume when enabled.' },
@@ -771,16 +807,14 @@ export default function AdminPage() {
     'ruleBasedStrategy.indicators': { description: 'Technical indicators this rule evaluates to decide entries — one string per indicator, encoding its parameters.', values: "e.g. 'RSI_5_80_20' (RSI, period 5, overbought 80, oversold 20), 'MACD_12_26_9', 'EMA_5_13', 'Bollinger_20_2', 'ADX_14', 'Stochastic_14_3'. Must be valid JSON array of strings." },
 
     'bulkPcrStrategy.enabled': { description: 'Turn this one-shot strategy on/off. It durably disables itself (writes enabled: false back to config.yml) after completing one full buy → target → sell cycle.', values: 'On/Off.' },
-    'bulkPcrStrategy.broker': { description: "Legacy single-broker field - only used as a fallback when no boxes are checked below.", values: "'breeze' or 'kite'." },
     'bulkPcrStrategy.brokers': { description: 'Which broker(s) place this block order. Checking more than one places the FULL configured quantity independently on each broker at once (not a split) - e.g. 13975 qty on Kite AND 13975 qty on Breeze. One PCR decision drives all of them; the cycle only self-disables once every checked broker is fully sold.', values: 'One or more of: Kite, Breeze.' },
     'bulkPcrStrategy.quantity': { description: 'Total quantity bought in one go, on each selected broker; split into exchange-compliant chunks automatically (NIFTY freeze quantity is 1755).', values: 'Integer, must be a multiple of the instrument lot size. Default 13975 (215 lots × 65).' },
     'bulkPcrStrategy.targetPoints': { description: 'Profit target, in points above entry average, that triggers the exit. There is no stop-loss — the position holds indefinitely until this is hit.', values: 'Integer points.' },
     'bulkPcrStrategy.right': { description: 'Fixed entry direction, or auto-resolve from PCR (put/call OI ratio) when left as none.', values: "'call', 'put', or 'none' for PCR-based auto-resolve." },
-    'bulkPcrStrategy.maxInvestment': { description: 'Reference figure for total capital this block order deploys (quantity × price). This is a per-account cap shared across every broker checked above, not per broker - with 2 brokers checked, both run under the same combined limit, so size this for the FULL combined exposure (roughly 2× a single-broker figure) or one broker can get rejected while the other succeeds.', values: 'Integer, in ₹.' },
+    'bulkPcrStrategy.maxInvestment': { description: 'Capital cap in ₹ PER BROKER: every broker checked above gets this amount (with 2 brokers checked the combined exposure is twice this figure).', values: 'Integer, in ₹.' },
     'bulkPcrStrategy.logEnabled': { description: "Write this strategy's own decision/trade log lines.", values: 'On/Off.' },
 
     'topStockOptionsOpeningGapStrategy.enabled': { description: 'Turn this one-shot strategy on/off. It durably disables itself (writes enabled: false back to config.yml) once at least one leg actually enters on a trading day - flip back on manually to arm another run.', values: 'On/Off.' },
-    'topStockOptionsOpeningGapStrategy.broker': { description: 'Broker this strategy trades on.', values: "'ant' (only broker currently wired up for this strategy)." },
     'topStockOptionsOpeningGapStrategy.rankStart': { description: "Rank (by |gap %|, 1 = biggest gap) of the first stock in the window of gap-screener candidates this strategy trades.", values: 'Integer ≥ 1, e.g. 3 to skip the 2 biggest gappers.' },
     'topStockOptionsOpeningGapStrategy.rankCount': { description: 'How many consecutively-ranked stocks (starting at Rank Start) this strategy enters a leg for.', values: 'Integer ≥ 1, e.g. 5.' },
     'topStockOptionsOpeningGapStrategy.lots': { description: 'Lot multiplier applied to each leg\'s own instrument lot size.', values: 'Integer, e.g. 1.' },
@@ -964,6 +998,7 @@ export default function AdminPage() {
                   <th>Status</th>
                   <th>Loss Limit</th>
                   <th>Lot Count</th>
+                  <th>Investment Mode</th>
                   <th>Investment Amount</th>
                   <th>Profit Split %</th>
                   <th>Per-Order Cap</th>
@@ -1048,6 +1083,34 @@ export default function AdminPage() {
                           />
                         ) : (
                           u.lotLimit ?? u.lotCount
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <div className="d-flex flex-column gap-1">
+                            <Form.Select
+                              size="sm"
+                              value={editing[u.email].investmentMode}
+                              onChange={e => updateEditingField(u.email, { investmentMode: e.target.value as 'lotCount' | 'investmentAmount' })}
+                              style={{ width: 150 }}
+                            >
+                              <option value="investmentAmount">Investment amount</option>
+                              <option value="lotCount">Lot count</option>
+                            </Form.Select>
+                            <Form.Check
+                              type="switch"
+                              id={`modeLock-${u.email}`}
+                              label="Locked"
+                              title="Locked: the user cannot change their own investment mode"
+                              checked={editing[u.email].investmentModeLocked}
+                              onChange={e => updateEditingField(u.email, { investmentModeLocked: e.target.checked })}
+                            />
+                          </div>
+                        ) : (
+                          <>
+                            {(u.investmentMode ?? 'investmentAmount') === 'investmentAmount' ? 'Amount' : 'Lots'}
+                            {u.investmentModeLocked && <span className="badge bg-warning text-dark ms-1" title="Locked by admin">Locked</span>}
+                          </>
                         )}
                       </td>
                       <td>
@@ -1213,15 +1276,29 @@ export default function AdminPage() {
                       <td style={stickyActionsStyle}>
                         <div className="d-flex gap-1">
                           {isEditing ? (
-                            <Button size="sm" variant="secondary" onClick={() => cancelEdit(u.email)}>Cancel</Button>
+                            <>
+                              <Button size="sm" variant="secondary" onClick={() => cancelEdit(u.email)} title="Changes save automatically; this just closes the editor">Done</Button>
+                              {rowSave[u.email] && (
+                                <span
+                                  className={`small align-self-center ${rowSave[u.email].state === 'error' ? 'text-danger' : rowSave[u.email].state === 'saved' ? 'text-success' : 'text-body-secondary'}`}
+                                  role="status"
+                                >
+                                  {rowSave[u.email].state === 'saving' ? 'Saving…' : rowSave[u.email].state === 'saved' ? 'Saved' : `Save failed: ${rowSave[u.email].msg ?? ''}`}
+                                </span>
+                              )}
+                            </>
                           ) : (
                             <>
                               <Button size="sm" variant="outline-primary" onClick={() => startEdit(u)}>Edit</Button>
+                              {u.role !== 'admin' && u.enabled !== false && (
+                                <Button size="sm" variant="outline-warning" onClick={() => handleActAs(u)} title="Open the app as this user">Use as</Button>
+                              )}
                               <Button
                                 size="sm"
                                 variant="outline-danger"
                                 onClick={() => handleDeleteUser(u.email)}
-                                disabled={u.email === user?.email}
+                                disabled={u.email === user?.email || u.role === 'admin'}
+                                title={u.role === 'admin' ? 'An admin account cannot be deleted' : undefined}
                               >
                                 Delete
                               </Button>
@@ -1293,6 +1370,10 @@ export default function AdminPage() {
                       <Col md={6}>
                         {renderConfigField('Cooldown (sec)', ['settings', 'cooldownSeconds'], config.settings?.cooldownSeconds)}
                         {renderConfigField('Admin mirror %', ['settings', 'mirrorPercentage'], config.settings?.mirrorPercentage)}
+                        {renderConfigField('Max profit ₹ (kite)', ['settings', 'maxProfit', 'kite'], config.settings?.maxProfit?.kite)}
+                        {renderConfigField('Max profit ₹ (ant)', ['settings', 'maxProfit', 'ant'], config.settings?.maxProfit?.ant)}
+                        {renderConfigField('Max profit ₹ (breeze)', ['settings', 'maxProfit', 'breeze'], config.settings?.maxProfit?.breeze)}
+                        {renderConfigField('Max profit ₹ (prism)', ['settings', 'maxProfit', 'prism'], config.settings?.maxProfit?.prism)}
                       </Col>
                       <Col md={6}>
                         {renderConfigField('Trailing Distance', ['settings', 'trailingDistance'], config.settings?.trailingDistance)}
@@ -1582,7 +1663,6 @@ export default function AdminPage() {
                       renderFields: () => (
                         <>
                           <Row>
-                            <Col md={6}>{renderConfigField('Broker', ['topStockOptionsOpeningGapStrategy', 'broker'], config.topStockOptionsOpeningGapStrategy?.broker, 'text')}</Col>
                             <Col md={6}>{renderConfigField('Rank Start', ['topStockOptionsOpeningGapStrategy', 'rankStart'], config.topStockOptionsOpeningGapStrategy?.rankStart)}</Col>
                             <Col md={6}>{renderConfigField('Rank Count', ['topStockOptionsOpeningGapStrategy', 'rankCount'], config.topStockOptionsOpeningGapStrategy?.rankCount)}</Col>
                             <Col md={6}>{renderConfigField('Lots', ['topStockOptionsOpeningGapStrategy', 'lots'], config.topStockOptionsOpeningGapStrategy?.lots)}</Col>
@@ -1919,6 +1999,8 @@ export default function AdminPage() {
                 )}
               </Card.Body>
             </Card>
+
+            <TradeTables open={openTradesList} closed={closedTradesList} showUser={tradeUser === '__all__'} />
 
             <Modal show={showStatusModal} onHide={() => setShowStatusModal(false)} centered>
               <Modal.Header closeButton>

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, Fragment } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Container, Card, Form, Button, Badge, Alert, Spinner, Row, Col, Table } from 'react-bootstrap';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Container, Card, Form, Button, Badge, Alert, Spinner, Row, Col, Table, Tab, Tabs } from 'react-bootstrap';
+import MyTrades from '../components/MyTrades';
 import AccountLevelCard from '../components/AccountLevelCard';
 import { useAuth } from '../context/AuthContext';
 import NotificationBell from '../components/NotificationBell';
@@ -64,6 +65,29 @@ export default function ProfilePage() {
     if (!(await logout())) window.alert('Logout could not be completed - please try again.');
   };
   const navigate = useNavigate();
+
+  // Delete account: personal information is removed, trade records stay (the server enforces this and the open-position / pending-payment checks).
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteText, setDeleteText] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deleteAccount = async () => {
+    setDeleteError(null);
+    setDeleting(true);
+    try {
+      const res = await apiFetch(`/users/${encodeURIComponent(user!.email)}/delete-account`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: deleteText }),
+      });
+      if (!res.ok) { setDeleteError((await readError(res)) || 'Could not delete the account'); return; }
+      window.location.href = '/';
+    } catch {
+      setDeleteError('Could not reach the server - try again');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const [phone, setPhone] = useState(user?.phone ?? '');
   const [phoneError, setPhoneError] = useState<string | null>(null);
@@ -133,6 +157,9 @@ export default function ProfilePage() {
   const [bankError, setBankError] = useState<string | null>(null);
   const [companyError, setCompanyError] = useState<string | null>(null);
 
+  const [searchParams, setSearchParams] = useSearchParams();
+  const profileTab = ['profile', 'trades', 'payments'].includes(searchParams.get('tab') ?? '') ? (searchParams.get('tab') as string) : 'profile';
+  const setProfileTab = (k: string) => setSearchParams(k === 'profile' ? {} : { tab: k }, { replace: true });
   const [expandedPayoutId, setExpandedPayoutId] = useState<string | null>(null);
   const [decisionLogs, setDecisionLogs] = useState<Record<string, DecisionLogEntry[]>>({});
 
@@ -434,7 +461,7 @@ export default function ProfilePage() {
         </Container>
       </div>
 
-      <Container className="py-4" style={{ maxWidth: 600 }}>
+      <Container className="py-4" style={{ maxWidth: 900 }}>
         <Alert variant="warning" className="small">
           <strong>PAN card is mandatory</strong> if your total payout exceeds &#8377;20,000 in a year. Please upload your PAN card in the KYC Documents section below.
         </Alert>
@@ -447,6 +474,8 @@ export default function ProfilePage() {
           </div>
         </div>
 
+        <Tabs activeKey={profileTab} onSelect={(k) => setProfileTab(k || 'profile')} className="mb-3">
+          <Tab eventKey="profile" title="Profile">
         {/* Contact Info */}
         <Card className="mb-3">
           <Card.Header className="fw-bold">Contact Information</Card.Header>
@@ -495,16 +524,18 @@ export default function ProfilePage() {
               <Form.Label className="fw-semibold">Investment Mode</Form.Label>
               <Form.Select
                 value={investmentMode}
+                disabled={user?.investmentModeLocked === true}
                 onChange={e => setInvestmentMode(e.target.value as 'lotCount' | 'investmentAmount')}
               >
                 <option value="investmentAmount">Investment Amount</option>
                 <option value="lotCount">Lot Count</option>
               </Form.Select>
+              {user?.investmentModeLocked && <Form.Text className="text-muted">Locked by an admin - contact them to change it.</Form.Text>}
             </Form.Group>
 
             {investmentMode === 'investmentAmount' ? (
               <Alert variant="info" className="small py-2 mb-3">
-                <strong>Investment Amount mode:</strong> Each trade is sized to as many lots as your remaining capital (&#8377;{(user?.accountCapital ?? user?.investmentAmount ?? 100000).toLocaleString()}) covers at the option's current price, rather than a fixed lot count. There is no lot-count cap in this mode: only your capital (net of open positions and pending orders), the per-order cap and the exchange freeze quantity limit a buy. Your investment amount is set by an admin — contact them to change it.
+                <strong>Investment Amount mode:</strong> Each trade is sized to as many lots as your remaining capital (&#8377;{(user?.accountCapital ?? user?.investmentAmount ?? 100000).toLocaleString()}) covers at the option's current price, rather than a fixed lot count. {user?.role !== 'admin' && 'You can place at most 3 trades a day in this mode. '}There is no lot-count cap in this mode: only your capital (net of open positions and pending orders), the per-order cap and the exchange freeze quantity limit a buy. Your investment amount is set by an admin — contact them to change it.
               </Alert>
             ) : (
               <Alert variant="info" className="small py-2 mb-3">
@@ -723,6 +754,35 @@ export default function ProfilePage() {
           </Card.Body>
         </Card>
 
+        {user?.role !== 'admin' && (
+          <Card className="mb-3 border-danger">
+            <Card.Header className="text-danger fw-semibold">Delete account</Card.Header>
+            <Card.Body>
+              <p className="small mb-2">
+                Deleting your account permanently removes your personal information: name, picture, phone, KYC numbers and documents, bank and UPI details,
+                and the documents we emailed you. Your trade records are kept, without your name or email. You will be logged out and can sign up again later as a new user. This cannot be undone.
+              </p>
+              {!deleteOpen ? (
+                <Button size="sm" variant="outline-danger" onClick={() => { setDeleteOpen(true); setDeleteText(''); setDeleteError(null); }}>Delete my account</Button>
+              ) : (
+                <div className="d-flex flex-wrap align-items-center gap-2">
+                  <Form.Control size="sm" style={{ maxWidth: 220 }} placeholder="Type DELETE to confirm" value={deleteText} onChange={e => setDeleteText(e.target.value)} />
+                  <Button size="sm" variant="danger" disabled={deleteText !== 'DELETE' || deleting} onClick={deleteAccount}>
+                    {deleting ? <Spinner animation="border" size="sm" /> : 'Permanently delete'}
+                  </Button>
+                  <Button size="sm" variant="secondary" disabled={deleting} onClick={() => setDeleteOpen(false)}>Cancel</Button>
+                </div>
+              )}
+              {deleteError && <div className="text-danger small mt-2">{deleteError}</div>}
+            </Card.Body>
+          </Card>
+        )}
+
+          </Tab>
+          <Tab eventKey="trades" title="Trades" mountOnEnter>
+            {user && <MyTrades email={user.email} />}
+          </Tab>
+          <Tab eventKey="payments" title={pendingPayouts.length > 0 ? `Payments (${pendingPayouts.length} pending)` : 'Payments'}>
         {pendingPayouts.length > 0 && (
           <Card className="mb-3">
             <Card.Header className="fw-bold">Pending Payout</Card.Header>
@@ -848,6 +908,8 @@ export default function ProfilePage() {
             )}
           </Card.Body>
         </Card>
+          </Tab>
+        </Tabs>
       </Container>
     </div>
   );

@@ -35,7 +35,10 @@ function feedSymbols(name: string): ContractItem[] {
 // `demo`: the anonymous demo page renders this same component (its provider supplies the same trading context). Differences: the
 // contract list is the ANT-native /demo/symbols one (symbols.txt is Kite-format and not subscribable on ANT's feed), help bubbles
 // explain the controls, the loss limit is the fixed demo one, and no order is ever real.
-export default function OrderEntry({ demo }: { demo?: boolean }) {
+// `part`: render only Flash Trade or only Search & Buy (the trading page shows them in different places); unset = both (demo).
+export default function OrderEntry({ demo, part }: { demo?: boolean; part?: 'flash' | 'search' }) {
+  const showFlash = part !== 'search';
+  const showSearch = part !== 'flash';
   const { placeOrder, placeContractOrder, isOrderDisabled, placingOrder, totalPnL, orderError, clearError } = useTrading();
   const { user } = useAuth();
   const { mode: demoMode } = useDemoMode(); // demo only: 'feed' = recorded day replayed in the browser
@@ -68,8 +71,8 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
       .catch(err => console.error('Failed to load config:', err));
   }, [demo]);
 
-  const effectiveDefaultTarget = demo ? null : (user?.targetPoints ?? defaultTargetPoints);
-  const effectiveDefaultStopLoss = demo ? null : (user?.stopLossPoints ?? defaultStopLossPoints);
+  const effectiveDefaultTarget = demo ? null : (user?.targetPoints ?? user?.defaultTargetPoints ?? defaultTargetPoints);
+  const effectiveDefaultStopLoss = demo ? null : (user?.stopLossPoints ?? user?.defaultStopLossPoints ?? defaultStopLossPoints);
 
   // Load symbols list once. Expiry filtering happens server-side now, at
   // generation time (see frontend/update-symbols.sh, which filters Kite's real
@@ -184,6 +187,7 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
 
   return (
     <div>
+      {showFlash && (<>
       {/* Section A: Flash Trade */}
       <fieldset style={{ border: '1px solid var(--bs-border-color)', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
         <legend
@@ -209,7 +213,7 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
             {placingOrder ? <Spinner animation="border" size="sm" /> : 'Down'}
           </Button>
           <small className="text-muted" style={{ fontSize: '0.75rem' }}>
-            Predict the trend — buys NIFTY CE or PE {demo ? '(demo)' : 'at market'}
+            Predict the trend {demo ? '(demo)' : ''}
           </small>
           {!demo && (
             <Button variant="link" size="sm" className="p-0" onClick={() => setShowFlashSettings(true)}>
@@ -223,6 +227,9 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
           defaultTarget={defaultTargetPoints} defaultStopLoss={defaultStopLossPoints} />
       )}
 
+      </>)}
+
+      {showSearch && (<>
       {/* Section B: Symbol Search */}
       <fieldset style={{ border: '1px solid var(--bs-border-color)', borderRadius: 8, padding: '12px 16px', marginBottom: 16 }}>
         <legend
@@ -335,6 +342,8 @@ export default function OrderEntry({ demo }: { demo?: boolean }) {
           )}
         </div>
       )}
+
+      </>)}
 
       {orderError && (
         <Alert variant="danger" className="mt-2 py-2" dismissible onClose={clearError}>
