@@ -16,6 +16,7 @@ import { configuredBrokersOf } from '../util/brokerName';
 import { splitIntoFreezeQtyChunks } from '../util/quantityChunks';
 import { isPastEodClose } from '../util/eodClose';
 import { exchangeForTsym } from '../util/underlyings';
+import { isGlobalMaxProfitLatched } from './globalMaxProfitLatch';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 
 // Shared engine of RecommendationStrategy and NiftyChangeStrategy: one LIMIT buy per configured broker, sized from a rupee budget (per broker: every broker gets its own full amount),
@@ -53,6 +54,7 @@ export interface Leg {
     boughtValue: number;
     soldQty: number;
     soldValue: number;
+    latchCancelAt?: number; // last time the entry cancel for the global max-profit latch was tried (throttle)
     entryCancelled?: boolean; // the entry order was cancelled; no fills beyond `qty` are expected
     exit?: ExitKind;
     exitAttempts?: number;
@@ -770,6 +772,16 @@ export abstract class LimitEntryStrategy extends Strategy {
         for (const leg of this.legs()) {
             // The entry order is still open (possibly part-filled, in which case status is already 'filled').
             const entryOpen = (leg.status === 'resting' || leg.status === 'filled') && !leg.entryCancelled && leg.filledQty < leg.qty;
+            // The global max-profit latch is per broker, but this strategy's entry is one cycle over all its brokers: once ANY broker of it is latched
+            // today, every entry still resting (on any broker) is cancelled, so no fill after the trip opens a position nothing locks (2026-11-16: an
+            // ANT entry placed 10:50:02 filled at 10:52 after the Prism trip at 10:50:10). Re-read each pass, so it holds across a restart and is retried
+            // (throttled) when the cancel fails; a disabled strategy never reaches here.
+            if (entryOpen && !eod && now - (leg.latchCancelAt ?? 0) >= RETRY_BACKOFF_MS && await isGlobalMaxProfitLatched(this.userId)) {
+                leg.latchCancelAt = now;
+                Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: the global max profit is hit today (on a broker of this strategy) - cancelling the resting entry`);
+                await this.cancelEntry(leg, 'global max profit hit');
+                continue;
+            }
             if (entryOpen && (eod || (timeoutMs > 0 && now - leg.placedAt >= timeoutMs))) {
                 await this.cancelEntry(leg, eod ? 'end of day' : `unfilled after ${timeoutMinutes} min`);
             }

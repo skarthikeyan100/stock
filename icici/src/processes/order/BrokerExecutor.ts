@@ -1,6 +1,29 @@
 import { Trade } from '../../model/model';
 import Log from '../../util/Log';
 
+// ONE SELL AT A TIME per (broker, user, contract). A sell is invisible to every "is a sell already resting?" check (the pending tracker, the
+// never-short guard's resting quantity) from the moment the broker call starts until it returns and the order is tracked (seconds on Prism).
+// 2026-11-16 10:50: a target sell (protectLeg, 91.50) was in flight when the global max-profit trip asked the same question, saw nothing and
+// placed a second full-quantity sell (90.50): two sells for one position. Every sell placement (limit or market) of a contract therefore runs
+// under this lock, so the second one starts only after the first is tracked and then sees it (the guard clamps or refuses it). Not re-entrant:
+// never call a locked sell from inside another one for the same key.
+const sellLocks = new Map<string, Promise<void>>();
+export async function withSellLock<T>(broker: string, userId: string, tradingSymbol: string, fn: () => Promise<T>): Promise<T> {
+    const key = `${broker}|${userId}|${tradingSymbol}`;
+    const prev = sellLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((r) => { release = r; });
+    const tail = prev.then(() => mine);
+    sellLocks.set(key, tail);
+    await prev;
+    try {
+        return await fn();
+    } finally {
+        release();
+        if (sellLocks.get(key) === tail) sellLocks.delete(key);
+    }
+}
+
 export type Exchange = 'NFO' | 'BFO' | 'NSE'; // NSE added for Breeze cash-equity orders
 export type OptionExchange = Exclude<Exchange, 'NSE'>; // an option contract's exchange
 

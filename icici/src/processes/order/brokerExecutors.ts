@@ -3,7 +3,7 @@
 // wrapping only: no behaviour change to the functions these call into.
 
 import { Trade } from '../../model/model';
-import { BrokerExecutor, BuyRequest, OptionIndex, OptionRight, ResolvedContract } from './BrokerExecutor';
+import { BrokerExecutor, withSellLock, BuyRequest, OptionIndex, OptionRight, ResolvedContract } from './BrokerExecutor';
 import * as kiteExecutor from './kiteExecutor';
 import * as antExecutor from './antExecutor';
 import * as prismExecutor from './prismExecutor';
@@ -39,7 +39,7 @@ export const KiteExecutor: BrokerExecutor = {
         kiteExecutor.squareOffOnKite(userId, tradingSymbol, quantity, exchange as Exch),
 
     squareOffLimit: (userId, tradingSymbol, instrumentId, quantity, exchange, limitPrice) =>
-        kiteExecutor.placeLimitSellBareOnKite(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as Exch),
+        withSellLock('kite', userId, tradingSymbol, () => kiteExecutor.placeLimitSellBareOnKite(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as Exch)),
 
     cancelOrder: (orderId) => kiteExecutor.cancelOrderOnKite(orderId),
 
@@ -74,7 +74,7 @@ export const AntExecutor: BrokerExecutor = {
         antExecutor.squareOffOnAnt(userId, tradingSymbol, quantity, exchange as Exch),
 
     squareOffLimit: (userId, tradingSymbol, instrumentId, quantity, exchange, limitPrice) =>
-        antExecutor.placeLimitSellBareOnAnt(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as Exch),
+        withSellLock('ant', userId, tradingSymbol, () => antExecutor.placeLimitSellBareOnAnt(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as Exch)),
 
     cancelOrder: (orderId) => antExecutor.cancelOrderOnAnt(orderId),
 
@@ -109,7 +109,7 @@ export const PrismExecutor: BrokerExecutor = {
         prismExecutor.squareOffOnPrism(userId, tradingSymbol, quantity, exchange),
 
     squareOffLimit: (userId, tradingSymbol, instrumentId, quantity, exchange, limitPrice) =>
-        prismExecutor.placeLimitSellBareOnPrism(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as Exch),
+        withSellLock('prism', userId, tradingSymbol, () => prismExecutor.placeLimitSellBareOnPrism(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as Exch)),
 
     cancelOrder: (orderId, exchange) => prismExecutor.cancelOrderOnPrism(orderId, exchange),
 
@@ -142,7 +142,7 @@ export const BreezeExecutor: BrokerExecutor = {
         breezeExecutor.squareOffOnBreeze(userId, tradingSymbol, quantity),
 
     squareOffLimit: (userId, tradingSymbol, instrumentId, quantity, exchange, limitPrice) =>
-        breezeExecutor.placeLimitSellBareOnBreeze(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as Exch),
+        withSellLock('breeze', userId, tradingSymbol, () => breezeExecutor.placeLimitSellBareOnBreeze(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as Exch)),
 
     cancelOrder: (orderId, exchange) => breezeExecutor.cancelOrderOnBreeze(orderId, exchange),
 

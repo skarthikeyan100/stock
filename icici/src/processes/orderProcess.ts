@@ -45,7 +45,7 @@ import * as exitMonitor from './order/exitMonitor';
 import { startMirrorBuy, undoMirrorBuy, onUserSell, mirrorSetTargetStopLoss, forgetRestingMirror, type MirrorLeg, type MirrorHook } from './order/mirror';
 import * as prismExecutor from './order/prismExecutor';
 import { getBrokerExecutor, getExecutorByBroker } from './order/brokerExecutors';
-import { BrokerExecutor, OrderAlreadyFilledError } from './order/BrokerExecutor';
+import { BrokerExecutor, withSellLock, OrderAlreadyFilledError } from './order/BrokerExecutor';
 import Kite from '../kite/Kite';
 import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
@@ -944,7 +944,7 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             case 'antPlaceLimitSellBare': {
                 await waitForReconcile();
                 const { tradingSymbol, instrumentId, quantity, price, exchange, product } = req.payload;
-                const result = await antExecutor.placeLimitSellBareOnAnt(req.userId, tradingSymbol, instrumentId, quantity, price, exchange, product);
+                const result = await withSellLock('ant', req.userId, tradingSymbol, () => antExecutor.placeLimitSellBareOnAnt(req.userId, tradingSymbol, instrumentId, quantity, price, exchange, product));
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
