@@ -3,6 +3,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import { roundToTick } from '../util/tick';
 import { INDEX_LOT_SIZE } from '../constants';
 import { LimitEntryStrategy, Leg } from './LimitEntryStrategy';
+import { splitLots } from './halfTrail';
 import { exitDistance, exitRulesFrom, legacyExitKeysIn, ExitRules } from './exitRules';
 
 // Base of the 15-minute-candle strategies (NextWeekStrategy, BreakoutStrategy): one LIMIT buy per broker at the option's prevailing LTP, a
@@ -53,6 +54,11 @@ export abstract class CandleEntryStrategy extends LimitEntryStrategy {
         return exitRulesFrom(this.setting('target'), this.setting('stopLoss'), this.logTag);
     }
 
+    // Points below the peak at which the trailed half ends (half-at-target + trail exit, halfTrail.ts). 0 = off (the default; MandWStrategy reads its config key).
+    protected trailDistance(): number {
+        return 0;
+    }
+
     // Absolute target and stop prices for a leg whose average fill is `avg`. Throws when the stop would not be above zero.
     protected exitFor(avg: number): { targetDist: number | null; target: number | null; stop: number | undefined } {
         const rules = this.exitRules();
@@ -72,6 +78,12 @@ export abstract class CandleEntryStrategy extends LimitEntryStrategy {
         const avg = this.avgPrice(leg);
         const ex = this.exitFor(avg);
         if (ex.target !== null && ex.stop !== undefined) {
+            const dist = this.trailDistance();
+            if (dist > 0) {
+                const split = splitLots(leg.filledQty, INDEX_LOT_SIZE.NIFTY);
+                if (split) { await this.placeHalfTrailExit(leg, ex.target, ex.stop, dist, split.halfQty); return; }
+                Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: trailDistance ${dist} set but ${leg.filledQty} is less than 2 whole lots - trailing not engaged, normal target / stop exit`);
+            }
             await this.protectLeg(leg, ex.target, ex.stop);
             return;
         }
@@ -98,6 +110,7 @@ export abstract class CandleEntryStrategy extends LimitEntryStrategy {
 
     // A later partial fill is covered the way the exit was placed (see MomentumAtFixedTimeStrategy.topUpExit).
     protected async topUpExit(leg: Leg, delta: number): Promise<void> {
+        if (leg.halfTrail) { await this.topUpHalfTrail(leg, INDEX_LOT_SIZE.NIFTY); return; }
         if (leg.exit === 'exitMonitor' || leg.exit === 'none') return;
         const ex = this.exitFor(this.avgPrice(leg));
         if (leg.exit === 'target') { if (ex.targetDist !== null) await this.topUpTargetSell(leg, ex.targetDist); return; }

@@ -36,6 +36,7 @@ import { MwState, MwWatch, Right, WatchEvent, MAX_ENTRY_RETRIES, PENDING_MAX_AGE
 //   startSide: CE            - CE | PE, the first entry of the day
 //   startTime: '09:20'
 //   target / stopLoss        - option-price exits (block or settings); both are required (not 'none')
+//   trailDistance: 4         - optional (option points): sell floor(lots/2) lots at the target, trail the rest (floor = the target, no stop); needs 2+ lots, else off
 //   patternTimeoutMinutes: 30 - ends the watch of a sold position (default 30)
 //   lastEntryTime: '15:00'   - no entry or reversal at or after this time (default 15:00)
 //   settings.maxProfit       - required (the global cap; a block-level maxProfit is NOT read for this strategy)
@@ -64,6 +65,12 @@ export default class MandWStrategy extends CandleEntryStrategy {
     private mwState(): MwState {
         if (!this.state.mw) this.state.mw = {};
         return this.state.mw;
+    }
+
+    // Half-at-target + trail (halfTrail.ts): `trailDistance` points below the peak. Absent / 0 = off; with fewer than 2 lots it is not engaged.
+    protected trailDistance(): number {
+        const n = Number((this.cfg() as any).trailDistance);
+        return Number.isFinite(n) && n > 0 ? n : 0;
     }
 
     private startSide(): Right | null {

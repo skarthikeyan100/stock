@@ -19,6 +19,7 @@ import { exchangeForTsym } from '../util/underlyings';
 import { isGlobalMaxProfitLatched } from './globalMaxProfitLatch';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import type { MwState } from './mandwCycle';
+import { HalfTrailState, stepHalfTrail } from './halfTrail';
 
 // Shared engine of RecommendationStrategy and NiftyChangeStrategy: one LIMIT buy per configured broker, sized from a rupee budget (per broker: every broker gets its own full amount),
 // then an exit the subclass chooses once the entry has filled. Owns everything that is the same for both: per-broker legs, state
@@ -66,6 +67,7 @@ export interface Leg {
     targetSellQty?: number; // exit 'target': quantity the target sell covers; set BEFORE the order goes out, so a later fill is topped up and a retry never doubles it
     targetSellPrice?: number; // exit 'target': the limit price of that sell
     targetRetryAt?: number; // exit 'target': earliest time a refused (definitely not placed) target sell is tried again
+    halfTrail?: HalfTrailState; // half sold at the target by a resting limit, the rest trailed (see halfTrail.ts); set by placeHalfTrailExit
     closing?: boolean; // an EOD/stop close is in flight or done - never started twice
     outcomeRecorded?: boolean;
 }
@@ -243,6 +245,95 @@ export abstract class LimitEntryStrategy extends Strategy {
     private rewatch(leg: Leg): void {
         if (leg.stop && leg.status === 'filled' && leg.soldQty < leg.filledQty) this.armSelfStop(leg);
         if (leg.exit === 'target' && leg.targetSellQty === undefined && leg.status === 'filled' && leg.soldQty < leg.filledQty) this.armSelfStop(leg);
+        if (leg.halfTrail && leg.status === 'filled' && leg.soldQty < leg.filledQty) this.armSelfStop(leg);
+    }
+
+    // ---- half at the target + trail (opt-in: a subclass's placeExit calls placeHalfTrailExit; pure rules in halfTrail.ts) ----
+    // Self-managed on purpose (no Kite GTT / ANT exitMonitor: they cover the whole quantity only): a resting limit sell of `halfQty` at the target plus
+    // the tick stop on the whole leg. When the half has filled the stop is dropped and the rest trails (floor = the target). The stop is armed first, so
+    // if the sell cannot be placed the downside is still covered and the error is thrown so the placement is retried.
+    protected async placeHalfTrailExit(leg: Leg, target: number, stop: number, dist: number, halfQty: number): Promise<void> {
+        const avg = this.avgPrice(leg);
+        if (leg.halfTrail?.sellQty !== undefined) {
+            // An earlier attempt claimed the sell and the process ended before the exit was recorded: the order may be live, never place it twice.
+            leg.exit = 'self';
+            leg.exitQty = undefined;
+            this.save();
+            this.armSelfStop(leg);
+            Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: half-at-target sell of ${leg.halfTrail.sellQty} was already claimed before a restart - NOT placed again, check the broker's order book`);
+            return;
+        }
+        leg.halfTrail = { halfQty, targetPrice: target, dist, phase: 'half' };
+        leg.stop = stop;
+        this.save();
+        this.armSelfStop(leg);
+        leg.halfTrail.sellQty = halfQty; // claimed before the await
+        this.save();
+        try {
+            await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
+                broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: halfQty, price: target, exchange: leg.exchange,
+            });
+        } catch (e: any) {
+            const msg = String(e?.message ?? e);
+            if (msg.includes(NOT_PLACED_TAG)) {
+                leg.halfTrail.sellQty = undefined; // definitely nothing placed: the caller's retry places it
+                this.save();
+                throw e;
+            }
+            Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: half-at-target sell outcome UNKNOWN (${msg}) - it may be live at the broker; NOT retried, check by hand`);
+            leg.exit = 'self';
+            this.save();
+            return;
+        }
+        leg.exit = 'self';
+        this.save();
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym} qty=${leg.filledQty} avg=${avg.toFixed(2)}: resting sell ${halfQty} @ ${target}, the other ${leg.filledQty - halfQty} then trails ${dist} points below its peak (never below ${target}); stop ${stop} watched on ticks until the half is sold`);
+    }
+
+    // A later entry fill: while the half is still resting its size follows floor(lots/2) of the new quantity (the difference rests at the target too);
+    // once the trail runs the extra simply joins the trailed part (closeLeg sells whatever is left).
+    protected async topUpHalfTrail(leg: Leg, lot: number): Promise<void> {
+        const ht = leg.halfTrail;
+        if (!ht || ht.phase !== 'half' || ht.sellQty === undefined) return;
+        const newHalf = Math.max(ht.halfQty, Math.floor(leg.filledQty / lot / 2) * lot);
+        const extra = newHalf - ht.sellQty;
+        if (extra <= 0) return;
+        const before = { half: ht.halfQty, sell: ht.sellQty };
+        ht.halfQty = newHalf;
+        ht.sellQty = newHalf; // before the await: a second pass must not sell the same extra again
+        this.save();
+        try {
+            await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
+                broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: extra, price: ht.targetPrice, exchange: leg.exchange,
+            });
+        } catch (e: any) {
+            const msg = String(e?.message ?? e);
+            if (msg.includes(NOT_PLACED_TAG)) { ht.halfQty = before.half; ht.sellQty = before.sell; this.save(); throw e; }
+            Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: extra half-at-target sell ${extra} outcome UNKNOWN (${msg}) - it may be live; NOT retried, check by hand`);
+            return;
+        }
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: extra resting sell ${extra} @ ${ht.targetPrice} for the later fill (half now ${newHalf})`);
+    }
+
+    private trailSavedAt = new WeakMap<Leg, number>();
+    // Per tick for a halfTrail leg. Returns true when the leg is in the trail phase (the stop no longer applies).
+    private async onHalfTrailTick(leg: Leg, ltp: number): Promise<boolean> {
+        const ht = leg.halfTrail!;
+        const step = stepHalfTrail(ht, this.avgPrice(leg), ltp, leg.soldQty);
+        if (step.switched) {
+            leg.stop = undefined; // the target half is sold: the rest has no stop, only the trail with its floor at the target
+            this.save();
+            Log.log(`[${this.logTag}] TARGET half sold on ${leg.broker} ${leg.tsym} (${leg.soldQty}/${ht.halfQty}) - stop dropped, ${leg.filledQty - leg.soldQty} now trails ${ht.dist} points below its peak (floor ${ht.targetPrice})`);
+        }
+        if (step.action === 'exit') {
+            Log.log(`[${this.logTag}] TRAIL exit on ${leg.broker} ${leg.tsym}: ltp ${ltp} <= ${step.exitLevel} (peak ${step.peak}, trail ${ht.dist}, floor ${ht.targetPrice})`);
+            this.save();
+            await this.closeLeg(leg, 'trail');
+        } else if (step.changed && !step.switched && Date.now() - (this.trailSavedAt.get(leg) ?? 0) >= 1000) {
+            this.trailSavedAt.set(leg, Date.now());
+            this.save();
+        }
+        return ht.phase === 'trail';
     }
 
     // ---- deferred target exit (opt-in: a subclass's placeExit calls deferTargetExit) ----
@@ -438,7 +529,7 @@ export abstract class LimitEntryStrategy extends Strategy {
     }
 
     canHandleOptionQuote(quote: OptionQuote): boolean {
-        return this.legs().some((l) => l.token === String(quote.token) && l.status === 'filled' && (!!l.stop || (l.exit === 'target' && l.targetSellQty === undefined)));
+        return this.legs().some((l) => l.token === String(quote.token) && l.status === 'filled' && (!!l.stop || (l.exit === 'target' && l.targetSellQty === undefined) || (!!l.halfTrail && l.soldQty < l.filledQty)));
     }
 
     // Tick-driven stop for a 'self' exit (used when a broker has no post-fill protection, or attaching it failed).
@@ -450,6 +541,7 @@ export abstract class LimitEntryStrategy extends Strategy {
                 await this.onTargetTick(leg, quote.ltp);
                 continue;
             }
+            if (leg.halfTrail && leg.halfTrail.sellQty !== undefined && await this.onHalfTrailTick(leg, quote.ltp)) continue;
             if (!leg.stop) continue;
             if (quote.ltp > 0 && quote.ltp <= leg.stop) {
                 Log.log(`[${this.logTag}] STOP hit on ${leg.broker} ${leg.tsym}: ltp ${quote.ltp} <= ${leg.stop}`);

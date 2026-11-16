@@ -351,6 +351,7 @@ export function validateConfigFile(parsed: any): string[] {
             if (s.startSide !== 'CE' && s.startSide !== 'PE') errors.push(`${s.type}.startSide must be CE or PE (got ${JSON.stringify(s.startSide)})`);
             if (typeof s.startTime !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.startTime)) errors.push(`${s.type}.startTime must be HH:mm (got ${JSON.stringify(s.startTime)})`);
             if (s.patternTimeoutMinutes !== undefined && !(isNum(s.patternTimeoutMinutes) && s.patternTimeoutMinutes > 0)) errors.push(`${s.type}.patternTimeoutMinutes must be a positive number of minutes (got ${JSON.stringify(s.patternTimeoutMinutes)})`);
+            if (s.trailDistance !== undefined && !(isNum(s.trailDistance) && s.trailDistance > 0)) errors.push(`${s.type}.trailDistance must be a positive number of option points (got ${JSON.stringify(s.trailDistance)})`);
             for (const key of ['target', 'stopLoss']) {
                 const v = s[key] !== undefined && s[key] !== null ? s[key] : parsed.settings?.[key];
                 if (typeof v === 'string' && v.trim().toLowerCase() === 'none') errors.push(`${s.type}.${key} must not be 'none' (the strategy needs both a target and a stop)`);
