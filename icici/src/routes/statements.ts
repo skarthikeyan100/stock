@@ -38,7 +38,7 @@ const invoiceDir = (contractorId: string) => path.join(storageRoot(false), '_inv
 /** Advanced: the invoice for a PAID statement (PDF, number, date). Uploading restores access if the contractor was paused for it. */
 router.post('/contractor/statements/:id/invoice', requireAuth, upload.single('invoice'), async function (req, res) {
     const c = await me(req);
-    if (!c || c.type !== 'BUSINESS') { res.status(403).json({ error: 'Invoices are for Business contractors' }); return; }
+    if (!c || c.type !== 'BUSINESS') { res.status(403).json({ error: 'Invoices are for Research Analysts (Business, GSTIN)' }); return; }
     const s = (await statementsCol().findOne({ id: req.params.id, contractorId: c.id })) as StatementDoc | null;
     if (!s || s.status !== 'PAID' || !s.invoiceDueAt) { res.status(404).json({ error: 'No invoice is due for that statement' }); return; }
     if (s.invoice) { res.status(409).json({ error: 'An invoice was already uploaded for this statement' }); return; }
@@ -97,7 +97,7 @@ router.post('/owner/statements/:id/paid', requireAdmin, async function (req, res
 /** Advanced: change the fee model from a FUTURE (or today's) effective date; earlier periods are never touched. */
 router.post('/owner/contractors/:id/fee-model', requireAdmin, async function (req, res) {
     const c = await getContractor(req.params.id);
-    if (!c || c.type !== 'BUSINESS') { res.status(404).json({ error: 'Not an Advanced contractor' }); return; }
+    if (!c || c.type !== 'BUSINESS') { res.status(404).json({ error: 'Not a Research Analyst' }); return; }
     const from = str(req.body?.from), model = str(req.body?.model);
     // The one exception to "never retroactive": giving the AMOUNT to a fixed-fee entry that was created without one (a contractor who did not confirm clause 6A.5) on its own date.
     const amountless = (c.feeModels ?? []).some((e) => e.from === from && e.model === 'FIXED_PERIOD' && !(Number(e.fixedAmount) > 0));

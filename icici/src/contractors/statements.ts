@@ -225,6 +225,6 @@ export async function markPaid(id: string, by: string, utr: string, contractor: 
 }
 
 export function statementCsv(s: StatementDoc, c: Contractor): string {
-    const rows: [string, string | number][] = [['Contractor', c.name], ['Statement', s.id], ['Kind', s.kind], ['Period from', s.periodFrom], ['Period to', s.periodTo], ...Object.entries(s.lines).map(([k, v]): [string, string | number] => [k, v]), ['Gross amount (INR)', s.gross], ['Status', s.status], ['UTR', s.utr ?? '']];
+    const rows: [string, string | number][] = [['Research Analyst / Researcher', c.name], ['Statement', s.id], ['Kind', s.kind], ['Period from', s.periodFrom], ['Period to', s.periodTo], ...Object.entries(s.lines).map(([k, v]): [string, string | number] => [k, v]), ['Gross amount (INR)', s.gross], ['Status', s.status], ['UTR', s.utr ?? '']];
     return rows.map(([k, v]) => `"${String(k).replace(/"/g, '""')}","${String(v).replace(/"/g, '""')}"`).join('\n') + '\n';
 }

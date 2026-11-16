@@ -15,8 +15,8 @@ export default function LandingPage() {
         </div>
       </nav>
       <main className="flex-grow-1 d-flex flex-column justify-content-center align-items-center text-center px-3">
-        <h1 className="h3 mb-3">Nivedha Tech – Contractor Portal</h1>
-        <p className="lead mb-4">Private contractor programme. By invitation only.</p>
+        <h1 className="h3 mb-3">Nivedha Tech – Research Portal</h1>
+        <p className="lead mb-4">Private research programme. By invitation only.</p>
         <p className="mb-0">
           Contact: <a href="mailto:admin@nivedhatech.com">admin@nivedhatech.com</a>
         </p>

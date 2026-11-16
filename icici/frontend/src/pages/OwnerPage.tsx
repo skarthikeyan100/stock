@@ -64,7 +64,7 @@ function ContractorsTab() {
             <Card.Body>
               <Form onSubmit={createInvite}>
                 <Form.Select className="mb-2" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-                  <option value="INDIVIDUAL">Beginner: Individual (PAN), forecasts</option>
+                  <option value="INDIVIDUAL">Researcher: Individual (PAN), forecasts</option>
                   <option value="BUSINESS">Advanced: Business (GSTIN), recommendations</option>
                 </Form.Select>
                 <Form.Control className="mb-2" type="email" placeholder="Email (optional: locks the link to it; needed to send by Gmail)" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
@@ -107,12 +107,12 @@ function ContractorsTab() {
       </Row>
 
       <Card>
-        <Card.Header>Contractors</Card.Header>
+        <Card.Header>Participants</Card.Header>
         <Card.Body className="p-0">
           <Table size="sm" responsive className="mb-0 align-middle">
             <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Agreement</th><th>SEBI</th><th>Trades as</th><th /></tr></thead>
             <tbody>
-              {contractors.length === 0 && <tr><td colSpan={7} className="text-muted p-3">No contractors yet.</td></tr>}
+              {contractors.length === 0 && <tr><td colSpan={7} className="text-muted p-3">No participants yet.</td></tr>}
               {contractors.map((c) => (
                 <tr key={c.id}>
                   <td>{c.name}{c.isTest && <Badge bg="warning" text="dark" className="ms-1">TEST</Badge>}<div className="small text-muted">{c.email}</div></td>
@@ -151,7 +151,7 @@ function RecommendationsTab() {
   useEffect(() => { getJson('/owner/recommendations').then(setRows).catch(() => undefined); }, []);
   return (
     <Table size="sm" responsive>
-      <thead><tr><th>When</th><th>Contractor</th><th>Contract</th><th className="text-end">Entry</th><th className="text-end">Target</th><th className="text-end">Stop</th><th>Status</th><th>Decided</th></tr></thead>
+      <thead><tr><th>When</th><th>Research Analyst</th><th>Contract</th><th className="text-end">Entry</th><th className="text-end">Target</th><th className="text-end">Stop</th><th>Status</th><th>Decided</th></tr></thead>
       <tbody>
         {rows.length === 0 && <tr><td colSpan={8} className="text-muted">None yet.</td></tr>}
         {rows.map((r) => <tr key={r.id}><td>{when(r.createdAt)}</td><td>{r.contractorName}</td><td>{r.index} {r.contract}</td><td className="text-end">{r.entry}</td><td className="text-end">{r.target}</td><td className="text-end">{r.stop}</td><td><Badge bg={r.status === 'APPROVED' ? 'success' : r.status === 'PENDING' ? 'warning' : 'secondary'}>{r.status}</Badge></td><td>{when(r.decidedAt)} {r.note}</td></tr>)}
@@ -185,14 +185,14 @@ function PilotTab() {
         <>
           <h6>{data.day}</h6>
           <Table size="sm" responsive>
-            <thead><tr><th>Contractor</th><th className="text-end">Forecasts</th><th className="text-end">Passed filters</th><th className="text-end">Rejected</th><th className="text-end">Orders armed</th><th className="text-end">Accuracy (scored)</th></tr></thead>
+            <thead><tr><th>Researcher</th><th className="text-end">Forecasts</th><th className="text-end">Passed filters</th><th className="text-end">Rejected</th><th className="text-end">Orders armed</th><th className="text-end">Accuracy (scored)</th></tr></thead>
             <tbody>
-              {data.per.length === 0 && <tr><td colSpan={6} className="text-muted">No Beginner contractors yet.</td></tr>}
+              {data.per.length === 0 && <tr><td colSpan={6} className="text-muted">No Researchers yet.</td></tr>}
               {data.per.map((p: Json) => <tr key={p.contractorId}><td>{p.name}</td><td className="text-end">{p.forecasts}</td><td className="text-end">{p.accepted}</td><td className="text-end">{p.rejected}</td><td className="text-end">{p.ordersPlaced}</td><td className="text-end">{p.accuracy.accuracyPct == null ? '–' : `${p.accuracy.accuracyPct}% of ${p.accuracy.scored}`}</td></tr>)}
             </tbody>
           </Table>
           <Table size="sm" responsive>
-            <thead><tr><th>Time</th><th>Contractor</th><th>Call</th><th>Decision</th><th>Why</th><th>Order</th><th>Outcome</th></tr></thead>
+            <thead><tr><th>Time</th><th>Participant</th><th>Call</th><th>Decision</th><th>Why</th><th>Order</th><th>Outcome</th></tr></thead>
             <tbody>
               {data.recent.map((r: Json) => (
                 <tr key={r.id}>
@@ -227,14 +227,14 @@ function FeesTab() {
   return (
     <>
       {err && <Alert variant="danger" onClose={() => setErr('')} dismissible>{err}</Alert>}
-      {data && !data.taxPhaseComplete && <Alert variant="warning">Payments are locked for real contractors until the tax phase is complete (<code>forecast.taxPhaseComplete</code> in config.yml). Statements are created and can be reviewed; Approve and Mark paid are refused. The TEST user is not affected.</Alert>}
+      {data && !data.taxPhaseComplete && <Alert variant="warning">Payments are locked for real participants until the tax phase is complete (<code>forecast.taxPhaseComplete</code> in config.yml). Statements are created and can be reviewed; Approve and Mark paid are refused. The TEST user is not affected.</Alert>}
       <div className="d-flex gap-2 mb-3 flex-wrap">
         <Button size="sm" variant="outline-primary" onClick={() => post('/owner/statements/run', { kind: 'weekly' })}>Run weekly statements now</Button>
         <Button size="sm" variant="outline-primary" onClick={() => post('/owner/statements/run', { kind: 'monthly' })}>Run monthly retainers now</Button>
         <span className="small text-muted align-self-center">They also run by themselves: weekly on Wednesday from 06:00 IST, retainers on the 1st. Running again creates nothing twice.</span>
       </div>
       <Table size="sm" responsive className="align-middle">
-        <thead><tr><th>Contractor</th><th>Kind</th><th>Period</th><th className="text-end">Gross (₹)</th><th>Details</th><th>Status</th><th /></tr></thead>
+        <thead><tr><th>Participant</th><th>Kind</th><th>Period</th><th className="text-end">Gross (₹)</th><th>Details</th><th>Status</th><th /></tr></thead>
         <tbody>
           {(data?.statements ?? []).length === 0 && <tr><td colSpan={7} className="text-muted">No statements yet.</td></tr>}
           {(data?.statements ?? []).map((s: Json) => (
@@ -258,7 +258,7 @@ function FeesTab() {
         <Card.Body>
           <Form onSubmit={saveModel}>
             <Row className="g-2">
-              <Col md={6}><Form.Select value={fm.contractor} onChange={(e) => setFm({ ...fm, contractor: e.target.value })} required><option value="">Contractor…</option>{advanced.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Form.Select></Col>
+              <Col md={6}><Form.Select value={fm.contractor} onChange={(e) => setFm({ ...fm, contractor: e.target.value })} required><option value="">Research Analyst…</option>{advanced.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Form.Select></Col>
               <Col md={6}><Form.Control type="date" value={fm.from} onChange={(e) => setFm({ ...fm, from: e.target.value })} required /></Col>
               <Col md={6}><Form.Select value={fm.model} onChange={(e) => setFm({ ...fm, model: e.target.value })}><option value="PROFIT_SHARE">Profit share (%)</option><option value="FIXED_PERIOD">Fixed fee for a duration (₹ per period)</option></Form.Select></Col>
               <Col md={6}><Form.Control inputMode="decimal" placeholder={fm.model === 'PROFIT_SHARE' ? 'Percent, e.g. 25' : 'Rupees per period, e.g. 25000'} value={fm.value} onChange={(e) => setFm({ ...fm, value: e.target.value })} required /></Col>
@@ -288,7 +288,7 @@ function KycChangesTab() {
     <>
       {err && <Alert variant="danger">{err}</Alert>}
       <Table size="sm" responsive>
-        <thead><tr><th>When</th><th>Contractor</th><th>Wants to change</th><th /></tr></thead>
+        <thead><tr><th>When</th><th>Participant</th><th>Wants to change</th><th /></tr></thead>
         <tbody>
           {rows.length === 0 && <tr><td colSpan={4} className="text-muted">No pending changes.</td></tr>}
           {rows.map((r) => <tr key={r.id}><td>{when(r.createdAt)}</td><td>{r.name}<div className="small text-muted">{r.email}</div></td><td>{(r.fields as string[]).map((f) => f.replace(/Enc$/, '')).join(', ')}</td>
@@ -311,7 +311,7 @@ function AgreementsTab() {
     const fd = new FormData(e.currentTarget);
     const r = await apiFetch('/owner/agreements', { method: 'POST', body: fd });
     if (!r.ok) { setErr(await readError(r)); return; }
-    setOk('Scheduled. Contractors move to "agreement pending" on the effective date, with a notice from 15 days before.'); load(); (e.target as HTMLFormElement).reset();
+    setOk('Scheduled. Participants move to "agreement pending" on the effective date, with a notice from 15 days before.'); load(); (e.target as HTMLFormElement).reset();
   };
   return (
     <>
@@ -341,12 +341,12 @@ export default function OwnerPage() {
   return (
     <Container fluid className="py-3 px-4">
       <div className="d-flex align-items-center gap-3 mb-3">
-        <h1 className="h4 mb-0">Contractors</h1>
+        <h1 className="h4 mb-0">Participants</h1>
         <Link to="/trade">Trading</Link>
         <Link to="/admin">Admin</Link>
       </div>
       <Tabs defaultActiveKey="contractors" className="mb-3" mountOnEnter>
-        <Tab eventKey="contractors" title="Contractors"><ContractorsTab /></Tab>
+        <Tab eventKey="contractors" title="Participants"><ContractorsTab /></Tab>
         <Tab eventKey="recs" title="Recommendations"><RecommendationsTab /></Tab>
         <Tab eventKey="pilot" title="Pilot (forecasts)"><PilotTab /></Tab>
         <Tab eventKey="fees" title="Fees"><FeesTab /></Tab>

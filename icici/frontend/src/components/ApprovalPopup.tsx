@@ -56,7 +56,7 @@ export default function ApprovalPopup() {
           <tr><td>Stop loss</td><td className="text-end">{cur.stop}</td></tr>
         </tbody></table>
         <div className="small text-muted mb-2">Received {new Date(cur.createdAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false })}. It lapses at the end of the day if you do nothing.</div>
-        <Form.Control size="sm" placeholder="Note (optional, shown to the contractor)" value={note} onChange={(e) => setNote(e.target.value)} />
+        <Form.Control size="sm" placeholder="Note (optional, shown to the Research Analyst)" value={note} onChange={(e) => setNote(e.target.value)} />
         {err && <div className="text-danger small mt-2">{err}</div>}
       </Modal.Body>
       <Modal.Footer>
@@ -75,7 +75,7 @@ export function OwnerConsoleLink() {
   if (!isAdmin || pathname === '/console' || pathname === '/owner-login') return null;
   return (
     <Link to="/console" className="btn btn-sm btn-dark" style={{ position: 'fixed', left: 12, bottom: 12, zIndex: 1500 }}>
-      Contractors {items.length > 0 && <Badge bg="danger">{items.length}</Badge>}
+      Participants {items.length > 0 && <Badge bg="danger">{items.length}</Badge>}
     </Link>
   );
 }

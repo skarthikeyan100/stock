@@ -205,7 +205,7 @@ router.post('/invite/:token/accept', async function (req, res) {
     setContractorCookie(res, email, c.type);
     sendWelcomeIfDue(c).catch(() => undefined); // never blocks or fails the acceptance
     if (c.type === 'BUSINESS' && !confirmed) await notifyAdmins('fee_model', `${name} did not confirm clause 6A.5: the fixed fee applies from today. Set its amount on the Fees tab.`, { contractorId: c.id });
-    await notifyAdmins('contractor_accepted', `${name} (${c.type === 'INDIVIDUAL' ? 'Beginner' : 'Advanced'}) accepted the invite${c.status === 'ACTIVE' ? ' and is active.' : `, but the cap of ${maxActiveContractors()} active contractors is reached: activate them when a place is free.`}`, { contractorId: c.id });
+    await notifyAdmins('contractor_accepted', `${name} (${c.type === 'INDIVIDUAL' ? 'Researcher, Beginner' : 'Research Analyst, Advanced'}) accepted the invite${c.status === 'ACTIVE' ? ' and is active.' : `, but the cap of ${maxActiveContractors()} active participants is reached: activate them when a place is free.`}`, { contractorId: c.id });
     res.json(await contractorClientView(c));
 });
 
@@ -218,13 +218,13 @@ async function me(req: express.Request): Promise<Contractor | null> {
 
 router.get('/contractor/me', requireAuth, async function (req, res) {
     const c = await me(req);
-    if (!c) { res.status(404).json({ error: 'Not a contractor' }); return; }
+    if (!c) { res.status(404).json({ error: 'Not a participant' }); return; }
     res.json(await contractorClientView(c));
 });
 
 async function sendOwnAgreement(req: express.Request, res: express.Response) {
     const c = await me(req);
-    if (!c) { res.status(404).json({ error: 'Not a contractor' }); return; }
+    if (!c) { res.status(404).json({ error: 'Not a participant' }); return; }
     const version = await currentVersion();
     const mine = c.agreementVersion === version ? readStored(c.agreementFile) : null; // the copy they accepted, with their details filled in
     if (mine) { res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="Agreement.pdf"', 'X-Agreement-Sha256': sha256Of(mine), 'Cache-Control': 'no-store' }).send(mine); return; }
@@ -237,7 +237,7 @@ router.get('/agreements/current', requireAuth, sendOwnAgreement);
 
 router.post('/contractor/accept-agreement', requireAuth, async function (req, res) {
     const c = await me(req);
-    if (!c || c.status === 'TERMINATED') { res.status(404).json({ error: 'Not a contractor' }); return; }
+    if (!c || c.status === 'TERMINATED') { res.status(404).json({ error: 'Not a participant' }); return; }
     const version = await currentVersion();
     const body = req.body ?? {};
     if (body.acceptTerms !== true || body.dpdpConsent !== true) { res.status(400).json({ error: 'Please accept the agreement and the data consent' }); return; }
@@ -307,7 +307,7 @@ router.post('/contractor/kyc-change', requireAuth, async function (req, res) {
         const v = normPan(b.pan); if (!validPan(v)) { res.status(400).json({ error: 'PAN is not valid' }); return; } change.panEnc = encryptField(v);
     }
     if (b.gstin !== undefined) {
-        if (c.type !== 'BUSINESS') { res.status(400).json({ error: 'GSTIN applies to Business contractors only' }); return; }
+        if (c.type !== 'BUSINESS') { res.status(400).json({ error: 'GSTIN applies to Research Analysts (Business) only' }); return; }
         const g = normGstin(b.gstin);
         if (!gstinMatchesPan(g, g.slice(2, 12))) { res.status(400).json({ error: 'GSTIN is not valid' }); return; }
         change.gstinEnc = encryptField(g);

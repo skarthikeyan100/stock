@@ -106,7 +106,7 @@ async function firstActivation(id: string): Promise<Record<string, unknown>> { c
 router.post('/owner/contractors/:id/activate', requireAdmin, async function (req, res) {
     await transition(req, res, 'ACTIVE', { statusReason: null, ...(await firstActivation(req.params.id)) }, async (c) => {
         if (!c.kyc) return 'KYC is missing';
-        if (c.agreementVersion !== await currentVersion()) return 'The contractor has not accepted the current agreement version';
+        if (c.agreementVersion !== await currentVersion()) return 'This participant has not accepted the current agreement version';
         if (!c.isTest && c.status !== 'PAUSED' && c.status !== 'PAUSED_INVOICE' && (await activeCount()) >= maxActiveContractors()) return `The cap of ${maxActiveContractors()} active contractors is reached`;
         return null;
     });

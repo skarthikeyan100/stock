@@ -12,14 +12,14 @@ export default function PrivacyNoticePage() {
           <ThemeToggle />
         </div>
         <h1 className="h3">Privacy Notice</h1>
-        <p className="text-muted">Nivedha Tech – Contractor Portal · Last updated: November 2026</p>
+        <p className="text-muted">Nivedha Tech – Research Portal · Last updated: November 2026</p>
 
         <h2 className="h5 mt-4">1. Who this is for</h2>
-        <p>This portal is a private programme for contractors who have been invited and have accepted their services agreement. Nobody else has an account, and we do not collect data from visitors beyond what is needed to run the site securely.</p>
+        <p>This portal is a private research programme for Research Analysts and Researchers who have been invited and have accepted their services agreement. Nobody else has an account, and we do not collect data from visitors beyond what is needed to run the site securely.</p>
 
         <h2 className="h5 mt-4">2. What we collect</h2>
         <ul>
-          <li><strong>Identity and contact:</strong> your name, email address and address; for a business, its legal name, signatory and designated forecaster.</li>
+          <li><strong>Identity and contact:</strong> your name, email address and address; for a business, its legal name, signatory and designated Research Analyst.</li>
           <li><strong>Tax and registration:</strong> PAN, GSTIN and, for a business, its SEBI registration number and validity.</li>
           <li><strong>Payment:</strong> bank account details and the payments we make to you, with their reference numbers.</li>
           <li><strong>Your work on the portal:</strong> the forecasts or recommendations you submit, their time and outcome, your statements and invoices.</li>
@@ -46,7 +46,7 @@ export default function PrivacyNoticePage() {
         <p>We use one cookie, to keep you signed in. If you clear it or log out, you will need a new invitation. We use no advertising or tracking cookies.</p>
 
         <h2 className="h5 mt-4">9. Changes</h2>
-        <p>If we change this notice we will tell contractors by email before the change takes effect.</p>
+        <p>If we change this notice we will tell participants by email before the change takes effect.</p>
       </Container>
     </div>
   );

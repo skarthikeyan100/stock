@@ -16,14 +16,12 @@ export async function sendContractorEmail(to: string, subject: string, html: str
     return { to, redirectedTo: test ?? undefined };
 }
 
-/** Business (GSTIN) contractors submit recommendations; Individual (PAN) contractors submit forecasts. */
-export const programmeName = (type: string) => (type === 'BUSINESS' ? 'recommendations programme' : 'forecasting programme');
+/** Business (GSTIN) users are Research Analysts (recommendations); Individual (PAN) users are Researchers (forecasts). */
+export const kindLabel = (type: string) => (type === 'BUSINESS' ? 'Research Analyst (GSTIN)' : 'Researcher (PAN)');
 
 export async function sendInviteEmail(to: string, type: string, link: string, expires: Date): Promise<Sent> {
-    const kind = type === 'BUSINESS' ? 'Business (GSTIN)' : 'Individual (PAN)';
-    const programme = programmeName(type);
-    const vars = { kind, programme, link, expires: expires.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' }) };
+    const vars = { kind: kindLabel(type), link, expires: expires.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' }) };
     const html = renderTemplate(fs.readFileSync(path.join(TEMPLATE_DIR, 'contractorInviteEmail.html'), 'utf8'), vars, true);
-    const subject = renderTemplate(fs.readFileSync(path.join(TEMPLATE_DIR, 'contractorInviteEmail.subject.txt'), 'utf8').replace(/\s+/g, ' ').trim(), { programme }, false);
+    const subject = fs.readFileSync(path.join(TEMPLATE_DIR, 'contractorInviteEmail.subject.txt'), 'utf8').replace(/\s+/g, ' ').trim();
     return sendContractorEmail(to, subject, html);
 }

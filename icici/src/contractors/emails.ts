@@ -8,16 +8,16 @@ import { istDayBounds, todayIst } from '../eodEmail';
 import { Contractor, tradeUsers } from './types';
 import { contractorsCol } from './store';
 import { readAgreement } from './agreements';
-import { programmeName, sendContractorEmail } from './email';
+import { kindLabel, sendContractorEmail } from './email';
 import { readStored } from './personalise';
 import { isPlaceholderEmail } from './validate';
 
 const TEMPLATE_DIR = path.resolve(__dirname, '..', '..', 'templates');
-const kindOf = (c: Contractor) => (c.type === 'INDIVIDUAL' ? 'Individual (PAN)' : 'Business (GSTIN)');
+const kindOf = (c: Contractor) => kindLabel(c.type);
 
 const WHAT: Record<Contractor['type'], string> = {
-    INDIVIDUAL: 'You submit Flash Forecasts: whether NIFTY 50 will move Up or Down over the forecast window, during the forecasting hours in your agreement, up to the daily limit. A forecast cannot be edited or withdrawn once recorded, and is scored from the index value at the time you submit it.',
-    BUSINESS: 'You submit research recommendations for NIFTY option contracts (strike, CE or PE, entry, target and stop loss). We review each one and approve or reject it; we decide whether to trade and how.',
+    INDIVIDUAL: 'As a Researcher you submit Flash Forecasts: whether NIFTY 50 will move Up or Down over the forecast window, during the forecasting hours in your agreement, up to the daily limit. A forecast cannot be edited or withdrawn once recorded, and is scored from the index value at the time you submit it.',
+    BUSINESS: 'As a Research Analyst you submit research recommendations for NIFTY option contracts (strike, CE or PE, entry, target and stop loss). We review each one and approve or reject it; we decide whether to trade and how.',
 };
 const PAY: Record<Contractor['type'], string> = {
     INDIVIDUAL: 'A monthly retainer and a fixed fee for each correct forecast, as set out in Schedule 1 of your agreement. Incorrect or neutral forecasts earn nothing and never cost you anything. Your fees do not depend on whether or how we traded.',
@@ -29,10 +29,10 @@ const SEE: Record<Contractor['type'], string> = {
 };
 
 export function renderWelcome(c: Contractor, version: string, acceptedAt: Date): { subject: string; html: string } {
-    const vars = { name: c.name, kind: kindOf(c), programme: programmeName(c.type), version, agreementName: c.type === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Forecasting Services Agreement', what: WHAT[c.type], pay: PAY[c.type], see: SEE[c.type],
+    const vars = { name: c.name, kind: kindOf(c), version, agreementName: c.type === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Forecasting Services Agreement', what: WHAT[c.type], pay: PAY[c.type], see: SEE[c.type],
         acceptedAt: acceptedAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) };
     return {
-        subject: renderTemplate(fs.readFileSync(path.join(TEMPLATE_DIR, 'contractorWelcomeEmail.subject.txt'), 'utf8').replace(/\s+/g, ' ').trim(), vars, false),
+        subject: fs.readFileSync(path.join(TEMPLATE_DIR, 'contractorWelcomeEmail.subject.txt'), 'utf8').replace(/\s+/g, ' ').trim(),
         html: renderTemplate(fs.readFileSync(path.join(TEMPLATE_DIR, 'contractorWelcomeEmail.html'), 'utf8'), vars, true),
     };
 }

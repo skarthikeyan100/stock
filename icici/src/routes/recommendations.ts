@@ -30,7 +30,7 @@ const ownView = (r: RecommendationDoc) => ({ id: String(r._id), contract: r.cont
 // ---------- contractor ----------
 router.post('/recommendations', requireAuth, async function (req, res) {
     const c = await me(req);
-    if (!c || c.type !== 'BUSINESS') { res.status(403).json({ error: 'Recommendations are for Advanced (Business) contractors' }); return; }
+    if (!c || c.type !== 'BUSINESS') { res.status(403).json({ error: 'Recommendations are for Research Analysts (Business, GSTIN)' }); return; }
     if (!submitLimiter.allow(c.id)) { res.status(429).json({ error: 'Too many attempts. Try again in a minute.' }); return; }
     const blocked = submissionBlock(c, await currentVersion());
     if (blocked) { res.status(403).json({ error: blocked }); return; }
@@ -84,9 +84,9 @@ router.post('/owner/recommendations/:id/decision', requireAdmin, async function 
     const actor = resolveRealUser(req) ?? 'admin';
     const c = decision === 'approve' ? await getContractor(rec.contractorId) : null;
     if (decision === 'approve') {
-        if (!c || c.status !== 'ACTIVE') { res.status(409).json({ error: 'The contractor is no longer active' }); return; }
+        if (!c || c.status !== 'ACTIVE') { res.status(409).json({ error: 'This Research Analyst is no longer active' }); return; }
         if (rec.day !== istDate()) { res.status(409).json({ error: 'This recommendation is from an earlier day' }); return; }
-        if (await tradeInProgress(c)) { res.status(409).json({ error: 'Cannot approve now: a trade of this contractor is still in progress.' }); return; }
+        if (await tradeInProgress(c)) { res.status(409).json({ error: 'Cannot approve now: a trade of this Research Analyst is still in progress.' }); return; }
         const drawdown = await drawdownRefusal(c as Contractor); // Schedule 2: no new order past the contractor's daily or weekly drawdown limit
         if (drawdown) { res.status(409).json({ error: `Cannot approve now: ${drawdown}.` }); return; }
     }

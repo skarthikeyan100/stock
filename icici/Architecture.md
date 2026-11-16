@@ -86,7 +86,7 @@ Proposal: two processes, `strategies` and "others". Rejected as stated, because 
 Revisit if the IPC layer becomes a real maintenance or latency problem.
 
 
-## Contractor portal (2026-11-16)
+## Research portal (2026-11-16)
 
 Where the portal's code runs, so a restart or a hot-restart is predictable:
 

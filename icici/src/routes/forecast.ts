@@ -26,7 +26,7 @@ const view = (f: ForecastDoc) => ({
 
 router.post('/forecast', requireAuth, async function (req, res) {
     const c = await me(req);
-    if (!c) { res.status(403).json({ error: 'Forecasts are for Beginner (Individual) contractors' }); return; }
+    if (!c) { res.status(403).json({ error: 'Forecasts are for Researchers (Individual, PAN)' }); return; }
     const r = await engine().submit(c, req.body);
     if (r.ok === false) { const f = r as { status: number; error: string }; res.status(f.status).json({ error: f.error }); return; }
     const ok = r as Extract<typeof r, { ok: true }>;

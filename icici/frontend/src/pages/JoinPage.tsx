@@ -110,8 +110,8 @@ export default function JoinPage() {
 
   return (
     <Container className="py-4" style={{ maxWidth: 900 }}>
-      <h1 className="h4 mb-1">Nivedha Tech – {business ? 'Recommendations' : 'Forecasting'} programme</h1>
-      <p className="text-muted">{re ? `Welcome back, ${re.name}.` : `You are invited as a ${business ? 'Business (GSTIN)' : 'Individual (PAN)'} contractor.`} This link works once and signs this browser in. Give your details first; the agreement is then prepared with them for you to read and accept.</p>
+      <h1 className="h4 mb-1">Nivedha Tech – Research Portal</h1>
+      <p className="text-muted">{re ? `Welcome back, ${re.name}.` : `You are invited as a ${business ? 'Research Analyst (GSTIN)' : 'Researcher (PAN)'}.`} This link works once and signs this browser in. Give your details first; the agreement is then prepared with them for you to read and accept.</p>
       <Alert variant="warning" className="small">There is no login page. If you log out or clear your browser data you will need a new invitation, so keep using this browser.</Alert>
       <Form onSubmit={submit}>
         {!re && (
