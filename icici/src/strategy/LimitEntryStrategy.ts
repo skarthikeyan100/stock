@@ -12,7 +12,7 @@ import configService from '../prism/ConfigService';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 import { roundToTick } from '../util/tick';
 import { NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY, INDEX_LOT_SIZE } from '../constants';
-import { configuredBrokersOf } from '../util/brokerName';
+import { configuredBrokersOf, normalizeBrokerName } from '../util/brokerName';
 import { splitIntoFreezeQtyChunks } from '../util/quantityChunks';
 import { isPastEodClose } from '../util/eodClose';
 import { exchangeForTsym } from '../util/underlyings';
@@ -772,13 +772,15 @@ export abstract class LimitEntryStrategy extends Strategy {
         for (const leg of this.legs()) {
             // The entry order is still open (possibly part-filled, in which case status is already 'filled').
             const entryOpen = (leg.status === 'resting' || leg.status === 'filled') && !leg.entryCancelled && leg.filledQty < leg.qty;
-            // The global max-profit latch is per broker, but this strategy's entry is one cycle over all its brokers: once ANY broker of it is latched
-            // today, every entry still resting (on any broker) is cancelled, so no fill after the trip opens a position nothing locks (2026-11-16: an
-            // ANT entry placed 10:50:02 filled at 10:52 after the Prism trip at 10:50:10). Re-read each pass, so it holds across a restart and is retried
-            // (throttled) when the cancel fails; a disabled strategy never reaches here.
-            if (entryOpen && !eod && now - (leg.latchCancelAt ?? 0) >= RETRY_BACKOFF_MS && await isGlobalMaxProfitLatched(this.userId)) {
+            // The global max-profit latch is judged PER BROKER (each strategy instance on each broker against the cap): when it is set for (this
+            // strategy, this leg's broker) the entry still resting on THAT broker is cancelled, so no fill after the trip opens a position nothing
+            // locks (2026-11-16: an ANT entry placed 10:50:02 filled at 10:52 after the Prism trip at 10:50:10, which the then broker-wide cancel
+            // would have covered by cancelling every broker; the other brokers' entries are not tripped and are left alone). The latch scope is the
+            // canonical broker name (config brokers are normalised by configuredBrokersOf); a persisted leg.broker is normalised the same way.
+            // Re-read each pass, so it holds across a restart and is retried (throttled) when the cancel fails; a disabled strategy never reaches here.
+            if (entryOpen && !eod && now - (leg.latchCancelAt ?? 0) >= RETRY_BACKOFF_MS && await isGlobalMaxProfitLatched(this.userId, normalizeBrokerName(leg.broker))) {
                 leg.latchCancelAt = now;
-                Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: the global max profit is hit today (on a broker of this strategy) - cancelling the resting entry`);
+                Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: the global max profit is hit today on ${leg.broker} - cancelling the resting entry on that broker`);
                 await this.cancelEntry(leg, 'global max profit hit');
                 continue;
             }
