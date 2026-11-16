@@ -61,3 +61,22 @@ Nov-13 backtest, target 10 / stop 10: 24 trades, 8 winners, 16 stop-flips. A win
 2. Stop confirmation, flip cooldown and `maxConsecutiveStops`.
 3. Separate `valleyDepth`, `peakTolerance`, `failDistance`, with today's behaviour as the default.
 4. Sweep tool over all stored days, then pick defaults from it.
+
+## All strategies (2026-11-16)
+
+### Every strategy supports `brokers: [...]` natively, each broker independent
+Every block already must list `brokers:` (the validator requires it), but it works in two different ways today:
+- Ten types handle the list inside one strategy (BulkPcr, BulkPcrAutoStart, Hourly, Butterfly, TopStock, Recommendation, NiftyChange, MomentumAtFixedTime, NextWeek, Breakout; GammaBurst and MandW too). Among them only MandW keeps a fully separate cycle, leg, watch, retry count and profit-cap latch per broker; the LimitEntry ones start one cycle across all brokers and share the cycle key.
+- The other types (Continuous, SupportResistance, Sentiment, RateOfChange, Gap, RuleBased, GoodMorning*, TargetReach) are expanded in memory into one instance per broker (`<id>`, `<id>-ANT`, `<id>-Breeze`), so they are independent but are separate strategies with separate state files and ids.
+
+To do: one rule for all strategies. A block with `brokers: [...]` is ONE strategy, and each broker in it acts independently: its own cycle, legs, state, latch (a profit-cap or loss latch on kite never touches prism), retries and refusals, with `quantity` / `maxInvestment` per broker. Steps:
+1. Make the per-broker scope of `LimitEntryStrategy.startCycle(..., [broker])` (added for MandW) the model, and move NiftyChange, MomentumAtFixedTime, NextWeek, Breakout, Recommendation and GammaBurst to per-broker cycle keys and state, so one broker's unfilled or refused entry never holds back another's.
+2. Decide for the expanded types whether to keep the per-broker instances (already independent) or fold them into one strategy; either way the config looks the same, only the internals differ. Keep the existing `-ANT` / `-Breeze` ids and state files working if they are kept.
+3. Add one test per strategy that two brokers diverge independently (one stopped or latched, the other keeps trading).
+
+### Every strategy can use halfTrail
+The half-at-target + trail exit (`halfTrail.ts` plus the shared engine in `LimitEntryStrategy`, switched on by `trailDistance`) is only enabled for MandWStrategy today, and BulkPcr has its own separate trail (see the ToDo entry to merge them). To do: make it available to every strategy that exits on a target, configured like `target` / `stopLoss` (the block's value, else a `settings.trailDistance`; absent = off; not engaged with fewer than 2 lots):
+1. NextWeek, Breakout, NiftyChange, MomentumAtFixedTime, Recommendation, GammaBurst: they already sit on `CandleEntryStrategy` / `LimitEntryStrategy`, so this is mostly reading the key in `trailDistance()` and a validator rule.
+2. The strategies with their own exit code (Continuous, SupportResistance, SimpleContinuous, ScaledHedged, Hourly, Butterfly, TopStock, BulkPcr, the legacy ones) need the engine adapted to their exit path; each needs its own check for partial fills, chunked orders and restarts.
+3. Per broker: the half and the trail are decided per leg, so they stay independent across brokers.
+4. Backtests: add the option to the backtest tools that exist, so the effect can be measured before it is turned on anywhere.
