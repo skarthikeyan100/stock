@@ -106,7 +106,7 @@ async function main() {
     assert((await db.collection('notifications').find({ user: 'boss@x.com', type: 'approval_required' }).toArray()).length === 1, 'the owner gets an approval_required notification');
     r = await request(app).post('/recommendations').set('Cookie', c1).send(body);
     assert(r.status === 409, 'a second recommendation while one is waiting is refused');
-    r = await request(app).post('/recommendations').set('Cookie', c2).send({ ...body, stop: 139 });
+    r = await request(app).post('/recommendations').set('Cookie', c2).send({ ...body, stop: 140 });
     assert(r.status === 400, 'an invalid price band is refused');
     await contractorsCol().updateOne({ id: 'c2' }, { $unset: { sebi: '' } });
     r = await request(app).post('/recommendations').set('Cookie', c2).send(body);
@@ -127,9 +127,9 @@ async function main() {
     assert(r.status === 400, 'a bad decision is refused');
     r = await request(app).post(`/owner/recommendations/${id1}/decision`).set('Cookie', admin).send({ decision: 'approve' });
     assert(r.status === 200 && r.body.status === 'APPROVED', 'the owner approves');
-    assert(orders.length === 1 && orders[0].user === 'c1@acme.com' && orders[0].payload.contract === 'NIFTY_24150_CE' && orders[0].payload.price === 135 && orders[0].payload.targetPoints === 25 && orders[0].payload.stopLossPoints === 15,
-        'approval places a normal user order under the contractor\'s own id: limit 135 (entry 140 - 5), target +25, stop -15');
-    assert((oc.pushed ?? []).some((x: any) => x.user === 'c1@acme.com' && x.settings.contractor === true), 'the contractor\'s settings are flagged as a contractor in the order process before the buy (sizing, no admin mirror)');
+    assert(orders.length === 1 && orders[0].user === 'c1@acme.com' && orders[0].payload.contract === 'NIFTY_24150_CE' && orders[0].payload.price === 140 && orders[0].payload.limitPrice === 140 && orders[0].payload.targetPoints === 20 && orders[0].payload.stopLossPoints === 20,
+        'approval places a normal user order under the contractor\'s own id: resting limit AT the recommended 140 (no offset), target +20, stop -20');
+    assert((oc.pushed ?? []).some((x: any) => x.user === 'c1@acme.com' && x.settings.contractor === true), 'the contractor\'s settings are flagged as a contractor in the order process before the buy (sizing)');
     assert(!((configService.getConfig() as any).strategies ?? []).some((b: any) => b.enabled === true && /Recommendation|Forecast/.test(String(b.userId ?? ''))), 'no strategy block was armed or created');
     r = await request(app).post(`/owner/recommendations/${id1}/decision`).set('Cookie', admin).send({ decision: 'reject' });
     assert(r.status === 404, 'a decided recommendation cannot be decided again');
@@ -156,7 +156,7 @@ async function main() {
     assert(r.status === 409 && /still in progress/.test(r.body.error), 'approval is refused while a trade of this contractor is open');
     openTrades = [];
     r = await request(app).post(`/owner/recommendations/${stockId}/decision`).set('Cookie', admin).send({ decision: 'approve' });
-    assert(r.status === 200 && orders[orders.length - 1].user === 'c2@acme.com' && orders[orders.length - 1].payload.contract === 'TCS_3500_CE' && orders[orders.length - 1].payload.price === 95, 'a stock option goes through the same path (limit 95 = entry 100 - 5)');
+    assert(r.status === 200 && orders[orders.length - 1].user === 'c2@acme.com' && orders[orders.length - 1].payload.contract === 'TCS_3500_CE' && orders[orders.length - 1].payload.limitPrice === 100, 'a stock option goes through the same path (limit 100 = the recommended entry)');
     await db.collection('recommendations').updateOne({ _id: new (require('mongodb').ObjectId)(stockId) }, { $set: { status: 'PENDING' } });
     r = await request(app).post(`/owner/recommendations/${stockId}/decision`).set('Cookie', admin).send({ decision: 'reject', note: 'test' });
     assert(r.status === 200, 'it can be rejected');

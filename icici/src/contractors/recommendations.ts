@@ -1,6 +1,6 @@
 /**
  * Advanced contractors' recommendations (spec v2.1 section 9). Validation COPIES the rules of src/strategy/RecommendationStrategy.ts and the
- * `recommend` skill (neither is modified; a parity test keeps them equal): stop < order price (= entry - offset, tick-rounded) < target,
+ * `recommend` skill (neither is modified; a parity test keeps them equal): stop < order price (= entry, tick-rounded; the strategy's own offset is 5) < target,
  * contract like "24150 CE", positive prices. The approval places a normal user order under the contractor's id (src/contractors/order.ts); no strategy block is involved.
  */
 import configService from '../prism/ConfigService';
@@ -8,7 +8,9 @@ import Mongo from '../tools/mongo';
 import { roundToTick } from '../util/tick';
 import { istDate } from './agreements';
 
-export const DEFAULT_ENTRY_OFFSET = 5;
+export const DEFAULT_ENTRY_OFFSET = 5; // RecommendationStrategy's (the parity test); contractor recommendations use ENTRY_OFFSET
+/** A contractor's recommendation is bought AT the recommended price: no offset (owner's rule, 2026-11-16). */
+export const ENTRY_OFFSET = 0;
 export type RecStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
 
 export const INDEX_UNDERLYINGS = ['NIFTY', 'SENSEX'];

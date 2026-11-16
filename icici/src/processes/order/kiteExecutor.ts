@@ -19,6 +19,7 @@ import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError, emptyE
 import { exchangeForTsym } from '../../util/underlyings';
 import { loadOrderOwners } from './orderOwners';
 import Mongo from '../../tools/mongo';
+import { registerEntryExit } from './entryExits';
 
 // Kite is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -277,9 +278,40 @@ export interface ManualBuyRequest {
     targetPoints?: number;
     stopLossPoints?: number;
     mirror?: MirrorHook; // set by orderProcess for a frontend user's buy: the admin mirrors it (mirror.ts)
+    /** A resting LIMIT entry at exactly this price (a contractor's recommendation), with target/stop attached on the fill. `contract` only. Returns {orderId}, not a Trade. */
+    limitPrice?: number;
 }
 
-export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade> {
+/** Places a resting limit buy at `limitPrice` for `userId` and records its target/stop (absolute: limit + targetPoints, limit - stopLossPoints) to attach on the fill. */
+async function restingLimitBuyOnKite(userId: string, tsym: string, token: string, qty: number, exchange: 'NFO' | 'BFO', limitPrice: number, targetPoints: number | undefined, stopLossPoints: number | undefined): Promise<{ orderId: string }> {
+    const targetPrice = roundToTick(limitPrice + (targetPoints ?? 0)), stopLossPrice = roundToTick(limitPrice - (stopLossPoints ?? 0));
+    if (!(stopLossPrice > 0 && stopLossPrice < limitPrice && limitPrice < targetPrice)) throw new Error(`resting entry needs 0 < stop < limit < target (stop=${stopLossPrice}, limit=${limitPrice}, target=${targetPrice})`);
+    const placed = await placeLimitBuyBareOnKite(userId, tsym, token, qty, limitPrice, exchange);
+    try {
+        await registerEntryExit({ userId, orderId: placed.orderId, tsym, token, exchange, broker: 'kite', targetPrice, stopLossPrice });
+    } catch (e) {
+        // The order is live but its exits could not be recorded: take it back rather than leave a position that would have none.
+        await cancelOrderOnKite(placed.orderId).catch((ce) => Log.log(`[order] ALERT: resting entry ${placed.orderId} (${tsym}, ${userId}) could not be cancelled after its exits failed to record - cancel it by hand:`, ce));
+        throw e;
+    }
+    Log.log(`[order] resting limit entry ${tsym} qty=${qty} @ ${limitPrice} for ${userId} (target ${targetPrice}, stop ${stopLossPrice} on fill)`);
+    return placed;
+}
+
+export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { orderId: string; resting: true; tsym: string; quantity: number; limitPrice: number }> {
+    if (req.limitPrice !== undefined) {
+        if (!req.contract) throw new Error('a limit entry needs a contract');
+        if (!(req.limitPrice > 0)) throw new Error('limitPrice must be positive');
+        const canonical = parseCanonicalSymbol(req.contract);
+        const resolved = await KiteContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
+        const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, req.limitPrice, req.quantity, resolved.lotSize, req.stopLossPoints);
+        const placed = await restingLimitBuyOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.limitPrice, req.targetPoints, req.stopLossPoints);
+        // The mirror starts only once the user's own order is in (a resting order cannot be "undone" like a fill): the admin rests the same limit with the same exits.
+        req.mirror?.({ userId: req.userId, broker: 'kite', tsym: resolved.tradingSymbol, token: commonToken, exchange: resolved.exchange, quantity, resting: true,
+            place: (adminId, qty) => restingLimitBuyOnKite(adminId, resolved.tradingSymbol, commonToken, qty, resolved.exchange, req.limitPrice as number, req.targetPoints, req.stopLossPoints) });
+        return { orderId: placed.orderId, resting: true, tsym: resolved.tradingSymbol, quantity, limitPrice: req.limitPrice };
+    }
     if (req.contract) {
         const canonical = parseCanonicalSymbol(req.contract);
         const resolved = await KiteContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);

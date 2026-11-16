@@ -51,6 +51,7 @@ class FakeCollection {
         };
         return api;
     }
+    async deleteOne(filter: Doc) { const i = this.docs.findIndex((x) => matches(x, filter)); if (i >= 0) this.docs.splice(i, 1); return { deletedCount: i >= 0 ? 1 : 0 }; }
     async countDocuments(filter: Doc = {}) { return this.docs.filter((d) => matches(d, filter)).length; }
 }
 

@@ -27,6 +27,7 @@ import configService from '../prism/ConfigService';
 import { writeJsonLine, readJsonLines } from '../ipc/jsonLines';
 import { ORDER_SOCKET_PATH, NOT_PLACED_TAG, ORDER_MAY_BE_LIVE_TAG, OrderRequest, OrderResponse, FillNotification, PositionsChangedNotification, OrderCancelledNotification } from '../ipc/orderProtocol';
 import bookkeeping, { MongoRestoreResult, EodBrokerReport } from './order/bookkeeping';
+import { onEntryFill, onEntryCancelled } from './order/entryExits';
 import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells } from './order/kiteExecutor';
 import * as antExecutor from './order/antExecutor';
 import { buyIndexOnBreeze, manualBuyOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
@@ -41,7 +42,7 @@ import Prism from '../prism';
 import BreezeOrderNotifyStream from '../breeze/BreezeOrderNotifyStream';
 import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
-import { startMirrorBuy, undoMirrorBuy, onUserSell, mirrorSetTargetStopLoss, type MirrorLeg, type MirrorHook } from './order/mirror';
+import { startMirrorBuy, undoMirrorBuy, onUserSell, mirrorSetTargetStopLoss, forgetRestingMirror, type MirrorLeg, type MirrorHook } from './order/mirror';
 import * as prismExecutor from './order/prismExecutor';
 import { getBrokerExecutor, getExecutorByBroker } from './order/brokerExecutors';
 import { BrokerExecutor, OrderAlreadyFilledError } from './order/BrokerExecutor';
@@ -96,6 +97,8 @@ function broadcast(msg: OrderNotification) {
 
 // A frontend user's sell (squareoff, target/stop hit, force-close, expiry) closes the matching share of the admin's mirror leg.
 bookkeeping.onFill(onUserSell);
+// A filled resting limit entry (a contractor's recommendation, and the admin's mirror of it) gets its target and stop-loss (order/entryExits.ts).
+bookkeeping.onFill((userId, trade) => { void onEntryFill(userId, trade); });
 
 bookkeeping.onFill((userId, trade) => {
     // Net open quantity of this token once the fill is booked (listeners run after booking), summed over every broker on the same
@@ -114,6 +117,7 @@ bookkeeping.onPositionsChanged(() => {
 
 for (const trackerBroker of TRACKER_BROKERS) {
     TRACKERS[trackerBroker].onCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason) => {
+        if (action === 'Buy') { void onEntryCancelled(userId, orderId); void forgetRestingMirror(userId, instrumentToken); }
         broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason });
     });
 }
@@ -1096,6 +1100,7 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return await placeOrderWithPendingGuard(req, estimatedValue, () => {
                     const manualBuyBroker = bookkeeping.getUserBroker(req.userId);
+                    if (req.payload.limitPrice !== undefined && manualBuyBroker !== 'kite') throw new Error(`a limit entry is supported on Kite only (this user's broker is ${manualBuyBroker})`);
                     // mirror: a frontend user's buy is copied by the admin (mirror.ts; settings.mirrorPercentage). If the user's own order then
                     // fails, the admin's matching quantity is taken back so it does not sit open without the user's.
                     const started: Array<{ leg: MirrorLeg; done: Promise<void> | void }> = [];

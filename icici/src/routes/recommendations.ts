@@ -13,7 +13,7 @@ import { istDate } from '../contractors/agreements';
 import { notifyAdmins, notifyUser } from '../contractors/notify';
 import { RateLimiter } from '../contractors/rateLimit';
 import { placeContractorBuy, tradeInProgress } from '../contractors/order';
-import { DEFAULT_ENTRY_OFFSET, RecommendationDoc, appendDecision, recommendationRules, recommendationsCol, validateRecommendation, withinHours, istHHMM } from '../contractors/recommendations';
+import { ENTRY_OFFSET, RecommendationDoc, appendDecision, recommendationRules, recommendationsCol, validateRecommendation, withinHours, istHHMM } from '../contractors/recommendations';
 
 const router = asyncRouter();
 const orderClient = OrderClient.getInstance();
@@ -35,7 +35,7 @@ router.post('/recommendations', requireAuth, async function (req, res) {
     if (blocked) { res.status(403).json({ error: blocked }); return; }
     const rules = recommendationRules();
     if (!withinHours(rules)) { res.status(422).json({ error: `Recommendations are accepted from ${rules.start} to ${rules.end} IST (it is ${istHHMM()} now).` }); return; }
-    const v = validateRecommendation(req.body, DEFAULT_ENTRY_OFFSET);
+    const v = validateRecommendation(req.body, ENTRY_OFFSET);
     if (!v.ok) { res.status(400).json({ error: (v as { error: string }).error }); return; }
     const ok = v as Extract<typeof v, { ok: true }>;
     const day = istDate();
@@ -92,8 +92,8 @@ router.post('/owner/recommendations/:id/decision', requireAdmin, async function 
     if (!r?.value) { res.status(409).json({ error: 'Already decided' }); return; }
     if (decision === 'approve') {
         try {
-            // A normal user order (the same path as Search & Buy) under the contractor's own id: a limit buy at the order price with the target and stop in points from it.
-            await placeContractorBuy(c as Contractor, { underlying: rec.index, strike: rec.strike, right: rec.right, price: rec.orderPrice, target: rec.target, stop: rec.stop });
+            // A normal user order under the contractor's own id: a limit buy RESTING at the recommended entry price, target and stop attached when it fills; the admin mirrors it.
+            await placeContractorBuy(c as Contractor, { underlying: rec.index, strike: rec.strike, right: rec.right, price: rec.orderPrice, target: rec.target, stop: rec.stop, limit: true });
         }
         catch (e: any) {
             Log.log('[recommendations] placing the approved recommendation failed; reverting the approval:', e);

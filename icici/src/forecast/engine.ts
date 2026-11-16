@@ -195,7 +195,7 @@ export class ForecastEngine {
         const target = Number(o.targetPoints) > 0 ? Number(o.targetPoints) : 10, stop = Number(o.stopLossPoints) > 0 ? Number(o.stopLossPoints) : 20;
         const price = roundToTick(ltp), targetPrice = roundToTick(ltp + target), stopPrice = roundToTick(ltp - stop);
         if (!(stopPrice > 0)) return { placed: false, reason: 'stop would be non-positive' };
-        // A normal user order (the same path as Search & Buy) under the contractor's own id; the order process sizes it (forecast.orders.maxInvestment) and attaches target and stop.
+        // A normal user order (the same path as Search & Buy) under the contractor's own id, bought at once (marketable limit); the order process sizes it (forecast.orders.maxInvestment), attaches target and stop, and the admin mirrors it.
         await placeContractorBuy(c, { underlying: 'NIFTY', strike, right, price, target: targetPrice, stop: stopPrice });
         return { placed: true, reason: `bought ${contract} at ${price}, target ${targetPrice}, stop ${stopPrice} as ${c.email}` };
     }

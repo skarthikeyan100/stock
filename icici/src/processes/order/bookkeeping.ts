@@ -89,7 +89,7 @@ interface UserSettings {
     targetPoints?: number;
     stopLossPoints?: number;
     proficiencyLevel?: 'beginner' | 'advanced'; // picks settings.levelRules
-    contractor?: boolean; // a contractor-portal user (role 'contractor'): sized from forecast.orders.maxInvestment, never mirrored by the admin
+    contractor?: boolean; // a contractor-portal user (role 'contractor'): sized from forecast.orders.maxInvestment
     accountClosed?: boolean;
     closedAtMs?: number; // when this process closed the account (see updateUserSettings)
 }

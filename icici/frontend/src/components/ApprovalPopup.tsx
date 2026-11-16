@@ -51,7 +51,7 @@ export default function ApprovalPopup() {
         <div className="fs-5 mb-2">{cur.index} {cur.contract}</div>
         <table className="table table-sm mb-2"><tbody>
           <tr><td>Entry</td><td className="text-end">{cur.entry}</td></tr>
-          <tr><td>Order price (entry − offset)</td><td className="text-end">{cur.orderPrice}</td></tr>
+          <tr><td>Limit buy price (the recommended entry)</td><td className="text-end">{cur.orderPrice}</td></tr>
           <tr><td>Target</td><td className="text-end">{cur.target}</td></tr>
           <tr><td>Stop loss</td><td className="text-end">{cur.stop}</td></tr>
         </tbody></table>

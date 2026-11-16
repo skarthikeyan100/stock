@@ -11,7 +11,7 @@ import { setTargetStopLoss } from './kiteExecutor';
 // Admin mirror trades. Every buy a user starts from the FRONTEND (orderProcess's 'manualBuy') is copied by the admin user as
 // its own real order on the same broker, for floor(userLots * settings.mirrorPercentage / 100) lots (0 lots = no trade). The
 // admin leg carries the same target/stop-loss points, so it exits on its own, and follows the user's sells proportionally
-// (onUserSell) so the two legs never diverge. Strategy pseudo-users and contractor-portal users never mirror (they are not frontend trades) and the admin's
+// (onUserSell) so the two legs never diverge. Strategy pseudo-users never mirror (they are not frontend trades); contractor-portal users DO (the owner's rule, 2026-11-16: the admin mirrors every contractor) and the admin's
 // own trades never mirror (no recursion).
 //
 // The admin order goes straight to the broker executor, NOT through placeOrderWithPendingGuard: the admin's own lot/investment/
@@ -30,7 +30,9 @@ export interface MirrorLeg {
     /** The user's lot quantity (units) about to be bought. */
     quantity: number;
     /** Places the admin's order for `qty` units through the SAME executor path the user's buy takes. */
-    place: (adminId: string, qty: number) => Promise<Trade>;
+    place: (adminId: string, qty: number) => Promise<unknown>;
+    /** A resting limit entry (a contractor's recommendation): the user has no position yet, the admin rests the same limit with the same exits. */
+    resting?: boolean;
 }
 /** Returns a promise that settles when the mirror attempt is over (never rejects), or nothing when no mirror was started. */
 export type MirrorHook = (leg: MirrorLeg) => Promise<void> | void;
@@ -52,7 +54,7 @@ export function mirrorQuantityFor(userQty: number, lotSize: number, pct: number)
 }
 
 function eligibleUser(userId: string): boolean {
-    return !!userId && userId.toLowerCase() !== primaryAdminEmail() && !bookkeeping.isStrategyUser(userId) && !bookkeeping.isContractorUser(userId);
+    return !!userId && userId.toLowerCase() !== primaryAdminEmail() && !bookkeeping.isStrategyUser(userId);
 }
 
 const col = () => Mongo.getInstance()?.db?.collection(COLLECTION);
@@ -89,7 +91,7 @@ export const startMirrorBuy: MirrorHook = (leg) => {
                 { upsert: true },
             );
             // The user may have sold while the admin order was filling: that sell found no row to follow, so close now.
-            if (openQty(leg.userId, leg.token) <= 0) await closeMirror(leg.userId, leg.token, undefined);
+            if (!leg.resting && openQty(leg.userId, leg.token) <= 0) await closeMirror(leg.userId, leg.token, undefined);
         }).then(() => undefined, (e) => { Log.log(`[order] ALERT: mirror buy of ${leg.tsym} for ${leg.userId} (qty=${qty}) failed - the user's order is unaffected:`, e); });
     } catch (e) {
         Log.log('[order] ALERT: mirror buy could not start:', e);
@@ -182,5 +184,15 @@ export async function mirrorSetTargetStopLoss(userId: string, token: string, tar
         await setTargetStopLoss(primaryAdminEmail(), token, targetPoints, stopLossPoints);
     } catch (e) {
         Log.log(`[order] ALERT: mirror target/stop-loss update for ${userId} ${token} failed:`, e);
+    }
+}
+
+/** A user's resting entry ended without a fill (cancelled / expired at the close): drop the mirror row of it, unless the user does hold the contract. */
+export async function forgetRestingMirror(userId: string, token: string): Promise<void> {
+    try {
+        if (openQty(userId, token) > 0) return;
+        await col()?.deleteOne({ userId, token });
+    } catch (e) {
+        Log.log(`[order] mirror: dropping the row of ${userId}'s unfilled entry ${token} failed:`, e);
     }
 }
