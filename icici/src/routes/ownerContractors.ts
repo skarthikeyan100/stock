@@ -11,7 +11,7 @@ import { Contractor, ContractorStatus, ContractorType, missingDetails } from '..
 import { AGREEMENTS_DIR, agreementPath, currentVersion, istDate, listVersions, scheduleVersion, upcomingVersion, VERSION_RE, versionAvailable } from '../contractors/agreements';
 import { decryptField, maskedField } from '../contractors/kycCrypto';
 import { publicBaseUrl, sendInviteEmail } from '../contractors/email';
-import { validEmail, validIsoDate } from '../contractors/validate';
+import { isPlaceholderEmail, validEmail, validIsoDate } from '../contractors/validate';
 import { notifyUser } from '../contractors/notify';
 import Mongo from '../tools/mongo';
 import { ObjectId } from 'mongodb';
@@ -48,6 +48,7 @@ router.post('/owner/invites', requireAdmin, async function (req, res) {
     let email_sent: { to: string; redirectedTo?: string } | { error: string } | null = null;
     if (req.body?.send === true) {
         if (!email) { res.status(400).json({ error: 'give an email to send the invitation to' }); return; }
+        if (isPlaceholderEmail(email)) { email_sent = { error: 'a placeholder address (no real email) cannot be mailed; send the link yourself' }; res.json({ id: String(invite._id), link, type, emailLock: email, expiresAt: invite.expiresAt, email: email_sent }); return; }
         try { email_sent = await sendInviteEmail(email, kindLabel(type), link, invite.expiresAt); } catch (e: any) { email_sent = { error: String(e?.message ?? e) }; Log.log('[contractor] invite email failed:', e); }
     }
     res.json({ id: String(invite._id), link, type, emailLock: email || null, expiresAt: invite.expiresAt, email: email_sent });
@@ -132,7 +133,8 @@ router.post('/owner/contractors/:id/reinvite', requireAdmin, async function (req
     const { invite, token } = await createInvite({ type: c.type, emailLock: c.email, createdBy: resolveRealUser(req) ?? 'admin', targetContractorId: c.id });
     const link = `${publicBaseUrl()}/join/${token}`;
     let email_sent: any = null;
-    if (req.body?.send === true) { try { email_sent = await sendInviteEmail(c.email, kindLabel(c.type), link, invite.expiresAt); } catch (e: any) { email_sent = { error: String(e?.message ?? e) }; } }
+    if (req.body?.send === true && isPlaceholderEmail(c.email)) email_sent = { error: 'a placeholder address (no real email) cannot be mailed; send the link yourself' };
+    else if (req.body?.send === true) { try { email_sent = await sendInviteEmail(c.email, kindLabel(c.type), link, invite.expiresAt); } catch (e: any) { email_sent = { error: String(e?.message ?? e) }; } }
     res.json({ link, expiresAt: invite.expiresAt, email: email_sent });
 });
 

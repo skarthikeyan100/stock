@@ -120,7 +120,7 @@ export default function JoinPage() {
             <Card.Body>
               <Row className="g-2">
                 <Field f={f} set={set} required={false} k="name" label={business ? 'Research Analyst name' : 'Full legal name'} />
-                {(!business || !!info.emailLock) && <Field f={f} set={set} required={!business} k="email" label={business ? 'Research Analyst email' : 'Email'} type="email" readOnly={!!info.emailLock} />}
+                {(!business || (!!info.emailLock && !info.emailLock.endsWith('@example.com'))) && <Field f={f} set={set} required={!business} k="email" label={business ? 'Research Analyst email' : 'Email'} type="email" readOnly={!!info.emailLock} />}
                 {business && <Field f={f} set={set} required={false} k="entityName" label="Legal entity name" />}
                 {!business && <Field f={f} set={set} required={false} k="address" label="Address" />}
                 {!business && <Field f={f} set={set} k="pan" label="PAN" maxLength={10} style={{ textTransform: 'uppercase' }} />}

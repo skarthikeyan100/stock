@@ -168,8 +168,8 @@ router.post('/invite/:token/accept', async function (req, res) {
 
     // ---- a new contractor ----
     // A Business contractor needs no email: without an email locked to the invite, its account id is its SEBI number (<INH number>@example.com, never mailed).
-    const sebiForId = invite.type === 'BUSINESS' ? normSebi(body.kyc?.sebiNumber) : '';
-    const email = str(body.email, 254).toLowerCase() || (invite.type === 'BUSINESS' && !invite.emailLock && validSebi(sebiForId) ? placeholderEmailFor(sebiForId) : '');
+    const gstinForId = invite.type === 'BUSINESS' ? normGstin(body.kyc?.gstin) : '';
+    const email = str(body.email, 254).toLowerCase() || (invite.type === 'BUSINESS' && !invite.emailLock && gstinForId.length === 15 ? placeholderEmailFor(gstinForId) : '');
     const name = str(body.name, 120) || str(body.kyc?.entityName, 120) || email.split('@')[0]; // a name can be added later on the profile page
     if (!validEmail(email)) { res.status(400).json({ error: 'A valid email is required' }); return; }
     if (invite.emailLock && invite.emailLock !== email) { res.status(400).json({ error: 'This invite was issued to a different email address.' }); return; }
