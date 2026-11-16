@@ -18,6 +18,7 @@ import { isPastEodClose } from '../util/eodClose';
 import { exchangeForTsym } from '../util/underlyings';
 import { isGlobalMaxProfitLatched } from './globalMaxProfitLatch';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
+import type { MwState } from './mandwCycle';
 
 // Shared engine of RecommendationStrategy and NiftyChangeStrategy: one LIMIT buy per configured broker, sized from a rupee budget (per broker: every broker gets its own full amount),
 // then an exit the subclass chooses once the entry has filled. Owns everything that is the same for both: per-broker legs, state
@@ -80,6 +81,8 @@ export interface State {
     baseKey?: string;
     // Signature of the cycle state onCycleEnded last ran for (see endIfIdle). Durable, so a restart does not end the same cycle again.
     endedSig?: string;
+    // MandWStrategy only: the pattern watch / pending reversal (durable, so a restart resumes it; see mandwCycle.ts).
+    mw?: MwState;
 }
 
 export interface ResolvedEntry {

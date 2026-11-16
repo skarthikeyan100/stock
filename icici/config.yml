@@ -421,6 +421,18 @@ strategies:
     index: NIFTY
     brokers:
       - kite
+  - type: MandWStrategy
+    enabled: false          # M / W pattern on the option price (see strategies.md); needs settings.maxProfit (global cap), target and stopLoss both set
+    userId: MandW-NIFTY
+    quantity: 65            # units per broker (one NIFTY lot), whole lots only
+    startSide: CE           # CE | PE: the first entry of the day
+    startTime: '09:20'      # first entry fires only in [startTime, startTime + 5 min) and never for a time before the process started
+    # target / stopLoss (option points) come from settings unless set on this block; both are required (not 'none')
+    patternTimeoutMinutes: 30  # ends the watch of a sold position without the pattern or the stop; the same side is then bought again
+    lastEntryTime: '15:00'
+    index: NIFTY
+    brokers:
+      - kite
   - type: SimpleContinuousStrategy
     enabled: false
     brokers:

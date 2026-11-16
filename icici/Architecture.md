@@ -98,3 +98,33 @@ Where the portal's code runs, so a restart or a hot-restart is predictable:
 | `data` | additive only | `AntDataStream.onFutTick` also carries `tbq`/`tsq` on the `fut` tick when the depth feed is subscribed. Nothing else reads them. |
 
 Data flow of a Beginner forecast: `POST /forecast` -> record (write-once) -> both filters -> `decisions` row -> (only if `forecast.orders.enabled`) arm the slot block -> `RecommendationStrategy` places the order. Nothing in the response tells the contractor whether or how it was used. An Advanced recommendation waits as PENDING until the owner approves it on `/console` (persistent pop-up), which arms the slot the same way.
+
+## Adding a strategy: registration, candles, contracts (2026-11-16)
+
+**How a strategy gets registered** (all of these, for a new type `FooStrategy`):
+- `src/strategy/StrategyFactory.ts`: `STRATEGY_REGISTRY.set('FooStrategy', FooStrategy)` (type name -> class; the constructor takes the `userId`). `createStrategy` sets `enabled` from the block.
+- `src/util/strategyInstances.ts`: a type in `MULTI_BROKER_TYPES` is ONE instance that fans out over `brokers:` itself (per-broker legs inside its state); any other type is expanded in
+  memory into `<id>`, `<id>-ANT`, `<id>-Breeze` instances. The LimitEntry family (Recommendation, NiftyChange, MomentumAtFixedTime, NextWeek, Breakout, MandW) is multi-broker.
+- `src/prism/configValidation.ts`: per-type required keys (`requiredByType`, the global target/stop list, the fixed-`quantity` NIFTY-lot check). Only enabled blocks are validated.
+- `config.yml`: a block with `type`, `enabled`, `userId`, `brokers: [...]`. Blocks are never deleted, only disabled. Global keys under `settings` apply unless the block sets its own.
+- `enabled` is the one switch and is enforced centrally (`strategiesProcess.ts` / `tokenRouter.ts`): a disabled strategy gets no ticks, fills or cancellations. A new strategy gets it for free.
+- Ticks: `strategiesProcess.onTick` calls `processNiftyQuote` (and `receive` with the shared 300 s stats). Option ticks reach a strategy through `tokenRouter`: it must hold the token
+  (`registerTrade`, or `watchTokenOnSource('ant', token, this, exchange)` for a contract it only watches) and `canHandleOptionQuote` must accept the quote before `processOptionQuote` runs.
+- `reconcile()` (startup and `POST /reconcile`) runs inside `OrderClient.withNoOrders`: it rebuilds state and never places, cancels or modifies an order. Exits and entries start from ticks and
+  housekeeping. Class chain: `Strategy` -> `LimitEntryStrategy` (legs, persisted state, fills, entry timeout, EOD close) -> `CandleEntryStrategy` (fixed quantity, target/stop) -> the strategy.
+- The global `settings.maxProfit` needs no per-strategy code: `processes/strategies/globalMaxProfit.ts` judges every strategy that has no profit stop of its own and latches in Mongo; the
+  order process then refuses its buys. A block-level `maxProfit` is not read for those strategies.
+
+**Is there a candle builder?** Yes, for NIFTY index ticks: `src/processes/strategies/niftyStatsBuilder.ts`, `createStatsBuilder(bucketSeconds, { aligned: true })`, built on `lib/candle-builder.ts`.
+`record(ltp, ltt)` returns `{ oldStats, newStats }` only when a candle CLOSES (`newStats` = the closed candle with `open/high/low/close/candleTime`; the tick that closes it belongs to the next
+candle). `closes()` returns closes only, so a strategy that needs OHLC keeps its own array (see `NextWeekStrategy.liveToday`); `seed(candles)` preloads history (Yahoo `^NSEI` via
+`lib/yahooCandles.ts`, cached in Mongo, today's own candles in `candles15Live`). `strategiesProcess` keeps one shared 300 s builder and hands its closes to `receive()`; the LimitEntry family does not
+use it and builds its own (`NextWeek`/`Breakout`: 900 s, aligned to 09:15). `decision.ts` is NOT a live candle source (only `/replay` instantiates it). There is no candle builder for option prices:
+`MandWStrategy` works on option ticks directly.
+
+**How an option contract is selected:** the strategy picks a strike and side, `OrderClient.resolveOptionContract(userId, { broker, index, strike, right, skipNearestExpiryDay, expiryOffset })`
+returns `{ tsym, token, exchange }` for that broker (nearest expiry; `expiryOffset: 1` = the next one). The LimitEntry strategies use `atmStrike(ltp) = round(ltp / 50) * 50` of the last NIFTY tick,
+via `LimitEntryStrategy.startCycle`, which resolves the contract per broker, takes the entry price from `getOptionLtp` (a LIMIT buy at the prevailing LTP), sizes it (`quantity` for the Candle family,
+a rupee budget for the others), splits it at the freeze quantity and persists the leg BEFORE the order goes out. The expiry-day skip (`skipNearestExpiryOnExpiryDay`, `skipNearestExpiryOnEve`) is a
+global setting a block can override (`util/expirySkip.ts`); an explicit `expiryOffset` is never bumped. The half-days-to-expiry OTM shift (`AntContractMaster.entryStrike`) applies only to spot-index buys
+(`chunkedBuyIndex`), not to these strategies, which pass an explicit strike.

@@ -21,6 +21,7 @@ import NiftyChangeStrategy from './NiftyChangeStrategy';
 import MomentumAtFixedTimeStrategy from './MomentumAtFixedTimeStrategy';
 import NextWeekStrategy from './NextWeekStrategy';
 import BreakoutStrategy from './BreakoutStrategy';
+import MandWStrategy from './MandWStrategy';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 import { expandRuleBasedConfig, expandStrategyInstances } from '../util/strategyInstances';
 
@@ -44,6 +45,7 @@ STRATEGY_REGISTRY.set('NiftyChangeStrategy', NiftyChangeStrategy);
 STRATEGY_REGISTRY.set('MomentumAtFixedTimeStrategy', MomentumAtFixedTimeStrategy);
 STRATEGY_REGISTRY.set('NextWeekStrategy', NextWeekStrategy);
 STRATEGY_REGISTRY.set('BreakoutStrategy', BreakoutStrategy);
+STRATEGY_REGISTRY.set('MandWStrategy', MandWStrategy);
 STRATEGY_REGISTRY.set('SimpleContinuousStrategy', SimpleContinuousStrategy);
 STRATEGY_REGISTRY.set('ScaledHedgedStrategy', ScaledHedgedStrategy);
 

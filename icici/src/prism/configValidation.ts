@@ -327,7 +327,7 @@ export function validateConfigFile(parsed: any): string[] {
         const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'], ScaledHedgedStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'] };
         // Strategies that take their target and stop from the global exits: each must be set in the block or in settings (a value or 'none').
         // An absent key is refused rather than read as "no stop" (strategies/exitRules.ts).
-        if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy' || s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy') {
+        if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy' || s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy' || s.type === 'MandWStrategy') {
             for (const key of ['target', 'stopLoss', ...(s.type === 'RuleBasedStrategy' ? ['maxHoldTimeMinutes'] : [])]) {
                 const set = (o: any) => o?.[key] !== undefined && o?.[key] !== null;
                 if (!set(s) && !set(parsed.settings)) errors.push(`${s.type}.${key} is not set in the block or in settings (give a value, or 'none')`);
@@ -341,10 +341,23 @@ export function validateConfigFile(parsed: any): string[] {
             // No-gain timeout: minutes after the entry, or 'none' / absent for off. A typo must not silently disable it.
             if (s.noGainTimeoutMinutes !== undefined && s.noGainTimeoutMinutes !== null && s.noGainTimeoutMinutes !== 'none' && !(isNum(s.noGainTimeoutMinutes) && s.noGainTimeoutMinutes > 0)) errors.push(`${s.type}.noGainTimeoutMinutes must be a positive number of minutes or 'none' (got ${JSON.stringify(s.noGainTimeoutMinutes)})`);
         }
-        if (s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy') {
+        if (s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy' || s.type === 'MandWStrategy') {
             // A fixed quantity per broker (whole lots), not a rupee budget.
             if (!isNum(s.quantity) || !(s.quantity > 0) || !Number.isInteger(s.quantity) || s.quantity % INDEX_LOT_SIZE.NIFTY !== 0) errors.push(`${s.type}.quantity must be a positive multiple of the NIFTY lot size ${INDEX_LOT_SIZE.NIFTY} (per broker; got ${JSON.stringify(s.quantity)})`);
             if (s.index !== undefined && s.index !== 'NIFTY') errors.push(`${s.type}.index must be NIFTY (got ${JSON.stringify(s.index)})`);
+        }
+        if (s.type === 'MandWStrategy') {
+            // Reverses on every stop / pattern all day, so it needs the global profit cap and exits it can classify (target AND stop, not 'none').
+            if (s.startSide !== 'CE' && s.startSide !== 'PE') errors.push(`${s.type}.startSide must be CE or PE (got ${JSON.stringify(s.startSide)})`);
+            if (typeof s.startTime !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.startTime)) errors.push(`${s.type}.startTime must be HH:mm (got ${JSON.stringify(s.startTime)})`);
+            if (s.patternTimeoutMinutes !== undefined && !(isNum(s.patternTimeoutMinutes) && s.patternTimeoutMinutes > 0)) errors.push(`${s.type}.patternTimeoutMinutes must be a positive number of minutes (got ${JSON.stringify(s.patternTimeoutMinutes)})`);
+            for (const key of ['target', 'stopLoss']) {
+                const v = s[key] !== undefined && s[key] !== null ? s[key] : parsed.settings?.[key];
+                if (typeof v === 'string' && v.trim().toLowerCase() === 'none') errors.push(`${s.type}.${key} must not be 'none' (the strategy needs both a target and a stop)`);
+            }
+            if (s.maxProfit !== undefined) errors.push(`${s.type}.maxProfit is not read for this strategy - remove it and set settings.maxProfit (rupees)`);
+            const g = parsed.settings?.maxProfit;
+            if (!(typeof g === 'number' && Number.isFinite(g) && g > 0)) errors.push(`${s.type} needs settings.maxProfit to be a positive number of rupees`);
         }
         // maxProfit is an AMOUNT in rupees for SimpleContinuous (the other strategies' maxProfit is a percent of maxInvestment): a '%' string
         // or a non-positive number is rejected, and the key is required (no default in code).

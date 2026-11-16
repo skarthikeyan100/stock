@@ -54,7 +54,7 @@ export abstract class CandleEntryStrategy extends LimitEntryStrategy {
     }
 
     // Absolute target and stop prices for a leg whose average fill is `avg`. Throws when the stop would not be above zero.
-    private exitFor(avg: number): { targetDist: number | null; target: number | null; stop: number | undefined } {
+    protected exitFor(avg: number): { targetDist: number | null; target: number | null; stop: number | undefined } {
         const rules = this.exitRules();
         const targetDist = rules.target ? exitDistance(rules.target, avg) : null;
         const stopDist = rules.stop ? exitDistance(rules.stop, avg) : null;
