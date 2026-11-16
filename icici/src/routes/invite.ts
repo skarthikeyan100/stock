@@ -13,7 +13,7 @@ import { AcceptanceDoc, activeCount, maxActiveContractors, consumeInvite, contra
 import { BusinessKyc, Contractor, ContractorType, IndividualKyc } from '../contractors/types';
 import { currentVersion, istDate, readAgreement, upcomingVersion } from '../contractors/agreements';
 import { encryptField, isKycCryptoConfigured } from '../contractors/kycCrypto';
-import { gstinMatchesPan, normAccount, normGstin, normIfsc, normPan, normSebi, validAccount, validEmail, validIfsc, validIsoDate, validPan, validSebi } from '../contractors/validate';
+import { placeholderEmailFor, gstinMatchesPan, normAccount, normGstin, normIfsc, normPan, normSebi, validAccount, validEmail, validIfsc, validIsoDate, validPan, validSebi } from '../contractors/validate';
 import { RateLimiter } from '../contractors/rateLimit';
 import { setContractorCookie } from '../contractors/session';
 import { toContractorClient } from '../contractors/clientUser';
@@ -86,11 +86,12 @@ export function buildKyc(type: ContractorType, body: any, email: string): KycRes
     if (type === 'INDIVIDUAL' && k.notGstRegistered !== true) return { ok: false, status: 422, error: 'Contact admin to switch to the Business agreement.' };
     const bank = bankFrom(k);
     if (bank.ok === false) return { ok: false, status: 400, error: (bank as { error: string }).error };
-    const address = str(k.address, 500) || undefined;
+    // A Business contractor has no registered address in the agreement; the SEBI registration number and its validity are mandatory.
+    const address = type === 'INDIVIDUAL' ? (str(k.address, 500) || undefined) : undefined;
     let sebi: Contractor['sebi'];
-    if (type === 'BUSINESS' && (k.sebiNumber || k.sebiValidUntil)) {
+    if (type === 'BUSINESS') {
         const num = normSebi(k.sebiNumber);
-        if (!validSebi(num)) return { ok: false, status: 400, error: 'SEBI Registration No. must be a Research Analyst number: INH followed by 9 digits' };
+        if (!validSebi(num)) return { ok: false, status: 400, error: 'SEBI Registration No. is required: a Research Analyst number, INH followed by 9 digits' };
         if (!validIsoDate(str(k.sebiValidUntil))) return { ok: false, status: 400, error: 'SEBI registration valid-until date is required (YYYY-MM-DD)' };
         sebi = { number: num, validUntil: str(k.sebiValidUntil) };
     }
@@ -166,7 +167,9 @@ router.post('/invite/:token/accept', async function (req, res) {
     }
 
     // ---- a new contractor ----
-    const email = str(body.email, 254).toLowerCase();
+    // A Business contractor needs no email: without an email locked to the invite, its account id is its SEBI number (<INH number>@example.com, never mailed).
+    const sebiForId = invite.type === 'BUSINESS' ? normSebi(body.kyc?.sebiNumber) : '';
+    const email = str(body.email, 254).toLowerCase() || (invite.type === 'BUSINESS' && !invite.emailLock && validSebi(sebiForId) ? placeholderEmailFor(sebiForId) : '');
     const name = str(body.name, 120) || str(body.kyc?.entityName, 120) || email.split('@')[0]; // a name can be added later on the profile page
     if (!validEmail(email)) { res.status(400).json({ error: 'A valid email is required' }); return; }
     if (invite.emailLock && invite.emailLock !== email) { res.status(400).json({ error: 'This invite was issued to a different email address.' }); return; }

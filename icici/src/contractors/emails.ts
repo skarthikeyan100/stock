@@ -10,6 +10,7 @@ import { contractorsCol } from './store';
 import { readAgreement } from './agreements';
 import { sendContractorEmail } from './email';
 import { readStored } from './personalise';
+import { isPlaceholderEmail } from './validate';
 
 const TEMPLATE_DIR = path.resolve(__dirname, '..', '..', 'templates');
 const kindOf = (c: Contractor) => (c.type === 'INDIVIDUAL' ? 'Individual (PAN)' : 'Business (GSTIN)');
@@ -39,7 +40,7 @@ export function renderWelcome(c: Contractor, version: string, acceptedAt: Date):
 /** Sent once per contractor, right after the first acceptance (a re-invite does not send it again). The test user gets none. Never throws: a failed send is logged. */
 export async function sendWelcomeIfDue(c: Contractor): Promise<void> {
     try {
-        if (c.isTest) return;
+        if (c.isTest || isPlaceholderEmail(c.email)) return;
         const fresh = (await contractorsCol().findOne({ id: c.id })) as any;
         if (!fresh || fresh.welcomeEmailSentAt) return;
         const version = fresh.agreementVersion as string;
@@ -105,7 +106,7 @@ export async function runDailyEmails(o: DailyOptions = {}): Promise<{ date: stri
     const marks = Mongo.getInstance().db.collection('contractorDailyEmails');
     const out: DailyResult[] = [];
     for (const c of (await contractorsCol().find({ status: 'ACTIVE' }).toArray()) as Contractor[]) {
-        if (c.isTest || (o.contractorId && c.id !== o.contractorId)) continue;
+        if (c.isTest || isPlaceholderEmail(c.email) || (o.contractorId && c.id !== o.contractorId)) continue;
         try {
             if (!o.force && !o.dryRun && (await marks.findOne({ contractorId: c.id, date }))) { out.push({ contractor: c.email, status: 'skipped', reason: 'already sent' }); continue; }
             const items = await gatherDay(c, date);

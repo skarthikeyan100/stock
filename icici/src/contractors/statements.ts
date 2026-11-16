@@ -56,7 +56,7 @@ export function feeModelOn(entries: FeeModelEntry[] | undefined, date: string, d
 }
 
 export const DEFAULT_FIXED_FEE_MONTHS = 1;
-export const DEFAULT_REFERENCE_INVESTMENT = 100000;
+export const DEFAULT_REFERENCE_INVESTMENT = 200000;
 /** The length of a fee period in months (config forecast.fixedFeeDurationMonths; default 1). */
 export const fixedFeeMonths = (): number => { const n = Number((configService.getConfig() as any)?.forecast?.fixedFeeDurationMonths); return Number.isInteger(n) && n >= 1 && n <= 12 ? n : DEFAULT_FIXED_FEE_MONTHS; };
 /** The investment the fixed fee is measured against (forecast.orders.maxInvestment; snapshotted on each fee-model entry when it is created). */

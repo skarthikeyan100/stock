@@ -10,15 +10,15 @@ const ph = (v: string | undefined, fallback: string) => (v && v.trim() ? v.trim(
 
 export type ScheduleRow = [string, string];
 
-/** Schedule 1 (fee) rows. Shared by the PDF and the invitation page, so the two cannot differ. */
+/** Schedule 2 (fee) rows. Shared by the PDF and the invitation page, so the two cannot differ. */
 export function feeScheduleRows(d: AgreementDetails = {}): ScheduleRow[] {
   const pct = d.profitSharePercent ?? 25;
   const months = d.fixedFeeMonths ?? 1;
-  const ref = d.referenceInvestment ?? 100000;
+  const ref = d.referenceInvestment ?? 200000;
   return [
     ['Item', 'Value'],
     ['Fee model (clause 6A)', d.fixedFeeFromStart ? 'Fixed fee per Fee Period under clause 6A.6, from the Effective Date' : 'Profit Share (or, under clause 6A.6, the fixed fee per Fee Period)'],
-    ['Profit Share', d.fixedFeeFromStart ? 'Not applicable (the fixed fee applies)' : `${pct}% of net Trade Profit per Settlement Week`],
+    ['Part payment (trial period)', d.fixedFeeFromStart ? 'Not applicable (the fixed fee applies)' : `${pct}% of net Trade Profit per Settlement Week, paid as a part payment during the trial period; the fixed fee under clause 6A.6 is the Fees`],
     ['Fee Period', `${months} month${months === 1 ? '' : 's'}, starting on the Effective Date; each following Fee Period is of the same length`],
     ['Fixed fee per Fee Period (clause 6A.6)', d.fixedFee ? `₹${d.fixedFee} for each Fee Period, paid in full when the Net Realized Profit of that Fee Period reaches the Reference Investment; pro rata below it; nil on a net loss` : 'The amount notified by Karthikeyan S in writing under Section 15 before clause 6A.6 applies'],
     ['Reference Investment', `₹${ref.toLocaleString("en-IN")}`],
@@ -28,7 +28,7 @@ export function feeScheduleRows(d: AgreementDetails = {}): ScheduleRow[] {
   ];
 }
 
-/** Schedule 2 (recommendation and risk rules) rows: only the limits the Platform actually applies to the Contractor's orders. */
+/** Schedule 1 (recommendation and risk rules) rows: only the limits the Platform actually applies to the Contractor's orders. */
 export function rulesScheduleRows(d: AgreementDetails = {}): ScheduleRow[] {
   const hours = d.recHours ?? { start: '09:20', end: '15:00' };
   const r = d.rules ?? {};
@@ -38,29 +38,29 @@ export function rulesScheduleRows(d: AgreementDetails = {}): ScheduleRow[] {
     ['Recommendations per day', `${d.perDay ?? 3} per Trading Day; one open at a time`],
   ];
   if (d.sebiValidUntil) rows.push(['Registration valid until', d.sebiValidUntil]);
-  const capital = r.maxInvestment ?? d.referenceInvestment ?? 100000;
+  const capital = r.maxInvestment ?? d.referenceInvestment ?? 200000;
   const inr = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
   rows.push(['Order size', `${inr(capital)} per Resulting Trade; as many whole lots as this buys, at least one`]);
   // the level-rule defaults (15% a day, 30% a week) when no details are given, so the standard PDF shows them too
   const dailyPct = r.dailyDrawdownPercent ?? 15, weeklyPct = r.weeklyDrawdownPercent ?? 30, allocated = r.allocatedCapital ?? 200000;
   rows.push(['Daily drawdown limit', `${dailyPct}% of the allocated capital of ${inr(allocated)} (${inr(allocated * dailyPct / 100)}): when the realized loss of the Contractor’s Resulting Trades in a Trading Day reaches this, no new Resulting Trade is placed until the next Trading Day`]);
-  rows.push(['Weekly drawdown limit', `${weeklyPct}% of the allocated capital of ${inr(allocated)} (${inr(allocated * weeklyPct / 100)}): when the realized loss of the Contractor’s Resulting Trades in a Settlement Week reaches this, no new Resulting Trade is placed until the next Settlement Week`]);
+  rows.push(['Weekly drawdown limit', `${weeklyPct}% of the allocated capital of ${inr(allocated)} (${inr(allocated * weeklyPct / 100)}): when the realized loss of the Contractor’s Resulting Trades in a Settlement Week reaches this, the Contractor’s account will be disabled`]);
   if (r.maxOpenPositions && r.maxOpenPositions > 0) rows.push(['Maximum open positions', `${r.maxOpenPositions} Resulting Trades open at any time, across all contractors`]);
   if (r.noNewAfter) rows.push(['No new Resulting Trade after', `${r.noNewAfter} IST`]);
   if (r.dailyLossLimit && r.dailyLossLimit > 0) rows.push(['Daily loss limit (all contractors)', `When the contractors’ trades lose ₹${r.dailyLossLimit} in a day, no new Resulting Trade is placed for the rest of that day`]);
-  rows.push(['Effect of the limits', 'The Platform applies the limits above to every Resulting Trade. A limit that is reached stops new Resulting Trades for the Contractor; the Fee Period amount then follows the realized result under clause 6A.6.']);
+  rows.push(['Effect of the limits', 'The Platform applies the limits above to every Resulting Trade. A daily limit that is reached stops new Resulting Trades for the rest of that Trading Day; a weekly limit that is reached disables the Contractor’s account. The Fee Period amount then follows the realized result under clause 6A.6.']);
   return rows;
 }
 
-/** The Business agreement; `d` fills the Parties clause, 3.4 and Schedule 1 once the contractor has given the details (anything missing stays a placeholder). */
+/** The Business agreement; `d` fills the Parties clause, 3.4 and Schedules 1 and 2 once the contractor has given the details (anything missing stays a placeholder). */
 export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
   const co = d.company ?? {};
   // Nothing is left blank: a detail the contractor has not given yet is simply not mentioned.
   const analyst = ph(d.analystName, 'the Research Analyst named on the Platform');
   const ids = [d.pan ? `PAN ${d.pan}` : '', d.gstin ? `GSTIN ${d.gstin}` : ''].filter(Boolean).join('; ');
   const contractorParty = d.entityName
-    ? `${d.entityName}${d.address ? `, registered office ${d.address}` : ''}${ids ? ` (${ids})` : ''}, acting through ${analyst}, its Research Analyst`
-    : `${analyst}${d.address ? `, of ${d.address}` : ''}${ids ? ` (${ids})` : ''}, a Research Analyst`;
+    ? `${d.entityName}${ids ? ` (${ids})` : ''}, acting through ${analyst}, its Research Analyst`
+    : `${analyst}${ids ? ` (${ids})` : ''}, a Research Analyst`;
   const months = d.fixedFeeMonths ?? 1;
   return {
     title: 'Research Analyst Services Agreement',
@@ -80,11 +80,11 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
         { t: 'li', text: '“Approved Recommendation” means a Recommendation Karthikeyan S has approved on the Platform. A Recommendation Karthikeyan S rejects, or does not act on by the end of the day, is not an Approved Recommendation.' },
         { t: 'li', text: '“Resulting Trade” means the trade, if any, that Karthikeyan S places in its own account because of an Approved Recommendation.' },
         { t: 'li', text: '“Trade Profit” means, for each Resulting Trade, the exit value minus the entry value of that trade for the contract concerned, before taxes, but after Karthikeyan S’s brokerage and statutory charges on that trade, as recorded in Karthikeyan S’s trade records. A loss is a “Trade Loss”.' },
-        { t: 'li', text: '“Profit Share” means the percentage in Schedule 1 of the net Trade Profit for a Settlement Week, as defined in clause 6A.1.' },
+        { t: 'li', text: '“Profit Share” means the percentage in Schedule 2 of the net Trade Profit for a Settlement Week, as defined in clause 6A.1.' },
         { t: 'li', text: '“Settlement Week” means Wednesday to the following Tuesday (both days included).' },
-        { t: 'li', text: '“Fee Period” means the period stated in Schedule 1 (one month unless Schedule 1 states otherwise), starting on the Effective Date, and each following period of the same length.' },
+        { t: 'li', text: '“Fee Period” means the period stated in Schedule 2 (one month unless Schedule 2 states otherwise), starting on the Effective Date, and each following period of the same length.' },
         { t: 'li', text: '“Net Realized Profit” means, for a Fee Period, the total of the Trade Profit less the Trade Losses of all Resulting Trades closed in that Fee Period, as recorded in Karthikeyan S’s trade records.' },
-        { t: 'li', text: '“Reference Investment” means the amount stated in Schedule 1.' },
+        { t: 'li', text: '“Reference Investment” means the amount stated in Schedule 2.' },
         { t: 'li', text: '“Trading Day” means a day on which the National Stock Exchange of India holds a normal trading session.' },
         { t: 'li', text: '“Fees” means the Profit Share, or the fixed fee per Fee Period under clause 6A.6, as applicable.' },
 
@@ -96,14 +96,14 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
 
         { t: 'h2', text: '4. The Services' },
         { t: 'num', n: '4.1', text: 'The Contractor will submit Recommendations on the Platform. Each Recommendation must be the Contractor’s own research, prepared in compliance with the SEBI (Research Analysts) Regulations, 2014 and any circulars issued under them, and with the disclosures, records and rationale those rules require.' },
-        { t: 'num', n: '4.2', text: 'A Recommendation is valid only if the stop-loss is below the entry price and the entry price is below the target, and it is made for a contract not already traded that day. The Contractor may have one open Recommendation at a time, and may submit Recommendations only during the Recommendation hours and up to the daily number stated in Schedule 2.' },
+        { t: 'num', n: '4.2', text: 'A Recommendation is valid only if the stop-loss is below the entry price and the entry price is below the target, and it is made for a contract not already traded that day. The Contractor may have one open Recommendation at a time, and may submit Recommendations only during the Recommendation hours and up to the daily number stated in Schedule 1.' },
         { t: 'num', n: '4.3', text: 'A Recommendation cannot be edited or withdrawn once recorded, but it lapses at the end of the day if not approved.' },
         { t: 'num', n: '4.4', text: 'The Contractor must not access the Platform through bots or scripts without Karthikeyan S’s written consent.' },
 
         { t: 'h2', text: '5. How Karthikeyan S Uses Recommendations' },
         { t: 'num', n: '5.1', text: 'Karthikeyan S decides. Karthikeyan S reviews every Recommendation and may approve or reject it, with or without giving reasons, in its sole discretion. Karthikeyan S has no obligation to approve, to trade on, or to continue trading on any Recommendation.' },
         { t: 'num', n: '5.2', text: 'Karthikeyan S controls execution. Only Karthikeyan S places orders, in its own account with its own capital and its own broker. The Contractor never places, modifies or cancels an order, and has no access to Karthikeyan S’s broker or account.' },
-        { t: 'num', n: '5.3', text: 'Recommendations are one input. Karthikeyan S may combine a Recommendation with its own analysis and risk limits, may exit a Resulting Trade at any time, and applies the limits in Schedule 2 to every Resulting Trade.' },
+        { t: 'num', n: '5.3', text: 'Recommendations are one input. Karthikeyan S may combine a Recommendation with its own analysis and risk limits, may exit a Resulting Trade at any time, and applies the limits in Schedule 1 to every Resulting Trade.' },
 
         { t: 'h2', text: '5A. What the Contractor Can See' },
         { t: 'num', n: '5A.1', text: 'The Platform shows the Contractor, read-only: its own Recommendations and their status; and, for each of its own Resulting Trades, the entry price and the live profit or loss.' },
@@ -114,12 +114,12 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
         { t: 'p', text: 'The Contractor is paid solely as described in Section 6A.' },
 
         { t: 'h2', text: '6A. Fees' },
-        { t: 'num', n: '6A.1', text: 'Profit Share. For each Settlement Week Karthikeyan S will pay the Contractor the Profit Share percentage in Schedule 1 of the net Trade Profit of all Resulting Trades of that Contractor that were closed in that week, where net Trade Profit is the total of the Trade Profit of those trades after setting off Trade Losses of the same week and any loss carried forward under clause 6A.2.' },
+        { t: 'num', n: '6A.1', text: 'Profit Share. For each Settlement Week Karthikeyan S will pay the Contractor the Profit Share percentage in Schedule 2 of the net Trade Profit of all Resulting Trades of that Contractor that were closed in that week, where net Trade Profit is the total of the Trade Profit of those trades after setting off Trade Losses of the same week and any loss carried forward under clause 6A.2.' },
         { t: 'num', n: '6A.2', text: 'Carry-forward of losses. If the net result of a Settlement Week is zero or a loss, no Profit Share is payable for that week. A loss is carried forward and set off against the Trade Profit of the following Settlement Weeks, so that Profit Share is payable only on the net Trade Profit remaining after the carried-forward loss has been recovered. A carried-forward loss never reduces any amount already paid, and no amount is ever payable by the Contractor to Karthikeyan S, and nothing is deducted from the Contractor for any loss.' },
         { t: 'num', n: '6A.3', text: 'Calculation and payment. The Platform calculates the Profit Share for each Settlement Week automatically and shows it in the Contractor’s statement. Karthikeyan S then reviews and approves that statement, and pays the approved amount by bank transfer manually, on the Wednesday after the Settlement Week or the next working day, against the invoice required in Section 8, subject to tax under Section 8. No payment is made automatically.' },
         { t: 'num', n: '6A.4', text: 'Records. The Profit Share is computed from Karthikeyan S’s own trade records. The Platform will show the Contractor a statement for each Settlement Week. The Contractor must raise any disagreement within 15 days of the payment, and the parties will review the records together in good faith.' },
         { t: 'num', n: '6A.5', text: 'Contractor’s representation about its Registration. The Contractor represents and confirms that: (a) the Registration is valid, and it will tell Karthikeyan S within 3 days if it lapses, is suspended or is cancelled; (b) it has checked its Registration conditions, the SEBI (Research Analysts) Regulations and any SEBI circular on research analyst fees, and its own compliance function (or compliance officer, where it has one) has confirmed that receiving the Profit Share under this Agreement is permitted for the Contractor; and (c) it will tell Karthikeyan S at once if that position changes. If the Contractor does not give this confirmation when accepting this Agreement, clause 6A.6 applies from the Effective Date and no Profit Share is payable.' },
-        { t: 'num', n: '6A.6', text: `Fixed fee per Fee Period. If the Contractor or Karthikeyan S concludes that the Profit Share is not permitted for the Contractor, or Karthikeyan S gives 15 days’ notice under Section 15, the Fees will instead be a fixed fee for each Fee Period. For each Fee Period the fixed fee is the fixed amount stated in Schedule 1 multiplied by the Net Realized Profit of that Fee Period divided by the Reference Investment, and never more than the fixed amount. It is therefore paid in full when the Net Realized Profit reaches the Reference Investment, pro rata when it is below the Reference Investment, and nothing is payable for a Fee Period whose Net Realized Profit is zero or a loss. A loss is not carried forward to any later Fee Period. Where the Agreement starts or ends part-way through a Fee Period, the fixed amount is pro-rated by the number of days of that Fee Period on which the Contractor was under this Agreement. The Platform calculates the fixed fee for a Fee Period automatically and shows it in the statement of the Settlement Week in which that Fee Period ends; Karthikeyan S approves and pays it manually, as in clause 6A.3, and no payment is made automatically. Nothing is ever payable by the Contractor. The change applies only to Fee Periods starting after it takes effect and does not alter any statement already issued.` },
+        { t: 'num', n: '6A.6', text: `Fixed fee per Fee Period. If the Contractor or Karthikeyan S concludes that the Profit Share is not permitted for the Contractor, or Karthikeyan S gives 15 days’ notice under Section 15, the Fees will instead be a fixed fee for each Fee Period. For each Fee Period the fixed fee is the fixed amount stated in Schedule 2 multiplied by the Net Realized Profit of that Fee Period divided by the Reference Investment, and never more than the fixed amount. It is therefore paid in full when the Net Realized Profit reaches the Reference Investment, pro rata when it is below the Reference Investment, and nothing is payable for a Fee Period whose Net Realized Profit is zero or a loss. A loss is not carried forward to any later Fee Period. Where the Agreement starts or ends part-way through a Fee Period, the fixed amount is pro-rated by the number of days of that Fee Period on which the Contractor was under this Agreement. The Platform calculates the fixed fee for a Fee Period automatically and shows it in the statement of the Settlement Week in which that Fee Period ends; Karthikeyan S approves and pays it manually, as in clause 6A.3, and no payment is made automatically. Nothing is ever payable by the Contractor. The change applies only to Fee Periods starting after it takes effect and does not alter any statement already issued.` },
         { t: 'num', n: '6A.7', text: 'Karthikeyan S’s rights. Karthikeyan S may suspend Recommendations at any time. If the Registration is not valid, no Recommendation is accepted, and no Fee accrues for Recommendations made while it was invalid.' },
 
         { t: 'h2', text: '7. No Payment, Deposit or Stake by the Contractor' },
@@ -150,7 +150,7 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
         { t: 'p', text: 'Karthikeyan S collects the Contractor’s name, contact details, PAN, GSTIN, Registration details, address, bank details and Platform activity only to perform this Agreement, pay Fees and meet tax and legal obligations. The Contractor consents to this processing under the Digital Personal Data Protection Act, 2023. Karthikeyan S will store this data securely, keep it no longer than the law requires, and not sell or share it except with its bank, tax authorities or as required by law. Requests to access or correct data can be sent to admin@nivedhatech.com.' },
 
         { t: 'h2', text: '13. Term and Termination' },
-        { t: 'li', text: 'This Agreement runs for the Term in Schedule 1: 6 months from the Effective Date.' },
+        { t: 'li', text: 'This Agreement runs for the Term in Schedule 2: 6 months from the Effective Date.' },
         { t: 'li', text: 'Karthikeyan S may end it immediately by email if the Contractor breaches Section 4, 9 or 10, or provided false information during onboarding.' },
         { t: 'li', text: 'Karthikeyan S may end this Agreement immediately by email if the Registration lapses, is suspended or cancelled, or if the representation in clause 6A.5 is untrue.' },
         { t: 'li', text: 'When this Agreement ends, Karthikeyan S will pay the Fees earned up to the end date (including any Fee Period amount, pro-rated under clause 6A.6), and Platform access will end. Sections 6 and 6A (for Fees earned), 8, 10, 11, 12, 14 and 16 continue to apply.' },
@@ -173,11 +173,11 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
         { t: 'li', text: 'Notices are given by email to the addresses recorded on the Platform (for Karthikeyan S: admin@nivedhatech.com).' },
         { t: 'li', text: 'The Contractor may not assign this Agreement.' },
 
-        { t: 'h2', text: 'Schedule 1 – Fee Schedule' },
-        { t: 'table', rows: feeScheduleRows(d) },
-
-        { t: 'h2', text: 'Schedule 2 – Recommendation and Risk Rules' },
+        { t: 'h2', text: 'Schedule 1 – Recommendation and Risk Rules' },
         { t: 'table', rows: rulesScheduleRows(d) },
+
+        { t: 'h2', text: 'Schedule 2 – Fee Schedule' },
+        { t: 'table', rows: feeScheduleRows(d) },
 
         { t: 'h2', text: 'Schedule 3 – Invoice Requirements' },
         { t: 'p', text: 'Each tax invoice must contain at least:' },
@@ -199,7 +199,7 @@ export function businessDoc(d: AgreementDetails = {}): AgreementDoc {
 export function invitationScheduleRows(d: AgreementDetails = {}): { section?: string; item?: string; value?: string }[] {
   const fee = feeScheduleRows(d).slice(1).map(([item, value]) => ({ item, value }));
   const rules = rulesScheduleRows(d).slice(1).map(([item, value]) => ({ item, value }));
-  return [{ section: 'Schedule 1 – Fee Schedule' }, ...fee, { section: 'Schedule 2 – Recommendation and Risk Rules' }, ...rules];
+  return [{ section: 'Schedule 1 – Recommendation and Risk Rules' }, ...rules, { section: 'Schedule 2 – Fee Schedule' }, ...fee];
 }
 
 export const BUSINESS_V1_1: AgreementDoc = businessDoc();

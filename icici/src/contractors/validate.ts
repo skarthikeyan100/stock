@@ -20,6 +20,10 @@ export function validIfsc(v: string): boolean { return IFSC_RE.test(v); }
 export function validAccount(v: string): boolean { return ACCOUNT_RE.test(v); }
 export function validSebi(v: string): boolean { return SEBI_RA_RE.test(v); }
 export function validEmail(v: string): boolean { return EMAIL_RE.test(v) && v.length <= 254; }
+/** A Business contractor with no real email is keyed by its SEBI number: `<INH number>@example.com` (never mailed). */
+export const PLACEHOLDER_EMAIL_DOMAIN = 'example.com';
+export const placeholderEmailFor = (sebiNumber: string) => `${sebiNumber.trim().toLowerCase()}@${PLACEHOLDER_EMAIL_DOMAIN}`;
+export const isPlaceholderEmail = (v: string | undefined | null) => !!v && v.toLowerCase().endsWith(`@${PLACEHOLDER_EMAIL_DOMAIN}`);
 export function validIsoDate(v: string): boolean { return /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v + 'T00:00:00Z')); }
 
 /** A registration is usable on a date when it is verified and valid-until is that day or later (IST date string compare). */

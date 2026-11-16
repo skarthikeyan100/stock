@@ -49,7 +49,7 @@ export function companyDetails(): { name?: string; address?: string; pan?: strin
 /** Details from what the contractor typed (plain values) while they fill in the form. */
 export function detailsFromForm(type: ContractorType, name: string, k: any, fixedFeeFromStart = false): AgreementDetails {
     const up = (v: unknown) => String(v ?? '').trim().toUpperCase();
-    const base: AgreementDetails = { ...scheduleDetails(), address: String(k?.address ?? '').trim() || undefined, fixedFeeFromStart };
+    const base: AgreementDetails = { ...scheduleDetails(), address: type === 'INDIVIDUAL' ? String(k?.address ?? '').trim() || undefined : undefined, fixedFeeFromStart };
     if (type === 'INDIVIDUAL') return { ...base, name: String(k?.legalName ?? name ?? '').trim() || undefined, pan: up(k?.pan) || undefined };
     const gstin = up(k?.gstin);
     return { ...base, entityName: String(k?.entityName ?? '').trim() || undefined, gstin: gstin || undefined, pan: gstin.length >= 12 ? gstin.slice(2, 12) : undefined,
@@ -62,7 +62,7 @@ export function usesFixedFee(c: Contractor, today = istDate()): boolean { return
 export function detailsFromContractor(c: Contractor, fixedFeeFromStart = usesFixedFee(c)): AgreementDetails {
     const k: any = c.kyc ?? {};
     const dec = (v?: string) => { try { return v ? decryptField(v) : undefined; } catch { return undefined; } };
-    const base: AgreementDetails = { ...scheduleDetails(), address: k.address, fixedFeeFromStart };
+    const base: AgreementDetails = { ...scheduleDetails(), address: c.type === 'INDIVIDUAL' ? k.address : undefined, fixedFeeFromStart }; // a Business contractor has no registered address in the agreement
     if (c.type === 'INDIVIDUAL') return { ...base, name: k.legalName ?? c.name, pan: dec(k.panEnc) };
     return { ...base, entityName: k.entityName, gstin: dec(k.gstinEnc), pan: dec(k.panEnc), 
         analystName: k.analystName ?? c.name, sebiNumber: c.sebi?.number, sebiValidUntil: c.sebi?.validUntil };
