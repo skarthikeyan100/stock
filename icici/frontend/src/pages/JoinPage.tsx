@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { Alert, Button, Card, Col, Container, Form, Row } from 'react-bootstrap';
+import { Alert, Button, Card, Col, Container, Form, Row, Table } from 'react-bootstrap';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiFetch, apiPost, readError } from '../utils/api';
@@ -11,6 +11,8 @@ interface InviteInfo {
   emailLock?: string | null;
   reinvite?: { email: string; name: string; needsAgreement: boolean } | null;
   agreement?: { version: string; sha256: string; filename: string };
+  // Advanced only: Schedules 1 (fee) and 2 (rules) as one table; a row with `section` is a heading
+  schedule?: { title: string; rows: { section?: string; item?: string; value?: string }[] } | null;
 }
 const GONE: Record<string, string> = { used: 'This invitation link has already been used.', revoked: 'This invitation link is no longer valid.', expired: 'This invitation link has expired.', unknown: 'This invitation link is not valid.' };
 
@@ -103,6 +105,20 @@ export default function JoinPage() {
       <h1 className="h4 mb-1">Nivedha Tech – Forecasting programme</h1>
       <p className="text-muted">{re ? `Welcome back, ${re.name}.` : `You are invited as a ${business ? 'Business (GSTIN)' : 'Individual (PAN)'} contractor.`} This link works once and signs this browser in. Give your details first; the agreement is then prepared with them for you to read and accept.</p>
       <Alert variant="warning" className="small">There is no login page. If you log out or clear your browser data you will need a new invitation, so keep using this browser.</Alert>
+      {info.schedule && (
+        <Card className="mb-3">
+          <Card.Header>{info.schedule.title}</Card.Header>
+          <Card.Body className="p-0">
+            <Table size="sm" responsive className="mb-0">
+              <tbody>
+                {info.schedule.rows.map((r, i) => (r.section
+                  ? <tr key={i} className="bg-body-tertiary"><th colSpan={2} className="small">{r.section}</th></tr>
+                  : <tr key={i}><td className="small" style={{ width: '40%' }}>{r.item}</td><td className="small">{r.value}</td></tr>))}
+              </tbody>
+            </Table>
+          </Card.Body>
+        </Card>
+      )}
       <Form onSubmit={submit}>
         {!re && (
           <Card className="mb-3">
@@ -143,7 +159,7 @@ export default function JoinPage() {
             <Form.Check id="dp" className="mb-2" checked={chk.dpdp} onChange={(e) => setChk({ ...chk, dpdp: e.target.checked })} label="I consent to the processing of my personal data as described in Section 12 of the agreement (DPDP Act, 2023)." />
             {business && <>
               <Form.Check id="rep" checked={chk.rep} onChange={(e) => { setPdfUrl(null); setChk({ ...chk, rep: e.target.checked, accept: false, dpdp: false }); }} label="I confirm clause 6A.5: our SEBI registration is valid, and our compliance function has confirmed that receiving the Profit Share under this agreement is permitted for us." />
-              <div className="small text-muted ms-4">Optional. If you do not tick this, the fixed fee in clause 6A.6 applies from the start instead of the Profit Share; the agreement above is prepared accordingly.</div>
+              <div className="small text-muted ms-4">Optional. If you do not tick this, the fixed fee per Fee Period in clause 6A.6 applies from the start instead of the Profit Share; the agreement above is prepared accordingly.</div>
             </>}
           </Card.Body></Card>
         )}

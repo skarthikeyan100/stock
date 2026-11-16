@@ -3,7 +3,9 @@
  * `contractorStatements`: the existing `payouts` collection and its Admin screens are not touched.
  *   Beginner: ACCURACY_WEEK (correct forecasts x the fee snapshotted on each forecast, capped by the month's remaining cap) and RETAINER_MONTH.
  *   Advanced: PROFIT_SHARE_WEEK (a percentage of the net profit of the closed trades of its approved recommendations; a losing week pays 0 and the loss is CARRIED FORWARD
- *             and set off against later weeks before any share is paid, clause 6A.2; nothing is ever charged to the contractor) or, from an effective date, FIXED_PER_APPROVED_WEEK (a fixed amount per approved recommendation, earned pro rata to the suggested profit achieved, clause 6A.6).
+ *             and set off against later weeks before any share is paid, clause 6A.2; nothing is ever charged to the contractor) or, from an effective date, FIXED_PERIOD
+ *             (a fixed amount per fee period, of N months (default 1), x min(1, max(0, net realized profit of the period / reference investment)), clause 6A.6:
+ *             the full amount only when the reference investment is realized, pro rata below it, nothing on a net loss, and no loss carried forward).
  * Invariants (tested): no amount is negative, only CORRECT forecasts earn an accuracy fee, no input is the Company's P&L for a Beginner statement,
  * and a fee-model change applies only from its effective date, never to an earlier period.
  */
@@ -13,7 +15,7 @@ import configService from '../prism/ConfigService';
 import { Contractor, tradeUsers } from './types';
 import { applyMonthlyCap, monthlyRetainer } from '../forecast/fees';
 
-export type StatementKind = 'ACCURACY_WEEK' | 'RETAINER_MONTH' | 'PROFIT_SHARE_WEEK' | 'FIXED_PER_APPROVED_WEEK';
+export type StatementKind = 'ACCURACY_WEEK' | 'RETAINER_MONTH' | 'PROFIT_SHARE_WEEK' | 'FIXED_PERIOD';
 export type StatementStatus = 'DRAFT' | 'APPROVED' | 'PAID';
 export interface StatementDoc {
     _id?: any; id: string; contractorId: string; kind: StatementKind; periodFrom: string; periodTo: string; // IST dates, inclusive
@@ -36,14 +38,29 @@ export function previousWeek(runDate: string): { from: string; to: string } {
     return { from: addDays(thisWed, -7), to: addDays(thisWed, -1) };
 }
 export const previousMonth = (runDate: string): string => { const [y, m] = runDate.split('-').map(Number); return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`; };
+/** `date` moved by n whole months; the day is clamped to the month's last day (31 Jan + 1 month = 28/29 Feb). */
+export function addMonths(d: string, n: number): string {
+    const y = Number(d.slice(0, 4)), mIdx = Number(d.slice(5, 7)) - 1 + n, day = Number(d.slice(8, 10));
+    const ty = y + Math.floor(mIdx / 12), tm = ((mIdx % 12) + 12) % 12;
+    const dim = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
+    return `${ty}-${String(tm + 1).padStart(2, '0')}-${String(Math.min(day, dim)).padStart(2, '0')}`;
+}
+const daysBetween = (a: string, b: string): number => Math.round((toDate(b).getTime() - toDate(a).getTime()) / 86_400_000) + 1; // inclusive
 
 // ---------- fee model of an Advanced contractor, with effective dates ----------
-export interface FeeModelEntry { from: string; model: 'PROFIT_SHARE' | 'FIXED_PER_APPROVED'; sharePercent?: number; fixedAmount?: number }
+export interface FeeModelEntry { from: string; model: 'PROFIT_SHARE' | 'FIXED_PERIOD'; sharePercent?: number; fixedAmount?: number; durationMonths?: number; referenceInvestment?: number }
 /** The entry in force on `date`: the latest whose `from` is on or before it. A change never reaches back before its own `from`. */
 export function feeModelOn(entries: FeeModelEntry[] | undefined, date: string, defaultSharePercent: number): FeeModelEntry {
     const sorted = [...(entries ?? [])].sort((a, b) => (a.from < b.from ? -1 : 1)).filter((e) => e.from <= date);
     return sorted.length ? sorted[sorted.length - 1] : { from: '1970-01-01', model: 'PROFIT_SHARE', sharePercent: defaultSharePercent };
 }
+
+export const DEFAULT_FIXED_FEE_MONTHS = 1;
+export const DEFAULT_REFERENCE_INVESTMENT = 100000;
+/** The length of a fee period in months (config forecast.fixedFeeDurationMonths; default 1). */
+export const fixedFeeMonths = (): number => { const n = Number((configService.getConfig() as any)?.forecast?.fixedFeeDurationMonths); return Number.isInteger(n) && n >= 1 && n <= 12 ? n : DEFAULT_FIXED_FEE_MONTHS; };
+/** The investment the fixed fee is measured against (forecast.orders.maxInvestment; snapshotted on each fee-model entry when it is created). */
+export const referenceInvestment = (): number => { const n = Number((configService.getConfig() as any)?.forecast?.orders?.maxInvestment); return n > 0 ? n : DEFAULT_REFERENCE_INVESTMENT; };
 
 export const feeCfg = () => ({ monthlyCap: 0, retainerMonthly: 0, minParticipationDays: 15, feePerCorrect: 0, ...(((configService.getConfig() as any)?.forecast?.fees) ?? {}) });
 
@@ -96,18 +113,9 @@ export async function weeklyAdvancedStatement(c: Contractor, week: { from: strin
     const db = Mongo.getInstance().db;
     const model = feeModelOn((c as any).feeModels, week.to, defaultSharePercent);
     // the model in force on the LAST day of the week applies to the whole week (a change takes effect from its date: a week that spans it uses the new one only if the date is on or before the week's end)
+    if (model.model === 'FIXED_PERIOD') return null; // paid per fee period by fixedPeriodStatements, not per week
     const approved = await db.collection('recommendations').find({ contractorId: c.id, status: 'APPROVED', day: { $gte: week.from, $lte: week.to } }).toArray() as any[];
     const trades = await db.collection('closedTrades').find({ user: { $in: tradeUsers(c) }, exitTime: { $gte: istStart(week.from), $lt: istEndExcl(week.to) } }).toArray() as any[];
-    if (model.model === 'FIXED_PER_APPROVED') {
-        if (approved.length === 0) return null;
-        const per = Number(model.fixedAmount) > 0 ? Number(model.fixedAmount) : 0;
-        // Clause 6A.6: the fixed fee is earned to the extent the suggested profit (target - order price, in option points) is achieved by the trades closed in the week:
-        // in full once it is, pro rata when only part is, nothing without a profit. Weekly approximation: points achieved by this week's closed trades / points suggested by this week's approved recommendations.
-        const suggested = approved.reduce((a, r) => a + Math.max(0, Number(r.target) - Number(r.orderPrice)), 0);
-        const achieved = Math.max(0, trades.reduce((a, t) => a + (Number(t.quantity) > 0 && Number.isFinite(Number(t.realizedPnL)) ? Number(t.realizedPnL) / Number(t.quantity) : 0), 0));
-        const ratio = suggested > 0 ? Math.min(1, achieved / suggested) : 0;
-        return create(c, 'FIXED_PER_APPROVED_WEEK', week.from, week.to, { approvedRecommendations: approved.length, fixedPerApproved: per, suggestedPoints: Math.round(suggested * 100) / 100, achievedPoints: Math.round(achieved * 100) / 100, earnedFraction: Math.round(ratio * 10000) / 10000, effectiveFrom: model.from }, approved.length * per * ratio);
-    }
     if (trades.length === 0 && approved.length === 0) return null;
     const net = trades.reduce((a, t) => a + (Number.isFinite(Number(t.realizedPnL)) ? Number(t.realizedPnL) : 0), 0);
     const pct = Number(model.sharePercent) > 0 ? Number(model.sharePercent) : defaultSharePercent;
@@ -120,13 +128,58 @@ export async function weeklyAdvancedStatement(c: Contractor, week: { from: strin
     return create(c, 'PROFIT_SHARE_WEEK', week.from, week.to, { closedTrades: trades.length, netTradeProfit: Math.round(net * 100) / 100, lossBroughtForward: Math.round(lossIn * 100) / 100, lossCarriedForward: Math.round(lossOut * 100) / 100, sharePercent: pct, effectiveFrom: model.from }, gross);
 }
 
-/** The Wednesday job: previous Wednesday-to-Tuesday statements for every non-test contractor that is not terminated (or ended inside the week). Idempotent. */
+/**
+ * Advanced, FIXED_PERIOD (clause 6A.6). For each fee period of a FIXED_PERIOD entry (anchored at the entry's `from`, N months each):
+ *   gross = fixedAmount x periodFraction x earnedFraction, where
+ *   periodFraction = days the contractor was on this model in the period / days in the full period (a period cut by a later entry or by termination is pro rata by days),
+ *   earnedFraction = min(1, max(0, net realized profit of the period's closed trades / reference investment)).
+ * A loss pays 0 and nothing carries forward. A period with no approved recommendation gets no statement. A period is settled only once it has ended (or was cut)
+ * before `runDate`, so a missed run is caught up on the next one. Idempotent through create().
+ */
+export async function fixedPeriodStatements(c: Contractor, runDate: string): Promise<StatementDoc[]> {
+    const db = Mongo.getInstance().db;
+    const all = [...(c.feeModels ?? [])].sort((a, b) => (a.from < b.from ? -1 : 1));
+    const out: StatementDoc[] = [];
+    for (const e of all.filter((x) => x.model === 'FIXED_PERIOD')) {
+        const amount = Number(e.fixedAmount);
+        if (!(amount > 0)) continue; // amountless (6A.5 not confirmed): nothing until the owner sets the amount
+        const months = Number(e.durationMonths) >= 1 ? Number(e.durationMonths) : fixedFeeMonths();
+        const ref = Number(e.referenceInvestment) > 0 ? Number(e.referenceInvestment) : referenceInvestment();
+        const nextFrom = all.find((x) => x.from > e.from)?.from;
+        const windowEnd = nextFrom ? addDays(nextFrom, -1) : '9999-12-31'; // the entry is in force until the next entry starts
+        for (let k = 0; ; k++) {
+            const start = addMonths(e.from, k * months);
+            if (start > windowEnd || start > runDate) break;
+            const fullEnd = addDays(addMonths(e.from, (k + 1) * months), -1);
+            let end = fullEnd < windowEnd ? fullEnd : windowEnd;
+            if (c.terminatedAt && c.terminatedAt < end) end = c.terminatedAt;
+            if (end < start) break; // ended before this period began: later periods are later still
+            if (!(end < runDate)) break; // not settled yet
+            const approved = await db.collection('recommendations').find({ contractorId: c.id, status: 'APPROVED', day: { $gte: start, $lte: end } }).toArray() as any[];
+            if (approved.length === 0) continue;
+            const trades = await db.collection('closedTrades').find({ user: { $in: tradeUsers(c) }, exitTime: { $gte: istStart(start), $lt: istEndExcl(end) } }).toArray() as any[];
+            const net = trades.reduce((a, t) => a + (Number.isFinite(Number(t.realizedPnL)) ? Number(t.realizedPnL) : 0), 0);
+            const frac = daysBetween(start, end) / daysBetween(start, fullEnd);
+            const earned = Math.min(1, Math.max(0, net / ref));
+            const s = await create(c, 'FIXED_PERIOD', start, end, {
+                approvedRecommendations: approved.length, closedTrades: trades.length, netRealizedProfit: Math.round(net * 100) / 100,
+                referenceInvestment: ref, fixedAmount: amount, periodMonths: months, periodFraction: Math.round(frac * 10000) / 10000,
+                earnedFraction: Math.round(earned * 10000) / 10000, effectiveFrom: e.from,
+            }, amount * frac * earned);
+            if (s) out.push(s);
+        }
+    }
+    return out;
+}
+
+/** The Wednesday job: previous Wednesday-to-Tuesday statements for every non-test contractor that is not terminated (or ended inside the week), and the fee-period settlement of Advanced contractors. Idempotent. */
 export async function runWeeklyStatements(runDate: string): Promise<StatementDoc[]> {
     const week = previousWeek(runDate);
     const out: StatementDoc[] = [];
     const share = Number((configService.getConfig() as any)?.settings?.levelRules?.advanced?.profitSplitPercent) || 25;
     for (const c of (await Mongo.getInstance().db.collection('contractors').find({}).toArray()) as Contractor[]) {
         if (c.isTest) continue;
+        if (c.type === 'BUSINESS') out.push(...await fixedPeriodStatements(c, runDate)); // before the terminated filter: a terminated contractor's last period is still owed
         if (c.status === 'TERMINATED' && !(c.terminatedAt && c.terminatedAt >= week.from)) continue;
         const s = c.type === 'INDIVIDUAL' ? await weeklyAccuracyStatement(c, week) : await weeklyAdvancedStatement(c, week, share);
         if (s) out.push(s);

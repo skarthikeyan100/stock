@@ -20,16 +20,18 @@ import { toContractorClient } from '../contractors/clientUser';
 import { notifyAdmins } from '../contractors/notify';
 import Mongo from '../tools/mongo';
 import { sendWelcomeIfDue } from '../contractors/emails';
-import { canPersonalise, detailsFromContractor, detailsFromForm, readStored, renderPersonalised, sha256Of, storePersonalised, usesFixedFee } from '../contractors/personalise';
+import { canPersonalise, detailsFromContractor, detailsFromForm, readStored, renderPersonalised, scheduleDetails, sha256Of, storePersonalised, usesFixedFee } from '../contractors/personalise';
+import { invitationScheduleRows } from '../agreements/content/business-v1.1';
+import { fixedFeeMonths, referenceInvestment } from '../contractors/statements';
 
 const router = asyncRouter();
 const acceptLimiter = new RateLimiter(Number(process.env.INVITE_RATE_LIMIT) || 20, 60_000); // per IP per minute (the env override is for tests)
 const clientIp = (req: express.Request) => String(req.get('cf-connecting-ip') || req.ip || req.socket.remoteAddress || '');
 const agreementName = (t: ContractorType) => (t === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Forecasting Services Agreement');
-/** Not confirming clause 6A.5 is allowed: the fixed fee of clause 6A.6 then applies from today (the amount is the owner's to set; config forecast.fixedFeePerApproved is the default). */
+/** Not confirming clause 6A.5 is allowed: the fixed fee of clause 6A.6 then applies from today (the amount is the owner's to set; config forecast.fixedFeePerPeriod is the default). */
 function fixedFeeEntry() {
-    const amount = Number(((configService.getConfig() as any)?.forecast ?? {}).fixedFeePerApproved);
-    return { from: istDate(), model: 'FIXED_PER_APPROVED' as const, ...(amount > 0 ? { fixedAmount: amount } : {}) };
+    const amount = Number(((configService.getConfig() as any)?.forecast ?? {}).fixedFeePerPeriod);
+    return { from: istDate(), model: 'FIXED_PERIOD' as const, durationMonths: fixedFeeMonths(), referenceInvestment: referenceInvestment(), ...(amount > 0 ? { fixedAmount: amount } : {}) };
 }
 const str = (v: unknown, max = 300) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
@@ -59,7 +61,9 @@ router.get('/invite/:token', async function (req, res) {
         if (!c || c.status === 'TERMINATED') { res.json({ state: 'revoked' }); return; }
         reinvite = { email: c.email, name: c.name, needsAgreement: c.agreementVersion !== version };
     }
-    res.json({ state: 'ok', type: invite.type, agreementName: agreementName(invite.type), emailLock: invite.emailLock ?? null, reinvite, agreement: { version, sha256: ag.sha256, filename: ag.filename } });
+    // Advanced: Schedules 1 and 2 as one table for the invitation page (the same rows the agreement PDF prints)
+    const schedule = invite.type === 'BUSINESS' ? { title: 'Fee and Recommendation Rules', rows: invitationScheduleRows(scheduleDetails()) } : null;
+    res.json({ state: 'ok', type: invite.type, agreementName: agreementName(invite.type), emailLock: invite.emailLock ?? null, reinvite, schedule, agreement: { version, sha256: ag.sha256, filename: ag.filename } });
 });
 
 router.get('/invite/:token/agreement', async function (req, res) {

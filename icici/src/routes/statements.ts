@@ -8,7 +8,7 @@ import { requireAdmin, requireAuth, resolveRealUser, resolveUser, invalidateUser
 import { upload, detectDocumentType } from './users';
 import { contractorsCol, getContractor, getContractorByEmail } from '../contractors/store';
 import { Contractor } from '../contractors/types';
-import { StatementDoc, addDays, approveStatement, markPaid, runMonthlyRetainers, runWeeklyStatements, statementCsv, statementsCol, taxPhaseComplete } from '../contractors/statements';
+import { StatementDoc, addDays, approveStatement, fixedFeeMonths, markPaid, referenceInvestment, runMonthlyRetainers, runWeeklyStatements, statementCsv, statementsCol, taxPhaseComplete } from '../contractors/statements';
 import { istDate } from '../contractors/agreements';
 import { validIsoDate } from '../contractors/validate';
 import { notifyAdmins, notifyUser } from '../contractors/notify';
@@ -100,12 +100,20 @@ router.post('/owner/contractors/:id/fee-model', requireAdmin, async function (re
     if (!c || c.type !== 'BUSINESS') { res.status(404).json({ error: 'Not an Advanced contractor' }); return; }
     const from = str(req.body?.from), model = str(req.body?.model);
     // The one exception to "never retroactive": giving the AMOUNT to a fixed-fee entry that was created without one (a contractor who did not confirm clause 6A.5) on its own date.
-    const amountless = (c.feeModels ?? []).some((e) => e.from === from && e.model === 'FIXED_PER_APPROVED' && !(Number(e.fixedAmount) > 0));
-    if (!validIsoDate(from) || (from < istDate() && !(amountless && model === 'FIXED_PER_APPROVED'))) { res.status(400).json({ error: 'The effective date must be today or later (a change never applies to an earlier period)' }); return; }
-    if (model !== 'PROFIT_SHARE' && model !== 'FIXED_PER_APPROVED') { res.status(400).json({ error: 'model must be PROFIT_SHARE or FIXED_PER_APPROVED' }); return; }
+    const amountless = (c.feeModels ?? []).some((e) => e.from === from && e.model === 'FIXED_PERIOD' && !(Number(e.fixedAmount) > 0));
+    if (!validIsoDate(from) || (from < istDate() && !(amountless && model === 'FIXED_PERIOD'))) { res.status(400).json({ error: 'The effective date must be today or later (a change never applies to an earlier period)' }); return; }
+    if (model !== 'PROFIT_SHARE' && model !== 'FIXED_PERIOD') { res.status(400).json({ error: 'model must be PROFIT_SHARE or FIXED_PERIOD' }); return; }
     const entry: any = { from, model };
     if (model === 'PROFIT_SHARE') { const p = Number(req.body?.sharePercent); if (!(p > 0 && p <= 100)) { res.status(400).json({ error: 'sharePercent must be between 0 and 100' }); return; } entry.sharePercent = p; }
-    else { const a = Number(req.body?.fixedAmount); if (!(a > 0)) { res.status(400).json({ error: 'fixedAmount must be positive' }); return; } entry.fixedAmount = a; }
+    else {
+        const a = Number(req.body?.fixedAmount); if (!(a > 0)) { res.status(400).json({ error: 'fixedAmount (rupees per fee period) must be positive' }); return; } entry.fixedAmount = a;
+        // the duration in months (default 1) and the reference investment the fee is measured against (default forecast.orders.maxInvestment), both fixed on the entry
+        const months = req.body?.durationMonths === undefined || req.body?.durationMonths === '' ? fixedFeeMonths() : Number(req.body?.durationMonths);
+        if (!(Number.isInteger(months) && months >= 1 && months <= 12)) { res.status(400).json({ error: 'durationMonths must be a whole number from 1 to 12' }); return; }
+        const ref = req.body?.referenceInvestment === undefined || req.body?.referenceInvestment === '' ? referenceInvestment() : Number(req.body?.referenceInvestment);
+        if (!(ref > 0)) { res.status(400).json({ error: 'referenceInvestment must be positive' }); return; }
+        entry.durationMonths = months; entry.referenceInvestment = ref;
+    }
     await contractorsCol().updateOne({ id: c.id }, { $set: { feeModels: [...(c.feeModels ?? []).filter((e) => e.from !== from), entry] } });
     Log.log(`[contractor] fee model of ${c.id} set from ${from}: ${model}`);
     res.json({ ok: true, feeModels: [...(c.feeModels ?? []).filter((e) => e.from !== from), entry] });

@@ -160,7 +160,7 @@ export default function MyProfilePage() {
                   <Alert variant="warning" className="small">A newer agreement is in force. Please read and accept it.</Alert>
                   <Form.Check id="a" checked={agree.a} onChange={(e) => setAgree({ ...agree, a: e.target.checked })} label={`I have read and accept the ${user.agreementName ?? 'agreement'} v${user.agreementVersionRequired}`} />
                   <Form.Check id="d" checked={agree.d} onChange={(e) => setAgree({ ...agree, d: e.target.checked })} label="I consent to the data processing in Section 12." />
-                  {business && <Form.Check id="r" checked={agree.r} onChange={(e) => setAgree({ ...agree, r: e.target.checked })} label="I confirm clause 6A.5 (registration and compliance). Optional: without it the fixed fee of clause 6A.6 applies." />}
+                  {business && <Form.Check id="r" checked={agree.r} onChange={(e) => setAgree({ ...agree, r: e.target.checked })} label="I confirm clause 6A.5 (registration and compliance). Optional: without it the fixed fee per Fee Period of clause 6A.6 applies." />}
                   <Button type="submit" size="sm" className="mt-2" disabled={!agree.a || !agree.d}>Accept</Button>
                   {msg?.where === 'agree' && <div className={`small mt-2 ${msg.ok ? 'text-success' : 'text-danger'}`}>{msg.text}</div>}
                 </Form>

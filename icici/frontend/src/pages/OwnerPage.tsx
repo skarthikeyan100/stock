@@ -215,14 +215,14 @@ function FeesTab() {
   const [data, setData] = useState<Json | null>(null);
   const [contractors, setContractors] = useState<Json[]>([]);
   const [err, setErr] = useState('');
-  const [fm, setFm] = useState({ contractor: '', from: '', model: 'PROFIT_SHARE', value: '' });
+  const [fm, setFm] = useState({ contractor: '', from: '', model: 'PROFIT_SHARE', value: '', months: '1', ref: '' });
   const load = useCallback(() => Promise.all([getJson('/owner/statements'), getJson('/owner/contractors')]).then(([d, c]) => { setData(d); setContractors(c); setErr(''); }).catch((e) => setErr(e.message)), []);
   useEffect(() => { load(); }, [load]);
   const post = async (url: string, body: Json = {}) => { const r = await apiPost(url, body); if (!r.ok) { setErr(await readError(r)); return null; } setErr(''); load(); return r.json().catch(() => ({})); };
   const advanced = contractors.filter((c) => c.type === 'BUSINESS' && c.status !== 'TERMINATED');
   const saveModel = async (e: FormEvent) => {
     e.preventDefault();
-    await post(`/owner/contractors/${fm.contractor}/fee-model`, { from: fm.from, model: fm.model, ...(fm.model === 'PROFIT_SHARE' ? { sharePercent: Number(fm.value) } : { fixedAmount: Number(fm.value) }) });
+    await post(`/owner/contractors/${fm.contractor}/fee-model`, { from: fm.from, model: fm.model, ...(fm.model === 'PROFIT_SHARE' ? { sharePercent: Number(fm.value) } : { fixedAmount: Number(fm.value), durationMonths: Number(fm.months || 1), ...(fm.ref ? { referenceInvestment: Number(fm.ref) } : {}) }) });
   };
   return (
     <>
@@ -260,8 +260,12 @@ function FeesTab() {
             <Row className="g-2">
               <Col md={6}><Form.Select value={fm.contractor} onChange={(e) => setFm({ ...fm, contractor: e.target.value })} required><option value="">Contractor…</option>{advanced.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Form.Select></Col>
               <Col md={6}><Form.Control type="date" value={fm.from} onChange={(e) => setFm({ ...fm, from: e.target.value })} required /></Col>
-              <Col md={6}><Form.Select value={fm.model} onChange={(e) => setFm({ ...fm, model: e.target.value })}><option value="PROFIT_SHARE">Profit share (%)</option><option value="FIXED_PER_APPROVED">Fixed amount per approved recommendation (₹)</option></Form.Select></Col>
-              <Col md={6}><Form.Control inputMode="decimal" placeholder={fm.model === 'PROFIT_SHARE' ? 'Percent, e.g. 25' : 'Rupees, e.g. 500'} value={fm.value} onChange={(e) => setFm({ ...fm, value: e.target.value })} required /></Col>
+              <Col md={6}><Form.Select value={fm.model} onChange={(e) => setFm({ ...fm, model: e.target.value })}><option value="PROFIT_SHARE">Profit share (%)</option><option value="FIXED_PERIOD">Fixed fee for a duration (₹ per period)</option></Form.Select></Col>
+              <Col md={6}><Form.Control inputMode="decimal" placeholder={fm.model === 'PROFIT_SHARE' ? 'Percent, e.g. 25' : 'Rupees per period, e.g. 25000'} value={fm.value} onChange={(e) => setFm({ ...fm, value: e.target.value })} required /></Col>
+              {fm.model === 'FIXED_PERIOD' && <>
+                <Col md={6}><Form.Control inputMode="numeric" placeholder="Duration in months (default 1)" value={fm.months} onChange={(e) => setFm({ ...fm, months: e.target.value })} /></Col>
+                <Col md={6}><Form.Control inputMode="decimal" placeholder="Reference investment ₹ (default ₹1,00,000)" value={fm.ref} onChange={(e) => setFm({ ...fm, ref: e.target.value })} /></Col>
+              </>}
             </Row>
             <Button type="submit" size="sm" className="mt-2">Set from that date</Button>
           </Form>

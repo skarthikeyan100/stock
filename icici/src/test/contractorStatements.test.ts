@@ -8,7 +8,7 @@ process.env.CONFIG_PATH = path.join(tmp, 'config.yml');
 for (const k of ['GMAIL_USER', 'GMAIL_CLIENT_ID', 'GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN']) delete process.env[k];
 import { installFakeDb } from './fakeDb';
 import configService from '../prism/ConfigService';
-import { previousWeek, previousMonth, daysInMonthOf, addDays, feeModelOn, weeklyAccuracyStatement, monthlyRetainerStatement, weeklyAdvancedStatement, runWeeklyStatements, runMonthlyRetainers, approveStatement, markPaid, statementCsv, statementsCol } from '../contractors/statements';
+import { previousWeek, previousMonth, daysInMonthOf, addDays, addMonths, feeModelOn, weeklyAccuracyStatement, monthlyRetainerStatement, weeklyAdvancedStatement, fixedPeriodStatements, runWeeklyStatements, runMonthlyRetainers, approveStatement, markPaid, statementCsv, statementsCol } from '../contractors/statements';
 import { runInvoiceChecks } from '../contractors/jobs';
 import { restoreIfNoOverdue } from '../routes/statements';
 import { contractorsCol } from '../contractors/store';
@@ -26,9 +26,9 @@ async function main() {
     assert(addDays('2026-12-31', 1) === '2027-01-01', 'date arithmetic across a year');
 
     console.log('fee model effective dates:');
-    const models = [{ from: '2026-12-01', model: 'FIXED_PER_APPROVED' as const, fixedAmount: 500 }];
+    const models = [{ from: '2026-12-01', model: 'FIXED_PERIOD' as const, fixedAmount: 500 }];
     assert(feeModelOn(models, '2026-11-30', 25).model === 'PROFIT_SHARE' && feeModelOn(models, '2026-11-30', 25).sharePercent === 25, 'before the effective date: the default profit share');
-    assert(feeModelOn(models, '2026-12-01', 25).model === 'FIXED_PER_APPROVED' && feeModelOn(undefined, '2026-12-01', 25).model === 'PROFIT_SHARE', 'on the date the new model applies; no entries means the default');
+    assert(feeModelOn(models, '2026-12-01', 25).model === 'FIXED_PERIOD' && feeModelOn(undefined, '2026-12-01', 25).model === 'PROFIT_SHARE', 'on the date the new model applies; no entries means the default');
 
     console.log('Beginner accuracy:');
     const ind: any = { id: 'i1', email: 'i@x.com', name: 'Ind', type: 'INDIVIDUAL', status: 'ACTIVE', activatedAt: new Date('2026-10-01') };
@@ -91,26 +91,38 @@ async function main() {
     const p8: any = await weeklyAdvancedStatement(biz, { from: '2026-12-30', to: '2027-01-05' }, 25);
     assert(p7.lines.lossCarriedForward === 500 && p8.lines.lossBroughtForward === 500 && p8.gross === 0 && p8.lines.lossCarriedForward === 300, 'a partly recovered loss keeps carrying (500 - 200 = 300)');
     assert((await statementsCol().find({ contractorId: 'b1' }).toArray() as any[]).every((x) => x.gross >= 0), 'nothing is ever negative: a carried loss is never a debt');
-    const fixed: any = { ...biz, id: 'b2', email: 'b2@x.com', feeModels: [{ from: '2026-11-18', model: 'FIXED_PER_APPROVED', fixedAmount: 400 }] };
-    await contractorsCol().insertOne(fixed);
-    const R = (id: string, day: string, status = 'APPROVED') => db.collection('recommendations').insertOne({ id, contractorId: 'b2', day, status, orderPrice: 100, target: 120 });
-    const T2 = (id: string, pnl: number, qty: number, exit: string) => db.collection('closedTrades').insertOne({ id, user: 'b2@x.com', realizedPnL: pnl, quantity: qty, exitTime: new Date(`${exit}+05:30`) });
-    await R('x1', '2026-11-12'); await R('x2', '2026-11-13'); await R('x3', '2026-11-19'); await R('x4', '2026-11-20'); await R('x5', '2026-11-21', 'REJECTED');
-    const f1: any = await weeklyAdvancedStatement(fixed, w, 25);
-    assert(f1 === null || f1.kind === 'PROFIT_SHARE_WEEK', 'before the effective date the old model (profit share) applies to that week: no fixed fee');
-    await T2('y1', 1300, 65, '2026-11-20T11:00:00'); // +20 points on one trade
-    const f2: any = await weeklyAdvancedStatement(fixed, { from: '2026-11-18', to: '2026-11-24' }, 25);
-    assert(f2.kind === 'FIXED_PER_APPROVED_WEEK' && f2.lines.approvedRecommendations === 2 && f2.lines.suggestedPoints === 40 && f2.lines.achievedPoints === 20 && f2.gross === 400, 'half of the suggested profit (20 of 40 points) achieved: half of 2 x 400 is paid, pro rata');
-    await R('x6', '2026-11-25'); await T2('y2', 2600, 65, '2026-11-26T11:00:00'); // +40 points, suggested 20
-    const f3: any = await weeklyAdvancedStatement(fixed, { from: '2026-11-25', to: '2026-12-01' }, 25);
-    assert(f3.lines.earnedFraction === 1 && f3.gross === 400, 'profit above the suggested profit pays the full fee, never more');
-    await R('x7', '2026-12-02'); await T2('y3', -650, 65, '2026-12-03T11:00:00');
-    const f4: any = await weeklyAdvancedStatement(fixed, { from: '2026-12-02', to: '2026-12-08' }, 25);
-    assert(f4.gross === 0 && f4.lines.earnedFraction === 0, 'a losing trade earns nothing (and costs the contractor nothing)');
-    await R('x8', '2026-12-09');
-    const f5: any = await weeklyAdvancedStatement(fixed, { from: '2026-12-09', to: '2026-12-15' }, 25);
-    assert(f5.gross === 0, 'approved but not yet profitable (no closed trade): nothing yet');
-    assert((await statementsCol().find({ contractorId: 'b2', kind: 'PROFIT_SHARE_WEEK' }).toArray()).length <= 1, 'switching the model altered no earlier statement');
+    console.log('Advanced fixed fee per Fee Period (clause 6A.6):');
+    const fxEntry = { from: '2026-11-01', model: 'FIXED_PERIOD' as const, fixedAmount: 25000, durationMonths: 1, referenceInvestment: 100000 };
+    const fx: any = { ...biz, id: 'fx', email: 'fx@x.com', feeModels: [fxEntry] };
+    await contractorsCol().insertOne(fx);
+    const RR = (id: string, cid: string, day: string, status = 'APPROVED') => db.collection('recommendations').insertOne({ id, contractorId: cid, day, status, orderPrice: 100, target: 120 });
+    const TT = (id: string, user: string, pnl: number, exit: string) => db.collection('closedTrades').insertOne({ id, user, realizedPnL: pnl, quantity: 65, exitTime: new Date(`${exit}+05:30`) });
+    await RR('fr1', 'fx', '2026-11-03'); await TT('ft1', 'fx@x.com', 60000, '2026-11-10T11:00:00'); await TT('ft2', 'fx@x.com', 50000, '2026-11-20T11:00:00');
+    assert(await weeklyAdvancedStatement(fx, { from: '2026-11-11', to: '2026-11-17' }, 25) === null, 'on FIXED_PERIOD the weekly job pays no profit share');
+    const nov: any[] = await fixedPeriodStatements(fx, '2026-12-01');
+    assert(nov.length === 1 && nov[0].kind === 'FIXED_PERIOD' && nov[0].periodFrom === '2026-11-01' && nov[0].periodTo === '2026-11-30' && nov[0].gross === 25000, 'a month with 1,10,000 realized (at least the 1,00,000 reference) pays the full fixed amount');
+    assert((await fixedPeriodStatements(fx, '2026-12-01')).length === 0, 'idempotent: running again creates nothing');
+    await RR('fr2', 'fx', '2026-12-05'); await TT('ft3', 'fx@x.com', -30000, '2026-12-08T11:00:00'); await TT('ft4', 'fx@x.com', 70000, '2026-12-15T11:00:00');
+    const dec: any[] = await fixedPeriodStatements(fx, '2027-01-01'); // a missed run is caught up: December settles on the next run
+    assert(dec.length === 1 && dec[0].periodFrom === '2026-12-01' && dec[0].lines.earnedFraction === 0.4 && dec[0].gross === 10000, 'net 40,000 of the 1,00,000 reference: 40% of the fixed amount, and a loss in the month is netted inside it');
+    await RR('fr3', 'fx', '2027-01-06'); await TT('ft5', 'fx@x.com', -20000, '2027-01-12T11:00:00');
+    const jan: any[] = await fixedPeriodStatements(fx, '2027-02-01');
+    assert(jan.length === 1 && jan[0].gross === 0 && jan[0].lines.earnedFraction === 0, 'a net loss pays 0 and the statement is still a record (never negative)');
+    await TT('ft6', 'fx@x.com', 50000, '2027-02-10T11:00:00'); // profit, but no approved recommendation in February
+    assert((await fixedPeriodStatements(fx, '2027-03-01')).length === 0, 'a period with no approved recommendation gets no statement');
+    const fxT: any = { ...biz, id: 'fxt', email: 'fxt@x.com', terminatedAt: '2026-11-15', feeModels: [fxEntry] };
+    await RR('tr1', 'fxt', '2026-11-03'); await TT('tt1', 'fxt@x.com', 50000, '2026-11-05T11:00:00');
+    const tr: any[] = await fixedPeriodStatements(fxT, '2026-11-16');
+    assert(tr.length === 1 && tr[0].periodTo === '2026-11-15' && tr[0].gross === 6250, 'terminated on 15 Nov: 15 of 30 days (half) x half of the reference realized = 6,250');
+    const fxS: any = { ...biz, id: 'fxs', email: 'fxs@x.com', feeModels: [fxEntry, { from: '2026-11-16', model: 'PROFIT_SHARE', sharePercent: 25 }] };
+    await RR('sr1', 'fxs', '2026-11-03'); await TT('st1', 'fxs@x.com', 50000, '2026-11-05T11:00:00');
+    const sw: any[] = await fixedPeriodStatements(fxS, '2026-11-17');
+    assert(sw.length === 1 && sw[0].periodTo === '2026-11-15' && sw[0].gross === 6250, 'a change to profit share on 16 Nov cuts the fixed period at 15 Nov, pro rata, and no earlier period is altered');
+    const fxA: any = { ...biz, id: 'fxa', email: 'fxa@x.com', feeModels: [{ from: '2026-11-01', model: 'FIXED_PERIOD' }] };
+    await RR('ar1', 'fxa', '2026-11-03'); await TT('at1', 'fxa@x.com', 90000, '2026-11-05T11:00:00');
+    assert((await fixedPeriodStatements(fxA, '2026-12-01')).length === 0, 'an amountless entry (6A.5 not confirmed) pays nothing until the owner sets the amount');
+    assert(addMonths('2026-01-31', 1) === '2026-02-28' && addMonths('2028-01-31', 1) === '2028-02-29' && addMonths('2026-03-15', 12) === '2027-03-15', 'months are added with the day clamped to the month end');
+    assert((await statementsCol().find({ contractorId: { $in: ['fx', 'fxt', 'fxs', 'fxa'] } }).toArray() as any[]).every((x) => x.gross >= 0), 'no fixed-fee statement is ever negative');
 
     console.log('jobs:');
     const made = await runWeeklyStatements('2026-12-02');

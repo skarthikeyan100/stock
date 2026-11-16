@@ -21,7 +21,9 @@ export interface AgreementDetails {
     company?: { name?: string; address?: string; pan?: string };
     // Schedule values, from config at the time the agreement is prepared (so no blank remains in the PDF)
     fixedFeeFromStart?: boolean; // the clause 6A.5 confirmation was not given: the fixed fee of 6A.6 applies from the Effective Date
-    profitSharePercent?: number; recHours?: { start: string; end: string }; perDay?: number; fixedFee?: number; acceptedOn?: string;
+    profitSharePercent?: number; recHours?: { start: string; end: string }; perDay?: number; acceptedOn?: string;
+    fixedFee?: number; fixedFeeMonths?: number; referenceInvestment?: number; // clause 6A.6: rupees per Fee Period, the Fee Period in months, the Reference Investment
+    rules?: { maxOpenPositions?: number; noNewAfter?: string; maxInvestment?: number; dailyLossLimit?: number }; // Schedule 2: the limits the Platform applies to Resulting Trades
     fees?: { retainer?: number; feePerCorrect?: number; monthlyCap?: number; minDays?: number; windowMinutes?: number; neutral?: number; dailyLimit?: number; hours?: { start: string; end: string; expiryEnd: string } };
 }
 

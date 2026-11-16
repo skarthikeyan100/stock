@@ -15,7 +15,7 @@ import { istDate } from './agreements';
 import { Contractor, ContractorType } from './types';
 import { levelDefaultsFor } from '../user';
 import { recommendationRules } from './recommendations';
-import { feeCfg, feeModelOn } from './statements';
+import { feeCfg, feeModelOn, fixedFeeMonths, referenceInvestment } from './statements';
 import { getForecastConfig } from '../forecast/rules';
 import * as crypto from 'crypto';
 
@@ -25,10 +25,14 @@ export const canPersonalise = (version: string) => version === BUILT_IN_VERSION;
 /** The values of the Schedule that come from config: the agreement carries real numbers, never blanks. */
 export function scheduleDetails(): AgreementDetails {
     const rr = recommendationRules(), fc = getForecastConfig(), fees = feeCfg();
-    const fixed = Number(((configService.getConfig() as any)?.forecast ?? {}).fixedFeePerApproved);
+    const fc2: any = (configService.getConfig() as any)?.forecast ?? {};
+    const fixed = Number(fc2.fixedFeePerPeriod);
+    const orders = fc2.orders ?? {};
     return {
         company: companyDetails(), acceptedOn: istDate(),
-        profitSharePercent: levelDefaultsFor('advanced').profitSplitPercent, recHours: { start: rr.start, end: rr.end }, perDay: rr.perDay, fixedFee: fixed > 0 ? fixed : undefined,
+        profitSharePercent: levelDefaultsFor('advanced').profitSplitPercent, recHours: { start: rr.start, end: rr.end }, perDay: rr.perDay,
+        fixedFee: fixed > 0 ? fixed : undefined, fixedFeeMonths: fixedFeeMonths(), referenceInvestment: referenceInvestment(),
+        rules: { maxOpenPositions: Number(orders.maxOpenPositions) || 0, noNewAfter: orders.noNewAfter ? String(orders.noNewAfter) : undefined, maxInvestment: referenceInvestment(), dailyLossLimit: Number(orders.dailyLossLimit) || 0 },
         fees: { retainer: Number(fees.retainerMonthly), feePerCorrect: Number(fees.feePerCorrect), monthlyCap: Number(fees.monthlyCap), minDays: Number(fees.minParticipationDays), windowMinutes: fc.windowMinutes, neutral: fc.neutralThresholdPoints, dailyLimit: fc.dailyLimit, hours: fc.hours },
     };
 }
@@ -50,7 +54,7 @@ export function detailsFromForm(type: ContractorType, name: string, k: any, fixe
 }
 
 /** Details from a stored contractor (encrypted KYC decrypted here). */
-export function usesFixedFee(c: Contractor, today = istDate()): boolean { return c.type === 'BUSINESS' && feeModelOn(c.feeModels, today, 25).model === 'FIXED_PER_APPROVED'; }
+export function usesFixedFee(c: Contractor, today = istDate()): boolean { return c.type === 'BUSINESS' && feeModelOn(c.feeModels, today, 25).model === 'FIXED_PERIOD'; }
 
 export function detailsFromContractor(c: Contractor, fixedFeeFromStart = usesFixedFee(c)): AgreementDetails {
     const k: any = c.kyc ?? {};

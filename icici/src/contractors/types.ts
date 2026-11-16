@@ -43,7 +43,7 @@ export interface Contractor {
     isTest?: boolean;         // the migrated test user: not counted in the cap, payouts, statements or emails
     createdAt: Date;
     activatedAt?: Date;       // first activation (pro-rates the retainer)
-    feeModels?: { from: string; model: 'PROFIT_SHARE' | 'FIXED_PER_APPROVED'; sharePercent?: number; fixedAmount?: number }[]; // Advanced: effective-dated, never retroactive
+    feeModels?: { from: string; model: 'PROFIT_SHARE' | 'FIXED_PERIOD'; sharePercent?: number; fixedAmount?: number; durationMonths?: number; referenceInvestment?: number }[]; // Advanced: effective-dated, never retroactive
     invitedBy: string;
     agreementVersion?: string;
     agreementAcceptedAt?: Date;

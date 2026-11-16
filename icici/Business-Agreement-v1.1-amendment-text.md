@@ -66,7 +66,7 @@ The Contractor is paid solely as described in Section 6A. There is no retainer u
 - (b) it has checked its Registration conditions, the SEBI (Research Analysts) Regulations and any SEBI circular on research analyst fees, and its own compliance function (or compliance officer, where it has one) has confirmed that **receiving the Profit Share under this Agreement is permitted for the Contractor**; and
 - (c) it will tell the Company at once if that position changes.
 
-**6A.6 Change of fee model.** If the Contractor or the Company concludes that the Profit Share is not permitted for the Contractor, or the Company gives 15 days' notice under Section 15, the Fee will instead be the **fixed fee per Approved Recommendation** stated in Schedule 1, which is not linked to any Trade Profit or Trade Loss. The change applies only to Recommendations approved after it takes effect and does not alter any statement already issued.
+**6A.6 Change of fee model.** If the Contractor or the Company concludes that the Profit Share is not permitted for the Contractor, or the Company gives 15 days' notice under Section 15, the Fee will instead be the **fixed fee for each Fee Period** (one month by default) stated in Schedule 1: the fixed amount × Net Realized Profit of that Fee Period ÷ Reference Investment, never more than the fixed amount, nil on a net loss, with no carry-forward. Part periods (a change of model or termination) are pro-rated by days. The change applies only to Recommendations approved after it takes effect and does not alter any statement already issued.
 
 **6A.7 Company's rights.** The Company may suspend Recommendations at any time. If the Registration is not valid, no Recommendation is accepted, and no Fee accrues for Recommendations made while it was invalid.
 
@@ -100,9 +100,10 @@ The Company's total liability is limited to Profit Share earned and not yet paid
 
 | Item | Value |
 |---|---|
-| Fee model (clause 6A) | **Profit Share** [switch to "Fixed fee per Approved Recommendation" under clause 6A.6] |
+| Fee model (clause 6A) | **Profit Share** [switch to "Fixed fee per Fee Period" under clause 6A.6] |
 | Profit Share | [25]% of net Trade Profit per Settlement Week |
-| Fixed fee per Approved Recommendation (only under clause 6A.6) | ₹[_____] |
+| Fee Period (default 1 month); Reference Investment (₹1,00,000 by default) | [1] month; ₹[1,00,000] |
+| Fixed fee per Fee Period (only under clause 6A.6) | ₹[_____] |
 | Retainer | None [or ₹[_____] per month] |
 | Settlement Week | Wednesday to Tuesday; paid the following Wednesday |
 | Recommendation hours | [09:20] to [15:00] IST on Trading Days |

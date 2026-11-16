@@ -45,3 +45,11 @@ Section 8 is unchanged.
 - All square-bracket placeholders (names, PAN, GSTIN, INH number, validity date, fee values) are left as placeholders, as in v1.0.
 - The PDFs carry the same self-signed PKCS#7 signature as the other platform PDFs (`src/pdfSigning.ts`).
 - Not legal advice.
+
+## Change, 2026-11-16 (Advanced fixed fee; replaces the per-recommendation fee)
+- Clause 6A.6: the fixed fee is now **per Fee Period** (one month by default, owner-set amount), not per Approved Recommendation. Per period: fixed amount x min(1, Net Realized Profit of the period / Reference Investment); paid in full only when the Reference Investment is realized, pro rata below it, nil on a net loss, no carry-forward. Part periods (model change or termination) are pro-rated by days. Nothing is ever payable by the Contractor.
+- Schedule 1 is the Fee Schedule and **no longer has a Retainer row** (Business only; the Individual agreement keeps its retainer).
+- Schedule 2 is new: Recommendation and Risk Rules (hours, per day, registration validity, order size, open-position cap, no-new-trade cut-off, optional daily loss limit). It lists only the limits the Platform applies to contractor orders. The percentage drawdown limits (15% daily, 30% weekly, 10% per trade) are NOT applied to contractor orders yet, so they are not in the agreement.
+- Schedule 3 is Invoice Requirements (renumbered from 2). Clause 8 and clause 4.2 now point to Schedules 3 and 2.
+- The invitation page shows Schedules 1 and 2 as one table (`GET /invite/:token` returns `schedule`; the same rows as the PDF, from `src/agreements/content/business-v1.1.ts`).
+- Built with `node dist/tools/buildAgreements.js --only BUSINESS`; the Individual PDF is unchanged.
