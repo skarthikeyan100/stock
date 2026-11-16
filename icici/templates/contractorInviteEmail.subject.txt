@@ -1,1 +1,1 @@
-Your invitation to the Nivedha Tech forecasting programme
+Your invitation to the Nivedha Tech {{programme}}

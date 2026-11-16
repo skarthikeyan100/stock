@@ -19,7 +19,6 @@ import { ObjectId } from 'mongodb';
 const router = asyncRouter();
 const str = (v: unknown, max = 300) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const TYPES: ContractorType[] = ['INDIVIDUAL', 'BUSINESS'];
-const kindLabel = (t: ContractorType) => (t === 'INDIVIDUAL' ? 'Individual (PAN)' : 'Business (GSTIN)');
 
 export function adminView(c: Contractor) {
     const k: any = c.kyc ?? {};
@@ -49,7 +48,7 @@ router.post('/owner/invites', requireAdmin, async function (req, res) {
     if (req.body?.send === true) {
         if (!email) { res.status(400).json({ error: 'give an email to send the invitation to' }); return; }
         if (isPlaceholderEmail(email)) { email_sent = { error: 'a placeholder address (no real email) cannot be mailed; send the link yourself' }; res.json({ id: String(invite._id), link, type, emailLock: email, expiresAt: invite.expiresAt, email: email_sent }); return; }
-        try { email_sent = await sendInviteEmail(email, kindLabel(type), link, invite.expiresAt); } catch (e: any) { email_sent = { error: String(e?.message ?? e) }; Log.log('[contractor] invite email failed:', e); }
+        try { email_sent = await sendInviteEmail(email, type, link, invite.expiresAt); } catch (e: any) { email_sent = { error: String(e?.message ?? e) }; Log.log('[contractor] invite email failed:', e); }
     }
     res.json({ id: String(invite._id), link, type, emailLock: email || null, expiresAt: invite.expiresAt, email: email_sent });
 });
@@ -134,7 +133,7 @@ router.post('/owner/contractors/:id/reinvite', requireAdmin, async function (req
     const link = `${publicBaseUrl()}/join/${token}`;
     let email_sent: any = null;
     if (req.body?.send === true && isPlaceholderEmail(c.email)) email_sent = { error: 'a placeholder address (no real email) cannot be mailed; send the link yourself' };
-    else if (req.body?.send === true) { try { email_sent = await sendInviteEmail(c.email, kindLabel(c.type), link, invite.expiresAt); } catch (e: any) { email_sent = { error: String(e?.message ?? e) }; } }
+    else if (req.body?.send === true) { try { email_sent = await sendInviteEmail(c.email, c.type, link, invite.expiresAt); } catch (e: any) { email_sent = { error: String(e?.message ?? e) }; } }
     res.json({ link, expiresAt: invite.expiresAt, email: email_sent });
 });
 

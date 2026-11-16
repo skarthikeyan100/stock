@@ -12,7 +12,7 @@ export default function PrivacyNoticePage() {
           <ThemeToggle />
         </div>
         <h1 className="h3">Privacy Notice</h1>
-        <p className="text-muted">Nivedha Tech – Forecasting Contractor Portal · Last updated: November 2026</p>
+        <p className="text-muted">Nivedha Tech – Contractor Portal · Last updated: November 2026</p>
 
         <h2 className="h5 mt-4">1. Who this is for</h2>
         <p>This portal is a private programme for contractors who have been invited and have accepted their services agreement. Nobody else has an account, and we do not collect data from visitors beyond what is needed to run the site securely.</p>

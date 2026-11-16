@@ -8,7 +8,7 @@ import { istDayBounds, todayIst } from '../eodEmail';
 import { Contractor, tradeUsers } from './types';
 import { contractorsCol } from './store';
 import { readAgreement } from './agreements';
-import { sendContractorEmail } from './email';
+import { programmeName, sendContractorEmail } from './email';
 import { readStored } from './personalise';
 import { isPlaceholderEmail } from './validate';
 
@@ -29,10 +29,10 @@ const SEE: Record<Contractor['type'], string> = {
 };
 
 export function renderWelcome(c: Contractor, version: string, acceptedAt: Date): { subject: string; html: string } {
-    const vars = { name: c.name, kind: kindOf(c), version, agreementName: c.type === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Forecasting Services Agreement', what: WHAT[c.type], pay: PAY[c.type], see: SEE[c.type],
+    const vars = { name: c.name, kind: kindOf(c), programme: programmeName(c.type), version, agreementName: c.type === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Forecasting Services Agreement', what: WHAT[c.type], pay: PAY[c.type], see: SEE[c.type],
         acceptedAt: acceptedAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) };
     return {
-        subject: fs.readFileSync(path.join(TEMPLATE_DIR, 'contractorWelcomeEmail.subject.txt'), 'utf8').replace(/\s+/g, ' ').trim(),
+        subject: renderTemplate(fs.readFileSync(path.join(TEMPLATE_DIR, 'contractorWelcomeEmail.subject.txt'), 'utf8').replace(/\s+/g, ' ').trim(), vars, false),
         html: renderTemplate(fs.readFileSync(path.join(TEMPLATE_DIR, 'contractorWelcomeEmail.html'), 'utf8'), vars, true),
     };
 }
