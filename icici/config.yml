@@ -421,10 +421,20 @@ strategies:
     index: NIFTY
     brokers:
       - kite
+  - type: GammaBurstStrategy
+    enabled: false          # set true to trade. Trades ONLY on the NIFTY expiry day, from 14:00, this week's expiry (see strategies.md)
+    userId: GammaBurst-NIFTY
+    maxInvestment: 100000   # per broker: 1 lakh, whole lots that fit it at the option's price
+    target: 2               # option points above the entry (a resting sell)
+    stopLoss: 'none'        # no stop loss: required on this block (a settings stopLoss is not inherited)
+    lastEntryTime: '15:00'  # no entry at or after this time
+    index: NIFTY
+    brokers:
+      - kite
   - type: MandWStrategy
     enabled: false          # M / W pattern on the option price (see strategies.md); needs settings.maxProfit (global cap), target and stopLoss both set
     userId: MandW-NIFTY
-    quantity: 65            # units per broker (one NIFTY lot), whole lots only
+    quantity: 130           # units per broker (2 NIFTY lots), whole lots only; 2+ lots lets trailDistance split half / trail
     startSide: CE           # CE | PE: the first entry of the day
     startTime: '09:20'      # first entry fires only in [startTime, startTime + 5 min) and never for a time before the process started
     # target / stopLoss (option points) come from settings unless set on this block; both are required (not 'none')
