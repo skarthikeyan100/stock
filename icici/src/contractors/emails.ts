@@ -29,7 +29,7 @@ const SEE: Record<Contractor['type'], string> = {
 };
 
 export function renderWelcome(c: Contractor, version: string, acceptedAt: Date): { subject: string; html: string } {
-    const vars = { name: c.name, kind: kindOf(c), version, agreementName: c.type === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Forecasting Services Agreement', what: WHAT[c.type], pay: PAY[c.type], see: SEE[c.type],
+    const vars = { name: c.name, kind: kindOf(c), version, agreementName: c.type === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Researcher Services Agreement', what: WHAT[c.type], pay: PAY[c.type], see: SEE[c.type],
         acceptedAt: acceptedAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) };
     return {
         subject: fs.readFileSync(path.join(TEMPLATE_DIR, 'contractorWelcomeEmail.subject.txt'), 'utf8').replace(/\s+/g, ' ').trim(),

@@ -1,5 +1,5 @@
 /**
- * Builds the signed Forecasting Services Agreement PDFs (src/agreements/content/*). A new file: it uses the shared signing helpers
+ * Builds the signed Researcher Services Agreement PDFs (src/agreements/content/*). A new file: it uses the shared signing helpers
  * (src/pdfSigning.ts) and the same look as src/legalPdf.ts, which is left unchanged.
  */
 import * as path from 'path';

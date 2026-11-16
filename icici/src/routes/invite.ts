@@ -27,7 +27,7 @@ import { fixedFeeMonths, referenceInvestment } from '../contractors/statements';
 const router = asyncRouter();
 const acceptLimiter = new RateLimiter(Number(process.env.INVITE_RATE_LIMIT) || 20, 60_000); // per IP per minute (the env override is for tests)
 const clientIp = (req: express.Request) => String(req.get('cf-connecting-ip') || req.ip || req.socket.remoteAddress || '');
-const agreementName = (t: ContractorType) => (t === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Forecasting Services Agreement');
+const agreementName = (t: ContractorType) => (t === 'BUSINESS' ? 'Research Analyst Services Agreement' : 'Researcher Services Agreement');
 /** Not confirming clause 6A.5 is allowed: the fixed fee of clause 6A.6 then applies from today (the amount is the owner's to set; config forecast.fixedFeePerPeriod is the default). */
 function fixedFeeEntry() {
     const amount = Number(((configService.getConfig() as any)?.forecast ?? {}).fixedFeePerPeriod);

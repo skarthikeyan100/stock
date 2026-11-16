@@ -71,7 +71,7 @@ export function detailsFromContractor(c: Contractor, fixedFeeFromStart = usesFix
 export async function renderPersonalised(type: ContractorType, d: AgreementDetails, date = istDate()): Promise<{ pdf: Buffer; sha256: string; filename: string }> {
     const doc = type === 'BUSINESS' ? businessDoc(d) : individualDoc(d);
     const { pdf, sha256 } = await buildAgreementPdf(doc, date);
-    return { pdf, sha256, filename: `${type === 'BUSINESS' ? 'Research-Analyst-Agreement-Business-GSTIN' : 'Forecasting-Agreement-Individual-PAN'}-v${BUILT_IN_VERSION}.pdf` };
+    return { pdf, sha256, filename: `${type === 'BUSINESS' ? 'Research-Analyst-Agreement-Business-GSTIN' : 'Researcher-Agreement-Individual-PAN'}-v${BUILT_IN_VERSION}.pdf` };
 }
 
 export const agreementDir = (contractorId: string) => path.join(storageRoot(false), '_agreements', contractorId.replace(/[^a-z0-9]/gi, '_'));

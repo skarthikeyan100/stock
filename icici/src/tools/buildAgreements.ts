@@ -18,7 +18,7 @@ async function main() {
     const existing = fs.existsSync(path.join(outDir, 'manifest.json')) ? JSON.parse(fs.readFileSync(path.join(outDir, 'manifest.json'), 'utf8')).files : {};
     Object.assign(manifest, existing);
     for (const [type, doc, file] of [
-        ['INDIVIDUAL', INDIVIDUAL_V1_1, 'Forecasting-Agreement-Individual-PAN-v1.1.pdf'],
+        ['INDIVIDUAL', INDIVIDUAL_V1_1, 'Researcher-Agreement-Individual-PAN-v1.1.pdf'],
         ['BUSINESS', BUSINESS_V1_1, 'Research-Analyst-Agreement-Business-GSTIN-v1.1.pdf'],
     ] as const) {
         if (only && only !== type) continue;

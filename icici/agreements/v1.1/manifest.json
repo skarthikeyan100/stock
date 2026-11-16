@@ -2,12 +2,12 @@
   "version": "1.1",
   "files": {
     "INDIVIDUAL": {
-      "file": "Forecasting-Agreement-Individual-PAN-v1.1.pdf",
-      "sha256": "a0516b6d6dc7ba531052a7414a71628a39ed9148871b9bdb4a952fcad7511348"
+      "file": "Researcher-Agreement-Individual-PAN-v1.1.pdf",
+      "sha256": "33c463ee22974857c1ad87a2a962779ec4773f778f17989146bf81463c160d5a"
     },
     "BUSINESS": {
       "file": "Research-Analyst-Agreement-Business-GSTIN-v1.1.pdf",
-      "sha256": "4aac8974a072bf2a7bfa7e7c780e93df512f5c5da59c8713e2a5052fd535d06e"
+      "sha256": "2f4816999f766693f7b058a67c498b06196a488da1c1e3b6c72a79c4ec719777"
     }
   }
 }

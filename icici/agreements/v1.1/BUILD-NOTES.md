@@ -53,3 +53,12 @@ Section 8 is unchanged.
 - Schedule 3 is Invoice Requirements (renumbered from 2). Clause 8 and clause 4.2 now point to Schedules 3 and 2.
 - The invitation page shows Schedules 1 and 2 as one table (`GET /invite/:token` returns `schedule`; the same rows as the PDF, from `src/agreements/content/business-v1.1.ts`).
 - Built with `node dist/tools/buildAgreements.js --only BUSINESS`; the Individual PDF is unchanged.
+
+## Change, 2026-11-16 (titles and wording: "contractor" is legal text only)
+- Edited in place (no one had accepted v1.1 for real; the only acceptance is the test account's, which keeps its stored PDF and hash). New acceptances get the new text.
+- Individual: title **Researcher Services Agreement**, party "Individual Researcher (PAN)", defined term **"Researcher"** (was "Contractor"). New file `Researcher-Agreement-Individual-PAN-v1.1.pdf`; the old `Forecasting-Agreement-Individual-PAN-v1.1.pdf` is removed once the server has restarted with the new filename map (`src/contractors/agreements.ts`).
+- Business: title stays **Research Analyst Services Agreement**, party "Business Research Analyst (GSTIN)", defined term **"Research Analyst"** (was "Contractor"). The person named in Parties and 3.4 is now called the entity's **"representative"** (was "Research Analyst"), so the two roles are not both called Research Analyst.
+- "independent contractor" -> "independent service provider" in 3.1 (both agreements). Section headings "Contractor Undertakings" -> "Researcher / Research Analyst Undertakings".
+- Cover line "Pilot programme" -> "Research Portal".
+- Forecast, Recommendation, Flash Forecast and the other defined feature terms are unchanged.
+- Rebuilt with `node dist/tools/buildAgreements.js` (both PDFs; new SHA-256 in `manifest.json`). PDF text checked: no "contractor" left.

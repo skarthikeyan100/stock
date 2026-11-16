@@ -253,7 +253,7 @@ async function main() {
     assert(/through its Research Analyst, D Forecaster/.test(tb) && !/Signatures/.test(tb) && !/third part/i.test(tb) && !/7 days’ notice/.test(tb) && !/not give the same Recommendation/.test(tb), 'clause 3.4 names the forecaster; no Signatures section, no 4.3 third-party clause, no 7-day notice, no old 9.3');
     const noBlanks = (t: string) => !/\[[^\]]*\]/.test(t) && !/_{3,}/.test(t) && !/undefined|null|NaN/.test(t);
     assert(noBlanks(tb) && noBlanks(t1.replace(/\s+/g, ' ')), 'no placeholder, blank line or "undefined" in either personalised PDF');
-    assert(/Research Analyst Services Agreement/.test(tb) && !/Forecasting Services Agreement/.test(tb) && /Forecasting Services Agreement/.test(t1), 'the Business document is a Research Analyst Services Agreement; the Individual one stays a Forecasting Services Agreement');
+    assert(/Research Analyst Services Agreement/.test(tb) && !/Researcher Services Agreement/.test(tb) && /Researcher Services Agreement/.test(t1), 'the Business document is a Research Analyst Services Agreement; the Individual one stays a Researcher Services Agreement');
     assert(/Karthikeyan S, an individual resident in Chennai, Tamil Nadu, carrying on business under the name “Nivedha Tech”; and/.test(tb) && !/PAN:/.test(tb.split('The Contractor:')[0]), 'the owner is named without an address or PAN');
     assert(/25% of net Trade Profit per Settlement Week/.test(tb) && /3 per Trading Day/.test(tb) && /09:20 to 15:00 IST/.test(tb) && /Term\s+6 months/.test(tb), 'the Schedule carries real values from config');
     assert(!/Signatures/.test(t1), 'the Individual agreement has no Signatures section either');
