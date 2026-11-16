@@ -187,7 +187,7 @@ export abstract class LimitEntryStrategy extends Strategy {
 
     // An entry order still open at the broker: not cancelled, not refused, and not every share filled. Its leg can already be
     // 'closed' (the part that filled was sold) while the rest of the entry can still fill, so it keeps the cycle alive.
-    private entryOpen(leg: Leg): boolean {
+    protected entryOpen(leg: Leg): boolean {
         return !leg.entryCancelled && leg.status !== 'failed' && leg.status !== 'cancelled' && leg.filledQty < leg.qty;
     }
 
@@ -436,10 +436,12 @@ export abstract class LimitEntryStrategy extends Strategy {
     // Starts a cycle: one limit buy per configured broker. `priceFor` is asked once per broker for that broker's limit price.
     // The cycle key and every leg are persisted BEFORE the order goes out, so a crash or restart mid-way can never place it twice;
     // an order whose outcome is unknown is left as a leg and never retried blind.
-    protected async startCycle(key: string, entry: ResolvedEntry, budgetOf: (broker: string) => number, priceFor: (c: { tsym: string; token: string; exchange: 'NFO' | 'BFO' }) => Promise<number>): Promise<void> {
+    // `only` (optional): start the cycle on just these brokers and leave every other broker's legs untouched - for a strategy whose brokers act
+    // independently (MandWStrategy). Without it, one cycle covers every configured broker and replaces all legs.
+    protected async startCycle(key: string, entry: ResolvedEntry, budgetOf: (broker: string) => number, priceFor: (c: { tsym: string; token: string; exchange: 'NFO' | 'BFO' }) => Promise<number>, only?: string[]): Promise<void> {
         this.ensureLoaded();
         if (this.placing) return; // callers check cycleStarted(key) first and may have marked the key already
-        if (this.hasActiveLeg()) {
+        if ((only ? this.legs().filter((l) => only.includes(l.broker)) : this.legs()).some((l) => this.isActive(l))) {
             Log.log(`[${this.logTag}] ${key}: a previous cycle is still live - not starting another`);
             this.state.keys.push(key);
             this.save();
@@ -449,9 +451,9 @@ export abstract class LimitEntryStrategy extends Strategy {
         this.priceBandRefusal = false;
         try {
             if (!this.state.keys.includes(key)) this.state.keys.push(key);
-            this.state.legs = {};
+            if (only) { for (const b of only) delete this.state.legs[b]; } else this.state.legs = {};
             if (!this.save()) { return; }
-            const brokers = this.brokers();
+            const brokers = only ?? this.brokers();
             for (const broker of brokers) {
                 try {
                     const perBroker = budgetOf(broker); // the amount is PER broker: each one buys with its own full budget

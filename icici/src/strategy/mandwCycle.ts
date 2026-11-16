@@ -28,12 +28,18 @@ export interface MwPending {
     at: number; // ms: a pending entry older than PENDING_MAX_AGE_MS is dropped (never placed after a long gap, e.g. a restart)
 }
 
-export interface MwState {
+// The state of ONE broker (brokers act independently: nothing here is shared between brokers).
+export interface MwBroker {
     cycleRight?: Right; // the side of the cycle that is (or was last) live
     watch?: MwWatch;
     pending?: MwPending;
-    decidedKey?: string; // the cycle key whose end was already decided (onCycleEnded can fire more than once for one cycle)
+    seq?: number; // cycles started on this broker today (the cycle key is `<day> MW-<broker>-<seq>`)
+    decidedKey?: string; // the cycle key whose end was already decided
     retries?: number; // consecutive cycles that ended with nothing filled (entry refused / never filled) and were tried again
+}
+
+export interface MwState {
+    brokers: Record<string, MwBroker>;
 }
 
 // After this many consecutive cycles with no fill the strategy stops for the day instead of trying again (ALERT logged).

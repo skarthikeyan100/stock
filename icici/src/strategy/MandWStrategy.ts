@@ -10,8 +10,7 @@ import { isPastEodClose } from '../util/eodClose';
 import { normalizeBrokerName } from '../util/brokerName';
 import { isGlobalMaxProfitLatched } from './globalMaxProfitLatch';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
-import { StrategyInstanceConfig } from '../prism/AppConfig';
-import { MwState, MwWatch, Right, WatchEvent, MAX_ENTRY_RETRIES, PENDING_MAX_AGE_MS, classifyExit, opposite, patternName, stepWatch } from './mandwCycle';
+import { MwBroker, MwState, MwWatch, Right, WatchEvent, MAX_ENTRY_RETRIES, PENDING_MAX_AGE_MS, classifyExit, opposite, patternName, stepWatch } from './mandwCycle';
 
 // M and W pattern strategy on NIFTY options, traded on the OPTION price (pure rules: mandwCycle.ts).
 //
@@ -25,8 +24,9 @@ import { MwState, MwWatch, Right, WatchEvent, MAX_ENTRY_RETRIES, PENDING_MAX_AGE
 //   4. It goes on until the profit cap trips (`settings.maxProfit`, the global rupee cap: the global monitor locks it and the order process then refuses
 //      every new buy of this strategy on that broker), `lastEntryTime`, or the end-of-day close.
 //
-// Several brokers: every broker acts on its own. `brokers: [kite, ant]` is expanded into one instance per broker (`<id>`, `<id>-ANT`, ...: util/strategyInstances.ts),
-// each with its own state file, cycles, watch, reversals, retries and profit cap, so one broker's stop, target or pattern never decides for another.
+// Several brokers (`brokers: [kite, ant, ...]`, one strategy): EVERY BROKER ACTS ON ITS OWN. Each broker has its own cycle, leg, watch, reversal, retry count and
+// profit-cap latch (state.mw.brokers[<broker>]); one broker's stop, target, pattern, refusal or latch never decides, delays or blocks another's (a latch on kite does
+// not touch prism). The brokers share only the code, the config block and the NIFTY price they pick the strike from.
 //
 // Restart: the watch (and a reversal not yet placed) is kept in the state file and resumed; a reversal older than two minutes is dropped, never
 // placed late. The first entry fires only in [startTime, startTime + 5 min) and never for a start time before this process started (no catch-up).
@@ -58,19 +58,21 @@ export default class MandWStrategy extends CandleEntryStrategy {
         this.warnLegacyExitKeys();
     }
 
-    // The EXPANDED config of this instance (a per-broker child has its own userId and `brokers: [its broker]`), not the raw block.
-    protected cfg(): StrategyInstanceConfig {
-        return this.instanceConfig();
-    }
-
     reset(): void {
-        super.reset(); // a fresh state: no watch, no pending reversal
+        super.reset(); // a fresh state: no watch, no pending reversal on any broker
         this.missedLogged = false;
     }
 
     private mwState(): MwState {
-        if (!this.state.mw) this.state.mw = {};
+        if (!this.state.mw || !this.state.mw.brokers) this.state.mw = { brokers: {} };
         return this.state.mw;
+    }
+
+    // The state of one broker (created on first use). Nothing in it is shared with another broker.
+    private bs(broker: string): MwBroker {
+        const mw = this.mwState();
+        if (!mw.brokers[broker]) mw.brokers[broker] = {};
+        return mw.brokers[broker];
     }
 
     // Half-at-target + trail (halfTrail.ts): `trailDistance` points below the peak. Absent / 0 = off; with fewer than 2 lots it is not engaged.
@@ -99,111 +101,123 @@ export default class MandWStrategy extends CandleEntryStrategy {
         return moment().hour(h).minute(m).second(0).millisecond(0);
     }
 
-    // ---- the watch: ticks of a contract nothing is held on ----
+    // This broker's leg is placing, resting, held, or its entry is still open: its cycle is not over.
+    private legBusy(broker: string): boolean {
+        const leg = this.state.legs[broker];
+        return !!leg && (this.isActive(leg) || this.entryOpen(leg));
+    }
 
-    // Keeps the tick feed of the watched contract on (idempotent), and off for a contract no longer watched.
-    private armed: { token: string; exchange: 'NFO' | 'BFO' } | null = null;
+    private cycleKey(broker: string, seq: number): string {
+        return `${localDayKey()} MW-${broker}-${seq}`;
+    }
+
+    // ---- the watch: ticks of a contract nothing is held on (one watch per broker) ----
+
+    // Keeps the tick feed of every watched contract on (idempotent), and off for a contract no broker watches any more.
+    private armed = new Map<string, 'NFO' | 'BFO'>(); // token -> exchange
     private syncWatch(): void {
-        const w = this.mwState().watch;
-        if (this.armed && (!w || this.armed.token !== w.token)) {
-            unwatchTokenOnSource('ant', this.armed.token, this, this.armed.exchange);
-            this.armed = null;
+        const wanted = new Map<string, 'NFO' | 'BFO'>();
+        for (const b of Object.values(this.mwState().brokers)) if (b.watch) wanted.set(b.watch.token, b.watch.exchange);
+        for (const [token, exchange] of [...this.armed]) {
+            if (!wanted.has(token)) { unwatchTokenOnSource('ant', token, this, exchange); this.armed.delete(token); }
         }
-        if (w) {
-            watchTokenOnSource('ant', w.token, this, w.exchange);
-            this.armed = { token: w.token, exchange: w.exchange };
+        for (const [token, exchange] of wanted) {
+            watchTokenOnSource('ant', token, this, exchange);
+            this.armed.set(token, exchange);
         }
     }
 
     canHandleOptionQuote(quote: OptionQuote): boolean {
-        const w = this.state.mw?.watch;
-        return (!!w && w.token === String(quote.token)) || super.canHandleOptionQuote(quote);
+        const brokers = this.state.mw?.brokers;
+        return (!!brokers && Object.values(brokers).some((b) => b.watch?.token === String(quote.token))) || super.canHandleOptionQuote(quote);
     }
 
     async processOptionQuote(quote: OptionQuote): Promise<void> {
         if (!this.enabled) return;
-        const w = this.state.mw?.watch;
-        if (w && w.token === String(quote.token)) {
-            const ltp = Number(quote.ltp);
+        const ltp = Number(quote.ltp);
+        for (const [broker, b] of Object.entries(this.mwState().brokers)) {
+            const w = b.watch;
+            if (!w || w.token !== String(quote.token)) continue;
             const r = stepWatch(w, ltp, Date.now(), this.timeoutMs());
-            this.applyWatchEvent(w, r.event, r.phase, ltp);
+            this.applyWatchEvent(broker, w, r.event, r.phase, ltp);
         }
-        await super.processOptionQuote(quote);
+        await super.processOptionQuote(quote); // the tick stop / target of every broker's leg on this token, each on its own leg
     }
 
     // Synchronous on purpose (no await): concurrent ticks cannot apply one event twice, and the watch is cleared before anything else runs.
-    private applyWatchEvent(w: MwWatch, event: WatchEvent, phase: MwWatch['phase'], ltp: number): void {
-        const mw = this.mwState();
-        if (mw.watch !== w || event === 'none') return;
+    private applyWatchEvent(broker: string, w: MwWatch, event: WatchEvent, phase: MwWatch['phase'], ltp: number): void {
+        const b = this.bs(broker);
+        if (b.watch !== w || event === 'none') return;
         const shape = patternName(w.right);
-        const head = `${w.right} ${w.tsym} (P ${w.entry.toFixed(2)}, target ${w.target}, stop ${w.stop})`;
+        const head = `${broker} ${w.right} ${w.tsym} (P ${w.entry.toFixed(2)}, target ${w.target}, stop ${w.stop})`;
         if (event === 'valley') {
             w.phase = phase;
             this.save();
             Log.log(`[${this.logTag}] ${shape} valley on ${head}: price ${ltp} is back at or below P - waiting for ${w.target} again`);
             return;
         }
-        mw.watch = undefined;
+        b.watch = undefined;
         if (event === 'pattern') {
-            mw.pending = { right: opposite(w.right), reason: `${shape} pattern`, at: Date.now() };
-            Log.log(`[${this.logTag}] ${shape} PATTERN IDENTIFIED on ${head}: peak at ${w.target}, valley at or below ${w.entry.toFixed(2)}, second peak at ${ltp} -> reverse: BUY ${mw.pending.right}`);
+            b.pending = { right: opposite(w.right), reason: `${shape} pattern`, at: Date.now() };
+            Log.log(`[${this.logTag}] ${shape} PATTERN IDENTIFIED on ${head}: peak at ${w.target}, valley at or below ${w.entry.toFixed(2)}, second peak at ${ltp} -> reverse: BUY ${b.pending.right}`);
         } else if (event === 'failed') {
-            mw.pending = { right: opposite(w.right), reason: `${shape} failed`, at: Date.now() };
-            Log.log(`[${this.logTag}] ${shape} FAILED on ${head}: price ${ltp} fell to the stop level ${w.stop} before the second peak -> reverse at once: BUY ${mw.pending.right}`);
+            b.pending = { right: opposite(w.right), reason: `${shape} failed`, at: Date.now() };
+            Log.log(`[${this.logTag}] ${shape} FAILED on ${head}: price ${ltp} fell to the stop level ${w.stop} before the second peak -> reverse at once: BUY ${b.pending.right}`);
         } else {
-            mw.pending = { right: w.right, reason: 'pattern timeout', at: Date.now() };
-            Log.log(`[${this.logTag}] ${shape} watch on ${head} timed out after ${Math.round(this.timeoutMs() / 60000)} min without the pattern or the stop (phase ${w.phase}) -> abandoned, BUY ${mw.pending.right} again`);
+            b.pending = { right: w.right, reason: 'pattern timeout', at: Date.now() };
+            Log.log(`[${this.logTag}] ${shape} watch on ${head} timed out after ${Math.round(this.timeoutMs() / 60000)} min without the pattern or the stop (phase ${w.phase}) -> abandoned, BUY ${b.pending.right} again`);
         }
         this.save();
     }
 
-    // ---- cycle end: what happened to the position decides the next step ----
+    // ---- cycle end: what happened to THIS broker's position decides ITS next step ----
 
-    protected async onCycleEnded(): Promise<void> {
-        const mw = this.mwState();
-        const key = this.state.keys[this.state.keys.length - 1];
-        if (!key || mw.decidedKey === key) return;
-        mw.decidedKey = key;
-        const right = mw.cycleRight ?? this.startSide();
-        const filled = this.legs().filter((l) => l.filledQty > 0);
-        if (filled.length === 0) {
-            const tries = mw.retries ?? 0;
+    private decideCycleEnd(broker: string): void {
+        const b = this.bs(broker);
+        if (!b.seq) return; // no cycle started on this broker yet
+        const key = this.cycleKey(broker, b.seq);
+        if (b.decidedKey === key || this.legBusy(broker)) return;
+        b.decidedKey = key;
+        const right = b.cycleRight ?? this.startSide();
+        const leg = this.state.legs[broker];
+        const tag = `${broker} cycle ${key}`;
+        if (!leg || leg.filledQty <= 0) {
+            const tries = b.retries ?? 0;
             if (right && tries < MAX_ENTRY_RETRIES && !this.pastEntryWindow()) {
-                mw.retries = tries + 1;
-                mw.pending = { right, reason: 'entry not filled', at: Date.now() };
-                Log.log(`[${this.logTag}] cycle ${key} ended with nothing filled (entry refused, cancelled or unaffordable) - trying ${right} again (${mw.retries}/${MAX_ENTRY_RETRIES})`);
+                b.retries = tries + 1;
+                b.pending = { right, reason: 'entry not filled', at: Date.now() };
+                Log.log(`[${this.logTag}] ${tag} ended with nothing filled (entry refused, cancelled or unaffordable) - trying ${right} again (${b.retries}/${MAX_ENTRY_RETRIES})`);
             } else {
-                Log.log(`[${this.logTag}] ALERT: cycle ${key} ended with nothing filled${tries >= MAX_ENTRY_RETRIES ? ` ${tries} times in a row` : ''} - no further entry today`);
+                Log.log(`[${this.logTag}] ALERT: ${tag} ended with nothing filled${tries >= MAX_ENTRY_RETRIES ? ` ${tries} times in a row` : ''} - no further entry today on ${broker}`);
             }
             this.save();
             return;
         }
-        mw.retries = 0;
-        const leg = filled[0];
+        b.retries = 0;
         const entry = this.avgPrice(leg);
         if (leg.soldQty <= 0 || !right) { this.save(); return; }
         if (this.pastEntryWindow()) {
-            Log.log(`[${this.logTag}] cycle ${key} ended at or after lastEntryTime / the end-of-day close - no further entry`);
+            Log.log(`[${this.logTag}] ${tag} ended at or after lastEntryTime / the end-of-day close - no further entry on ${broker}`);
             this.save();
             return;
         }
         let ex: { target: number | null; stop: number | undefined };
-        try { ex = this.exitFor(entry); } catch (e: any) { Log.log(`[${this.logTag}] ALERT: cycle ${key}: ${e?.message ?? e} - no further entry`); this.save(); return; }
+        try { ex = this.exitFor(entry); } catch (e: any) { Log.log(`[${this.logTag}] ALERT: ${tag}: ${e?.message ?? e} - no further entry on ${broker}`); this.save(); return; }
         if (ex.target === null || ex.stop === undefined) {
-            Log.log(`[${this.logTag}] ALERT: cycle ${key}: target and stopLoss must both be set for this strategy - no further entry`);
+            Log.log(`[${this.logTag}] ALERT: ${tag}: target and stopLoss must both be set for this strategy - no further entry on ${broker}`);
             this.save();
             return;
         }
         const exitPx = leg.soldValue / leg.soldQty;
         const kind = classifyExit(entry, exitPx, ex.target, ex.stop);
         if (kind === 'stop') {
-            mw.pending = { right: opposite(right), reason: 'stop hit', at: Date.now() };
-            Log.log(`[${this.logTag}] STOP-FLIP: ${right} ${leg.tsym} bought @ ${entry.toFixed(2)}, sold @ ${exitPx.toFixed(2)} (stop ${ex.stop}) -> reverse at once: BUY ${mw.pending.right}`);
+            b.pending = { right: opposite(right), reason: 'stop hit', at: Date.now() };
+            Log.log(`[${this.logTag}] STOP-FLIP on ${broker}: ${right} ${leg.tsym} bought @ ${entry.toFixed(2)}, sold @ ${exitPx.toFixed(2)} (stop ${ex.stop}) -> reverse at once: BUY ${b.pending.right}`);
         } else if (kind === 'target') {
-            mw.watch = { right, tsym: leg.tsym, token: leg.token, exchange: leg.exchange, entry, target: ex.target, stop: ex.stop, phase: 'peak', startedAt: Date.now() };
-            Log.log(`[${this.logTag}] TARGET hit: ${right} ${leg.tsym} bought @ ${entry.toFixed(2)}, sold @ ${exitPx.toFixed(2)} (target ${ex.target}) - watching it for the ${patternName(right)}: valley at or below ${entry.toFixed(2)}, then ${ex.target} again; failed below ${ex.stop}`);
+            b.watch = { right, tsym: leg.tsym, token: leg.token, exchange: leg.exchange, entry, target: ex.target, stop: ex.stop, phase: 'peak', startedAt: Date.now() };
+            Log.log(`[${this.logTag}] TARGET hit on ${broker}: ${right} ${leg.tsym} bought @ ${entry.toFixed(2)}, sold @ ${exitPx.toFixed(2)} (target ${ex.target}) - watching it for the ${patternName(right)}: valley at or below ${entry.toFixed(2)}, then ${ex.target} again; failed below ${ex.stop}`);
         } else {
-            Log.log(`[${this.logTag}] cycle ${key}: ${right} ${leg.tsym} bought @ ${entry.toFixed(2)}, sold @ ${exitPx.toFixed(2)} - neither the target (${ex.target}) nor the stop (${ex.stop}) (end-of-day or manual close) - no further entry`);
+            Log.log(`[${this.logTag}] ${tag}: ${right} ${leg.tsym} bought @ ${entry.toFixed(2)}, sold @ ${exitPx.toFixed(2)} - neither the target (${ex.target}) nor the stop (${ex.stop}) (end-of-day or manual close) - no further entry on ${broker}`);
         }
         this.save();
     }
@@ -214,21 +228,25 @@ export default class MandWStrategy extends CandleEntryStrategy {
         const ltp = Number(quote.ltp);
         if (!(ltp > 0)) return;
         this.niftyLtp = ltp;
-        const mw = this.mwState();
-        this.syncWatch();
-        if (mw.watch) { // the watch also ends on time alone, with no option tick
-            const w = mw.watch;
-            const r = stepWatch(w, NaN, Date.now(), this.timeoutMs());
-            this.applyWatchEvent(w, r.event, r.phase, NaN);
-            this.syncWatch();
+        this.mwState();
+        const brokers = this.brokers();
+        for (const broker of brokers) {
+            if (!this.placingNext) this.decideCycleEnd(broker); // not while an entry is being placed: its leg is not recorded yet
+            const w = this.bs(broker).watch;
+            if (w) { // the watch also ends on time alone, with no option tick
+                const r = stepWatch(w, NaN, Date.now(), this.timeoutMs());
+                this.applyWatchEvent(broker, w, r.event, r.phase, NaN);
+            }
         }
-        this.maybeFirstEntry(mw);
-        await this.runPending(mw);
+        this.syncWatch();
+        for (const broker of brokers) this.maybeFirstEntry(broker);
+        for (const broker of brokers) await this.runPending(broker);
     }
 
-    // The first entry of the day becomes a pending entry (same gates and placement as every reversal).
-    private maybeFirstEntry(mw: MwState): void {
-        if (this.state.keys.length > 0 || mw.pending || mw.watch) return;
+    // The first entry of the day on one broker becomes a pending entry (same gates and placement as every reversal).
+    private maybeFirstEntry(broker: string): void {
+        const b = this.bs(broker);
+        if (b.seq || b.pending || b.watch) return;
         const cfg = this.cfg() as any;
         const slot = this.slotMoment(String(cfg.startTime ?? ''));
         const side = this.startSide();
@@ -242,17 +260,19 @@ export default class MandWStrategy extends CandleEntryStrategy {
             if (!this.missedLogged) { this.missedLogged = true; Log.log(`[${this.logTag}] start time ${cfg.startTime} is before this process started or more than ${LATE_WINDOW_MINUTES} min ago - no first entry today`); }
             return;
         }
-        mw.pending = { right: side, reason: 'first entry', at: Date.now() };
+        b.pending = { right: side, reason: 'first entry', at: Date.now() };
         this.save();
     }
 
-    // Places the pending entry once nothing is held. Every drop is logged; nothing here is retried blind (the key and legs are persisted by startCycle).
-    private async runPending(mw: MwState): Promise<void> {
-        const p = mw.pending;
+    // Places one broker's pending entry once that broker is flat. Every drop is logged; nothing here is retried blind (the key and leg are persisted
+    // by startCycle). Only this broker's gates apply: its own profit-cap latch, its own open leg.
+    private async runPending(broker: string): Promise<void> {
+        const b = this.bs(broker);
+        const p = b.pending;
         if (!p || this.placingNext) return;
-        const drop = (why: string, alert = false) => { mw.pending = undefined; this.save(); Log.log(`[${this.logTag}] ${alert ? 'ALERT: ' : ''}${p.reason}: BUY ${p.right} not placed - ${why}`); };
+        const drop = (why: string, alert = false) => { b.pending = undefined; this.save(); Log.log(`[${this.logTag}] ${alert ? 'ALERT: ' : ''}${broker} ${p.reason}: BUY ${p.right} not placed - ${why}`); };
         if (Date.now() - p.at > PENDING_MAX_AGE_MS) return drop('it is more than 2 minutes old', true);
-        if (this.isRunning()) return; // a leg is still placing / resting / held: wait until flat
+        if (this.legBusy(broker)) return; // this broker's leg is still placing / resting / held: wait until it is flat
         if (!(this.niftyLtp > 0)) return;
         if (this.pastEntryWindow()) return drop('past lastEntryTime / the end-of-day close');
         if (this.configuredQuantity() === null) return drop(`quantity (${(this.cfg() as any).quantity}) is not a positive multiple of the lot size`, true);
@@ -260,22 +280,21 @@ export default class MandWStrategy extends CandleEntryStrategy {
             const rules = this.exitRules();
             if (!rules.target || !rules.stop) return drop('target and stopLoss must both be set (not none)', true);
         } catch (e: any) { return drop(String(e?.message ?? e), true); }
-        const brokers = this.brokers();
-        const latched = await Promise.all(brokers.map((b) => isGlobalMaxProfitLatched(this.userId, normalizeBrokerName(b))));
-        if (brokers.length > 0 && latched.every(Boolean)) return drop('the global max profit is hit on every broker today');
-        if (mw.pending !== p || this.isRunning()) return; // changed while awaiting
+        if (await isGlobalMaxProfitLatched(this.userId, normalizeBrokerName(broker))) return drop(`the global max profit is hit today on ${broker}`);
+        if (b.pending !== p || this.legBusy(broker) || this.placingNext) return; // changed while awaiting
         this.placingNext = true;
         try {
-            const key = `${localDayKey()} MW${this.state.keys.length + 1}`;
+            b.seq = (b.seq ?? 0) + 1;
+            const key = this.cycleKey(broker, b.seq);
             const strike = this.atmStrike(this.niftyLtp);
-            mw.pending = undefined;
-            mw.cycleRight = p.right;
+            b.pending = undefined;
+            b.cycleRight = p.right;
             this.save();
-            Log.log(`[${this.logTag}] ${p.reason}: BUY ${p.right} ${strike} (nearest expiry), quantity ${this.configuredQuantity()} per broker [${key}]`);
+            Log.log(`[${this.logTag}] ${broker} ${p.reason}: BUY ${p.right} ${strike} (nearest expiry), quantity ${this.configuredQuantity()} [${key}]`);
             await this.startCycle(key, { index: 'NIFTY', strike, right: p.right }, () => 1, async (c) => {
                 const optionLtp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
                 return roundToTick(optionLtp);
-            });
+            }, [broker]);
         } finally {
             this.placingNext = false;
         }
