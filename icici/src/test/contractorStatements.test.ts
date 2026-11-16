@@ -126,19 +126,19 @@ async function main() {
     assert((await statementsCol().find({ contractorId: { $in: ['fx', 'fxt', 'fxs', 'fxa'] } }).toArray() as any[]).every((x) => x.gross >= 0), 'no fixed-fee statement is ever negative');
 
     console.log('drawdown limits on contractor orders (Schedule 2):');
-    // reference investment 1,00,000: daily limit 15% = 15,000 realized loss today; weekly limit 30% = 30,000 since the Wednesday that starts the settlement week
+    // allocated capital 2,00,000 (Advanced): daily limit 15% = 30,000 realized loss today; weekly limit 30% = 60,000 since the Wednesday that starts the settlement week
     const ddc: any = { id: 'dd', email: 'dd@x.com', name: 'DD', type: 'BUSINESS', status: 'ACTIVE' };
     const DT = (id: string, pnl: number, exit: string) => db.collection('closedTrades').insertOne({ id, user: 'dd@x.com', realizedPnL: pnl, exitTime: new Date(`${exit}+05:30`) });
-    await DT('dd1', -16000, '2026-11-16T10:00:00'); // Monday 16 Nov, the week that began Wed 11 Nov
+    await DT('dd1', -31000, '2026-11-16T10:00:00'); // Monday 16 Nov, the week that began Wed 11 Nov
     const mon = new Date('2026-11-16T11:00:00+05:30');
     const dd1 = await drawdownRefusal(ddc, mon);
-    assert(dd1 !== null && /daily drawdown limit reached/.test(dd1), 'a realized loss of 16,000 today (above 15% of 1,00,000) refuses a new order today');
+    assert(dd1 !== null && /daily drawdown limit reached/.test(dd1), 'a realized loss of 31,000 today (above 15% of 2,00,000) refuses a new order today');
     assert(await drawdownRefusal(ddc, new Date('2026-11-17T11:00:00+05:30')) === null, 'the next day the daily limit resets');
     const wk: any = { id: 'dw', email: 'dw@x.com', name: 'DW', type: 'BUSINESS', status: 'ACTIVE' };
     const DW = (id: string, pnl: number, exit: string) => db.collection('closedTrades').insertOne({ id, user: 'dw@x.com', realizedPnL: pnl, exitTime: new Date(`${exit}+05:30`) });
-    await DW('dw1', -10000, '2026-11-11T11:00:00'); await DW('dw2', -10000, '2026-11-12T11:00:00'); await DW('dw3', -10500, '2026-11-13T11:00:00');
+    await DW('dw1', -20000, '2026-11-11T11:00:00'); await DW('dw2', -20000, '2026-11-12T11:00:00'); await DW('dw3', -21000, '2026-11-13T11:00:00');
     const wkRefusal = await drawdownRefusal(wk, new Date('2026-11-16T11:00:00+05:30'));
-    assert(wkRefusal !== null && /weekly drawdown limit reached/.test(wkRefusal), 'a realized loss of 30,500 this settlement week (above 30% of 1,00,000) refuses new orders for the rest of the week');
+    assert(wkRefusal !== null && /weekly drawdown limit reached/.test(wkRefusal), 'a realized loss of 61,000 this settlement week (above 30% of 2,00,000) refuses new orders for the rest of the week');
     assert(await drawdownRefusal(wk, new Date('2026-11-18T11:00:00+05:30')) === null, 'a new settlement week (from Wednesday 18 Nov) starts with a clean weekly limit');
     const ok: any = { id: 'dk', email: 'dk@x.com', name: 'DK', type: 'BUSINESS', status: 'ACTIVE' };
     await db.collection('closedTrades').insertOne({ id: 'dk1', user: 'dk@x.com', realizedPnL: -10000, exitTime: new Date('2026-11-11T11:00:00+05:30') });

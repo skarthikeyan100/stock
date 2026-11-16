@@ -42,9 +42,9 @@ export function rulesScheduleRows(d: AgreementDetails = {}): ScheduleRow[] {
   const inr = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
   rows.push(['Order size', `${inr(capital)} per Resulting Trade; as many whole lots as this buys, at least one`]);
   // the level-rule defaults (15% a day, 30% a week) when no details are given, so the standard PDF shows them too
-  const dailyPct = r.dailyDrawdownPercent ?? 15, weeklyPct = r.weeklyDrawdownPercent ?? 30;
-  rows.push(['Daily drawdown limit', `${dailyPct}% of the Reference Investment (${inr(capital * dailyPct / 100)}): when the realized loss of the Contractor’s Resulting Trades in a Trading Day reaches this, no new Resulting Trade is placed until the next Trading Day`]);
-  rows.push(['Weekly drawdown limit', `${weeklyPct}% of the Reference Investment (${inr(capital * weeklyPct / 100)}): when the realized loss of the Contractor’s Resulting Trades in a Settlement Week reaches this, no new Resulting Trade is placed until the next Settlement Week`]);
+  const dailyPct = r.dailyDrawdownPercent ?? 15, weeklyPct = r.weeklyDrawdownPercent ?? 30, allocated = r.allocatedCapital ?? 200000;
+  rows.push(['Daily drawdown limit', `${dailyPct}% of the allocated capital of ${inr(allocated)} (${inr(allocated * dailyPct / 100)}): when the realized loss of the Contractor’s Resulting Trades in a Trading Day reaches this, no new Resulting Trade is placed until the next Trading Day`]);
+  rows.push(['Weekly drawdown limit', `${weeklyPct}% of the allocated capital of ${inr(allocated)} (${inr(allocated * weeklyPct / 100)}): when the realized loss of the Contractor’s Resulting Trades in a Settlement Week reaches this, no new Resulting Trade is placed until the next Settlement Week`]);
   if (r.maxOpenPositions && r.maxOpenPositions > 0) rows.push(['Maximum open positions', `${r.maxOpenPositions} Resulting Trades open at any time, across all contractors`]);
   if (r.noNewAfter) rows.push(['No new Resulting Trade after', `${r.noNewAfter} IST`]);
   if (r.dailyLossLimit && r.dailyLossLimit > 0) rows.push(['Daily loss limit (all contractors)', `When the contractors’ trades lose ₹${r.dailyLossLimit} in a day, no new Resulting Trade is placed for the rest of that day`]);

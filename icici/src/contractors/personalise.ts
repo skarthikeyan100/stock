@@ -34,7 +34,8 @@ export function scheduleDetails(): AgreementDetails {
         profitSharePercent: levelDefaultsFor('advanced').profitSplitPercent, recHours: { start: rr.start, end: rr.end }, perDay: rr.perDay,
         fixedFee: fixed > 0 ? fixed : undefined, fixedFeeMonths: fixedFeeMonths(), referenceInvestment: referenceInvestment(),
         rules: { maxOpenPositions: Number(orders.maxOpenPositions) || 0, noNewAfter: orders.noNewAfter ? String(orders.noNewAfter) : undefined, maxInvestment: referenceInvestment(), dailyLossLimit: Number(orders.dailyLossLimit) || 0,
-            dailyDrawdownPercent: levelRules((configService.getConfig() as any)?.settings, 'advanced').maxDailyDrawdownPercent, weeklyDrawdownPercent: levelRules((configService.getConfig() as any)?.settings, 'advanced').maxWeeklyDrawdownPercent },
+            dailyDrawdownPercent: levelRules((configService.getConfig() as any)?.settings, 'advanced').maxDailyDrawdownPercent, weeklyDrawdownPercent: levelRules((configService.getConfig() as any)?.settings, 'advanced').maxWeeklyDrawdownPercent,
+            allocatedCapital: levelRules((configService.getConfig() as any)?.settings, 'advanced').capital },
         fees: { retainer: Number(fees.retainerMonthly), feePerCorrect: Number(fees.feePerCorrect), monthlyCap: Number(fees.monthlyCap), minDays: Number(fees.minParticipationDays), windowMinutes: fc.windowMinutes, neutral: fc.neutralThresholdPoints, dailyLimit: fc.dailyLimit, hours: fc.hours },
     };
 }
