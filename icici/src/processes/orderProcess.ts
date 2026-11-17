@@ -45,6 +45,7 @@ import * as exitMonitor from './order/exitMonitor';
 import { startMirrorBuy, undoMirrorBuy, onUserSell, mirrorSetTargetStopLoss, forgetRestingMirror, type MirrorLeg, type MirrorHook } from './order/mirror';
 import * as prismExecutor from './order/prismExecutor';
 import { getBrokerExecutor, getExecutorByBroker } from './order/brokerExecutors';
+import { onPaperTick } from './order/paperExecutor';
 import { BrokerExecutor, withSellLock, OrderAlreadyFilledError } from './order/BrokerExecutor';
 import Kite from '../kite/Kite';
 import ANT from '../ant/ANT';
@@ -59,6 +60,7 @@ import { localDayKey } from '../strategy/dayKey';
 import { normalizeBrokerName, configuredBrokersOf } from '../util/brokerName';
 import { brokerClientFor } from '../broker/brokerClients';
 import { exchangeForIndex, exchangeForTsym } from '../util/underlyings';
+import type { BrokerName } from '../util/brokerName';
 
 // Defense-in-depth: an unhandled promise rejection anywhere in this process
 // (e.g. a fire-and-forget Mongo write - see bookkeeping.ts's
@@ -706,7 +708,7 @@ async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean):
 // uniform return shape across all 4 brokers). Prism's contract master carries no exchange
 // field at all - hardcoded here, same as the 'BFO' fallback below.
 async function resolveOptionContractForBroker(
-    broker: 'kite' | 'ant' | 'breeze' | 'prism',
+    broker: BrokerName,
     index: 'NIFTY' | 'SENSEX',
     strike: number,
     right: 'CE' | 'PE',
@@ -1383,8 +1385,8 @@ let reconcileQueued = false;
 // Per-broker outcome of the most recent completed reconcile, returned to the
 // POST /reconcile caller. true only when that broker's positions were actually
 // fetched and restored. Informational only - nothing is gated on it.
-type ReconcilableBroker = 'kite' | 'ant' | 'breeze' | 'prism';
-const lastReconcileResult: Record<ReconcilableBroker, boolean> = { kite: false, ant: false, breeze: false, prism: false };
+type ReconcilableBroker = BrokerName;
+const lastReconcileResult: Record<ReconcilableBroker, boolean> = { kite: false, ant: false, breeze: false, prism: false, paper: false };
 
 // A Shoonya (prism) login is only required when an enabled strategy trades on prism; otherwise prism counts as reconciled (nothing to restore).
 function prismInUse(): boolean {
@@ -1523,6 +1525,7 @@ async function onTick(tick: any) {
     if (tick.type === 'option') {
         const quote = Object.assign(new OptionQuote(), tick.quote) as OptionQuote;
         await exitMonitor.handleOptionTick(quote);
+        await onPaperTick(quote); // resting paper-broker sells fill on a crossing tick (in-memory book)
     }
 }
 

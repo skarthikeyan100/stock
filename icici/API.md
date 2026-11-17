@@ -73,7 +73,7 @@ A user is **Beginner** (default) or **Advanced**; Advanced is permanent. The num
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `GET /:broker/login` for `ant`, `kite`, `breeze`, `prism` | none | Redirects to the broker's login page. |
+| `GET /:broker/login` for `ant`, `kite`, `breeze`, `prism` | none | Redirects to the broker's login page. (`paper`, the in-memory strategy-only broker, has no login route.) |
 | `GET /:broker/callback` (same four), `POST /breeze/callback`, `GET /shoonya/callback` | none | OAuth / session callback: exchanges the token, tells `data` to reconnect (ANT, Breeze), has the trading process reload the session (3 tries), redirects to `/`. `/shoonya/callback` is Prism's, registered at the broker. |
 | `GET /broker/:broker/trades`, `/broker/:broker/positions` | admin | The broker's own trade book / positions (debug and ops; used by `scripts/check-broker-sessions.sh`). |
 | `POST /ant/connect` | admin | Asks `data` to reconnect the ANT feed (it also reconnects by itself). |

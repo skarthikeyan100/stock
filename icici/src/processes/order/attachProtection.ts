@@ -5,6 +5,7 @@ import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { exchangeForTsym } from '../../util/underlyings';
 import { persistGttTriggerId } from './kiteExecutor';
+import type { BrokerName } from '../../util/brokerName';
 
 // Attaches an absolute target / stop-loss to a position that is ALREADY open (a filled limit buy), unlike finalizeEntry which runs
 // at entry. Used by RecommendationStrategy. Mirrors kiteExecutor.setTargetStopLoss: finds the open row in bookkeeping, sets its
@@ -17,7 +18,7 @@ export type ProtectionMode = 'gtt' | 'exitMonitor';
 
 export async function attachProtection(
     userId: string,
-    broker: 'kite' | 'ant' | 'breeze' | 'prism',
+    broker: BrokerName,
     tradingSymbol: string,
     targetPrice: number,
     stopLossPrice: number,
@@ -62,7 +63,7 @@ export async function attachProtection(
 // by hand without a trigger firing later against a flat account. Idempotent; a GTT delete failure throws (the trigger may be live).
 export async function cancelProtection(
     userId: string,
-    broker: 'kite' | 'ant' | 'breeze' | 'prism',
+    broker: BrokerName,
     tradingSymbol: string,
 ): Promise<{ gttDeleted: boolean }> {
     const trade = bookkeeping.trades.find((t) => t.tsym === tradingSymbol && t.user === userId && (t.broker ?? 'kite') === broker);

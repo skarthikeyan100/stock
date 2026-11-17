@@ -2,6 +2,7 @@ import * as kite from './pendingLimitOrders';
 import * as breeze from './breezePendingLimitOrders';
 import * as ant from './pendingAntLimitOrders';
 import * as prism from './pendingPrismLimitOrders';
+import { PAPER_TRACKER } from './paperExecutor';
 import { OptionExchange } from './BrokerExecutor';
 import { CancelledListener, TrackerBroker } from './pendingOrderTracker';
 
@@ -20,6 +21,7 @@ export const TRACKERS: Record<TrackerBroker, TrackerHandle> = {
     breeze: { find: breeze.findPendingOrdersForSymbol, all: breeze.allPendingOrders, load: breeze.loadPendingBreezeLimitOrdersFromMongo, poll: breeze.pollPendingBreezeLimitOrders, onCancelled: breeze.onCancelled },
     ant: { find: ant.findPendingOrdersForSymbol, all: ant.allPendingOrders, load: ant.loadPendingAntLimitOrdersFromMongo, poll: ant.pollPendingAntLimitOrders, onCancelled: ant.onCancelled },
     prism: { find: prism.findPendingOrdersForSymbol, all: prism.allPendingOrders, load: prism.loadPendingPrismLimitOrdersFromMongo, poll: prism.pollPendingPrismLimitOrders, onCancelled: prism.onCancelled },
+    paper: PAPER_TRACKER, // in-memory book (paperExecutor.ts): nothing to load or poll
 };
 
 export const TRACKER_BROKERS = Object.keys(TRACKERS) as TrackerBroker[];

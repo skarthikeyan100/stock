@@ -22,11 +22,12 @@ import { normalizeBrokerName } from '../../util/brokerName';
 import { localDayKey } from '../../strategy/dayKey';
 import { exchangeForTsym } from '../../util/underlyings';
 import { isGlobalMaxProfitLatched } from '../../strategy/globalMaxProfitLatch';
+import type { BrokerName } from '../../util/brokerName';
 
 // One row of a broker's position list, normalised across the four brokers (see OrderBookkeeping.readBrokerRows). `tsyms` and `tokens` are every
 // spelling/id the platform may have stored for the contract; `soldQty`/`soldValue` are TODAY's sells at the broker (absent where the broker does not report them).
 type BrokerRow = { tsyms: string[]; tokens: string[]; qty: number; soldQty?: number; soldValue?: number; ltp?: number };
-type BrokerKey = 'kite' | 'ant' | 'breeze' | 'prism';
+type BrokerKey = BrokerName;
 type BrokerFill = { orderId: string; action: 'Buy' | 'Sell'; tsym: string; token?: string; qty: number; price: number };
 export type EodMismatchKind = 'unattributedFill' | 'partialUnattributable' | 'brokerExcess' | 'brokerShort' | 'sellWithoutBuy';
 export type EodMismatch = { kind: EodMismatchKind; broker: BrokerKey; tsym: string; brokerQty?: number; mongoQty?: number; note?: string };
@@ -1023,7 +1024,12 @@ class OrderBookkeeping {
     async recordFill(tradeEvent: Trade): Promise<void> {
         let skipInsert = false;
         const id = tradeEvent.brokerOrderId;
-        if (id) {
+        // Paper broker (in-memory only): nothing is read from or written to Mongo; the id is still claimed so a redelivered fill is ignored.
+        const paper = tradeEvent.broker === 'paper';
+        if (id && paper) {
+            if (this.processedFillIds.has(id)) return;
+            this.processedFillIds.add(id);
+        } else if (id) {
             if (this.processedFillIds.has(id)) {
                 Log.log(`[order] Ignoring redelivered fill for broker order ${id} (${tradeEvent.tsym}) - already processed`);
                 return;
@@ -1196,7 +1202,7 @@ class OrderBookkeeping {
         // which cannot catch a rejection from a promise that isn't awaited)
         // is what actually prevents an unhandled promise rejection from
         // crashing the `order` process on a transient Mongo error.
-        if (!skipInsert) {
+        if (!skipInsert && tradeEvent.broker !== 'paper') {
             const p = Mongo.getInstance()?.insert(tradeEvent).catch((e) => {
                 Log.log('[order] Mongo insert failed for trade event (continuing without persistence):', tradeEvent.tsym, e);
             });
@@ -1297,7 +1303,7 @@ class OrderBookkeeping {
                 // write is in flight, so the breach check needs no wait on the ledger write.
                 this.persistClosedTrade(closedPortion, user, tradeEvent.price);
                 this.checkBreachAndNotify(user);
-            } else if (tradeEvent.user && tradeEvent.broker) {
+            } else if (tradeEvent.user && tradeEvent.broker && tradeEvent.broker !== 'paper') {
                 // No open position in memory for this Sell, so no closed-trade row is written here. The raw fill is stored; once its insert has
                 // landed, rebuild this contract's closes from the fills (a no-op when Mongo holds no Buy for it, i.e. a foreign sell).
                 Log.log(`[order] ALERT: Sell ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} (${tradeEvent.user}, ${tradeEvent.broker}) has no open position in memory - the fill is stored; repairing its closed trade from Mongo`);
@@ -2215,7 +2221,7 @@ class OrderBookkeeping {
         return { users, ownedFills };
     }
 
-    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number | null, brokerToken: string | undefined, broker: 'kite' | 'ant' | 'breeze' | 'prism', brokerView?: { avg?: unknown; ltp?: unknown }, contractTokens?: string[], alsoTsyms?: string[]): Promise<Trade[]> {
+    private async restoreOpenTradesForTsym(tsym: string, brokerQuantity: number | null, brokerToken: string | undefined, broker: BrokerName, brokerView?: { avg?: unknown; ltp?: unknown }, contractTokens?: string[], alsoTsyms?: string[]): Promise<Trade[]> {
         const db = Mongo.getInstance()?.db;
         if (!db || !tsym) return [];
 
@@ -2368,6 +2374,7 @@ class OrderBookkeeping {
     // Never throws: a failure here must not reject the fill handler after
     // position state has already changed.
     private async persistClosedTrade(trade: Trade, user: string, exitPrice: number): Promise<boolean> {
+        if (trade.broker === 'paper') return true; // paper trades live in memory only (this.closedTrades), never in Mongo
         const id = randomUUID();
         const row = {
             _id: id,

@@ -74,21 +74,22 @@ export async function loadSeedCandles(todayKey: string = localDayKey()): Promise
 // instead of a hole in the EMA series. One document per day.
 const LIVE_COLLECTION = 'candles15Live';
 
-export async function loadLiveCandles(dayKey: string = localDayKey()): Promise<SeedCandle[]> {
+// `collection`: another strategy with its own candle size keeps its own collection (the default is the 15-minute one, used by NextWeek).
+export async function loadLiveCandles(dayKey: string = localDayKey(), collection: string = LIVE_COLLECTION): Promise<SeedCandle[]> {
     try {
-        const doc: any = await Mongo.getInstance()?.db?.collection(LIVE_COLLECTION).findOne({ _id: dayKey as any });
+        const doc: any = await Mongo.getInstance()?.db?.collection(collection).findOne({ _id: dayKey as any });
         return Array.isArray(doc?.candles) ? doc.candles : [];
     } catch (e: any) {
-        Log.log(`[yahooCandles] could not read today's candles from ${LIVE_COLLECTION} (${e?.message ?? e})`);
+        Log.log(`[yahooCandles] could not read today's candles from ${collection} (${e?.message ?? e})`);
         return [];
     }
 }
 
-export async function saveLiveCandles(candles: SeedCandle[], dayKey: string = localDayKey()): Promise<void> {
+export async function saveLiveCandles(candles: SeedCandle[], dayKey: string = localDayKey(), collection: string = LIVE_COLLECTION): Promise<void> {
     try {
-        await Mongo.getInstance()?.db?.collection(LIVE_COLLECTION).updateOne({ _id: dayKey as any }, { $set: { candles, updatedAt: new Date() } }, { upsert: true });
+        await Mongo.getInstance()?.db?.collection(collection).updateOne({ _id: dayKey as any }, { $set: { candles, updatedAt: new Date() } }, { upsert: true });
     } catch (e: any) {
-        Log.log(`[yahooCandles] could not store today's candles in ${LIVE_COLLECTION} (${e?.message ?? e}) - a restart will lose them`);
+        Log.log(`[yahooCandles] could not store today's candles in ${collection} (${e?.message ?? e}) - a restart will lose them`);
     }
 }
 

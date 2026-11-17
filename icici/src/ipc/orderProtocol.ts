@@ -1,3 +1,4 @@
+import type { BrokerName } from '../util/brokerName';
 // Message shapes for the order<->strategies/frontend Unix-domain-socket channel.
 // `order` is the server (stable, rarely restarted); `strategies` and `frontend`
 // are clients that (re)connect to it. Framed as newline-delimited JSON via
@@ -168,7 +169,7 @@ export interface OrderCancelledNotification {
     quantity: number;        // qty that was resting in the cancelled/rejected order
     exchange: 'NFO' | 'BFO';
     action: 'Buy' | 'Sell';
-    broker: 'kite' | 'breeze' | 'ant' | 'prism';
+    broker: BrokerName;
     orderId: string;
     reason: 'CANCELLED' | 'REJECTED';
     // The broker's own rejection remark (e.g. a margin-shortfall message), when available.

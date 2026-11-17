@@ -1,4 +1,5 @@
 import OrderClient from '../processes/strategies/OrderClient';
+import type { BrokerName } from '../util/brokerName';
 
 export type UnconfirmedBuyResolution = { kind: 'none' } | { kind: 'filled'; qty: number; price: number } | { kind: 'unknown'; why: string };
 
@@ -11,7 +12,7 @@ export type UnconfirmedBuyResolution = { kind: 'none' } | { kind: 'filled'; qty:
 // `heldBefore` is what the strategy already held of this contract before the buy (an add / double-up buy on an open leg): the live quantity
 // includes it, so only the excess is the unconfirmed buy. A partial fill before the cancel is therefore booked as that partial, not dropped.
 export async function resolveUnconfirmedBuy(
-    userId: string, broker: 'kite' | 'ant' | 'breeze' | 'prism', contract: { tradingSymbol: string; premium: number }, heldBefore = 0,
+    userId: string, broker: BrokerName, contract: { tradingSymbol: string; premium: number }, heldBefore = 0,
 ): Promise<UnconfirmedBuyResolution> {
     const client = OrderClient.getInstance();
     try {

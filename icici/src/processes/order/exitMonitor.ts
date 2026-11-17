@@ -4,6 +4,7 @@ import { OptionQuote, Trade } from '../../model/model';
 import configService from '../../prism/ConfigService';
 import { BROKER_TO_FEED_SOURCE, DEFAULT_FEED_SOURCE } from '../../ipc/feedSource';
 import { exchangeForTsym } from '../../util/underlyings';
+import type { BrokerName } from '../../util/brokerName';
 
 // In-app target/SL exit monitoring, for trades placed with useGTT=false (see
 // bookkeeping.getUserUseGTT / kiteExecutor.finalizeEntry, antExecutor.finalizeEntry).
@@ -13,7 +14,7 @@ import { exchangeForTsym } from '../../util/underlyings';
 // via onExit() rather than imported directly, to avoid a circular dependency
 // with kiteExecutor.ts/antExecutor.ts.
 
-export type Broker = 'kite' | 'ant' | 'prism' | 'breeze';
+export type Broker = BrokerName;
 
 interface MonitoredTrade {
     trade: Trade;

@@ -10,11 +10,11 @@ import { investmentForBroker } from '../prism/configVocabulary';
 export const MULTI_BROKER_TYPES: readonly string[] = [
     'BulkPcrStrategy', 'BulkPcrAutoStartStrategy', 'HourlyStrategy', 'ButterflyStrategy',
     'TopStockOptionsOpeningGapStrategy', 'RecommendationStrategy', 'NiftyChangeStrategy', 'MomentumAtFixedTimeStrategy',
-    'NextWeekStrategy', 'BreakoutStrategy', 'GammaBurstStrategy', 'MandWStrategy',
+    'NextWeekStrategy', 'BreakoutStrategy', 'GammaBurstStrategy', 'MandWStrategy', 'HighLowStrategy',
 ];
 
 // Kite keeps the base id (state, latches and trade history carry over); the others get a suffix, as the hand-made copies did.
-const SUFFIX: Record<string, string> = { kite: '', ant: '-ANT', breeze: '-Breeze', prism: '-Prism' };
+const SUFFIX: Record<string, string> = { kite: '', ant: '-ANT', breeze: '-Breeze', prism: '-Prism', paper: '-Paper' };
 
 export function instanceUserIdFor(baseId: string, broker: string): string {
     return baseId + (SUFFIX[normalizeBrokerName(broker)] ?? `-${broker}`);

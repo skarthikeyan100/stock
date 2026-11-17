@@ -85,6 +85,8 @@ export interface State {
     endedSig?: string;
     // MandWStrategy only: the pattern watch / pending reversal (durable, so a restart resumes it; see mandwCycle.ts).
     mw?: MwState;
+    // GammaBurstStrategy only: epoch ms when its last trade closed (the 1-minute wait before the next entry; durable across a restart).
+    cycleEndedAt?: number;
 }
 
 export interface ResolvedEntry {
@@ -223,6 +225,24 @@ export abstract class LimitEntryStrategy extends Strategy {
     protected cycleStarted(key: string): boolean {
         this.ensureLoaded();
         return this.state.keys.includes(key);
+    }
+
+    // The per-block value of skipNearestExpiryOnExpiryDay used when this strategy looks up its contract (undefined = the global setting).
+    // A subclass that must trade the expiring contract on its own expiry day overrides this.
+    protected skipNearestExpiryDay(): boolean | undefined {
+        return expiryDayOverrideOf(this.cfg());
+    }
+
+    // When the last trade of this strategy closed (epoch ms), or undefined. Durable (saved with the state).
+    protected cycleEndedAt(): number | undefined {
+        this.ensureLoaded();
+        return this.state.cycleEndedAt;
+    }
+
+    protected markCycleEndedAt(at: number): void {
+        this.ensureLoaded();
+        this.state.cycleEndedAt = at;
+        this.save();
     }
 
     // Records a cycle key as used without placing anything (a skipped or refused slot), so a restart cannot revive it.
@@ -457,7 +477,7 @@ export abstract class LimitEntryStrategy extends Strategy {
             for (const broker of brokers) {
                 try {
                     const perBroker = budgetOf(broker); // the amount is PER broker: each one buys with its own full budget
-                    const contract = await OrderClient.getInstance().resolveOptionContract(this.userId, { broker: broker as any, index: entry.index, strike: entry.strike, right: entry.right, skipNearestExpiryDay: expiryDayOverrideOf(this.cfg()), expiryOffset: entry.expiryOffset });
+                    const contract = await OrderClient.getInstance().resolveOptionContract(this.userId, { broker: broker as any, index: entry.index, strike: entry.strike, right: entry.right, skipNearestExpiryDay: this.skipNearestExpiryDay(), expiryOffset: entry.expiryOffset });
                     const price = roundToTick(await priceFor(contract));
                     const qty = this.sizeOrder(perBroker, price, entry.index);
                     if (!(price > 0) || qty <= 0) {
@@ -618,6 +638,20 @@ export abstract class LimitEntryStrategy extends Strategy {
             const held = open.filter((t) => t.tsym === leg.tsym && (t.broker ?? 'kite') === leg.broker).reduce((s, t) => s + Math.max(0, Number(t.quantity) || 0), 0);
             const row = open.find((t) => t.tsym === leg.tsym && (t.broker ?? 'kite') === leg.broker);
             const unsold = leg.filledQty - leg.soldQty;
+            // Paper broker: its orders and positions live in the order process's memory only, so after a restart nothing is held and nothing
+            // will ever fill: the leg is dropped (closed, neutral P&L) instead of keeping a stop / exit retry on a position that is gone.
+            if (leg.broker === 'paper' && held === 0 && !row) {
+                Log.log(`[${this.logTag}] reconcile: paper ${leg.tsym} is not held (paper state is in memory only and is lost on a restart) - dropping the leg`);
+                leg.entryCancelled = true;
+                leg.soldQty = leg.filledQty;
+                leg.soldValue += unsold * (leg.filledQty > 0 ? leg.boughtValue / leg.filledQty : 0);
+                leg.status = 'closed';
+                leg.outcomeRecorded = true;
+                this.unwatch(leg);
+                this.save();
+                closedAny = true;
+                continue;
+            }
             if (leg.status === 'filled' && unsold > 0 && held === 0 && !row && await this.closeBookedElsewhere(leg)) {
                 // The order process holds no open trade for the leg AND has booked a close of the whole position (an intraday square-off, a sell in the
                 // broker's app, an expiry: its reconcile books those). Left 'filled' the leg kept a tick stop / exit retry running on a position that is gone

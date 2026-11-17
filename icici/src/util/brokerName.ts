@@ -1,7 +1,7 @@
 // Canonical broker names used everywhere (code, config, Mongo, API, UI).
 // Legacy/vendor names are accepted on read only, so persisted data, state files and
 // config written before the rename keep working. Writers always emit the canonical name.
-export const ALL_BROKERS = ['ant', 'kite', 'breeze', 'prism'] as const;
+export const ALL_BROKERS = ['ant', 'kite', 'breeze', 'prism', 'paper'] as const;
 export type BrokerName = typeof ALL_BROKERS[number];
 
 const ALIASES: Record<string, BrokerName> = {
@@ -9,6 +9,7 @@ const ALIASES: Record<string, BrokerName> = {
     kite: 'kite', zerodha: 'kite',
     breeze: 'breeze', icici: 'breeze', 'icici direct': 'breeze', icicidirect: 'breeze',
     prism: 'prism', shoonya: 'prism',
+    paper: 'paper',
 };
 
 // Returns the canonical name for a known broker/alias; anything else is returned

@@ -297,11 +297,11 @@ class OrderClient {
     // place independent orders on several brokers at once (BulkPcrStrategy's
     // multi-broker support). Omitted by every other caller, which keeps
     // today's per-userId resolution unchanged.
-    async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism'; driftCancelPoints?: number; index?: 'NIFTY' | 'SENSEX'; hedgeRebuy?: boolean }): Promise<ChunkedBuyIndexResult> {
+    async chunkedBuyIndex(userId: string, payload: { right: string; quantity: number; freezeQuantity?: number; niftyLtp?: number; broker?: BrokerName; driftCancelPoints?: number; index?: 'NIFTY' | 'SENSEX'; hedgeRebuy?: boolean }): Promise<ChunkedBuyIndexResult> {
         return this.call('chunkedBuyIndex', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 
-    async chunkedSquareOff(userId: string, payload: { tradingSymbol: string; quantity: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<any> {
+    async chunkedSquareOff(userId: string, payload: { tradingSymbol: string; quantity: number; freezeQuantity?: number; broker?: BrokerName }): Promise<any> {
         return this.call('chunkedSquareOff', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 
@@ -310,7 +310,7 @@ class OrderClient {
     // squareOffLimitChunked). Reuses the same generous chunked timeout since
     // placement is still up to 8 sequential broker calls, even though it
     // shouldn't normally take anywhere near as long as a fill-waiting call.
-    async chunkedSquareOffLimit(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number; broker?: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<any> {
+    async chunkedSquareOffLimit(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number; broker?: BrokerName }): Promise<any> {
         return this.call('chunkedSquareOffLimit', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 
@@ -331,17 +331,17 @@ class OrderClient {
     }
 
     // Broker-parameterized counterpart of antPlaceLimitSellBare - see orderProtocol.ts's comment.
-    async brokerPlaceLimitSellBare(userId: string, payload: { broker: 'kite' | 'breeze' | 'ant'; tradingSymbol: string; instrumentToken: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
+    async brokerPlaceLimitSellBare(userId: string, payload: { broker: BrokerName; tradingSymbol: string; instrumentToken: string; quantity: number; price: number; exchange: 'NFO' | 'BFO' }): Promise<{ orderId: string }> {
         return this.call('brokerPlaceLimitSellBare', userId, payload);
     }
 
 
-    async cancelRestingLimitSells(userId: string, payload: { tradingSymbol: string; broker: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<{ filledQty: number; cancelFailed: boolean }> {
+    async cancelRestingLimitSells(userId: string, payload: { tradingSymbol: string; broker: BrokerName }): Promise<{ filledQty: number; cancelFailed: boolean }> {
         return this.call('cancelRestingLimitSells', userId, payload);
     }
 
     // Buy-side counterpart: filledQty is the quantity bought in the cancel window (orders found already filled at the recheck).
-    async cancelRestingLimitBuys(userId: string, payload: { tradingSymbol: string; broker: 'kite' | 'ant' | 'breeze' | 'prism' }): Promise<{ filledQty: number; cancelFailed: boolean }> {
+    async cancelRestingLimitBuys(userId: string, payload: { tradingSymbol: string; broker: BrokerName }): Promise<{ filledQty: number; cancelFailed: boolean }> {
         return this.call('cancelRestingLimitBuys', userId, payload);
     }
 
@@ -352,32 +352,32 @@ class OrderClient {
     // orderProtocol.ts's comment for why these are separate from 'buyContractBare'/
     // 'sellContractBare' (which resolve broker per-user, wrong for one strategy
     // instance running several brokers' legs concurrently).
-    async butterflyBuyLeg(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+    async butterflyBuyLeg(userId: string, payload: { broker: BrokerName; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
         return this.call('butterflyBuyLeg', userId, payload);
     }
 
-    async butterflyCloseLeg(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+    async butterflyCloseLeg(userId: string, payload: { broker: BrokerName; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
         return this.call('butterflyCloseLeg', userId, payload);
     }
 
-    async butterflySellToOpen(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+    async butterflySellToOpen(userId: string, payload: { broker: BrokerName; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
         return this.call('butterflySellToOpen', userId, payload);
     }
 
-    async butterflyBuyToClose(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
+    async butterflyBuyToClose(userId: string, payload: { broker: BrokerName; tradingSymbol: string; instrumentToken: string; quantity: number; exchange: 'NFO' | 'BFO' }): Promise<Trade> {
         return this.call('butterflyBuyToClose', userId, payload);
     }
 
-    async resolveOptionContract(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE'; skipNearestExpiryDay?: boolean; expiryOffset?: number }): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
+    async resolveOptionContract(userId: string, payload: { broker: BrokerName; index: 'NIFTY' | 'SENSEX'; strike: number; right: 'CE' | 'PE'; skipNearestExpiryDay?: boolean; expiryOffset?: number }): Promise<{ tsym: string; token: string; exchange: 'NFO' | 'BFO' }> {
         return this.call('resolveOptionContract', userId, payload);
     }
 
     // Attaches an absolute target/stop-loss to an already-open position (see order/attachProtection.ts).
-    async attachProtection(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string; targetPrice: number; stopLossPrice: number }): Promise<{ mode: 'gtt' | 'exitMonitor'; gttTriggerId?: number }> {
+    async attachProtection(userId: string, payload: { broker: BrokerName; tradingSymbol: string; targetPrice: number; stopLossPrice: number }): Promise<{ mode: 'gtt' | 'exitMonitor'; gttTriggerId?: number }> {
         return this.call('attachProtection', userId, payload);
     }
 
-    async cancelProtection(userId: string, payload: { broker: 'kite' | 'ant' | 'breeze' | 'prism'; tradingSymbol: string }): Promise<{ gttDeleted: boolean }> {
+    async cancelProtection(userId: string, payload: { broker: BrokerName; tradingSymbol: string }): Promise<{ gttDeleted: boolean }> {
         return this.call('cancelProtection', userId, payload);
     }
 

@@ -327,7 +327,7 @@ export function validateConfigFile(parsed: any): string[] {
         const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'], ScaledHedgedStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'] };
         // Strategies that take their target and stop from the global exits: each must be set in the block or in settings (a value or 'none').
         // An absent key is refused rather than read as "no stop" (strategies/exitRules.ts).
-        if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy' || s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy' || s.type === 'MandWStrategy') {
+        if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy' || s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy' || s.type === 'MandWStrategy' || s.type === 'HighLowStrategy') {
             for (const key of ['target', 'stopLoss', ...(s.type === 'RuleBasedStrategy' ? ['maxHoldTimeMinutes'] : [])]) {
                 const set = (o: any) => o?.[key] !== undefined && o?.[key] !== null;
                 if (!set(s) && !set(parsed.settings)) errors.push(`${s.type}.${key} is not set in the block or in settings (give a value, or 'none')`);
@@ -345,6 +345,36 @@ export function validateConfigFile(parsed: any): string[] {
             // A fixed quantity per broker (whole lots), not a rupee budget.
             if (!isNum(s.quantity) || !(s.quantity > 0) || !Number.isInteger(s.quantity) || s.quantity % INDEX_LOT_SIZE.NIFTY !== 0) errors.push(`${s.type}.quantity must be a positive multiple of the NIFTY lot size ${INDEX_LOT_SIZE.NIFTY} (per broker; got ${JSON.stringify(s.quantity)})`);
             if (s.index !== undefined && s.index !== 'NIFTY') errors.push(`${s.type}.index must be NIFTY (got ${JSON.stringify(s.index)})`);
+        }
+        if (s.type === 'HighLowStrategy') {
+            // Exactly one sizing key: a fixed quantity (whole lots) or a rupee budget (maxInvestment, per broker).
+            const hasQty = s.quantity !== undefined && s.quantity !== null;
+            const hasAmt = s.maxInvestment !== undefined && s.maxInvestment !== null;
+            if (hasQty === hasAmt) errors.push(`${s.type} needs exactly one of quantity or maxInvestment (the investment amount per broker)`);
+            else if (hasQty && (!isNum(s.quantity) || !(s.quantity > 0) || !Number.isInteger(s.quantity) || s.quantity % INDEX_LOT_SIZE.NIFTY !== 0)) errors.push(`${s.type}.quantity must be a positive multiple of the NIFTY lot size ${INDEX_LOT_SIZE.NIFTY} (per broker; got ${JSON.stringify(s.quantity)})`);
+            else if (hasAmt && (!isNum(s.maxInvestment) || !(s.maxInvestment > 0))) errors.push(`${s.type}.maxInvestment must be a positive number of rupees (got ${JSON.stringify(s.maxInvestment)})`);
+            if (s.index !== undefined && s.index !== 'NIFTY') errors.push(`${s.type}.index must be NIFTY (got ${JSON.stringify(s.index)})`);
+            if (s.trailDistance !== undefined && !(isNum(s.trailDistance) && s.trailDistance > 0)) errors.push(`${s.type}.trailDistance must be a positive number of option points (got ${JSON.stringify(s.trailDistance)})`);
+            if (s.lastEntryTime !== undefined && (typeof s.lastEntryTime !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.lastEntryTime))) errors.push(`${s.type}.lastEntryTime must be HH:mm (got ${JSON.stringify(s.lastEntryTime)})`);
+            for (const key of ['target', 'stopLoss']) {
+                const v = s[key] !== undefined && s[key] !== null ? s[key] : parsed.settings?.[key];
+                if (typeof v === 'string' && v.trim().toLowerCase() === 'none') errors.push(`${s.type}.${key} must not be 'none' (the strategy needs both a target and a stop)`);
+            }
+        }
+        if (s.type === 'GammaBurstStrategy') {
+            // Sized from the rupee budget per broker (maxInvestment / maxInvestmentByBroker), never a fixed quantity.
+            if (s.quantity !== undefined) errors.push(`${s.type}.quantity is not used - size with maxInvestment (per broker)`);
+            if (!isNum(s.maxInvestment) || !(s.maxInvestment > 0)) errors.push(`${s.type}.maxInvestment is required for an enabled strategy (the rupee budget per broker, e.g. 100000)`);
+            // Trades the expiry it is given (this week) on its own expiry day only: the index is fixed, and a stop is not used.
+            if (s.index !== undefined && s.index !== 'NIFTY') errors.push(`${s.type}.index must be NIFTY (got ${JSON.stringify(s.index)})`);
+            if (s.lastEntryTime !== undefined && (typeof s.lastEntryTime !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.lastEntryTime))) errors.push(`${s.type}.lastEntryTime must be HH:mm (got ${JSON.stringify(s.lastEntryTime)})`);
+            // The target comes from the block or settings (a points value); the stop must be written 'none' ON THE BLOCK, because a
+            // global settings.stopLoss would otherwise be inherited silently.
+            const targetRaw = s.target !== undefined && s.target !== null ? s.target : parsed.settings?.target;
+            if (targetRaw === undefined || targetRaw === null) errors.push(`${s.type}.target is not set in the block or in settings (give points, e.g. 2)`);
+            else if (exitValueError(`${s.type}`, 'target', targetRaw)) errors.push(exitValueError(`${s.type}`, 'target', targetRaw) as string);
+            else if (typeof targetRaw === 'string' && targetRaw.trim().toLowerCase() === 'none') errors.push(`${s.type}.target must be a value: this strategy takes its profit at the target (got 'none')`);
+            if (typeof s.stopLoss !== 'string' || s.stopLoss.trim().toLowerCase() !== 'none') errors.push(`${s.type}.stopLoss must be set to 'none' on this block - the strategy has no stop loss (got ${JSON.stringify(s.stopLoss)})`);
         }
         if (s.type === 'MandWStrategy') {
             // Reverses on every stop / pattern all day, so it needs the global profit cap and exits it can classify (target AND stop, not 'none').

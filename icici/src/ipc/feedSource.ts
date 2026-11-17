@@ -19,4 +19,5 @@ export const BROKER_TO_FEED_SOURCE: Record<string, FeedSource> = {
     ant: 'ant',
     breeze: 'breeze',
     prism: 'ant',
+    paper: 'ant', // paper positions are priced from ANT's ticks
 };

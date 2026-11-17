@@ -1,5 +1,6 @@
 import { Trade } from '../../model/model';
 import Log from '../../util/Log';
+import type { BrokerName } from '../../util/brokerName';
 
 // ONE SELL AT A TIME per (broker, user, contract). A sell is invisible to every "is a sell already resting?" check (the pending tracker, the
 // never-short guard's resting quantity) from the moment the broker call starts until it returns and the order is tracked (seconds on Prism).
@@ -98,7 +99,7 @@ export async function neverShortSellable(args: {
 }
 
 // The "nothing left to sell" result of a square-off whose resting sells already closed the position: a zero-quantity, complete Sell.
-export function emptyExitTrade(userId: string, tsym: string, broker: 'kite' | 'ant' | 'breeze' | 'prism'): Trade {
+export function emptyExitTrade(userId: string, tsym: string, broker: BrokerName): Trade {
     const done = new Trade();
     done.tsym = tsym;
     done.quantity = 0;
@@ -309,7 +310,7 @@ export interface ResolvedContract {
 }
 
 export interface BrokerExecutor {
-    readonly brokerName: 'kite' | 'ant' | 'prism' | 'breeze';
+    readonly brokerName: BrokerName;
 
     // "Bare" ops: a single order with no GTT/bracket/cover protection, for strategies that self-monitor their legs.
     // `instrumentToken` is the ANT common token carried on Trade.token (brokers that need their own id resolve it).

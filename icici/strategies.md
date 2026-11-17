@@ -664,9 +664,12 @@ or `none`), placed on fill exactly as MomentumAtFixedTime does (`protectLeg` wit
 Test: `node dist/test/nextWeekStrategy.test.js`, `node dist/test/candleLibs.test.js`.
 
 ### GammaBurstStrategy (`GammaBurstStrategy.ts`, on `CandleEntryStrategy` -> `LimitEntryStrategy`) — config: `enabled: false`, multi-broker
-NextWeek's signal with a 9 EMA, on THIS week's expiry, only on the NIFTY expiry day, only from 14:00. 15-minute NIFTY candles (built from the ticks, seeded
-from Yahoo like NextWeek). Trend: candle close above the 9 EMA = `call`, below = `put`. Breakout: `BreakoutData.from(c1, c2)` (`lib/breakoutData.ts`).
-Both must agree. The candle that closes at 14:00 (13:45-14:00) is the first one that can trade; `lastEntryTime` (default 15:00) ends entries.
+NextWeek's signal with a 9 EMA, on THIS week's expiry, only on the NIFTY expiry day, only from 14:00. **2-minute** NIFTY candles built from the ticks on the
+09:15 grid (09:15, 09:17, ..., 13:59, 14:01; `niftyStatsBuilder` `originSeconds` = 60, since 09:15 IST is 60 s past an even-2-minute epoch boundary). No Yahoo
+seed: the EMA is built from today's own candles (about 09:33 before the first 9 closes exist). Today's completed candles are kept in Mongo `candles2Live`
+(one document per day, separate from NextWeek's `candles15Live`), so a restart restores them. Trend: candle close above the 9 EMA = `call`, below = `put`.
+Breakout: `BreakoutData.from(c1, c2)` (`lib/breakoutData.ts`). Both must agree. The first candle that can trade is 13:59-14:01, closing at 14:01 (a candle that
+closes before 14:00 never trades); `lastEntryTime` (default 15:00) ends entries. A candle is traded only if its close was seen within 30 s (`LATE_CANDLE_SECONDS`).
 Entry: one LIMIT buy per broker of the ATM option at the prevailing LTP, sized from the broker's investment: whole lots that fit `maxInvestment`
 (per broker; `maxInvestmentByBroker` overrides one broker) at that price. `quantity` is not used (the validator refuses it).
 Expiry: `expiryOffset: 0` with `skipNearestExpiryDay()` forced to `false` (the global `settings.skipNearestExpiryOnExpiryDay` is true in config.yml and would
@@ -731,7 +734,22 @@ Config (`config.yml`): `quantity`, `startSide`, `startTime`, `target` / `stopLos
 **Half at the target + trail (`trailDistance`, option points, absent = off; shared code `halfTrail.ts` + `LimitEntryStrategy.placeHalfTrailExit`, any `CandleEntryStrategy` subclass can opt in by overriding `trailDistance()`; only MandW does):** with 2+ whole lots, `floor(lots/2)` lots rest as a limit sell at the target (3 lots: 1 + 2) while the tick stop covers the whole leg; no Kite GTT / ANT exitMonitor is used. Once that half has filled, the stop is dropped and the rest trails: it is sold when the price is at or below `max(target, peak - trailDistance)` (floor = the target, the `TrailStop.ts` rule) with the same close path as the stop (`closeLeg`: cancels resting sells, sells what is left; a market-style close, not a re-priced limit). With 1 lot trailing is not engaged (normal target / stop, one log line). The mode is fixed on the leg when its exit is placed (a config change never flips a live position); the peak is persisted in the state file. A later partial entry fill raises the resting half to `floor(lots/2)` of the new quantity, or joins the trailed part once the trail runs. The M/W logic is unchanged: an average sell price at or above the halfway point to the target counts as a target. A sell whose outcome is unknown is never retried (ALERT).
 Test: `node dist/test/mandwCycle.test.js`, `node dist/test/mandwStrategy.test.js`, `node dist/test/halfTrail.test.js`.
 
-### CandleEntryStrategy (`CandleEntryStrategy.ts`) — shared base of NextWeek and Breakout, not a strategy
+### HighLowStrategy (`HighLowStrategy.ts`, on `CandleEntryStrategy` -> `LimitEntryStrategy`) — config: `enabled: false`, multi-broker
+Two consecutive **2-minute NIFTY candles** (c1 then c2; built from the index ticks on the 09:15 grid, in memory only, nothing in Mongo; the first candle after a restart never pairs with an older one):
+- `c2.high > c1.high` **and** `c2.low > c1.low` -> buy **CE**; `c2.high < c1.high` **and** `c2.low < c1.low` -> buy **PE**; anything else (inside / outside bar, an equal high or low) -> nothing (`highLowSignal`).
+- Evaluated when a candle closes (a candle seen more than 30 s late is not traded). One LIMIT buy per broker of the ATM option at its LTP (`startCycle`; expiry per the global skip settings). One trade at a time; a candle is handled once, also across a restart; no entry at or after `lastEntryTime` (default 15:00).
+- **Sizing: exactly one of** `quantity` (units per broker, whole lots) **or** `maxInvestment` (rupee budget per broker, `maxInvestmentByBroker` overrides one: whole lots that fit at the option's price). The validator refuses both or neither.
+- **Exit:** `target` and `stopLoss` (block or settings; points or "N%"; both required, not `none`). `trailDistance` (option points, optional) engages HalfTrail with 2+ whole lots: half the lots rest as a limit sell at the target, the rest trails `trailDistance` below its peak with the target as the floor; the stop covers the whole leg until the half has sold (details under MandWStrategy). 1 lot or no `trailDistance`: a plain target + stop. The end-of-day close applies.
+Config (`config.yml`): `quantity` | `maxInvestment`, `target`, `stopLoss`, `trailDistance`, `lastEntryTime`, `index: NIFTY`, `brokers` (the shipped block uses `[paper]`).
+Test: `node dist/test/highLowStrategy.test.js`, `node dist/test/paperBroker.test.js`.
+
+### The `paper` broker (`processes/order/paperExecutor.ts`) — not a real broker
+`brokers: [paper]` on a strategy block trades on an in-memory broker: **no login, no real order, nothing in Mongo** (orders, fills, positions, closed trades, the global max-profit latch and GammaBurst's candle store are all in the trading process's memory and are lost on a restart; no trade rows, `closedTrades`, `orderOwners` or `eodReconcileRuns` are written, and the EOD sync / `POST /sync` do not touch it). Currently set on `GammaBurst-NIFTY`, `MandW-NIFTY` and `HighLow-NIFTY` (all still `enabled: false`).
+- Limit buy: accepted at once and filled in full at its limit price a moment later (after the placing call has returned its order id). Limit sell: rests in memory and fills in full at its limit price on the first option tick at or above it. Market-style exit (`squareOff`): fills at once at the last tick price (else ANT's quote), after cancelling its own resting sells. Never short. A cancel of an already-filled order reports `OrderAlreadyFilledError` like the real brokers.
+- Contracts and ticks are ANT's (`BROKER_TO_FEED_SOURCE.paper = 'ant'`), so ANT's contract master and data stream are needed (not an ANT login for orders). No Kite GTT / ANT exitMonitor protection: `protectLeg` falls back to a resting target sell + tick-driven stop. No manual buys, shorts or price-range lookups.
+- After a restart nothing is held: each paper leg of a strategy's state file is dropped as closed with neutral P&L at the startup reconcile. `POST /order/lock-profits` cannot price paper positions (it reads broker positions: reported `failed`). `paper` is not a user broker (`USER_BROKERS`), only a strategy broker.
+
+### CandleEntryStrategy (`CandleEntryStrategy.ts`) — shared base of NextWeek, Breakout, GammaBurst, MandW and HighLow, not a strategy
 Extends `LimitEntryStrategy`: fixed `quantity` sizing (overrides `sizeOrder`; the validator requires a positive multiple of the NIFTY lot size 65 per broker for these two
 types, and `maxInvestment` is not read), and the target / stopLoss exit copied from MomentumAtFixedTime (`placeExit`, `topUpExit`). MomentumAtFixedTime was left on its
 own copy so no live strategy was touched; the two can be merged later.

@@ -8,6 +8,14 @@ import { BrokerClient, MissingCredentialsError } from './BrokerClient';
 
 // Wraps the four client singletons behind BrokerClient. Thin: each method is the singleton's own call.
 export const BROKER_CLIENTS: Record<BrokerName, BrokerClient> = {
+    // Not a real broker: no login, no broker-side trades; positions are the in-memory paper book (bookkeeping, broker 'paper').
+    paper: {
+        label: 'Paper',
+        getLoginUrl: () => { throw new MissingCredentialsError('The paper broker has no login'); },
+        exchangeToken: async () => { throw new MissingCredentialsError('The paper broker has no login'); },
+        getTrades: async () => [],
+        getPositions: async () => [],
+    },
     prism: {
         label: 'Shoonya',
         getLoginUrl: () => Prism.getInstance().getOAuthURL(),

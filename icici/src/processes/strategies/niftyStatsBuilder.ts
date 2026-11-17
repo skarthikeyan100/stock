@@ -49,11 +49,16 @@ export interface StatsBuilderOptions {
     // crosses a boundary belongs to the NEW candle. false (default, every existing caller): a bucket starts at its first tick and closes on
     // the first tick at least bucketSeconds later, which then drifts the next bucket's start (decision.ts's algorithm).
     aligned?: boolean;
+    // Only with aligned: the epoch second a bucket boundary falls on, modulo bucketSeconds (default 0 = epoch multiples). A 2-minute
+    // session that must start at 09:15 IST passes (09:15 IST) % 120 = 60, so its buckets are 09:15, 09:17, ... (epoch multiples would give 09:14, 09:16).
+    originSeconds?: number;
 }
 
 // Returns a builder with its own state. record() returns a stats update only when a tick closes a bucket, otherwise null.
 export function createStatsBuilder(bucketSeconds: number, options: StatsBuilderOptions = {}): StatsBuilder {
     const aligned = options.aligned === true;
+    const origin = options.originSeconds ?? 0;
+    const alignedStart = (ltt: number): number => Math.floor((ltt - origin) / bucketSeconds) * bucketSeconds + origin;
     let startTime: number | null = null;
     let bucket: number[] = [];
     const closes: number[] = []; // one entry per completed bucket, grows for the session (matches decision.ts's candlesMap-derived `prices` array)
@@ -76,13 +81,13 @@ export function createStatsBuilder(bucketSeconds: number, options: StatsBuilderO
         // A tick older than the bucket start (out-of-order/replayed) would corrupt the bucket's time base.
         if (startTime !== null && ltt < startTime) return null;
         if (startTime === null) {
-            startTime = aligned ? Math.floor(ltt / bucketSeconds) * bucketSeconds : ltt;
+            startTime = aligned ? alignedStart(ltt) : ltt;
         }
 
         // Aligned: the tick that crosses the boundary starts the next candle, it is not part of the one it closes.
         if (aligned && bucket.length > 0 && ltt - startTime >= bucketSeconds) {
             const closing = completeBucket(startTime);
-            startTime = Math.floor(ltt / bucketSeconds) * bucketSeconds;
+            startTime = alignedStart(ltt);
             bucket = [ltp];
             return closing;
         }

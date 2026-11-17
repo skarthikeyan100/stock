@@ -8,7 +8,7 @@ Kept out of `CLAUDE.md` on purpose (that file is loaded on every prompt). Read t
 
 ## Broker naming
 
-Exactly four brokers are supported. Use only the canonical name in code, config, Mongo, API, UI and docs.
+Exactly four real brokers are supported, plus the internal `paper` broker (2026-11-17: in-memory fills for strategies only, nothing in Mongo, no login; `src/processes/order/paperExecutor.ts`, see `strategies.md`). Use only the canonical name in code, config, Mongo, API, UI and docs.
 
 | Use | Never use |
 |---|---|
@@ -16,6 +16,7 @@ Exactly four brokers are supported. Use only the canonical name in code, config,
 | `kite` | Zerodha |
 | `breeze` | ICICI, ICICI Direct (as a broker name) |
 | `prism` | Shoonya |
+| `paper` | (none: not a real broker) |
 
 Legacy names are accepted on read only, through `normalizeBrokerName()` in `src/util/brokerName.ts`
 (config lists, user settings, IPC and API parameters). Writers always emit the canonical name.

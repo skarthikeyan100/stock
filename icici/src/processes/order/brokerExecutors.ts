@@ -8,6 +8,7 @@ import * as kiteExecutor from './kiteExecutor';
 import * as antExecutor from './antExecutor';
 import * as prismExecutor from './prismExecutor';
 import * as breezeExecutor from './breezeExecutor';
+import { PaperExecutor } from './paperExecutor';
 import bookkeeping from './bookkeeping';
 import { TRACKERS } from './pendingTrackers';
 import { normalizeBrokerName } from '../../util/brokerName';
@@ -161,7 +162,7 @@ export const BreezeExecutor: BrokerExecutor = {
     findPendingOrders: (userId, tradingSymbol) => TRACKERS.breeze.find(userId, tradingSymbol),
 };
 
-const EXECUTORS = { kite: KiteExecutor, ant: AntExecutor, breeze: BreezeExecutor, prism: PrismExecutor } as const;
+const EXECUTORS = { kite: KiteExecutor, ant: AntExecutor, breeze: BreezeExecutor, prism: PrismExecutor, paper: PaperExecutor } as const;
 
 // The executor for an explicit broker name (aliases accepted); throws on an unknown one.
 export function getExecutorByBroker(name: unknown, op?: string): BrokerExecutor {

@@ -430,7 +430,7 @@ strategies:
     lastEntryTime: '15:00'  # no entry at or after this time
     index: NIFTY
     brokers:
-      - kite
+      - paper               # paper broker: in-memory fills, nothing real, nothing in Mongo (strategies.md "Paper broker")
   - type: MandWStrategy
     enabled: false          # M / W pattern on the option price (see strategies.md); needs settings.maxProfit (global cap), target and stopLoss both set
     userId: MandW-NIFTY
@@ -443,7 +443,19 @@ strategies:
     lastEntryTime: '15:00'
     index: NIFTY
     brokers:
-      - kite
+      - paper               # paper broker: in-memory fills, nothing real, nothing in Mongo (strategies.md "Paper broker")
+  - type: HighLowStrategy
+    enabled: false          # two 2-minute NIFTY candles: higher high + higher low = buy CE, lower high + lower low = buy PE (see strategies.md)
+    userId: HighLow-NIFTY
+    quantity: 130           # units per broker (2 NIFTY lots), whole lots only. Use EITHER quantity OR maxInvestment (a rupee budget per broker), not both
+    # maxInvestment: 100000
+    target: 10              # option points above the entry (or "N%"); both target and stopLoss are required
+    stopLoss: 8             # option points below the entry (or "N%")
+    trailDistance: 4        # optional (option points): sell half the lots at the target, trail the rest; needs 2+ lots
+    lastEntryTime: '15:00'
+    index: NIFTY
+    brokers:
+      - paper               # paper broker: in-memory fills, nothing real, nothing in Mongo
   - type: SimpleContinuousStrategy
     enabled: false
     brokers:

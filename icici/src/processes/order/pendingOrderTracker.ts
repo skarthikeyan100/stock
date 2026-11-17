@@ -4,11 +4,12 @@ import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import { OptionExchange } from './BrokerExecutor';
 import Mongo from '../../tools/mongo';
+import type { BrokerName } from '../../util/brokerName';
 
 // One loop for every broker's resting limit orders: track, poll, book the fill, book a partial fill on cancel, tell the
 // cancelled listeners, untrack. The per-broker part (where statuses come from) is a BrokerOrderAdapter.
 
-export type TrackerBroker = 'prism' | 'kite' | 'ant' | 'breeze';
+export type TrackerBroker = BrokerName;
 
 export interface PendingOrder {
     orderId: string;

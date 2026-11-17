@@ -33,6 +33,9 @@ interface BrokerRoute {
 }
 
 const BROKER_ROUTES: Record<BrokerName, BrokerRoute> = {
+    paper: {
+        callbackParams: () => ({}),
+    },
     prism: {
         callbackParams: (req) => ({ code: req.query.code as string | undefined }),
     },
@@ -107,6 +110,7 @@ const brokerCallback = (name: BrokerName) => async function (req: express.Reques
 };
 
 for (const name of ALL_BROKERS) {
+    if (name === 'paper') continue; // the in-memory paper broker has no login
     router.get(`/${name}/login`, brokerLogin(name));
     router.get(`/${name}/callback`, brokerCallback(name));
 }
