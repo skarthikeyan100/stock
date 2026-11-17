@@ -319,6 +319,14 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
             continue;
         }
         const gate = retryGate.get(monitorKey(trade.user, trade.token, broker));
+        // A retried exit whose position has meanwhile left bookkeeping (another path sold the rest, e.g. a drawdown force-close raced this
+        // squareoff's last chunk, live 2026-11-17 13:38) has nothing left to sell: drop the stale watch instead of retrying it every 60 s.
+        if (gate && aggregateResolver && !aggregate) {
+            Log.log(`[order] exitMonitor: ${trade.tsym} (${trade.user}, ${broker}) is no longer open in the books - dropping the stale watch and its retries`);
+            unregisterTradeInternal(trade.user, trade.token, broker, true);
+            retryGate.delete(monitorKey(trade.user, trade.token, broker));
+            continue;
+        }
         if (gate && now < gate.nextAt) continue; // a failed squareoff is waiting out its backoff
 
         const hitTarget = trade.targetPrice != null && quote.ltp >= trade.targetPrice;
@@ -367,6 +375,13 @@ export async function handleOptionTick(quote: OptionQuote): Promise<void> {
                     retryGate.delete(key);
                     continue;
                 }
+            }
+            if (aggregateResolver && aggregateResolver(trade, broker) === undefined) {
+                // The failed exit lost a race with another sell that closed the whole position (its fill was booked while this entry was
+                // unregistered in flight): nothing to retry, do not put the watch back.
+                Log.log(`[order] exitMonitor: ${trade.tsym} (${trade.user}, ${broker}) closed meanwhile by another path - not re-registering the watch`);
+                retryGate.delete(key);
+                continue;
             }
             const delay = retryDelayMs(state.attempts);
             state.nextAt = Date.now() + delay;
