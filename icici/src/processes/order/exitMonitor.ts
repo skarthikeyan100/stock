@@ -202,6 +202,15 @@ function registerTradeInternal(trade: Trade, exchange: 'NFO' | 'BFO', broker: Br
     if (!retry) Log.log(`[order] exitMonitor watching ${trade.tsym} (token ${trade.token}, ${broker}) for ${trade.user}: target=${trade.targetPrice} stopLoss=${trade.stopLossPrice}${watchOnly ? ' (watch-only, broker owns exit)' : ''}`);
 }
 
+// After a manual buy was split into several orders, each chunk registered its own detached Trade; the exit must act on the ONE
+// bookkeeping row of the position (whole quantity, and the target/stop a later set-target edits). Re-points the watch at that row.
+// No-op when the row has no target/stop (nothing to watch) or is already gone (sold meanwhile).
+export function watchAggregate(user: string, tsym: string, token: string, exchange: 'NFO' | 'BFO', broker: Broker): void {
+    const row = aggregateResolver?.({ tsym, user, token } as Trade, broker);
+    if (!row || !row.token || (row.targetPrice == null && row.stopLossPrice == null)) return;
+    registerTrade(row, exchange, broker, false);
+}
+
 // `broker` omitted removes every broker's entry for this user+token.
 export function unregisterTrade(user: string, token: string, broker?: Broker): void {
     unregisterTradeInternal(user, token, broker, false);

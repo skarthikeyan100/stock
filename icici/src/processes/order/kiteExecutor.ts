@@ -20,6 +20,7 @@ import { exchangeForTsym } from '../../util/underlyings';
 import { loadOrderOwners } from './orderOwners';
 import Mongo from '../../tools/mongo';
 import { registerEntryExit } from './entryExits';
+import { manualBuyChunked, squareOffAutoChunked } from './chunkedOrder';
 
 // Kite is the primary execution broker (per current product decision - Prism
 // stays wired as the secondary/legacy path in prismExecutor.ts). Ported from the
@@ -113,7 +114,8 @@ async function getMarketableKitePrice(antToken: string, exchange: 'NFO' | 'BFO',
 // Shared by every entry path (index-ATM and manual/strike/contract): computes
 // target/SL from points, then places a GTT or registers with exitMonitor
 // depending on the placing user's useGTT setting, before recording the fill.
-async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number): Promise<void> {
+// `inAppExit`: one of several chunks of a split manual buy - no per-chunk GTT (see chunkedOrder.manualBuyChunked), the in-app exit monitor owns the exit.
+async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number, inAppExit = false): Promise<void> {
     const entryPrice = trade.price;
 
     if (targetPoints > 0 && stopLossPoints > 0) {
@@ -143,7 +145,7 @@ async function finalizeEntry(trade: Trade, userId: string, exchange: 'NFO' | 'BF
         trade.stopLossPrice = roundToTick(entryPrice - stopLossPoints);
         trade.targetPrice = roundToTick(entryPrice + targetPoints);
 
-        if (bookkeeping.getUserUseGTT(userId)) {
+        if (bookkeeping.getUserUseGTT(userId) && !inAppExit) {
             try {
                 // Kept on the trade (not discarded) so setTargetStopLoss can modify
                 // this same GTT later instead of only updating local bookkeeping.
@@ -319,7 +321,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { 
         const resolved = await KiteContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
         const price = await estimateOptionPrice(canonical.symbol, canonical.strike, canonical.optionType);
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity, resolved.lotSize, req.stopLossPoints, req.contractorBudget);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity, resolved.lotSize, req.stopLossPoints, req.contractorBudget, false);
         return buyContractOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
     }
 
@@ -335,7 +337,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { 
         const contract = await KiteContractMaster.getInstance().findATMOption(req.strikePrice, optionType, index);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.strikePrice });
         const price = await estimateOptionPrice(index, req.strikePrice, optionType);
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity, contract.lotSize, req.stopLossPoints, req.contractorBudget);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity, contract.lotSize, req.stopLossPoints, req.contractorBudget, false);
         return buyContractOnKite(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
     }
 
@@ -346,18 +348,28 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { 
     return manualBuyOnKite({ ...req, strikePrice: entryStrike, index });
 }
 
+// A manual buy, split into freeze-sized orders when it is larger than one (chunkedOrder.manualBuyChunked). The admin mirror starts ONCE with the
+// whole quantity (its own order is split the same way through `place`), then the user's chunks are placed one after another.
 async function buyContractOnKite(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', targetPoints?: number, stopLossPoints?: number, mirror?: MirrorHook): Promise<Trade> {
-    const kite = Kite.getInstance();
-    if (!(await kite.hasValidSession())) {
+    if (!(await Kite.getInstance().hasValidSession())) {
         throw new Error('Kite session not active - complete /kite/login first.');
     }
-    Log.log(`[order] Buying (manual) ${tradingSymbol} qty=${quantity} for ${userId}`);
     // The admin mirror starts now, in parallel with this order (it does not wait for the user's fill).
     mirror?.({ userId, broker: 'kite', tsym: tradingSymbol, token: commonToken, exchange, quantity,
         // The admin leg gets the user's RESOLVED exit points (request, else the user's own, else settings), not the admin's defaults.
         place: (adminId, qty) => buyContractOnKite(adminId, tradingSymbol, commonToken, qty, exchange,
             targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? configService.getConfig().settings.targetPoints,
             stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? configService.getConfig().settings.stopLossPoints) });
+    return manualBuyChunked({
+        label: 'manualBuyChunked', userId, tradingSymbol, exchange, quantity,
+        placeOne: (qty, inAppExit) => buyOneContractOnKite(userId, tradingSymbol, commonToken, qty, exchange, targetPoints, stopLossPoints, inAppExit),
+        onBooked: () => exitMonitor.watchAggregate(userId, tradingSymbol, commonToken, exchange, 'kite'),
+    });
+}
+
+async function buyOneContractOnKite(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', targetPoints: number | undefined, stopLossPoints: number | undefined, inAppExit: boolean): Promise<Trade> {
+    const kite = Kite.getInstance();
+    Log.log(`[order] Buying (manual) ${tradingSymbol} qty=${quantity} for ${userId}`);
     const buyPrice = await getMarketableKitePrice(commonToken, exchange, 'BUY');
     const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
     const mkPartial = (qty: number, px: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: commonToken, action: 'Buy', userId: userId, orderId: orderId }, qty, px);
@@ -369,7 +381,8 @@ async function buyContractOnKite(userId: string, tradingSymbol: string, commonTo
             userId,
             exchange,
             targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? configService.getConfig().settings.targetPoints,
-            stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? configService.getConfig().settings.stopLossPoints
+            stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? configService.getConfig().settings.stopLossPoints,
+            inAppExit
         )
     );
 
@@ -388,7 +401,7 @@ async function buyContractOnKite(userId: string, tradingSymbol: string, commonTo
     const settings = configService.getConfig().settings;
     const finalTargetPoints = targetPoints ?? bookkeeping.getUserTargetPoints(userId) ?? settings.targetPoints;
     const finalStopLossPoints = stopLossPoints ?? bookkeeping.getUserStopLossPoints(userId) ?? settings.stopLossPoints;
-    await finalizeEntry(trade, userId, exchange, finalTargetPoints, finalStopLossPoints);
+    await finalizeEntry(trade, userId, exchange, finalTargetPoints, finalStopLossPoints, inAppExit);
     return trade;
 }
 
@@ -809,7 +822,8 @@ export async function getContractByPriceRangeOnKite(
 // here (rather than exitMonitor importing squareOffOnKite directly) to
 // avoid a circular import between the two modules.
 exitMonitor.onExit('kite', async (trade: Trade, exchange: 'NFO' | 'BFO') => {
-    await squareOffOnKite(trade.user, trade.tsym, trade.quantity, exchange);
+    // A position above one freeze order (a split frontend buy) is sold in freeze-sized chunks.
+    await squareOffAutoChunked({ squareOff: (u, t, q, e) => squareOffOnKite(u, t, q, e as 'NFO' | 'BFO') }, trade.user, trade.tsym, trade.quantity, exchange);
 });
 
 // exitMonitor calls this ONCE when its squareoff was refused because Kite holds nothing sellable (the broker's GTT already sold the

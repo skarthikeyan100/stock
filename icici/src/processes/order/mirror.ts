@@ -7,6 +7,7 @@ import { Trade } from '../../model/model';
 import bookkeeping from './bookkeeping';
 import { getBrokerExecutor } from './brokerExecutors';
 import { setTargetStopLoss } from './kiteExecutor';
+import { squareOffAutoChunked } from './chunkedOrder';
 
 // Admin mirror trades. Every buy a user starts from the FRONTEND (orderProcess's 'manualBuy') is copied by the admin user as
 // its own real order on the same broker, for floor(userLots * settings.mirrorPercentage / 100) lots (0 lots = no trade). The
@@ -82,16 +83,26 @@ export const startMirrorBuy: MirrorHook = (leg) => {
         const admin = primaryAdminEmail();
         return serialized(`${leg.userId}|${leg.token}`, async () => {
             Log.log(`[order] mirror: ${admin} buys ${leg.tsym} qty=${qty} (${pct}% of ${leg.userId}'s ${leg.quantity})`);
-            await leg.place(admin, qty);
+            // A split admin order that stopped part-way (a chunk rejected): the chunks already filled ARE open, so record them and report.
+            let placedQty = qty;
+            let partialErr: any;
+            try {
+                await leg.place(admin, qty);
+            } catch (e: any) {
+                if (!(e?.partial && e.filledQuantity > 0)) throw e;
+                placedQty = e.filledQuantity;
+                partialErr = e;
+            }
             const c = col();
             if (!c) throw new Error('Mongo not connected - the mirror leg is open but not recorded, close it by hand');
             await c.updateOne(
                 { userId: leg.userId, token: leg.token },
-                { $inc: { adminQty: qty }, $set: { tsym: leg.tsym, broker: leg.broker, exchange: leg.exchange, updatedAt: new Date() } },
+                { $inc: { adminQty: placedQty }, $set: { tsym: leg.tsym, broker: leg.broker, exchange: leg.exchange, updatedAt: new Date() } },
                 { upsert: true },
             );
             // The user may have sold while the admin order was filling: that sell found no row to follow, so close now.
             if (!leg.resting && openQty(leg.userId, leg.token) <= 0) await closeMirror(leg.userId, leg.token, undefined);
+            if (partialErr) throw partialErr; // booked above, still reported as an ALERT by the handler below
         }).then(() => undefined, (e) => { Log.log(`[order] ALERT: mirror buy of ${leg.tsym} for ${leg.userId} (qty=${qty}) failed - the user's order is unaffected:`, e); });
     } catch (e) {
         Log.log('[order] ALERT: mirror buy could not start:', e);
@@ -120,7 +131,7 @@ async function closeMirror(userId: string, token: string, sold: { qty: number; b
     } else if (closeQty > 0) {
         Log.log(`[order] mirror: ${admin} sells ${row.tsym} qty=${closeQty} following ${userId}`);
         try {
-            await getBrokerExecutor(admin, row.broker).squareOff(admin, row.tsym, closeQty, row.exchange);
+            await squareOffAutoChunked(getBrokerExecutor(admin, row.broker), admin, row.tsym, closeQty, row.exchange);
         } catch (e) {
             // Nothing sellable at the broker: the admin leg is already gone there (its own GTT sold it; the GTT poll books it next). Not retried.
             if (!/NEVER-SHORT GUARD: nothing sellable/.test(String((e as any)?.message ?? e))) throw e;
@@ -158,8 +169,10 @@ function verifyAdminClosed(tsym: string, token: string): void {
 }
 
 /** The user's own buy failed after the mirror started: take back the admin's matching quantity (never the leg of an earlier user buy). */
-export function undoMirrorBuy(leg: MirrorLeg, started: Promise<void> | void): void {
-    const qty = mirrorQuantityFor(leg.quantity, bookkeeping.getInstrumentLotSize(leg.tsym), mirrorPercentage());
+export function undoMirrorBuy(leg: MirrorLeg, started: Promise<void> | void, userKeptQty = 0): void {
+    // `userKeptQty`: a split buy that stopped part-way left this many units open for the user, so the admin keeps its share of THOSE.
+    const lot = bookkeeping.getInstrumentLotSize(leg.tsym);
+    const qty = mirrorQuantityFor(leg.quantity, lot, mirrorPercentage()) - (userKeptQty > 0 ? mirrorQuantityFor(userKeptQty, lot, mirrorPercentage()) : 0);
     if (!started || qty <= 0) return;
     // started resolves after the admin order is placed and recorded, so the row and the admin position exist by now.
     started.then(() => serialized(`${leg.userId}|${leg.token}`, () => closeMirror(leg.userId, leg.token, undefined, qty)))

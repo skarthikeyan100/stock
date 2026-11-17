@@ -171,7 +171,7 @@ export async function marketBuyBareChunked(
 }
 
 export async function squareOffChunked(
-    executor: BrokerExecutor,
+    executor: Pick<BrokerExecutor, 'squareOff'>,
     userId: string,
     tradingSymbol: string,
     quantity: number,
@@ -212,6 +212,97 @@ export async function squareOffChunked(
         }
     }
     return { quantity: filledQty, avgPrice: filledQty > 0 ? filledValue / filledQty : 0 };
+}
+
+// A frontend manual buy (POST /order/buy) above one exchange freeze order is placed as several orders, each at most the freeze quantity
+// (user decision 2026-11-17: frontend trades chunk like strategies; before this the sizing clamped the quantity to one freeze order).
+// `placeOne(qty, inAppExit)` is the broker's own single-order buy (it books its fill, so each chunk's fill merges into the user's ONE
+// bookkeeping row keyed by tsym+user+broker). `inAppExit` is true whenever the buy is split: a position of several fills is protected by
+// the in-app exit monitor (target/stop on the aggregate row, sold in freeze-sized chunks), NOT by one broker bracket/GTT per chunk,
+// because only the first id survives a restart and a single exit order above the freeze is refused. Returns ONE Trade (quantity summed,
+// price volume-weighted). A chunk that fails or fills short stops the run: the filled part is already booked and protected, so it throws
+// an error carrying {partial, filledQuantity, averagePrice} (a clean failure of the first chunk stays a clean failure). A single-chunk
+// request is passed straight to `placeOne` unchanged. Non-index (stock option) symbols are never split (see defaultFreezeQty).
+export async function manualBuyChunked(opts: {
+    label: string;
+    userId: string;
+    tradingSymbol: string;
+    exchange: 'NFO' | 'BFO';
+    quantity: number;
+    placeOne: (quantity: number, inAppExit: boolean) => Promise<Trade>;
+    // Called once after the last chunk that booked anything (also on a partial run): re-points the exit watch at the aggregate row.
+    onBooked?: () => void;
+    freezeQty?: number;
+}): Promise<Trade> {
+    const { label, userId, tradingSymbol, exchange, quantity, placeOne } = opts;
+    const chunks = splitIntoFreezeQtyChunks(quantity, opts.freezeQty ?? defaultFreezeQty(tradingSymbol, exchange));
+    if (chunks.length === 1) return placeOne(quantity, false);
+    Log.log(`[order] ${label}: ${tradingSymbol} qty=${quantity} for ${userId} placed as ${chunks.length} orders (${chunks.join(' + ')}), exits watched in-app on the whole position`);
+    let filledQty = 0;
+    let filledValue = 0;
+    let last: Trade | undefined;
+    try {
+        for (let i = 0; i < chunks.length; i++) {
+            await throttleOrderPlacement();
+            let trade: Trade;
+            try {
+                trade = await placeOne(chunks[i], true);
+            } catch (e: any) {
+                // A chunk cancelled/refused after part of it filled: that part is booked, count it.
+                if (e?.filledQuantity > 0 && !e.fillStateUnknown) {
+                    filledQty += e.filledQuantity;
+                    filledValue += e.filledQuantity * (e.averagePrice ?? 0);
+                }
+                throw wrapChunkError(label, 'filling', 'placed', i, chunks.length, quantity, filledQty, filledValue, e);
+            }
+            filledQty += trade.quantity;
+            filledValue += trade.quantity * trade.price;
+            last = trade;
+            Log.log(`[order] ${label}: ${tradingSymbol} chunk ${i + 1}/${chunks.length} filled qty=${trade.quantity} @ ${trade.price} for ${userId} (bought ${filledQty}/${quantity})`);
+            if (trade.quantity < chunks[i] && i < chunks.length - 1) {
+                // Filled short (a partial that was cancelled): do not stack more orders behind it.
+                throw Object.assign(new Error(
+                    `${label}: chunk ${i + 1}/${chunks.length} filled only ${trade.quantity}/${chunks[i]} - bought ${filledQty}/${quantity}, ${quantity - filledQty} qty NOT placed. Manual review required.`
+                ), { partial: true, filledQuantity: filledQty, averagePrice: filledValue / filledQty });
+            }
+        }
+    } finally {
+        if (filledQty > 0) opts.onBooked?.();
+    }
+    const aggregate = Object.assign(new Trade(), last);
+    aggregate.quantity = filledQty;
+    aggregate.price = filledValue / filledQty;
+    aggregate.lastTradePrice = aggregate.price;
+    if (filledQty < quantity) {
+        // The last chunk itself filled short.
+        throw Object.assign(new Error(
+            `${label}: bought ${filledQty}/${quantity} (last chunk filled short), ${quantity - filledQty} qty NOT placed. Manual review required.`
+        ), { partial: true, filledQuantity: filledQty, averagePrice: aggregate.price });
+    }
+    return aggregate;
+}
+
+// A sell of a whole position: one order when it fits the exchange freeze quantity (unchanged path, no throttle delay on a stop-loss),
+// freeze-sized chunks otherwise (squareOffChunked). Frontend positions can now exceed one freeze order, and every exit route (exit
+// monitor, manual squareoff, force-close, mirror) goes through here. Returns ONE Trade for what was confirmed sold; a failing chunk throws
+// (earlier chunks are booked, so a retry sizes itself from what is left).
+export async function squareOffAutoChunked(
+    executor: Pick<BrokerExecutor, 'squareOff'>,
+    userId: string,
+    tradingSymbol: string,
+    quantity: number,
+    exchange: Exchange
+): Promise<Trade> {
+    if (quantity <= defaultFreezeQty(tradingSymbol, exchange)) return executor.squareOff(userId, tradingSymbol, quantity, exchange);
+    const result = await squareOffChunked(executor, userId, tradingSymbol, quantity, exchange);
+    const trade = new Trade();
+    trade.tsym = tradingSymbol;
+    trade.action = 'Sell';
+    trade.status = 'COMPLETE';
+    trade.user = userId;
+    trade.quantity = result.quantity;
+    trade.price = result.avgPrice;
+    return trade;
 }
 
 // LIMIT-priced counterpart of squareOffChunked above - places resting sell

@@ -12,6 +12,7 @@ import { CALL } from '../../constants';
 import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
+import { manualBuyChunked, squareOffAutoChunked } from './chunkedOrder';
 import { neverShortSellable } from './BrokerExecutor';
 import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder, beginCancelOfPendingAntLimitOrders, endCancelOfPendingAntLimitOrders, silenceListenersOfPendingAntLimitOrders } from './pendingAntLimitOrders';
 import { sleep } from '../../util/sleep';
@@ -161,15 +162,26 @@ async function enterManualBuy(req: ManualBuyRequest, tsym: string, token: string
     const sized = req.quantity != null ? undefined : await sizingQuote(exch, token);
     const quantity = sizeManualBuyOrRefuse(req, tsym, sized?.ltp, Number(lotSize) || undefined);
     req.mirror?.({ userId: req.userId, broker: 'ant', tsym, token, exchange: exch, quantity,
-        place: (adminId, qty) => enterPosition(adminId, tsym, token, qty, exch, targetPoints, stopLossPoints, 'bracket') });
-    return enterPosition(req.userId, tsym, token, quantity, exch, targetPoints, stopLossPoints, 'bracket', sized);
+        place: (adminId, qty) => enterManualPositionChunked(adminId, tsym, token, qty, exch, targetPoints, stopLossPoints) });
+    return enterManualPositionChunked(req.userId, tsym, token, quantity, exch, targetPoints, stopLossPoints, sized);
+}
+
+// A manual ANT buy above one freeze order is placed as several orders (chunkedOrder.manualBuyChunked). A split position is NOT protected by
+// one broker bracket per chunk: squareOffOnAnt exits through the single antOrderNo kept on the merged row, so the other brackets would be
+// left live; instead the chunks are plain entries and the in-app exit monitor owns target/stop on the whole position (sold in chunks).
+function enterManualPositionChunked(userId: string, tsym: string, token: string, quantity: number, exch: 'NFO' | 'BFO', targetPoints: number, stopLossPoints: number, sized?: { ltp: number; atMs: number }): Promise<Trade> {
+    return manualBuyChunked({
+        label: 'manualBuyChunked', userId, tradingSymbol: tsym, exchange: exch, quantity,
+        placeOne: (qty, inAppExit) => enterPosition(userId, tsym, token, qty, exch, targetPoints, stopLossPoints, 'bracket', sized, undefined, inAppExit),
+        onBooked: () => exitMonitor.watchAggregate(userId, tsym, token, exch, 'ant'),
+    });
 }
 
 // An unsized buy needs a price to size from. Without one, refuse: the entry also needs a limit price,
 // so a quote outage blocks it either way. The one-lot default (resolveManualBuyQuantity) only applies when
 // a price is known but no investment amount is set.
 function sizeManualBuyOrRefuse(req: ManualBuyRequest, tsym: string, price: number | undefined, contractLotSize?: number): number {
-    const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, tsym, price ?? 0, req.quantity, contractLotSize, req.stopLossPoints, req.contractorBudget);
+    const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, tsym, price ?? 0, req.quantity, contractLotSize, req.stopLossPoints, req.contractorBudget, false);
     if (req.quantity == null && !((price ?? 0) > 0)
         && bookkeeping.getUserContext(req.userId).investmentMode === 'investmentAmount') {
         throw new Error(`Manual buy ${tsym}: no ANT price to size an investment-amount order - not placed`);
@@ -187,7 +199,9 @@ export async function enterPosition(
     stopLossPoints: number,
     orderMode: 'bracket' | 'cover' | 'target-only' = 'bracket',
     knownLtp?: { ltp: number; atMs: number },
-    marketEntry?: { underlyingOpen: number; marketProtectionPercent: string; product?: 'INTRADAY' | 'LONGTERM' }
+    marketEntry?: { underlyingOpen: number; marketProtectionPercent: string; product?: 'INTRADAY' | 'LONGTERM' },
+    // One chunk of a split manual buy: no broker bracket (see enterManualPositionChunked), target/stop are watched in-app.
+    inAppExit = false
 ): Promise<Trade> {
     if (marketEntry && !(marketEntry.underlyingOpen > 0)) {
         throw new Error(`enterPosition ${tradingSymbol}: invalid underlyingOpen ${marketEntry.underlyingOpen} - order not placed`);
@@ -203,7 +217,7 @@ export async function enterPosition(
 
     const ant = ANT.getInstance();
     const useCover = orderMode === 'cover';
-    const useBracket = !useCover && targetPoints > 0 && stopLossPoints > 0 && bookkeeping.getUserUseGTT(userId);
+    const useBracket = !useCover && !inAppExit && targetPoints > 0 && stopLossPoints > 0 && bookkeeping.getUserUseGTT(userId);
 
     let orderNo: string;
     if (useCover) {
@@ -1233,7 +1247,8 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
 
 // exitMonitor calls this when a useGTT=false ANT trade crosses target/SL.
 exitMonitor.onExit('ant', async (trade: Trade, exchange: 'NFO' | 'BFO') => {
-    await squareOffOnAnt(trade.user, trade.tsym, trade.quantity, exchange, trade.lastTradePrice);
+    // Above one freeze order (a split manual buy) the position is sold in freeze-sized chunks; the trigger price backs every chunk's quote fallback.
+    await squareOffAutoChunked({ squareOff: (u, t, q, e) => squareOffOnAnt(u, t, q, e as 'NFO' | 'BFO', trade.lastTradePrice) }, trade.user, trade.tsym, trade.quantity, exchange);
 });
 
 // Entry point for the gap-screener cover-order flow (GapScreenerCoverOrder.ts) -

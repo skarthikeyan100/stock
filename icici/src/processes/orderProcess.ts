@@ -32,7 +32,7 @@ import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, recon
 import * as antExecutor from './order/antExecutor';
 import { buyIndexOnBreeze, manualBuyOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
 import { attachProtection, cancelProtection } from './order/attachProtection';
-import { buyChunked, marketBuyBareChunked, squareOffChunked, squareOffLimitChunked } from './order/chunkedOrder';
+import { buyChunked, marketBuyBareChunked, squareOffChunked, squareOffAutoChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster, { breezeTsym } from '../breeze/BreezeContractMaster';
 import Breeze from '../breeze/Breeze';
 import KiteContractMaster from '../kite/KiteContractMaster';
@@ -522,7 +522,7 @@ async function forceCloseTrade(trade: Trade): Promise<boolean> {
         } // see cancelAnyRestingLimitSell's comment - would double-sell
         // Trade has no `exchange` field - inferred from tsym (SENSEX = BFO).
         const exchange: 'NFO' | 'BFO' = exchangeForTsym(trade.tsym);
-        await executor.squareOff(trade.user, trade.tsym, remainingQty, exchange);
+        await squareOffAutoChunked(executor, trade.user, trade.tsym, remainingQty, exchange);
         return true;
     } catch (e) {
         forceCloseStartedAt.delete(trade);
@@ -759,7 +759,7 @@ async function squareOffByToken(userId: string, token: any, quantity: number | u
         const ex = exchange ?? (exchangeForTsym(row.tsym));
         const done = only === 'ant'
             ? await antExecutor.squareOffOnAnt(userId, row.tsym, q, ex)
-            : await getBrokerExecutor(userId, row.broker).squareOff(userId, row.tsym, q, ex);
+            : await squareOffAutoChunked(getBrokerExecutor(userId, row.broker), userId, row.tsym, q, ex);
         results.push(done);
         remaining -= q;
     }
@@ -826,7 +826,8 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     if ('error' in byToken) return { kind: 'response', id: req.id, ok: false, error: byToken.error };
                     return { kind: 'response', id: req.id, ok: true, result: byToken };
                 }
-                const trade = await executorForPosition(req.userId, tsym).squareOff(req.userId, tsym, quantity, exchange);
+                // Above one freeze order (a split frontend buy) the position is sold in freeze-sized chunks.
+                const trade = await squareOffAutoChunked(executorForPosition(req.userId, tsym), req.userId, tsym, quantity, exchange);
                 return { kind: 'response', id: req.id, ok: true, result: trade };
             }
 
@@ -1112,7 +1113,7 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                         : manualBuyBroker === 'breeze'
                             ? manualBuyOnBreeze({ userId: req.userId, ...req.payload, mirror })
                             : manualBuyOnKite({ userId: req.userId, ...req.payload, mirror });
-                    return buy.catch((e) => { for (const s of started) undoMirrorBuy(s.leg, s.done); throw e; });
+                    return buy.catch((e) => { for (const s of started) undoMirrorBuy(s.leg, s.done, e?.partial ? Number(e.filledQuantity) || 0 : 0); throw e; });
                 });
             }
 

@@ -12,6 +12,7 @@ import { parseCanonicalSymbol } from '../../model/CanonicalSymbol';
 import { getSpotLtp } from './spotQuote';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
+import { manualBuyChunked } from './chunkedOrder';
 import { exchangeForTsym } from '../../util/underlyings';
 import { BuyRequest, OptionExchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
@@ -1048,7 +1049,7 @@ async function enterManualBreezeBuy(userId: string, contract: FnoRecord, request
     const tsym = tsymFor(contract);
     const { bestAsk } = await breezeQuoteWithCrossCheck(contract);
     if (!(bestAsk > 0)) throw new Error(`Breeze quote unavailable for ${tsym} - manual buy not placed`);
-    const quantity = bookkeeping.resolveManualBuyQuantity(userId, tsym, bestAsk, requestedQuantity, contract.lotSize, stopLossPoints, contractorBudget);
+    const quantity = bookkeeping.resolveManualBuyQuantity(userId, tsym, bestAsk, requestedQuantity, contract.lotSize, stopLossPoints, contractorBudget, false);
     const lot = contract.lotSize;
     if (!Number.isInteger(quantity) || !(quantity > 0) || (lot > 0 && quantity % lot !== 0)) {
         throw new Error(`Manual buy ${tsym}: quantity ${quantity} must be a positive multiple of the lot size ${lot} - not placed`);
@@ -1060,58 +1061,65 @@ async function enterManualBreezeBuy(userId: string, contract: FnoRecord, request
     mirror?.({ userId, broker: 'breeze', tsym, token: contract.token, exchange: contract.exchange, quantity,
         place: (adminId, qty) => enterManualBreezeBuy(adminId, contract, qty, target, stop) });
 
-    Log.log(`[order] Buying (manual) ${tsym} qty=${quantity} @ ${bestAsk} (limit, guarded quote) for ${userId} via Breeze`);
-    const { orderId } = await placeLimitOptionOrder(contract, 'buy', quantity, bestAsk);
-    // Tracked from placement until the fill is settled (same as marketBuyBareOnBreeze): a fill that lands after the wait gave up is booked by the poller.
-    trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol: tsym, antToken: contract.token, quantity, exchange: contract.exchange, action: 'Buy' });
+    // Several orders when above one freeze order (chunkedOrder.manualBuyChunked); Breeze exits are always in-app, so `inAppExit` changes nothing here.
+    const placeOne = async (qty: number, _inAppExit: boolean): Promise<Trade> => {
+        Log.log(`[order] Buying (manual) ${tsym} qty=${qty} @ ${bestAsk} (limit, guarded quote) for ${userId} via Breeze`);
+        const { orderId } = await placeLimitOptionOrder(contract, 'buy', qty, bestAsk);
+        // Tracked from placement until the fill is settled (same as marketBuyBareOnBreeze): a fill that lands after the wait gave up is booked by the poller.
+        trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol: tsym, antToken: contract.token, quantity: qty, exchange: contract.exchange, action: 'Buy' });
 
-    const right = contract.optionType === 'CE' ? CALL : PUT;
-    const build = (qty: number, price: number): Trade => {
-        const t = new Trade();
-        t.tsym = tsym;
-        t.token = contract.token;
-        t.quantity = qty;
-        t.price = price;
-        t.lastTradePrice = price;
-        t.action = 'Buy';
-        t.status = 'COMPLETE';
-        t.right = right;
-        t.user = userId;
-        t.broker = 'breeze';
-        t.brokerOrderId = orderId;
-        // No broker-side exit on Breeze: a requested target and/or stop is enforced by the in-app exitMonitor.
-        if (target > 0) { t.targetPoints = target; t.targetPrice = roundToTick(price + target); }
-        if (stop > 0) t.stopLossPrice = Math.max(0.05, roundToTick(price - stop));
-        return t;
-    };
-    const book = async (t: Trade): Promise<void> => {
-        await bookkeeping.recordFill(t);
-        if ((t.targetPrice != null || t.stopLossPrice != null) && t.token) exitMonitor.registerTrade(t, contract.exchange, 'breeze');
-    };
+        const right = contract.optionType === 'CE' ? CALL : PUT;
+        const build = (qty: number, price: number): Trade => {
+            const t = new Trade();
+            t.tsym = tsym;
+            t.token = contract.token;
+            t.quantity = qty;
+            t.price = price;
+            t.lastTradePrice = price;
+            t.action = 'Buy';
+            t.status = 'COMPLETE';
+            t.right = right;
+            t.user = userId;
+            t.broker = 'breeze';
+            t.brokerOrderId = orderId;
+            // No broker-side exit on Breeze: a requested target and/or stop is enforced by the in-app exitMonitor.
+            if (target > 0) { t.targetPoints = target; t.targetPrice = roundToTick(price + target); }
+            if (stop > 0) t.stopLossPrice = Math.max(0.05, roundToTick(price - stop));
+            return t;
+        };
+        const book = async (t: Trade): Promise<void> => {
+            await bookkeeping.recordFill(t);
+            if ((t.targetPrice != null || t.stopLossPrice != null) && t.token) exitMonitor.registerTrade(t, contract.exchange, 'breeze');
+        };
 
-    let partial: Trade | undefined;
-    let entryPrice: number;
-    try {
-        entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, {}, async (t) => {
-            // The partial's own price/quantity come from the broker; rebuild with the exit levels so it is protected like a full fill.
-            partial = build(t.quantity, t.price);
-            await book(partial);
-        });
-    } catch (e: any) {
-        const live = !!(e?.orderMayBeLive || e?.fillStateUnknown);
-        if (!live) untrackPendingBreezeLimitOrder(orderId); // terminal at the broker, nothing more can fill; a partial was booked above
-        else Log.log(`[order] ALERT: manual Breeze buy ${orderId} (${tsym}, ${userId}) not confirmed ${e?.fillStateUnknown ? 'fill state unknown' : 'cancel failed'} - order may still be live, left on the pending poller, check the broker`);
-        if (partial) {
-            Log.log(`[order] manual Breeze buy ${orderId} (${tsym}) partially filled: ${partial.quantity}/${quantity} @ ${partial.price} - booked and protected`);
-            return partial;
+        let partial: Trade | undefined;
+        let entryPrice: number;
+        try {
+            entryPrice = await waitForBreezeFillBooking(orderId, contract.exchange, {}, async (t) => {
+                // The partial's own price/qty come from the broker; rebuild with the exit levels so it is protected like a full fill.
+                partial = build(t.quantity, t.price);
+                await book(partial);
+            });
+        } catch (e: any) {
+            const live = !!(e?.orderMayBeLive || e?.fillStateUnknown);
+            if (!live) untrackPendingBreezeLimitOrder(orderId); // terminal at the broker, nothing more can fill; a partial was booked above
+            else Log.log(`[order] ALERT: manual Breeze buy ${orderId} (${tsym}, ${userId}) not confirmed ${e?.fillStateUnknown ? 'fill state unknown' : 'cancel failed'} - order may still be live, left on the pending poller, check the broker`);
+            if (partial) {
+                Log.log(`[order] manual Breeze buy ${orderId} (${tsym}) partially filled: ${partial.quantity}/${qty} @ ${partial.price} - booked and protected`);
+                return partial;
+            }
+            throw e;
         }
-        throw e;
-    }
-    untrackPendingBreezeLimitOrder(orderId);
-    Log.log(`[order] Filled (manual) ${tsym} at ${entryPrice} for ${userId} via Breeze`);
-    const trade = build(quantity, entryPrice);
-    await book(trade);
-    return trade;
+        untrackPendingBreezeLimitOrder(orderId);
+        Log.log(`[order] Filled (manual) ${tsym} at ${entryPrice} for ${userId} via Breeze`);
+        const trade = build(qty, entryPrice);
+        await book(trade);
+        return trade;
+    };
+    return manualBuyChunked({
+        label: 'manualBuyChunked', userId, tradingSymbol: tsym, exchange: contract.exchange, quantity, placeOne,
+        onBooked: () => exitMonitor.watchAggregate(userId, tsym, contract.token, contract.exchange, 'breeze'),
+    });
 }
 
 export async function manualBuyOnBreeze(req: BreezeManualBuyRequest): Promise<Trade> {

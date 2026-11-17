@@ -335,12 +335,12 @@ class OrderBookkeeping {
     // Broker-agnostic manual-buy sizing: an explicit quantity always wins; otherwise a user on investmentMode='investmentAmount' gets as
     // many lots as their remaining capital (net of pending reservations) covers at the given price, and everyone else one lot. One lot
     // is the documented floor, and every fallback to it is logged. The capital-derived lots are then clamped, each clamp logged, to what
-    // the account may actually place: the per-order cap and the exchange freeze quantity (a manual buy is one order, never chunked). There
+    // the account may actually place: the per-order cap and (only when `clampToFreeze`) the exchange freeze quantity; a frontend manual buy is NOT clamped to it, the executor splits it into freeze-sized orders. There
     // is deliberately NO lot-count cap in this mode (user decision 2026-11-13): only capital, per-order cap and the freeze limit apply. `contractLotSize` is the resolved contract's own lot size (preferred over the
     // name-based guess, see getInstrumentLotSize).
     // `contractorBudget` (contractors only): the rupees this one order may use, replacing forecast.orders.maxInvestment for it (a Research Analyst's first
     // recommendation order gets a share of it, Add More the rest). `strict`: refuse when it does not buy one whole lot, instead of the one-lot floor.
-    resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number, contractLotSize?: number, stopLossPoints?: number, contractorBudget?: { amount: number; strict?: boolean }): number {
+    resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number, contractLotSize?: number, stopLossPoints?: number, contractorBudget?: { amount: number; strict?: boolean }, clampToFreeze = true): number {
         if (explicitQuantity != null) return explicitQuantity;
         const lotSize = contractLotSize && contractLotSize > 0 ? contractLotSize : this.getInstrumentLotSize(tsym);
         if (this.isContractorUser(userId)) return this.resolveContractorQuantity(userId, tsym, price, lotSize, contractorBudget);
@@ -371,8 +371,12 @@ class OrderBookkeeping {
         });
         const beforeLossCap = lots;
         if (lossCapLots !== undefined && lots > lossCapLots) lots = Math.max(1, lossCapLots);
-        const freeze = tsym.startsWith('SENSEX') ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY;
-        lots = Math.max(1, Math.min(lots, Math.floor(freeze / lotSize)));
+        // `clampToFreeze` false (frontend manual buys, 2026-11-17): the quantity may exceed one exchange freeze order because the executor
+        // places it as several orders (chunkedOrder.manualBuyChunked). A caller that places ONE order (a resting limit entry) keeps the clamp.
+        if (clampToFreeze) {
+            const freeze = tsym.startsWith('SENSEX') ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY;
+            lots = Math.max(1, Math.min(lots, Math.floor(freeze / lotSize)));
+        }
         Log.log(`[order] manual buy sizing for ${userId} ${tsym}: ${lots} lot(s) x ${lotSize} @ ${price} (capital allows ${capitalLots}, available ${available}${perOrderCap !== undefined ? `, per-order cap ${perOrderCap}` : ''}${lots < capitalLots ? ' - clamped by the account limits' : ''}${lots < beforeLossCap ? ' - clamped by the per-trade loss cap' : ''})`);
         return lots * lotSize;
     }
