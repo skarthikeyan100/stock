@@ -26,6 +26,8 @@ export interface Config {
   priceMin: number;
   priceMax: number;
   dedupeWindowSeconds: number;
+  /** loopback port the WhatsApp router posts messages to */
+  port: number;
   headless: boolean;
   dryRun: boolean;
   profileDir: string;

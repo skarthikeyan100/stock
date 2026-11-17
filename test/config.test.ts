@@ -10,6 +10,7 @@ describe('parseConfig', () => {
     expect(cfg.priceMin).toBe(1);
     expect(cfg.priceMax).toBe(1500);
     expect(cfg.dedupeWindowSeconds).toBe(300);
+    expect(cfg.port).toBe(3101);
     expect(cfg.headless).toBe(true);
     expect(cfg.dryRun).toBe(true);
     expect(cfg.profileDir).toBe('browser-profile');

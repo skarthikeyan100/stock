@@ -14,6 +14,7 @@ const reason = (s: Partial<Signal>) => {
 describe('validateSignal', () => {
   it('accepts a sane signal', () => expect(reason({})).toBe('ok'));
   it('rejects a strike far from spot', () => expect(reason({ strike: 2540 })).toMatch(/strike/));
+  it('rejects an unreadable spot (0) with a spot reason', () => expect(validateSignal({ action: 'buy', right: 'CE', strike: 25400, price: 54 }, { spot: 0, today: '2026-11-17' }, cfg)).toMatchObject({ ok: false, reason: expect.stringMatching(/invalid spot/) }));
   it('rejects an implausible price', () => expect(reason({ price: 5400 })).toMatch(/price/));
   it('rejects a stop at or above the entry', () => expect(reason({ stop: 60 })).toMatch(/stop/));
   it('rejects a target at or below the entry', () => expect(reason({ target: 50 })).toMatch(/target/));

@@ -10,7 +10,8 @@ export async function readSpot(page: Page): Promise<number> {
   while (Date.now() < deadline) {
     const text = await page.locator('body').innerText();
     const m = text.match(/NIFTY 50\s+([\d,]+(?:\.\d+)?)/);
-    if (m) return Number(m[1].replace(/,/g, ''));
+    const value = m ? Number(m[1].replace(/,/g, '')) : 0;
+    if (value > 0) return value; // the bar shows 0 until the first quote arrives
     await page.waitForTimeout(500);
   }
   throw new Error('could not read the NIFTY 50 level from the page');
