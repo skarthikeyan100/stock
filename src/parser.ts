@@ -1,4 +1,20 @@
-import type { Action, Right, TradeMessage } from './types.js';
+export type Action = 'buy' | 'exit';
+export type Right = 'call' | 'put';
+
+/** Raw output of the regex parser (strings as written in the message). */
+export interface TradeMessage {
+  sender: string;
+  message: string;
+  index: string;
+  right: Right;
+  strikePrice: string;
+  price: string;
+  action: Action;
+  quantity?: number;
+  target?: string;
+  stoploss?: string;
+  timestamp: Date;
+}
 
 const INSTRUMENT_PATTERNS: Array<{ regex: RegExp; name: string }> = [
   { regex: /\bBANKNIFTY\b/i, name: 'BANKNIFTY' },
