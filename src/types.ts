@@ -2,6 +2,8 @@ export type Right = 'CE' | 'PE';
 
 export interface Signal {
   action: 'buy';
+  /** underlying symbol as the exchange spells it, upper-case: NIFTY, PAYTM, HAL ... */
+  underlying: string;
   right: Right;
   strike: number;
   /** YYYY-MM-DD, only when the message states a date */
@@ -18,8 +20,6 @@ export interface OffsetRule {
 
 export interface Config {
   allowedSenders: string[];
-  investment: number;
-  lotSize: number;
   target?: OffsetRule;
   stop?: OffsetRule;
   strikeBandPercent: number;

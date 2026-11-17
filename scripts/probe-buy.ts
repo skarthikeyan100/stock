@@ -3,14 +3,14 @@ import { placeBracketBuy } from '../src/order/gopocket.js';
 import { openContext } from '../src/order/session.js';
 
 // Dry run only: dryRun is forced true, so Buy is never clicked.
-// Usage: npm run probe-buy -- CE 25400 54 1 13 14   (right strike price lots stopOffset targetOffset)
-const [right = 'CE', strike = '25400', price = '54', lots = '1', stopOffset = '13', targetOffset = '14'] = process.argv.slice(2);
+// Usage: npm run probe-buy -- NIFTY CE 25400 54 13 14   (underlying right strike price stopOffset targetOffset); always one lot
+const [underlying = 'NIFTY', right = 'CE', strike = '25400', price = '54', stopOffset = '13', targetOffset = '14'] = process.argv.slice(2);
 const cfg = { ...loadConfig(), dryRun: true };
 const context = await openContext(cfg, { headless: true });
 const page = await context.newPage();
 const outcome = await placeBracketBuy(
   page,
-  { right: right as 'CE' | 'PE', strike: Number(strike), price: Number(price), lots: Number(lots), stopOffset: Number(stopOffset), targetOffset: Number(targetOffset) },
+  { underlying: underlying.toUpperCase(), right: right as 'CE' | 'PE', strike: Number(strike), price: Number(price), stopOffset: Number(stopOffset), targetOffset: Number(targetOffset) },
   cfg,
   new Date().toLocaleDateString('en-CA'),
 );

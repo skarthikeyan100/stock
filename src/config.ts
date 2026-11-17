@@ -35,8 +35,6 @@ export function parseConfig(input: unknown): Config {
   const stop = rule(raw, 'stop');
   return {
     allowedSenders: raw.allowedSenders as string[],
-    investment: positive(raw, 'investment'),
-    lotSize: positive(raw, 'lotSize'),
     ...(target ? { target } : {}),
     ...(stop ? { stop } : {}),
     strikeBandPercent: withDefault(raw, 'strikeBandPercent', 10),

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { computeLots, resolveBracket, roundTick } from '../src/bracket.js';
+import { resolveBracket, roundTick } from '../src/bracket.js';
 import { parseConfig } from '../src/config.js';
 import type { Signal } from '../src/types.js';
 
-const cfg = (extra: object = {}) => parseConfig({ allowedSenders: ['x'], investment: 100000, lotSize: 65, ...extra });
-const sig = (s: Partial<Signal>): Signal => ({ action: 'buy', right: 'CE', strike: 25400, price: 54, ...s });
+const cfg = (extra: object = {}) => parseConfig({ allowedSenders: ['x'], ...extra });
+const sig = (s: Partial<Signal>): Signal => ({ action: 'buy', underlying: 'NIFTY', right: 'CE', strike: 25400, price: 54, ...s });
 
 describe('roundTick', () => {
   it('rounds to the nearest 0.05', () => {
@@ -34,15 +34,5 @@ describe('resolveBracket', () => {
   });
   it('throws when target is missing and not configured', () => {
     expect(() => resolveBracket(sig({ stop: 41 }), cfg())).toThrow(/target/);
-  });
-});
-
-describe('computeLots', () => {
-  it('floors investment / price / lotSize', () => {
-    expect(computeLots(100000, 54, 65)).toBe(28);
-    expect(computeLots(100000, 171, 65)).toBe(8);
-  });
-  it('is 0 when one lot costs more than the investment', () => {
-    expect(computeLots(11000, 171, 65)).toBe(0);
   });
 });

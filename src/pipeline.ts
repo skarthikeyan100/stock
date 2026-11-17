@@ -1,4 +1,4 @@
-import { computeLots, resolveBracket } from './bracket.js';
+import { resolveBracket } from './bracket.js';
 import type { ClaudeRunner } from './claudeParser.js';
 import type { createDeduper } from './dedupe.js';
 import type { BuyRequest, OrderOutcome } from './order/gopocket.js';
@@ -50,11 +50,13 @@ export async function handleMessage(messageId: string, text: string, deps: Pipel
   const { signal } = parsed;
   log('parsed signal', { via: parsed.via, signal });
 
-  let spot: number;
-  try {
-    spot = await broker.readSpot();
-  } catch (error) {
-    return done({ result: 'skipped', detail: `could not read spot: ${error instanceof Error ? error.message : String(error)}` });
+  let spot: number | undefined;
+  if (signal.underlying === 'NIFTY') {
+    try {
+      spot = await broker.readSpot();
+    } catch (error) {
+      return done({ result: 'skipped', detail: `could not read spot: ${error instanceof Error ? error.message : String(error)}` });
+    }
   }
 
   const check = validateSignal(signal, { spot, today: deps.today() }, cfg);
@@ -67,19 +69,16 @@ export async function handleMessage(messageId: string, text: string, deps: Pipel
     return done({ result: 'skipped', detail: error instanceof Error ? error.message : String(error) });
   }
 
-  const lots = computeLots(cfg.investment, signal.price, cfg.lotSize);
-  if (lots < 1) return done({ result: 'skipped', detail: `0 lots: investment ${cfg.investment} buys less than one lot at ${signal.price}` });
-
-  if (deps.deduper.isDuplicate(`buy:${signal.right}:${signal.strike}:${signal.expiry ?? ''}`)) {
+  if (deps.deduper.isDuplicate(`buy:${signal.underlying}:${signal.right}:${signal.strike}:${signal.expiry ?? ''}`)) {
     return done({ result: 'duplicate', detail: `${signal.strike} ${signal.right} was already ordered recently` });
   }
 
   const req: BuyRequest = {
+    underlying: signal.underlying,
     right: signal.right,
     strike: signal.strike,
     ...(signal.expiry ? { expiry: signal.expiry } : {}),
     price: signal.price,
-    lots,
     stopOffset: bracket.stopOffset,
     targetOffset: bracket.targetOffset,
   };

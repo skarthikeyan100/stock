@@ -1,7 +1,5 @@
 {
   "allowedSenders": ["Trading Signals", "+919876543210"],
-  "investment": 100000,
-  "lotSize": 65,
   "stop": { "percent": 10 },
   "target": { "percent": 20 },
   "strikeBandPercent": 10,

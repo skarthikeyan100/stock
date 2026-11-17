@@ -18,12 +18,13 @@ export async function readSpot(page: Page): Promise<number> {
 }
 
 export interface BuyRequest {
+  /** underlying symbol, e.g. NIFTY, PAYTM */
+  underlying: string;
   right: 'CE' | 'PE';
   strike: number;
   /** YYYY-MM-DD; absent means the nearest listed expiry */
   expiry?: string;
   price: number;
-  lots: number;
   stopOffset: number;
   targetOffset: number;
 }
@@ -67,21 +68,32 @@ export async function readForm(page: Page) {
   };
 }
 
+/** A search row belongs to this underlying: "NIFTY 17th NOV ..." yes, "FINNIFTY 17th NOV ..." no. */
+export function underlyingRow(label: string, underlying: string): boolean {
+  return label.toUpperCase().startsWith(`${underlying.toUpperCase()} `) && /^\S+ \d{1,2}(st|nd|rd|th) /i.test(label);
+}
+
+/** Stocks are listed on NFO and BFO: trade the NFO contract; BFO only when that is all there is (SENSEX). */
+export function preferNfo(labels: string[]): string[] {
+  const nfo = labels.filter((l) => /\bNFO\s*$/.test(l));
+  return nfo.length > 0 ? nfo : labels;
+}
+
 const near = (a: number, b: number) => Math.abs(a - b) < 0.001;
 
 /** Opens the buy form for the contract: search, pick the expiry row, hover, click B. Returns the row label. */
 async function openBuyForm(page: Page, req: BuyRequest, today: string): Promise<string> {
-  await page.getByPlaceholder(/Search eg/).fill(`NIFTY ${req.strike} ${req.right}`);
+  await page.getByPlaceholder(/Search eg/).fill(`${req.underlying} ${req.strike} ${req.right}`);
   const rows = page.locator('[id^="mw_searchlist_li_"]');
   await rows.first().waitFor({ state: 'visible', timeout: 10_000 });
   await page.waitForTimeout(800); // let the list settle after the last keystroke
   const labels = (await rows.allInnerTexts()).map((t) => t.replace(/\s+/g, ' ').trim());
-  const niftyIdx = labels.map((l, i) => ({ l, i })).filter((x) => /^NIFTY /.test(x.l));
-  const choice = req.expiry
-    ? findExpiry(niftyIdx.map((x) => x.l), req.expiry, today)
-    : nearestExpiry(niftyIdx.map((x) => x.l), today);
-  if (!choice) throw new Error(req.expiry ? `no NIFTY ${req.strike} ${req.right} listed for ${req.expiry}` : 'no expiry found');
-  const idx = niftyIdx.find((x) => x.l === choice.label)!.i;
+  const rowsOfUnderlying = labels.map((l, i) => ({ l, i })).filter((x) => underlyingRow(x.l, req.underlying));
+  const wanted = new Set(preferNfo(rowsOfUnderlying.map((x) => x.l)));
+  const mine = rowsOfUnderlying.filter((x) => wanted.has(x.l));
+  const choice = req.expiry ? findExpiry(mine.map((x) => x.l), req.expiry, today) : nearestExpiry(mine.map((x) => x.l), today);
+  if (!choice) throw new Error(req.expiry ? `no ${req.underlying} ${req.strike} ${req.right} listed for ${req.expiry}` : `no ${req.underlying} ${req.strike} ${req.right} expiry found`);
+  const idx = mine.find((x) => x.l === choice.label)!.i;
   const row = rows.nth(idx);
   await row.hover();
   await row.locator('#mw_search_buy').click({ timeout: FILL_TIMEOUT });
@@ -102,7 +114,14 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
     await page.locator('#ow_Limit').click();
     const box = page.locator('#ow_bo_checkbox');
     if (!(await box.isChecked())) await page.getByText('Target (Bracket)').click({ timeout: FILL_TIMEOUT });
-    await setNumber(page, '#qty', req.lots * cfg.lotSize);
+    // One lot = the site's own lot quantity (the qty field's step); the lot size written in the message is ignored.
+    const lot = Number(await page.locator('#qty').getAttribute('step', { timeout: FILL_TIMEOUT }));
+    if (!(lot > 0)) {
+      await saveEvidence(page, 'no-lot');
+      await cancelForm(page);
+      return { status: 'unknown', reason: 'could not read the lot size from the form' };
+    }
+    await setNumber(page, '#qty', lot);
     await setNumber(page, '#price', req.price);
     await setNumber(page, '#triggerPrice', req.stopOffset);
     await setNumber(page, '#targetPrice', req.targetOffset);
@@ -110,7 +129,7 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
 
     const f = await readForm(page);
     const ok =
-      f.bracket && f.qty === req.lots * cfg.lotSize && near(f.price, req.price) && near(f.stop, req.stopOffset) && near(f.target, req.targetOffset);
+      f.bracket && f.qty === lot && near(f.price, req.price) && near(f.stop, req.stopOffset) && near(f.target, req.targetOffset);
     console.log(`[buy-form] ${label}`, f);
     if (!ok) {
       await saveEvidence(page, 'form-mismatch');
@@ -135,7 +154,7 @@ async function readResult(page: Page): Promise<OrderOutcome> {
   let m: RegExpMatchArray | null = null;
   while (Date.now() < deadline && !m) {
     const text = await page.locator('body').innerText();
-    m = text.match(/(NIFTY\w+)\s*-\s*BUY\s*-\s*(\d+)\s*\n?\s*([A-Z ]+)?/);
+    m = text.match(/([A-Z][A-Z0-9&-]*\d\w*)\s*-\s*BUY\s*-\s*(\d+)\s*\n?\s*([A-Z ]+)?/);
     if (!m) await page.waitForTimeout(500);
   }
   if (!m) {

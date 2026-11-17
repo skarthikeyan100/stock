@@ -13,45 +13,42 @@ const claudeSays = (structured: unknown) => {
 const sampleOut = { relevant: true, instrument: 'NIFTY', action: 'buy', right: 'CE', strike: 25400, price: 54, stop: 41, targets: [68, 80, 100] };
 
 describe('parseSignal', () => {
-  it('uses the regex when it finds price, stop and target (no Claude call)', async () => {
+  it('always asks Claude, even for a clean message', async () => {
     const { run, calls } = claudeSays(sampleOut);
-    const r = await parseSignal('Nifty 23400 ce Cmp 120 target 150 sl 100', run);
-    expect(r).toEqual({ signal: { action: 'buy', right: 'CE', strike: 23400, price: 120, stop: 100, target: 150 }, via: 'regex' });
-    expect(calls.n).toBe(0);
-  });
-
-  it('sends the typo-ridden sample to Claude', async () => {
-    const { run, calls } = claudeSays(sampleOut);
-    const r = await parseSignal(SAMPLE, run);
-    expect(r).toEqual({ signal: { action: 'buy', right: 'CE', strike: 25400, price: 54, stop: 41, target: 68 }, via: 'claude' });
+    const r = await parseSignal('Nifty 25400 ce Cmp 54 target 68 sl 41', run);
+    expect(r).toEqual({ signal: { action: 'buy', underlying: 'NIFTY', right: 'CE', strike: 25400, price: 54, stop: 41, target: 68 }, via: 'claude' });
     expect(calls.n).toBe(1);
   });
 
-  it('ignores another instrument without calling Claude', async () => {
+  it('parses the typo-ridden sample', async () => {
+    const { run } = claudeSays(sampleOut);
+    expect((await parseSignal(SAMPLE, run)).signal?.underlying).toBe('NIFTY');
+  });
+
+  it('accepts a non-NIFTY underlying', async () => {
+    const { run } = claudeSays({ relevant: true, instrument: 'PAYTM', action: 'buy', right: 'CE', strike: 2000, price: 20.5, stop: 17, targets: [22.5] });
+    const r = await parseSignal('# BUY Paytm ( NOV: 2000.00 CE) at above 20.50 STOPLOSS 17.00 TARGET 22.50++', run);
+    expect(r.signal).toMatchObject({ underlying: 'PAYTM', strike: 2000, price: 20.5 });
+  });
+
+  it.each([['Again RISKY JACKPOT BUY NIFTY 25800 CE'], ['( T+4) # BUY FEDERAL BANK (CASH) AT ABOVE 360'], ['buy x cash 1 CE'], ['AGAIN nifty ce 100'], ['(cash)']])('skips %s without calling Claude', async (text) => {
     const { run, calls } = claudeSays(sampleOut);
-    const r = await parseSignal('Banknifty 45000 CE cmp 180 target 200 sl 150', run);
+    const r = await parseSignal(text, run);
     expect(r.signal).toBeNull();
+    expect((r as { reason: string }).reason).toMatch(/again|cash/i);
     expect(calls.n).toBe(0);
   });
 
-  it('ignores chatter without calling Claude', async () => {
+  it('does not skip words that merely contain "again" or "cash"', async () => {
     const { run, calls } = claudeSays(sampleOut);
-    expect((await parseSignal('good morning everyone', run)).signal).toBeNull();
-    expect(calls.n).toBe(0);
-  });
-
-  it('sends a regex result that lacks stop/target to Claude', async () => {
-    const { run, calls } = claudeSays(sampleOut);
-    await parseSignal('Nifty 23400 ce Cmp 120', run);
+    await parseSignal('Nifty 25400 CE cashew againstit 54', run);
     expect(calls.n).toBe(1);
   });
 
-  it('ignores exit messages without calling Claude', async () => {
-    const { run, calls } = claudeSays(sampleOut);
-    const r = await parseSignal('Exit Nifty 23400 ce @ 150', run);
+  it('turns a Claude "not relevant" into a not-a-signal reason', async () => {
+    const { run } = claudeSays({ relevant: false });
+    const r = await parseSignal('good morning everyone', run);
     expect(r.signal).toBeNull();
-    expect((r as { reason: string }).reason).toMatch(/exit/);
-    expect(calls.n).toBe(0);
   });
 
   it('turns a Claude failure into a skip reason', async () => {

@@ -17,7 +17,3 @@ export function resolveBracket(signal: Signal, cfg: Config): { stopOffset: numbe
   const targetOffset = signal.target !== undefined ? roundTick(signal.target - signal.price) : fromRule(cfg.target, signal.price, 'target');
   return { stopOffset, targetOffset };
 }
-
-export function computeLots(investment: number, price: number, lotSize: number): number {
-  return Math.floor(investment / price / lotSize);
-}

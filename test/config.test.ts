@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseConfig } from '../src/config.js';
 
-const base = { allowedSenders: ['x'], investment: 100000, lotSize: 65 };
+const base = { allowedSenders: ['x'] };
 
 describe('parseConfig', () => {
   it('fills the documented defaults', () => {
@@ -16,12 +16,10 @@ describe('parseConfig', () => {
     expect(cfg.profileDir).toBe('browser-profile');
   });
 
-  it('rejects a non-positive investment, naming the field', () => {
-    expect(() => parseConfig({ ...base, investment: 0 })).toThrow(/investment/);
-  });
-
-  it('rejects a missing lotSize, naming the field', () => {
-    expect(() => parseConfig({ allowedSenders: ['x'], investment: 1 })).toThrow(/lotSize/);
+  it('no longer needs investment or lotSize', () => {
+    const cfg = parseConfig(base) as unknown as Record<string, unknown>;
+    expect(cfg.investment).toBeUndefined();
+    expect(cfg.lotSize).toBeUndefined();
   });
 
   it('accepts stop with both percent and points', () => {

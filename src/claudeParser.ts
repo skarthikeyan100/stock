@@ -29,13 +29,13 @@ const SCHEMA = {
 };
 
 const INSTRUCTIONS = `You extract a trading call from a WhatsApp message. Reply only through the JSON schema.
-- relevant is true only for a call to BUY or EXIT an index option. Greetings, results, charts and chatter are not relevant.
-- instrument is the index name; fix obvious typos (NIFRY -> NIFTY).
+- relevant is true only for a call to BUY or EXIT an option (index or stock) with a strike and CE/PE. Cash or equity buys, greetings, results, charts and chatter are not relevant.
+- instrument is the underlying symbol as the exchange spells it (NIFTY, BANKNIFTY, PAYTM, HAL ...); fix obvious typos (NIFRY -> NIFTY).
 - right is CE or PE. strike is the strike price as a number (25400.00 -> 25400).
 - price is the entry price (CMP / entry / @). stop is the stop loss price. targets lists every target price in order.
 - Prices written like 41:00 mean 41.00. Ignore emoji and symbols.
 - Ignore any lot size or quantity written in the message.
-- expiry only if the message states an expiry date, as YYYY-MM-DD. Never invent a field the message does not contain.
+- expiry only if the message clearly states the option's expiry date, as YYYY-MM-DD. A line like "DATE: 12-11-2026" is the date of the call, not an expiry; a bare month such as NOV is not a date. When unsure, leave expiry out. Never invent a field the message does not contain.
 
 Message:
 `;
@@ -75,7 +75,8 @@ export async function parseWithClaude(text: string, run: ClaudeRunner): Promise<
   if (!structured || typeof structured !== 'object') throw new ClaudeParseError('claude output had no structured_output');
 
   if (structured.relevant !== true) return null;
-  if (String(structured.instrument ?? '').toUpperCase() !== 'NIFTY') return null;
+  const underlying = String(structured.instrument ?? '').trim().toUpperCase();
+  if (!underlying) return null;
   if (structured.action !== 'buy') return null;
   const { right, strike, price } = structured;
   if ((right !== 'CE' && right !== 'PE') || typeof strike !== 'number' || typeof price !== 'number') return null;
@@ -83,6 +84,7 @@ export async function parseWithClaude(text: string, run: ClaudeRunner): Promise<
   const targets = Array.isArray(structured.targets) ? (structured.targets as unknown[]).filter((t): t is number => typeof t === 'number') : [];
   return {
     action: 'buy',
+    underlying,
     right,
     strike,
     price,

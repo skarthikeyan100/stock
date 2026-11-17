@@ -78,3 +78,10 @@ Selectors and exact page steps, Playwright vs Puppeteer details (Playwright pref
 ## Open items for the owner
 - Real orders will be placed during testing: the owner decides when and how small.
 - Guard-rail bands (strike distance from spot, price range, duplicate window) will be proposed during the plan for the owner to adjust.
+
+## Revision 3 (2026-11-17, owner)
+- Any option (index or stock) is traded, not only NIFTY; cash/equity posts are not options and are ignored.
+- Always exactly one lot (the site's own lot quantity); investment-based sizing and `lotSize` are removed.
+- Parsing is Claude-only (the regex parser is deleted); any message containing the whole word "Again" or "cash" is skipped without a Claude call.
+- Guards: stop/target ordering and expiry-not-past for every underlying; spot band and price range for NIFTY only. Other underlyings use the message price as given (owner's decision; a typo'd strike would be ordered as written).
+- Messages arrive from the WhatsApp router (`~/work/whatsapp`) over loopback HTTP; this project no longer talks to WhatsApp.

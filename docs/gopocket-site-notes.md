@@ -34,3 +34,10 @@ Site: https://web.gopocket.in (login page, then /dashboard). Account is a normal
 - So the bracket order itself was accepted by the form and sent to the risk system; the rejection is about time (BO not allowed after the system square-off time). Placing a bracket order must be tried during market hours (the 'BO'/cover cut-off time is NOT yet known; find it).
 - Internal REST endpoints seen on the Orders page (method GET, 200): /od-rest/info/orderbook, /od-rest/info/tradebook, /od-rest/info/gtt/orderbook, /od-rest/info/sip/orderbook, /bo-rest/basketorder, /alertrest/alert. The order-placement request itself was NOT captured (network tracking returned nothing after the Buy click). The network tool shows only method/url/status, no bodies. Next time: install an in-page fetch/XHR logger (URL, method, body, response body; no headers) with javascript_tool just before Buy.
 - Side effects in the account: order 26111700015304 (rejected, harmless); watchlist 1 contains NIFTY 50 and NIFTY 23rd NOV 25400 CE.
+
+## Update 2026-11-17 (night): any underlying, one lot
+- Search `<UNDERLYING> <strike> <CE|PE>` works for stocks and indices. Rows read like `PAYTM 23rd NOV 2000 CE NFO`; **stock options are also listed on BFO** (`PAYTM 26th NOV 2000 CE BFO`), SENSEX only on BFO, BANKNIFTY only on NFO. The bot takes NFO rows when any exist, else BFO, then the nearest expiry (or the stated one).
+- One lot = the `step` of the `#qty` field (NIFTY 65, PAYTM 725, HAL 150); the bot orders exactly that quantity. These matched the lot sizes written in the channel posts.
+- The channel posts a line `DATE: dd-mm-yyyy` that is the date of the call, not an expiry; the Claude prompt says so.
+- The headless dry run (form filled, read back, Cancel) was verified for NIFTY, PAYTM and HAL. A real accepted order is still not recorded.
+- A second Chromium on the same `browser-profile/` while the bot runs shows the site as logged out: stop the bot before running `npm run probe`/`probe-buy`.

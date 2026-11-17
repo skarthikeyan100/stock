@@ -7,7 +7,7 @@ const cli = (structured: unknown) => async () => JSON.stringify({ is_error: fals
 describe('parseWithClaude', () => {
   it('maps the sample message to a Signal using the first target', async () => {
     const run = cli({ relevant: true, instrument: 'NIFTY', action: 'buy', right: 'CE', strike: 25400, price: 54, stop: 41, targets: [68, 80, 100] });
-    expect(await parseWithClaude(SAMPLE, run)).toEqual({ action: 'buy', right: 'CE', strike: 25400, price: 54, stop: 41, target: 68 });
+    expect(await parseWithClaude(SAMPLE, run)).toEqual({ action: 'buy', underlying: 'NIFTY', right: 'CE', strike: 25400, price: 54, stop: 41, target: 68 });
   });
 
   it('keeps a stated expiry date', async () => {
@@ -19,8 +19,13 @@ describe('parseWithClaude', () => {
     expect(await parseWithClaude('hello', cli({ relevant: false }))).toBeNull();
   });
 
-  it('returns null for another instrument', async () => {
-    const run = cli({ relevant: true, instrument: 'BANKNIFTY', action: 'buy', right: 'CE', strike: 62000, price: 100 });
+  it('keeps another underlying, upper-cased', async () => {
+    const run = cli({ relevant: true, instrument: 'hal', action: 'buy', right: 'CE', strike: 5400, price: 13.5, stop: 6, targets: [18, 27] });
+    expect(await parseWithClaude('x', run)).toMatchObject({ underlying: 'HAL', strike: 5400, price: 13.5, target: 18 });
+  });
+
+  it('returns null when the instrument is missing', async () => {
+    const run = cli({ relevant: true, action: 'buy', right: 'CE', strike: 5400, price: 13.5 });
     expect(await parseWithClaude('x', run)).toBeNull();
   });
 
