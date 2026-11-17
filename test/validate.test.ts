@@ -3,7 +3,7 @@ import { parseConfig } from '../src/config.js';
 import { validateSignal } from '../src/validate.js';
 import type { Signal } from '../src/types.js';
 
-const cfg = parseConfig({ allowedSenders: ['x'] });
+const cfg = parseConfig({});
 const ctx = { spot: 25387, today: '2026-11-17' };
 const good: Signal = { action: 'buy', underlying: 'NIFTY', right: 'CE', strike: 25400, price: 54, stop: 41, target: 68 };
 const reason = (s: Partial<Signal>) => {

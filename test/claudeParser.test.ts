@@ -50,3 +50,14 @@ describe('parseWithClaude', () => {
     await expect(parseWithClaude('x', async () => { throw new Error('timeout'); })).rejects.toThrow('timeout');
   });
 });
+
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+describe('parse log location', () => {
+  it('writes to GOPOCKET_LOG_DIR (the tests point it at a temp folder, not the real logs/)', async () => {
+    const marker = `marker-${Date.now()}`;
+    await parseWithClaude(marker, cli({ relevant: false }));
+    const log = readFileSync(path.join(process.env.GOPOCKET_LOG_DIR!, 'claude-parse.log'), 'utf8');
+    expect(log).toContain(marker);
+  });
+});

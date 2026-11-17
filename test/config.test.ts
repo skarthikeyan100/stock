@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseConfig } from '../src/config.js';
 
-const base = { allowedSenders: ['x'] };
+const base = {};
 
 describe('parseConfig', () => {
   it('fills the documented defaults', () => {

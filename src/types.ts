@@ -19,7 +19,6 @@ export interface OffsetRule {
 }
 
 export interface Config {
-  allowedSenders: string[];
   target?: OffsetRule;
   stop?: OffsetRule;
   strikeBandPercent: number;

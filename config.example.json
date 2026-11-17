@@ -1,8 +1,4 @@
 {
-  "allowedSenders": [
-    "Trading Signals",
-    "+919876543210"
-  ],
   "stop": {
     "percent": 10
   },

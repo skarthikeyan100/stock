@@ -25,7 +25,7 @@ function setup(over: { spot?: number | Error; outcome?: OrderOutcome; out?: Reco
   };
   const run: ClaudeRunner = async () => JSON.stringify({ structured_output: over.out ?? sampleOut });
   const deps = {
-    cfg: parseConfig({ allowedSenders: ['x'] }),
+    cfg: parseConfig({}),
     run,
     broker,
     deduper: createDeduper(300_000, () => 0),

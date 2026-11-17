@@ -9,7 +9,8 @@ export type ClaudeRunner = (prompt: string) => Promise<string>;
 export class ClaudeParseError extends Error {}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LOG_DIR = path.join(__dirname, '..', 'logs');
+// GOPOCKET_LOG_DIR lets the tests write somewhere other than the real logs/ folder.
+const LOG_DIR = process.env.GOPOCKET_LOG_DIR ?? path.join(__dirname, '..', 'logs');
 const PARSE_LOG = path.join(LOG_DIR, 'claude-parse.log');
 
 const SCHEMA = {

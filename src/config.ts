@@ -29,12 +29,10 @@ function rule(raw: Record<string, unknown>, field: string): OffsetRule | undefin
 export function parseConfig(input: unknown): Config {
   if (typeof input !== 'object' || input === null) throw new Error('Invalid config: expected an object');
   const raw = input as Record<string, unknown>;
-  if (!Array.isArray(raw.allowedSenders)) throw new Error('Invalid config: allowedSenders must be a string[]');
 
   const target = rule(raw, 'target');
   const stop = rule(raw, 'stop');
   return {
-    allowedSenders: raw.allowedSenders as string[],
     ...(target ? { target } : {}),
     ...(stop ? { stop } : {}),
     strikeBandPercent: withDefault(raw, 'strikeBandPercent', 10),

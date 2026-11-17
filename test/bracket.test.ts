@@ -3,7 +3,7 @@ import { resolveBracket, roundTick } from '../src/bracket.js';
 import { parseConfig } from '../src/config.js';
 import type { Signal } from '../src/types.js';
 
-const cfg = (extra: object = {}) => parseConfig({ allowedSenders: ['x'], ...extra });
+const cfg = (extra: object = {}) => parseConfig(extra);
 const sig = (s: Partial<Signal>): Signal => ({ action: 'buy', underlying: 'NIFTY', right: 'CE', strike: 25400, price: 54, ...s });
 
 describe('roundTick', () => {
