@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
+import readline from 'node:readline/promises';
+import { loginWithOtp, readCredentials } from '../src/order/login.js';
 import { dismissNotice, isLoggedIn, openContext } from '../src/order/session.js';
 import { findProcess, isListening } from '../src/startup.js';
 
@@ -33,13 +35,36 @@ if ((await isListening(cfg.port)) || findProcess(ROOT, 'src/index.ts')) {
 } else {
   const context = await openContext(cfg, { headless: true });
   const page = await context.newPage();
-  const loggedIn = await isLoggedIn(page);
+  let loggedIn = await isLoggedIn(page);
+  if (!loggedIn) {
+    let creds: ReturnType<typeof readCredentials> | undefined;
+    try {
+      creds = readCredentials(process.env);
+    } catch (error) {
+      console.error(`GoPocket: not logged in and cannot log in by itself: ${(error as Error).message}. Or run \`npm run login\` and start again.`);
+    }
+    if (creds) {
+      if (!process.stdin.isTTY) {
+        console.error('GoPocket: not logged in, and the OTP prompt needs an interactive terminal.');
+      } else {
+        try {
+          console.log('GoPocket: session is logged out, logging in with the mobile and password from .env ...');
+          await loginWithOtp(page, creds, async () => {
+            const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+            const otp = await rl.question('Enter the 6-digit OTP sent to your phone: ');
+            rl.close();
+            return otp;
+          });
+          loggedIn = await isLoggedIn(page);
+        } catch (error) {
+          console.error(`GoPocket: login failed: ${(error as Error).message}`);
+        }
+      }
+    }
+  }
   if (loggedIn) await dismissNotice(page);
   await context.close(); // the browser profile can be used by one browser at a time
-  if (!loggedIn) {
-    console.error('GoPocket: the saved session is not logged in. Run `npm run login`, then start again.');
-    process.exit(1);
-  }
+  if (!loggedIn) process.exit(1);
   launch(ROOT, 'bot.out.log');
   const up = await waitFor(() => isListening(cfg.port), 40);
   console.log(up ? `GoPocket: started (dryRun=${cfg.dryRun}), listening on port ${cfg.port}; log: logs/bot.out.log` : 'GoPocket: started but not listening after 40 s, check logs/bot.out.log');
