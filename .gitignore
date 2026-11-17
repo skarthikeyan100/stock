@@ -6,3 +6,4 @@ browser-profile/
 logs/
 config.json
 .superpowers/
+.env

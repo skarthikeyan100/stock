@@ -36,3 +36,9 @@ clicked**; set `false` only when you want real orders), `claudeModel` (the model
 - `npm run probe`: headless check that the saved session works (never clicks Buy).
 - `npm run probe-buy -- NIFTY CE 25400 54 13 14`: fills the bracket form headlessly and reads it back (never clicks Buy).
 - `npm test`: unit tests. `docs/gopocket-site-notes.md`: recorded page flows.
+
+## Starting everything
+`npm run start` starts GoPocket and the WhatsApp router (`../whatsapp`, or `WHATSAPP_DIR`), each only if it is not
+already running (GoPocket is detected by its port, the router by its process). Both run in the background; logs are
+`logs/bot.out.log` and `../whatsapp/logs/router.out.log`. If the saved GoPocket session is logged out it stops and tells
+you to run `npm run login`. `.env` (copy `.env.example`, gitignored) is reserved for the automated login below.
