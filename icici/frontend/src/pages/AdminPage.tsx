@@ -97,7 +97,12 @@ interface UserEditRow {
   profitSplitPercent: string; perOrderCap: string; strategyCapital: string; targetPoints: string;
   stopLossPoints: string; accountCapital: string;
   investmentMode: 'lotCount' | 'investmentAmount'; investmentModeLocked: boolean;
+  brokers: string[];
 }
+
+const USER_BROKER_CHOICES = ['kite', 'ant', 'breeze'] as const;
+// The brokers a user's frontend buys go to: the saved list, else just the one `broker` (default kite).
+const brokersOfUser = (u: { broker?: string; brokers?: string[] }): string[] => (u.brokers && u.brokers.length > 0 ? u.brokers : [u.broker ?? 'kite']);
 
 // Legacy broker names still present in older config.yml files; mirrors src/util/brokerName.ts.
 const LEGACY_BROKER_ALIASES: Record<string, string> = { zerodha: 'kite', aliceblue: 'ant', icici: 'breeze', shoonya: 'prism' };
@@ -423,6 +428,7 @@ export default function AdminPage() {
       ...prev,
       [u.email]: {
         investmentMode: u.investmentMode ?? 'investmentAmount', investmentModeLocked: u.investmentModeLocked === true,
+        brokers: brokersOfUser(u),
         lossLimit: String(u.lossLimit), lotLimit: String(u.lotLimit ?? u.lotCount ?? ''), role: u.role, enabled: u.enabled ?? true, useGTT: u.useGTT ?? true,
         profitSplitPercent: String(u.profitSplitPercent ?? 40), perOrderCap: u.perOrderCap !== undefined ? String(u.perOrderCap) : '',
         // Show the actual value in effect (override, else the resolved
@@ -497,6 +503,11 @@ export default function AdminPage() {
         targetPoints: override(vals.targetPoints, userDefaults.targetPoints),
         stopLossPoints: override(vals.stopLossPoints, userDefaults.stopLossPoints),
       };
+      // Sent only when it changed, so an unrelated save never touches (or trips the admin-only rule on) the broker list.
+      const before = users.find(u => u.email === email);
+      const beforeBrokers = before ? brokersOfUser(before) : [];
+      if (vals.brokers.length === 0) throw new Error('Pick at least one broker');
+      if (vals.brokers.length !== beforeBrokers.length || vals.brokers.some(b => !beforeBrokers.includes(b))) body.brokers = vals.brokers;
       const res = await apiPost(`/users/${encodeURIComponent(email)}/settings`, body);
       if (!res.ok) throw new Error(await readError(res));
       // Update role if changed
@@ -1006,6 +1017,7 @@ export default function AdminPage() {
                   <th>Target Pts</th>
                   <th>Stop-Loss Pts</th>
                   <th>Use GTT</th>
+                  <th>Brokers</th>
                   <th>Session P&amp;L</th>
                   <th>Active</th>
                   <th>Email</th>
@@ -1211,6 +1223,24 @@ export default function AdminPage() {
                           <span className={`badge ${(u.useGTT ?? true) ? 'bg-secondary' : 'bg-info'}`}>
                             {(u.useGTT ?? true) ? 'GTT' : 'In-app'}
                           </span>
+                        )}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <div className="d-flex flex-column gap-1" title="Every buy this user places from the frontend goes to each ticked broker, independently. More than one broker is for an admin account only.">
+                            {USER_BROKER_CHOICES.map(b => (
+                              <Form.Check
+                                key={b}
+                                type="checkbox"
+                                id={`broker-${u.email}-${b}`}
+                                label={b.toUpperCase()}
+                                checked={editing[u.email].brokers.includes(b)}
+                                onChange={e => updateEditingField(u.email, { brokers: e.target.checked ? [...editing[u.email].brokers, b] : editing[u.email].brokers.filter(x => x !== b) })}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          brokersOfUser(u).map(b => <span key={b} className="badge bg-dark me-1 text-uppercase">{b}</span>)
                         )}
                       </td>
                       <td className={pnlColor}>

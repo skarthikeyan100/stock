@@ -16,6 +16,9 @@ export interface AuthUser {
   investmentMode: 'lotCount' | 'investmentAmount';
   investmentModeLocked?: boolean;
   useGTT: boolean;
+  broker?: string;
+  /** Admin account only: a frontend buy goes to each of these brokers independently. */
+  brokers?: string[];
   role: string;
   enabled: boolean;
   phone?: string;
