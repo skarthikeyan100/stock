@@ -118,6 +118,7 @@ async function runOnce(list: Strategy[]): Promise<void> {
                 // No global cap set: nothing to judge or lock (a latch set earlier today keeps blocking new buys in the order process).
                 const cap = globalMaxProfit();
                 if (!(cap > 0)) continue;
+                if (broker === 'paper') continue; // the paper broker has no global max-profit latch
                 try { await checkOne(c.userId, broker, cap, stats, latched); } catch (e) { Log.log(`[GlobalMaxProfit] ${c.userId} ${broker} check failed:`, e); }
             }
         }
