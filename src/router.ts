@@ -46,3 +46,9 @@ export async function forward(route: Route, payload: ForwardPayload, fetchFn: Fe
     return { ok: false, error: `${route.name} unreachable: ${(e as Error).message}` };
   }
 }
+
+/** A message I sent into my own "Message yourself" chat. WhatsApp may address that chat by a @lid; resolvedPhone is that lid's phone id. */
+export function isSelfChat(m: { fromMe: boolean; to: string; ownId?: string; resolvedPhone?: string }): boolean {
+  if (!m.fromMe || !m.ownId) return false;
+  return m.to === m.ownId || m.resolvedPhone === m.ownId;
+}

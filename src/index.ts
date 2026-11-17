@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import qrcodeTerminal from 'qrcode-terminal';
 import whatsappWeb from 'whatsapp-web.js';
 import { logError, logInfo } from './logger.js';
-import { forward, parseRoutes, resolveRoute } from './router.js';
+import { forward, isSelfChat as isSelfChatMessage, parseRoutes, resolveRoute } from './router.js';
 
 const { Client, LocalAuth } = whatsappWeb;
 
@@ -24,7 +24,12 @@ client.on('disconnected', (reason) => logError('WhatsApp client disconnected', {
 
 client.on('message_create', async (msg) => {
   const ownId = client.info?.wid?._serialized;
-  const isSelfChat = msg.fromMe && msg.to === ownId;
+  let toPhone: string | undefined;
+  if (msg.fromMe && msg.to !== ownId && msg.to.endsWith('@lid')) {
+    toPhone = (await client.getContactLidAndPhone([msg.to]).catch(() => []))[0]?.pn;
+  }
+  const isSelfChat = isSelfChatMessage({ fromMe: msg.fromMe, to: msg.to, ownId, resolvedPhone: toPhone });
+  if (discovery) logInfo('DISCOVERY raw', { from: msg.from, to: msg.to, fromMe: msg.fromMe, ownId, isSelfChat, preview: msg.body.slice(0, 40) });
   if (msg.fromMe && !isSelfChat) return;
 
   try {
