@@ -712,12 +712,25 @@ export default class ScaledHedgedStrategy extends Strategy {
             return;
         }
         if (openSame) {
-            // Scaled (D, 2026-11-17): the fixed contract of that right already has an open leg: NOTHING is bought (no add, no new leg). The leg is marked
-            // hedged so it is not retried; the open leg's resting sell (original average + priceDiff) is left untouched and no trigger is re-armed.
-            leg.hedged = true;
-            leg.hedgeWaiting = false;
-            this.save();
-            Log.log(`[ScaledHedgedStrategy] no add to ${openSame.tsym} for ${leg.tsym} (${reason}): that contract already has an open leg (one leg per contract per cycle)`);
+            // Scaled (D, 2026-11-17): the fixed contract of that right already has an open leg: NOTHING is bought (no add, no new leg), and the open
+            // leg's resting sell is left untouched. The leg is NOT marked hedged (2026-11-17 replay: the PE re-buy went adverse while the CE was
+            // open, was marked hedged for good, and when the CE sold at +650 nothing was ever bought again, leaving the PE open all day): it waits
+            // (hedgeWaiting) and the hedge is bought once that contract has no open leg, from this leg's own ticks while it is still adverse or
+            // from Nifty ticks (the same retry as the side-occupied wait below).
+            if (leg.status === 'closed') {
+                // A closed leg has nothing left to protect, and the open leg of that contract already is the position: nothing follows it.
+                leg.hedged = true;
+                leg.hedgeWaiting = false;
+                this.save();
+                Log.log(`[ScaledHedgedStrategy] no add to ${openSame.tsym} for ${leg.tsym} (${reason}): that contract already has an open leg (one leg per contract per cycle)`);
+                return;
+            }
+            if (!leg.hedgeWaiting) {
+                leg.hedgeWaiting = true;
+                leg.hedgeSame = same;
+                this.save();
+                Log.log(`[ScaledHedgedStrategy] no add to ${openSame.tsym} for ${leg.tsym} (${reason}): that contract already has an open leg (one leg per contract per cycle) - the hedge waits until it is closed`);
+            }
             return;
         }
         if (this.sideBlocked(right)) {
