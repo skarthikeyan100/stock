@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { parseSignal } from '../src/parseSignal.js';
 
+import { AGAIN_REPOST, APOLLO_UPDATE, CASH_POSTS, HAL_CALL, HAL_CALL_CLAUDE, NIFTY_CALL, NIFTY_CALL_CLAUDE, PAYTM_BOOK_UPDATE, PAYTM_BOOK_UPDATE_CLAUDE, PAYTM_CALL, PAYTM_CALL_CLAUDE } from './fixtures/channel.js';
+
+// The user's own typo-ridden sample (also a real message): "NIFRY", "STOPLLOSS", ":" for "."
 const SAMPLE = 'BUY NIFRY (25400.00 CE) CMP 54:)) STOPLLOSS 41:00 TARGET 68:00-80:00-100:00++(LOT SIZE 65)';
 const claudeSays = (structured: unknown) => {
   const calls = { n: 0 };
@@ -10,50 +13,72 @@ const claudeSays = (structured: unknown) => {
   };
   return { run, calls };
 };
+
 const sampleOut = { relevant: true, instrument: 'NIFTY', action: 'buy', right: 'CE', strike: 25400, price: 54, stop: 41, targets: [68, 80, 100] };
 
-describe('parseSignal', () => {
-  it('always asks Claude, even for a clean message', async () => {
-    const { run, calls } = claudeSays(sampleOut);
-    const r = await parseSignal('Nifty 25400 ce Cmp 54 target 68 sl 41', run);
-    expect(r).toEqual({ signal: { action: 'buy', underlying: 'NIFTY', right: 'CE', strike: 25400, price: 54, stop: 41, target: 68 }, via: 'claude' });
+describe('parseSignal on real channel posts', () => {
+  it('parses the NIFTY call through Claude', async () => {
+    const { run, calls } = claudeSays(NIFTY_CALL_CLAUDE);
+    expect(await parseSignal(NIFTY_CALL, run)).toEqual({ signal: { action: 'buy', underlying: 'NIFTY', right: 'CE', strike: 25800, price: 79, stop: 61, target: 100 }, via: 'claude' });
     expect(calls.n).toBe(1);
   });
-
+  it('parses the PAYTM call (a stock option)', async () => {
+    const { run } = claudeSays(PAYTM_CALL_CLAUDE);
+    expect((await parseSignal(PAYTM_CALL, run)).signal).toEqual({ action: 'buy', underlying: 'PAYTM', right: 'CE', strike: 2000, price: 20.5, stop: 17, target: 22.5 });
+  });
+  it('parses the HAL call (a stock option)', async () => {
+    const { run } = claudeSays(HAL_CALL_CLAUDE);
+    expect((await parseSignal(HAL_CALL, run)).signal).toMatchObject({ underlying: 'HAL', strike: 5400, price: 13.5, stop: 6, target: 18 });
+  });
   it('parses the typo-ridden sample', async () => {
     const { run } = claudeSays(sampleOut);
-    expect((await parseSignal(SAMPLE, run)).signal?.underlying).toBe('NIFTY');
+    expect((await parseSignal(SAMPLE, run)).signal).toMatchObject({ underlying: 'NIFTY', strike: 25400, price: 54, stop: 41, target: 68 });
   });
-
-  it('accepts a non-NIFTY underlying', async () => {
-    const { run } = claudeSays({ relevant: true, instrument: 'PAYTM', action: 'buy', right: 'CE', strike: 2000, price: 20.5, stop: 17, targets: [22.5] });
-    const r = await parseSignal('# BUY Paytm ( NOV: 2000.00 CE) at above 20.50 STOPLOSS 17.00 TARGET 22.50++', run);
-    expect(r.signal).toMatchObject({ underlying: 'PAYTM', strike: 2000, price: 20.5 });
-  });
-
-  it.each([['Again RISKY JACKPOT BUY NIFTY 25800 CE'], ['( T+4) # BUY FEDERAL BANK (CASH) AT ABOVE 360'], ['buy x cash 1 CE'], ['AGAIN nifty ce 100'], ['(cash)']])('skips %s without calling Claude', async (text) => {
-    const { run, calls } = claudeSays(sampleOut);
-    const r = await parseSignal(text, run);
+  it('sends a profit-booking update to Claude, which says it is not a call', async () => {
+    const { run, calls } = claudeSays(PAYTM_BOOK_UPDATE_CLAUDE);
+    const r = await parseSignal(PAYTM_BOOK_UPDATE, run);
     expect(r.signal).toBeNull();
-    expect((r as { reason: string }).reason).toMatch(/again|cash/i);
+    expect(calls.n).toBe(1);
+  });
+  it('skips the "Again" repost without calling Claude', async () => {
+    const { run, calls } = claudeSays(NIFTY_CALL_CLAUDE);
+    const r = await parseSignal(AGAIN_REPOST, run);
+    expect((r as { reason: string }).reason).toMatch(/again/i);
     expect(calls.n).toBe(0);
   });
+  it.each(CASH_POSTS.map((t) => [t.slice(0, 60), t]))('skips the cash post "%s" without calling Claude', async (_name, text) => {
+    const { run, calls } = claudeSays(NIFTY_CALL_CLAUDE);
+    const r = await parseSignal(text, run);
+    expect((r as { reason: string }).reason).toMatch(/cash/i);
+    expect(calls.n).toBe(0);
+  });
+  it('skips the APOLLO update (no CE or PE) without calling Claude', async () => {
+    const { run, calls } = claudeSays(NIFTY_CALL_CLAUDE);
+    const r = await parseSignal(APOLLO_UPDATE, run);
+    expect((r as { reason: string }).reason).toMatch(/CE or PE/);
+    expect(calls.n).toBe(0);
+  });
+  it('turns a Claude failure into a skip reason', async () => {
+    const r = await parseSignal(NIFTY_CALL, async () => { throw new Error('timeout'); });
+    expect((r as { reason: string }).reason).toMatch(/^claude failed/);
+  });
+});
 
-  it('does not skip words that merely contain "again" or "cash"', async () => {
+// Edge cases of the word rules. These are synthetic: no real post has them.
+describe('word rules', () => {
+  it('does not treat "cashew" or "againstit" as the skip words', async () => {
     const { run, calls } = claudeSays(sampleOut);
     await parseSignal('Nifty 25400 CE cashew againstit 54', run);
     expect(calls.n).toBe(1);
   });
-
-  it('turns a Claude "not relevant" into a not-a-signal reason', async () => {
-    const { run } = claudeSays({ relevant: false });
-    const r = await parseSignal('good morning everyone', run);
-    expect(r.signal).toBeNull();
+  it.each([['BUY NIFTY 25400PE 54'], ['BUY NIFTY 25400 ce 54']])('counts CE/PE in "%s"', async (text) => {
+    const { run, calls } = claudeSays(sampleOut);
+    await parseSignal(text, run);
+    expect(calls.n).toBe(1);
   });
-
-  it('turns a Claude failure into a skip reason', async () => {
-    const r = await parseSignal(SAMPLE, async () => { throw new Error('timeout'); });
-    expect(r.signal).toBeNull();
-    expect((r as { reason: string }).reason).toMatch(/^claude failed/);
+  it('does not count "PRICE" or "PEAK" as CE/PE', async () => {
+    const { run, calls } = claudeSays(sampleOut);
+    await parseSignal('the PRICE is a PEAK', run);
+    expect(calls.n).toBe(0);
   });
 });

@@ -14,7 +14,7 @@ cp config.example.json config.json   # edit stop/target fallbacks
 `config.json` keys: `stop`/`target` (`{percent}` or
 `{points}`, used only when a message has none; percent wins), `strikeBandPercent`, `priceMin`/`priceMax` (both for NIFTY calls only),
 `dedupeWindowSeconds`, `port` (loopback port the WhatsApp router posts to, default 3101), `headless`, `dryRun` (**true by default: the form is filled and checked but Buy is never
-clicked**; set `false` only when you want real orders), `claudeModel` (optional).
+clicked**; set `false` only when you want real orders), `claudeModel` (the model for `claude -p`; `claude-haiku-5-5` is set: same answers as the default on the real posts at about a tenth of the usage).
 
 ## Daily routine
 1. `npm run login` once each morning. A browser window opens; type your password/OTP yourself. The session is kept in
