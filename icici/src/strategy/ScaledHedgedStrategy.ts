@@ -29,8 +29,8 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //      fill (the leg is at or above its entry) buys initialQuantity.
 //   C. NO double-up. Instead, when a leg falls by priceDiff the OPPOSITE option is bought again (a hedge leg that falls buys the CE again).
 //   D. Only ONE CE contract and ONE PE contract are used per cycle: the root's contract and the contract of the first hedge (ATM at that time).
-//      Every later buy of a right uses that same contract: if its leg is open the quantity is ADDED to it (blended entry, the resting sell is
-//      re-placed at the new average + priceDiff, and the leg's hedge trigger is re-armed from the new average); if it is closed a new leg opens.
+//      Every later buy of a right uses that same contract: if its leg is open NOTHING is bought (no add; one leg per contract per cycle, the
+//      resting sell stays at the original average + priceDiff, nothing is re-armed; user's rule 2026-11-17); if it is closed a new leg opens.
 //   F. maxInvestment is honoured by EVERY buy (root, hedge, add): a buy is cut to the whole lots that still fit under the cap (cost basis of the open
 //      legs + the new buy at the contract's latest price), or skipped (held back and retried) when not even one lot fits.
 //   G. A same-direction re-buy (after a target fill) is skipped when that contract already has an open leg.
@@ -711,7 +711,16 @@ export default class ScaledHedgedStrategy extends Strategy {
             Log.log(`[ScaledHedgedStrategy] no re-buy of ${openSame.tsym} after ${leg.tsym} (${reason}): that contract already has an open leg`);
             return;
         }
-        if (!openSame && this.sideBlocked(right)) {
+        if (openSame) {
+            // Scaled (D, 2026-11-17): the fixed contract of that right already has an open leg: NOTHING is bought (no add, no new leg). The leg is marked
+            // hedged so it is not retried; the open leg's resting sell (original average + priceDiff) is left untouched and no trigger is re-armed.
+            leg.hedged = true;
+            leg.hedgeWaiting = false;
+            this.save();
+            Log.log(`[ScaledHedgedStrategy] no add to ${openSame.tsym} for ${leg.tsym} (${reason}): that contract already has an open leg (one leg per contract per cycle)`);
+            return;
+        }
+        if (this.sideBlocked(right)) {
             // Stacking guard / side occupied: leave the leg un-hedged. An open leg is retried by its own ticks, a closed one from Nifty ticks.
             if (!leg.hedgeWaiting) {
                 leg.hedgeWaiting = true;
@@ -723,7 +732,7 @@ export default class ScaledHedgedStrategy extends Strategy {
         }
         if (leg.hedgeWaiting) { leg.hedgeWaiting = false; if (!this.capHeld.has(leg.id)) Log.log(`[ScaledHedgedStrategy] hedge of ${leg.tsym} released (${reason})`); }
         leg.hedged = true; // synchronous, before any await: a second tick must not buy a second hedge
-        if (!openSame && this.onePerSide()) this.pendingSides.add(right); // same synchronous section as the sideBlocked check above
+        if (this.onePerSide()) this.pendingSides.add(right); // same synchronous section as the sideBlocked check above
         this.busy.add(leg.id);
         this.save();
         try {
@@ -747,11 +756,6 @@ export default class ScaledHedgedStrategy extends Strategy {
             }
             this.capHeld.delete(leg.id);
             if (hedgeQty < wanted) Log.log(`[ScaledHedgedStrategy] hedge quantity of ${contract.tradingSymbol} cut ${wanted} -> ${hedgeQty} by maxInvestment`);
-            if (openSame) {
-                const ok = await this.addToLeg(openSame, hedgeQty, leg, reason);
-                if (!ok) { leg.hedged = false; this.save(); } // nothing bought: the next tick retries
-                return;
-            }
             let trade: Trade;
             try {
                 trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, hedgeQty, contract.exchange, contract.premium, this.broker());
@@ -917,67 +921,8 @@ export default class ScaledHedgedStrategy extends Strategy {
         }
     }
 
-    // ---- add to an open leg (Scaled C/D: replaces the double-up) ----
-
-    // Buys `addQty` more of the open leg's contract and re-places its resting sell for the new total at the new average + priceDiff. The leg's
-    // hedge trigger is re-armed (hedged = false) so it hedges again when it falls priceDiff below the NEW average; the leg that caused the add
-    // (`trigger`) stays hedged. Returns false when nothing was bought.
-    private async addToLeg(parent: SimpleLeg, addQty: number, trigger: SimpleLeg, reason: string): Promise<boolean> {
-        if (parent.status !== 'open' || this.busy.has(parent.id)) return false;
-        this.busy.add(parent.id);
-        const broker = this.brokerOrKite();
-        try {
-            let cancelledFilled = 0;
-            if (parent.sellQty > 0) {
-                const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: parent.tsym, broker });
-                if (res.cancelFailed) { Log.log(`[ScaledHedgedStrategy] add to ${parent.tsym} aborted: its resting sell could not be cancelled`); return false; }
-                cancelledFilled = res.filledQty;
-                parent.sellQty = 0;
-                parent.sellShortfall = 0;
-            }
-            if (cancelledFilled > 0) {
-                Log.log(`[ScaledHedgedStrategy] add to ${parent.tsym} aborted: ${cancelledFilled} sold while cancelling`);
-                const left = parent.qty - parent.soldQty - cancelledFilled;
-                if (left > 0) await this.placeSellQty(parent, left);
-                return false;
-            }
-            let trade: Trade;
-            try {
-                trade = await OrderClient.getInstance().buyContractBare(this.userId, parent.tsym, parent.token, addQty, parent.exchange, parent.entry, this.broker());
-            } catch (e) {
-                const notPlaced = this.noteBuyError(e, `add buy ${parent.tsym}`, false);
-                Log.log('[ScaledHedgedStrategy] add buy failed:', e);
-                if (notPlaced) { await this.placeSellQty(parent, this.remaining(parent)); return false; }
-                // Outcome unknown (IPC timeout / unconfirmed fill): the parent has no resting sell now, so settle it here. The live quantity
-                // includes what the parent already holds, so only the excess is the add buy (a partial fill is booked as that partial).
-                const res = await this.resolveUnconfirmedBuy({ tradingSymbol: parent.tsym, premium: parent.entry }, this.remaining(parent));
-                if (res.kind === 'none') {
-                    Log.log(`[ScaledHedgedStrategy] add buy of ${parent.tsym} was cancelled with 0 filled - the parent keeps its quantity, sell re-placed`);
-                    await this.placeSellQty(parent, this.remaining(parent));
-                    return false;
-                }
-                if (res.kind === 'unknown') {
-                    // The trigger leg stays hedged (no second buy) with the add recorded on it: settled from the broker like an unconfirmed hedge.
-                    trigger.pendingHedge = { tsym: parent.tsym, token: parent.token, exchange: parent.exchange, strike: parent.strike, right: parent.right, premium: parent.entry, qty: addQty, addToLegId: parent.id, heldBefore: this.remaining(parent), at: Date.now() };
-                    Log.log(`[ScaledHedgedStrategy] ALERT: add buy ${parent.tsym} may be live at the broker (${res.why}) - recorded as pending on ${trigger.tsym}; no new buys until it is settled from the broker`);
-                    this.save();
-                    return false;
-                }
-                trade = Object.assign(new Trade(), { quantity: res.qty, price: res.price });
-                Log.log(`[ScaledHedgedStrategy] add buy of ${parent.tsym} had filled after all: adopting +${res.qty} @${res.price}`);
-            }
-            const got = Number(trade.quantity) > 0 ? Number(trade.quantity) : 0;
-            const price = Number(trade.price) > 0 ? Number(trade.price) : parent.entry;
-            this.bookAdd(parent, got, price, trigger, reason);
-            await this.placeSellQty(parent, this.remaining(parent));
-            return got > 0;
-        } catch (e) {
-            Log.log('[ScaledHedgedStrategy] add to leg failed:', e);
-            return false;
-        } finally {
-            this.busy.delete(parent.id);
-        }
-    }
+    // ---- settling an add buy recorded before 2026-11-17 ----
+    // The strategy no longer ADDS to an open leg (one leg per contract per cycle); bookAdd only books an add buy that an older process left pending/live at the broker.
 
     // Books `got` more of the parent's contract at `price`: blended entry, re-armed hedge trigger (the leg that caused the add stays hedged).
     private bookAdd(parent: SimpleLeg, got: number, price: number, trigger: SimpleLeg, reason: string): void {
