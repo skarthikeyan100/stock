@@ -1,0 +1,13 @@
+{
+  "allowedSenders": ["Trading Signals", "+919876543210"],
+  "investment": 100000,
+  "lotSize": 65,
+  "stop": { "percent": 10 },
+  "target": { "percent": 20 },
+  "strikeBandPercent": 10,
+  "priceMin": 1,
+  "priceMax": 1500,
+  "dedupeWindowSeconds": 300,
+  "headless": true,
+  "dryRun": true
+}
