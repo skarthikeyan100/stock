@@ -15,6 +15,7 @@ import { isOpenedToday, openedFilterOf } from '../util/openedToday';
 import { closedTradeRows } from '../util/closedTradeRows';
 import { gateBuy, gateSetTarget } from '../levelGate';
 import { requireCsrfHeader, resolveUser, requireAuth, requireAdmin, requireSelfOrAdmin } from './session';
+import { USER_BROKERS_TEXT, isUserBroker } from '../util/brokerName';
 
 const router = asyncRouter();
 const orderClient = OrderClient.getInstance();
@@ -121,14 +122,16 @@ router.post('/order/lock-profits', requireAdmin, async function (req, res) {
 
 router.post('/order/squareoff', requireAuth, async function (req, res) {
     try {
-        const { token, qty, tsym } = req.query;
+        const { token, qty, tsym, broker } = req.query;
         const user = resolveUser(req);
+        if (broker !== undefined && !(typeof broker === 'string' && isUserBroker(broker))) { res.status(400).json({ error: `broker must be ${USER_BROKERS_TEXT}` }); return; }
         if (qty !== undefined && !(Number.isInteger(Number(qty)) && Number(qty) > 0)) { res.status(400).json({ error: 'qty must be a positive integer' }); return; }
         if ((token !== undefined && typeof token !== 'string') || (tsym !== undefined && typeof tsym !== 'string') || (!token && !tsym)) { res.status(400).json({ error: 'token or tsym is required' }); return; }
         await orderClient.squareOff(user, {
             token: token as string,
             tsym: tsym as string,
             quantity: qty ? Number(qty) : undefined,
+            broker: broker as string | undefined,
         });
         res.sendStatus(200);
     } catch (e) {
@@ -139,7 +142,8 @@ router.post('/order/squareoff', requireAuth, async function (req, res) {
 
 router.post('/order/settarget', requireAuth, requireCsrfHeader, async function (req: express.Request, res) {
     try {
-        const { token, targetPoints, stopLossPoints } = req.body;
+        const { token, targetPoints, stopLossPoints, broker } = req.body;
+        if (broker !== undefined && !isUserBroker(broker)) { res.status(400).json({ error: `broker must be ${USER_BROKERS_TEXT}` }); return; }
         if (!token || targetPoints == null || stopLossPoints == null) {
             res.status(400).json({ error: 'Missing token, targetPoints, or stopLossPoints' });
             return;
@@ -152,7 +156,7 @@ router.post('/order/settarget', requireAuth, requireCsrfHeader, async function (
         const caller = user ? await getUser(user) : null;
         const gate = gateSetTarget({ role: caller?.role, level: caller?.proficiencyLevel, targetPoints, stopLossPoints });
         if (!gate.allowed) { res.status(403).json({ error: gate.error }); return; }
-        await orderClient.setTargetStopLoss(user, token, targetPoints, stopLossPoints);
+        await orderClient.setTargetStopLoss(user, token, targetPoints, stopLossPoints, broker);
         res.sendStatus(200);
     } catch (e) {
         Log.log(e);

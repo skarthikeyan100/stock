@@ -11,7 +11,7 @@ import Tesseract from 'tesseract.js';
 import sharp from 'sharp';
 import Mongo from '../tools/mongo';
 import OrderClient from '../processes/strategies/OrderClient';
-import { USER_BROKERS_TEXT, isUserBroker } from '../util/brokerName';
+import { USER_BROKERS_TEXT, isUserBroker, normalizeBrokerName } from '../util/brokerName';
 import { asyncRouter } from './asyncRouter';
 import { pushUserToOrderProcess, parseSession, sessionRevoked, resolveUser, requestIsLoopback, invalidateUserCache, requireAdmin, requireSelfOrAdmin } from './session';
 const MAX_INVESTMENT_AMOUNT = 100_000_000; // server-side ceiling for a user-set investmentAmount
@@ -176,7 +176,7 @@ router.patch('/users/:email/role', requireAdmin, async function (req, res) {
 router.post('/users/:email/settings', requireSelfOrAdmin('email'), async function (req, res) {
     try {
         const { email } = req.params;
-        const { lossLimit, investmentMode, useGTT, broker, perOrderCap, targetPoints, stopLossPoints, profitSplitPercent, enabled, investmentModeLocked, proficiencyLevel } = req.body;
+        const { lossLimit, investmentMode, useGTT, broker, brokers, perOrderCap, targetPoints, stopLossPoints, profitSplitPercent, enabled, investmentModeLocked, proficiencyLevel } = req.body;
         // Canonical names win; the old ones (lotCount / investmentAmount / allottedCapital) are still accepted (REFACTOR_PLAN.md section 3).
         const lotCount = req.body.lotLimit ?? req.body.lotCount;
         const investmentAmount = req.body.accountCapital ?? req.body.investmentAmount;
@@ -186,7 +186,7 @@ router.post('/users/:email/settings', requireSelfOrAdmin('email'), async functio
         if (!requestIsLoopback(req)) {
             const caller = await getUser(resolveUser(req) ?? '');
             if (caller?.role !== 'admin') {
-                const restricted = { lossLimit, lotCount, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, profitSplitPercent, enabled, investmentModeLocked, proficiencyLevel };
+                const restricted = { lossLimit, lotCount, investmentAmount, useGTT, broker, brokers, perOrderCap, allottedCapital, profitSplitPercent, enabled, investmentModeLocked, proficiencyLevel };
                 const attempted = Object.entries(restricted).filter(([, v]) => v !== undefined).map(([k]) => k);
                 if (attempted.length > 0) {
                     res.status(403).json({ error: `Only an admin can change: ${attempted.join(', ')}` });
@@ -224,10 +224,18 @@ router.post('/users/:email/settings', requireSelfOrAdmin('email'), async functio
         if (profitSplitPercent !== undefined && !(finite(profitSplitPercent) && profitSplitPercent >= 0)) return bad('profitSplitPercent must be a number >= 0');
         if (proficiencyLevel !== undefined && proficiencyLevel !== 'beginner' && proficiencyLevel !== 'advanced') return bad("proficiencyLevel must be 'beginner' or 'advanced'");
         if (profitSplitPercent !== undefined && profitSplitPercent > 100) return bad('profitSplitPercent must be <= 100');
-        if (Object.values({ lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled, investmentModeLocked, proficiencyLevel }).every((v) => v === undefined)) return bad('No settings supplied');
+        if (Object.values({ lossLimit, lotCount, investmentMode, investmentAmount, useGTT, broker, brokers, perOrderCap, allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled, investmentModeLocked, proficiencyLevel }).every((v) => v === undefined)) return bad('No settings supplied');
         if (broker !== undefined && !isUserBroker(broker)) {
             res.status(400).json({ error: `Invalid broker '${broker}' (expected ${USER_BROKERS_TEXT})` });
             return;
+        }
+        // `brokers`: a list of 1+ user brokers; more than one (every frontend buy fans out to each, independently) is for an admin account only.
+        if (brokers !== undefined) {
+            if (!Array.isArray(brokers) || brokers.length === 0 || !brokers.every(isUserBroker)) return bad(`brokers must be a non-empty list of: ${USER_BROKERS_TEXT}`);
+            if (new Set(brokers.map(normalizeBrokerName)).size > 1 && (await getUser(email))?.role !== 'admin') {
+                res.status(403).json({ error: 'Trading on several brokers at once is available to the admin account only' });
+                return;
+            }
         }
         // Advanced is permanent (no downgrade, any caller) and is reached through applyAdvanced (advancedSince/Via, the Advanced share and capital), never by writing the level directly;
         // the other fields of this same request are applied after it, so an explicit capital / split still wins.
@@ -239,7 +247,7 @@ router.post('/users/:email/settings', requireSelfOrAdmin('email'), async functio
             if (!change.allowed) { res.status(403).json({ error: change.error }); return; }
             if (proficiencyLevel === 'advanced' && normalizeLevel(target.proficiencyLevel) !== 'advanced') await applyAdvanced(email, { via: 'admin' });
         }
-        const user = await updateUserSettings(email, { lossLimit, lotLimit: lotCount, investmentMode, investmentModeLocked, accountCapital: investmentAmount, useGTT, broker, perOrderCap, strategyCapital: allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled, proficiencyLevel: levelToWrite });
+        const user = await updateUserSettings(email, { lossLimit, lotLimit: lotCount, investmentMode, investmentModeLocked, accountCapital: investmentAmount, useGTT, broker, brokers, perOrderCap, strategyCapital: allottedCapital, targetPoints, stopLossPoints, profitSplitPercent, enabled, proficiencyLevel: levelToWrite });
         if (!user) {
             res.status(404).json({ error: 'User not found' });
             return;

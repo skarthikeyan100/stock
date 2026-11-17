@@ -230,7 +230,7 @@ class OrderClient {
         return this.call('buyIndex', userId, payload);
     }
 
-    async squareOff(userId: string, payload: { tsym?: string; token?: string; quantity?: number; exchange?: 'NFO' | 'BFO' }): Promise<any> {
+    async squareOff(userId: string, payload: { tsym?: string; token?: string; quantity?: number; exchange?: 'NFO' | 'BFO'; broker?: string }): Promise<any> {
         return this.call('squareOff', userId, payload);
     }
 
@@ -266,8 +266,8 @@ class OrderClient {
         return this.call('manualBuy', userId, payload);
     }
 
-    async setTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number): Promise<void> {
-        const res = await this.request('setTargetStopLoss', userId, { token, targetPoints, stopLossPoints });
+    async setTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number, broker?: string): Promise<void> {
+        const res = await this.request('setTargetStopLoss', userId, { token, targetPoints, stopLossPoints, broker });
         if (!res.ok) throw new Error(res.error);
     }
 
@@ -419,7 +419,7 @@ class OrderClient {
 
 
 
-    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; accountCapital?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; perOrderCap?: number; strategyCapital?: number; targetPoints?: number; stopLossPoints?: number; accountClosed?: boolean; proficiencyLevel?: "beginner" | "advanced"; contractor?: boolean }): Promise<void> {
+    async updateUserSettings(userId: string, settings: { lossLimit: number; lotLimit?: number; maxInvestment?: number; investmentMode?: string; accountCapital?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; brokers?: string[]; perOrderCap?: number; strategyCapital?: number; targetPoints?: number; stopLossPoints?: number; accountClosed?: boolean; proficiencyLevel?: "beginner" | "advanced"; contractor?: boolean }): Promise<void> {
         const res = await this.request('updateUserSettings', userId, settings);
         if (!res.ok) throw new Error(res.error);
     }

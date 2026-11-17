@@ -7,7 +7,9 @@ import { optionRight } from '../utils/optionRight';
 // `demo`: the anonymous demo page renders this same card (its provider supplies the same trading context), with help bubbles on the
 // target/stop-loss controls and the pending-points hint while a fill waits for a price.
 export default function PositionCard({ trade, closed, demo }: { trade: Trade; closed?: boolean; demo?: boolean }) {
-  const { squareOff, setTargetStopLoss } = useTrading();
+  const { squareOff, setTargetStopLoss, trades } = useTrading();
+  // Shown only when the same contract is open on more than one broker (an account trading on several brokers): each row is its own position.
+  const onSeveralBrokers = !closed && !!trade.broker && trades.some((o) => o.token === trade.token && o.broker !== trade.broker);
   const [targetPoints, setTargetPoints] = useState('');
   const [slPoints, setSlPoints] = useState('');
 
@@ -30,7 +32,7 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
     if (!(Number.isFinite(tp) && tp >= 0) || !(Number.isFinite(sl) && sl >= 0) || (tp <= 0 && sl <= 0)) return;
     setBusy(true);
     try {
-      const ok = await setTargetStopLoss(trade.token, tp, sl);
+      const ok = await setTargetStopLoss(trade.token, tp, sl, trade.broker);
       if (ok) {
         setTargetPoints('');
         setSlPoints('');
@@ -42,10 +44,10 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
 
   const handleSquareOff = async () => {
     if (busy) return;
-    if (!window.confirm(`Square off ${trade.tsym} (qty ${trade.quantity})? This cannot be undone.`)) return;
+    if (!window.confirm(`Square off ${trade.tsym}${onSeveralBrokers ? ` on ${trade.broker}` : ''} (qty ${trade.quantity})? This cannot be undone.`)) return;
     setBusy(true);
     try {
-      await squareOff(trade.token, trade.quantity);
+      await squareOff(trade.token, trade.quantity, trade.broker);
     } finally {
       setBusy(false);
     }
@@ -62,6 +64,9 @@ export default function PositionCard({ trade, closed, demo }: { trade: Trade; cl
                 <Badge bg={rightLabel === 'CE' ? 'primary' : 'warning'} className="ms-2">
                   {rightLabel}
                 </Badge>
+              )}
+              {(onSeveralBrokers || (closed && trade.broker)) && (
+                <Badge bg="dark" className="ms-2 text-uppercase">{trade.broker}</Badge>
               )}
               {closed && (
                 <Badge bg="secondary" className="ms-2">Closed</Badge>

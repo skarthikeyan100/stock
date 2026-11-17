@@ -18,7 +18,7 @@ import { levelRules } from '../../levelRules';
 import { maxLotsForLossCap } from '../../levelLimits';
 import { startOfWeek } from '../../util/weekWindow';
 import AntContractMaster from '../../ant/AntContractMaster';
-import { normalizeBrokerName } from '../../util/brokerName';
+import { normalizeBrokerName, normalizeBrokerList } from '../../util/brokerName';
 import { localDayKey } from '../../strategy/dayKey';
 import { exchangeForTsym } from '../../util/underlyings';
 import { isGlobalMaxProfitLatched } from '../../strategy/globalMaxProfitLatch';
@@ -85,6 +85,7 @@ interface UserSettings {
     accountCapital?: number;
     useGTT?: boolean;
     broker?: 'kite' | 'ant' | 'breeze';
+    brokers?: string[]; // admin only: a frontend buy is placed independently on each (see getUserBrokers)
     perOrderCap?: number;
     strategyCapital?: number;
     targetPoints?: number;
@@ -285,6 +286,19 @@ class OrderBookkeeping {
         return userBroker ? (normalizeBrokerName(userBroker) as 'kite' | 'ant' | 'breeze') : this.getStrategyConfigBroker(user) ?? 'kite';
     }
 
+    // The brokers a frontend buy by this user is placed on, each independently: `brokers` when set (admin only, enforced where it is
+    // saved), else just the user's one broker. Always at least one entry.
+    getUserBrokers(user: string): Array<'kite' | 'ant' | 'breeze'> {
+        const list = Array.from(new Set(normalizeBrokerList(this.userSettingsCache.get(user)?.brokers))) as Array<'kite' | 'ant' | 'breeze'>;
+        return list.length > 0 ? list : [this.getUserBroker(user)];
+    }
+
+    // A user on several brokers has every limit (lot limit, account capital, sizing) counted PER BROKER, like a strategy's maxInvestment:
+    // each broker's leg must not be blocked by, or sized against, what the other brokers hold. undefined = the user-wide count (one broker).
+    private limitScope(user: string, broker?: string): string | undefined {
+        return broker !== undefined && this.getUserBrokers(user).length > 1 ? broker : undefined;
+    }
+
     getUserPerOrderCap(user: string): number | undefined {
         return this.userSettingsCache.get(user)?.perOrderCap;
     }
@@ -340,7 +354,7 @@ class OrderBookkeeping {
     // name-based guess, see getInstrumentLotSize).
     // `contractorBudget` (contractors only): the rupees this one order may use, replacing forecast.orders.maxInvestment for it (a Research Analyst's first
     // recommendation order gets a share of it, Add More the rest). `strict`: refuse when it does not buy one whole lot, instead of the one-lot floor.
-    resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number, contractLotSize?: number, stopLossPoints?: number, contractorBudget?: { amount: number; strict?: boolean }, clampToFreeze = true): number {
+    resolveManualBuyQuantity(userId: string, tsym: string, price: number, explicitQuantity?: number, contractLotSize?: number, stopLossPoints?: number, contractorBudget?: { amount: number; strict?: boolean }, clampToFreeze = true, broker?: string): number {
         if (explicitQuantity != null) return explicitQuantity;
         const lotSize = contractLotSize && contractLotSize > 0 ? contractLotSize : this.getInstrumentLotSize(tsym);
         if (this.isContractorUser(userId)) return this.resolveContractorQuantity(userId, tsym, price, lotSize, contractorBudget);
@@ -350,7 +364,8 @@ class OrderBookkeeping {
             Log.log(`[order] manual buy sizing for ${userId} ${tsym}: no usable price (${price}) - falling back to one lot (${lotSize})`);
             return lotSize;
         }
-        const available = ctx.availableAmount - this.pendingValue(userId);
+        const scope = this.limitScope(userId, broker);
+        const available = scope === undefined ? ctx.availableAmount - this.pendingValue(userId) : ctx.accountCapital - this.getCurrentInvestment(userId, scope) - this.pendingValue(userId, scope);
         if (!(available > 0)) {
             Log.log(`[order] manual buy sizing for ${userId} ${tsym}: no capital left (account ${ctx.accountCapital}, available ${available}) - falling back to one lot (${lotSize})`);
             return lotSize;
@@ -416,9 +431,9 @@ class OrderBookkeeping {
         return lots * lotSize;
     }
 
-    getTradedLots(user: string): number {
+    getTradedLots(user: string, broker?: string): number {
         return this.trades
-            .filter((t) => t.user === user)
+            .filter((t) => t.user === user && (broker === undefined || (t.broker ?? 'kite') === broker))
             .reduce((sum, t) => sum + Math.ceil(t.quantity / this.getInstrumentLotSize(t.tsym)), 0);
     }
 
@@ -530,8 +545,8 @@ class OrderBookkeeping {
         if (list.length === 0) this.pendingOrders.delete(user);
     }
 
-    private pendingLots(user: string): number {
-        return (this.pendingOrders.get(user) ?? []).reduce((sum, p) => sum + p.estimatedLots, 0);
+    private pendingLots(user: string, broker?: string): number {
+        return (this.pendingOrders.get(user) ?? []).filter((p) => broker === undefined || p.broker === broker).reduce((sum, p) => sum + p.estimatedLots, 0);
     }
 
     // `broker` scopes the sum to reservations tagged with that broker only -
@@ -877,12 +892,14 @@ class OrderBookkeeping {
         const ctx = this.getUserContext(user);
         // (An account with no capital configured has no capital limit to take the lot limit's place, so it keeps the lot limit.)
         if (ctx.investmentMode === 'investmentAmount' && ctx.accountCapital > 0) {
-            const capitalLeft = ctx.accountCapital - this.getCurrentInvestment(user) - this.pendingValue(user);
+            const scope = this.limitScope(user, broker);
+            const capitalLeft = ctx.accountCapital - this.getCurrentInvestment(user, scope) - this.pendingValue(user, scope);
             if (!(capitalLeft > 0)) {
                 return { allowed: false, reason: `User '${user}' has no capital left (account capital ${ctx.accountCapital}, in use ${ctx.accountCapital - capitalLeft}).` };
             }
         } else {
-            const tradedLots = this.getTradedLots(user) + this.pendingLots(user);
+            const scope = this.limitScope(user, broker);
+            const tradedLots = this.getTradedLots(user, scope) + this.pendingLots(user, scope);
             const lotLimit = this.getUserLotLimit(user);
             if (tradedLots >= lotLimit) {
                 return { allowed: false, reason: `User '${user}' has reached the lot limit (${tradedLots}/${lotLimit} lots).` };

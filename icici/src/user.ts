@@ -2,7 +2,7 @@ import Log from './util/Log';
 import Mongo from './tools/mongo';
 import configService from './prism/ConfigService';
 import { levelRules, ProficiencyLevel } from './levelRules';
-import { USER_BROKERS_TEXT, isUserBroker, normalizeBrokerName } from './util/brokerName';
+import { USER_BROKERS_TEXT, isUserBroker, normalizeBrokerName, normalizeBrokerList } from './util/brokerName';
 
 /** Starting capital and profit share of a level, from config.yml settings.levelRules (built-in defaults when absent). */
 export function levelDefaultsFor(level: ProficiencyLevel): { accountCapital: number; profitSplitPercent: number } {
@@ -29,6 +29,8 @@ export interface User {
     investmentAmount: number;
     useGTT: boolean;
     broker?: 'kite' | 'ant' | 'breeze';
+    /** Admin only: every frontend buy is placed independently on EACH of these brokers (the first is the default). Absent = just `broker`. */
+    brokers?: Array<'kite' | 'ant' | 'breeze'>;
     role: string;
     enabled: boolean;
     // Set when the user's realized loss in a trading week breached the weekly
@@ -285,7 +287,7 @@ export async function getAllUsers(): Promise<User[]> {
     return docs.map((d) => withCanonicalFields(d as unknown as User));
 }
 
-export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotLimit?: number; lotCount?: number; investmentMode?: string; investmentModeLocked?: boolean; accountCapital?: number; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; enabled?: boolean; perOrderCap?: number | null; strategyCapital?: number | null; allottedCapital?: number | null; targetPoints?: number | null; stopLossPoints?: number | null; profitSplitPercent?: number; proficiencyLevel?: 'beginner' | 'advanced' }): Promise<User | null> {
+export async function updateUserSettings(email: string, settings: { lossLimit?: number; lotLimit?: number; lotCount?: number; investmentMode?: string; investmentModeLocked?: boolean; accountCapital?: number; investmentAmount?: number; useGTT?: boolean; broker?: 'kite' | 'ant' | 'breeze'; brokers?: string[]; enabled?: boolean; perOrderCap?: number | null; strategyCapital?: number | null; allottedCapital?: number | null; targetPoints?: number | null; stopLossPoints?: number | null; profitSplitPercent?: number; proficiencyLevel?: 'beginner' | 'advanced' }): Promise<User | null> {
     const update: any = {};
     if (settings.lossLimit !== undefined) update.lossLimit = settings.lossLimit;
     const lotLimit = settings.lotLimit ?? settings.lotCount;
@@ -299,6 +301,13 @@ export async function updateUserSettings(email: string, settings: { lossLimit?: 
         const broker = normalizeBrokerName(settings.broker);
         if (!isUserBroker(broker)) throw new Error(`Invalid broker '${settings.broker}' (expected ${USER_BROKERS_TEXT})`);
         update.broker = broker;
+    }
+    if (settings.brokers !== undefined) {
+        const brokers = Array.from(new Set(normalizeBrokerList(settings.brokers)));
+        if (brokers.length === 0 || !brokers.every(isUserBroker)) throw new Error(`Invalid brokers '${JSON.stringify(settings.brokers)}' (each must be ${USER_BROKERS_TEXT})`);
+        update.brokers = brokers;
+        // `broker` stays the default broker (every single-broker path reads it): the first listed one unless the same call sets it.
+        if (settings.broker === undefined) update.broker = brokers[0];
     }
     if (settings.enabled !== undefined) update.enabled = settings.enabled;
     // null = clear a per-user override (falls back to the global/strategy default); undefined = leave as is.

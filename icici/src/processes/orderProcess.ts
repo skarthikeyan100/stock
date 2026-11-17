@@ -232,6 +232,7 @@ function resolveRequestBroker(req: OrderRequest): string {
             return 'breeze';
         case 'buyContract':
             return 'prism';
+        case 'manualBuy': // a multi-broker user's buy is placed once per broker, each request carrying its own payload.broker
         case 'chunkedBuyIndex':
         case 'butterflyBuyLeg':
         case 'butterflySellToOpen':
@@ -755,24 +756,37 @@ function executorForPosition(userId: string, tsym: string): BrokerExecutor {
 
 // Squares off EVERY open row behind a token (a token can map to several rows: one per broker), each through its
 // own broker, instead of closing only the first match. `quantity`, when given, is spread across the rows in order.
-async function squareOffByToken(userId: string, token: any, quantity: number | undefined, exchange: any, only?: 'ant'): Promise<Trade | { error: string }> {
-    const rows = bookkeeping.trades.filter((t) => t.token === String(token) && t.user === userId && (!only || t.broker === only));
-    if (rows.length === 0) return { error: `No open trade found for token ${token}` };
+// `broker` limits it to that broker's row(s). A user on several brokers has independent legs: one broker's failed sell must not stop
+// the others from being sold, so every row is attempted and the failures are reported together afterwards.
+async function squareOffByToken(userId: string, token: any, quantity: number | undefined, exchange: any, only?: 'ant', broker?: string): Promise<Trade | { error: string }> {
+    return squareOffRows(userId, bookkeeping.trades.filter((t) => t.token === String(token) && t.user === userId && (!only || t.broker === only) && (!broker || (t.broker ?? 'kite') === broker)),
+        `token ${token}`, quantity, exchange, only);
+}
+
+async function squareOffRows(userId: string, rows: Trade[], label: string, quantity: number | undefined, exchange: any, only?: 'ant'): Promise<Trade | { error: string }> {
+    if (rows.length === 0) return { error: `No open trade found for ${label}` };
     let remaining = quantity ?? Number.POSITIVE_INFINITY;
     const results: Trade[] = [];
+    const failures: string[] = [];
     for (const row of rows) {
         if (!(remaining > 0)) break;
         // The sells below are awaited one by one: re-check the row is still open and use its CURRENT quantity.
         if (!bookkeeping.trades.includes(row) || !(row.quantity > 0)) continue;
         const q = Math.min(row.quantity, remaining);
         const ex = exchange ?? (exchangeForTsym(row.tsym));
-        const done = only === 'ant'
-            ? await antExecutor.squareOffOnAnt(userId, row.tsym, q, ex)
-            : await squareOffAutoChunked(getBrokerExecutor(userId, row.broker), userId, row.tsym, q, ex);
-        results.push(done);
-        remaining -= q;
+        try {
+            const done = only === 'ant'
+                ? await antExecutor.squareOffOnAnt(userId, row.tsym, q, ex)
+                : await squareOffAutoChunked(getBrokerExecutor(userId, row.broker), userId, row.tsym, q, ex);
+            results.push(done);
+            remaining -= q;
+        } catch (e: any) {
+            if (rows.length === 1) throw e;
+            failures.push(`${row.broker ?? 'kite'}: ${e?.message ?? e}`);
+        }
     }
-    if (results.length === 0) return { error: `Open trade(s) for token ${token} were already closed` };
+    if (failures.length > 0) return { error: `Square-off of ${label} failed on ${failures.join('; ')}${results.length ? ` (sold on ${results.map((r) => r.broker ?? 'kite').join(', ')})` : ''}` };
+    if (results.length === 0) return { error: `Open trade(s) for ${label} were already closed` };
     if (results.length === 1) return results[0];
     return Object.assign(new Trade(), results[0], { quantity: results.reduce((sum, r) => sum + (r.quantity || 0), 0) });
 }
@@ -791,6 +805,42 @@ function upgradeLegacyRequest(req: OrderRequest): OrderRequest {
         default:
             return req;
     }
+}
+
+// One frontend buy on ONE broker (the user's only broker, or one leg of a fan-out). `mirrored` = hand the buy to the admin mirror (mirror.ts);
+// a fan-out leg is never mirrored (the multi-broker account is the admin's own, and the admin never mirrors).
+async function manualBuyOnOneBroker(req: OrderRequest, manualBuyBroker: string, mirrored: boolean): Promise<OrderResponse> {
+    const { broker: _ignored, ...payload } = req.payload ?? {};
+    const legReq: OrderRequest = { ...req, payload: { ...payload, broker: manualBuyBroker } };
+    const estimatedValue = payload.price && payload.quantity ? payload.price * payload.quantity : undefined;
+    return await placeOrderWithPendingGuard(legReq, estimatedValue, () => {
+        if (payload.limitPrice !== undefined && manualBuyBroker !== 'kite') throw new Error(`a limit entry is supported on Kite only (this buy is on ${manualBuyBroker})`);
+        // mirror: a frontend user's buy is copied by the admin (mirror.ts; settings.mirrorPercentage). If the user's own order then
+        // fails, the admin's matching quantity is taken back so it does not sit open without the user's.
+        const started: Array<{ leg: MirrorLeg; done: Promise<void> | void }> = [];
+        const mirror: MirrorHook | undefined = mirrored ? (leg) => { const done = startMirrorBuy(leg); started.push({ leg, done }); return done; } : undefined;
+        const buy = manualBuyBroker === 'ant'
+            ? antExecutor.manualBuyOnAnt({ userId: req.userId, ...payload, mirror })
+            : manualBuyBroker === 'breeze'
+                ? manualBuyOnBreeze({ userId: req.userId, ...payload, mirror })
+                : manualBuyOnKite({ userId: req.userId, ...payload, mirror });
+        return buy.catch((e) => { for (const s of started) undoMirrorBuy(s.leg, s.done, e?.partial ? Number(e.filledQuantity) || 0 : 0); throw e; });
+    });
+}
+
+// A multi-broker user's frontend buy: the same order placed independently on every broker (own sizing, own limits, own fills, own
+// target/stop), all at once. A leg that fails does not undo the others. The reply is ok when at least one leg is in; `results` has every leg.
+async function manualBuyFanOut(req: OrderRequest, brokers: string[]): Promise<OrderResponse> {
+    if (req.payload?.limitPrice !== undefined) return { kind: 'response', id: req.id, ok: false, error: 'a limit entry is not supported when the user trades on several brokers' };
+    const settled = await Promise.allSettled(brokers.map((b) => manualBuyOnOneBroker(req, b, false)));
+    const results = settled.map((s, i) => {
+        const broker = brokers[i];
+        if (s.status === 'rejected') return { broker, ok: false as const, error: String(s.reason?.message ?? s.reason) };
+        return s.value.ok ? { broker, ok: true as const, result: s.value.result } : { broker, ok: false as const, error: s.value.error };
+    });
+    for (const r of results) Log.log(`[order] fan-out buy for ${req.userId} on ${r.broker}: ${r.ok ? 'placed' : `FAILED - ${r.error}`}`);
+    if (!results.some((r) => r.ok)) return { kind: 'response', id: req.id, ok: false, error: results.map((r) => `${r.broker}: ${(r as any).error}`).join('; ') };
+    return { kind: 'response', id: req.id, ok: true, result: { fanOut: true, results } };
 }
 
 export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
@@ -830,10 +880,18 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 await waitForReconcile();
                 const { quantity, exchange, token } = req.payload;
                 const tsym = payloadTradingSymbol(req.payload);
+                // `broker` (optional): only that broker's leg. Without it, every broker holding the contract is sold, each independently.
+                const onlyBroker = normalizeBrokerName(req.payload?.broker) || undefined;
                 if (!tsym && token) {
-                    const byToken = await squareOffByToken(req.userId, token, quantity, exchange);
+                    const byToken = await squareOffByToken(req.userId, token, quantity, exchange, undefined, onlyBroker);
                     if ('error' in byToken) return { kind: 'response', id: req.id, ok: false, error: byToken.error };
                     return { kind: 'response', id: req.id, ok: true, result: byToken };
+                }
+                const heldRows = bookkeeping.trades.filter((t) => t.user === req.userId && t.tsym === tsym && (!onlyBroker || (t.broker ?? 'kite') === onlyBroker));
+                if ((bookkeeping.getUserBrokers(req.userId).length > 1 && new Set(heldRows.map((t) => t.broker ?? 'kite')).size > 1) || (onlyBroker && heldRows.length > 0)) {
+                    const byRows = await squareOffRows(req.userId, heldRows, tsym, quantity, exchange);
+                    if ('error' in byRows) return { kind: 'response', id: req.id, ok: false, error: byRows.error };
+                    return { kind: 'response', id: req.id, ok: true, result: byRows };
                 }
                 // Above one freeze order (a split frontend buy) the position is sold in freeze-sized chunks.
                 const trade = await squareOffAutoChunked(executorForPosition(req.userId, tsym), req.userId, tsym, quantity, exchange);
@@ -1110,25 +1168,15 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 };
 
             case 'manualBuy': {
-                const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
-                return await placeOrderWithPendingGuard(req, estimatedValue, () => {
-                    const manualBuyBroker = bookkeeping.getUserBroker(req.userId);
-                    if (req.payload.limitPrice !== undefined && manualBuyBroker !== 'kite') throw new Error(`a limit entry is supported on Kite only (this user's broker is ${manualBuyBroker})`);
-                    // mirror: a frontend user's buy is copied by the admin (mirror.ts; settings.mirrorPercentage). If the user's own order then
-                    // fails, the admin's matching quantity is taken back so it does not sit open without the user's.
-                    const started: Array<{ leg: MirrorLeg; done: Promise<void> | void }> = [];
-                    const mirror: MirrorHook = (leg) => { const done = startMirrorBuy(leg); started.push({ leg, done }); return done; };
-                    const buy = manualBuyBroker === 'ant'
-                        ? antExecutor.manualBuyOnAnt({ userId: req.userId, ...req.payload, mirror })
-                        : manualBuyBroker === 'breeze'
-                            ? manualBuyOnBreeze({ userId: req.userId, ...req.payload, mirror })
-                            : manualBuyOnKite({ userId: req.userId, ...req.payload, mirror });
-                    return buy.catch((e) => { for (const s of started) undoMirrorBuy(s.leg, s.done, e?.partial ? Number(e.filledQuantity) || 0 : 0); throw e; });
-                });
+                const userBrokers = bookkeeping.getUserBrokers(req.userId);
+                const explicit = normalizeBrokerName(req.payload?.broker);
+                if (explicit && !userBrokers.includes(explicit as any)) return { kind: 'response', id: req.id, ok: false, error: `broker '${explicit}' is not one of this user's brokers (${userBrokers.join(', ')})` };
+                if (!explicit && userBrokers.length > 1) return await manualBuyFanOut(req, userBrokers);
+                return await manualBuyOnOneBroker(req, explicit || userBrokers[0], true);
             }
 
             case 'setTargetStopLoss': {
-                await setTargetStopLoss(req.userId, req.payload.token, req.payload.targetPoints, req.payload.stopLossPoints);
+                await setTargetStopLoss(req.userId, req.payload.token, req.payload.targetPoints, req.payload.stopLossPoints, normalizeBrokerName(req.payload?.broker) || undefined);
                 await mirrorSetTargetStopLoss(req.userId, req.payload.token, req.payload.targetPoints, req.payload.stopLossPoints);
                 return { kind: 'response', id: req.id, ok: true };
             }
@@ -1351,6 +1399,7 @@ async function loadUserLimits() {
             accountCapital: user.accountCapital ?? user.investmentAmount,
             useGTT: user.useGTT,
             broker: user.broker,
+            brokers: user.brokers,
             perOrderCap: user.perOrderCap,
             strategyCapital: user.strategyCapital ?? user.allottedCapital,
             targetPoints: user.targetPoints,

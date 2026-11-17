@@ -309,7 +309,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { 
         const canonical = parseCanonicalSymbol(req.contract);
         const resolved = await KiteContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, req.limitPrice, req.quantity, resolved.lotSize, req.stopLossPoints, req.contractorBudget);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, req.limitPrice, req.quantity, resolved.lotSize, req.stopLossPoints, req.contractorBudget, true, 'kite');
         const placed = await restingLimitBuyOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.limitPrice, req.targetPoints, req.stopLossPoints);
         // The mirror starts only once the user's own order is in (a resting order cannot be "undone" like a fill): the admin rests the same limit with the same exits.
         req.mirror?.({ userId: req.userId, broker: 'kite', tsym: resolved.tradingSymbol, token: commonToken, exchange: resolved.exchange, quantity, resting: true,
@@ -321,7 +321,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { 
         const resolved = await KiteContractMaster.getInstance().findNearestExpiryOption(canonical.strike, canonical.optionType, canonical.symbol);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(canonical.symbol, canonical.optionType, { strike: canonical.strike });
         const price = await estimateOptionPrice(canonical.symbol, canonical.strike, canonical.optionType);
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity, resolved.lotSize, req.stopLossPoints, req.contractorBudget, false);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, resolved.tradingSymbol, price, req.quantity, resolved.lotSize, req.stopLossPoints, req.contractorBudget, false, 'kite');
         return buyContractOnKite(req.userId, resolved.tradingSymbol, commonToken, quantity, resolved.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
     }
 
@@ -337,7 +337,7 @@ export async function manualBuyOnKite(req: ManualBuyRequest): Promise<Trade | { 
         const contract = await KiteContractMaster.getInstance().findATMOption(req.strikePrice, optionType, index);
         const commonToken = AntContractMaster.getInstance().resolveCommonToken(index, optionType, { atmLtp: req.strikePrice });
         const price = await estimateOptionPrice(index, req.strikePrice, optionType);
-        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity, contract.lotSize, req.stopLossPoints, req.contractorBudget, false);
+        const quantity = bookkeeping.resolveManualBuyQuantity(req.userId, contract.tradingSymbol, price, req.quantity, contract.lotSize, req.stopLossPoints, req.contractorBudget, false, 'kite');
         return buyContractOnKite(req.userId, contract.tradingSymbol, commonToken, quantity, contract.exchange, req.targetPoints, req.stopLossPoints, req.mirror);
     }
 
@@ -407,9 +407,19 @@ async function buyOneContractOnKite(userId: string, tradingSymbol: string, commo
 
 // POST /prism/settarget's Kite path: update bookkeeping's local target/SL
 // fields and, if this trade has a live GTT (gttTriggerId), modify it in place.
-export async function setTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number): Promise<void> {
-    const trade = bookkeeping.trades.find((t) => t.token === token && t.user === userId);
-    if (!trade) throw new Error(`No open trade for token ${token} and user ${userId}`);
+export async function setTargetStopLoss(userId: string, token: string, targetPoints: number, stopLossPoints: number, broker?: string): Promise<void> {
+    // A token can be open on several brokers for one user (independent legs): without `broker` every leg is updated, with it only that one.
+    const legs = bookkeeping.trades.filter((t) => t.token === token && t.user === userId && (!broker || (t.broker ?? 'kite') === broker));
+    if (legs.length === 0) throw new Error(`No open trade for token ${token} and user ${userId}${broker ? ` on ${broker}` : ''}`);
+    const failures: string[] = [];
+    for (const leg of legs) {
+        try { await setTargetStopLossOnLeg(leg, targetPoints, stopLossPoints); }
+        catch (e: any) { if (legs.length === 1) throw e; failures.push(`${leg.broker ?? 'kite'}: ${e?.message ?? e}`); }
+    }
+    if (failures.length > 0) throw new Error(`setTargetStopLoss failed on ${failures.join('; ')}`);
+}
+
+async function setTargetStopLossOnLeg(trade: Trade, targetPoints: number, stopLossPoints: number): Promise<void> {
 
     // 0 / missing / non-numeric means "leave that side unset" (the UI may set only one side). Without this a 0 became
     // price -/+ 0 = the entry price, i.e. an exit at the first tick.

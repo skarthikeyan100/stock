@@ -1049,7 +1049,7 @@ async function enterManualBreezeBuy(userId: string, contract: FnoRecord, request
     const tsym = tsymFor(contract);
     const { bestAsk } = await breezeQuoteWithCrossCheck(contract);
     if (!(bestAsk > 0)) throw new Error(`Breeze quote unavailable for ${tsym} - manual buy not placed`);
-    const quantity = bookkeeping.resolveManualBuyQuantity(userId, tsym, bestAsk, requestedQuantity, contract.lotSize, stopLossPoints, contractorBudget, false);
+    const quantity = bookkeeping.resolveManualBuyQuantity(userId, tsym, bestAsk, requestedQuantity, contract.lotSize, stopLossPoints, contractorBudget, false, 'breeze');
     const lot = contract.lotSize;
     if (!Number.isInteger(quantity) || !(quantity > 0) || (lot > 0 && quantity % lot !== 0)) {
         throw new Error(`Manual buy ${tsym}: quantity ${quantity} must be a positive multiple of the lot size ${lot} - not placed`);

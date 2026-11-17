@@ -24,6 +24,8 @@ export interface Trade {
   // position show what was requested instead of looking like nothing was set.
   pendingTargetPoints?: number;
   pendingStopLossPoints?: number;
+  // Which broker holds this position (an account trading on several brokers has one row per broker for the same contract).
+  broker?: string;
 }
 
 interface TradingState {
@@ -40,8 +42,8 @@ interface TradingState {
   placeOrder: (right: string) => Promise<void>;
   // Resolve true only when the server accepted the request, so callers clear their inputs/selection on success only.
   placeContractOrder: (contract: string, targetPoints?: number, stopLossPoints?: number) => Promise<boolean>;
-  squareOff: (token: string, qty: number) => Promise<boolean>;
-  setTargetStopLoss: (token: string, targetPoints: number, stopLossPoints: number) => Promise<boolean>;
+  squareOff: (token: string, qty: number, broker?: string) => Promise<boolean>;
+  setTargetStopLoss: (token: string, targetPoints: number, stopLossPoints: number, broker?: string) => Promise<boolean>;
   clearError: () => void;
 }
 
@@ -146,6 +148,14 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     return message || 'Order rejected';
   };
 
+  // An account that trades on several brokers gets one independent order per broker; the reply is OK when at least one is in, so a broker
+  // that did not place is reported here instead of passing silently.
+  const reportFailedBrokerLegs = async (response: Response) => {
+    const body = await response.clone().json().catch(() => null);
+    const failed = body?.fanOut ? (body.results as Array<{ broker: string; ok: boolean; error?: string }>).filter((r) => !r.ok) : [];
+    if (failed.length > 0) setOrderError(`Not placed on ${failed.map((r) => `${r.broker}: ${describeOrderError({ error: r.error })}`).join('; ')}`);
+  };
+
   const placeOrder = useCallback(async (right: string) => {
     setPlacingOrder(true);
     setOrderError(null);
@@ -153,6 +163,8 @@ export function TradingProvider({ children }: { children: ReactNode }) {
       const response = await apiPost(`/order/buy?index=NIFTY&right=${encodeURIComponent(right)}`);
       if (!response.ok) {
         setOrderError(describeOrderError({ error: await readError(response) }));
+      } else {
+        await reportFailedBrokerLegs(response);
       }
     } catch (err) {
       console.error('[Order] Order failed:', err);
@@ -174,6 +186,7 @@ export function TradingProvider({ children }: { children: ReactNode }) {
         setOrderError(describeOrderError({ error: await readError(response) }));
         return false;
       }
+      await reportFailedBrokerLegs(response);
       return true;
     } catch (err) {
       console.error('[Order] Contract order failed:', err);
@@ -184,10 +197,10 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const squareOff = useCallback(async (token: string, qty: number): Promise<boolean> => {
+  const squareOff = useCallback(async (token: string, qty: number, broker?: string): Promise<boolean> => {
     setOrderError(null);
     try {
-      const response = await apiPost(`/order/squareoff?token=${encodeURIComponent(token)}&qty=${qty}`);
+      const response = await apiPost(`/order/squareoff?token=${encodeURIComponent(token)}&qty=${qty}${broker ? `&broker=${encodeURIComponent(broker)}` : ''}`);
       if (!response.ok) {
         // The server answers with plain text on some failures: read it as text, not JSON.
         setOrderError(describeOrderError({ error: await readError(response) }));
@@ -201,9 +214,9 @@ export function TradingProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const setTargetStopLoss = useCallback(async (token: string, targetPoints: number, stopLossPoints: number): Promise<boolean> => {
+  const setTargetStopLoss = useCallback(async (token: string, targetPoints: number, stopLossPoints: number, broker?: string): Promise<boolean> => {
     try {
-      const response = await apiPost('/order/settarget', { token, targetPoints, stopLossPoints });
+      const response = await apiPost('/order/settarget', { token, targetPoints, stopLossPoints, ...(broker ? { broker } : {}) });
       if (!response.ok) {
         setOrderError(await readError(response));
         return false;

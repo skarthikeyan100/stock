@@ -27,6 +27,7 @@ export function pushUserToOrderProcess(user: any, context: string): Promise<void
         accountCapital: user.accountCapital ?? user.investmentAmount,
         useGTT: user.useGTT,
         broker: user.broker,
+        brokers: user.brokers,
         perOrderCap: user.perOrderCap,
         strategyCapital: user.strategyCapital ?? user.allottedCapital,
         targetPoints: user.targetPoints,
