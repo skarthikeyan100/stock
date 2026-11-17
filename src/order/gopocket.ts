@@ -11,3 +11,16 @@ export async function readSpot(page: Page): Promise<number> {
   }
   throw new Error('could not read the NIFTY 50 level from the page');
 }
+
+export interface BuyRequest {
+  right: 'CE' | 'PE';
+  strike: number;
+  /** YYYY-MM-DD; absent means the nearest listed expiry */
+  expiry?: string;
+  price: number;
+  lots: number;
+  stopOffset: number;
+  targetOffset: number;
+}
+
+export type OrderOutcome = { status: 'placed' | 'rejected' | 'unknown'; orderNo?: string; symbol?: string; reason?: string };
