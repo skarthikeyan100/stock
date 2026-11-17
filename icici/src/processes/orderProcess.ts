@@ -32,6 +32,7 @@ import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, recon
 import * as antExecutor from './order/antExecutor';
 import { buyIndexOnBreeze, manualBuyOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
 import { attachProtection, cancelProtection } from './order/attachProtection';
+import { isLockedSell, onLockedSellCancelled, recordLockedSells, loadLockedSellsFromMongo } from './order/lockedSells';
 import { buyChunked, marketBuyBareChunked, squareOffChunked, squareOffAutoChunked, squareOffLimitChunked } from './order/chunkedOrder';
 import BreezeContractMaster, { breezeTsym } from '../breeze/BreezeContractMaster';
 import Breeze from '../breeze/Breeze';
@@ -120,6 +121,14 @@ bookkeeping.onPositionsChanged(() => {
 for (const trackerBroker of TRACKER_BROKERS) {
     TRACKERS[trackerBroker].onCancelled((userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason) => {
         if (action === 'Buy') { void onEntryCancelled(userId, orderId); void forgetRestingMirror(userId, instrumentToken); }
+        // A locked-price sell (max-profit trip) is re-placed here at its locked price, owned by the order side whether or not a strategy is
+        // enabled (order/lockedSells.ts). Handled = the strategies are not told (their resting-sell bookkeeping stays right).
+        if (action === 'Sell' && isLockedSell(orderId)) {
+            void onLockedSellCancelled(userId, tradingSymbol, quantity, action, broker, orderId, reason, rejectReason)
+                .catch((e) => { Log.log('[order] ALERT: lockedSells handler threw:', e); return false; })
+                .then((handled) => { if (!handled) broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason }); });
+            return;
+        }
         broadcast({ kind: 'cancelled', userId, tradingSymbol, instrumentToken, quantity, exchange, action, broker, orderId, reason, rejectReason });
     });
 }
@@ -883,16 +892,17 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 if (reconcileInFlight) await reconcileInFlight;
                 const executor = getBrokerExecutor(req.userId, req.payload.broker);
                 const tsym = payloadTradingSymbol(req.payload);
-                const result = await squareOffLimitChunked(
-                    executor,
-                    req.userId,
-                    tsym,
-                    req.payload.instrumentId,
-                    req.payload.quantity,
-                    exchangeForTsym(tsym),
-                    req.payload.price,
-                    req.payload.freezeQuantity
-                );
+                const exch = exchangeForTsym(tsym);
+                const locked = req.payload.locked === true; // a max-profit trip's locked-price sell: re-placed by the order side if it is cancelled (order/lockedSells.ts)
+                const brokerName = req.payload.broker ?? 'kite';
+                let result;
+                try {
+                    result = await squareOffLimitChunked(executor, req.userId, tsym, req.payload.instrumentId, req.payload.quantity, exch, req.payload.price, req.payload.freezeQuantity);
+                } catch (e: any) {
+                    if (locked && Array.isArray(e?.orderIds) && e.orderIds.length > 0) await recordLockedSells(req.userId, brokerName, tsym, String(req.payload.instrumentId), exch, req.payload.price, e.orderIds);
+                    throw e;
+                }
+                if (locked) await recordLockedSells(req.userId, brokerName, tsym, String(req.payload.instrumentId), exch, req.payload.price, result.orderIds);
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
@@ -1564,6 +1574,7 @@ export async function startOrderProcess() {
     // cancellation) that happened while this process was down instead of
     // silently orphaning it - see pendingLimitOrders.ts's header comment.
     // Each guarded: one Mongo hiccup here must not keep the IPC server from ever starting (process would exit).
+    await loadLockedSellsFromMongo().catch((e) => Log.log('[order] startup: restoring locked sells failed (continuing):', e));
     for (const name of TRACKER_BROKERS) {
         await TRACKERS[name].load().catch((e) => Log.log(`[order] startup: restoring pending ${name} limit orders failed (continuing):`, e));
     }

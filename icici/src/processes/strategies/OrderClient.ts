@@ -310,7 +310,7 @@ class OrderClient {
     // squareOffLimitChunked). Reuses the same generous chunked timeout since
     // placement is still up to 8 sequential broker calls, even though it
     // shouldn't normally take anywhere near as long as a fill-waiting call.
-    async chunkedSquareOffLimit(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number; broker?: BrokerName }): Promise<any> {
+    async chunkedSquareOffLimit(userId: string, payload: { tradingSymbol: string; instrumentId: string; quantity: number; price: number; freezeQuantity?: number; broker?: BrokerName; locked?: boolean }): Promise<any> {
         return this.call('chunkedSquareOffLimit', userId, payload, OrderClient.CHUNKED_ORDER_TIMEOUT_MS);
     }
 

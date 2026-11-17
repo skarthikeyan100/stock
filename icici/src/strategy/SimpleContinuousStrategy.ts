@@ -806,7 +806,7 @@ export default class SimpleContinuousStrategy extends Strategy {
     private async placeTripSell(leg: SimpleLeg, quantity: number, price: number, add: boolean, cap: number): Promise<void> {
         try {
             const res: any = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
-                tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(),
+                tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(), locked: true,
             });
             this.tripGuard.ok(leg.id);
             if (add) {

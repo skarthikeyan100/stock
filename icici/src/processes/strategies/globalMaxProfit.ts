@@ -88,7 +88,7 @@ export async function checkOne(userId: string, broker: string, cap: number, stat
                 const pending = await OrderClient.getInstance().getPendingSells(userId, broker, t.tsym);
                 if (pending.reduce((s, p) => s + num(p.quantity), 0) >= num(t.quantity)) { placed.set(key, { qty: num(t.quantity), price: 0, at: Date.now() }); continue; }
             }
-            await OrderClient.getInstance().chunkedSquareOffLimit(userId, { tradingSymbol: t.tsym, instrumentId, quantity: num(t.quantity), price, broker: broker as any });
+            await OrderClient.getInstance().chunkedSquareOffLimit(userId, { tradingSymbol: t.tsym, instrumentId, quantity: num(t.quantity), price, broker: broker as any, locked: true });
             tripGuard.ok(key2);
             placed.set(key, { qty: num(t.quantity), price, at: Date.now() });
             Log.log(`[GlobalMaxProfit] ${userId} ${broker}: resting sell ${t.tsym} qty=${num(t.quantity)} @${price} (locks ${cap})`);
