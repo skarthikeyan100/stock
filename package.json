@@ -1,0 +1,26 @@
+{
+  "name": "gopocket",
+  "version": "1.0.0",
+  "description": "Reads NIFTY option calls from WhatsApp and places bracket orders on web.gopocket.in",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "tsx src/index.ts 2>&1 | tee -a logs/dev.log",
+    "login": "tsx scripts/login.ts",
+    "probe": "tsx scripts/probe.ts",
+    "probe-buy": "tsx scripts/probe-buy.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.26.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
