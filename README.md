@@ -42,3 +42,28 @@ clicked**; set `false` only when you want real orders), `claudeModel` (the model
 already running (GoPocket is detected by its port, the router by its process). Both run in the background; logs are
 `logs/bot.out.log` and `../whatsapp/logs/router.out.log`. If the saved GoPocket session is logged out it stops and tells
 you to run `npm run login`. If it is logged out and `.env` has `GOPOCKET_MOBILE` and `GOPOCKET_PASSWORD` (copy `.env.example`; gitignored, keep it `chmod 600`), it logs in by itself and asks you for the OTP in the terminal; without them it tells you to run `npm run login`.
+
+## Status (2026-11-17 night) and what is next
+Everything so far was verified in **dry run only**: no real order has been placed and no accepted order has been seen.
+
+**Verified**
+- Router (`../whatsapp`) -> GoPocket over loopback with a self-chat message: parsed by Claude, sized as one lot, bracket form filled and read back on the live site (NIFTY, PAYTM, HAL), then cancelled.
+- Haiku 5.5 (`claudeModel`) gave the same answers as the default model on the real channel posts.
+- Skips without a Claude call: "Again", "cash", and messages with no CE/PE. A stated expiry month is honoured (never trades another month).
+- 101 unit tests, `tsc` clean. `npm run start` skips whatever is already running.
+
+**Not verified yet**
+1. **First live order (owner-run, market hours):** set `"dryRun": false` in `config.json`, run a 1-lot order, watch the result. Unverified until then: toast/status parsing, the rejected-reason lookup (Orders > Executed > Info), the bracket/cover cut-off time (the only recorded rejection was "'BO' Orders are disallowed after system square off"), how to cancel a pending order, and the order-placement request.
+2. **A real post from the channel** (`Pavithra Sky Calls`) through router -> bot: the chat-name match has only been tested with a self-chat message.
+3. **Automated login in `npm run start`** (`.env` mobile + password, OTP asked in the terminal): written from the recorded screens, never run against the site. Headless login is also untested; set `"headless": false` if the site refuses it.
+4. **The restarted router** has not been checked to have finished linking to WhatsApp (`../whatsapp/logs/router.out.log`).
+
+**Known risks**
+- Non-NIFTY calls use the message price as given (owner's decision): a typo'd strike or stale call is ordered as written. NIFTY keeps the spot-band and price-range checks.
+- Session lifetime on the site is unknown; the bot reports "session expired" if it lapses.
+- `.env` holds the password in plain text: keep it `chmod 600`.
+
+**Still to do**
+- Final whole-branch self-review of GoPocket (no subagent tool available), fix findings, ledger, finish the branch.
+- Record in `docs/gopocket-site-notes.md`: an accepted bracket buy, the cut-off time, the order request.
+- Later: the "enrich" broker and its route in the router config; a README for `../whatsapp`.
