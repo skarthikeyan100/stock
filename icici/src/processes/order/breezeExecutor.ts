@@ -1062,9 +1062,19 @@ async function enterManualBreezeBuy(userId: string, contract: FnoRecord, request
         place: (adminId, qty) => enterManualBreezeBuy(adminId, contract, qty, target, stop) });
 
     // Several orders when above one freeze order (chunkedOrder.manualBuyChunked); Breeze exits are always in-app, so `inAppExit` changes nothing here.
+    // Every chunk after the first is priced from a FRESH guarded quote: the first chunk's ask is seconds old by the time the next order goes
+    // out, and a limit at a stale ask never filled when the market had ticked up (2026-11-17 12:50: 1755 filled @ 37.5, the 195 chunk @ 37.5
+    // sat until cancelled while the ask was 37.85).
+    let placedChunks = 0;
     const placeOne = async (qty: number, _inAppExit: boolean): Promise<Trade> => {
-        Log.log(`[order] Buying (manual) ${tsym} qty=${qty} @ ${bestAsk} (limit, guarded quote) for ${userId} via Breeze`);
-        const { orderId } = await placeLimitOptionOrder(contract, 'buy', qty, bestAsk);
+        let ask = bestAsk;
+        if (placedChunks++ > 0) {
+            const fresh = (await breezeQuoteWithCrossCheck(contract)).bestAsk;
+            if (!(fresh > 0)) throw new Error(`Breeze quote unavailable for ${tsym} - next chunk of the manual buy not placed`);
+            ask = fresh;
+        }
+        Log.log(`[order] Buying (manual) ${tsym} qty=${qty} @ ${ask} (limit, guarded quote) for ${userId} via Breeze`);
+        const { orderId } = await placeLimitOptionOrder(contract, 'buy', qty, ask);
         // Tracked from placement until the fill is settled (same as marketBuyBareOnBreeze): a fill that lands after the wait gave up is booked by the poller.
         trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol: tsym, antToken: contract.token, quantity: qty, exchange: contract.exchange, action: 'Buy' });
 
