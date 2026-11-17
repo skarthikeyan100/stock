@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import type { Page } from 'playwright';
-import { findExpiry, nearestExpiry } from '../expiry.js';
+import { chooseExpiry } from '../expiry.js';
 import type { Config } from '../types.js';
 import { BASE_URL, dismissNotice, isLoggedIn } from './session.js';
 
@@ -24,6 +24,8 @@ export interface BuyRequest {
   strike: number;
   /** YYYY-MM-DD; absent means the nearest listed expiry */
   expiry?: string;
+  /** JAN..DEC: trade the nearest expiry inside this month */
+  expiryMonth?: string;
   price: number;
   stopOffset: number;
   targetOffset: number;
@@ -91,8 +93,8 @@ async function openBuyForm(page: Page, req: BuyRequest, today: string): Promise<
   const rowsOfUnderlying = labels.map((l, i) => ({ l, i })).filter((x) => underlyingRow(x.l, req.underlying));
   const wanted = new Set(preferNfo(rowsOfUnderlying.map((x) => x.l)));
   const mine = rowsOfUnderlying.filter((x) => wanted.has(x.l));
-  const choice = req.expiry ? findExpiry(mine.map((x) => x.l), req.expiry, today) : nearestExpiry(mine.map((x) => x.l), today);
-  if (!choice) throw new Error(req.expiry ? `no ${req.underlying} ${req.strike} ${req.right} listed for ${req.expiry}` : `no ${req.underlying} ${req.strike} ${req.right} expiry found`);
+  const choice = chooseExpiry(mine.map((x) => x.l), req, today);
+  if (!choice) throw new Error(`no ${req.underlying} ${req.strike} ${req.right} listed for ${req.expiry ?? req.expiryMonth ?? 'any expiry'}`);
   const idx = mine.find((x) => x.l === choice.label)!.i;
   const row = rows.nth(idx);
   await row.hover();

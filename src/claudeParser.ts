@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { MONTHS } from './expiry.js';
 import type { Signal } from './types.js';
 
 export type ClaudeRunner = (prompt: string) => Promise<string>;
@@ -22,6 +23,7 @@ const SCHEMA = {
     right: { type: 'string', enum: ['CE', 'PE'] },
     strike: { type: 'number' },
     expiry: { type: 'string' },
+    expiryMonth: { type: 'string', enum: MONTHS },
     price: { type: 'number' },
     stop: { type: 'number' },
     targets: { type: 'array', items: { type: 'number' } },
@@ -36,6 +38,7 @@ const INSTRUCTIONS = `You extract a trading call from a WhatsApp message. Reply 
 - price is the entry price (CMP / entry / @). stop is the stop loss price. targets lists every target price in order.
 - Prices written like 41:00 mean 41.00. Ignore emoji and symbols.
 - Ignore any lot size or quantity written in the message.
+- expiryMonth is the three-letter month of the option's expiry when the message names a month but no date ("NOV: 2000.00 CE" -> NOV). Leave it out when no month is named.
 - expiry only if the message clearly states the option's expiry date, as YYYY-MM-DD. A line like "DATE: 12-11-2026" is the date of the call, not an expiry; a bare month such as NOV is not a date. When unsure, leave expiry out. Never invent a field the message does not contain.
 
 Message:
@@ -82,6 +85,8 @@ export async function parseWithClaude(text: string, run: ClaudeRunner): Promise<
   const { right, strike, price } = structured;
   if ((right !== 'CE' && right !== 'PE') || typeof strike !== 'number' || typeof price !== 'number') return null;
 
+  if (structured.expiryMonth !== undefined && !MONTHS.includes(String(structured.expiryMonth).toUpperCase())) return null;
+
   const targets = Array.isArray(structured.targets) ? (structured.targets as unknown[]).filter((t): t is number => typeof t === 'number') : [];
   return {
     action: 'buy',
@@ -92,5 +97,6 @@ export async function parseWithClaude(text: string, run: ClaudeRunner): Promise<
     ...(typeof structured.stop === 'number' ? { stop: structured.stop } : {}),
     ...(targets.length > 0 ? { target: targets[0] } : {}),
     ...(typeof structured.expiry === 'string' ? { expiry: structured.expiry } : {}),
+    ...(structured.expiryMonth !== undefined ? { expiryMonth: String(structured.expiryMonth).toUpperCase() } : {}),
   };
 }

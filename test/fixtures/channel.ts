@@ -8,15 +8,15 @@ export const NIFTY_CALL_CLAUDE = { relevant: true, action: 'buy', instrument: 'N
 
 export const PAYTM_CALL =
   'Positional\n\nRISKY JACKPOT\n\nDATE: 12-11-2026\n\n# BUY Paytm ( NOV: 2000.00 CE) at above 20.50 ADD UPTO 17.00 STOPLOSS 17.00 TARGET 22.50-25.00-28.00++(LOT SIZE 725';
-export const PAYTM_CALL_CLAUDE = { relevant: true, action: 'buy', instrument: 'PAYTM', strike: 2000, right: 'CE', price: 20.5, stop: 17, targets: [22.5, 25, 28] };
+export const PAYTM_CALL_CLAUDE = { relevant: true, action: 'buy', instrument: 'PAYTM', strike: 2000, right: 'CE', price: 20.5, stop: 17, targets: [22.5, 25, 28], expiryMonth: 'NOV' };
 
 export const HAL_CALL =
   'Positional ( RESULTS BET)\n\nRISKY JACKPOT\n\nDATE: 12-11-2026\n\n# BUY HAL ( NOV: 5400.00 CE) at above 13.50 ADD UPTO 7.00 STOPLOSS 6.00 TARGET 18.00-27.00-38.00++(LOT SIZE 150)';
-export const HAL_CALL_CLAUDE = { relevant: true, action: 'buy', instrument: 'HAL', strike: 5400, right: 'CE', price: 13.5, stop: 6, targets: [18, 27, 38] };
+export const HAL_CALL_CLAUDE = { relevant: true, action: 'buy', instrument: 'HAL', strike: 5400, right: 'CE', price: 13.5, stop: 6, targets: [18, 27, 38], expiryMonth: 'NOV' };
 
-/** Profit-booking update on an earlier option call: has CE, reaches Claude, Claude says not relevant. */
+/** Profit-booking update on an earlier option call: has CE, reaches Claude, Claude calls it an exit. */
 export const PAYTM_BOOK_UPDATE = 'Forwarded\n# PAYTM 2000 CE: 24.25 FROM 20.50 BOOK Pls check on 12-11-2026';
-export const PAYTM_BOOK_UPDATE_CLAUDE = { relevant: false };
+export const PAYTM_BOOK_UPDATE_CLAUDE = { relevant: true, action: 'exit', instrument: 'PAYTM', strike: 2000, right: 'CE', price: 24.25 };
 
 /** The same NIFTY call re-posted: must never be traded twice. */
 export const AGAIN_REPOST =

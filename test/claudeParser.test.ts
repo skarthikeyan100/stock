@@ -53,6 +53,19 @@ describe('parseWithClaude', () => {
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+describe('expiryMonth', () => {
+  const base = { relevant: true, instrument: 'PAYTM', action: 'buy', right: 'CE', strike: 2000, price: 20.5 };
+  it('maps a stated month onto the signal', async () => {
+    expect((await parseWithClaude('x', cli({ ...base, expiryMonth: 'DEC' })))?.expiryMonth).toBe('DEC');
+  });
+  it('leaves expiryMonth out when none is stated', async () => {
+    expect(await parseWithClaude('x', cli(base))).not.toHaveProperty('expiryMonth');
+  });
+  it('refuses a call whose month is not a three-letter month (never guesses the nearest expiry)', async () => {
+    expect(await parseWithClaude('x', cli({ ...base, expiryMonth: 'Decembre' }))).toBeNull();
+  });
+});
+
 describe('parse log location', () => {
   it('writes to GOPOCKET_LOG_DIR (the tests point it at a temp folder, not the real logs/)', async () => {
     const marker = `marker-${Date.now()}`;

@@ -3,7 +3,7 @@ export interface ExpiryChoice {
   date: string;
 }
 
-const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+export const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
 function iso(year: number, month: number, day: number): string {
   return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -37,4 +37,17 @@ export function nearestExpiry(labels: string[], today: string): ExpiryChoice | n
 
 export function findExpiry(labels: string[], date: string, today: string): ExpiryChoice | null {
   return dated(labels, today).find((e) => e.date === date) ?? null;
+}
+
+/**
+ * Which expiry row to trade: a stated date, else the nearest one inside a stated month, else the nearest.
+ * A stated month that is not listed returns null: never trade a different month than the message names.
+ */
+export function chooseExpiry(labels: string[], want: { expiry?: string; expiryMonth?: string }, today: string): ExpiryChoice | null {
+  if (want.expiry) return findExpiry(labels, want.expiry, today);
+  if (want.expiryMonth) {
+    const month = MONTHS.indexOf(want.expiryMonth.toUpperCase());
+    return dated(labels, today).find((e) => parseInt(e.date.slice(5, 7), 10) - 1 === month) ?? null;
+  }
+  return nearestExpiry(labels, today);
 }

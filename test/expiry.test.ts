@@ -29,3 +29,27 @@ describe('nearestExpiry / findExpiry', () => {
     expect(findExpiry(labels, '2026-12-02', '2026-11-17')).toBeNull();
   });
 });
+
+import { chooseExpiry } from '../src/expiry.js';
+describe('chooseExpiry', () => {
+  const today = '2026-11-17';
+  it('picks the nearest expiry of the stated month, not the nearest overall', () => {
+    expect(chooseExpiry(labels, { expiryMonth: 'DEC' }, today)?.label).toBe(labels[2]);
+    expect(chooseExpiry(labels, { expiryMonth: 'JAN' }, today)?.label).toBe(labels[3]);
+  });
+  it('picks the nearest listed expiry inside the month (today counts)', () => {
+    expect(chooseExpiry(labels, { expiryMonth: 'NOV' }, today)?.label).toBe(labels[0]);
+    expect(chooseExpiry(labels, { expiryMonth: 'NOV' }, '2026-11-18')?.label).toBe(labels[1]);
+  });
+  it('never falls back to another month when the stated month is not listed', () => {
+    expect(chooseExpiry(labels, { expiryMonth: 'FEB' }, today)).toBeNull();
+    // the site lists only upcoming expiries: on 24 Nov no NOV row exists any more
+    expect(chooseExpiry(labels.slice(2), { expiryMonth: 'NOV' }, '2026-11-24')).toBeNull();
+  });
+  it('a stated date wins over a stated month', () => {
+    expect(chooseExpiry(labels, { expiry: '2026-12-01', expiryMonth: 'NOV' }, today)?.label).toBe(labels[2]);
+  });
+  it('with neither, takes the nearest', () => {
+    expect(chooseExpiry(labels, {}, today)?.label).toBe(labels[0]);
+  });
+});

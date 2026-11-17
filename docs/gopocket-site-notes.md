@@ -41,3 +41,4 @@ Site: https://web.gopocket.in (login page, then /dashboard). Account is a normal
 - The channel posts a line `DATE: dd-mm-yyyy` that is the date of the call, not an expiry; the Claude prompt says so.
 - The headless dry run (form filled, read back, Cancel) was verified for NIFTY, PAYTM and HAL. A real accepted order is still not recorded.
 - A second Chromium on the same `browser-profile/` while the bot runs shows the site as logged out: stop the bot before running `npm run probe`/`probe-buy`.
+- Expiry: posts name only a month for stock options ("NOV: 2000.00 CE"). Claude returns `expiryMonth` (JAN..DEC); the bot trades the nearest listed expiry inside that month and refuses if that month is not listed (it never falls back to another month). With no month stated it takes the nearest expiry, as for NIFTY.

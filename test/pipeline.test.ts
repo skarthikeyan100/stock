@@ -69,7 +69,17 @@ describe('handleMessage', () => {
     const { deps, buys } = setup({ spotCalls, spot: new Error('must not be called'), out: PAYTM_CALL_CLAUDE });
     expect((await handleMessage('m1', PAYTM_CALL, deps)).result).toBe('ordered');
     expect(spotCalls.n).toBe(0);
-    expect(buys).toEqual([{ underlying: 'PAYTM', right: 'CE', strike: 2000, price: 20.5, stopOffset: 3.5, targetOffset: 2 }]);
+    expect(buys).toEqual([{ underlying: 'PAYTM', right: 'CE', strike: 2000, expiryMonth: 'NOV', price: 20.5, stopOffset: 3.5, targetOffset: 2 }]);
+  });
+
+  it('passes the stated expiry month to the broker and treats another month as another contract', async () => {
+    const dec = { ...PAYTM_CALL_CLAUDE, expiryMonth: 'DEC' };
+    const nov = { ...PAYTM_CALL_CLAUDE, expiryMonth: 'NOV' };
+    const a = setup({ out: nov });
+    await handleMessage('m1', PAYTM_CALL, a.deps);
+    const b = { ...a.deps, run: (async () => JSON.stringify({ structured_output: dec })) as ClaudeRunner };
+    expect((await handleMessage('m2', PAYTM_CALL, b)).result).toBe('ordered');
+    expect(a.buys.map((x) => x.expiryMonth)).toEqual(['NOV', 'DEC']);
   });
 
   it('treats the same strike on different underlyings as different contracts', async () => {

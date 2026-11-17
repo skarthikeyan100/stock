@@ -8,6 +8,8 @@ export interface Signal {
   strike: number;
   /** YYYY-MM-DD, only when the message states a date */
   expiry?: string;
+  /** three-letter month (JAN..DEC) when the message names the expiry month but no date, e.g. "( NOV: 2000.00 CE)" */
+  expiryMonth?: string;
   price: number;
   stop?: number;
   target?: number;

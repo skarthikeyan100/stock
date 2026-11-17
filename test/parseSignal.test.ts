@@ -24,17 +24,17 @@ describe('parseSignal on real channel posts', () => {
   });
   it('parses the PAYTM call (a stock option)', async () => {
     const { run } = claudeSays(PAYTM_CALL_CLAUDE);
-    expect((await parseSignal(PAYTM_CALL, run)).signal).toEqual({ action: 'buy', underlying: 'PAYTM', right: 'CE', strike: 2000, price: 20.5, stop: 17, target: 22.5 });
+    expect((await parseSignal(PAYTM_CALL, run)).signal).toEqual({ action: 'buy', underlying: 'PAYTM', right: 'CE', strike: 2000, price: 20.5, stop: 17, target: 22.5, expiryMonth: 'NOV' });
   });
   it('parses the HAL call (a stock option)', async () => {
     const { run } = claudeSays(HAL_CALL_CLAUDE);
-    expect((await parseSignal(HAL_CALL, run)).signal).toMatchObject({ underlying: 'HAL', strike: 5400, price: 13.5, stop: 6, target: 18 });
+    expect((await parseSignal(HAL_CALL, run)).signal).toMatchObject({ underlying: 'HAL', strike: 5400, price: 13.5, stop: 6, target: 18, expiryMonth: 'NOV' });
   });
   it('parses the typo-ridden sample', async () => {
     const { run } = claudeSays(sampleOut);
     expect((await parseSignal(SAMPLE, run)).signal).toMatchObject({ underlying: 'NIFTY', strike: 25400, price: 54, stop: 41, target: 68 });
   });
-  it('sends a profit-booking update to Claude, which says it is not a call', async () => {
+  it('sends a profit-booking update to Claude, which calls it an exit', async () => {
     const { run, calls } = claudeSays(PAYTM_BOOK_UPDATE_CLAUDE);
     const r = await parseSignal(PAYTM_BOOK_UPDATE, run);
     expect(r.signal).toBeNull();

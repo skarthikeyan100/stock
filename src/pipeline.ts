@@ -69,7 +69,7 @@ export async function handleMessage(messageId: string, text: string, deps: Pipel
     return done({ result: 'skipped', detail: error instanceof Error ? error.message : String(error) });
   }
 
-  if (deps.deduper.isDuplicate(`buy:${signal.underlying}:${signal.right}:${signal.strike}:${signal.expiry ?? ''}`)) {
+  if (deps.deduper.isDuplicate(`buy:${signal.underlying}:${signal.right}:${signal.strike}:${signal.expiry ?? signal.expiryMonth ?? ''}`)) {
     return done({ result: 'duplicate', detail: `${signal.strike} ${signal.right} was already ordered recently` });
   }
 
@@ -78,6 +78,7 @@ export async function handleMessage(messageId: string, text: string, deps: Pipel
     right: signal.right,
     strike: signal.strike,
     ...(signal.expiry ? { expiry: signal.expiry } : {}),
+    ...(signal.expiryMonth ? { expiryMonth: signal.expiryMonth } : {}),
     price: signal.price,
     stopOffset: bracket.stopOffset,
     targetOffset: bracket.targetOffset,
