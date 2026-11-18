@@ -928,7 +928,7 @@ export async function placeLimitBuyBareOnBreeze(userId: string, tradingSymbol: s
 // current-bestBid limit gets filled at (still a live-market price, not the
 // strategy's own target). Returns immediately; fill arrives later via
 // pollPendingBreezeLimitOrders.
-export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, price: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: string, antToken: string, quantity: number, price: number, _exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string; quantity: number }> {
     const breeze = Breeze.getInstance();
     if (!(await breeze.hasValidSession())) throw new Error('Breeze session not active - complete /breeze/login first.');
     const contract = await resolveBreezeContract(tradingSymbol, antToken);
@@ -939,7 +939,7 @@ export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: 
     Log.log(`[order] Bare Breeze limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, price);
     trackPendingBreezeLimitOrder({ orderId, userId, tradingSymbol, antToken, quantity, exchange: contract.exchange, action: 'Sell' });
-    return { orderId };
+    return { orderId, quantity }; // the quantity actually placed (the never-short guard may have clamped it)
 }
 
 // Breeze premium-floor strike walk - mirrors getContractByPriceRangeOnKite's shape

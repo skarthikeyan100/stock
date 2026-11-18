@@ -45,3 +45,7 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 - Forecast engine: orders are OFF (`forecast.orders.enabled: false`). Before switching them on: check the ANT depth feed delivers `tbq`/`tsq` for the NIFTY future (the engine subscribes to it), set `forecast.holidays`, fees (`forecast.fees`), `noNewAfter`, `maxOpenPositions`, `dailyLossLimit`; the 15:15 expiry-day square-off of forecast positions is NOT built (strategies close at `settings.eodCloseTime`).
 - Fee statements are gross-only in `contractorStatements`; Mark PAID / approve are locked for real contractors until `forecast.taxPhaseComplete: true` (set it when the tax work is done). PDF statements are not built (CSV only); invoice taxable-value / GST fields wait for the tax phase.
 - Run `npm run contractor-email -- --dry-run` after the first trading day to check the daily email; the welcome email is sent at acceptance.
+
+## Two strategies on one Breeze contract (2026-11-18)
+- Restart the `trading` process after market hours to load the unconfirmed-buy ownership cap and the placed-quantity return of the ANT/Prism/Breeze limit sells (open-review-items.md 111).
+- Trader action for the live NIFTY23NOV2625300CE state: Simple's 585 vs real 520, the rejected locked sell (open-review-items.md 112).

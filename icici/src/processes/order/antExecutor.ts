@@ -760,7 +760,7 @@ export async function manualBuyOnAnt(req: ManualBuyRequest): Promise<Trade> {
 // places a regular order with no price floor. Used for a target-hit exit
 // that must lock in a specific price - see placeLimitSellBareOnKite's
 // comment for why (2026-09-22 incident).
-export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO', product?: 'INTRADAY' | 'LONGTERM'): Promise<{ orderId: string }> {
+export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO', product?: 'INTRADAY' | 'LONGTERM'): Promise<{ orderId: string; quantity: number }> {
     const ant = ANT.getInstance();
     quantity = await neverShortSellable({
         label: `${tradingSymbol} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),
@@ -777,7 +777,7 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
         product,
     });
     trackPendingAntLimitOrder({ orderId: orderNo, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell', product });
-    return { orderId: orderNo };
+    return { orderId: orderNo, quantity }; // the quantity actually placed (the never-short guard may have clamped it)
 }
 
 // Buy counterpart of placeLimitSellBareOnAnt: a plain REGULAR LIMIT buy at a caller-chosen price (ContinuousStrategy's

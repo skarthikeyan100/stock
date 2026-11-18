@@ -390,7 +390,7 @@ async function squareOffOnPrismUnguarded(userId: string, tsym: string, quantity:
 // Returns immediately with {orderId} - fill arrives later via
 // pollPendingPrismLimitOrders. Mirrors placeLimitSellBareOnAnt exactly -
 // BulkPcrStrategy's target-hit exit on Prism.
-export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string; quantity: number }> {
     quantity = await neverShortSellable({
         label: `${tradingSymbol} (${userId}, Prism)`, quantity, livePosition: () => liveNetQuantityOnPrism(tradingSymbol),
         restingSellQuantity: findPendingOrdersForSymbol(userId, tradingSymbol).filter((o) => o.action === 'Sell').reduce((sum, o) => sum + o.quantity, 0), recheckIfFlat: true,
@@ -398,7 +398,7 @@ export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: s
     Log.log(`[order] Bare Prism limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await Prism.getInstance().placeLimitSellBare(tradingSymbol, instrumentId, quantity, price, userId, exchange);
     trackPendingPrismLimitOrder({ orderId, userId, tradingSymbol, instrumentId, quantity, exchange, action: 'Sell' });
-    return { orderId };
+    return { orderId, quantity }; // the quantity actually placed (the never-short guard may have clamped it)
 }
 
 // Returns immediately with {orderId} - the fill arrives later via pollPendingPrismLimitOrders. Mirrors placeLimitBuyBareOnKite
