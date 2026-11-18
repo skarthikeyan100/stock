@@ -3,7 +3,7 @@ import type { Page } from 'playwright';
 import { roundTick } from '../bracket.js';
 import { chooseExpiry } from '../expiry.js';
 import type { Config } from '../types.js';
-import { BASE_URL, dismissNotice, isLoggedIn } from './session.js';
+import { BASE_URL, dismissNotice } from './session.js';
 
 /** NIFTY 50 level from the top bar, e.g. "NIFTY 50 25387.40 (0.38%)". Throws when it cannot be read. */
 export async function readSpot(page: Page): Promise<number> {
@@ -47,7 +47,7 @@ async function saveEvidence(page: Page, tag: string): Promise<void> {
   }
 }
 
-async function cancelForm(page: Page): Promise<void> {
+export async function cancelForm(page: Page): Promise<void> {
   await page.locator('#ow_close_btn').click({ timeout: FILL_TIMEOUT }).catch(() => undefined);
 }
 
@@ -85,7 +85,7 @@ export function preferNfo(labels: string[]): string[] {
 const near = (a: number, b: number) => Math.abs(a - b) < 0.001;
 
 /** Opens the buy form for the contract: search, pick the expiry row, hover, click B. Returns the row label. */
-async function openBuyForm(page: Page, req: BuyRequest, today: string): Promise<string> {
+export async function openBuyForm(page: Page, req: BuyRequest, today: string): Promise<string> {
   await page.getByPlaceholder(/Search eg/).fill(`${req.underlying} ${req.strike} ${req.right}`);
   const rows = page.locator('[id^="mw_searchlist_li_"]');
   await rows.first().waitFor({ state: 'visible', timeout: 10_000 });
@@ -120,8 +120,9 @@ async function readRegularForm(page: Page) {
  */
 export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, today: string): Promise<OrderOutcome> {
   try {
-    if (!(await isLoggedIn(page))) return { status: 'unknown', reason: 'session expired: run npm run login' };
+    await ensurePendingPage(page);
     await dismissNotice(page);
+    if (!(await pendingEmpty(page))) return { status: 'unknown', reason: 'rejected: an order is still pending' };
     const label = await openBuyForm(page, req, today);
     await page.locator('#ow_Regular').click();
     await page.locator('#ow_Limit').click();
@@ -148,20 +149,26 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
       await cancelForm(page);
       return { status: 'unknown', reason: 'dry run' };
     }
-    const placedAt = new Date(Date.now() - 10_000);
     await page.locator('#ow_place_order_btn').click({ timeout: FILL_TIMEOUT });
     const outcome = await readResult(page, req);
     if (outcome.status !== 'placed' || !outcome.orderNo) return outcome;
 
-    // The exit: wait for the fill, then protect the position with a sell OCO GTT.
-    if (!(await waitForFill(page, req, placedAt, 120_000))) {
-      return { ...outcome, status: 'unknown', reason: `buy placed but not filled within 2 minutes: NO stop/target was placed, check the website (order ${outcome.orderNo})` };
+    // The exit: wait on the Pending tab until the order leaves it, then check it was filled.
+    await waitUntilNotPending(page, 120_000);
+    if (!(await pendingEmpty(page))) {
+      return { ...outcome, status: 'unknown', reason: `buy still pending after 2 minutes: NO stop/target was placed, check the website (order ${outcome.orderNo})` };
+    }
+    const status = await latestStatus(page, req);
+    if (!/^COMPLETE/i.test(status)) {
+      return { ...outcome, status: 'unknown', reason: `buy not filled (status "${status}"): no stop/target placed (order ${outcome.orderNo})` };
     }
     try {
       await placeExitGtt(page, req, lot, today);
     } catch (err) {
       await saveEvidence(page, 'gtt-error');
       return { ...outcome, status: 'unknown', reason: `buy filled but the stop/target GTT FAILED (${(err as Error).message}): position is unprotected, check the website` };
+    } finally {
+      await openOrdersTab(page, 'Pending_order').catch(() => undefined);
     }
     return outcome;
   } catch (err) {
@@ -173,6 +180,52 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
 /** Matches an Executed row of this contract, e.g. "MANAPPURAM 23rd NOV 280 PE". */
 export function contractRow(req: BuyRequest): RegExp {
   return new RegExp(`${req.underlying}\\s.*\\b${req.strike}(\\.0+)?\\s*${req.right}\\b`, 'i');
+}
+
+/** The Orders page is a single page: stay on it, and only navigate when we are somewhere else. */
+export async function ensureOrdersPage(page: Page): Promise<void> {
+  if (!page.url().includes('/order')) await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
+}
+
+/** Parks the page on Orders > Pending. Throws when the Orders tabs are not there (logged out). */
+export async function ensurePendingPage(page: Page): Promise<void> {
+  await ensureOrdersPage(page);
+  try {
+    await page.locator('#Pending_order').waitFor({ state: 'visible', timeout: 15_000 });
+  } catch {
+    throw new Error('session expired: run npm run login');
+  }
+  const tab = page.locator('#Pending_order');
+  if (!/violet-color/.test((await tab.getAttribute('class')) ?? '')) await openOrdersTab(page, 'Pending_order');
+}
+
+/** The Pending tab shows "No Pending orders Found" when it is empty (recorded page text). */
+export async function pendingEmpty(page: Page): Promise<boolean> {
+  return /No Pending orders Found/i.test(await page.locator('body').innerText());
+}
+
+/** Waits on the Pending tab: first for the order to appear (it may already be gone), then until the tab is empty again. */
+async function waitUntilNotPending(page: Page, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  const appearBy = Date.now() + 5_000;
+  let seen = false;
+  while (Date.now() < deadline) {
+    const empty = await pendingEmpty(page);
+    if (!empty) seen = true;
+    if (empty && (seen || Date.now() > appearBy)) return;
+    await page.waitForTimeout(1_000);
+  }
+}
+
+/**
+ * Status of the newest Executed row of this contract (recorded markup: `tr#executed_N`, cells `order_td_N_name` /
+ * `_status`, newest first). One click on the Executed tab; the page is then put back on Pending by the caller.
+ */
+async function latestStatus(page: Page, req: BuyRequest): Promise<string> {
+  await openOrdersTab(page, 'Executed_order');
+  const row = executedRow(page, req).first();
+  await row.waitFor({ state: 'visible', timeout: 10_000 });
+  return (await row.locator('[id$="_status"]').innerText()).trim();
 }
 
 /**
@@ -190,35 +243,10 @@ async function openOrdersTab(page: Page, id: string): Promise<void> {
   throw new Error(`could not open the ${id} tab`);
 }
 
-/** Executed-tab row (recorded markup: `tr#executed_N`, cells `order_td_N_name` / `_time` / `_status`, newest first). */
 function executedRow(page: Page, req: BuyRequest) {
   return page
     .locator('tr[id^="executed_"]')
     .filter({ has: page.locator('[id$="_name"]', { hasText: contractRow(req) }) });
-}
-
-/**
- * Polls Orders > Executed until the newest row of this contract, placed no earlier than `since`, shows COMPLETE.
- * False on REJECTED/CANCELLED or timeout.
- */
-export async function waitForFill(page: Page, req: BuyRequest, since: Date, timeoutMs: number): Promise<boolean> {
-  const floor = since.toLocaleTimeString('en-GB'); // the site shows HH:MM:SS in local time
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
-    await openOrdersTab(page, 'Executed_order');
-    const row = executedRow(page, req).first();
-    if (await row.count()) {
-      const time = (await row.locator('[id$="_time"]').innerText().catch(() => '')).trim();
-      const status = (await row.locator('[id$="_status"]').innerText().catch(() => '')).trim();
-      if (time >= floor) {
-        if (/^COMPLETE/i.test(status)) return true;
-        if (/REJECTED|CANCEL/i.test(status)) return false;
-      }
-    }
-    await page.waitForTimeout(3_000);
-  }
-  return false;
 }
 
 /** Sell OCO GTT: stoploss leg (limit a little under the trigger so it fills) and target leg. */
@@ -226,7 +254,6 @@ export async function placeExitGtt(page: Page, req: BuyRequest, lot: number, tod
   const stop = roundTick(req.price - req.stopOffset);
   const target = roundTick(req.price + req.targetOffset);
   const stopLimit = roundTick(stop * 0.95);
-  await page.goto(`${BASE_URL}/dashboard`, { waitUntil: 'domcontentloaded' });
   await openBuyForm(page, req, today);
   await page.locator('#ow_sell:visible').click({ timeout: FILL_TIMEOUT });
   await page.locator('#ow_GTT:visible').click({ timeout: FILL_TIMEOUT });
@@ -253,7 +280,7 @@ export async function placeExitGtt(page: Page, req: BuyRequest, lot: number, tod
 
 /** True when Orders > GTT shows an entry for this contract (text match: the list's exact columns are not recorded). */
 export async function gttListed(page: Page, req: BuyRequest): Promise<boolean> {
-  await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
+  await ensureOrdersPage(page);
   await openOrdersTab(page, 'GTT_order');
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -289,7 +316,6 @@ async function readResult(page: Page, req: BuyRequest): Promise<OrderOutcome> {
 
 async function readRejectReason(page: Page, req: BuyRequest): Promise<string> {
   try {
-    await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
     await openOrdersTab(page, 'Executed_order');
     const row = executedRow(page, req).filter({ hasText: /REJECTED/ }).first();
     await row.hover({ timeout: FILL_TIMEOUT });

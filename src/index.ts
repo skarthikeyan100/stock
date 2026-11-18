@@ -3,11 +3,11 @@ import { defaultRunner } from './claudeParser.js';
 import { loadConfig } from './config.js';
 import { createDeduper } from './dedupe.js';
 import { logError, logInfo } from './logger.js';
-import { type BuyRequest, gttListed, waitForFill, placeBracketBuy, placeExitGtt, readSpot } from './order/gopocket.js';
+import { type BuyRequest, cancelForm, ensurePendingPage, gttListed, openBuyForm, pendingEmpty, placeBracketBuy, placeExitGtt, readSpot } from './order/gopocket.js';
 import fs from 'node:fs';
 import { loginWithBrowserOtp, readCredentials } from './order/login.js';
 import { dismissNotice, isLoggedIn, openContext } from './order/session.js';
-import { type Broker, handleMessage, serialize } from './pipeline.js';
+import { type Broker, handleMessage } from './pipeline.js';
 import { createMessageServer } from './server.js';
 
 if (fs.existsSync('.env')) process.loadEnvFile('.env');
@@ -30,8 +30,7 @@ async function getPage(): Promise<Page> {
 const broker: Broker = {
   async readSpot() {
     const p = await getPage();
-    if (!(await isLoggedIn(p))) throw new Error('session expired: run "npm run login" and restart');
-    await dismissNotice(p);
+    await ensurePendingPage(p); // parked on Orders > Pending; the NIFTY level is in the top bar of every page
     return readSpot(p);
   },
   async buy(req) {
@@ -47,44 +46,59 @@ const broker: Broker = {
     await loginWithBrowserOtp(p, readCredentials(process.env));
   }
   await dismissNotice(p);
-  logInfo('GoPocket session is logged in');
+  await ensurePendingPage(p);
+  logInfo('GoPocket session is logged in, parked on Orders > Pending');
 }
 
-const server = createMessageServer((messageId, text) => {
+// One user, one order at a time: while a message is being handled (or an order is pending) other messages are rejected.
+let busy = false;
+
+const server = createMessageServer(async (messageId, text) => {
   logInfo('Received message', { messageId, body: text });
-  return serialize(() =>
-    handleMessage(messageId, text, {
+  if (busy) {
+    logInfo('rejected: another order is in progress', { messageId });
+    return;
+  }
+  busy = true;
+  try {
+    await handleMessage(messageId, text, {
       cfg,
       run,
       broker,
       deduper,
       today: () => new Date().toLocaleDateString('en-CA'),
       log: (message, extra) => logInfo(message, extra),
-    }),
-  ).catch((error) => logError('Unhandled error while processing message', { error: error instanceof Error ? error.message : String(error) }));
-}, (b) =>
-  // Exit-only: create the sell OCO GTT for a contract that is already held (owner-triggered, loopback only).
-  serialize(async () => {
+    });
+  } catch (error) {
+    logError('Unhandled error while processing message', { error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    busy = false;
+  }
+}, async (b) => {
+  // Owner-triggered, loopback only: create the exit GTT for a held contract, or check the page without ordering.
+  if (busy) return logInfo('rejected: another order is in progress');
+  busy = true;
+  try {
     const req = b as unknown as BuyRequest & { lot: number; verifyOnly?: boolean };
+    const pg = await getPage();
     if (req.verifyOnly) {
-      const pg = await getPage();
+      await ensurePendingPage(pg);
+      logInfo('pending empty?', { empty: await pendingEmpty(pg) });
       logInfo('GTT listed?', { listed: await gttListed(pg, req) });
-      logInfo('fill check (since 14:30)', { filled: await waitForFill(pg, req, new Date(new Date().setHours(14, 30, 0, 0)), 15_000) });
-      // Record the real Executed tab (text + screenshot) so the fill check can be written from facts.
-      await pg.goto('https://web.gopocket.in/order', { waitUntil: 'domcontentloaded' });
-      await pg.getByText(/^Executed/).first().click({ timeout: 5_000 });
-      await pg.waitForTimeout(2_000);
-      fs.mkdirSync('logs', { recursive: true });
-      fs.writeFileSync('logs/executed-tab.txt', await pg.locator('body').innerText());
-      fs.writeFileSync('logs/executed-tab.html', await pg.content());
-      await pg.screenshot({ path: 'logs/executed-tab.png' });
-      logInfo('Executed tab saved to logs/executed-tab.*');
+      await ensurePendingPage(pg);
+      logInfo('buy form opens from the Orders page', { label: await openBuyForm(pg, req, new Date().toLocaleDateString('en-CA')) });
+      await cancelForm(pg);
       return;
     }
-    await placeExitGtt(await getPage(), req, req.lot, new Date().toLocaleDateString('en-CA'));
+    await ensurePendingPage(pg);
+    await placeExitGtt(pg, req, req.lot, new Date().toLocaleDateString('en-CA'));
     logInfo('exit GTT submitted', { underlying: req.underlying, strike: req.strike, right: req.right });
-  }).catch((error) => logError('exit GTT failed', { error: error instanceof Error ? error.message : String(error) })),
-);
+  } catch (error) {
+    logError('exit GTT failed', { error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    busy = false;
+  }
+});
 server.listen(cfg.port, '127.0.0.1', () => logInfo(`GoPocket listening on 127.0.0.1:${cfg.port} (dryRun=${cfg.dryRun}, headless=${cfg.headless})`));
 
 // A restart (SIGTERM/SIGINT) must really stop this process: close the listener and the browser, then exit.
