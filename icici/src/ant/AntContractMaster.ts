@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import Log from '../util/Log';
 import { exchangeForIndex } from '../util/underlyings';
+import { readOptionTsym } from '../util/optionTsym';
 import { effectiveExpiryOffset } from '../util/expirySkip';
 import { tradingDaysToExpiry, shiftedStrike, otmSteps } from '../util/expiryOffset';
 
@@ -440,6 +441,32 @@ class AntContractMaster {
       tradingSymbol: tradingSymbolOf(record),
       lotSize: record['Lot Size'],
     };
+  }
+
+  // The ANT contract a trading symbol of ANY broker's spelling names (Kite, Breeze, Prism, ANT: see util/optionTsym.ts), or undefined when none
+  // of its readings names a listed contract. The ANT spelling is tried first. Used to price a position held on another broker at ANT's quote.
+  findByAnyBrokerTradingSymbol(tradingSymbol: string, exch: 'NFO' | 'BFO' = 'NFO'): { token: string; strike: number; optionType: string; exch: string; tradingSymbol: string; lotSize: string } | undefined {
+    const exact = this.findByTradingSymbol(tradingSymbol, exch);
+    if (exact) return exact;
+    const cache = exch === 'NFO' ? this.loadNFO() : this.loadBFO();
+    const todayStart = todayStartUtc();
+    for (const r of readOptionTsym(tradingSymbol)) {
+      const rows = cache.filter((c) => c.Symbol === r.symbol && c.Exch === exch && c['Option Type'] === r.optionType && Number(c['Strike Price']) === r.strike);
+      if (rows.length === 0) continue;
+      let want: number | undefined;
+      const ex = r.expiry;
+      if (ex.kind === 'day') want = Date.UTC(ex.year, ex.month, ex.day);
+      else if (ex.kind === 'month') {
+        const inMonth = rows.map((c) => parseInt(c['Expiry Date'])).filter((e) => { const d = new Date(e); return d.getUTCFullYear() === ex.year && d.getUTCMonth() === ex.month; });
+        if (inMonth.length) want = Math.max(...inMonth);
+      } else {
+        const upcoming = rows.map((c) => parseInt(c['Expiry Date'])).filter((e) => e >= todayStart);
+        if (upcoming.length) want = Math.min(...upcoming);
+      }
+      const hit = want === undefined ? undefined : rows.find((c) => parseInt(c['Expiry Date']) === want);
+      if (hit) return { token: hit.Token, strike: Number(hit['Strike Price']), optionType: hit['Option Type'], exch: hit.Exch, tradingSymbol: tradingSymbolOf(hit), lotSize: hit['Lot Size'] };
+    }
+    return undefined;
   }
 }
 

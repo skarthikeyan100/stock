@@ -663,10 +663,19 @@ class OrderBookkeeping {
     }
 
     // Open P&L of this user's positions at live ANT prices (maxloss.md B4.1). Long: (ltp - price) * qty; short: the reverse.
-    // The token comes from the trading symbol via AntContractMaster, not Trade.token: Kite and Breeze rows carry their own
-    // broker's instrument token there, which ANT would price as a different contract. Returns null when no row could be priced.
-    // Never throws; a row whose quote fails counts as 0 (a failed quote must never by itself breach the limit).
+    // The token comes from the trading symbol via AntContractMaster.findByAnyBrokerTradingSymbol, not Trade.token: Kite and Breeze rows carry
+    // their own broker's instrument token there, which ANT would price as a different contract, and the ANT master only spells a symbol its own
+    // way, so Kite / Breeze / Prism symbols are read into (underlying, expiry, strike, side) first (util/optionTsym.ts). A contract listed on
+    // two brokers is quoted once. Returns null when no row could be priced. Never throws; a row that cannot be priced counts as 0 (a failed
+    // quote must never by itself breach the limit) but is named in a rate-limited ALERT, so an unpriced position is never silent.
     private openPnlLogAt = 0;
+    private openPnlAlertAt = new Map<string, number>();
+    private alertUnpriced(user: string, trade: Trade, why: string): void {
+        const key = `${user}|${trade.broker ?? ''}|${trade.tsym}`;
+        if (Date.now() - (this.openPnlAlertAt.get(key) ?? 0) < OPEN_PNL_LOG_EVERY_MS * 5) return;
+        this.openPnlAlertAt.set(key, Date.now());
+        Log.log(`[order] ALERT: open P&L for ${user}: ${trade.tsym} on ${trade.broker ?? 'unknown broker'} (qty ${trade.quantity}) cannot be priced live (${why}) - counted as 0 in the daily drawdown, so its open loss is NOT limited until it is priced`);
+    }
     async getOpenUnrealizedPnL(user: string): Promise<number | null> {
         const rows: Array<{ trade: Trade; sign: 1 | -1 }> = [
             ...this.trades.filter((t) => t.user === user).map((trade) => ({ trade, sign: 1 as const })),
@@ -681,19 +690,21 @@ class OrderBookkeeping {
             let token: string | undefined;
             try {
                 const exch = exchangeForTsym(trade.tsym);
-                token = AntContractMaster.getInstance().findByTradingSymbol(trade.tsym, exch)?.token;
-                if (!token || !Number.isFinite(trade.price) || !(trade.quantity > 0)) { failed++; continue; }
+                token = AntContractMaster.getInstance().findByAnyBrokerTradingSymbol(trade.tsym, exch)?.token;
+                if (!token) { failed++; this.alertUnpriced(user, trade, 'no ANT contract matches this trading symbol'); continue; }
+                if (!Number.isFinite(trade.price) || !(trade.quantity > 0)) { failed++; this.alertUnpriced(user, trade, `unusable entry price ${trade.price} or quantity ${trade.quantity}`); continue; }
                 let ltp = quotes.get(token);
                 if (!ltp) {
                     ltp = ANT.getInstance().getLiveQuote(exch, token).then((q) => q.ltp);
                     quotes.set(token, ltp);
                 }
                 const price = await ltp;
-                if (!(price > 0)) { failed++; continue; }
+                if (!(price > 0)) { failed++; this.alertUnpriced(user, trade, `ANT returned price ${price}`); continue; }
                 total += sign * (price - trade.price) * trade.quantity;
                 priced++;
-            } catch (e) {
+            } catch (e: any) {
                 failed++;
+                this.alertUnpriced(user, trade, `ANT quote failed: ${e?.message ?? e}`);
                 if (token) quotes.delete(token); // a failed quote is retried on the next call, not cached
             }
         }
