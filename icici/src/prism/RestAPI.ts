@@ -9,6 +9,9 @@ import path from 'path';
 import Config from './config';
 import WS from './WebSocket'
 import MockAPI from './MockAPI';
+import { runOrderWrite } from '../util/brokerOrderQueue';
+
+const ORDER_WRITE_ROUTES = ['placeorder', 'modifyorder', 'cancelorder', 'exitorder'];
 import { MOCK_BROKER, MOCK_QUOTES } from '../constants';
 
 // __dirname-relative (repo root), matching ANT's/Kite's session file
@@ -159,6 +162,8 @@ class NorenRestApi {
     if (!noAuthRoutes.includes(route) && this.accessToken) {
       headers['Authorization'] = `Bearer ${this.accessToken}`;
     }
+    // Every call that changes an order goes through the per-broker order queue (one at a time, one second apart).
+    if (ORDER_WRITE_ROUTES.includes(route)) return runOrderWrite('prism', route, () => axios.post(url, payload, { headers }));
     return axios.post(url, payload, { headers });
   }
 

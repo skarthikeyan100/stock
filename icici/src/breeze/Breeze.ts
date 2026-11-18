@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
 import { sleep } from '../util/sleep';
+import { runOrderWrite } from '../util/brokerOrderQueue';
 import { SessionValidityCache } from '../util/SessionValidityCache';
 
 // breezeconnect ships no TypeScript types and is a plain CommonJS export
@@ -439,7 +440,7 @@ class Breeze {
     }): Promise<{ orderId: string }> {
         await this.requireSession();
         Log.log(`[Breeze] Placing ${params.action} ${params.orderType} order: ${params.stockCode} qty=${params.quantity}`);
-        const response = await this.callSdk('placeOrder', () => this.breeze.placeOrder(params));
+        const response = await runOrderWrite('breeze', `placeOrder ${params.action} ${params.stockCode}`, () => this.callSdk('placeOrder', () => this.breeze.placeOrder(params)));
         const orderId = response?.Success?.order_id;
         if (!orderId) {
             throw new Error(`Breeze placeOrder returned no order_id: ${JSON.stringify(response)}`);
@@ -465,7 +466,7 @@ class Breeze {
     }): Promise<{ orderId: string }> {
         await this.requireSession();
         Log.log(`[Breeze] Squaring off: ${params.stockCode} qty=${params.quantity}`);
-        const response = await this.callSdk('squareOff', () => this.breeze.squareOff(params));
+        const response = await runOrderWrite('breeze', `squareOff ${params.stockCode}`, () => this.callSdk('squareOff', () => this.breeze.squareOff(params)));
         const orderId = response?.Success?.order_id;
         if (!orderId) {
             throw new Error(`Breeze squareOff returned no order_id: ${JSON.stringify(response)}`);
@@ -478,7 +479,7 @@ class Breeze {
         Log.log(`[Breeze] Cancelling order ${orderId}`);
         // breezeconnect's cancelOrder calls axios.delete(url, body, {headers}) - axios takes (url, config), so
         // the auth headers are never sent and every cancel fails with "appkey is empty". Send it ourselves.
-        await this.callSdk('cancelOrder', async () => {
+        await runOrderWrite('breeze', `cancelOrder ${orderId}`, () => this.callSdk('cancelOrder', async () => {
             const body = { exchange_code: exchangeCode, order_id: orderId };
             const headers = this.breeze.generateHeaders(body);
             const res = await axios.create().delete(`${BREEZE_API_URL}order`, { data: body, headers, validateStatus: () => true });
@@ -492,7 +493,7 @@ class Breeze {
                 throw new Error(`unexpected cancel response: ${String(res.data).slice(0, 200)}`);
             }
             return res.data;
-        });
+        }));
     }
 
     async getOrderDetail(exchangeCode: string, orderId: string): Promise<any> {

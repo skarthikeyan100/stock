@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 // Use a separate axios instance to avoid Shoonya interceptors
 import axiosModule from 'axios';
+import { runOrderWrite } from '../util/brokerOrderQueue';
 import { sleep } from '../util/sleep';
 import AntContractMaster from './AntContractMaster';
 import { SessionValidityCache } from '../util/SessionValidityCache';
@@ -661,11 +662,11 @@ class ANT {
         let resp;
         const headers = { ...this.authHeader(), 'Content-Type': 'application/json' }; // throws (not ambiguous) with no session
         try {
-            resp = await axios.post(
+            resp = await runOrderWrite('ant', `${label} ${body[0]?.instrumentId ?? ''}`, () => axios.post(
                 'https://a3.aliceblueonline.com/open-api/od/v1/orders/placeorder',
                 body,
                 { headers }
-            );
+            ));
         } catch (e: any) {
             if (!e?.response) {
                 throw Object.assign(
@@ -784,11 +785,12 @@ class ANT {
     async exitBracketOrder(orderNo: string, orderComplexity: 'BO' | 'CO' = 'BO'): Promise<void> {
         const body = [{ orderNo, orderComplexity }];
         Log.log('[ANT] exitBracketOrder request:', JSON.stringify(body));
-        const resp = await axios.post(
+        const headers = { ...this.authHeader(), 'Content-Type': 'application/json' };
+        const resp = await runOrderWrite('ant', `exitBracketOrder ${orderNo}`, () => axios.post(
             'https://a3.aliceblueonline.com/open-api/od/v1/orders/exit/sno',
             body,
-            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
-        );
+            { headers }
+        ));
         Log.log('[ANT] exitBracketOrder response:', JSON.stringify(resp.data));
         if (resp.data?.status !== 'Ok') {
             throw new Error(`ANT exitBracketOrder failed: ${JSON.stringify(resp.data)}`);
@@ -797,11 +799,12 @@ class ANT {
 
     async cancelOrder(orderNo: string): Promise<void> {
         const body = { brokerOrderId: orderNo };
-        const resp = await axios.post(
+        const headers = { ...this.authHeader(), 'Content-Type': 'application/json' };
+        const resp = await runOrderWrite('ant', `cancelOrder ${orderNo}`, () => axios.post(
             'https://a3.aliceblueonline.com/open-api/od/v1/orders/cancel',
             body,
-            { headers: { ...this.authHeader(), 'Content-Type': 'application/json' } }
-        );
+            { headers }
+        ));
         if (resp.data?.status !== 'Ok') {
             throw new Error(`ANT cancelOrder failed: ${JSON.stringify(resp.data)}`);
         }

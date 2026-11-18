@@ -5,6 +5,7 @@ import Log from '../util/Log';
 import fs from 'fs';
 import path from 'path';
 import { sleep } from '../util/sleep';
+import { runOrderWrite } from '../util/brokerOrderQueue';
 import { SessionValidityCache } from '../util/SessionValidityCache';
 import { NFO_TICK_SIZE, roundToTick } from '../util/tick';
 
@@ -57,6 +58,11 @@ class Kite {
     private buyHaltReason: string | null = null;
 
 
+
+    // Every Kite order placement goes through the per-broker order queue (one at a time, one second apart; see util/brokerOrderQueue.ts).
+    private queuedPlaceOrder(params: Parameters<KiteConnect['placeOrder']>[1]) {
+        return runOrderWrite('kite', `placeOrder ${params.transaction_type} ${params.tradingsymbol}`, () => this.kc.placeOrder('regular', params));
+    }
 
     private assertBuysNotHalted(): void {
         if (this.buyHaltReason) {
@@ -242,7 +248,7 @@ class Kite {
         }
         Log.log(`[Kite] Placing NRML limit buy: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
         try {
-            const response = await this.kc.placeOrder('regular', {
+            const response = await this.queuedPlaceOrder({
                 exchange,
                 tradingsymbol: tradingSymbol,
                 transaction_type: 'BUY',
@@ -340,7 +346,7 @@ class Kite {
                 quantity = sellable;
             }
             Log.log(`[Kite] Placing NRML limit sell: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
-            const response = await this.kc.placeOrder('regular', {
+            const response = await this.queuedPlaceOrder({
                 exchange,
                 tradingsymbol: tradingSymbol,
                 transaction_type: 'SELL',
@@ -517,7 +523,7 @@ class Kite {
 
         Log.log(`[Kite] Placing GTT OCO for ${tradingSymbol}: stopLoss=${stopLossPrice} target=${targetPrice}`);
 
-        const response = await this.kc.placeGTT({
+        const response = await runOrderWrite('kite', `placeGTT ${tradingSymbol}`, () => this.kc.placeGTT({
             trigger_type: 'two-leg', // KiteConnect.GTT_TYPE_OCO - not in the SDK's type defs
             tradingsymbol: tradingSymbol,
             exchange,
@@ -527,7 +533,7 @@ class Kite {
                 { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: stopLimitPrice(stopLossPrice) },
                 { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: targetPrice },
             ],
-        });
+        }));
 
         Log.log(`[Kite] GTT placed: trigger_id=${response.trigger_id}`);
         return response.trigger_id;
@@ -537,7 +543,7 @@ class Kite {
     async deleteGTT(triggerId: number): Promise<void> {
         if (!this.accessToken) throw new Error('No active session. Please login first.');
         Log.log(`[Kite] Deleting GTT ${triggerId}`);
-        await (this.kc as any).deleteGTT(triggerId); // in the SDK (lib/connect.js) but missing from its type defs
+        await runOrderWrite('kite', `deleteGTT ${triggerId}`, () => (this.kc as any).deleteGTT(triggerId)); // in the SDK (lib/connect.js) but missing from its type defs
     }
 
     // Kite's two-leg GTT requires stop trigger < last price < target trigger (all on the tick grid);
@@ -570,7 +576,7 @@ class Kite {
         lastPrice = roundToTick(lastPrice);
         Kite.assertGttPrices(stopLossPrice, lastPrice, targetPrice);
         Log.log(`[Kite] Modifying GTT ${triggerId} for ${tradingSymbol}: stopLoss=${stopLossPrice} target=${targetPrice}`);
-        await this.kc.modifyGTT(triggerId, {
+        await runOrderWrite('kite', `modifyGTT ${triggerId}`, () => this.kc.modifyGTT(triggerId, {
             trigger_type: 'two-leg',
             tradingsymbol: tradingSymbol,
             exchange,
@@ -580,7 +586,7 @@ class Kite {
                 { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: stopLimitPrice(stopLossPrice) },
                 { transaction_type: 'SELL', quantity, order_type: 'LIMIT', product: 'NRML', price: targetPrice },
             ],
-        });
+        }));
     }
 
     // Cancels a plain (non-GTT) order, e.g. a resting root-refill LIMIT buy
@@ -591,7 +597,7 @@ class Kite {
             throw new Error('No active session. Please login first.');
         }
         Log.log(`[Kite] Cancelling order ${orderId}`);
-        await this.kc.cancelOrder('regular', orderId);
+        await runOrderWrite('kite', `cancelOrder ${orderId}`, () => this.kc.cancelOrder('regular', orderId));
     }
 
     // NARROW EXCEPTION TO THE NEVER-SHORT GUARD (see getSellableQuantity/placeLimitSellOption
@@ -608,7 +614,7 @@ class Kite {
         Log.log(`[Kite] [BUTTERFLY SHORT-ENTRY] Placing NRML limit sell-to-open: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
         let response;
         try {
-            response = await this.kc.placeOrder('regular', {
+            response = await this.queuedPlaceOrder({
                 exchange,
                 tradingsymbol: tradingSymbol,
                 transaction_type: 'SELL',
