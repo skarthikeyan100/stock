@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import type { Page } from 'playwright';
+import { roundTick } from '../bracket.js';
 import { chooseExpiry } from '../expiry.js';
 import type { Config } from '../types.js';
 import { BASE_URL, dismissNotice, isLoggedIn } from './session.js';
@@ -103,19 +104,28 @@ async function openBuyForm(page: Page, req: BuyRequest, today: string): Promise<
   return choice.label;
 }
 
+/** Values currently in the open Regular buy form (used to verify before Buy). */
+async function readRegularForm(page: Page) {
+  return {
+    qty: await readNumber(page, '#qty'),
+    price: await readNumber(page, '#price'),
+    positional: await page.locator('#NRML').isChecked().catch(() => false),
+  };
+}
+
 /**
- * Bracket buy: Cover tab, Limit, Target (Bracket) ticked, stoploss/target as differences.
- * In dry run the form is filled, read back and cancelled; Buy is never clicked.
+ * Cover/bracket orders are not allowed, so: (1) a plain Regular Limit buy (Positional, so a GTT can exit it later),
+ * (2) once it is filled, a sell OCO GTT (stoploss leg + target leg). The offsets in the request are differences from the
+ * entry price. In dry run the buy form is filled, read back and cancelled; Buy is never clicked.
  */
 export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, today: string): Promise<OrderOutcome> {
   try {
     if (!(await isLoggedIn(page))) return { status: 'unknown', reason: 'session expired: run npm run login' };
     await dismissNotice(page);
     const label = await openBuyForm(page, req, today);
-    await page.locator('#ow_Cover').click();
+    await page.locator('#ow_Regular').click();
     await page.locator('#ow_Limit').click();
-    const box = page.locator('#ow_bo_checkbox');
-    if (!(await box.isChecked())) await page.getByText('Target (Bracket)').click({ timeout: FILL_TIMEOUT });
+    await page.locator('#NRML').check({ timeout: FILL_TIMEOUT });
     // One lot = the site's own lot quantity (the qty field's step); the lot size written in the message is ignored.
     const lot = Number(await page.locator('#qty').getAttribute('step', { timeout: FILL_TIMEOUT }));
     if (!(lot > 0)) {
@@ -125,15 +135,11 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
     }
     await setNumber(page, '#qty', lot);
     await setNumber(page, '#price', req.price);
-    await setNumber(page, '#triggerPrice', req.stopOffset);
-    await setNumber(page, '#targetPrice', req.targetOffset);
-    await page.locator('#targetPrice').blur();
+    await page.locator('#price').blur();
 
-    const f = await readForm(page);
-    const ok =
-      f.bracket && f.qty === lot && near(f.price, req.price) && near(f.stop, req.stopOffset) && near(f.target, req.targetOffset);
+    const f = await readRegularForm(page);
     console.log(`[buy-form] ${label}`, f);
-    if (!ok) {
+    if (f.qty !== lot || !near(f.price, req.price) || !f.positional) {
       await saveEvidence(page, 'form-mismatch');
       await cancelForm(page);
       return { status: 'unknown', reason: `form mismatch: ${JSON.stringify(f)}` };
@@ -143,15 +149,78 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
       return { status: 'unknown', reason: 'dry run' };
     }
     await page.locator('#ow_place_order_btn').click({ timeout: FILL_TIMEOUT });
-    return await readResult(page);
+    const outcome = await readResult(page, req);
+    if (outcome.status !== 'placed' || !outcome.orderNo) return outcome;
+
+    // The exit: wait for the fill, then protect the position with a sell OCO GTT.
+    if (!(await waitForFill(page, req, 120_000))) {
+      return { ...outcome, status: 'unknown', reason: `buy placed but not filled within 2 minutes: NO stop/target was placed, check the website (order ${outcome.orderNo})` };
+    }
+    try {
+      await placeExitGtt(page, req, lot, today);
+    } catch (err) {
+      await saveEvidence(page, 'gtt-error');
+      return { ...outcome, status: 'unknown', reason: `buy filled but the stop/target GTT FAILED (${(err as Error).message}): position is unprotected, check the website` };
+    }
+    return outcome;
   } catch (err) {
     await saveEvidence(page, 'buy-error');
     return { status: 'unknown', reason: `error: ${(err as Error).message}` };
   }
 }
 
+/** Matches an Executed row of this contract, e.g. "MANAPPURAM 23rd NOV 280 PE". */
+export function contractRow(req: BuyRequest): RegExp {
+  return new RegExp(`${req.underlying}\\s.*\\b${req.strike}(\\.0+)?\\s*${req.right}\\b`, 'i');
+}
+
+/** Polls Orders > Executed until the order shows COMPLETE. False on REJECTED/CANCELLED or timeout. */
+async function waitForFill(page: Page, req: BuyRequest, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
+    await page.getByText(/^Executed/).first().click({ timeout: FILL_TIMEOUT }).catch(() => undefined);
+    await page.waitForTimeout(1_500);
+    // The Executed rows carry no order number: look at every row of this contract.
+    const rows = page.locator('tr, [role="row"]').filter({ hasText: contractRow(req) });
+    const texts = await rows.allInnerTexts().catch(() => [] as string[]);
+    if (texts.some((t) => /COMPLETE/i.test(t))) return true;
+    await page.waitForTimeout(3_000);
+  }
+  return false;
+}
+
+/** Sell OCO GTT: stoploss leg (limit a little under the trigger so it fills) and target leg. */
+export async function placeExitGtt(page: Page, req: BuyRequest, lot: number, today: string): Promise<void> {
+  const stop = roundTick(req.price - req.stopOffset);
+  const target = roundTick(req.price + req.targetOffset);
+  const stopLimit = roundTick(stop * 0.95);
+  await page.goto(`${BASE_URL}/dashboard`, { waitUntil: 'domcontentloaded' });
+  await openBuyForm(page, req, today);
+  await page.locator('#ow_sell:visible').click({ timeout: FILL_TIMEOUT });
+  await page.locator('#ow_GTT:visible').click({ timeout: FILL_TIMEOUT });
+  await page.locator('#ow_OCO:visible').click({ timeout: FILL_TIMEOUT });
+  await setNumber(page, '#trigger_price:visible', stop);
+  await setNumber(page, '#sl_bid_qty:visible', lot);
+  await setNumber(page, '#scrip_price:visible', stopLimit);
+  await setNumber(page, '#target_trig_price:visible', target);
+  await setNumber(page, '#tar_bid_qty:visible', lot);
+  await setNumber(page, '#target_price_ocd:visible', target);
+  await page.locator('#target_price_ocd:visible').blur();
+  console.log('[gtt-form]', {
+    stop: await readNumber(page, '#trigger_price:visible'),
+    stopLimit: await readNumber(page, '#scrip_price:visible'),
+    target: await readNumber(page, '#target_trig_price:visible'),
+    targetLimit: await readNumber(page, '#target_price_ocd:visible'),
+    qty: await readNumber(page, '#sl_bid_qty:visible'),
+  });
+  await page.locator('#agreeCB:visible').check({ timeout: FILL_TIMEOUT });
+  await page.locator('#gtt_ow_place_order_btn:visible').click({ timeout: FILL_TIMEOUT });
+  await page.waitForTimeout(2_000);
+}
+
 /** Toast "<SYMBOL> - BUY - <orderNo>" + status; a REJECTED order's reason comes from Orders > Executed > Info. */
-async function readResult(page: Page): Promise<OrderOutcome> {
+async function readResult(page: Page, req: BuyRequest): Promise<OrderOutcome> {
   const deadline = Date.now() + 10_000;
   let m: RegExpMatchArray | null = null;
   while (Date.now() < deadline && !m) {
@@ -165,18 +234,18 @@ async function readResult(page: Page): Promise<OrderOutcome> {
   }
   const [, symbol, orderNo, status] = m;
   if (status?.trim() === 'REJECTED') {
-    return { status: 'rejected', symbol, orderNo, reason: await readRejectReason(page, orderNo) };
+    return { status: 'rejected', symbol, orderNo, reason: await readRejectReason(page, req) };
   }
   if (status?.trim() && /OPEN|PENDING|COMPLETE|TRIGGER/.test(status)) return { status: 'placed', symbol, orderNo };
   await saveEvidence(page, 'toast-unclear');
   return { status: 'unknown', symbol, orderNo, reason: `toast status "${status?.trim() ?? ''}": check the website orders page` };
 }
 
-async function readRejectReason(page: Page, orderNo: string): Promise<string> {
+async function readRejectReason(page: Page, req: BuyRequest): Promise<string> {
   try {
     await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
     await page.getByText(/^Executed/).first().click({ timeout: FILL_TIMEOUT });
-    const row = page.locator('tr, [role="row"], div').filter({ hasText: /REJECTED/ }).filter({ hasText: orderNo }).last();
+    const row = page.locator('tr, [role="row"]').filter({ hasText: /REJECTED/ }).filter({ hasText: contractRow(req) }).first();
     await row.hover({ timeout: FILL_TIMEOUT });
     await row.getByText('More', { exact: true }).click({ timeout: FILL_TIMEOUT });
     await page.getByText('Info', { exact: true }).click({ timeout: FILL_TIMEOUT });

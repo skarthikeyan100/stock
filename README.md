@@ -1,8 +1,7 @@
 # GoPocket
 
-Reads option calls (any underlying) from WhatsApp and places a one-lot **bracket order** (limit buy + target + stop loss) on
-https://web.gopocket.in with a headless Playwright browser. Buy only: the bracket's own target and stop handle the
-exit, so exit messages are ignored. Outcomes go to the console and `logs/messages.log`; the bot never sends a
+Reads option calls (any underlying) from WhatsApp and places a one-lot **Regular limit buy** (Positional) on
+https://web.gopocket.in with a visible Playwright browser (`headless: false`), then, once the buy is COMPLETE, a **sell OCO GTT** (stoploss + target) as the exit (Cover/bracket orders are not allowed on the account). Exit messages are ignored. Outcomes go to the console and `logs/messages.log`; the bot never sends a
 WhatsApp message.
 
 ## Setup
@@ -67,3 +66,8 @@ Everything so far was verified in **dry run only**: no real order has been place
 - Final whole-branch self-review of GoPocket (no subagent tool available), fix findings, ledger, finish the branch.
 - Record in `docs/gopocket-site-notes.md`: an accepted bracket buy, the cut-off time, the order request.
 - Later: the "enrich" broker and its route in the router config; a README for `../whatsapp`.
+
+## Status (2026-11-18, live)
+- Verified live: message -> Claude parse -> Regular Limit buy filled -> sell OCO GTT created and listed (the GTT was created through `POST /gtt`, loopback only; the automatic buy-to-GTT chain with the fixed fill check is not yet seen end to end).
+- GoPocket opens a visible browser on start and logs in with `.env` mobile + password; type the OTP in that window. Do not use the window or log in elsewhere (one session only).
+- Fill detection matches the Executed row by contract (rows have no order number).

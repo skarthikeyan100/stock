@@ -61,3 +61,28 @@ export async function loginWithOtp(page: Page, creds: Credentials, askOtp: () =>
   }
   await dismissNotice(page);
 }
+
+/**
+ * For a headed browser: fills mobile + password from .env and leaves the OTP to the owner, who types it in the browser
+ * window. Resolves once the dashboard is visible; throws if that does not happen within `waitMinutes`.
+ */
+export async function loginWithBrowserOtp(page: Page, creds: Credentials, waitMinutes = 10): Promise<void> {
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  // The site remembers the last account and may show only the password field.
+  const mobile = page.locator('#mobileNo_input');
+  const password = page.locator('#password_input');
+  await mobile.or(password).first().waitFor({ state: 'visible', timeout: 20_000 });
+  if (await mobile.isVisible()) {
+    await mobile.fill(creds.mobile);
+    await page.locator('#mobileNo_submit_btn').click({ timeout: 5_000 }).catch(() => undefined); // the page may advance by itself
+  }
+  await password.fill(creds.password, { timeout: 20_000 });
+  await page.locator('#password_submit_btn').click();
+  console.log(`GoPocket: mobile and password submitted. Type the OTP in the browser window (waiting up to ${waitMinutes} minutes) ...`);
+  try {
+    await dashboardNav(page).waitFor({ state: 'visible', timeout: waitMinutes * 60_000 });
+  } catch {
+    throw new Error('the dashboard did not appear: the OTP was not entered in time, or was wrong');
+  }
+  await dismissNotice(page);
+}

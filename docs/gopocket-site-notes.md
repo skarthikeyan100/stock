@@ -42,3 +42,11 @@ Site: https://web.gopocket.in (login page, then /dashboard). Account is a normal
 - The headless dry run (form filled, read back, Cancel) was verified for NIFTY, PAYTM and HAL. A real accepted order is still not recorded.
 - A second Chromium on the same `browser-profile/` while the bot runs shows the site as logged out: stop the bot before running `npm run probe`/`probe-buy`.
 - Expiry: posts name only a month for stock options ("NOV: 2000.00 CE"). Claude returns `expiryMonth` (JAN..DEC); the bot trades the nearest listed expiry inside that month and refuses if that month is not listed (it never falls back to another month). With no month stated it takes the nearest expiry, as for NIFTY.
+
+## Update 2026-11-18 (live): Cover/bracket not allowed, Regular buy + GTT exit
+- **Cover (bracket) orders are not allowed** on this account (the 2026-11-18 10:55 IST bracket buy was REJECTED). The flow is now: Regular tab, Limit, **Positional** (`#NRML`; Intraday is `#MIS`), qty = lot, price; then, once filled, a **sell OCO GTT**.
+- A Regular Limit buy of MANAPPURAM NOV 280 PE (3000 @ 3.80) was accepted and went COMPLETE within ~2 minutes.
+- Sell GTT: open the form from the search row, click `#ow_sell`, `#ow_GTT`, `#ow_OCO`. Fields: stoploss leg `#trigger_price`, `#sl_bid_qty`, `#scrip_price` (limit price); target leg `#target_trig_price`, `#tar_bid_qty`, `#target_price_ocd`. Tick `#agreeCB`, click `#gtt_ow_place_order_btn`. GTT form is in the same order form (tabs Quick/Regular/Cover/AMO/GTT; GTT has Single and OCO). The trigger expires after one year. Created and listed under Orders > GTT (SL limit 1.90 trigger 2.00; target 5.00 trigger 5.00).
+- The order form exists **twice** in the DOM (duplicate ids such as `#ow_sell`): use `:visible` selectors.
+- **The Executed table rows have no order number**: match rows by contract (instrument) and Status, never by order number.
+- The site allows **one logged-in session**: logging in in a second browser logs out the first. The login page may remember the account and show only the password field.
