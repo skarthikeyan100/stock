@@ -11,13 +11,25 @@ import { sleep } from './sleep';
 // The rule is deliberately simple: FIFO; the next write for a broker starts only after the previous one has finished (success or
 // failure) AND at least ORDER_GAP_MS later. No tokens, no back-off, no retry.
 export const ORDER_GAP_MS = 1000;
+let gapMs = ORDER_GAP_MS;
 // A write whose turn does not come within this long is NOT sent: it fails with the NOT_PLACED flag (a definite "never reached the
 // broker", safe for the caller to retry). The strategy side gives up on a request after ORDER_IPC_TIMEOUT_MS (90 s) and would treat a
 // still-queued order as outcome unknown, then the order process would send it anyway; this keeps the answer definite and well inside that.
 export const MAX_QUEUE_WAIT_MS = 30000;
+let maxQueueWaitMs = MAX_QUEUE_WAIT_MS;
 // A broker call that has not returned after this long no longer holds the line (Breeze's SDK has no HTTP timeout of its own; ANT and Kite
 // time out at 15 s / 7 s). The call itself carries on and its caller still gets its result; only the next order may go.
 export const MAX_SLOT_HOLD_MS = 30000;
+let maxSlotHoldMs = MAX_SLOT_HOLD_MS;
+
+// Test hook only (never an operator control): shortens the three timings so a unit test need not wait 30 s. Called with no
+// argument it restores the production values.
+export function setOrderQueueTimingsForTest(t: { gapMs?: number; maxQueueWaitMs?: number; maxSlotHoldMs?: number } = {}): void {
+    gapMs = t.gapMs ?? ORDER_GAP_MS;
+    maxQueueWaitMs = t.maxQueueWaitMs ?? MAX_QUEUE_WAIT_MS;
+    maxSlotHoldMs = t.maxSlotHoldMs ?? MAX_SLOT_HOLD_MS;
+    lines.clear();
+}
 
 const lines = new Map<string, { tail: Promise<void>; lastDoneAt: number }>();
 
@@ -41,17 +53,17 @@ export async function runOrderWrite<T>(broker: string, label: string, fn: () => 
         release();
     };
     try {
-        const gap = myLine.lastDoneAt + ORDER_GAP_MS - Date.now();
+        const gap = myLine.lastDoneAt + gapMs - Date.now();
         if (gap > 0) await sleep(gap);
         const waited = Date.now() - enqueuedAt;
-        if (waited > MAX_QUEUE_WAIT_MS) {
+        if (waited > maxQueueWaitMs) {
             Log.log(`[orderQueue] ALERT: ${broker} ${label} waited ${waited} ms for its turn - not sent`);
-            throw markNotPlaced(new Error(`${broker} order queue: ${label} waited ${waited} ms for its turn (limit ${MAX_QUEUE_WAIT_MS} ms) and was not sent`));
+            throw markNotPlaced(new Error(`${broker} order queue: ${label} waited ${waited} ms for its turn (limit ${maxQueueWaitMs} ms) and was not sent`));
         }
         holdTimer = setTimeout(() => {
-            Log.log(`[orderQueue] ALERT: ${broker} ${label} has not returned after ${MAX_SLOT_HOLD_MS} ms - the next ${broker} order is released`);
+            Log.log(`[orderQueue] ALERT: ${broker} ${label} has not returned after ${maxSlotHoldMs} ms - the next ${broker} order is released`);
             done(true);
-        }, MAX_SLOT_HOLD_MS);
+        }, maxSlotHoldMs);
         return await fn();
     } finally {
         done(holdTimer !== undefined);
