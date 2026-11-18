@@ -73,6 +73,9 @@ wanted for the day and carry on with the routine below.
 3. Watch the alerts monitor. Reply only to `!!!` lines, ALERTs, limit trips and missed-slot lines. **The monitor must be armed
    at all times until 15:30 IST**: when it expires (every 30 min), re-arm it immediately, without waiting to be asked, and check
    that it is running before replying to anything else. Do not leave it unarmed between expiry and the next check.
+   **Exactly one monitor.** A monitor armed before a `/clear` or in an earlier session keeps running and is invisible to the new session, so you get every
+   alert twice. Before arming, run `ps -eo pid,lstart,args | grep "[m]onitor-strategies-alerts.sh"`: if one is already running, kill the older one
+   (`pkill -P <bash pid>`, then `kill` it, never a pattern that matches your own shell) instead of arming a second.
 4. On "status": invoke the `monitor-strategies` skill (section 2, status on demand), which runs `scripts/strategy-status.sh` (by default only trades OPENED today count, realized and unrealized; if the user says "status all" run `scripts/strategy-status.sh all`, which also counts trades opened on an earlier day and closed today and positions still open from earlier days). Show all three tables as-is: BY STRATEGY, BY BROKER, and UNREALIZED BY BROKER AND STRATEGY (one row per open position). Never show fewer than three. Paste the three tables into the reply text itself in a code block: tool output is not reliably shown to the user, so running the script is not showing it. Add one line about any open position the script does not show. On "status users" run `scripts/strategy-status.sh users` (or `users all`) instead and paste its four sections (BY USER, BY BROKER, OPEN POSITIONS, TRADES) the same way; the admin rows can include mirrored shares of other users' buys (the footer says so), and a "closed-trade list unavailable" line means the web server needs a restart for `?closed=1`.
 5. After each restart and after any fill-heavy period, compare broker positions with strategy state.
 
@@ -125,7 +128,7 @@ The trader does not write code fixes. Every fix goes to a separate fixing agent,
    that reloads every strategy from Mongo for nothing. A frontend-only change under `frontend/src/` needs only `cd frontend && npm run build`, no
    restart. Restart the whole `npm run processes` only when `src/processes/`, `src/strategy/`, `src/kite/` or other trading code changed. If
    there is no way to restart one child, say so and ask before restarting everything.
-   **Do not always do a full restart (user's rule 2026-11-18: "do not always restart"; a hot restart is enough).** The orchestrator's hot restart
+   **Do not always do a full restart (user's rule: "do not always restart"; a hot restart is enough).** The orchestrator's hot restart
    (`hotRestart('trading' | 'frontend', ...)` in `src/orchestrator.ts`) restarts only the child whose code changed. In market hours it is
    held back unless `HOT_RESTART=true` or `settings.hotRestartDuringMarketHours: true` is set, so when the restart test passes during market
    hours, allow the hot restart and let it restart that one child, instead of killing and starting `npm run processes`. A full
