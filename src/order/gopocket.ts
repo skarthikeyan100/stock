@@ -148,12 +148,13 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
       await cancelForm(page);
       return { status: 'unknown', reason: 'dry run' };
     }
+    const placedAt = new Date(Date.now() - 10_000);
     await page.locator('#ow_place_order_btn').click({ timeout: FILL_TIMEOUT });
     const outcome = await readResult(page, req);
     if (outcome.status !== 'placed' || !outcome.orderNo) return outcome;
 
     // The exit: wait for the fill, then protect the position with a sell OCO GTT.
-    if (!(await waitForFill(page, req, 120_000))) {
+    if (!(await waitForFill(page, req, placedAt, 120_000))) {
       return { ...outcome, status: 'unknown', reason: `buy placed but not filled within 2 minutes: NO stop/target was placed, check the website (order ${outcome.orderNo})` };
     }
     try {
@@ -174,17 +175,33 @@ export function contractRow(req: BuyRequest): RegExp {
   return new RegExp(`${req.underlying}\\s.*\\b${req.strike}(\\.0+)?\\s*${req.right}\\b`, 'i');
 }
 
-/** Polls Orders > Executed until the order shows COMPLETE. False on REJECTED/CANCELLED or timeout. */
-async function waitForFill(page: Page, req: BuyRequest, timeoutMs: number): Promise<boolean> {
+/** Executed-tab row (recorded markup: `tr#executed_N`, cells `order_td_N_name` / `_time` / `_status`, newest first). */
+function executedRow(page: Page, req: BuyRequest) {
+  return page
+    .locator('tr[id^="executed_"]')
+    .filter({ has: page.locator('[id$="_name"]', { hasText: contractRow(req) }) });
+}
+
+/**
+ * Polls Orders > Executed until the newest row of this contract, placed no earlier than `since`, shows COMPLETE.
+ * False on REJECTED/CANCELLED or timeout.
+ */
+export async function waitForFill(page: Page, req: BuyRequest, since: Date, timeoutMs: number): Promise<boolean> {
+  const floor = since.toLocaleTimeString('en-GB'); // the site shows HH:MM:SS in local time
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
     await page.getByText(/^Executed/).first().click({ timeout: FILL_TIMEOUT }).catch(() => undefined);
     await page.waitForTimeout(1_500);
-    // The Executed rows carry no order number: look at every row of this contract.
-    const rows = page.locator('tr, [role="row"]').filter({ hasText: contractRow(req) });
-    const texts = await rows.allInnerTexts().catch(() => [] as string[]);
-    if (texts.some((t) => /COMPLETE/i.test(t))) return true;
+    const row = executedRow(page, req).first();
+    if (await row.count()) {
+      const time = (await row.locator('[id$="_time"]').innerText().catch(() => '')).trim();
+      const status = (await row.locator('[id$="_status"]').innerText().catch(() => '')).trim();
+      if (time >= floor) {
+        if (/^COMPLETE/i.test(status)) return true;
+        if (/REJECTED|CANCEL/i.test(status)) return false;
+      }
+    }
     await page.waitForTimeout(3_000);
   }
   return false;
@@ -217,6 +234,21 @@ export async function placeExitGtt(page: Page, req: BuyRequest, lot: number, tod
   await page.locator('#agreeCB:visible').check({ timeout: FILL_TIMEOUT });
   await page.locator('#gtt_ow_place_order_btn:visible').click({ timeout: FILL_TIMEOUT });
   await page.waitForTimeout(2_000);
+  if (!(await gttListed(page, req))) throw new Error('the GTT was submitted but is not listed under Orders > GTT');
+}
+
+/** True when Orders > GTT shows an entry for this contract (text match: the list's exact columns are not recorded). */
+export async function gttListed(page: Page, req: BuyRequest): Promise<boolean> {
+  await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
+  await page.locator('#GTT_order').click({ timeout: FILL_TIMEOUT });
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const text = await page.locator('body').innerText().catch(() => '');
+    if (new RegExp(`OCO[\\s\\S]{0,40}SELL[\\s\\S]{0,40}${contractRow(req).source}`, 'i').test(text)) return true;
+    await page.waitForTimeout(1_000);
+  }
+  await saveEvidence(page, 'gtt-list');
+  return false;
 }
 
 /** Toast "<SYMBOL> - BUY - <orderNo>" + status; a REJECTED order's reason comes from Orders > Executed > Info. */
@@ -245,7 +277,7 @@ async function readRejectReason(page: Page, req: BuyRequest): Promise<string> {
   try {
     await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
     await page.getByText(/^Executed/).first().click({ timeout: FILL_TIMEOUT });
-    const row = page.locator('tr, [role="row"]').filter({ hasText: /REJECTED/ }).filter({ hasText: contractRow(req) }).first();
+    const row = executedRow(page, req).filter({ hasText: /REJECTED/ }).first();
     await row.hover({ timeout: FILL_TIMEOUT });
     await row.getByText('More', { exact: true }).click({ timeout: FILL_TIMEOUT });
     await page.getByText('Info', { exact: true }).click({ timeout: FILL_TIMEOUT });

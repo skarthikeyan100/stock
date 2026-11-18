@@ -3,7 +3,7 @@ import { defaultRunner } from './claudeParser.js';
 import { loadConfig } from './config.js';
 import { createDeduper } from './dedupe.js';
 import { logError, logInfo } from './logger.js';
-import { type BuyRequest, placeBracketBuy, placeExitGtt, readSpot } from './order/gopocket.js';
+import { type BuyRequest, gttListed, waitForFill, placeBracketBuy, placeExitGtt, readSpot } from './order/gopocket.js';
 import fs from 'node:fs';
 import { loginWithBrowserOtp, readCredentials } from './order/login.js';
 import { dismissNotice, isLoggedIn, openContext } from './order/session.js';
@@ -65,7 +65,22 @@ const server = createMessageServer((messageId, text) => {
 }, (b) =>
   // Exit-only: create the sell OCO GTT for a contract that is already held (owner-triggered, loopback only).
   serialize(async () => {
-    const req = b as unknown as BuyRequest & { lot: number };
+    const req = b as unknown as BuyRequest & { lot: number; verifyOnly?: boolean };
+    if (req.verifyOnly) {
+      const pg = await getPage();
+      logInfo('GTT listed?', { listed: await gttListed(pg, req) });
+      logInfo('fill check (since 14:30)', { filled: await waitForFill(pg, req, new Date(new Date().setHours(14, 30, 0, 0)), 15_000) });
+      // Record the real Executed tab (text + screenshot) so the fill check can be written from facts.
+      await pg.goto('https://web.gopocket.in/order', { waitUntil: 'domcontentloaded' });
+      await pg.getByText(/^Executed/).first().click({ timeout: 5_000 });
+      await pg.waitForTimeout(2_000);
+      fs.mkdirSync('logs', { recursive: true });
+      fs.writeFileSync('logs/executed-tab.txt', await pg.locator('body').innerText());
+      fs.writeFileSync('logs/executed-tab.html', await pg.content());
+      await pg.screenshot({ path: 'logs/executed-tab.png' });
+      logInfo('Executed tab saved to logs/executed-tab.*');
+      return;
+    }
     await placeExitGtt(await getPage(), req, req.lot, new Date().toLocaleDateString('en-CA'));
     logInfo('exit GTT submitted', { underlying: req.underlying, strike: req.strike, right: req.right });
   }).catch((error) => logError('exit GTT failed', { error: error instanceof Error ? error.message : String(error) })),
