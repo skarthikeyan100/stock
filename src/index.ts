@@ -3,11 +3,11 @@ import { defaultRunner } from './claudeParser.js';
 import { loadConfig } from './config.js';
 import { createDeduper } from './dedupe.js';
 import { logError, logInfo } from './logger.js';
-import { type BuyRequest, cancelForm, ensurePendingPage, gttListed, openBuyForm, pendingEmpty, placeBracketBuy, placeExitGtt, readSpot } from './order/gopocket.js';
+import { type BuyRequest, cancelForm, ensurePendingPage, gttListed, isOrderPending, openBuyForm, pendingEmpty, placeBracketBuy, placeExitGtt, readSpot } from './order/gopocket.js';
 import fs from 'node:fs';
 import { loginWithBrowserOtp, readCredentials } from './order/login.js';
 import { dismissNotice, isLoggedIn, openContext } from './order/session.js';
-import { type Broker, handleMessage } from './pipeline.js';
+import { type Broker, handleMessage, serialize } from './pipeline.js';
 import { createMessageServer } from './server.js';
 
 if (fs.existsSync('.env')) process.loadEnvFile('.env');
@@ -50,39 +50,31 @@ const broker: Broker = {
   logInfo('GoPocket session is logged in, parked on Orders > Pending');
 }
 
-// One user, one order at a time: while a message is being handled (or an order is pending) other messages are rejected.
-let busy = false;
-
-const server = createMessageServer(async (messageId, text) => {
+// One user, one order at a time: a message that arrives while an order is pending is rejected. Otherwise messages are
+// handled one after another (they share one browser page).
+const server = createMessageServer((messageId, text) => {
   logInfo('Received message', { messageId, body: text });
-  if (busy) {
-    logInfo('rejected: another order is in progress', { messageId });
-    return;
+  if (isOrderPending()) {
+    logInfo('rejected: an order is pending', { messageId });
+    return Promise.resolve();
   }
-  busy = true;
-  try {
-    await handleMessage(messageId, text, {
+  return serialize(() =>
+    handleMessage(messageId, text, {
       cfg,
       run,
       broker,
       deduper,
       today: () => new Date().toLocaleDateString('en-CA'),
       log: (message, extra) => logInfo(message, extra),
-    });
-  } catch (error) {
-    logError('Unhandled error while processing message', { error: error instanceof Error ? error.message : String(error) });
-  } finally {
-    busy = false;
-  }
-}, async (b) => {
+    }),
+  ).catch((error) => logError('Unhandled error while processing message', { error: error instanceof Error ? error.message : String(error) }));
+}, (b) =>
   // Owner-triggered, loopback only: create the exit GTT for a held contract, or check the page without ordering.
-  if (busy) return logInfo('rejected: another order is in progress');
-  busy = true;
-  try {
+  serialize(async () => {
     const req = b as unknown as BuyRequest & { lot: number; verifyOnly?: boolean };
     const pg = await getPage();
+    await ensurePendingPage(pg);
     if (req.verifyOnly) {
-      await ensurePendingPage(pg);
       logInfo('pending empty?', { empty: await pendingEmpty(pg) });
       logInfo('GTT listed?', { listed: await gttListed(pg, req) });
       await ensurePendingPage(pg);
@@ -90,15 +82,10 @@ const server = createMessageServer(async (messageId, text) => {
       await cancelForm(pg);
       return;
     }
-    await ensurePendingPage(pg);
     await placeExitGtt(pg, req, req.lot, new Date().toLocaleDateString('en-CA'));
     logInfo('exit GTT submitted', { underlying: req.underlying, strike: req.strike, right: req.right });
-  } catch (error) {
-    logError('exit GTT failed', { error: error instanceof Error ? error.message : String(error) });
-  } finally {
-    busy = false;
-  }
-});
+  }).catch((error) => logError('owner request failed', { error: error instanceof Error ? error.message : String(error) })),
+);
 server.listen(cfg.port, '127.0.0.1', () => logInfo(`GoPocket listening on 127.0.0.1:${cfg.port} (dryRun=${cfg.dryRun}, headless=${cfg.headless})`));
 
 // A restart (SIGTERM/SIGINT) must really stop this process: close the listener and the browser, then exit.

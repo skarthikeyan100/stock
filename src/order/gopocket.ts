@@ -122,7 +122,6 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
   try {
     await ensurePendingPage(page);
     await dismissNotice(page);
-    if (!(await pendingEmpty(page))) return { status: 'unknown', reason: 'rejected: an order is still pending' };
     const label = await openBuyForm(page, req, today);
     await page.locator('#ow_Regular').click();
     await page.locator('#ow_Limit').click();
@@ -154,7 +153,12 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
     if (outcome.status !== 'placed' || !outcome.orderNo) return outcome;
 
     // The exit: wait on the Pending tab until the order leaves it, then check it was filled.
-    await waitUntilNotPending(page, 120_000);
+    orderPending = true;
+    try {
+      await waitUntilNotPending(page, 120_000);
+    } finally {
+      orderPending = false;
+    }
     if (!(await pendingEmpty(page))) {
       return { ...outcome, status: 'unknown', reason: `buy still pending after 2 minutes: NO stop/target was placed, check the website (order ${outcome.orderNo})` };
     }
@@ -180,6 +184,12 @@ export async function placeBracketBuy(page: Page, req: BuyRequest, cfg: Config, 
 /** Matches an Executed row of this contract, e.g. "MANAPPURAM 23rd NOV 280 PE". */
 export function contractRow(req: BuyRequest): RegExp {
   return new RegExp(`${req.underlying}\\s.*\\b${req.strike}(\\.0+)?\\s*${req.right}\\b`, 'i');
+}
+
+let orderPending = false;
+/** True from the moment a buy is placed until it has left the Pending tab: new messages are rejected meanwhile. */
+export function isOrderPending(): boolean {
+  return orderPending;
 }
 
 /** The Orders page is a single page: stay on it, and only navigate when we are somewhere else. */
