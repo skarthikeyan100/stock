@@ -156,17 +156,20 @@ if(detail){
 }
 if(!detail){console.log("\n(position table unavailable: the API process predates the ?detail=1 option - restart it)");process.exit(0)}
 // Resting sell prices from today log: MomentumAtFixedTime "[MomentumAtFixedTime:<user>] <broker> <tsym>: bought .. - resting sell @ <p>" and
-// SimpleContinuous-style "[<user>] resting sell <tsym> qty=<n> @<p>". Keyed user|tsym; the last line wins.
+// SimpleContinuous-style "[<user>] resting sell <tsym> qty=<n> @<p>", HighLow "[HighLow:<user>] .. resting sell <h> @ <p>, the other <h> then trails". Keyed user|tsym only (never tsym alone); the last line wins.
 const sells=new Map();
 try{
   for(const line of require("fs").readFileSync(process.env.LOG,"utf8").split("\n")){
     let m=line.match(/\[MomentumAtFixedTime:([^\]]+)\] \w+ (\S+): bought .* resting sell @ ([0-9.]+)/);
-    if(m){sells.set(m[1]+"|"+m[2],+m[3]);sells.set("|"+m[2],+m[3]);continue}
+    if(m){sells.set(m[1]+"|"+m[2],+m[3]);continue}
     m=line.match(/\] \[([^\]]+)\] resting sell (\S+) qty=\d+ ?@ ?([0-9.]+)/);
-    if(m){sells.set(m[1]+"|"+m[2],+m[3]);sells.set("|"+m[2],+m[3]);continue} // the contract-only key covers an instance that logs under another id (Breeze)
+    if(m){sells.set(m[1]+"|"+m[2],+m[3]);continue} // keyed by the logging user: a line never shows on another strategy row (an ANT/Breeze/Prism instance falls back to its base id below)
+    // HighLow half-trail: "[HighLow:<user>] <broker> <tsym> qty=<n> avg=<a>: resting sell <h> @ <p>, the other <h> then trails ..." shows the half resting price <p>
+    m=line.match(/\[HighLow:([^\]]+)\] \w+ (\S+) qty=\d+ avg=\S+: resting sell \d+ @ ([0-9.]+),/);
+    if(m){sells.set(m[1]+"|"+m[2],+m[3]);continue}
     // CandleEntry family (NextWeek, Breakout): "[Type:<user>] <broker> <tsym> qty=<n> avg=<a>: target <t> / stop <s> protected via gtt"
     m=line.match(/\[[^\]:]+:([^\]]+)\] \w+ (\S+) qty=\d+ avg=\S+: target ([0-9.]+) \/ stop [0-9.]+ protected via (\w+)/);
-    if(m){const v={p:+m[3],via:m[4]};sells.set(m[1]+"|"+m[2],v);sells.set("|"+m[2],v)}
+    if(m)sells.set(m[1]+"|"+m[2],{p:+m[3],via:m[4]})
   }
 }catch{}
 console.log("\nUNREALIZED BY BROKER AND STRATEGY (open positions)");
@@ -174,7 +177,7 @@ if(!detail.length){console.log("  none open");process.exit(0)}
 detail.sort((a,b)=>a.broker.localeCompare(b.broker)||a.strategy.localeCompare(b.strategy)||a.tsym.localeCompare(b.tsym));
 const hdr=["broker","strategy","contract","qty","bought","ltp","resting sell","unrealized"];
 const rows=detail.map(r=>{
-  const sell=sells.get(r.user+"|"+r.tsym)??sells.get("|"+r.tsym);
+  const sell=sells.get(r.user+"|"+r.tsym)??sells.get(r.user.replace(/-(ANT|Breeze|Prism)$/,"")+"|"+r.tsym);
   const rest=sell!=null?(typeof sell==="object"?sell.p.toFixed(2)+" ("+sell.via+")":sell.toFixed(2)):(r.targetPrice!=null?r.targetPrice.toFixed(2)+" (tick)":"-");
   return [r.broker,r.strategy,r.tsym,String(r.quantity),r.price.toFixed(2),r.ltp==null?"?":r.ltp.toFixed(2)+(r.liveQuote?"":"*"),rest,f(r.unrealized)];
 });
