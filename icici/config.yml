@@ -452,6 +452,7 @@ strategies:
     target: 10              # option points above the entry (or "N%"); both target and stopLoss are required
     stopLoss: 8             # option points below the entry (or "N%")
     trailDistance: 4        # optional (option points): sell half the lots at the target, trail the rest; needs 2+ lots
+    candleMinutes: 10       # candle length in whole minutes (1..375; absent = 10); the 09:15 grid
     lastEntryTime: '15:00'
     index: NIFTY
     brokers:

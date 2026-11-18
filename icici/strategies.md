@@ -735,12 +735,12 @@ Config (`config.yml`): `quantity`, `startSide`, `startTime`, `target` / `stopLos
 Test: `node dist/test/mandwCycle.test.js`, `node dist/test/mandwStrategy.test.js`, `node dist/test/halfTrail.test.js`.
 
 ### HighLowStrategy (`HighLowStrategy.ts`, on `CandleEntryStrategy` -> `LimitEntryStrategy`) — config: `enabled: false`, multi-broker
-Two consecutive **2-minute NIFTY candles** (c1 then c2; built from the index ticks on the 09:15 grid, in memory only, nothing in Mongo; the first candle after a restart never pairs with an older one):
+Two consecutive **10-minute NIFTY candles** (c1 then c2; built from the index ticks on the 09:15 grid: 09:15-09:25, 09:25-09:35, ...; in memory only, nothing in Mongo; the first candle after a restart never pairs with an older one):
 - `c2.high > c1.high` **and** `c2.low > c1.low` -> buy **CE**; `c2.high < c1.high` **and** `c2.low < c1.low` -> buy **PE**; anything else (inside / outside bar, an equal high or low) -> nothing (`highLowSignal`).
 - Evaluated when a candle closes (a candle seen more than 30 s late is not traded). One LIMIT buy per broker of the ATM option at its LTP (`startCycle`; expiry per the global skip settings). One trade at a time; a candle is handled once, also across a restart; no entry at or after `lastEntryTime` (default 15:00).
 - **Sizing: exactly one of** `quantity` (units per broker, whole lots) **or** `maxInvestment` (rupee budget per broker, `maxInvestmentByBroker` overrides one: whole lots that fit at the option's price). The validator refuses both or neither.
 - **Exit:** `target` and `stopLoss` (block or settings; points or "N%"; both required, not `none`). `trailDistance` (option points, optional) engages HalfTrail with 2+ whole lots: half the lots rest as a limit sell at the target, the rest trails `trailDistance` below its peak with the target as the floor; the stop covers the whole leg until the half has sold (details under MandWStrategy). 1 lot or no `trailDistance`: a plain target + stop. The end-of-day close applies.
-Config (`config.yml`): `quantity` | `maxInvestment`, `target`, `stopLoss`, `trailDistance`, `lastEntryTime`, `index: NIFTY`, `brokers` (the shipped block uses `[paper]`).
+Config (`config.yml`): `quantity` | `maxInvestment`, `target`, `stopLoss`, `trailDistance`, `candleMinutes` (candle length in whole minutes, 1..375, default 10 when absent; per block; the config validator refuses anything else and, if one slips through, the strategy logs an ALERT and uses 10; a hot-reloaded change restarts the candles, so lengths are never mixed and the first new candle does not trade), `lastEntryTime`, `index: NIFTY`, `brokers` (the shipped block uses `[paper]`).
 Test: `node dist/test/highLowStrategy.test.js`, `node dist/test/paperBroker.test.js`.
 
 ### The `paper` broker (`processes/order/paperExecutor.ts`) — not a real broker

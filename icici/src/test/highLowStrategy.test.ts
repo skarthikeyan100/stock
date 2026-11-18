@@ -1,5 +1,5 @@
 /**
- * HighLowStrategy against a stubbed OrderClient and tokenRouter (no broker, no Mongo, no network): two 2-minute candles decide CE / PE.
+ * HighLowStrategy against a stubbed OrderClient and tokenRouter (no broker, no Mongo, no network): two 10-minute candles decide CE / PE.
  * Run: npx tsc, then: node ./dist/test/highLowStrategy.test.js
  */
 import '../util/tz';
@@ -34,7 +34,7 @@ const buys = () => calls.filter((c) => c.fn === 'placeLimitBuyBare');
 const resolves = () => calls.filter((c) => c.fn === 'resolveOptionContract').map((c) => c.args[1]);
 
 const midnight = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000);
-// 2-minute candles on the 09:15 grid start at odd minutes plus 0 s, e.g. 10:01, 10:03, 10:05 (09:15 + n x 2 min).
+// 10-minute candles on the 09:15 grid start at :05, :15, :25, :35, :45, :55 plus 0 s, e.g. 10:05, 10:15, 10:25 (09:15 + n x 10 min).
 const at = (h: number, m: number, sec = 0) => midnight + h * 3600 + m * 60 + sec;
 const tick = (s: any, ltp: number, ltt: number) => s.processNiftyQuote({ ltp, ltt: String(ltt), prevClose: 23400 });
 
@@ -48,16 +48,16 @@ function make(userId: string, extra: any = {}): any {
     return s;
 }
 
-// c1 = 10:01-10:03 (H 23510 L 23490), c2 = 10:03-10:05 as given, then a tick in 10:05 closes c2.
+// c1 = 10:05-10:15 (H 23510 L 23490), c2 = 10:15-10:25 as given, then a tick in 10:25 closes c2.
 async function twoCandles(s: any, c2: { high: number; low: number }) {
-    await tick(s, 23500, at(10, 1, 0));
-    await tick(s, 23510, at(10, 1, 30));
-    await tick(s, 23490, at(10, 2, 0));
-    await tick(s, 23500, at(10, 3, 0));
-    await tick(s, c2.high, at(10, 3, 30));
-    await tick(s, c2.low, at(10, 4, 0));
-    await tick(s, (c2.high + c2.low) / 2, at(10, 4, 50));
-    await tick(s, 23500, at(10, 5, 5)); // first tick of the next candle: c2 closes
+    await tick(s, 23500, at(10, 5, 0));
+    await tick(s, 23510, at(10, 8, 30));
+    await tick(s, 23490, at(10, 12, 0));
+    await tick(s, 23500, at(10, 15, 0));
+    await tick(s, c2.high, at(10, 18, 30));
+    await tick(s, c2.low, at(10, 21, 0));
+    await tick(s, (c2.high + c2.low) / 2, at(10, 24, 50));
+    await tick(s, 23500, at(10, 25, 5)); // first tick of the next candle: c2 closes
 }
 
 (async () => {
