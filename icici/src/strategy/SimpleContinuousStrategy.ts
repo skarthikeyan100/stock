@@ -14,7 +14,7 @@ import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
 import { roundToTick, NFO_TICK_SIZE } from '../util/tick';
-import { clearPrice, tripSellPrice, keepTripSell, TripGuard, TRIP_FILL_WAIT_MS } from './maxProfitLock';
+import { clearPrice, tripSellPrice, keepTripSell, TripGuard, TRIP_FILL_WAIT_MS, isNonTransientRejection, MAX_NON_TRANSIENT } from './maxProfitLock';
 import { effectiveMaxProfit } from './effectiveMaxProfit';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import { isPastEodClose } from '../util/eodClose';
@@ -757,6 +757,8 @@ export default class SimpleContinuousStrategy extends Strategy {
         if (this.remaining(leg) <= 0) return;
         if (!this.tripGuard.due(leg.id)) return; // a refused placement / cancel is retried with a growing delay, not every pass
         const clear = clearPrice(leg, this.openLegs(), this.state.realizedPnl, cap);
+        let prev: { qty: number; price: number } | undefined; // the resting sell this pass cancels: put back if its replacement is refused
+        if (leg.sellQty > 0 && this.tripGuard.exhausted(leg.id)) return; // refused by the broker MAX_NON_TRANSIENT times: the resting sell stays, no more cancel/replace
         if (leg.sellQty > 0) {
             if (keepTripSell(leg.sellPrice, clear, leg.lastLtp)) { // a retry pass never churns
                 const missing = Math.min(leg.sellShortfall ?? 0, this.remaining(leg) - leg.sellQty);
@@ -769,6 +771,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 if (this.tripGuard.shouldLogFailure(n)) Log.log(`[SimpleContinuousStrategy] MAX PROFIT: could not cancel the resting sell of ${leg.tsym} (it may still fill), retrying with backoff (failure ${n})`);
                 return;
             }
+            if (leg.sellPrice > 0) prev = { qty: leg.sellQty, price: leg.sellPrice };
             leg.sellQty = 0;
             leg.sellShortfall = 0;
             this.save();
@@ -797,13 +800,15 @@ export default class SimpleContinuousStrategy extends Strategy {
             this.tripGuard.clearFill(leg.id);
         }
         if (quantity <= 0) return;
+        const safe = this.tripGuard.safeQty(leg.id);
+        if (safe !== undefined && safe > 0 && safe < quantity) quantity = safe; // the broker refused the whole leg once (funds/margin) but accepted this much before
         const attempt = this.tripGuard.attempts(leg.id);
         const price = tripSellPrice(clearPrice(leg, this.openLegs(), this.state.realizedPnl, cap), leg.lastLtp, attempt);
-        await this.placeTripSell(leg, quantity, price, false, cap);
+        await this.placeTripSell(leg, quantity, price, false, cap, prev);
     }
 
     // One limit sell for `quantity` of `leg` at `price` after a maxProfit trip. `add` = the leg already has a resting sell at this price and this is its unplaced rest.
-    private async placeTripSell(leg: SimpleLeg, quantity: number, price: number, add: boolean, cap: number): Promise<void> {
+    private async placeTripSell(leg: SimpleLeg, quantity: number, price: number, add: boolean, cap: number, prev?: { qty: number; price: number }): Promise<void> {
         try {
             const res: any = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
                 tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(), locked: true,
@@ -833,8 +838,35 @@ export default class SimpleContinuousStrategy extends Strategy {
                     return;
                 }
             }
-            const n = this.tripGuard.fail(leg.id);
-            if (this.tripGuard.shouldLogFailure(n)) Log.log(`[SimpleContinuousStrategy] ALERT: MAX PROFIT resting sell for ${leg.tsym} (${quantity} @${price}) failed (failure ${n}; retried with backoff, the price moves toward the live LTP):`, e);
+            const partialPlaced = !!(e as any)?.partial || /after placing [1-9]\d*\//.test(String((e as any)?.message ?? e)); // some chunks already rest: restoring would oversell
+            if (isNonTransientRejection(e)) {
+                // The broker refused the order itself (funds / limit / margin / RMS): the same order can never succeed on a retry. One ALERT, a slow bounded
+                // retry sized to what the broker accepted before (the sell just cancelled), and the cancelled sell is put back below so the leg is never bare.
+                const n = this.tripGuard.failNonTransient(leg.id, prev?.qty);
+                if (n <= MAX_NON_TRANSIENT)
+                    Log.log(`[SimpleContinuousStrategy] ALERT: MAX PROFIT locked sell for ${leg.tsym} (${quantity} @${price}, ${this.brokerOrKite()}) REFUSED by the broker, not retryable as is (refusal ${n}/${MAX_NON_TRANSIENT}): ${(e as any)?.message ?? e}.` +
+                    (this.tripGuard.exhausted(leg.id) ? ' No more cancel/replace while a resting sell is in place: manual review required.' : ` Next attempt in 2 min${prev ? ` sized to ${prev.qty}` : ''}.`));
+            } else {
+                const n = this.tripGuard.fail(leg.id);
+                if (this.tripGuard.shouldLogFailure(n)) Log.log(`[SimpleContinuousStrategy] ALERT: MAX PROFIT resting sell for ${leg.tsym} (${quantity} @${price}) failed (failure ${n}; retried with backoff, the price moves toward the live LTP):`, e);
+            }
+            if (prev && !add && !partialPlaced && leg.status === 'open' && leg.sellQty <= 0) await this.restoreCancelledSell(leg, prev);
+        }
+    }
+
+    // The replacement of a cancelled resting sell was refused: re-place the cancelled one (same quantity and price, which the broker accepted before) so the
+    // leg is not left without an exit. Not `locked`: it is the pre-trip sell. A failure here is an ALERT and the trip retry (backoff) continues.
+    private async restoreCancelledSell(leg: SimpleLeg, prev: { qty: number; price: number }): Promise<void> {
+        const qty = Math.min(prev.qty, this.remaining(leg));
+        if (qty <= 0) return;
+        try {
+            const res: any = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
+                tradingSymbol: leg.tsym, instrumentId: leg.token, quantity: qty, price: prev.price, broker: this.brokerOrKite(),
+            });
+            this.bookPlacedSell(leg, qty, prev.price, res);
+            Log.log(`[SimpleContinuousStrategy] MAX PROFIT: the locked sell was refused, the previous resting sell of ${leg.tsym} was put back (qty=${qty} @${prev.price}) so the leg stays protected`);
+        } catch (e) {
+            Log.log(`[SimpleContinuousStrategy] ALERT: MAX PROFIT: the locked sell of ${leg.tsym} was refused AND the previous resting sell (${qty} @${prev.price}) could not be put back - the leg has NO resting sell:`, e);
         }
     }
 

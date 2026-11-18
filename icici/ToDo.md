@@ -49,3 +49,4 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 ## Two strategies on one Breeze contract (2026-11-18)
 - Restart the `trading` process after market hours to load the unconfirmed-buy ownership cap and the placed-quantity return of the ANT/Prism/Breeze limit sells (open-review-items.md 111).
 - Trader action for the live NIFTY23NOV2625300CE state: Simple's 585 vs real 520, the rejected locked sell (open-review-items.md 112).
+- Same restart also loads the max-profit refused-sell handling (open-review-items.md 113): non-retryable broker refusal, put-back of the cancelled sell, bounded retries.

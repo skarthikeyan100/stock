@@ -4,6 +4,7 @@ import bookkeeping from './bookkeeping';
 import { OptionExchange } from './BrokerExecutor';
 import { squareOffLimitChunked } from './chunkedOrder';
 import { getBrokerExecutor } from './brokerExecutors';
+import { isNonTransientRejection } from '../../strategy/maxProfitLock';
 
 // The LOCKED-PRICE sell of a max-profit trip (SimpleContinuousStrategy / ScaledHedgedStrategy / global max-profit) is owned by the ORDER process
 // from the moment it is placed (user's rule 2026-11-17: "the goal is to sell at the locked price"; a locked sell that is cancelled leaves the
@@ -88,6 +89,7 @@ export async function onLockedSellCancelled(userId: string, tsym: string, quanti
             if (/nothing sellable/.test(String(e?.message ?? e))) { Log.log(`[order] lockedSells: ${tsym} (${userId}) has nothing sellable after the ${reason} (closed, or another resting sell covers it) - nothing re-placed`); return true; }
             if (e?.partial) { Log.log(`[order] ALERT: lockedSells: re-placement of ${tsym} (${userId}) placed only part (${e.placedQuantity}/${quantity}):`, e); return true; }
             lastErr = e;
+            if (isNonTransientRejection(e)) { Log.log(`[order] lockedSells: ${tsym} (${userId}, ${broker}) re-placement refused by the broker (not retryable as is, no further identical try): ${e?.message ?? e}`); break; }
         }
     }
     Log.log(`[order] ALERT: lockedSells: could not re-place the locked sell of ${tsym} (${userId}, ${broker}) @${row.price} after ${PLACE_TRIES} tries - the position may be unmanaged:`, lastErr);

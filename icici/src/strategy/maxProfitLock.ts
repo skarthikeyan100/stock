@@ -85,7 +85,22 @@ export function keepTripSell(sellPrice: number, clear: number, lastLtp: number |
 export const TRIP_FILL_WAIT_MS = 60_000;
 const TRIP_BACKOFF_BASE_MS = 5_000;
 const TRIP_BACKOFF_MAX_MS = 60_000;
+// A broker refusal that no retry with the same order can cure (2026-11-18 10:01-10:08: Breeze "Available Futures and Options Limit is insufficient
+// to cover the trade value" was re-sent unchanged 10 times). Funds / limit / margin / RMS / invalid-order rejections. Transient causes (429, network,
+// timeouts) and the exchange price band (cured by the price walk of tripSellPrice) are NOT in this class, and a transient marker always wins.
+const TRANSIENT_ERROR = /429|too many requests|rate.?limit|timed? ?out|timeout|ETIMEDOUT|ECONN|ENOTFOUND|EAI_AGAIN|socket hang up|network|temporar|try again|service unavailable|\b50[234]\b/i;
+const NON_TRANSIENT_ERROR = /insufficient|not enough|margin|funds|balance|\brms\b|risk management|not (allowed|permitted|tradable)|invalid (order|quantity|qty|symbol|product|instrument)|blocked|exceeds? (the )?(limit|quantity)/i;
+export function isNonTransientRejection(e: unknown): boolean {
+    const msg = String((e as any)?.message ?? e);
+    return !TRANSIENT_ERROR.test(msg) && NON_TRANSIENT_ERROR.test(msg);
+}
+
+// A non-transient refusal is retried 2 minutes apart. After MAX_NON_TRANSIENT refusals a leg that has a resting sell is left on it (no more cancel/replace
+// churn, one ALERT); a leg with NO resting sell keeps trying every 2 minutes (it must not stay bare), logged once.
+export const MAX_NON_TRANSIENT = 3;
+export const NON_TRANSIENT_DELAY_MS = 120_000;
 export class TripGuard {
+    private nonTransient = new Map<string, { n: number; next: number; safeQty?: number }>();
     private failures = new Map<string, { n: number; next: number }>();
     private fillSince = new Map<string, number>(); // a cancel reported a fill: the leg's fill events may not have arrived yet
     private goneSince = new Map<string, number>(); // the broker refused the sell as 'nothing sellable' and the order side holds nothing
@@ -96,9 +111,24 @@ export class TripGuard {
         this.failures.set(id, { n, next: now + Math.min(TRIP_BACKOFF_MAX_MS, TRIP_BACKOFF_BASE_MS * 2 ** (n - 1)) });
         return n;
     }
-    due(id: string, now = Date.now()): boolean { const f = this.failures.get(id); return !f || now >= f.next; }
+    // A non-transient refusal: slow retries, bounded. `safeQty` = a quantity the broker accepted before for this leg (the sell the trip cancelled): the next
+    // attempt is sized to it instead of the whole leg. Returns the refusal count; exhausted() is true once the bound is reached.
+    failNonTransient(id: string, safeQty?: number, now = Date.now()): number {
+        const prev = this.nonTransient.get(id);
+        const n = (prev?.n ?? 0) + 1;
+        this.nonTransient.set(id, { n, next: now + NON_TRANSIENT_DELAY_MS, safeQty: safeQty ?? prev?.safeQty });
+        this.failures.set(id, { n: this.attempts(id) + 1, next: now + NON_TRANSIENT_DELAY_MS }); // the price walk (attempts) still advances
+        return n;
+    }
+    exhausted(id: string): boolean { return (this.nonTransient.get(id)?.n ?? 0) >= MAX_NON_TRANSIENT; }
+    safeQty(id: string): number | undefined { return this.nonTransient.get(id)?.safeQty; }
+    due(id: string, now = Date.now()): boolean {
+        const nt = this.nonTransient.get(id);
+        if (nt && now < nt.next) return false;
+        const f = this.failures.get(id); return !f || now >= f.next;
+    }
     attempts(id: string): number { return this.failures.get(id)?.n ?? 0; }
-    ok(id: string): void { this.failures.delete(id); this.goneSince.delete(id); }
+    ok(id: string): void { this.failures.delete(id); this.nonTransient.delete(id); this.goneSince.delete(id); }
     shouldLogFailure(n: number): boolean { return n === 1 || n % 10 === 0; }
 
     markFill(id: string, now = Date.now()): void { if (!this.fillSince.has(id)) this.fillSince.set(id, now); }
@@ -111,5 +141,5 @@ export class TripGuard {
         if (since === undefined) { this.goneSince.set(id, now); return false; }
         return now - since > TRIP_FILL_WAIT_MS;
     }
-    forget(id: string): void { this.failures.delete(id); this.fillSince.delete(id); this.goneSince.delete(id); }
+    forget(id: string): void { this.failures.delete(id); this.nonTransient.delete(id); this.fillSince.delete(id); this.goneSince.delete(id); }
 }

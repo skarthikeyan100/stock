@@ -5,7 +5,7 @@ import { isWithinTradingWindow } from '../../util/marketHours';
 import { isOpenedToday } from '../../util/openedToday';
 import { exchangeForTsym } from '../../util/underlyings';
 import { globalMaxProfit } from '../../strategy/effectiveMaxProfit';
-import { clearPrice, LockLeg, tripSellPrice, keepTripSell, TripGuard } from '../../strategy/maxProfitLock';
+import { clearPrice, LockLeg, tripSellPrice, keepTripSell, TripGuard, isNonTransientRejection, MAX_NON_TRANSIENT } from '../../strategy/maxProfitLock';
 import { latchGlobalMaxProfit, globalMaxProfitLatchedBrokers } from '../../strategy/globalMaxProfitLatch';
 import { NonFiniteAlert } from '../../strategy/finiteGuard';
 import OrderClient from './OrderClient';
@@ -74,13 +74,16 @@ export async function checkOne(userId: string, broker: string, cap: number, stat
         const clear = clearPrice(leg, [...legs.values()], realized, cap);
         // Never below the marketable floor (last price less 5%, tightening after a refusal): a clearPrice far under the market is refused by the exchange band.
         const price = tripSellPrice(clear, marks.get(t), tripGuard.attempts(key2));
+        let prev: { qty: number; price: number } | undefined; // the trip sell this pass cancels: put back if its replacement is refused
         try {
             const rec = placed.get(key);
             const instrumentId = String(t.token);
             if (rec) {
+                if (tripGuard.exhausted(key2)) continue; // refused by the broker MAX_NON_TRANSIENT times: the resting sell stays, no more cancel/replace
                 if (Date.now() - rec.at < REPRICE_AFTER_MS || keepTripSell(rec.price, clear, marks.get(t))) continue;
                 const res = await OrderClient.getInstance().cancelRestingLimitSells(userId, { tradingSymbol: t.tsym, broker: broker as any });
                 if (res.cancelFailed) { Log.log(`[GlobalMaxProfit] ${userId} ${broker}: could not cancel the resting sell of ${t.tsym}, retrying`); continue; }
+                if (rec.price > 0) prev = { qty: rec.qty, price: rec.price };
                 placed.delete(key);
                 if (res.filledQty > 0) continue; // part or all sold while cancelling: the next cycle sizes what is really left from fresh stats
             } else {
@@ -88,13 +91,30 @@ export async function checkOne(userId: string, broker: string, cap: number, stat
                 const pending = await OrderClient.getInstance().getPendingSells(userId, broker, t.tsym);
                 if (pending.reduce((s, p) => s + num(p.quantity), 0) >= num(t.quantity)) { placed.set(key, { qty: num(t.quantity), price: 0, at: Date.now() }); continue; }
             }
-            await OrderClient.getInstance().chunkedSquareOffLimit(userId, { tradingSymbol: t.tsym, instrumentId, quantity: num(t.quantity), price, broker: broker as any, locked: true });
+            const safe = tripGuard.safeQty(key2);
+            const qty = safe !== undefined && safe > 0 && safe < num(t.quantity) ? safe : num(t.quantity); // refused whole once (funds/margin), accepted this much before
+            await OrderClient.getInstance().chunkedSquareOffLimit(userId, { tradingSymbol: t.tsym, instrumentId, quantity: qty, price, broker: broker as any, locked: true });
             tripGuard.ok(key2);
-            placed.set(key, { qty: num(t.quantity), price, at: Date.now() });
-            Log.log(`[GlobalMaxProfit] ${userId} ${broker}: resting sell ${t.tsym} qty=${num(t.quantity)} @${price} (locks ${cap})`);
+            placed.set(key, { qty, price, at: Date.now() });
+            Log.log(`[GlobalMaxProfit] ${userId} ${broker}: resting sell ${t.tsym} qty=${qty} @${price} (locks ${cap})`);
         } catch (e) {
-            const n = tripGuard.fail(key2);
-            if (tripGuard.shouldLogFailure(n)) Log.log(`[GlobalMaxProfit] ALERT: ${userId} ${broker}: trip sell for ${t.tsym} @${price} failed (failure ${n}, retried with backoff):`, e);
+            const msg = String((e as any)?.message ?? e);
+            if (isNonTransientRejection(e)) {
+                const n = tripGuard.failNonTransient(key2, prev?.qty);
+                if (n <= MAX_NON_TRANSIENT) Log.log(`[GlobalMaxProfit] ALERT: ${userId} ${broker}: trip sell for ${t.tsym} (${num(t.quantity)} @${price}) REFUSED by the broker, not retryable as is (refusal ${n}/${MAX_NON_TRANSIENT}): ${msg}.` +
+                    (tripGuard.exhausted(key2) ? ' No more cancel/replace while a resting sell is in place: manual review required.' : ` Next attempt in 2 min${prev ? ` sized to ${prev.qty}` : ''}.`));
+            } else {
+                const n = tripGuard.fail(key2);
+                if (tripGuard.shouldLogFailure(n)) Log.log(`[GlobalMaxProfit] ALERT: ${userId} ${broker}: trip sell for ${t.tsym} @${price} failed (failure ${n}, retried with backoff):`, e);
+            }
+            // The replacement was refused: put the cancelled trip sell back (same quantity/price, accepted before) so the position keeps an exit. Not when some chunks already rest.
+            if (prev && !placed.has(key) && !/after placing [1-9]\d*\//.test(msg)) {
+                try {
+                    await OrderClient.getInstance().chunkedSquareOffLimit(userId, { tradingSymbol: t.tsym, instrumentId: String(t.token), quantity: Math.min(prev.qty, num(t.quantity)), price: prev.price, broker: broker as any, locked: true });
+                    placed.set(key, { qty: Math.min(prev.qty, num(t.quantity)), price: prev.price, at: Date.now() });
+                    Log.log(`[GlobalMaxProfit] ${userId} ${broker}: the new trip sell was refused, the previous one for ${t.tsym} was put back (qty=${prev.qty} @${prev.price})`);
+                } catch (e2) { Log.log(`[GlobalMaxProfit] ALERT: ${userId} ${broker}: trip sell of ${t.tsym} refused AND the previous resting sell could not be put back - NO resting sell:`, e2); }
+            }
         }
     }
 }
