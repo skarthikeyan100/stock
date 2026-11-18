@@ -9,6 +9,7 @@ import moment from "moment";
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 import OrderClient from "../processes/strategies/OrderClient";
 import { isWithinTradingWindow } from '../util/marketHours';
+import { isWithinEodEventWindow } from '../util/eodClose';
 import { FeedSource } from '../ipc/feedSource';
 import { clearGlobalMaxProfit } from './globalMaxProfitLatch';
 
@@ -44,7 +45,7 @@ export abstract class Strategy {
     // and state loaded. The window is a read-only clock test, so `enabled` stays equal to config.yml (it used to be force-cleared in
     // memory at 15:25 and never restored, which silently disabled a strategy that config still said was on).
     receivesEvents(): boolean {
-        return this.enabled && this.stateLoaded && isWithinTradingWindow();
+        return this.enabled && this.stateLoaded && (isWithinTradingWindow() || isWithinEodEventWindow());
     }
 
     // Win/loss tracking

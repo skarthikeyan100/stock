@@ -6,6 +6,8 @@
  */
 import ContinuousStrategy from '../strategy/ContinuousStrategy';
 import strategies from '../strategy/strategies';
+import configService from '../prism/ConfigService';
+(configService.getConfig().settings as any).eodCloseTime = '23:59'; // no EOD event window: this test covers the plain trading window
 
 function assert(condition: boolean, message: string) {
     console.log(`  ${condition ? 'PASS' : 'FAIL'}: ${message}`);

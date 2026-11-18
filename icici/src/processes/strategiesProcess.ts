@@ -17,6 +17,7 @@ import { FutQuote, NiftyQuote, OptionQuote, SensexQuote, Trade } from '../model/
 import { FeedSource, DEFAULT_FEED_SOURCE, BROKER_TO_FEED_SOURCE } from '../ipc/feedSource';
 import { OrderCancelledNotification } from '../ipc/orderProtocol';
 import { exchangeForTsym } from '../util/underlyings';
+import { shouldPokeEod } from '../util/eodClose';
 import { startGlobalMaxProfitMonitor } from './strategies/globalMaxProfit';
 
 // Entry point for the `strategies` process. No Prism/Kite dependency at all -
@@ -277,6 +278,34 @@ function enqueueLatest(key: string, quote: OptionQuote, job: (q: OptionQuote) =>
     })();
 }
 
+let lastNiftyQuote: NiftyQuote | undefined;
+let lastNiftyTickMs = 0;
+
+function dispatchNifty(quote: NiftyQuote, statsUpdate?: any): void {
+    // One latest-wins slot per strategy: a strategy stuck awaiting a broker call only coalesces its own ticks, not everyone's.
+    for (const strategy of strategies.getList()) {
+        enqueueLatestIndex(`tick:nifty:${strategy.getClassName()}:${strategy.userId}`, quote, statsUpdate, async (q, statsList) => {
+            if (!strategy.receivesEvents()) return;
+            for (const u of statsList) {
+                await isolate(strategy, 'receive', () => strategy.receive(u.oldStats, u.newStats));
+            }
+            await isolate(strategy, 'processNiftyQuote', () => strategy.processNiftyQuote(q));
+        });
+    }
+}
+
+// Clock-driven EOD fallback: once settings.eodCloseTime is due, the strategies' EOD close runs from Nifty ticks, and the feed may have
+// stopped at the closing second (2026-11-18: 15:30 close, no tick after 15:29:59). While the EOD event window is open and no real tick
+// arrived for 2s, the last Nifty quote is re-delivered (stats are not replayed). The strategies' EOD close is idempotent and retried
+// from ticks anyway; a disabled strategy is skipped by receivesEvents().
+function startEodClock(): void {
+    setInterval(() => {
+        try {
+            if (lastNiftyQuote && shouldPokeEod(lastNiftyTickMs)) dispatchNifty(lastNiftyQuote);
+        } catch (e) { Log.log('[strategies] EOD clock poke failed:', e); }
+    }, 1000).unref?.();
+}
+
 let feedDown = false;
 
 async function onTick(tick: any) {
@@ -290,16 +319,9 @@ async function onTick(tick: any) {
         if (!(Number.isFinite(quote.ltp) && quote.ltp > 0)) return;
         niftyQuoteHistory.record(quote);
         const statsUpdate = niftyStatsBuilder.record(quote.ltp, parseInt(quote.ltt as any));
-        // One latest-wins slot per strategy: a strategy stuck awaiting a broker call only coalesces its own ticks, not everyone's.
-        for (const strategy of strategies.getList()) {
-            enqueueLatestIndex(`tick:nifty:${strategy.getClassName()}:${strategy.userId}`, quote, statsUpdate, async (q, statsList) => {
-                if (!strategy.receivesEvents()) return;
-                for (const u of statsList) {
-                    await isolate(strategy, 'receive', () => strategy.receive(u.oldStats, u.newStats));
-                }
-                await isolate(strategy, 'processNiftyQuote', () => strategy.processNiftyQuote(q));
-            });
-        }
+        lastNiftyQuote = quote;
+        lastNiftyTickMs = Date.now();
+        dispatchNifty(quote, statsUpdate);
     } else if (tick.type === 'sensex') {
         const quote = Object.assign(new SensexQuote(), tick.quote) as SensexQuote;
         for (const strategy of strategies.getList()) {
@@ -464,6 +486,7 @@ export async function startStrategiesProcess() {
     void startupReconcile();
     // The global settings.maxProfit for strategies without a profit stop of their own (a no-op while the setting is absent).
     startGlobalMaxProfitMonitor(() => strategies.getList());
+    startEodClock();
 
     // The trading window is enforced at dispatch (Strategy.receivesEvents), not by clearing `enabled` in memory.
 

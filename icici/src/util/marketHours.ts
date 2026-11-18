@@ -3,8 +3,7 @@ import AntContractMaster from '../ant/AntContractMaster';
 const MARKET_CLOSE_HOUR = 15;
 const MARKET_CLOSE_MINUTE = 25;
 
-export function isPastMarketClose(): boolean {
-  const now = new Date();
+export function isPastMarketClose(now: Date = new Date()): boolean {
   return (
     now.getHours() > MARKET_CLOSE_HOUR ||
     (now.getHours() === MARKET_CLOSE_HOUR && now.getMinutes() >= MARKET_CLOSE_MINUTE)
@@ -91,12 +90,11 @@ export const TRADING_WINDOW_LABEL =
 // enabled past the same 15:25 cutoff that already halts WS reconnect
 // attempts elsewhere (AntStream.ts, AntDataStream.ts, prism.ts) would be a
 // real bug, not just an inconsistency.
-export function isWithinTradingWindow(): boolean {
-  const now = new Date();
+export function isWithinTradingWindow(now: Date = new Date()): boolean {
   const afterStart =
     now.getHours() > TRADING_WINDOW_START_HOUR ||
     (now.getHours() === TRADING_WINDOW_START_HOUR && now.getMinutes() >= TRADING_WINDOW_START_MINUTE);
-  return afterStart && !isPastMarketClose();
+  return afterStart && !isPastMarketClose(now);
 }
 
 // True when the local clock is at or past "HH:mm" (e.g. settings.eodCloseTime, via util/eodClose.ts). Minutes since midnight, so it is one comparison
