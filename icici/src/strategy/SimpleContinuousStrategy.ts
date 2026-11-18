@@ -921,6 +921,14 @@ export default class SimpleContinuousStrategy extends Strategy {
         this.state.realizedPnl = 0;
         this.state.profitTripped = false;
         for (const leg of this.openLegs()) { leg.pnlRef = undefined; leg.pnlRefPending = true; }
+        // Opens the one-root gate: closed roots (e.g. closed by the MAX PROFIT lock) are marked `restarted` so the contract selection runs again for a
+        // new root. Never while the chain is live: any open leg (a root or a hedge; a second root would make two live chains) or a closed leg whose
+        // hedge is still held back (hedgeWaiting) keeps the gate shut. The new root sizes from the free part of maxInvestment (invested() = open legs).
+        const live = Object.values(this.state.legs).filter((l) => l.status === 'open' || (l.hedgeWaiting && !l.hedged));
+        const reopened = live.length > 0 ? [] : Object.values(this.state.legs).filter((l) => l.role === 'root' && l.status === 'closed' && !l.restarted);
+        for (const l of reopened) { l.restarted = true; l.hedged = true; l.hedgeWaiting = false; } // hedged: nothing follows the closed root
+        if (reopened.length) Log.log(`[SimpleContinuousStrategy] reset: closed root(s) ${reopened.map((l) => l.tsym).join(', ')} re-opened for selection (root gate open, new root allowed)`);
+        else if (live.length) Log.log(`[SimpleContinuousStrategy] reset: root gate left as is, ${live.length} live/pending leg(s): ${live.map((l) => l.tsym).join(', ')}`);
         this.save();
         this.manualReview = false;
         this.entering = false;
