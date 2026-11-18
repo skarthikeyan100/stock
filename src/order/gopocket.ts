@@ -175,6 +175,21 @@ export function contractRow(req: BuyRequest): RegExp {
   return new RegExp(`${req.underlying}\\s.*\\b${req.strike}(\\.0+)?\\s*${req.right}\\b`, 'i');
 }
 
+/**
+ * Opens a tab of the Orders page by its recorded id (Pending_order, Executed_order, GTT_order ...). A click that lands
+ * before the page has loaded is dropped, so it is repeated until the tab is the active one (the active tab carries the
+ * `violet-color` class in the recorded markup).
+ */
+async function openOrdersTab(page: Page, id: string): Promise<void> {
+  const tab = page.locator(`#${id}`);
+  for (let i = 0; i < 6; i++) {
+    await tab.click({ timeout: FILL_TIMEOUT });
+    await page.waitForTimeout(1_000);
+    if (/violet-color/.test((await tab.getAttribute('class')) ?? '')) return;
+  }
+  throw new Error(`could not open the ${id} tab`);
+}
+
 /** Executed-tab row (recorded markup: `tr#executed_N`, cells `order_td_N_name` / `_time` / `_status`, newest first). */
 function executedRow(page: Page, req: BuyRequest) {
   return page
@@ -191,8 +206,7 @@ export async function waitForFill(page: Page, req: BuyRequest, since: Date, time
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
-    await page.getByText(/^Executed/).first().click({ timeout: FILL_TIMEOUT }).catch(() => undefined);
-    await page.waitForTimeout(1_500);
+    await openOrdersTab(page, 'Executed_order');
     const row = executedRow(page, req).first();
     if (await row.count()) {
       const time = (await row.locator('[id$="_time"]').innerText().catch(() => '')).trim();
@@ -240,7 +254,7 @@ export async function placeExitGtt(page: Page, req: BuyRequest, lot: number, tod
 /** True when Orders > GTT shows an entry for this contract (text match: the list's exact columns are not recorded). */
 export async function gttListed(page: Page, req: BuyRequest): Promise<boolean> {
   await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
-  await page.locator('#GTT_order').click({ timeout: FILL_TIMEOUT });
+  await openOrdersTab(page, 'GTT_order');
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     const text = await page.locator('body').innerText().catch(() => '');
@@ -276,7 +290,7 @@ async function readResult(page: Page, req: BuyRequest): Promise<OrderOutcome> {
 async function readRejectReason(page: Page, req: BuyRequest): Promise<string> {
   try {
     await page.goto(`${BASE_URL}/order`, { waitUntil: 'domcontentloaded' });
-    await page.getByText(/^Executed/).first().click({ timeout: FILL_TIMEOUT });
+    await openOrdersTab(page, 'Executed_order');
     const row = executedRow(page, req).filter({ hasText: /REJECTED/ }).first();
     await row.hover({ timeout: FILL_TIMEOUT });
     await row.getByText('More', { exact: true }).click({ timeout: FILL_TIMEOUT });

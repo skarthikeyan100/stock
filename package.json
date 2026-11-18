@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "tsx src/index.ts 2>&1 | tee -a logs/dev.log",
+    "dev": "tsc-watch --noEmit --onSuccess \"sh -c 'tsx src/index.ts 2>&1 | tee -a logs/dev.log'\"",
     "login": "tsx scripts/login.ts",
     "probe": "tsx scripts/probe.ts",
     "probe-buy": "tsx scripts/probe-buy.ts",
@@ -21,6 +21,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/qrcode-terminal": "^0.12.2",
+    "tsc-watch": "^7.2.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

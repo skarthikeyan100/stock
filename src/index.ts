@@ -86,3 +86,16 @@ const server = createMessageServer((messageId, text) => {
   }).catch((error) => logError('exit GTT failed', { error: error instanceof Error ? error.message : String(error) })),
 );
 server.listen(cfg.port, '127.0.0.1', () => logInfo(`GoPocket listening on 127.0.0.1:${cfg.port} (dryRun=${cfg.dryRun}, headless=${cfg.headless})`));
+
+// A restart (SIGTERM/SIGINT) must really stop this process: close the listener and the browser, then exit.
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(sig, () => {
+    logInfo(`${sig}: shutting down`);
+    server.close();
+    context
+      ?.close()
+      .catch(() => undefined)
+      .finally(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5_000).unref();
+  });
+}
