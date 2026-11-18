@@ -31,11 +31,11 @@ async function main() {
 
     // 3. unconfirmed-buy resolver
     const calls: string[] = [];
-    const mk = (o: { cancelFailed?: boolean; filledQty?: number; live?: number; liveThrows?: boolean }) => {
+    const mk = (o: { cancelFailed?: boolean; filledQty?: number; live?: number; liveThrows?: boolean; ownBooked?: number }) => {
         (OrderClient as any).getInstance = () => ({
             cancelRestingLimitBuys: async () => { calls.push('cancel'); return { cancelFailed: !!o.cancelFailed, filledQty: o.filledQty ?? 0 }; },
             getLiveQuantity: async () => { if (o.liveThrows) throw new Error('down'); return o.live ?? 0; },
-            getOpenTrades: async () => [{ tsym: 'X', quantity: o.live ?? 0, price: 101 }],
+            getOpenTrades: async () => (o.ownBooked === 0 ? [] : [{ tsym: 'X', quantity: o.ownBooked ?? o.live ?? 0, price: 101 }]),
         });
     };
     const c = { tradingSymbol: 'X', premium: 100 };
@@ -49,5 +49,12 @@ async function main() {
     mk({ live: 130 }); r = await resolveUnconfirmedBuy('u', 'breeze', c, 65);
     assert(r.kind === 'filled' && r.qty === 65, 'add buy: only the excess over what the leg already held');
     mk({ live: 65 }); assert((await resolveUnconfirmedBuy('u', 'breeze', c, 65)).kind === 'none', 'add buy that did not fill: none (parent quantity is not a new buy)');
+    // shared broker account (live 2026-11-18 10:00 Breeze): another strategy holds 585 of the contract, this user's own book holds none
+    mk({ live: 585, ownBooked: 0 });
+    assert((await resolveUnconfirmedBuy('u', 'breeze', c)).kind === 'none', 'another strategy\'s holding on the same account is not adopted as this buy');
+    mk({ live: 650, ownBooked: 65 }); r = await resolveUnconfirmedBuy('u', 'breeze', c, 0);
+    assert(r.kind === 'filled' && r.qty === 65, 'reading capped at what this user\'s own book holds');
+    mk({ live: 585, ownBooked: 0, filledQty: 65 }); r = await resolveUnconfirmedBuy('u', 'breeze', c);
+    assert(r.kind === 'filled' && r.qty === 65, 'a fill the cancel just caught is still this buy');
 }
 main().then(() => process.exit(process.exitCode ?? 0));
