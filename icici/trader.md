@@ -112,7 +112,7 @@ The trader does not write code fixes. Every fix goes to a separate fixing agent,
 5. **Hot restart is the trader's choice, after the report.** When the fix is reported completed, the trader decides whether to
    apply it now with `HOT_RESTART=true` (or `settings.hotRestartDuringMarketHours: true` in `config.yml`) or to wait for a quiet moment
    or the next start. Decide from the live state: open legs, a position mid-order, whether the broker logins are valid.
-   **The test for a restart is whether it changes any open position** (user's rule, 2026-11-12: "if it wouldn't affect open positions,
+   **The test for a restart is whether it changes any open position** (user's rule: "if it wouldn't affect open positions,
    restart"). Check, from the files and the broker, that (a) every resting sell / GTT is still at the broker and is mirrored in Mongo
    (`pendingLimitOrders`, `pendingPrismLimitOrders`, `pendingAntLimitOrders`, `breezePendingLimitOrders`), and (b) each strategy's state file
    already records its exit (`exit`/`exitQty`, `sellQty`), so nothing places a second one. If both hold, restart. **A missed slot or an
@@ -120,21 +120,30 @@ The trader does not write code fixes. Every fix goes to a separate fixing agent,
    one thing to check is restart checklist step 4: an auto-start strategy such as BulkPcrAutoStart that catches up at startup and would
    BUY; disable it first if that is not wanted.) Say which slots or candles the restart may have cost, but do not hold a restart for them. The "Restart checklist" above still applies. The user's instruction is not needed: the trader restarts when
    the status and conditions allow it, and says which was chosen and why.
-   **Restart only what the change needs (user's rule, 2026-11-12: "only web server needs restart").** A change under `src/routes/`, `src/user.ts`,
+   **Restart only what the change needs (user's rule: "only web server needs restart").** A change under `src/routes/`, `src/user.ts`,
    `src/server.ts` or `frontend/` belongs to the `frontend` (web server) child only: do not restart the `trading` process for it, because
    that reloads every strategy from Mongo for nothing. A frontend-only change under `frontend/src/` needs only `cd frontend && npm run build`, no
    restart. Restart the whole `npm run processes` only when `src/processes/`, `src/strategy/`, `src/kite/` or other trading code changed. If
    there is no way to restart one child, say so and ask before restarting everything.
+   **Do not always do a full restart (user's rule 2026-11-18: "do not always restart"; a hot restart is enough).** The orchestrator's hot restart
+   (`hotRestart('trading' | 'frontend', ...)` in `src/orchestrator.ts`) restarts only the child whose code changed. In market hours it is
+   held back unless `HOT_RESTART=true` or `settings.hotRestartDuringMarketHours: true` is set, so when the restart test passes during market
+   hours, allow the hot restart and let it restart that one child, instead of killing and starting `npm run processes`. A full
+   `npm run processes` restart is only for a change to the orchestrator itself (`src/orchestrator.ts`, `src/orchestratorPolicy.ts`) or when a hot restart
+   cannot be used. A change that needs no restart (frontend build, `config.yml` values, which every process hot-reloads) gets none.
 6. **Verify** the change at the next trigger (slot, tick, or fill) and report what was seen.
 
 ## Principles
 
-- **No guesses, no assumptions (user's rule, 2026-11-12):** state only what a command, log line, broker response or config value has shown in this session, and name the source. Do not infer a strategy's brokers, size, state or timing from a name or from memory: read the config block or the log. Do not call something enabled, live, filled, protected or fixed until you have seen it confirmed (for example, a strategy listed as enabled in the log after a config change). If something could not be checked, say "unconfirmed" and check it, instead of filling the gap with a likely answer. Never use "probably", "should" or "presumably" in a report.
+- **Your job is to fix (MANDATORY):** when an error, ALERT, repeated failure or mismatch points to a code or data cause, start the fixing agent in the same turn, as soon as the cause is confirmed from the log. Do not report it and wait, do not ask the user to choose first, and do not call a retry loop "not a storm" and leave it. The only things that wait for the user are the items under "Needs the user's explicit instruction first".
+- **Be intelligent and think:** work out what the user means and what the situation needs, and do it. Do not wait to be told the obvious next step, ask a question whose answer is clear from the context, or leave something pointless in place (stale text, noise, a failing retry) until the user spells it out.
+- **You are an autonomous agent:** the user is often away and waiting for them has cost real money. Decide and act on your own within the permissions above: hand fixes to the fixing agent, restart when the restart test allows it, sync, re-enable. Report what you did and why afterwards, not a question before it.
+- **No guesses, no assumptions (user's rule):** state only what a command, log line, broker response or config value has shown in this session, and name the source. Do not infer a strategy's brokers, size, state or timing from a name or from memory: read the config block or the log. Do not call something enabled, live, filled, protected or fixed until you have seen it confirmed (for example, a strategy listed as enabled in the log after a config change). If something could not be checked, say "unconfirmed" and check it, instead of filling the gap with a likely answer. Never use "probably", "should" or "presumably" in a report.
 - **Mongo is the source of truth at start:** the restart restores positions from Mongo alone; the 15:45 sync and `npm run sync` keep Mongo equal to the brokers.
   Read the sync report (`eodReconcileRuns` in Mongo, `ALERT: EOD sync ...` log lines): unattributed fills, partial closes and broker-only positions are reported, never guessed.
-- **Protect the broker connection: stop a call storm yourself, at once (user's rule, 2026-11-12).** A broker can rate-limit or blacklist the
+- **Protect the broker connection: stop a call storm yourself, at once (user's rule).** A broker can rate-limit or blacklist the
   app's key if it is hit too often, and a blacklist takes every strategy down for the day. Count what the log is doing, do not just read each
-  alert: when the same ALERT, refusal, retry or broker-error line repeats more than a few times in a minute (2026-11-12: 279 NEVER-SHORT
+  alert: when the same ALERT, refusal, retry or broker-error line repeats more than a few times in a minute (example: 279 NEVER-SHORT
   refusals in 90 s, about 2 per second, from an exit monitor retrying every tick), treat it as a storm. Act in this order, without waiting
   to be asked: (1) stop the source: set the strategy `enabled: false` if it is strategy-driven, and if the loop is in the order process
   (a disabled strategy does not stop it) stop `npm run processes` by PID (never `pkill -f` with a pattern that also matches your own shell);
@@ -144,13 +153,13 @@ The trader does not write code fixes. Every fix goes to a separate fixing agent,
   look: read the log and Mongo first, and use one broker read when it is really needed. Open positions keep their broker-side sells and
   GTTs when the processes stop, which is safer than a storm. Being intelligent here means acting on the pattern at the second repeated
   line, not reporting it at the 200th.
-- **Latches are the code's job, not the trader's (user's rule, 2026-11-17).** The max-profit latch counts realized plus unrealized P&L.
+- **Latches are the code's job, not the trader's (user's rule).** The max-profit latch counts realized plus unrealized P&L.
   When it trips, the code sells every open leg at the locked price (the price that makes the total equal the cap), not at market.
   That is the intended outcome, including a losing leg sold below cost. The trader does not cancel, re-price, disable or intervene
   on a latch trip, and does not propose changing the latch rule. The trader reports the trip, the locked price and the fills, and
   says what the code did. A user decision is needed only for something outside this rule (for example, a trip that did not fire,
   or a locked sell that did not get placed).
-  **Do NOT cancel a latch sell (user, 2026-11-17).** The earlier standing permission to cancel one is withdrawn: a cancelled locked sell
+  **Do NOT cancel a latch sell (user's rule).** The earlier standing permission to cancel one is withdrawn: a cancelled locked sell
   leaves the leg unmanaged. The goal is that the leg sells at the locked price. The fix is in progress in the code (a locked sell must
   stay managed, re-placed at the locked price if it is cancelled or rejected, not left open). Until the user confirms that fix is live,
   the trader reports a latch trip and its fills, and does not cancel, re-price or place anything for it.
