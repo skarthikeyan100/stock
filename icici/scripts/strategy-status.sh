@@ -105,16 +105,31 @@ if(!byStrategy){console.log("order process not reachable");process.exit(1)}
 // The three endpoint calls each re-price open legs at the tick of their own moment, so their unrealized totals drift apart by a few hundred.
 // Realized and counts do not move with ticks; unrealized is overwritten below from the single ?detail=1 snapshot so every table agrees.
 const detailSnap=parse(process.env.DETAIL);
-const snapUnreal=(rows,key)=>{if(!detailSnap)return;for(const r of rows){const k=key(r);r.unrealized=detailSnap.filter(d=>key(d)===k).reduce((a,d)=>a+d.unrealized,0)}};
+// The source is the snapshot rows of the strategies the table covers (see keepDetail): a BY BROKER row summed over EVERY open position of that broker
+// also counted real users and disabled strategies that the other tables leave out (2026-11-18: Breeze showed the user position on top).
+const snapUnreal=(rows,key,src=detailSnap)=>{if(!src)return;for(const r of rows){const k=key(r);r.unrealized=src.filter(d=>key(d)===k).reduce((a,d)=>a+d.unrealized,0)}};
 snapUnreal(byStrategy,r=>r.strategy);
 // Strategies enabled in config.yml, named as the platform names its instances (src/util/strategyInstances.ts, compiled in dist/).
 let enabledNames=null;
+let paperNames=new Set();
 try{
   const {expandStrategyInstances}=require(process.env.ROOT+"/dist/util/strategyInstances.js");
   const cfg=require(process.env.ROOT+"/node_modules/js-yaml").load(require("fs").readFileSync(process.env.CONFIG_PATH||process.env.ROOT+"/config.yml","utf8"));
-  enabledNames=new Set(expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&c.enabled===true)).map(c=>c.userId||c.type));
+  // Paper-only blocks (brokers: [paper], in-memory, nothing in Mongo) are left out: `paper` is reported only by the "status paper" check.
+  const isPaperOnly=c=>Array.isArray(c.brokers)&&c.brokers.length>0&&c.brokers.every(b=>b==="paper");
+  enabledNames=new Set(expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&c.enabled===true&&!isPaperOnly(c))).map(c=>c.userId||c.type));
+  paperNames=new Set(expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&isPaperOnly(c))).map(c=>c.userId||c.type));
 }catch(e){console.log("(could not read the enabled strategies from config.yml: "+e.message+")")}
-if(enabledNames){
+// status (today): enabled strategies only (rule of 2026-11-13). status all: every strategy with trades, enabled or disabled/latched
+// (rule of 2026-11-17), never the real users (their rows contain an @ sign).
+const allMode=process.env.OPENED==="all";
+const isUserName=n=>n.includes("@");
+// The open positions every table must be built from: the same strategies as BY STRATEGY (enabled only; with `all` every non-user, non-paper one).
+const keepDetail=s=>allMode?!(isUserName(s)||paperNames.has(s)):(!enabledNames||enabledNames.has(s));
+const tableDetail=detailSnap?detailSnap.filter(d=>keepDetail(d.strategy)):null;
+if(allMode){
+  for(let i=byStrategy.length-1;i>=0;i--)if(isUserName(byStrategy[i].strategy)||paperNames.has(byStrategy[i].strategy))byStrategy.splice(i,1);
+}else if(enabledNames){
   for(let i=byStrategy.length-1;i>=0;i--)if(!enabledNames.has(byStrategy[i].strategy))byStrategy.splice(i,1);
   const have=new Set(byStrategy.map(r=>r.strategy));
   for(const name of enabledNames)if(!have.has(name))byStrategy.push({strategy:name,realized:0,unrealized:0,open:0,closed:0});
@@ -124,15 +139,21 @@ if(!byStrategy.length){console.log("no strategy enabled and no trades this sessi
 console.log(process.env.OPENED==="all"?"(all trades: also those opened on an earlier day)":"(trades opened today only; `all` adds earlier-day trades closed or still open today)");
 table("BY STRATEGY",byStrategy);
 const esc=n=>n.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
-const matchQ=enabledNames?"&match="+encodeURIComponent("^("+[...enabledNames].map(esc).join("|")+")$"):"";
+const matchQ=allMode?"&match="+encodeURIComponent("^[^@]+$"):(enabledNames?"&match="+encodeURIComponent("^("+[...enabledNames].map(esc).join("|")+")$"):"");
 const byBroker=parse(require("child_process").execFileSync("curl",["-s","-m10","localhost:"+process.env.PORT+"/strategyPnl?by=broker&opened="+process.env.OPENED+matchQ]).toString());
-if(byBroker)snapUnreal(byBroker,r=>r.broker??r.strategy);
+if(byBroker&&allMode){for(let i=byBroker.length-1;i>=0;i--)if(byBroker[i].strategy==="paper"||byBroker[i].broker==="paper")byBroker.splice(i,1)}
+if(byBroker)snapUnreal(byBroker,r=>r.broker??r.strategy,tableDetail);
 if(byBroker&&byBroker.length){console.log("");table("BY BROKER",byBroker)}
 else console.log("\n(by-broker table unavailable: the API process predates the ?by=broker option - restart it)");
 
 // ---- Unrealized by broker and strategy, per open position ----
 const detail=parse(process.env.DETAIL);
-if(detail&&enabledNames)for(let i=detail.length-1;i>=0;i--)if(!enabledNames.has(detail[i].strategy))detail.splice(i,1);
+if(detail){
+  for(let i=detail.length-1;i>=0;i--){
+    const s=detail[i].strategy;
+    if(!keepDetail(s))detail.splice(i,1);
+  }
+}
 if(!detail){console.log("\n(position table unavailable: the API process predates the ?detail=1 option - restart it)");process.exit(0)}
 // Resting sell prices from today log: MomentumAtFixedTime "[MomentumAtFixedTime:<user>] <broker> <tsym>: bought .. - resting sell @ <p>" and
 // SimpleContinuous-style "[<user>] resting sell <tsym> qty=<n> @<p>". Keyed user|tsym; the last line wins.

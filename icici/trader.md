@@ -28,6 +28,7 @@ Needs the user's explicit instruction first:
 |---|---|
 | Status (the word "status"): 3 tables, trades opened today only; `status all` adds earlier-day trades closed or still open today | `monitor-strategies` skill, which runs `scripts/strategy-status.sh [all]` |
 | Status users ("status users", "users status"): the real users who trade from the frontend (emails), not strategies: BY USER, BY BROKER, OPEN POSITIONS, closed TRADES; `status users all` adds earlier-day trades | `monitor-strategies` skill, which runs `scripts/strategy-status.sh users [all]` |
+| Paper broker report (the words "status paper"; never part of `status` / `status all`): GammaBurst, MandW, HighLow on `brokers: [paper]`, in memory, nothing in Mongo | `monitor-strategies` skill ("status paper": config, `/broker/paper/positions` and `/trades`, and the day's log lines) |
 | Open contracts, capital, parent/child tree | `scripts/continuous-strategy-trades.sh` |
 | Alerts (errors, ALERTs, limit trips, missed slots) | `scripts/monitor-strategies-alerts.sh` via Monitor, 30 min, always armed until 15:30 (re-arm the moment it expires) |
 | Sentiment events | `scripts/monitor-sentiment-events.sh --once` |
@@ -35,6 +36,7 @@ Needs the user's explicit instruction first:
 | Logins | `scripts/login.sh` (pass the broker name, e.g. `prism`) |
 | Stop everything (lock profits) | `POST /order/lock-profits` (needs user approval) |
 | Broker ↔ Mongo repair | `npm run sync` (on demand; the platform also runs it by itself at 15:45, `settings.eodReconcileTime`); `npm run sync -- --strategies` also re-reads Mongo into the strategies. It places no order. Its first step (Mongo only, needs no login) writes a `closedTrades` row for every Sell fill that has none (`repairedClosed`; the row carries `repairedFromFills: true`), so P&L, reports and payouts match the fills. |
+| End of day (the user says "run eod") | The "Run EOD" section: disable every strategy, sync, check against the brokers, send new-user welcome emails (`npm run welcome-email`) and the users' EOD emails (`npm run eod-email`), report, stop the processes |
 | Positions and trade books | `GET /broker/<kite|ant|breeze|prism>/positions` and `/trades` |
 
 ## Pre-market start (before 09:15)
@@ -52,7 +54,8 @@ in this project.
    (`mkfifo <scratchpad>/otp; tail -f <scratchpad>/otp | scripts/login.sh > <scratchpad>/login.out 2>&1 &`), watch the output file for the
    next `OTP for ...:` prompt, and `echo <otp> >> <scratchpad>/otp` once the user gives it. Do not guess or reuse an
    old OTP. Afterwards run `scripts/check-broker-sessions.sh` to confirm every login is valid.
-4. **Start the data collection:** `npm run server` in `~/later/data`. It collects option chain, index data and other variables. It
+4. **Refresh the contract masters:** run `scripts/download-all-masters.sh` (public downloads, no login; ANT NFO/BFO/NSE, Kite, Breeze, Prism; each is validated and replaced atomically, a failed one leaves the old file). Kite and Breeze also refresh themselves at start-up, ANT does not: the start-up check logs `ALERT: <file> is N days old` when `data/ant/NFO_contract.json` or `BFO_contract.json` is older than 14 days, `NSE_contract.json` older than 30. A running process reloads the ANT NFO/BFO files by itself within a minute; the NSE equity list (TopStock only) is read at start.
+5. **Start the data collection:** `npm run server` in `~/later/data`. It collects option chain, index data and other variables. It
    reads the login written in step 3 (`userToken.txt` and the contract-master files in this project), so it can only start after the
    logins are done. It must be running before **09:15**: if the time has already passed 09:15 there is no point starting it, so skip it
    and say so. This project is separate from `~/work/icici`; it does not trade.
@@ -117,6 +120,11 @@ The trader does not write code fixes. Every fix goes to a separate fixing agent,
    one thing to check is restart checklist step 4: an auto-start strategy such as BulkPcrAutoStart that catches up at startup and would
    BUY; disable it first if that is not wanted.) Say which slots or candles the restart may have cost, but do not hold a restart for them. The "Restart checklist" above still applies. The user's instruction is not needed: the trader restarts when
    the status and conditions allow it, and says which was chosen and why.
+   **Restart only what the change needs (user's rule, 2026-11-12: "only web server needs restart").** A change under `src/routes/`, `src/user.ts`,
+   `src/server.ts` or `frontend/` belongs to the `frontend` (web server) child only: do not restart the `trading` process for it, because
+   that reloads every strategy from Mongo for nothing. A frontend-only change under `frontend/src/` needs only `cd frontend && npm run build`, no
+   restart. Restart the whole `npm run processes` only when `src/processes/`, `src/strategy/`, `src/kite/` or other trading code changed. If
+   there is no way to restart one child, say so and ask before restarting everything.
 6. **Verify** the change at the next trigger (slot, tick, or fill) and report what was seen.
 
 ## Principles
@@ -136,6 +144,17 @@ The trader does not write code fixes. Every fix goes to a separate fixing agent,
   look: read the log and Mongo first, and use one broker read when it is really needed. Open positions keep their broker-side sells and
   GTTs when the processes stop, which is safer than a storm. Being intelligent here means acting on the pattern at the second repeated
   line, not reporting it at the 200th.
+- **Latches are the code's job, not the trader's (user's rule, 2026-11-17).** The max-profit latch counts realized plus unrealized P&L.
+  When it trips, the code sells every open leg at the locked price (the price that makes the total equal the cap), not at market.
+  That is the intended outcome, including a losing leg sold below cost. The trader does not cancel, re-price, disable or intervene
+  on a latch trip, and does not propose changing the latch rule. The trader reports the trip, the locked price and the fills, and
+  says what the code did. A user decision is needed only for something outside this rule (for example, a trip that did not fire,
+  or a locked sell that did not get placed).
+  **Do NOT cancel a latch sell (user, 2026-11-17).** The earlier standing permission to cancel one is withdrawn: a cancelled locked sell
+  leaves the leg unmanaged. The goal is that the leg sells at the locked price. The fix is in progress in the code (a locked sell must
+  stay managed, re-placed at the locked price if it is cancelled or rejected, not left open). Until the user confirms that fix is live,
+  the trader reports a latch trip and its fills, and does not cancel, re-price or place anything for it.
+  Say which strategy was disabled and why in the next report.
 - **Mid-session changes trade immediately:** enabling a strategy or reconciling during market hours can start trades at once.
   Decide what should happen before flipping a switch.
 - **Silence is not success:** an alert feed only reports what the code logs. A slot that skipped without a logged reason is
@@ -150,6 +169,53 @@ The trader does not write code fixes. Every fix goes to a separate fixing agent,
 - **Manually managed trades:** positions the user places and manages by hand (e.g. in the Kite app) need not be considered: do not act on them, raise them as risks, or chase them in reports.
 - **Reports are two-sided:** a status table can miss a position (for example, a strategy the script does not cover). Cross-check
   with the broker when a number does not add up.
+
+## Run EOD (when the user says "run eod")
+
+The user's words "run eod" are the explicit instruction for everything below, including disabling the strategies and stopping the processes. Do
+the steps in this order and do not skip one. If the market is still open (before 15:30) say so in one line and carry on, since the user asked.
+
+1. **Disable every strategy FIRST, before anything else.** Set `enabled: false` on every strategy block that is `enabled: true` in
+   `config.yml` (values only: use the Edit tool, never delete a block or a key, and for NIFTY BulkPcr change only `BulkPcrAutoStart-NIFTY`).
+   Write down which blocks were enabled, with their brokers and amounts: they go into the report (section 5) and the carry-over (the morning
+   enable list). Confirm from the log that the config reloaded with each of them `(off)` (a `Config Updated` line). A disabled strategy takes
+   no action at all, so nothing can buy, sell, hedge or re-price while the sync runs. Positions of a disabled strategy are unmanaged from then
+   on (no stops, no EOD close): list every open position at this point and tell the user; do not close one without the user's instruction.
+2. **Processes: do not restart.** If `npm run processes` is already running, leave it running for the sync (its strategies are now off). If it is
+   not running, start it in the background (every strategy is already disabled, so the start cannot buy) and wait for
+   `Startup restore complete`. The sync and the status scripts need it up.
+3. **Broker logins and sync.** Run `scripts/check-broker-sessions.sh`; a broker with an invalid login needs `scripts/login.sh <broker>` (OTP from
+   the user) before the sync. Then run `npm run sync` (broker -> Mongo; places no order). Every broker must come back `ok`; read every
+   mismatch it reports (it books or reports, never guesses) and fix the cause and run it again if a broker is not ok. Do not wait for the
+   platform's own 15:45 run: the processes stop at the end of this procedure.
+4. **Check status against the brokers.** Run `scripts/strategy-status.sh` (all three tables) and `scripts/strategy-status.sh users`, and compare
+   them with each broker's own position list (`GET /broker/<kite|ant|breeze|prism>/positions`, `/trades`): every open position must match
+   in contract and quantity. Report each difference. Positions the user placed and manages by hand (the Kite app) are not counted. A
+   difference you cannot explain goes first in the carry-over, with who must act.
+5. **Send the welcome emails to new users:** `npm run welcome-email` (no options; rules in the body, signed Agreement / Terms & Conditions /
+   Privacy Policy PDFs). Every enabled non-admin user WITHOUT a folder under `./storage/` gets one, and the folder (holding copies of the PDFs)
+   is created when the email goes out: the user folder is the "already sent" marker, delete it to send again. Runs only on this machine (no API),
+   goes only to `settings.eodEmailTestRecipient` while that is set (do not remove it yourself; test copies go to `storage/_test/`), PDFs are signed
+   (`PDF_SIGN_P12*`), no signing means no email. Run it BEFORE the EOD emails: an EOD copy also creates the user folder, which would suppress a
+   new user's welcome. The Terms/Privacy PDFs are built from `templates/legal/*.json`; after editing the website's legal pages re-run
+   `node dist/tools/extractLegal.js` and commit the JSON. Report each sent/skipped/failed line.
+6. **Send the users' end-of-day emails** for today's transactions, after the sync so the trades are final: `npm run eod-email` (today IST; one
+   email per user who traded; add `-- --dry-run` first to preview). It runs only on this machine (there is no API for it) and needs only Mongo,
+   the `GMAIL_*` vars and the signing certificate (`PDF_SIGN_P12`, `PDF_SIGN_P12_PASSPHRASE`) in `.env`. The body is the summary only; the full report
+   (Summary, Trades, Payment information) is a digitally signed PDF attachment (a changed copy fails signature check in a PDF viewer), and the
+   SHA-256 of each sent PDF is printed and stored in Mongo `eodEmails.pdfSha256`. No certificate or a signing failure means no email for that user. While `settings.eodEmailTestRecipient` is set in `config.yml` every email goes only to that address
+   (subject `[TEST for <user>]`), until the user approves the content and removes the key: do not remove it yourself. A repeat run skips users
+   already sent (`-- --force` resends); a `failed` line exits non-zero: read the reason and fix it. Each sent PDF is also copied to `./storage/<user>/`. Put each sent/skipped/failed line in the report.
+7. **Write the end-of-day report** exactly as described under "End-of-day report" below (the `trades-summary` HTML and
+   `reports/eod-YYYY-MM-DD.md`), from the post-sync state. Section 5 (configuration at close) states that run eod disabled the strategies and
+   lists the ones that were enabled; the carry-over includes "enable these strategies tomorrow, after logins, `npm run sync` and a status
+   check" with that list.
+8. **Stop the processes.** Find the orchestrator wrapper's PID (`pgrep -f "node .*/node_modules/.bin/concurrently"`; never `pkill -f` with a
+   pattern that also matches your own shell), kill it, and confirm that no orchestrator, trading, data, frontend or `tsc -w` process is left
+   and that ports 3000/80 and the `/tmp/icici-*.sock` sockets are gone. Resting sells and GTTs stay at the brokers when the processes stop;
+   intraday (MIS) positions can be squared off by the broker itself. Say so for every open position. Then stop the alerts monitor.
+9. **Tell the user:** where the report and the HTML are, the realized total (and the users' total), the strategies that were disabled,
+   the open positions with their protection, the emails sent (or held back by the test recipient), and the first carry-over item. Do not commit or publish the files unless asked.
 
 ## End-of-day report
 

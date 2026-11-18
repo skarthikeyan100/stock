@@ -11,12 +11,12 @@
 // existing cached file's format exactly.
 //
 // Usage: node ant-master-to-json.js <in.csv> <out.json> <ROOT_KEY>
-//   ROOT_KEY is 'NFO' or 'BFO'.
+//   ROOT_KEY is 'NFO', 'BFO' or 'NSE'. NSE (cash equities) has no Expiry Date column; its rows are kept as they arrive.
 const fs = require('fs');
 
 const [, , inPath, outPath, rootKey] = process.argv;
 if (!inPath || !outPath || !rootKey) {
-    console.error('Usage: node ant-master-to-json.js <in.csv> <out.json> <NFO|BFO>');
+    console.error('Usage: node ant-master-to-json.js <in.csv> <out.json> <NFO|BFO|NSE>');
     process.exit(1);
 }
 
@@ -25,7 +25,8 @@ const lines = text.split('\n').filter((l) => l.length > 0);
 const header = lines[0].split(',');
 
 const MIN_RECORDS = 100; // a real NFO/BFO master has thousands of rows; fewer means an HTML/empty/garbled download
-if (!/Token/i.test(lines[0] || '') || !/Expiry/i.test(lines[0] || '')) {
+const hasExpiry = rootKey !== 'NSE'; // the cash-segment master carries no expiry
+if (!/Token/i.test(lines[0] || '') || (hasExpiry && !/Expiry/i.test(lines[0] || ''))) {
     console.error(`[ant-master-to-json] ${inPath} does not look like a contract master (unexpected header) - aborting`);
     process.exit(2);
 }
@@ -37,6 +38,7 @@ for (let i = 1; i < lines.length; i++) {
     if (cols.length !== header.length) continue; // skip malformed/truncated rows
     const rec = {};
     header.forEach((h, idx) => { rec[h] = cols[idx]; });
+    if (!hasExpiry) { records.push(rec); continue; }
     const expiryMs = Date.parse(rec['Expiry Date'] + 'T00:00:00.000Z');
     if (!Number.isFinite(expiryMs)) { skippedNoExpiry++; continue; } // would otherwise be stored as the string 'NaN'
     rec['Expiry Date'] = String(expiryMs);

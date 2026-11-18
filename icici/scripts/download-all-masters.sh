@@ -38,15 +38,19 @@ ANT_DIR="$REPO_ROOT/data/ant"
 mkdir -p "$ANT_DIR"
 TMP_ANT="$(mktemp -d)"
 if curl -sf "https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/NFO.csv" -o "$TMP_ANT/NFO.csv" \
-    && curl -sf "https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/BFO.csv" -o "$TMP_ANT/BFO.csv"; then
+    && curl -sf "https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/BFO.csv" -o "$TMP_ANT/BFO.csv" \
+    && curl -sf "https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/NSE.csv" -o "$TMP_ANT/NSE.csv"; then
     # Convert into the temp dir first; only a validated pair replaces the live files.
     if node "$SCRIPT_DIR/ant-master-to-json.js" "$TMP_ANT/NFO.csv" "$TMP_ANT/NFO_contract.json" NFO \
         && node "$SCRIPT_DIR/ant-master-to-json.js" "$TMP_ANT/BFO.csv" "$TMP_ANT/BFO_contract.json" BFO \
-        && node -e "for (const [f,k] of [['$TMP_ANT/NFO_contract.json','NFO'],['$TMP_ANT/BFO_contract.json','BFO']]) { const j = JSON.parse(require('fs').readFileSync(f,'utf8')); if (!Array.isArray(j[k]) || j[k].length < 100) process.exit(1); }"; then
+        && node "$SCRIPT_DIR/ant-master-to-json.js" "$TMP_ANT/NSE.csv" "$TMP_ANT/NSE_contract.json" NSE \
+        && node -e "for (const [f,k] of [['$TMP_ANT/NFO_contract.json','NFO'],['$TMP_ANT/BFO_contract.json','BFO'],['$TMP_ANT/NSE_contract.json','NSE']]) { const j = JSON.parse(require('fs').readFileSync(f,'utf8')); if (!Array.isArray(j[k]) || j[k].length < 100) process.exit(1); }"; then
         backup "$ANT_DIR/NFO_contract.json"
         backup "$ANT_DIR/BFO_contract.json"
+        backup "$ANT_DIR/NSE_contract.json"
         mv "$TMP_ANT/NFO_contract.json" "$ANT_DIR/NFO_contract.json"
         mv "$TMP_ANT/BFO_contract.json" "$ANT_DIR/BFO_contract.json"
+        mv "$TMP_ANT/NSE_contract.json" "$ANT_DIR/NSE_contract.json"
     else
         echo "[download-all-masters] ANT conversion/validation failed - leaving existing files untouched" >&2
         fail=$((fail + 1))

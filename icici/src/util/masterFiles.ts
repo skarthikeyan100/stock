@@ -14,7 +14,7 @@ interface MasterFile {
     howToGet: string;
 }
 
-const ANT_HOW = 'download from https://v2api.aliceblueonline.com/restpy/static/contract_master/V2/ (see CLAUDE.md, Data Files)';
+const ANT_HOW = 'run scripts/download-all-masters.sh (public download, no login, validated and replaced atomically; a running process reloads NFO/BFO by itself, the NSE equity list on its next restart)';
 const KITE_HOW = 'run scripts/download-all-masters.sh';
 
 export function requiredMasterFiles(): MasterFile[] {
