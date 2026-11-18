@@ -14,7 +14,7 @@ import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
 import { roundToTick, NFO_TICK_SIZE } from '../util/tick';
-import { clearPrice, tripSellPrice, keepTripSell, TripGuard, TRIP_FILL_WAIT_MS, isNonTransientRejection, MAX_NON_TRANSIENT } from './maxProfitLock';
+import { clearPrice, tripSellPrice, keepTripSell, TripGuard, TRIP_FILL_WAIT_MS, isNonTransientRejection, MAX_NON_TRANSIENT, isCoveredByOthers, COVERED_RETRY_MS } from './maxProfitLock';
 import { effectiveMaxProfit } from './effectiveMaxProfit';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import { isPastEodClose } from '../util/eodClose';
@@ -107,6 +107,7 @@ export interface SimpleLeg {
     doubleDue?: boolean; // a profitable hedge sell asked for this (parent) leg to be doubled and it has not happened yet
     pnlRef?: number;        // price the maxProfit total values this leg from (blended on a double-up); absent = its entry
     pnlRefPending?: boolean; // the maxProfit counting started while the leg was open: pnlRef is set from its next tick
+    cancelSell?: boolean;   // reconcile found this leg gone from the order side while a resting sell was recorded for it: that sell is cancelled from the tick path (a reconcile never trades)
     restarted?: boolean;    // the FIRST order (root) closed at a profit with no hedge bought: no same-direction re-buy, the contract selection runs again for a new root
     added?: boolean;        // a later buy of the same contract was added to this leg (blended entry); the leg is no longer a never-hedged first order
     lastLtp?: number;       // last option tick (in memory use only; refreshed by ticks)
@@ -141,6 +142,7 @@ export default class ScaledHedgedStrategy extends Strategy {
     private busy = new Set<string>();           // leg ids with a hedge / double-up / sell placement in flight
     private lastSellAttempt = new Map<string, number>();
     private lastEodAttempt = 0;
+    private lastStrandedCancel = 0;
     private lastWaitingHedgeRetry = 0;
     private lastDoubleAttempt = new Map<string, number>();
     private gateLog = new GateLogger('[ScaledHedgedStrategy] gate:', PCR_RECHECK_MS);
@@ -333,6 +335,9 @@ export default class ScaledHedgedStrategy extends Strategy {
         for (const leg of this.openLegs()) {
             const t = byKey.get(leg.token) ?? openTrades.find((x) => x.tsym === leg.tsym);
             if (!t || !(Number(t.quantity) > 0)) {
+                // The order side holds nothing for this leg any more (e.g. the books were corrected: the lots were never this user's). Its recorded resting sell
+                // may still rest at the broker and would sell ANOTHER user's lots of the same contract on a shared account: flagged here, cancelled from the tick path.
+                if (leg.sellQty > 0) leg.cancelSell = true;
                 this.closeOutside(leg, 'reconcile');
                 continue;
             }
@@ -421,6 +426,7 @@ export default class ScaledHedgedStrategy extends Strategy {
         this.ensureLoaded();
         this.lastNiftyLtp = quote.ltp;
         if (!this.enabled) { this.gateLog.log('disabled'); return; }
+        await this.cancelStrandedSells();
         await this.settlePendingHedges(false); // an unconfirmed hedge buy is settled even at EOD / after the max-profit trip (a fill is then closed with the rest)
         if (this.isStopped()) {
             if (Date.now() - this.lastEodAttempt > EOD_RETRY_MS) {
@@ -451,6 +457,26 @@ export default class ScaledHedgedStrategy extends Strategy {
             Log.log('[ScaledHedgedStrategy] root entry failed:', e);
         } finally {
             this.entering = false;
+        }
+    }
+
+    // Cancels the resting sell of a leg that reconcile closed as "not held": with no open leg of this strategy on the contract, nothing of this user's can
+    // be sold by it, so it could only sell other users' lots on the same broker account (live 2026-11-18: 65 @188.25 beside SimpleContinuous's 585 long).
+    // The flag is cleared only once the cancel went through; a failure is retried at most once a minute. Never runs while the strategy is disabled.
+    private async cancelStrandedSells(): Promise<void> {
+        const stranded = Object.values(this.state.legs).filter((l) => l.status === 'closed' && l.cancelSell && !this.openLegs().some((o) => o.tsym === l.tsym));
+        if (stranded.length === 0 || Date.now() - this.lastStrandedCancel < 60_000) return;
+        this.lastStrandedCancel = Date.now();
+        for (const leg of stranded) {
+            try {
+                const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
+                if (res.cancelFailed) { Log.log(`[ScaledHedgedStrategy] ALERT: could not cancel the stranded resting sell of the closed leg ${leg.id} ${leg.tsym} - retried in a minute`); continue; }
+                leg.cancelSell = false;
+                this.save();
+                Log.log(`[ScaledHedgedStrategy] cancelled the stranded resting sell of the closed leg ${leg.id} ${leg.tsym} (this strategy holds none of it)${res.filledQty > 0 ? ` - ALERT: ${res.filledQty} had filled meanwhile` : ''}`);
+            } catch (e) {
+                Log.log(`[ScaledHedgedStrategy] ALERT: stranded resting sell of ${leg.tsym} not cancelled (retried in a minute):`, e);
+            }
         }
     }
 
@@ -541,6 +567,13 @@ export default class ScaledHedgedStrategy extends Strategy {
         return true;
     }
 
+    // The never-short guard held a resting sell back because other users' resting sells on the same broker account cover the held lots: the tick path
+    // retries every SELL_RETRY_MS and would ALERT each time (live 2026-11-18, 20+ times). One plain line, then the next try is COVERED_RETRY_MS away.
+    private waitCovered(leg: SimpleLeg, quantity: number): void {
+        this.lastSellAttempt.set(leg.id, Date.now() + COVERED_RETRY_MS - SELL_RETRY_MS);
+        Log.log(`[ScaledHedgedStrategy] resting sell of ${quantity} ${leg.tsym} waits - the held lots are covered by another user's resting sell on the same ${this.brokerOrKite()} account; next try in ${COVERED_RETRY_MS / 60000} min`);
+    }
+
     private async placeSell(leg: SimpleLeg): Promise<void> {
         if (leg.status !== 'open' || this.busy.has(leg.id)) return;
         const quantity = this.remaining(leg);
@@ -555,6 +588,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             this.bookPlacedSell(leg, quantity, price, res);
         } catch (e) {
             if (await this.closeIfNotHeld(leg, e)) return;
+            if (isCoveredByOthers(e)) { this.waitCovered(leg, quantity); return; }
             Log.log(`[ScaledHedgedStrategy] ALERT: resting sell for ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
         } finally {
             this.busy.delete(leg.id);
@@ -600,6 +634,8 @@ export default class ScaledHedgedStrategy extends Strategy {
                 leg.sellShortfall = 0;
                 this.save();
                 Log.log(`[ScaledHedgedStrategy] ${leg.tsym}: the broker has nothing left to sell, so the rest of the leg already rests - no further sell placed`);
+            } else if (isCoveredByOthers(e)) {
+                this.waitCovered(leg, quantity);
             } else {
                 Log.log(`[ScaledHedgedStrategy] ALERT: resting sell for the rest of ${leg.tsym} (${quantity}) failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
             }
@@ -1065,7 +1101,13 @@ export default class ScaledHedgedStrategy extends Strategy {
                 }
             }
             const partialPlaced = !!(e as any)?.partial || /after placing [1-9]\d*\//.test(String((e as any)?.message ?? e)); // some chunks already rest: restoring would oversell
-            if (isNonTransientRejection(e)) {
+            if (isCoveredByOthers(e)) {
+                // The held lots are covered by another user's resting sell on the same broker account (never-short guard): asking again changes nothing until
+                // that order fills / is cancelled, so no ALERT and no 5-60 s retry storm - one plain line, the next try in COVERED_RETRY_MS. The locked
+                // sell is not dropped: it is placed as soon as the guard lets it through.
+                const n = this.tripGuard.coveredByOthers(leg.id);
+                if (this.tripGuard.shouldLogCovered(n)) Log.log(`[ScaledHedgedStrategy] MAX PROFIT: the locked sell of ${quantity} ${leg.tsym} waits - the held lots are covered by another user's resting sell on the same ${this.brokerOrKite()} account; next try in ${COVERED_RETRY_MS / 60000} min (attempt ${n})`);
+            } else if (isNonTransientRejection(e)) {
                 // The broker refused the order itself (funds / limit / margin / RMS): the same order can never succeed on a retry. One ALERT, a slow bounded
                 // retry sized to what the broker accepted before (the sell just cancelled), and the cancelled sell is put back below so the leg is never bare.
                 const n = this.tripGuard.failNonTransient(leg.id, prev?.qty);

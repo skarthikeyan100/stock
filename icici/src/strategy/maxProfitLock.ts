@@ -98,10 +98,18 @@ export function isNonTransientRejection(e: unknown): boolean {
 // A non-transient refusal is retried 2 minutes apart. After MAX_NON_TRANSIENT refusals a leg that has a resting sell is left on it (no more cancel/replace
 // churn, one ALERT); a leg with NO resting sell keeps trying every 2 minutes (it must not stay bare), logged once.
 export const MAX_NON_TRANSIENT = 3;
+// The never-short guard held a sell back because the quantity still held is covered by OTHER users' resting sells on the same broker account
+// (BrokerExecutor.neverShortSellable; live 2026-11-18 10:37-11:05: 20+ identical retries, one ALERT each, of a 65 sell that could not be placed
+// while ScaledHedged's own 65 sell rested on the same Breeze long). Re-asking changes nothing until that other order fills, is cancelled or is
+// re-attributed, and the strategy is told nothing about another user's orders, so it waits a long bounded interval, quietly (one plain line).
+export const COVERED_BY_OTHERS = /covered by other users' resting sells/i;
+export const COVERED_RETRY_MS = 5 * 60_000;
+export function isCoveredByOthers(e: unknown): boolean { return COVERED_BY_OTHERS.test(String((e as any)?.message ?? e)); }
 export const NON_TRANSIENT_DELAY_MS = 120_000;
 export class TripGuard {
     private nonTransient = new Map<string, { n: number; next: number; safeQty?: number }>();
     private failures = new Map<string, { n: number; next: number }>();
+    private covered = new Map<string, { n: number; next: number }>(); // held back because other users' resting sells cover the held lots
     private fillSince = new Map<string, number>(); // a cancel reported a fill: the leg's fill events may not have arrived yet
     private goneSince = new Map<string, number>(); // the broker refused the sell as 'nothing sellable' and the order side holds nothing
 
@@ -120,15 +128,24 @@ export class TripGuard {
         this.failures.set(id, { n: this.attempts(id) + 1, next: now + NON_TRANSIENT_DELAY_MS }); // the price walk (attempts) still advances
         return n;
     }
+    // The guard said the held lots are covered by other users' resting sells: nothing is re-asked for COVERED_RETRY_MS. Returns the count (log on 1, then hourly).
+    coveredByOthers(id: string, now = Date.now()): number {
+        const n = (this.covered.get(id)?.n ?? 0) + 1;
+        this.covered.set(id, { n, next: now + COVERED_RETRY_MS });
+        return n;
+    }
+    shouldLogCovered(n: number): boolean { return n === 1 || n % 12 === 0; }
     exhausted(id: string): boolean { return (this.nonTransient.get(id)?.n ?? 0) >= MAX_NON_TRANSIENT; }
     safeQty(id: string): number | undefined { return this.nonTransient.get(id)?.safeQty; }
     due(id: string, now = Date.now()): boolean {
         const nt = this.nonTransient.get(id);
         if (nt && now < nt.next) return false;
+        const cv = this.covered.get(id);
+        if (cv && now < cv.next) return false;
         const f = this.failures.get(id); return !f || now >= f.next;
     }
     attempts(id: string): number { return this.failures.get(id)?.n ?? 0; }
-    ok(id: string): void { this.failures.delete(id); this.nonTransient.delete(id); this.goneSince.delete(id); }
+    ok(id: string): void { this.failures.delete(id); this.nonTransient.delete(id); this.covered.delete(id); this.goneSince.delete(id); }
     shouldLogFailure(n: number): boolean { return n === 1 || n % 10 === 0; }
 
     markFill(id: string, now = Date.now()): void { if (!this.fillSince.has(id)) this.fillSince.set(id, now); }
@@ -141,5 +158,5 @@ export class TripGuard {
         if (since === undefined) { this.goneSince.set(id, now); return false; }
         return now - since > TRIP_FILL_WAIT_MS;
     }
-    forget(id: string): void { this.failures.delete(id); this.nonTransient.delete(id); this.fillSince.delete(id); this.goneSince.delete(id); }
+    forget(id: string): void { this.failures.delete(id); this.nonTransient.delete(id); this.covered.delete(id); this.fillSince.delete(id); this.goneSince.delete(id); }
 }

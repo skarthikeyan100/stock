@@ -126,3 +126,39 @@ export function pairFillsFifo<T extends FillDoc>(fills: T[]): { pieces: ClosedPi
     }
     return { pieces, unmatched };
 }
+
+/** A Sell that came BEFORE the Buy that covers it (a short round trip on this user's own order ids). */
+export interface ShortPiece<T extends FillDoc = FillDoc> {
+    sell: T;
+    buy: T;
+    qty: number;
+}
+
+/**
+ * Per-user netting BY ORDER ID (buys minus sells), for the case the plain FIFO gets wrong: a Sell with no Buy before it. netFifoLots / pairFillsFifo
+ * drop such a sell, so a user who sold first (live 2026-11-18: ScaledHedged-Breeze's root buy hit a 429 and the strategy adopted the lots of another
+ * strategy on the same Breeze account, then sold them) was left with a Buy that "stayed open" although the order ids net to zero.
+ * The FIFO result (pieces, open lots) is kept exactly as it is; each unmatched Sell is then matched with the oldest open Buy lots that were bought
+ * AFTER it, which is the position its order ids really net to. What a Sell cannot be matched with (no later Buy) stays in `unmatched`.
+ * Pure: no I/O, fills of ONE user and ONE contract in time order.
+ */
+export function netWithShortCover<T extends FillDoc>(fills: T[]): { pieces: ClosedPiece<T>[]; shortPieces: ShortPiece<T>[]; open: Lot<T>[]; unmatched: { sell: T; qty: number }[] } {
+    const { pieces, unmatched } = pairFillsFifo(fills);
+    const open = netFifoLots(fills);
+    const shortPieces: ShortPiece<T>[] = [];
+    const stillUnmatched: { sell: T; qty: number }[] = [];
+    const at = (d: FillDoc) => new Date(d.entryTime as any).getTime();
+    for (const u of unmatched) {
+        let left = u.qty;
+        for (const lot of open) {
+            if (left <= 0) break;
+            if (lot.remaining <= 0 || !(at(lot.doc) > at(u.sell))) continue;
+            const use = Math.min(left, lot.remaining);
+            shortPieces.push({ sell: u.sell, buy: lot.doc, qty: use });
+            lot.remaining -= use;
+            left -= use;
+        }
+        if (left > 0) stillUnmatched.push({ sell: u.sell, qty: left });
+    }
+    return { pieces, shortPieces, open: open.filter((l) => l.remaining > 0), unmatched: stillUnmatched };
+}

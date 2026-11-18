@@ -14,7 +14,7 @@ import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
 import { roundToTick, NFO_TICK_SIZE } from '../util/tick';
-import { clearPrice, tripSellPrice, keepTripSell, TripGuard, TRIP_FILL_WAIT_MS, isNonTransientRejection, MAX_NON_TRANSIENT } from './maxProfitLock';
+import { clearPrice, tripSellPrice, keepTripSell, TripGuard, TRIP_FILL_WAIT_MS, isNonTransientRejection, MAX_NON_TRANSIENT, isCoveredByOthers, COVERED_RETRY_MS } from './maxProfitLock';
 import { effectiveMaxProfit } from './effectiveMaxProfit';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import { isPastEodClose } from '../util/eodClose';
@@ -481,6 +481,13 @@ export default class SimpleContinuousStrategy extends Strategy {
         return true;
     }
 
+    // The never-short guard held a resting sell back because other users' resting sells on the same broker account cover the held lots: the tick path
+    // retries every SELL_RETRY_MS and would ALERT each time (live 2026-11-18, 20+ times). One plain line, then the next try is COVERED_RETRY_MS away.
+    private waitCovered(leg: SimpleLeg, quantity: number): void {
+        this.lastSellAttempt.set(leg.id, Date.now() + COVERED_RETRY_MS - SELL_RETRY_MS);
+        Log.log(`[SimpleContinuousStrategy] resting sell of ${quantity} ${leg.tsym} waits - the held lots are covered by another user's resting sell on the same ${this.brokerOrKite()} account; next try in ${COVERED_RETRY_MS / 60000} min`);
+    }
+
     private async placeSell(leg: SimpleLeg): Promise<void> {
         if (leg.status !== 'open' || this.busy.has(leg.id)) return;
         const quantity = this.remaining(leg);
@@ -495,6 +502,7 @@ export default class SimpleContinuousStrategy extends Strategy {
             this.bookPlacedSell(leg, quantity, price, res);
         } catch (e) {
             if (await this.closeIfNotHeld(leg, e)) return;
+            if (isCoveredByOthers(e)) { this.waitCovered(leg, quantity); return; }
             Log.log(`[SimpleContinuousStrategy] ALERT: resting sell for ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
         } finally {
             this.busy.delete(leg.id);
@@ -540,6 +548,8 @@ export default class SimpleContinuousStrategy extends Strategy {
                 leg.sellShortfall = 0;
                 this.save();
                 Log.log(`[SimpleContinuousStrategy] ${leg.tsym}: the broker has nothing left to sell, so the rest of the leg already rests - no further sell placed`);
+            } else if (isCoveredByOthers(e)) {
+                this.waitCovered(leg, quantity);
             } else {
                 Log.log(`[SimpleContinuousStrategy] ALERT: resting sell for the rest of ${leg.tsym} (${quantity}) failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
             }
@@ -839,7 +849,13 @@ export default class SimpleContinuousStrategy extends Strategy {
                 }
             }
             const partialPlaced = !!(e as any)?.partial || /after placing [1-9]\d*\//.test(String((e as any)?.message ?? e)); // some chunks already rest: restoring would oversell
-            if (isNonTransientRejection(e)) {
+            if (isCoveredByOthers(e)) {
+                // The held lots are covered by another user's resting sell on the same broker account (never-short guard): asking again changes nothing until
+                // that order fills / is cancelled, so no ALERT and no 5-60 s retry storm - one plain line, the next try in COVERED_RETRY_MS. The locked
+                // sell is not dropped: it is placed as soon as the guard lets it through.
+                const n = this.tripGuard.coveredByOthers(leg.id);
+                if (this.tripGuard.shouldLogCovered(n)) Log.log(`[SimpleContinuousStrategy] MAX PROFIT: the locked sell of ${quantity} ${leg.tsym} waits - the held lots are covered by another user's resting sell on the same ${this.brokerOrKite()} account; next try in ${COVERED_RETRY_MS / 60000} min (attempt ${n})`);
+            } else if (isNonTransientRejection(e)) {
                 // The broker refused the order itself (funds / limit / margin / RMS): the same order can never succeed on a retry. One ALERT, a slow bounded
                 // retry sized to what the broker accepted before (the sell just cancelled), and the cancelled sell is put back below so the leg is never bare.
                 const n = this.tripGuard.failNonTransient(leg.id, prev?.qty);

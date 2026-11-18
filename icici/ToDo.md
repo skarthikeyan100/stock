@@ -49,6 +49,7 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 
 ## Two strategies on one Breeze contract (2026-11-18)
 - Restart the `trading` process after market hours to load the unconfirmed-buy ownership cap and the placed-quantity return of the ANT/Prism/Breeze limit sells (open-review-items.md 111).
-- Trader action for the live NIFTY23NOV2625300CE state: Simple's 585 vs real 520, the rejected locked sell (open-review-items.md 112).
 - Same restart also loads the max-profit refused-sell handling (open-review-items.md 113): non-retryable broker refusal, put-back of the cancelled sell, bounded retries.
-- Same restart also loads the account-wide never-short guard for Breeze/ANT/Prism limit sells (open-review-items.md 114): Simple's locked sell then places 520 and retries the other 65 until ScaledHedged's resting 65 sell clears. The 650 vs 585 bookkeeping difference still needs the trader (114 limit 3).
+- Same restart also loads the account-wide never-short guard for Breeze/ANT/Prism limit sells (open-review-items.md 114), the attribution of fills by order id in the sync (115), the quiet wait when other users' resting sells cover the held lots (116) and ScaledHedged's cancel of a closed leg's stranded resting sell.
+- After the restart (market closed): `npm run sync -- --strategies`. Expected for NIFTY23NOV2625300CE: ScaledHedged-Breeze phantom L3 closed, a short round trip row of -474.50 written, Simple-Breeze 585; ScaledHedged cancels its resting 65 @188.25 on its next tick; check the log lines `order-id attribution breeze`.
+- Open (117): a fill delivered while a strategy is disabled is not in its realizedPnl (ScaledHedged-Breeze L5, +650); the trader decides.

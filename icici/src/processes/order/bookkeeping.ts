@@ -10,7 +10,7 @@ import { Trade } from '../../model/model';
 import { UserContext, closeUserAccount } from '../../user';
 import { PUT, CALL, UNKNOWN_USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY } from '../../constants';
 import * as exitMonitor from './exitMonitor';
-import { collapseFillsByOrderId, netFifoLots, pairFillsFifo } from './fillNetting';
+import { collapseFillsByOrderId, netFifoLots, pairFillsFifo, netWithShortCover } from './fillNetting';
 import { recordOrderOwner, loadOrderOwners } from './orderOwners';
 import configService from '../../prism/ConfigService';
 import { drawdownDecision } from '../../prism/percentConfig';
@@ -31,7 +31,7 @@ type BrokerKey = BrokerName;
 type BrokerFill = { orderId: string; action: 'Buy' | 'Sell'; tsym: string; token?: string; qty: number; price: number };
 export type EodMismatchKind = 'unattributedFill' | 'partialUnattributable' | 'brokerExcess' | 'brokerShort' | 'sellWithoutBuy';
 export type EodMismatch = { kind: EodMismatchKind; broker: BrokerKey; tsym: string; brokerQty?: number; mongoQty?: number; note?: string };
-export type EodBrokerReport = { ok: boolean; skipped?: string; error?: string; bookedFills: number; bookedFlat: number; repairedClosed: number; mismatches: EodMismatch[] };
+export type EodBrokerReport = { ok: boolean; skipped?: string; error?: string; attributed?: number; bookedFills: number; bookedFlat: number; repairedClosed: number; mismatches: EodMismatch[] };
 export type MongoRestoreResult = { ok: boolean; restored: number; contracts: number; skippedExpired: string[]; skippedUnknownToken: string[]; skippedNoToken: string[]; error?: string };
 
 // Open-P&L pricing gets a short budget: it runs inside every buy's drawdown check, so a slow quote must not stall an order.
@@ -2058,6 +2058,95 @@ class OrderBookkeeping {
         }
     }
 
+    // ---- Attribution by order id (2026-11-18) ----
+    // Every broker order has one owner (the order-owner ledger, written when the order is placed), so what each USER holds on a contract is his buys minus
+    // his sells by order id, whatever the broker aggregate says. The sync used to give up when the tracked quantity of a contract exceeded the broker's
+    // ("partialUnattributable ... which user's share is unknown"; "sellWithoutBuy"): live 2026-11-18 ScaledHedged-Breeze's root buy hit a 429, the strategy
+    // adopted 65 of SimpleContinuous-Breeze's lots, sold them (order ...2103, no Buy before it in Mongo) and later bought and sold more; Mongo held every
+    // fill with its order id, the plain FIFO netting dropped the leading Sell and kept a phantom open leg (tracked 650 vs broker 585).
+    // For each contract whose tracked total differs from the broker position: the per-user nets (fillNetting.netWithShortCover) are used ONLY when they
+    // add up exactly to the broker position, every fill carries an order id and no order id is ambiguous. Then (1) a Sell that preceded the Buy that covers
+    // it is written as a closed trade (a short round trip, P&L = sell - buy, one row per sell/buy pair, idempotent), (2) a user tracked above his net is
+    // reduced to it (a net of zero drops the position from memory and from the exit monitor). Anything else (a manual order, a missing order id, nets that
+    // do not add up) is left as it is and stays reported - never guessed. Mongo / bookkeeping only: it places and cancels no order and notifies no strategy;
+    // the strategies read the corrected books on their next reconcile (`npm run sync -- --strategies`). Same code for the 15:45 sync and `npm run sync`.
+    async attributeByOrderIds(broker: BrokerKey, mismatches: EodMismatch[] = []): Promise<number> {
+        const db = Mongo.getInstance()?.db;
+        if (!db) return 0;
+        const rows = await this.readBrokerRows(broker);
+        if (!rows) return 0;
+        let corrected = 0;
+        const byTsym = new Map<string, Trade[]>();
+        for (const t of this.trades) if (t.broker === broker && Number(t.quantity) > 0) byTsym.set(t.tsym, [...(byTsym.get(t.tsym) ?? []), t]);
+        for (const [tsym, ts] of byTsym) {
+            try {
+                const held = OrderBookkeeping.rowsFor(rows, ts[0]).reduce((sum, r) => sum + r.qty, 0);
+                const total = ts.reduce((sum, t) => sum + Number(t.quantity), 0);
+                if (held === total || !(held >= 0)) continue; // consistent (or a broker short: not this repair)
+                const loaded = await this.loadContractFills(tsym, broker, ts[0].token ? [String(ts[0].token)] : undefined);
+                if (loaded.ambiguous || loaded.ownedFills.length === 0 || loaded.ownedFills.some((f: any) => !f.brokerOrderId)) continue;
+                const users = Array.from(new Set(loaded.ownedFills.map((f: any) => String(f.user))));
+                const nets = new Map<string, ReturnType<typeof netWithShortCover<any>>>();
+                let sum = 0;
+                for (const u of users) {
+                    const r = netWithShortCover<any>(loaded.ownedFills.filter((f: any) => String(f.user) === u));
+                    nets.set(u, r);
+                    sum += r.open.reduce((a, l) => a + l.remaining, 0);
+                }
+                if (sum !== held) continue; // the order ids do not account for the broker position (a manual order, a partial): reported as before
+                for (const [u, r] of nets) {
+                    for (const sp of r.shortPieces) {
+                        const exists = await db.collection('closedTrades').findOne({ user: u, tsym, shortFirst: true, sellOrderId: String(sp.sell.brokerOrderId), buyOrderId: String(sp.buy.brokerOrderId) });
+                        if (exists) continue;
+                        const sellPx = Number(sp.sell.price), buyPx = Number(sp.buy.price);
+                        const pnl = (sellPx - buyPx) * sp.qty;
+                        const row = {
+                            _id: randomUUID(), user: u, tsym, token: sp.buy.token ?? sp.sell.token, right: sp.buy.right ?? sp.sell.right, quantity: sp.qty,
+                            entryPrice: sellPx, exitPrice: buyPx, realizedPnL: pnl, entryTime: sp.sell.entryTime, exitTime: sp.buy.entryTime,
+                            strategy: sp.sell.strategy ?? sp.buy.strategy, broker: normalizeBrokerName(String(sp.buy.broker ?? broker)) ?? broker,
+                            createdAt: new Date(), shortFirst: true, sellOrderId: String(sp.sell.brokerOrderId), buyOrderId: String(sp.buy.brokerOrderId),
+                        };
+                        await db.collection('closedTrades').insertOne(row as any);
+                        corrected++;
+                        Log.log(`[order] ALERT: order-id attribution ${broker}: ${u} ${tsym} - sold ${sp.qty} @ ${sellPx.toFixed(2)} (order ${row.sellOrderId}) before buying them back @ ${buyPx.toFixed(2)} (order ${row.buyOrderId}) - wrote the closed trade, P&L ${pnl.toFixed(2)}`);
+                        if (new Date(row.exitTime) >= OrderBookkeeping.startOfDay()) {
+                            const t = new Trade();
+                            t.tsym = tsym; t.token = row.token; t.right = row.right; t.quantity = sp.qty; t.price = sellPx; t.action = 'Sell'; t.user = u; t.broker = row.broker as any;
+                            t.open = false; t.realizedPnL = pnl; t.entryTime = row.entryTime; t.exitTime = row.exitTime; t.strategy = row.strategy;
+                            this.closedTrades.push(t);
+                            this.userPnL.set(u, (this.userPnL.get(u) || 0) + pnl);
+                        }
+                    }
+                    const mine = this.trades.filter((t) => t.broker === broker && t.tsym === tsym && t.user === u && Number(t.quantity) > 0);
+                    const trackedQty = mine.reduce((a, t) => a + Number(t.quantity), 0);
+                    const netQty = r.open.reduce((a, l) => a + l.remaining, 0);
+                    if (trackedQty > netQty) {
+                        let excess = trackedQty - netQty;
+                        for (const t of [...mine].reverse()) { // the newest lot goes first
+                            if (excess <= 0) break;
+                            const cut = Math.min(excess, Number(t.quantity));
+                            excess -= cut;
+                            if (cut >= Number(t.quantity)) {
+                                const idx = this.trades.indexOf(t);
+                                if (idx !== -1) this.trades.splice(idx, 1);
+                                if (t.token) exitMonitor.unregisterTrade(t.user, t.token, t.broker === 'ant' || t.broker === 'prism' || t.broker === 'kite' ? t.broker : undefined);
+                            } else t.quantity = Number(t.quantity) - cut;
+                        }
+                        corrected++;
+                        Log.log(`[order] ALERT: order-id attribution ${broker}: ${u} ${tsym} was tracked at ${trackedQty} but his own order ids net to ${netQty} (the broker holds ${held} in all, the users' nets add up to it) - corrected to ${netQty}`);
+                    } else if (trackedQty < netQty) {
+                        Log.log(`[order] order-id attribution ${broker}: ${u} ${tsym} is tracked at ${trackedQty} but his order ids net to ${netQty} - not raised here (the broker reconcile restores it)`);
+                    }
+                }
+                this.notifyPositionsChanged();
+            } catch (e: any) {
+                Log.log(`[order] attributeByOrderIds(${broker}, ${tsym}) failed (left as it was):`, e?.message ?? e);
+                mismatches.push({ kind: 'partialUnattributable', broker, tsym, note: `order-id attribution failed: ${e?.message ?? e}` });
+            }
+        }
+        return corrected;
+    }
+
     // A Sell fill in Mongo's `Trade` with no closedTrades row is a close the books lost: _processTradeEvent writes the row only when the open
     // position is in memory, so a fill that arrived while memory did not hold it (a restart whose restore did not run, 2026-11-11 16:19: Breeze
     // Momentum 25400CE sold at 150 for -35,139) left only the raw fill. Rebuilds each contract's closes from its fills (FIFO, per user, one order
@@ -2095,11 +2184,13 @@ class OrderBookkeeping {
             }
             const { pieces, unmatched } = pairFillsFifo(fills.filter((f) => f.user === c.user));
             for (const u of unmatched) {
+                // A Sell that came before the Buy that covers it was written as a short round trip by attributeByOrderIds (per-user order-id nets): not a gap.
+                if (u.sell.brokerOrderId && await db.collection('closedTrades').findOne({ user: c.user, tsym: c.tsym, shortFirst: true, sellOrderId: String(u.sell.brokerOrderId) })) continue;
                 if (new Date(u.sell.entryTime) >= since) mismatches.push({ kind: 'sellWithoutBuy', broker, tsym: c.tsym, mongoQty: u.qty, note: `${c.user}: a Sell of ${u.qty} @ ${Number(u.sell.price).toFixed(2)} (order ${u.sell.brokerOrderId ?? '-'}) has no Buy before it in Mongo - no closed trade written` });
             }
             const wanted = pieces.filter((p) => new Date(p.sell.entryTime) >= since);
             if (wanted.length === 0) continue;
-            const rows: any[] = await db.collection('closedTrades').find({ user: c.user, tsym: c.tsym, broker: brokerMatch, $or: [{ exitTime: { $gte: new Date(since.getTime() - 3600_000) } }, { repairedFromFills: true }] }).toArray();
+            const rows: any[] = await db.collection('closedTrades').find({ user: c.user, tsym: c.tsym, broker: brokerMatch, shortFirst: { $ne: true }, $or: [{ exitTime: { $gte: new Date(since.getTime() - 3600_000) } }, { repairedFromFills: true }] }).toArray();
             const used = new Set<any>();
             for (const p of wanted) {
                 const at = new Date(p.sell.entryTime).getTime();
@@ -2154,6 +2245,8 @@ class OrderBookkeeping {
             const restored = await this.restoreOpenTradesFromMongo(); // idempotent: memory must equal Mongo before it is compared with the broker
             if (!restored.ok) { report.error = `restore from Mongo failed: ${restored.error}`; return report; }
             // Mongo-only, so it runs before (and whether or not) the broker can be read: a Sell fill that never got its closed-trade row.
+            // Per-user order-id nets first: a contract whose tracked quantity differs from the broker's is attributed to the user who placed each order.
+            report.attributed = await this.attributeByOrderIds(broker, report.mismatches);
             report.repairedClosed = await this.repairClosedTradesFromFills(broker, report.mismatches);
             const rows = await this.readBrokerRows(broker);
             if (!rows) {
@@ -2262,6 +2355,36 @@ class OrderBookkeeping {
         }
         const { users, ownedFills } = loaded;
 
+        // The plain FIFO below drops a Sell that has no Buy before it, so a user who sold first (a strategy that adopted another strategy's lots after a
+        // 429 and sold them, live 2026-11-18) restores a Buy that his order ids net to zero. When the broker quantity is known and FIFO does not add up to
+        // it but the per-user order-id nets (a leading Sell covered by the later Buys) do, those nets are the position (never guessed: any fill without an
+        // order id, an ambiguous order, or nets that still differ from the broker keep the FIFO result and its alerts).
+        let coverLots: Map<string, { doc: any; remaining: number }[]> | null = null;
+        if (brokerQuantity != null && Number.isFinite(brokerQuantity) && brokerQuantity >= 0 && ownedFills.length > 0 && ownedFills.every((f: any) => f.brokerOrderId)) {
+            const fillUsers = Array.from(new Set(ownedFills.map((f: any) => String(f.user))));
+            const fifoSum = fillUsers.reduce((sum, u) => sum + netFifoLots<any>(ownedFills.filter((f: any) => f.user === u)).reduce((a, l) => a + l.remaining, 0), 0);
+            if (fifoSum !== brokerQuantity) {
+                const m = new Map<string, { doc: any; remaining: number }[]>();
+                let coverSum = 0;
+                for (const u of fillUsers) {
+                    const open = netWithShortCover<any>(ownedFills.filter((f: any) => f.user === u)).open;
+                    m.set(u, open);
+                    coverSum += open.reduce((a, l) => a + l.remaining, 0);
+                }
+                if (coverSum === brokerQuantity) {
+                    coverLots = m;
+                    Log.log(`[order] loadOpenTradesFromBroker: ${tsym} (${broker}) FIFO nets to ${fifoSum} but the broker holds ${brokerQuantity}; the per-user order-id nets (a Sell before its covering Buy counted) add up to exactly ${brokerQuantity} - restoring those: ${Array.from(m).map(([u, l]) => `${u}=${l.reduce((a, x) => a + x.remaining, 0)}`).join(', ')}`);
+                }
+            }
+        }
+        // Mongo-only restore (no broker quantity to check): a user whose short round trip was already written by attributeByOrderIds (it only writes it
+        // when the order-id nets added up to the broker position) is netted the same way, so a restart does not bring the phantom position back.
+        const shortVerified = new Set<string>();
+        if (brokerQuantity == null) {
+            try {
+                for (const u of await db.collection('closedTrades').distinct('user', { tsym: { $in: [tsym, ...(alsoTsyms ?? [])] }, shortFirst: true })) shortVerified.add(String(u));
+            } catch (e: any) { Log.log('[order] restore: shortFirst rows not readable (plain FIFO used):', e?.message ?? e); }
+        }
         const restored: Trade[] = [];
         let totalRestoredQty = 0;
         for (const user of users) {
@@ -2283,7 +2406,7 @@ class OrderBookkeeping {
             // Net the fills FIFO: every Sell (including a PARTIAL one - a partly-sold leg is still open for the
             // rest) consumes the oldest remaining Buy lots, so what's left is the position actually still held.
             // The old "buys after the last Sell" boundary ignored partial sells and restored the full quantity.
-            const lots = netFifoLots<any>(ownedFills.filter((f: any) => f.user === user));
+            const lots = coverLots ? (coverLots.get(user) ?? []) : shortVerified.has(user) ? netWithShortCover<any>(ownedFills.filter((f: any) => f.user === user)).open : netFifoLots<any>(ownedFills.filter((f: any) => f.user === user));
             // newest-first, same orientation the rest of this block expects; quantity = what is still held per lot
             const rows = lots.map((l) => ({ ...l.doc, quantity: l.remaining, originalQuantity: Number(l.doc.quantity) })).reverse();
             const row = rows[0];
