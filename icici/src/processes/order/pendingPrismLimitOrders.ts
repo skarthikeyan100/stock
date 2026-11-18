@@ -71,6 +71,7 @@ const tracker = new PendingOrderTracker<PendingPrismLimitOrder, any[], 'prism'>(
 
 export const onCancelled = tracker.onCancelled;
 export const findPendingOrdersForSymbol = tracker.find;
+export const prismRestingSells = tracker.restingSells;
 export const allPendingOrders = tracker.all;
 export const trackPendingPrismLimitOrder = tracker.track;
 export const untrackPendingPrismLimitOrder = tracker.untrack;

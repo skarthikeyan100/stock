@@ -108,6 +108,17 @@ export class PendingOrderTracker<T extends PendingOrder, Snapshot, B extends Tra
 
     find = (userId: string, tradingSymbol: string): T[] =>
         Array.from(this.pending.values()).filter((o) => o.userId === userId && o.tradingSymbol === tradingSymbol);
+    // Resting Sell quantity on one contract split into `own` (this user's) and `others` (every other user's). Breeze/ANT/Prism net positions
+    // per ACCOUNT and contract, so a sell of another user's strategy on the same account eats into the same long: the never-short guard
+    // must count both (live 2026-11-18: a 585 locked sell was refused for margin because another user's 65 sell also rested on a 585 long).
+    restingSells = (userId: string, tradingSymbol: string): { own: number; others: number } => {
+        let own = 0, others = 0;
+        for (const o of this.pending.values()) {
+            if (o.tradingSymbol !== tradingSymbol || o.action !== 'Sell') continue;
+            if (o.userId === userId) own += o.quantity; else others += o.quantity;
+        }
+        return { own, others };
+    };
     // Every order this tracker is watching, any user and symbol (lock-profits cancels resting refill buys it cannot name by symbol).
     all = (): T[] => Array.from(this.pending.values());
 

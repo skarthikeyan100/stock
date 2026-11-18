@@ -14,7 +14,7 @@ import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
 import { manualBuyChunked, squareOffAutoChunked } from './chunkedOrder';
 import { neverShortSellable } from './BrokerExecutor';
-import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder, beginCancelOfPendingAntLimitOrders, endCancelOfPendingAntLimitOrders, silenceListenersOfPendingAntLimitOrders } from './pendingAntLimitOrders';
+import { trackPendingAntLimitOrder, untrackPendingAntLimitOrder, pendingAntSellsFor, isPendingAntOrder, PendingAntLimitOrder, beginCancelOfPendingAntLimitOrders, endCancelOfPendingAntLimitOrders, silenceListenersOfPendingAntLimitOrders, antRestingSells } from './pendingAntLimitOrders';
 import { sleep } from '../../util/sleep';
 import { fillWaitPlan } from '../../util/fillWait';
 import { exchangeForIndex } from '../../util/underlyings';
@@ -764,7 +764,7 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
     const ant = ANT.getInstance();
     quantity = await neverShortSellable({
         label: `${tradingSymbol} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),
-        restingSellQuantity: pendingAntSellsFor(userId, tradingSymbol).reduce((sum, o) => sum + o.quantity, 0), recheckIfFlat: true,
+        restingSellQuantity: antRestingSells(userId, tradingSymbol).own, otherUsersRestingSellQuantity: antRestingSells(userId, tradingSymbol).others, recheckIfFlat: true,
     });
     Log.log(`[order] Bare ANT limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderNo } = await ant.placeOrder({

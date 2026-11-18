@@ -70,6 +70,7 @@ export const onCancelled = tracker.onCancelled;
 export const pendingBreezeOrderExchange = (orderId: string): 'NFO' | 'BFO' | undefined => tracker.get(orderId)?.exchange;
 export const findPendingOrdersForSymbol = tracker.find;
 export const allPendingOrders = tracker.all;
+export const breezeRestingSells = tracker.restingSells;
 export const trackPendingBreezeLimitOrder = tracker.track;
 // Called after an explicit cancel (cancelOrderOnBreeze) so the poll doesn't keep polling an order we just told the broker to drop.
 export const untrackPendingBreezeLimitOrder = tracker.untrack;

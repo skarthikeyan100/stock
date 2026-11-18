@@ -16,7 +16,7 @@ import { manualBuyChunked } from './chunkedOrder';
 import { exchangeForTsym } from '../../util/underlyings';
 import { BuyRequest, OptionExchange, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { estimateOptionPricesBatch } from './antExecutor';
-import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, beginCancelOfBreezePendingLimitOrders, endCancelOfBreezePendingLimitOrders, silenceListenersOfBreezePendingLimitOrders } from './breezePendingLimitOrders';
+import { trackPendingBreezeLimitOrder, untrackPendingBreezeLimitOrder, pendingBreezeOrderExchange, findPendingOrdersForSymbol as findPendingBreezeOrdersForSymbol, beginCancelOfBreezePendingLimitOrders, endCancelOfBreezePendingLimitOrders, silenceListenersOfBreezePendingLimitOrders, breezeRestingSells } from './breezePendingLimitOrders';
 import { roundToTick } from '../../util/tick';
 import { fillWaitPlan } from '../../util/fillWait';
 import { crossCheckQuote } from '../../util/quoteCrossCheck';
@@ -934,7 +934,7 @@ export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: 
     const contract = await resolveBreezeContract(tradingSymbol, antToken);
     quantity = await neverShortSellable({
         label: `${tradingSymbol} (${userId}, Breeze)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),
-        restingSellQuantity: findPendingBreezeOrdersForSymbol(userId, tradingSymbol).filter((o) => o.action === 'Sell').reduce((sum, o) => sum + o.quantity, 0), recheckIfFlat: true,
+        restingSellQuantity: breezeRestingSells(userId, tradingSymbol).own, otherUsersRestingSellQuantity: breezeRestingSells(userId, tradingSymbol).others, recheckIfFlat: true,
     });
     Log.log(`[order] Bare Breeze limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, price);

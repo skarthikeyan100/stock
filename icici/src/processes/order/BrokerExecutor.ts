@@ -68,16 +68,19 @@ export async function neverShortSellable(args: {
     quantity: number;
     livePosition: () => Promise<number>;
     restingSellQuantity: number;
+    // Quantity other users' strategies already rest as sells on the same contract and broker ACCOUNT (the position is netted per account).
+    otherUsersRestingSellQuantity?: number;
     // Re-read once after a short wait before refusing on a flat reading. Only for a sell placed right after the entry fill (a target
     // sell, a sell-back), where the positions endpoint can lag; never for a stop-loss/EOD exit, which must not wait.
     recheckIfFlat?: boolean;
 }): Promise<number> {
+    const others = args.otherUsersRestingSellQuantity ?? 0;
     let live: number;
     try {
         live = await args.livePosition();
         // A positions endpoint can lag a fill by a few seconds (a target sell placed right after the entry fill, a sell-back right
         // after its buy): before refusing on a flat reading, look once more.
-        if (args.recheckIfFlat && Number.isFinite(live) && live - args.restingSellQuantity <= 0) {
+        if (args.recheckIfFlat && Number.isFinite(live) && live - args.restingSellQuantity - others <= 0) {
             await new Promise((r) => setTimeout(r, 2500));
             live = await args.livePosition();
         }
@@ -86,13 +89,19 @@ export async function neverShortSellable(args: {
         return args.quantity;
     }
     if (!Number.isFinite(live)) return args.quantity;
-    const sellable = live - args.restingSellQuantity;
+    const sellable = live - args.restingSellQuantity - others;
+    if (sellable <= 0 && others > 0 && live - args.restingSellQuantity > 0) {
+        // Not "nothing sellable" (callers read that text as "this leg's whole quantity already rests"): the quantity is held but another user's
+        // resting sells cover it. Retried by the caller with its backoff; it becomes placeable when that order fills or is cancelled.
+        Log.log(`[order] NEVER-SHORT GUARD held back a sell of ${args.quantity} ${args.label}: live=${live}, own resting sells=${args.restingSellQuantity}, other users' resting sells=${others} on the same account`);
+        throw new Error(`NEVER-SHORT GUARD: ${args.label} - the ${live - args.restingSellQuantity} still held are covered by other users' resting sells (${others}) on this account - refusing to sell ${args.quantity} for now`);
+    }
     if (sellable <= 0) {
-        Log.log(`[order] ALERT: NEVER-SHORT GUARD refused a sell of ${args.quantity} ${args.label} - nothing sellable (live=${live}, resting sells=${args.restingSellQuantity}); position tracking is out of sync with the broker`);
+        Log.log(`[order] ALERT: NEVER-SHORT GUARD refused a sell of ${args.quantity} ${args.label} - nothing sellable (live=${live}, resting sells=${args.restingSellQuantity}, other users'=${others}); position tracking is out of sync with the broker`);
         throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${args.label} (live=${live}, resting=${args.restingSellQuantity}) - refusing to sell ${args.quantity}`);
     }
     if (args.quantity > sellable) {
-        Log.log(`[order] ALERT: NEVER-SHORT GUARD clamped a sell of ${args.label} from ${args.quantity} to ${sellable} - position tracking is out of sync with the broker`);
+        Log.log(`[order] ALERT: NEVER-SHORT GUARD clamped a sell of ${args.label} from ${args.quantity} to ${sellable} (live=${live}, own resting=${args.restingSellQuantity}, other users' resting=${others}) - position tracking is out of sync with the broker`);
         return sellable;
     }
     return args.quantity;

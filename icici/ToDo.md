@@ -51,3 +51,4 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 - Restart the `trading` process after market hours to load the unconfirmed-buy ownership cap and the placed-quantity return of the ANT/Prism/Breeze limit sells (open-review-items.md 111).
 - Trader action for the live NIFTY23NOV2625300CE state: Simple's 585 vs real 520, the rejected locked sell (open-review-items.md 112).
 - Same restart also loads the max-profit refused-sell handling (open-review-items.md 113): non-retryable broker refusal, put-back of the cancelled sell, bounded retries.
+- Same restart also loads the account-wide never-short guard for Breeze/ANT/Prism limit sells (open-review-items.md 114): Simple's locked sell then places 520 and retries the other 65 until ScaledHedged's resting 65 sell clears. The 650 vs 585 bookkeeping difference still needs the trader (114 limit 3).

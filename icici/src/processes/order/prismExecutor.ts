@@ -8,7 +8,7 @@ import PrismContractMaster from '../../prism/PrismContractMaster';
 import AntContractMaster from '../../ant/AntContractMaster';
 import * as exitMonitor from './exitMonitor';
 import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSellsAheadOfExit, neverShortSellable, emptyExitTrade } from './BrokerExecutor';
-import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol, beginCancelOfPendingPrismLimitOrders, endCancelOfPendingPrismLimitOrders, silenceListenersOfPendingPrismLimitOrders } from './pendingPrismLimitOrders';
+import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol, beginCancelOfPendingPrismLimitOrders, endCancelOfPendingPrismLimitOrders, silenceListenersOfPendingPrismLimitOrders, prismRestingSells } from './pendingPrismLimitOrders';
 import { sleep } from '../../util/sleep';
 import { roundToTick } from '../../util/tick';
 import { exchangeForTsym } from '../../util/underlyings';
@@ -393,7 +393,7 @@ async function squareOffOnPrismUnguarded(userId: string, tsym: string, quantity:
 export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string; quantity: number }> {
     quantity = await neverShortSellable({
         label: `${tradingSymbol} (${userId}, Prism)`, quantity, livePosition: () => liveNetQuantityOnPrism(tradingSymbol),
-        restingSellQuantity: findPendingOrdersForSymbol(userId, tradingSymbol).filter((o) => o.action === 'Sell').reduce((sum, o) => sum + o.quantity, 0), recheckIfFlat: true,
+        restingSellQuantity: prismRestingSells(userId, tradingSymbol).own, otherUsersRestingSellQuantity: prismRestingSells(userId, tradingSymbol).others, recheckIfFlat: true,
     });
     Log.log(`[order] Bare Prism limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await Prism.getInstance().placeLimitSellBare(tradingSymbol, instrumentId, quantity, price, userId, exchange);
