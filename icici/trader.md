@@ -36,7 +36,7 @@ Needs the user's explicit instruction first:
 | Logins | `scripts/login.sh` (pass the broker name, e.g. `prism`) |
 | Stop everything (lock profits) | `POST /order/lock-profits` (needs user approval) |
 | Broker ↔ Mongo repair | `npm run sync` (on demand; the platform also runs it by itself at 15:45, `settings.eodReconcileTime`); `npm run sync -- --strategies` also re-reads Mongo into the strategies. It places no order. Its first step (Mongo only, needs no login) writes a `closedTrades` row for every Sell fill that has none (`repairedClosed`; the row carries `repairedFromFills: true`), so P&L, reports and payouts match the fills. |
-| End of day (the user says "run eod") | The "Run EOD" section: disable every strategy, sync, check against the brokers, send new-user welcome emails (`npm run welcome-email`) and the users' EOD emails (`npm run eod-email`), report, stop the processes |
+| End of day (the user says "run eod") | The "Run EOD" section: disable every strategy, sync, check against the brokers, report, stop the processes. No emails on eod (user's rule) |
 | Positions and trade books | `GET /broker/<kite|ant|breeze|prism>/positions` and `/trades` |
 
 ## Pre-market start (before 09:15)
@@ -204,30 +204,16 @@ the steps in this order and do not skip one. If the market is still open (before
    them with each broker's own position list (`GET /broker/<kite|ant|breeze|prism>/positions`, `/trades`): every open position must match
    in contract and quantity. Report each difference. Positions the user placed and manages by hand (the Kite app) are not counted. A
    difference you cannot explain goes first in the carry-over, with who must act.
-5. **Send the welcome emails to new users:** `npm run welcome-email` (no options; rules in the body, signed Agreement / Terms & Conditions /
-   Privacy Policy PDFs). Every enabled non-admin user WITHOUT a folder under `./storage/` gets one, and the folder (holding copies of the PDFs)
-   is created when the email goes out: the user folder is the "already sent" marker, delete it to send again. Runs only on this machine (no API),
-   goes only to `settings.eodEmailTestRecipient` while that is set (do not remove it yourself; test copies go to `storage/_test/`), PDFs are signed
-   (`PDF_SIGN_P12*`), no signing means no email. Run it BEFORE the EOD emails: an EOD copy also creates the user folder, which would suppress a
-   new user's welcome. The Terms/Privacy PDFs are built from `templates/legal/*.json`; after editing the website's legal pages re-run
-   `node dist/tools/extractLegal.js` and commit the JSON. Report each sent/skipped/failed line.
-6. **Send the users' end-of-day emails** for today's transactions, after the sync so the trades are final: `npm run eod-email` (today IST; one
-   email per user who traded; add `-- --dry-run` first to preview). It runs only on this machine (there is no API for it) and needs only Mongo,
-   the `GMAIL_*` vars and the signing certificate (`PDF_SIGN_P12`, `PDF_SIGN_P12_PASSPHRASE`) in `.env`. The body is the summary only; the full report
-   (Summary, Trades, Payment information) is a digitally signed PDF attachment (a changed copy fails signature check in a PDF viewer), and the
-   SHA-256 of each sent PDF is printed and stored in Mongo `eodEmails.pdfSha256`. No certificate or a signing failure means no email for that user. While `settings.eodEmailTestRecipient` is set in `config.yml` every email goes only to that address
-   (subject `[TEST for <user>]`), until the user approves the content and removes the key: do not remove it yourself. A repeat run skips users
-   already sent (`-- --force` resends); a `failed` line exits non-zero: read the reason and fix it. Each sent PDF is also copied to `./storage/<user>/`. Put each sent/skipped/failed line in the report.
-7. **Write the end-of-day report** exactly as described under "End-of-day report" below (the `trades-summary` HTML and
+5. **Write the end-of-day report** exactly as described under "End-of-day report" below (the `trades-summary` HTML and
    `reports/eod-YYYY-MM-DD.md`), from the post-sync state. Section 5 (configuration at close) states that run eod disabled the strategies and
    lists the ones that were enabled; the carry-over includes "enable these strategies tomorrow, after logins, `npm run sync` and a status
    check" with that list.
-8. **Stop the processes.** Find the orchestrator wrapper's PID (`pgrep -f "node .*/node_modules/.bin/concurrently"`; never `pkill -f` with a
+6. **Stop the processes.** Find the orchestrator wrapper's PID (`pgrep -f "node .*/node_modules/.bin/concurrently"`; never `pkill -f` with a
    pattern that also matches your own shell), kill it, and confirm that no orchestrator, trading, data, frontend or `tsc -w` process is left
    and that ports 3000/80 and the `/tmp/icici-*.sock` sockets are gone. Resting sells and GTTs stay at the brokers when the processes stop;
    intraday (MIS) positions can be squared off by the broker itself. Say so for every open position. Then stop the alerts monitor.
-9. **Tell the user:** where the report and the HTML are, the realized total (and the users' total), the strategies that were disabled,
-   the open positions with their protection, the emails sent (or held back by the test recipient), and the first carry-over item. Do not commit or publish the files unless asked.
+7. **Tell the user:** where the report and the HTML are, the realized total (and the users' total), the strategies that were disabled,
+   the open positions with their protection, and the first carry-over item. Do not commit or publish the files unless asked.
 
 ## End-of-day report
 
