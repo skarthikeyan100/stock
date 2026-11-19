@@ -4,7 +4,7 @@
  */
 import '../util/tz';
 import OrderClient from '../processes/strategies/OrderClient';
-import HighLowStrategy from '../strategy/HighLowStrategy';
+import HighLowStrategy, { c2QualityFailure } from '../strategy/HighLowStrategy';
 import configService from '../prism/ConfigService';
 import { settingFor } from '../prism/configVocabulary';
 const tokenRouter = require('../processes/strategies/tokenRouter');
@@ -87,6 +87,30 @@ async function twoCandles(s: any, c2: { high: number; low: number; close: number
     s = make('HL-small');
     await twoCandles(s, { high: 23530, low: 23495, close: 23519 });
     assert(buys().length === 0, 'close 9 above c1 high: no buy');
+
+    console.log('  c2 quality filters: body dominance and close location');
+    const ok = { open: 100, high: 110, low: 100, close: 108 };
+    assert(c2QualityFailure(ok, 'CE', 60, 70) === undefined, 'CE body 80%, CLV 80% passes');
+    assert(c2QualityFailure({ ...ok, close: 106 }, 'CE', 60, 70) !== undefined, 'CE body 60% is not above 60');
+    assert(c2QualityFailure({ open: 100, high: 110, low: 94, close: 108 }, 'CE', 60, 70) !== undefined, 'CE CLV 87.5% ok but body 50% fails');
+    assert(c2QualityFailure({ open: 95, high: 110, low: 90, close: 108 }, 'CE', 60, 70) === undefined, 'CE body 65%, CLV 90% passes');
+    assert(c2QualityFailure({ open: 100, high: 120, low: 99, close: 112 }, 'CE', 50, 70) !== undefined, 'CE CLV 61.9% below 70 fails');
+    assert(c2QualityFailure({ open: 110, high: 110, low: 100, close: 102 }, 'PE', 60, 70) === undefined, 'PE body 80%, CLV 20% passes');
+    assert(c2QualityFailure({ open: 110, high: 110, low: 100, close: 104 }, 'PE', 50, 70) !== undefined, 'PE CLV 40% above 30 fails');
+    assert(c2QualityFailure({ open: 100, high: 100, low: 100, close: 100 }, 'CE', 60, 70) !== undefined, 'R2 = 0: no trade');
+    console.log('  c2 filters in the strategy: weak body blocks the buy');
+    calls = [];
+    s = make('HL-body');
+    await twoCandles(s, { high: 23560, low: 23495, close: 23525 }); // body 25/65 = 38%
+    assert(buys().length === 0, 'no buy on a weak c2 body');
+    calls = [];
+    s = make('HL-body0', { bodyDominance: 30 });
+    await twoCandles(s, { high: 23560, low: 23495, close: 23525 });
+    assert(buys().length === 0, 'bodyDominance 30 passes the body but CLV 46% < 70 still blocks');
+    calls = [];
+    s = make('HL-body-off', { bodyDominance: 30, closeLocation: 40 });
+    await twoCandles(s, { high: 23560, low: 23495, close: 23525 });
+    assert(buys().length === 1, 'both relaxed: buys');
 
     console.log('  a trade still open: no second entry');
     calls = [];

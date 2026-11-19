@@ -28,9 +28,13 @@ import { INDEX_LOT_SIZE } from '../constants';
 //   target / stopLoss        - exit rules
 //   trailDistance: 10        - HalfTrail (0 / absent = off)
 //   candleMinutes: 10        - candle length in whole minutes (1..375; absent = 10; invalid = ALERT + 10), per strategy block
+//   bodyDominance: 60        - c2's body must exceed this % of its range R2 = H2 - L2: CE (c2-o2)/R2*100 > it, PE (o2-c2)/R2*100 > it (absent = 60; invalid = ALERT + 60)
+//   closeLocation: 70        - c2's close location value CLV = (c2-l2)/R2*100: CE needs >= it, PE needs <= 100 - it (absent = 70; invalid = ALERT + 70)
 //   lastEntryTime: '15:00'   - no entry at or after this time
 //   index: NIFTY, brokers: [paper]
 const DEFAULT_CANDLE_MINUTES = 10;
+const DEFAULT_BODY_DOMINANCE = 60;
+const DEFAULT_CLOSE_LOCATION = 70;
 const MAX_CANDLE_MINUTES = 375; // the whole 09:15-15:30 session
 const SESSION_OPEN_SECONDS = 9 * 3600 + 15 * 60;
 const SESSION_CLOSE_SECONDS = 15 * 3600 + 30 * 60;
@@ -52,6 +56,21 @@ export function highLowSignal(c1: Pick<Ohlc, 'high' | 'low'>, c2: Pick<Ohlc, 'cl
     return undefined;
 }
 
+// c2 quality filters on top of the signal. R2 = H2 - L2 (R2 <= 0 or a non-numeric candle: not ok). Returns a reason when c2 fails, else undefined.
+export function c2QualityFailure(c2: Ohlc, side: HighLowSide, bodyDominance: number, closeLocation: number): string | undefined {
+    const vals = [c2.open, c2.high, c2.low, c2.close];
+    if (!vals.every((v) => Number.isFinite(v))) return 'c2 has no complete open/high/low/close';
+    const r2 = c2.high - c2.low;
+    if (!(r2 > 0)) return 'c2 has no range (H2 = L2)';
+    const eps = 1e-9;
+    const body = (side === 'CE' ? c2.close - c2.open : c2.open - c2.close) / r2 * 100;
+    if (!(body > bodyDominance + eps)) return `c2 body dominance ${body.toFixed(1)}% is not above ${bodyDominance}%`;
+    const clv = (c2.close - c2.low) / r2 * 100;
+    if (side === 'CE' && clv < closeLocation - eps) return `c2 close location ${clv.toFixed(1)}% is below ${closeLocation}% (CE)`;
+    if (side === 'PE' && clv > 100 - closeLocation + eps) return `c2 close location ${clv.toFixed(1)}% is above ${100 - closeLocation}% (PE)`;
+    return undefined;
+}
+
 export default class HighLowStrategy extends CandleEntryStrategy {
     protected readonly logTag = `HighLow:${this.userId}`;
     protected readonly strategyType = 'HighLowStrategy';
@@ -60,6 +79,7 @@ export default class HighLowStrategy extends CandleEntryStrategy {
     private originSeconds = 0;
     private candleMinutes = 0;
     private invalidMinutesAlerted: string | null = null;
+    private invalidPctAlerted: string | null = null;
     private tradingDay: string | null = null;
     private firstTickChecked = false;
     private firstCandlePartial = false;
@@ -87,6 +107,19 @@ export default class HighLowStrategy extends CandleEntryStrategy {
             Log.log(`[${this.logTag}] ALERT: candleMinutes ${shown} must be a whole number of minutes from 1 to ${MAX_CANDLE_MINUTES} - using ${DEFAULT_CANDLE_MINUTES}`);
         }
         return DEFAULT_CANDLE_MINUTES;
+    }
+
+    // A 0..100 percentage key of this block, read from the live config: absent = `dflt`; anything else invalid = ALERT (once per value) and `dflt`.
+    private pctKey(key: 'bodyDominance' | 'closeLocation', dflt: number): number {
+        const raw = (this.cfg() as any)[key];
+        if (raw === undefined || raw === null) return dflt;
+        if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 100) return raw;
+        const shown = `${key}=${JSON.stringify(raw)}`;
+        if (this.invalidPctAlerted !== shown) {
+            this.invalidPctAlerted = shown;
+            Log.log(`[${this.logTag}] ALERT: ${key} ${JSON.stringify(raw)} must be a number from 0 to 100 - using ${dflt}`);
+        }
+        return dflt;
     }
 
     // (Re)builds the candle builder for `minutes` on today's 09:15 grid (origin = today's 09:15 epoch modulo the bucket, so any length stays on the grid).
@@ -152,6 +185,8 @@ export default class HighLowStrategy extends CandleEntryStrategy {
         if (late > LATE_CANDLE_SECONDS) return skip(`candle closed ${late}s ago (more than ${LATE_CANDLE_SECONDS}s) - not traded late`);
         const right = highLowSignal(c1, c2);
         if (!right) return skip(`c2 did not close outside c1's range by ${MIN_BREAKOUT_POINTS}+ points (above c1 high or below c1 low)`);
+        const bad = c2QualityFailure(c2, right, this.pctKey('bodyDominance', DEFAULT_BODY_DOMINANCE), this.pctKey('closeLocation', DEFAULT_CLOSE_LOCATION));
+        if (bad) return skip(`${right} signal but ${bad}`);
         const lastEntry = String((this.cfg() as any).lastEntryTime ?? '15:00');
         if (isPastTime(lastEntry, '15:00')) return skip(`${right} signal but past lastEntryTime ${lastEntry}`);
         if (this.isRunning()) return skip(`${right} signal but a trade is still open`);

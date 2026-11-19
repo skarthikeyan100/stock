@@ -357,6 +357,7 @@ export function validateConfigFile(parsed: any): string[] {
             if (s.trailDistance !== undefined && !(isNum(s.trailDistance) && s.trailDistance > 0)) errors.push(`${s.type}.trailDistance must be a positive number of option points (got ${JSON.stringify(s.trailDistance)})`);
             if (s.lastEntryTime !== undefined && (typeof s.lastEntryTime !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.lastEntryTime))) errors.push(`${s.type}.lastEntryTime must be HH:mm (got ${JSON.stringify(s.lastEntryTime)})`);
             if (s.candleMinutes !== undefined && !(isNum(s.candleMinutes) && Number.isInteger(s.candleMinutes) && s.candleMinutes >= 1 && s.candleMinutes <= 375)) errors.push(`${s.type}.candleMinutes must be a whole number of minutes from 1 to 375 (got ${JSON.stringify(s.candleMinutes)})`);
+            for (const key of ['bodyDominance', 'closeLocation']) if (s[key] !== undefined && !(isNum(s[key]) && s[key] >= 0 && s[key] <= 100)) errors.push(`${s.type}.${key} must be a percentage from 0 to 100 (got ${JSON.stringify(s[key])})`);
             for (const key of ['target', 'stopLoss']) {
                 const v = s[key] !== undefined && s[key] !== null ? s[key] : parsed.settings?.[key];
                 if (typeof v === 'string' && v.trim().toLowerCase() === 'none') errors.push(`${s.type}.${key} must not be 'none' (the strategy needs both a target and a stop)`);
