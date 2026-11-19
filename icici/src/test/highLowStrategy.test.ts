@@ -131,6 +131,6 @@ async function twoCandles(s: any, c2: { high: number; low: number; close: number
     assert(s.sizeOrder(100000, 100, 'NIFTY') === 975, 'budget 1,00,000 at 100 -> 15 lots (975)');
     assert(s.sizeOrder(100000, 0, 'NIFTY') === 0, 'no price -> 0');
 
-    console.log('  trailDistance: half-trail only when set');
-    assert(make('HL-t0').trailDistance() === 0 && make('HL-t4', { trailDistance: 4 }).trailDistance() === 4, 'read from the block, 0 when absent');
+    console.log('  checkpoint exit is on for HighLow');
+    assert(make('HL-cp').checkpointExit() === true, 'checkpointExit true');
 })().catch((e) => { console.log('  FAIL: threw', e); process.exitCode = 1; }).finally(() => setTimeout(() => process.exit(process.exitCode ?? 0), 100));

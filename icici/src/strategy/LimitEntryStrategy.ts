@@ -20,6 +20,7 @@ import { isGlobalMaxProfitLatched } from './globalMaxProfitLatch';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import type { MwState } from './mandwCycle';
 import { HalfTrailState, stepHalfTrail } from './halfTrail';
+import { CheckpointState, FiveMinuteCloses, checkpointTrigger, lockedStop, SECOND_TARGET_FACTOR } from './checkpointTrail';
 
 // Shared engine of RecommendationStrategy and NiftyChangeStrategy: one LIMIT buy per configured broker, sized from a rupee budget (per broker: every broker gets its own full amount),
 // then an exit the subclass chooses once the entry has filled. Owns everything that is the same for both: per-broker legs, state
@@ -68,6 +69,7 @@ export interface Leg {
     targetSellPrice?: number; // exit 'target': the limit price of that sell
     targetRetryAt?: number; // exit 'target': earliest time a refused (definitely not placed) target sell is tried again
     halfTrail?: HalfTrailState; // half sold at the target by a resting limit, the rest trailed (see halfTrail.ts); set by placeHalfTrailExit
+    checkpoint?: CheckpointState; // half sold at market on a 5-minute option candle close at the checkpoint, stop of the rest moved (see checkpointTrail.ts); set by placeCheckpointExit
     closing?: boolean; // an EOD/stop close is in flight or done - never started twice
     outcomeRecorded?: boolean;
 }
@@ -266,6 +268,87 @@ export abstract class LimitEntryStrategy extends Strategy {
         if (leg.stop && leg.status === 'filled' && leg.soldQty < leg.filledQty) this.armSelfStop(leg);
         if (leg.exit === 'target' && leg.targetSellQty === undefined && leg.status === 'filled' && leg.soldQty < leg.filledQty) this.armSelfStop(leg);
         if (leg.halfTrail && leg.status === 'filled' && leg.soldQty < leg.filledQty) this.armSelfStop(leg);
+        if (leg.checkpoint && leg.status === 'filled' && leg.soldQty < leg.filledQty) this.armSelfStop(leg);
+    }
+
+    // ---- checkpoint on a 5-minute option candle close (opt-in: a subclass's placeExit calls placeCheckpointExit; pure rules in checkpointTrail.ts) ----
+    // Self-managed: nothing rests at the broker. The tick stop covers the whole leg; when a 5-minute candle closes at or above the checkpoint half
+    // the quantity is sold at market and the rest gets the stop `close - 2` and the second target (buy + 1.5 x target), both watched on ticks.
+    protected async placeCheckpointExit(leg: Leg, targetDist: number, stop: number, halfQty: number): Promise<void> {
+        const avg = this.avgPrice(leg);
+        if (leg.checkpoint) { // placed before a restart / retry: keep its phase, just make sure the exit is armed
+            leg.exit = 'self';
+            leg.exitQty = undefined;
+            this.save();
+            this.armSelfStop(leg);
+            return;
+        }
+        const checkpoint = roundToTick(avg + targetDist);
+        const target2 = roundToTick(avg + targetDist * SECOND_TARGET_FACTOR);
+        leg.checkpoint = { halfQty, checkpoint, target2, phase: 'watch' };
+        leg.stop = stop;
+        leg.exit = 'self';
+        this.save();
+        this.armSelfStop(leg);
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym} qty=${leg.filledQty} avg=${avg.toFixed(2)}: stop ${stop} on ticks; a 5-min candle close >= ${checkpoint} sells ${halfQty} and moves the stop of the other ${leg.filledQty - halfQty} to close-2; that rest targets ${target2}`);
+    }
+
+    // A later entry fill: before the checkpoint the half follows floor(lots/2) of the new quantity; afterwards the extra joins the rest. The tick stop already covers the whole leg.
+    protected async topUpCheckpoint(leg: Leg, lot: number): Promise<void> {
+        const cp = leg.checkpoint;
+        if (!cp || cp.phase !== 'watch' || cp.sellQty !== undefined) return;
+        cp.halfQty = Math.max(cp.halfQty, Math.floor(leg.filledQty / lot / 2) * lot);
+        this.save();
+    }
+
+    private closes = new WeakMap<Leg, FiveMinuteCloses>();
+    private checkpointBusy = new WeakSet<Leg>();
+    // Per tick for a checkpoint leg: judges finished 5-minute candles, sells the half once, moves the stop, exits the rest at the second target.
+    private async onCheckpointTick(leg: Leg, ltp: number): Promise<void> {
+        const cp = leg.checkpoint!;
+        if (cp.phase === 'moved') {
+            if (ltp > 0 && ltp >= cp.target2) {
+                Log.log(`[${this.logTag}] SECOND TARGET on ${leg.broker} ${leg.tsym}: ltp ${ltp} >= ${cp.target2}`);
+                await this.closeLeg(leg, 'target');
+            }
+            return;
+        }
+        let tracker = this.closes.get(leg);
+        if (!tracker) { tracker = new FiveMinuteCloses(); this.closes.set(leg, tracker); }
+        const close = tracker.onTick(ltp, Date.now());
+        if (cp.trigger === undefined && close !== undefined && checkpointTrigger(cp, close)) {
+            cp.trigger = close; // kept until the half is sold: a refused sell is retried on the next ticks with the same close
+            this.save();
+            Log.log(`[${this.logTag}] CHECKPOINT: 5-min candle of ${leg.tsym} closed at ${close} >= ${cp.checkpoint}`);
+        }
+        if (cp.trigger === undefined || this.checkpointBusy.has(leg)) return;
+        this.checkpointBusy.add(leg);
+        try {
+            const remainingBefore = leg.filledQty - leg.soldQty;
+            const qty = cp.sellQty === undefined ? Math.min(cp.halfQty, remainingBefore) : 0;
+            if (qty > 0) {
+                cp.sellQty = qty; // claimed before the await
+                this.save();
+                try {
+                    await OrderClient.getInstance().chunkedSquareOff(this.userId, { tradingSymbol: leg.tsym, quantity: qty, broker: leg.broker as any });
+                } catch (e: any) {
+                    const msg = String(e?.message ?? e);
+                    if (msg.includes(NOT_PLACED_TAG)) {
+                        cp.sellQty = undefined; // definitely nothing sold: retried on the next tick
+                        this.save();
+                        Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: checkpoint half sell refused (${msg}) - retrying`);
+                        return;
+                    }
+                    Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: checkpoint half sell outcome UNKNOWN (${msg}) - it may have sold; NOT retried, check by hand`);
+                }
+            }
+            cp.phase = 'moved';
+            leg.stop = lockedStop(cp.trigger);
+            this.save();
+            Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: half (${qty}) sold at the checkpoint - stop of the rest moved to ${leg.stop} (close ${cp.trigger} - 2), target ${cp.target2}`);
+        } finally {
+            this.checkpointBusy.delete(leg);
+        }
     }
 
     // ---- half at the target + trail (opt-in: a subclass's placeExit calls placeHalfTrailExit; pure rules in halfTrail.ts) ----
@@ -551,7 +634,7 @@ export abstract class LimitEntryStrategy extends Strategy {
     }
 
     canHandleOptionQuote(quote: OptionQuote): boolean {
-        return this.legs().some((l) => l.token === String(quote.token) && l.status === 'filled' && (!!l.stop || (l.exit === 'target' && l.targetSellQty === undefined) || (!!l.halfTrail && l.soldQty < l.filledQty)));
+        return this.legs().some((l) => l.token === String(quote.token) && l.status === 'filled' && (!!l.stop || (l.exit === 'target' && l.targetSellQty === undefined) || (!!l.halfTrail && l.soldQty < l.filledQty) || (!!l.checkpoint && l.soldQty < l.filledQty)));
     }
 
     // Tick-driven stop for a 'self' exit (used when a broker has no post-fill protection, or attaching it failed).
@@ -564,7 +647,8 @@ export abstract class LimitEntryStrategy extends Strategy {
                 continue;
             }
             if (leg.halfTrail && leg.halfTrail.sellQty !== undefined && await this.onHalfTrailTick(leg, quote.ltp)) continue;
-            if (!leg.stop) continue;
+            if (leg.checkpoint) await this.onCheckpointTick(leg, quote.ltp);
+            if (leg.closing || !leg.stop) continue;
             if (quote.ltp > 0 && quote.ltp <= leg.stop) {
                 Log.log(`[${this.logTag}] STOP hit on ${leg.broker} ${leg.tsym}: ltp ${quote.ltp} <= ${leg.stop}`);
                 await this.closeLeg(leg, 'stop loss');

@@ -54,6 +54,11 @@ export abstract class CandleEntryStrategy extends LimitEntryStrategy {
         return exitRulesFrom(this.setting('target'), this.setting('stopLoss'), this.logTag);
     }
 
+    // true = the checkpoint exit on 5-minute option candle closes (checkpointTrail.ts) instead of the plain target / stop (HighLowStrategy).
+    protected checkpointExit(): boolean {
+        return false;
+    }
+
     // Points below the peak at which the trailed half ends (half-at-target + trail exit, halfTrail.ts). 0 = off (the default; MandWStrategy reads its config key).
     protected trailDistance(): number {
         return 0;
@@ -78,6 +83,11 @@ export abstract class CandleEntryStrategy extends LimitEntryStrategy {
         const avg = this.avgPrice(leg);
         const ex = this.exitFor(avg);
         if (ex.target !== null && ex.stop !== undefined) {
+            if (this.checkpointExit()) {
+                const split = splitLots(leg.filledQty, INDEX_LOT_SIZE.NIFTY);
+                if (split && ex.targetDist !== null) { await this.placeCheckpointExit(leg, ex.targetDist, ex.stop, split.halfQty); return; }
+                Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: ${leg.filledQty} is less than 2 whole lots - checkpoint exit not engaged, normal target / stop exit`);
+            }
             const dist = this.trailDistance();
             if (dist > 0) {
                 const split = splitLots(leg.filledQty, INDEX_LOT_SIZE.NIFTY);
@@ -111,6 +121,7 @@ export abstract class CandleEntryStrategy extends LimitEntryStrategy {
     // A later partial fill is covered the way the exit was placed (see MomentumAtFixedTimeStrategy.topUpExit).
     protected async topUpExit(leg: Leg, delta: number): Promise<void> {
         if (leg.halfTrail) { await this.topUpHalfTrail(leg, INDEX_LOT_SIZE.NIFTY); return; }
+        if (leg.checkpoint) { await this.topUpCheckpoint(leg, INDEX_LOT_SIZE.NIFTY); return; }
         if (leg.exit === 'exitMonitor' || leg.exit === 'none') return;
         const ex = this.exitFor(this.avgPrice(leg));
         if (leg.exit === 'target') { if (ex.targetDist !== null) await this.topUpTargetSell(leg, ex.targetDist); return; }

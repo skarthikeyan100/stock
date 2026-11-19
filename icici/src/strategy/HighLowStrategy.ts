@@ -15,9 +15,9 @@ import { INDEX_LOT_SIZE } from '../constants';
 //   anything else (c2 closes inside c1's range, or outside it by less than 10 points) -> no trade.
 // Entry: when a candle closes and it agrees: one limit buy per broker of the ATM option at its LTP (this/next expiry as the global
 //   skipNearestExpiry settings decide). One trade at a time; a candle is handled once (also across a restart).
-// Exit: target / stopLoss (block or settings, points or "N%"). `trailDistance` > 0 engages HalfTrail (needs 2+ whole lots): half the lots sell at the
-//   target, the rest trails `trailDistance` points below its peak with the target as the floor; the stop covers the whole leg until the half sold.
-//   Below 2 lots, or trailDistance 0: a plain target + stop.
+// Exit (checkpointTrail.ts; needs 2+ whole lots): stopLoss on ticks for the whole leg. `target` is the CHECKPOINT: when a 5-minute candle of the option
+//   closes at or above buy + target, half the lots sell at market and the stop of the rest moves to that close - 2; the rest exits at buy + 1.5 x target
+//   (second target) or at the new stop. Below 2 lots: a plain target + stop. (`trailDistance` is no longer read by HighLow.)
 // A changed `candleMinutes` (config hot-reload) restarts the candle building at once: the first candle after it never pairs with an older one,
 //   so candles of different lengths are never compared.
 // Candles are kept in memory only (nothing in Mongo), so a restart starts the pairing again: the first candle after it never pairs with an older one.
@@ -25,8 +25,7 @@ import { INDEX_LOT_SIZE } from '../constants';
 // Config (config.yml):
 //   quantity: 130            - units per broker (whole lots)   -- exactly ONE of quantity / maxInvestment
 //   maxInvestment: 100000    - the investment amount: rupee budget per broker (maxInvestmentByBroker overrides one broker); whole lots that fit at the option's price
-//   target / stopLoss        - exit rules
-//   trailDistance: 10        - HalfTrail (0 / absent = off)
+//   target / stopLoss        - exit rules (target = the checkpoint distance, see Exit)
 //   candleMinutes: 10        - candle length in whole minutes (1..375; absent = 10; invalid = ALERT + 10), per strategy block
 //   bodyDominance: 60        - c2's body must exceed this % of its range R2 = H2 - L2: CE (c2-o2)/R2*100 > it, PE (o2-c2)/R2*100 > it (absent = 60; invalid = ALERT + 60)
 //   closeLocation: 70        - c2's close location value CLV = (c2-l2)/R2*100: CE needs >= it, PE needs <= 100 - it (absent = 70; invalid = ALERT + 70)
@@ -216,8 +215,7 @@ export default class HighLowStrategy extends CandleEntryStrategy {
         return Math.floor(budget / (price * lot)) * lot;
     }
 
-    protected trailDistance(): number {
-        const d = Number((this.cfg() as any).trailDistance);
-        return Number.isFinite(d) && d > 0 ? d : 0;
+    protected checkpointExit(): boolean {
+        return true;
     }
 }
