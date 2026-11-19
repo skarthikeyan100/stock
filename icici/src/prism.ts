@@ -245,14 +245,47 @@ export default class Prism {
     getNiftyQuote = async () => this.getQuote("NIFTY");
     getBankNiftyQuote = async () => this.getQuote("BANKNIFTY");
     getFinNiftyQuote = async () => this.getQuote("FINNIFTY");
+    // The quote of EXACTLY this contract, or a throw. On 2026-11-19 10:00 two GetQuotes calls for an NFO option came back as the
+    // NIFTY index quote (exch NSE, token 26000, lp 25282) and the index level was used as a limit price (rejected twice). The reply's
+    // tsym must equal the requested contract and its price must sit inside the contract's own circuit band; one retry for a transient
+    // wrong reply, then fail closed so no caller can derive a price from another instrument.
     getStockOptionQuote = async (contract) : Promise<NiftyQuote> => {
         const token = await this.getToken(contract)
-        const response = await NorenRestApi.get_quotes('NFO', token);  // Nifty Quotes
-        Log.log(response)
-        if (response != null) {
-            return NiftyQuote.fromPrism(response)
+        if (!token) throw new Error(`Prism: no NFO token for ${contract} in the symbol file - refusing to quote`);
+        let lastProblem = '';
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            const response: any = await NorenRestApi.get_quotes('NFO', token);
+            if (attempt === 1) Log.log(response)
+            if (response == null) { lastProblem = 'empty reply'; }
+            else if (response.tsym !== contract) { lastProblem = `reply is for ${response.exch}:${response.tsym} (token ${response.token}), not ${contract}`; }
+            else {
+                const quote = NiftyQuote.fromPrism(response);
+                const lc = parseFloat(response.lc), uc = parseFloat(response.uc);
+                if (!(quote.ltp > 0)) lastProblem = `non-positive lp ${response.lp}`;
+                else if ((uc > 0 && quote.ltp > uc) || (lc >= 0 && quote.ltp < lc)) lastProblem = `lp ${quote.ltp} outside the contract's circuit band ${lc}-${uc}`;
+                else return quote;
+            }
+            Log.log(`[Prism.getStockOptionQuote] attempt ${attempt} rejected for ${contract}: ${lastProblem}`);
+            if (attempt < 2) await this.sleep(300);
         }
-        return new NiftyQuote();
+        throw new Error(`Prism: no valid quote for ${contract}: ${lastProblem}`);
+    }
+
+    // Last line of defence on every Prism order: an option premium can never be anywhere near its strike. A limit price that is
+    // (e.g. the index level used by mistake) is refused before it reaches the broker.
+    private _assertSaneOptionPrice = async (tsym: string, price: any) => {
+        const px = Number(price);
+        if (!(px > 0)) return; // market order / no price
+        await this.cacheFile();
+        for (const line of this.lines) {
+            const values = line.split(',');
+            if (values[4] !== tsym) continue;
+            const strike = parseFloat(values[8]);
+            if (strike > 0 && px > strike * 0.5) {
+                throw new Error(`Prism: refusing ${tsym} order at ${px} - more than half the strike ${strike}, so not an option premium (wrong quote?)`);
+            }
+            return;
+        }
     }
 
     getStockQuote = async (symbol) => {
@@ -1158,6 +1191,7 @@ export default class Prism {
             if (!(Number(order.qty) > 0)) {
                 throw new Error(`Prism: refusing to place a zero/invalid-quantity order for ${order.tsym} (qty=${order.qty})`);
             }
+            await this._assertSaneOptionPrice(order.tsym, order.prc);
             const response = await NorenRestApi.place_order(order) as any;
             Log.log('User: ', user, 'Response from place_order: ', response)
             this._assertOrderAccepted(response, order);
