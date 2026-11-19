@@ -25,11 +25,15 @@ const TOK = 'paperTok1';
 async function main() {
     console.log('HighLow signal');
     const c1 = { high: 100, low: 90 };
-    assert(highLowSignal(c1, { close: 101 }) === 'CE', 'close above c1 high = CE');
-    assert(highLowSignal(c1, { close: 89 }) === 'PE', 'close below c1 low = PE');
+    assert(highLowSignal(c1, { close: 110 }) === 'CE', 'close 10 above c1 high = CE');
+    assert(highLowSignal(c1, { close: 109.9 }) === undefined, 'close 9.9 above c1 high = none');
+    assert(highLowSignal(c1, { close: 101 }) === undefined, 'close above c1 high by less than 10 = none');
+    assert(highLowSignal(c1, { close: 80 }) === 'PE', 'close 10 below c1 low = PE');
+    assert(highLowSignal(c1, { close: 80.1 }) === undefined, 'close 9.9 below c1 low = none');
+    assert(highLowSignal(c1, { close: 89 }) === undefined, 'close below c1 low by less than 10 = none');
     assert(highLowSignal(c1, { close: 95 }) === undefined, 'close inside c1 range = none');
     assert(highLowSignal(c1, { close: 100 }) === undefined, 'close equal c1 high = none');
-    assert(highLowSignal(c1, { close: 90 }) === undefined, 'close equal c1 low = none');
+    assert(highLowSignal({ high: 25360.85, low: 25340 }, { close: 25370.85 }) === 'CE', 'float: 25360.85 + 10 = CE');
     assert(highLowSignal({ high: NaN, low: 90 }, { close: 101 }) === undefined, 'NaN = none');
 
     console.log('broker names');

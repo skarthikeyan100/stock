@@ -10,9 +10,9 @@ import { investmentForBroker } from '../prism/configVocabulary';
 import { INDEX_LOT_SIZE } from '../constants';
 
 // HighLow: two consecutive NIFTY candles of `candleMinutes` (default 10; c1 then c2, 09:15 grid: 09:15-09:25, 09:25-09:35, ... for 10; built from the index ticks).
-//   c2.close > c1.high AND c2.close > c1.low  -> buy CE (c2 closes above c1's high)
-//   c2.close < c1.high AND c2.close < c1.low  -> buy PE (c2 closes below c1's low)
-//   anything else (c2 closes inside c1's range, or exactly on c1's high/low) -> no trade.
+//   c2.close >= c1.high + 10  -> buy CE (c2 closes outside c1's range, above its high, by at least 10 index points)
+//   c2.close <= c1.low - 10   -> buy PE (c2 closes outside c1's range, below its low, by at least 10 index points)
+//   anything else (c2 closes inside c1's range, or outside it by less than 10 points) -> no trade.
 // Entry: when a candle closes and it agrees: one limit buy per broker of the ATM option at its LTP (this/next expiry as the global
 //   skipNearestExpiry settings decide). One trade at a time; a candle is handled once (also across a restart).
 // Exit: target / stopLoss (block or settings, points or "N%"). `trailDistance` > 0 engages HalfTrail (needs 2+ whole lots): half the lots sell at the
@@ -40,12 +40,15 @@ const PARTIAL_CANDLE_SECONDS = 30;
 export interface Ohlc { open: number; high: number; low: number; close: number }
 export type HighLowSide = 'CE' | 'PE';
 
-// The whole signal: c2's close strictly above both c1's high and low = CE; strictly below both = PE.
+export const MIN_BREAKOUT_POINTS = 10; // c2's close must be outside c1's range by at least this many index points
+
+// The whole signal: c2's close at least MIN_BREAKOUT_POINTS above c1's high = CE; at least that far below c1's low = PE.
 export function highLowSignal(c1: Pick<Ohlc, 'high' | 'low'>, c2: Pick<Ohlc, 'close'>): HighLowSide | undefined {
     const vals = [c1.high, c1.low, c2.close];
     if (!vals.every((v) => Number.isFinite(v))) return undefined;
-    if (c2.close > c1.high && c2.close > c1.low) return 'CE';
-    if (c2.close < c1.high && c2.close < c1.low) return 'PE';
+    const eps = 1e-9; // float noise on prices like 25360.85 + 10
+    if (c2.close - c1.high >= MIN_BREAKOUT_POINTS - eps) return 'CE';
+    if (c1.low - c2.close >= MIN_BREAKOUT_POINTS - eps) return 'PE';
     return undefined;
 }
 
@@ -148,7 +151,7 @@ export default class HighLowStrategy extends CandleEntryStrategy {
         const late = tickLtt - (start + this.bucketSeconds);
         if (late > LATE_CANDLE_SECONDS) return skip(`candle closed ${late}s ago (more than ${LATE_CANDLE_SECONDS}s) - not traded late`);
         const right = highLowSignal(c1, c2);
-        if (!right) return skip('c2 did not close above c1 high or below c1 low');
+        if (!right) return skip(`c2 did not close outside c1's range by ${MIN_BREAKOUT_POINTS}+ points (above c1 high or below c1 low)`);
         const lastEntry = String((this.cfg() as any).lastEntryTime ?? '15:00');
         if (isPastTime(lastEntry, '15:00')) return skip(`${right} signal but past lastEntryTime ${lastEntry}`);
         if (this.isRunning()) return skip(`${right} signal but a trade is still open`);

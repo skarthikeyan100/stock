@@ -66,14 +66,14 @@ async function twoCandles(s: any, c2: { high: number; low: number; close: number
     console.log('  c2 closes above c1 high: buys CE (ATM, paper)');
     calls = [];
     let s = make('HL-ce');
-    await twoCandles(s, { high: 23530, low: 23495, close: 23520 });
+    await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
     assert(buys().length === 1 && resolves()[0]?.right === 'CE' && resolves()[0]?.strike === 23500, 'one CE buy at the ATM strike');
     assert(buys()[0].args[1].broker === 'paper' || buys()[0].args.some((a: any) => a === 'paper' || a?.broker === 'paper'), 'on the paper broker');
 
     console.log('  c2 closes below c1 low: buys PE');
     calls = [];
     s = make('HL-pe');
-    await twoCandles(s, { high: 23505, low: 23480, close: 23485 });
+    await twoCandles(s, { high: 23505, low: 23480, close: 23478 });
     assert(buys().length === 1 && resolves()[0]?.right === 'PE', 'one PE buy');
 
     console.log('  c2 closes inside c1 range (even with a higher high): no trade');
@@ -82,16 +82,22 @@ async function twoCandles(s: any, c2: { high: number; low: number; close: number
     await twoCandles(s, { high: 23530, low: 23480, close: 23500 });
     assert(buys().length === 0, 'no buy');
 
+    console.log('  c2 closes outside c1 range by less than 10 points: no trade');
+    calls = [];
+    s = make('HL-small');
+    await twoCandles(s, { high: 23530, low: 23495, close: 23519 });
+    assert(buys().length === 0, 'close 9 above c1 high: no buy');
+
     console.log('  a trade still open: no second entry');
     calls = [];
     s = make('HL-open');
-    await twoCandles(s, { high: 23530, low: 23495, close: 23520 });
+    await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
     assert(buys().length === 1 && s.isRunning(), 'first signal bought, leg active');
 
     console.log('  stopLoss none / missing target: refused (needs both)');
     calls = [];
     s = make('HL-nostop', { stopLoss: 'none' });
-    await twoCandles(s, { high: 23530, low: 23495, close: 23520 });
+    await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
     assert(buys().length === 0, "stopLoss 'none': not trading");
 
     console.log('  sizing: quantity or the rupee budget');
