@@ -41,7 +41,7 @@ Needs the user's explicit instruction first:
 
 ## Pre-market start (before 09:15)
 
-Do these in order. Steps 1-3 get the platform up with nothing trading; step 4 is the market-data collection, which is unrelated to trading
+Do these in order. Steps 1-3 get the platform up with nothing trading; step 5 is the market-data collection, which is unrelated to trading
 in this project.
 
 1. **Disable all strategies:** set `enabled: false` on every strategy block in `config.yml` (values only, never delete a block).
@@ -55,10 +55,13 @@ in this project.
    next `OTP for ...:` prompt, and `echo <otp> >> <scratchpad>/otp` once the user gives it. Do not guess or reuse an
    old OTP. Afterwards run `scripts/check-broker-sessions.sh` to confirm every login is valid.
 4. **Refresh the contract masters:** run `scripts/download-all-masters.sh` (public downloads, no login; ANT NFO/BFO/NSE, Kite, Breeze, Prism; each is validated and replaced atomically, a failed one leaves the old file). Kite and Breeze also refresh themselves at start-up, ANT does not: the start-up check logs `ALERT: <file> is N days old` when `data/ant/NFO_contract.json` or `BFO_contract.json` is older than 14 days, `NSE_contract.json` older than 30. A running process reloads the ANT NFO/BFO files by itself within a minute; the NSE equity list (TopStock only) is read at start.
-5. **Start the data collection:** `npm run server` in `~/later/data`. It collects option chain, index data and other variables. It
-   reads the login written in step 3 (`userToken.txt` and the contract-master files in this project), so it can only start after the
-   logins are done. It must be running before **09:15**: if the time has already passed 09:15 there is no point starting it, so skip it
-   and say so. This project is separate from `~/work/icici`; it does not trade.
+5. **Start the data collection (MANDATORY when the trader starts its work before 09:15 IST):** `npm run server` in `~/later/data`. It collects option chain,
+   index data and other variables. It reads the login written in step 3 (`userToken.txt` and the contract-master files in this project), so it can only
+   start after the logins are done. If the trader's work starts before 09:15 this step may not be skipped, deferred or left for the user: start it
+   in the background, confirm it is running (`pgrep -af "later/data"`) and that it is receiving data, and report it in the pre-market summary.
+   Do not call the pre-market start done until it is running. If a login it needs is missing, finish the login (step 3) first; if it still cannot start
+   before 09:15, say so at once with the reason. If the trader's work starts after 09:15 there is no point starting it, so skip it and say so.
+   This project is separate from `~/work/icici`; it does not trade.
 
 A start restores the open positions **from Mongo alone** (no broker read, no login needed for that). After the logins are valid run `npm run sync` (it books anything
 a broker did that Mongo lacks and prints what it could not attribute), check the positions against `scripts/strategy-status.sh`, then enable the strategies
