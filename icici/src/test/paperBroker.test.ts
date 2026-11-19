@@ -24,13 +24,13 @@ const TOK = 'paperTok1';
 
 async function main() {
     console.log('HighLow signal');
-    assert(highLowSignal({ high: 100, low: 90 }, { high: 101, low: 91 }) === 'CE', 'higher high + higher low = CE');
-    assert(highLowSignal({ high: 100, low: 90 }, { high: 99, low: 89 }) === 'PE', 'lower high + lower low = PE');
-    assert(highLowSignal({ high: 100, low: 90 }, { high: 99, low: 91 }) === undefined, 'inside bar = none');
-    assert(highLowSignal({ high: 100, low: 90 }, { high: 101, low: 89 }) === undefined, 'outside bar = none');
-    assert(highLowSignal({ high: 100, low: 90 }, { high: 100, low: 91 }) === undefined, 'equal high = none');
-    assert(highLowSignal({ high: 100, low: 90 }, { high: 101, low: 90 }) === undefined, 'equal low = none');
-    assert(highLowSignal({ high: NaN, low: 90 }, { high: 101, low: 91 }) === undefined, 'NaN = none');
+    const c1 = { high: 100, low: 90 };
+    assert(highLowSignal(c1, { close: 101 }) === 'CE', 'close above c1 high = CE');
+    assert(highLowSignal(c1, { close: 89 }) === 'PE', 'close below c1 low = PE');
+    assert(highLowSignal(c1, { close: 95 }) === undefined, 'close inside c1 range = none');
+    assert(highLowSignal(c1, { close: 100 }) === undefined, 'close equal c1 high = none');
+    assert(highLowSignal(c1, { close: 90 }) === undefined, 'close equal c1 low = none');
+    assert(highLowSignal({ high: NaN, low: 90 }, { close: 101 }) === undefined, 'NaN = none');
 
     console.log('broker names');
     assert(isBrokerName('paper') && normalizeBrokerName(' Paper ') === 'paper', 'paper is a broker name');

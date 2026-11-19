@@ -49,49 +49,49 @@ function make(userId: string, extra: any = {}): any {
 }
 
 // c1 = 10:05-10:15 (H 23510 L 23490), c2 = 10:15-10:25 as given, then a tick in 10:25 closes c2.
-async function twoCandles(s: any, c2: { high: number; low: number }) {
+async function twoCandles(s: any, c2: { high: number; low: number; close: number }) {
     await tick(s, 23500, at(10, 5, 0));
     await tick(s, 23510, at(10, 8, 30));
     await tick(s, 23490, at(10, 12, 0));
     await tick(s, 23500, at(10, 15, 0));
     await tick(s, c2.high, at(10, 18, 30));
     await tick(s, c2.low, at(10, 21, 0));
-    await tick(s, (c2.high + c2.low) / 2, at(10, 24, 50));
+    await tick(s, c2.close, at(10, 24, 50)); // last tick of c2 = its close
     await tick(s, 23500, at(10, 25, 5)); // first tick of the next candle: c2 closes
 }
 
 (async () => {
     console.log('HighLowStrategy');
 
-    console.log('  higher high + higher low: buys CE (ATM, paper)');
+    console.log('  c2 closes above c1 high: buys CE (ATM, paper)');
     calls = [];
     let s = make('HL-ce');
-    await twoCandles(s, { high: 23530, low: 23495 });
+    await twoCandles(s, { high: 23530, low: 23495, close: 23520 });
     assert(buys().length === 1 && resolves()[0]?.right === 'CE' && resolves()[0]?.strike === 23500, 'one CE buy at the ATM strike');
     assert(buys()[0].args[1].broker === 'paper' || buys()[0].args.some((a: any) => a === 'paper' || a?.broker === 'paper'), 'on the paper broker');
 
-    console.log('  lower high + lower low: buys PE');
+    console.log('  c2 closes below c1 low: buys PE');
     calls = [];
     s = make('HL-pe');
-    await twoCandles(s, { high: 23505, low: 23480 });
+    await twoCandles(s, { high: 23505, low: 23480, close: 23485 });
     assert(buys().length === 1 && resolves()[0]?.right === 'PE', 'one PE buy');
 
-    console.log('  inside bar: no trade');
+    console.log('  c2 closes inside c1 range (even with a higher high): no trade');
     calls = [];
     s = make('HL-none');
-    await twoCandles(s, { high: 23505, low: 23495 });
+    await twoCandles(s, { high: 23530, low: 23480, close: 23500 });
     assert(buys().length === 0, 'no buy');
 
     console.log('  a trade still open: no second entry');
     calls = [];
     s = make('HL-open');
-    await twoCandles(s, { high: 23530, low: 23495 });
+    await twoCandles(s, { high: 23530, low: 23495, close: 23520 });
     assert(buys().length === 1 && s.isRunning(), 'first signal bought, leg active');
 
     console.log('  stopLoss none / missing target: refused (needs both)');
     calls = [];
     s = make('HL-nostop', { stopLoss: 'none' });
-    await twoCandles(s, { high: 23530, low: 23495 });
+    await twoCandles(s, { high: 23530, low: 23495, close: 23520 });
     assert(buys().length === 0, "stopLoss 'none': not trading");
 
     console.log('  sizing: quantity or the rupee budget');
