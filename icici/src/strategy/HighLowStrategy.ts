@@ -17,7 +17,7 @@ import { INDEX_LOT_SIZE } from '../constants';
 //   skipNearestExpiry settings decide). One trade at a time; a candle is handled once (also across a restart).
 // Exit (checkpointTrail.ts; needs 2+ whole lots): stopLoss on ticks for the whole leg. `target` is the CHECKPOINT: when a 5-minute candle of the option
 //   closes at or above buy + target, half the lots sell at market and the stop of the rest moves to that close - 2; the rest exits at buy + 1.5 x target
-//   (second target) or at the new stop. Below 2 lots: a plain target + stop. (`trailDistance` is no longer read by HighLow.)
+//   (second target) or at the new stop. Below 2 lots: a plain target + stop.
 // A changed `candleMinutes` (config hot-reload) restarts the candle building at once: the first candle after it never pairs with an older one,
 //   so candles of different lengths are never compared.
 // Candles are kept in memory only (nothing in Mongo), so a restart starts the pairing again: the first candle after it never pairs with an older one.

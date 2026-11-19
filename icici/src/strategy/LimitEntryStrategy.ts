@@ -317,7 +317,7 @@ export abstract class LimitEntryStrategy extends Strategy {
         if (!tracker) { tracker = new FiveMinuteCloses(); this.closes.set(leg, tracker); }
         const close = tracker.onTick(ltp, Date.now());
         if (cp.trigger === undefined && close !== undefined && checkpointTrigger(cp, close)) {
-            cp.trigger = close; // kept until the half is sold: a refused sell is retried on the next ticks with the same close
+            cp.trigger = close; // the half sell is tried once; the stop moves whatever its outcome
             this.save();
             Log.log(`[${this.logTag}] CHECKPOINT: 5-min candle of ${leg.tsym} closed at ${close} >= ${cp.checkpoint}`);
         }
@@ -332,14 +332,8 @@ export abstract class LimitEntryStrategy extends Strategy {
                 try {
                     await OrderClient.getInstance().chunkedSquareOff(this.userId, { tradingSymbol: leg.tsym, quantity: qty, broker: leg.broker as any });
                 } catch (e: any) {
-                    const msg = String(e?.message ?? e);
-                    if (msg.includes(NOT_PLACED_TAG)) {
-                        cp.sellQty = undefined; // definitely nothing sold: retried on the next tick
-                        this.save();
-                        Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: checkpoint half sell refused (${msg}) - retrying`);
-                        return;
-                    }
-                    Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: checkpoint half sell outcome UNKNOWN (${msg}) - it may have sold; NOT retried, check by hand`);
+                    // Refused or unknown: never retried (it may have sold); the stop of the rest still moves below.
+                    Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: checkpoint half sell of ${qty} failed (${String(e?.message ?? e)}) - NOT retried, check the broker; stop of the rest still moves`);
                 }
             }
             cp.phase = 'moved';

@@ -85,16 +85,15 @@ const q = (s: any, ltp: number) => s.processOptionQuote({ ltp, ltt: '0', token: 
     await q(s, 115);
     assert(sells()[1] === 65, 'tick >= 115: the rest (65) closed');
 
-    console.log('refused sell is retried; one lot is not halved');
+    console.log('refused sell: ALERT, not retried, stop still moves; one lot is not halved');
     calls = []; s = make(); l = leg(); s.state.legs['r'] = l; await s.placeExit(l);
     now += 5 * MIN; await q(s, 100); now += 5 * MIN; await q(s, 111);
-    failSell = 'not placed [NOT_PLACED]';
     const { NOT_PLACED_TAG } = require('../ipc/orderProtocol');
-    failSell = `x ${NOT_PLACED_TAG}`;
+    failSell = `refused ${NOT_PLACED_TAG}`;
     now += 5 * MIN; await q(s, 111);
-    assert(l.checkpoint.phase === 'watch' && l.checkpoint.sellQty === undefined && l.checkpoint.trigger === 111, 'refused: still watching, trigger kept');
-    await q(s, 111);
-    assert(l.checkpoint.phase === 'moved' && sells().length === 2, 'retried on the next tick and moved');
+    assert(sells().length === 1 && l.checkpoint.phase === 'moved' && l.stop === 109, 'refused: one attempt, stop moved to 109');
+    await q(s, 111.5);
+    assert(sells().length === 1, 'not retried');
     calls = []; s = make(); l = { ...leg(), qty: 65, filledQty: 65, boughtValue: 6500 }; s.state.legs['o'] = l; await s.placeExit(l);
     assert(!l.checkpoint, 'one lot: no checkpoint exit (plain target / stop)');
 })().catch((e) => { console.log('  FAIL: threw', e); process.exitCode = 1; }).finally(() => setTimeout(() => process.exit(process.exitCode ?? 0), 100));
