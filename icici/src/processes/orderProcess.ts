@@ -100,6 +100,8 @@ function broadcast(msg: OrderNotification) {
 
 // A frontend user's sell (squareoff, target/stop hit, force-close, expiry) closes the matching share of the admin's mirror leg.
 bookkeeping.onFill(onUserSell);
+// Daily-drawdown open P&L falls back to the position's own broker last price when ANT's REST quote is slow or fails.
+bookkeeping.setBrokerPriceSource((broker) => brokerLastPrices(broker));
 // A filled resting limit entry (a contractor's recommendation, and the admin's mirror of it) gets its target and stop-loss (order/entryExits.ts).
 bookkeeping.onFill((userId, trade) => { void onEntryFill(userId, trade); });
 

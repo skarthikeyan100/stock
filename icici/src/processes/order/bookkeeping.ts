@@ -37,6 +37,12 @@ export type MongoRestoreResult = { ok: boolean; restored: number; contracts: num
 // Open-P&L pricing gets a short budget: it runs inside every buy's drawdown check, so a slow quote must not stall an order.
 const OPEN_PNL_TIMEOUT_MS = 4_000;
 const OPEN_PNL_LOG_EVERY_MS = 60_000;
+// Per-source budgets inside that total: the ANT REST quote (ANT_HTTP_TIMEOUT_MS is 15 s, which on 2026-11-19 hung on one contract at every
+// check and left the loss counted as 0), then the position's own broker last price. Both rows are priced in parallel.
+const OPEN_PNL_ANT_QUOTE_MS = 2_000;
+const OPEN_PNL_BROKER_PRICE_MS = 1_500;
+// A price last seen live this recently still stands in when both live sources fail.
+const OPEN_PNL_STALE_PRICE_MS = 120_000;
 
 // Local YYYY-MM-DD, same key as PnlStop's latch day.
 function dayKeyLocal(): string {
@@ -676,37 +682,70 @@ class OrderBookkeeping {
         this.openPnlAlertAt.set(key, Date.now());
         Log.log(`[order] ALERT: open P&L for ${user}: ${trade.tsym} on ${trade.broker ?? 'unknown broker'} (qty ${trade.quantity}) cannot be priced live (${why}) - counted as 0 in the daily drawdown, so its open loss is NOT limited until it is priced`);
     }
+    // The broker's own last prices (tsym -> ltp), wired by orderProcess (brokerLastPrices). Independent of ANT's REST quote.
+    private brokerPriceSource?: (broker: string) => Promise<Map<string, number>>;
+    setBrokerPriceSource(fn: (broker: string) => Promise<Map<string, number>>): void { this.brokerPriceSource = fn; }
+    private lastGoodPrice = new Map<string, { price: number; at: number }>(); // ANT token -> last live price
     async getOpenUnrealizedPnL(user: string): Promise<number | null> {
+        // Only positions still open: a closed row (quantity 0) is not a position and is never alerted on.
         const rows: Array<{ trade: Trade; sign: 1 | -1 }> = [
-            ...this.trades.filter((t) => t.user === user).map((trade) => ({ trade, sign: 1 as const })),
-            ...this.shortTrades.filter((t) => t.user === user).map((trade) => ({ trade, sign: -1 as const })),
+            ...this.trades.filter((t) => t.user === user && Number(t.quantity) > 0).map((trade) => ({ trade, sign: 1 as const })),
+            ...this.shortTrades.filter((t) => t.user === user && Number(t.quantity) > 0).map((trade) => ({ trade, sign: -1 as const })),
         ];
         if (rows.length === 0) return 0;
         const quotes = new Map<string, Promise<number>>(); // one live quote per token, shared by every row on it
-        let total = 0;
-        let priced = 0;
-        let failed = 0;
-        for (const { trade, sign } of rows) {
+        const brokerPrices = new Map<string, Promise<Map<string, number> | null>>(); // one positions read per broker
+        const brokerPriceFor = (trade: Trade): Promise<number | null> => {
+            const broker = String(trade.broker ?? '');
+            const src = this.brokerPriceSource;
+            if (!broker || !src) return Promise.resolve(null);
+            let p = brokerPrices.get(broker);
+            if (!p) {
+                p = withFallbackTimeout(src(broker), OPEN_PNL_BROKER_PRICE_MS, null, `open P&L ${broker} position prices`).catch(() => null);
+                brokerPrices.set(broker, p);
+            }
+            return p.then((m) => { const v = m?.get(trade.tsym); return v != null && v > 0 ? v : null; });
+        };
+        // Per row: ANT quote -> the broker's own last price -> a price seen live in the last OPEN_PNL_STALE_PRICE_MS. null = unpriced (reason).
+        const priceRow = async (trade: Trade): Promise<{ price: number } | { why: string }> => {
             let token: string | undefined;
+            let why = '';
             try {
                 const exch = exchangeForTsym(trade.tsym);
                 token = AntContractMaster.getInstance().findByAnyBrokerTradingSymbol(trade.tsym, exch)?.token;
-                if (!token) { failed++; this.alertUnpriced(user, trade, 'no ANT contract matches this trading symbol'); continue; }
-                if (!Number.isFinite(trade.price) || !(trade.quantity > 0)) { failed++; this.alertUnpriced(user, trade, `unusable entry price ${trade.price} or quantity ${trade.quantity}`); continue; }
+                if (!token) return { why: 'no ANT contract matches this trading symbol' };
                 let ltp = quotes.get(token);
                 if (!ltp) {
-                    ltp = ANT.getInstance().getLiveQuote(exch, token).then((q) => q.ltp);
+                    ltp = withTimeout(ANT.getInstance().getLiveQuote(exch, token).then((q) => q.ltp), OPEN_PNL_ANT_QUOTE_MS, 'ANT quote');
                     quotes.set(token, ltp);
                 }
                 const price = await ltp;
-                if (!(price > 0)) { failed++; this.alertUnpriced(user, trade, `ANT returned price ${price}`); continue; }
-                total += sign * (price - trade.price) * trade.quantity;
-                priced++;
+                if (price > 0) { this.lastGoodPrice.set(token, { price, at: Date.now() }); return { price }; }
+                why = `ANT returned price ${price}`;
             } catch (e: any) {
-                failed++;
-                this.alertUnpriced(user, trade, `ANT quote failed: ${e?.message ?? e}`);
+                why = `ANT quote failed: ${e?.message ?? e}`;
                 if (token) quotes.delete(token); // a failed quote is retried on the next call, not cached
             }
+            const own = await brokerPriceFor(trade);
+            if (own != null) return { price: own };
+            const seen = token ? this.lastGoodPrice.get(token) : undefined;
+            if (seen && Date.now() - seen.at <= OPEN_PNL_STALE_PRICE_MS) return { price: seen.price };
+            return { why };
+        };
+        const results = await Promise.all(rows.map(async ({ trade, sign }) => {
+            if (!Number.isFinite(trade.price) || !(Number(trade.quantity) > 0)) return { trade, sign, out: { why: `unusable entry price ${trade.price} or quantity ${trade.quantity}` } as { why: string } };
+            return { trade, sign, out: await priceRow(trade) };
+        }));
+        let total = 0;
+        let priced = 0;
+        let failed = 0;
+        for (const { trade, sign, out } of results) {
+            // The pricing awaits can span a sell: a row closed meanwhile is no longer a position (skip silently, no alert, no 0 counted).
+            const qty = Number(trade.quantity);
+            if (!(qty > 0)) continue;
+            if ('why' in out) { failed++; this.alertUnpriced(user, trade, out.why); continue; }
+            total += sign * (out.price - trade.price) * qty;
+            priced++;
         }
         if (failed > 0 && Date.now() - this.openPnlLogAt > OPEN_PNL_LOG_EVERY_MS) {
             this.openPnlLogAt = Date.now();
