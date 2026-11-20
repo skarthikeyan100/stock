@@ -29,6 +29,10 @@ import { INDEX_LOT_SIZE } from '../constants';
 //   candleMinutes: 10        - candle length in whole minutes (1..375; absent = 10; invalid = ALERT + 10), per strategy block
 //   bodyDominance: 60        - c2's body must exceed this % of its range R2 = H2 - L2: CE (c2-o2)/R2*100 > it, PE (o2-c2)/R2*100 > it (absent = 60; invalid = ALERT + 60)
 //   closeLocation: 70        - c2's close location value CLV = (c2-l2)/R2*100: CE needs >= it, PE needs <= 100 - it (absent = 70; invalid = ALERT + 70)
+//   fullyOutside: false      - true = c2's WHOLE range must be outside c1's: CE c2.low > c1.high, PE c2.high < c1.low (absent = false; not a boolean = ALERT + false)
+//   confirmCandle: false     - true = false-breakout check: a signal on c2 is held and the NEXT candle c3 must still close beyond c1's extreme
+//                              (CE c3.close > c1.high, PE c3.close < c1.low); then the entry goes out at c3's close. A c3 that closes back inside
+//                              c1's range cancels the signal. Held in memory only (a restart / candleMinutes change / new day drops it).
 //   lastEntryTime: '15:00'   - no entry at or after this time
 //   index: NIFTY, brokers: [paper]
 const DEFAULT_CANDLE_MINUTES = 10;
@@ -70,6 +74,19 @@ export function c2QualityFailure(c2: Ohlc, side: HighLowSide, bodyDominance: num
     return undefined;
 }
 
+// c2's whole range outside c1's: CE c2.low > c1.high, PE c2.high < c1.low.
+export function completelyOutside(c1: Pick<Ohlc, 'high' | 'low'>, c2: Pick<Ohlc, 'high' | 'low'>, side: HighLowSide): boolean {
+    const vals = [c1.high, c1.low, c2.high, c2.low];
+    if (!vals.every((v) => Number.isFinite(v))) return false;
+    return side === 'CE' ? c2.low > c1.high : c2.high < c1.low;
+}
+
+// The confirmation candle c3 still closes beyond c1's extreme (it did not fall back inside c1's range).
+export function breakoutConfirmed(c1: Pick<Ohlc, 'high' | 'low'>, c3: Pick<Ohlc, 'close'>, side: HighLowSide): boolean {
+    if (![c1.high, c1.low, c3.close].every((v) => Number.isFinite(v))) return false;
+    return side === 'CE' ? c3.close > c1.high : c3.close < c1.low;
+}
+
 export default class HighLowStrategy extends CandleEntryStrategy {
     protected readonly logTag = `HighLow:${this.userId}`;
     protected readonly strategyType = 'HighLowStrategy';
@@ -84,6 +101,9 @@ export default class HighLowStrategy extends CandleEntryStrategy {
     private firstCandlePartial = false;
     private firstCandleSeen = false;
     private incompleteCandles = new Set<number>();
+    private invalidBoolAlerted: string | null = null;
+    // confirmCandle: the signal held until the next candle closes (start = c2's start epoch seconds; c1 range is c1's at the time of the signal)
+    private pendingConfirm: { side: HighLowSide; start: number; c1High: number; c1Low: number } | null = null;
 
     constructor(userId?: string) {
         super(userId);
@@ -121,6 +141,19 @@ export default class HighLowStrategy extends CandleEntryStrategy {
         return dflt;
     }
 
+    // A boolean key of this block, read from the live config: absent = false; a non-boolean = ALERT (once per value) and false.
+    private boolKey(key: 'fullyOutside' | 'confirmCandle'): boolean {
+        const raw = (this.cfg() as any)[key];
+        if (raw === undefined || raw === null) return false;
+        if (typeof raw === 'boolean') return raw;
+        const shown = `${key}=${JSON.stringify(raw)}`;
+        if (this.invalidBoolAlerted !== shown) {
+            this.invalidBoolAlerted = shown;
+            Log.log(`[${this.logTag}] ALERT: ${key} ${JSON.stringify(raw)} must be true or false - using false`);
+        }
+        return false;
+    }
+
     // (Re)builds the candle builder for `minutes` on today's 09:15 grid (origin = today's 09:15 epoch modulo the bucket, so any length stays on the grid).
     private newBuilder(minutes: number, ltt: number, sod: number): void {
         this.candleMinutes = minutes;
@@ -136,6 +169,7 @@ export default class HighLowStrategy extends CandleEntryStrategy {
         this.firstCandlePartial = false;
         this.firstCandleSeen = false;
         this.incompleteCandles.clear();
+        this.pendingConfirm = null;
     }
 
     protected async onNiftyTick(quote: NiftyQuote): Promise<void> {
@@ -154,6 +188,7 @@ export default class HighLowStrategy extends CandleEntryStrategy {
             this.firstCandlePartial = false;
             this.firstCandleSeen = false;
             this.incompleteCandles.clear();
+            this.pendingConfirm = null;
         }
         if (!this.firstTickChecked) {
             this.firstTickChecked = true;
@@ -182,15 +217,36 @@ export default class HighLowStrategy extends CandleEntryStrategy {
         if (this.incompleteCandles.has(Number(c1.candleTime))) return skip('c1 is an incomplete candle (started mid-candle after a restart)');
         const late = tickLtt - (start + this.bucketSeconds);
         if (late > LATE_CANDLE_SECONDS) return skip(`candle closed ${late}s ago (more than ${LATE_CANDLE_SECONDS}s) - not traded late`);
-        const right = highLowSignal(c1, c2);
-        if (!right) return skip(`c2 did not close outside c1's range by ${MIN_BREAKOUT_POINTS}+ points (above c1 high or below c1 low)`);
-        const bad = c2QualityFailure(c2, right, this.pctKey('bodyDominance', DEFAULT_BODY_DOMINANCE), this.pctKey('closeLocation', DEFAULT_CLOSE_LOCATION));
-        if (bad) return skip(`${right} signal but ${bad}`);
+        // A held signal (confirmCandle): this candle is c3. It confirms when it follows the signal candle at once and still closes beyond c1's extreme.
+        const pending = this.pendingConfirm;
+        this.pendingConfirm = null;
+        let right: HighLowSide | undefined;
+        let confirmed = false;
+        if (pending && this.boolKey('confirmCandle')) {
+            if (pending.start + this.bucketSeconds !== start) return skip(`${pending.side} signal was held but this candle does not follow the signal candle`);
+            if (!breakoutConfirmed({ high: pending.c1High, low: pending.c1Low }, c2, pending.side)) {
+                return skip(`${pending.side} signal NOT confirmed: C ${c2.close} closed back inside c1's range (c1 H ${pending.c1High} L ${pending.c1Low}) - false breakout`);
+            }
+            right = pending.side;
+            confirmed = true;
+        } else {
+            right = highLowSignal(c1, c2);
+            if (!right) return skip(`c2 did not close outside c1's range by ${MIN_BREAKOUT_POINTS}+ points (above c1 high or below c1 low)`);
+            const bad = c2QualityFailure(c2, right, this.pctKey('bodyDominance', DEFAULT_BODY_DOMINANCE), this.pctKey('closeLocation', DEFAULT_CLOSE_LOCATION));
+            if (bad) return skip(`${right} signal but ${bad}`);
+            if (this.boolKey('fullyOutside') && !completelyOutside(c1, c2, right)) {
+                return skip(`${right} signal but c2 is not completely outside c1 (c2 L ${c2.low} H ${c2.high} vs c1 H ${c1.high} L ${c1.low})`);
+            }
+        }
         const lastEntry = String((this.cfg() as any).lastEntryTime ?? '15:00');
         if (isPastTime(lastEntry, '15:00')) return skip(`${right} signal but past lastEntryTime ${lastEntry}`);
         if (this.isRunning()) return skip(`${right} signal but a trade is still open`);
         const key = `${today} ${start}`;
         if (this.cycleStarted(key)) return skip(`${right} signal but this candle was already handled (restart)`);
+        if (!confirmed && this.boolKey('confirmCandle')) {
+            this.pendingConfirm = { side: right, start, c1High: Number(c1.high), c1Low: Number(c1.low) };
+            return skip(`${right} signal held: the next candle must close ${right === 'CE' ? 'above c1 high ' + c1.high : 'below c1 low ' + c1.low} to confirm`);
+        }
         try {
             const rules = this.exitRules();
             if (rules.target === null || rules.stop === null) throw new Error('target and stopLoss must both be set (HighLow exits at the target or the stop)');

@@ -4,7 +4,7 @@
  */
 import '../util/tz';
 import OrderClient from '../processes/strategies/OrderClient';
-import HighLowStrategy, { c2QualityFailure } from '../strategy/HighLowStrategy';
+import HighLowStrategy, { c2QualityFailure, completelyOutside, breakoutConfirmed } from '../strategy/HighLowStrategy';
 import configService from '../prism/ConfigService';
 import { settingFor } from '../prism/configVocabulary';
 const tokenRouter = require('../processes/strategies/tokenRouter');
@@ -111,6 +111,65 @@ async function twoCandles(s: any, c2: { high: number; low: number; close: number
     s = make('HL-body-off', { bodyDominance: 30, closeLocation: 40 });
     await twoCandles(s, { high: 23560, low: 23495, close: 23525 });
     assert(buys().length === 1, 'both relaxed: buys');
+
+    console.log('  completelyOutside / breakoutConfirmed helpers');
+    assert(completelyOutside({ high: 110, low: 90 }, { high: 130, low: 111 }, 'CE') === true, 'CE: c2 low 111 > c1 high 110');
+    assert(completelyOutside({ high: 110, low: 90 }, { high: 130, low: 110 }, 'CE') === false, 'CE: c2 low 110 = c1 high is not completely outside');
+    assert(completelyOutside({ high: 110, low: 90 }, { high: 89, low: 70 }, 'PE') === true, 'PE: c2 high 89 < c1 low 90');
+    assert(completelyOutside({ high: 110, low: 90 }, { high: 90, low: 70 }, 'PE') === false, 'PE: c2 high 90 = c1 low is not completely outside');
+    assert(completelyOutside({ high: 110, low: 90 }, { high: NaN, low: 111 }, 'CE') === false, 'non-numeric: false');
+    assert(breakoutConfirmed({ high: 110, low: 90 }, { close: 111 }, 'CE') === true && breakoutConfirmed({ high: 110, low: 90 }, { close: 110 }, 'CE') === false, 'CE: c3 close must be above c1 high');
+    assert(breakoutConfirmed({ high: 110, low: 90 }, { close: 89 }, 'PE') === true && breakoutConfirmed({ high: 110, low: 90 }, { close: 90 }, 'PE') === false, 'PE: c3 close must be below c1 low');
+
+    console.log('  fullyOutside: c2 whole range above c1 high');
+    // c1 = 10:05-10:15 (H 23510 L 23490); c2 opens at 23515 (above c1 high), low 23512, high 23530, close 23528
+    const outsideC2 = async (st: any, open: number) => {
+        await tick(st, 23500, at(10, 5, 0)); await tick(st, 23510, at(10, 8, 30)); await tick(st, 23490, at(10, 12, 0));
+        await tick(st, open, at(10, 15, 0)); await tick(st, 23530, at(10, 18, 30)); await tick(st, 23512, at(10, 21, 0)); await tick(st, 23528, at(10, 24, 50));
+        await tick(st, 23520, at(10, 25, 5));
+    };
+    calls = [];
+    s = make('HL-fo-on', { fullyOutside: true });
+    await outsideC2(s, 23515);
+    assert(buys().length === 1 && resolves()[0]?.right === 'CE', 'fullyOutside on, c2 completely outside: buys CE');
+    calls = [];
+    s = make('HL-fo-block', { fullyOutside: true });
+    await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
+    assert(buys().length === 0, 'fullyOutside on, c2 low 23495 below c1 high 23510: no buy');
+    calls = [];
+    s = make('HL-fo-off');
+    await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
+    assert(buys().length === 1, 'fullyOutside off (default): same candles buy');
+    calls = [];
+    s = make('HL-fo-bad', { fullyOutside: 'yes' });
+    await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
+    assert(buys().length === 1, "fullyOutside 'yes' (not a boolean) is treated as false");
+
+    console.log('  confirmCandle: the next candle must still close beyond c1');
+    const c3 = async (st: any, close: number) => { // c3 = 10:25-10:35: opens 23500 (twoCandles), then ticks, then a tick in 10:35 closes it
+        await tick(st, 23520, at(10, 28, 0)); await tick(st, close, at(10, 34, 50)); await tick(st, close, at(10, 35, 5));
+    };
+    calls = [];
+    s = make('HL-cc-ok', { confirmCandle: true });
+    await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
+    assert(buys().length === 0, 'signal held after c2: no buy yet');
+    await c3(s, 23515);
+    assert(buys().length === 1 && resolves()[0]?.right === 'CE', 'c3 closes 23515 > c1 high 23510: CE bought at c3 close');
+    calls = [];
+    s = make('HL-cc-fail', { confirmCandle: true });
+    await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
+    await c3(s, 23505);
+    assert(buys().length === 0, 'c3 closes back inside c1 range: false breakout, no buy');
+    calls = [];
+    s = make('HL-cc-pe', { confirmCandle: true });
+    await twoCandles(s, { high: 23505, low: 23480, close: 23478 });
+    assert(buys().length === 0, 'PE signal held');
+    await c3(s, 23485);
+    assert(buys().length === 1 && resolves()[0]?.right === 'PE', 'PE confirmed: c3 close 23485 < c1 low 23490');
+    calls = [];
+    s = make('HL-cc-off');
+    await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
+    assert(buys().length === 1, 'confirmCandle off (default): buys at c2 close');
 
     console.log('  a trade still open: no second entry');
     calls = [];
