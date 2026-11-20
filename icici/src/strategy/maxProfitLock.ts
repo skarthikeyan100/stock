@@ -158,5 +158,6 @@ export class TripGuard {
         if (since === undefined) { this.goneSince.set(id, now); return false; }
         return now - since > TRIP_FILL_WAIT_MS;
     }
+    clearGone(id: string): void { this.goneSince.delete(id); }
     forget(id: string): void { this.failures.delete(id); this.nonTransient.delete(id); this.covered.delete(id); this.fillSince.delete(id); this.goneSince.delete(id); }
 }

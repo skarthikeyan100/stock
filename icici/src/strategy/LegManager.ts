@@ -15,6 +15,10 @@ import { toPercentNumber } from '../prism/percentConfig';
 import { Strategy } from './strategy';
 import { localDayKey } from './dayKey';
 import { LegBrokerOps, PartialSellError, defaultLegOps, dryRunOps } from './LegBrokerOps';
+import { TripGuard, TRIP_FILL_WAIT_MS } from './maxProfitLock';
+import { heldQuantity } from './openTrades';
+import { normalizeBrokerName } from '../util/brokerName';
+import OrderClient from '../processes/strategies/OrderClient';
 
 // Extracted from ContinuousStrategy.ts (2026-09-11) so the same loss-driven
 // hedge-spawn/averaging/refill/maxProfit leg lifecycle can be reused by
@@ -169,6 +173,9 @@ export interface LegManagerDeps {
     // The owner can veto every NEW buy (entry, hedge spawn, average-in, refill) - e.g. an ANT buy whose fill could not be
     // confirmed and may still be live. Exits are never blocked by this.
     isOrderingBlocked?: () => boolean;
+    // The broker this owner trades on (its `broker:` key); unset = kite. Used only to read the broker's live quantity of a contract when a sell
+    // is refused as 'nothing sellable' (see onSellFailed).
+    getBroker?: () => unknown;
 }
 
 // A cancel that lost the race to a fill. The order process throws OrderAlreadyFilledError (name + filledQuantity), but
@@ -240,6 +247,63 @@ export class LegManager {
     // is mistaken for an external sell of THAT leg. Entries expire so an echo that never arrives cannot swallow a
     // genuine later external sell.
     private ignoredSellEchoes = new Map<string, { qty: number; expires: number }>();
+    // A leg's sell refused: next attempt after 5/10/20/40/60 s (TripGuard), never on every tick. Keyed by token; cleared by a successful sell
+    // or when the leg is closed neutral. One ALERT per leg per SELL_ALERT_EVERY_MS, the full error on the 1st and every 10th failure only.
+    private sellGuard = new TripGuard();
+    private sellAlertAt = new Map<string, number>();
+    private static readonly SELL_ALERT_EVERY_MS = 10 * 60_000;
+
+    private sellDue(leg: Leg): boolean {
+        return this.sellGuard.due(leg.token);
+    }
+
+    // Quantity the BROKER holds of the leg's contract (its live net position); falls back to what the order side holds when the broker cannot
+    // be read. undefined = unknown (the sell is retried, the leg is never closed on a guess).
+    private async heldAtBroker(leg: Leg): Promise<number | undefined> {
+        try {
+            const broker = normalizeBrokerName(this.deps.getBroker?.()) || 'kite';
+            return Math.abs(await OrderClient.getInstance().getLiveQuantity(this.deps.userId, broker, leg.tsym));
+        } catch {
+            return heldQuantity(this.deps.userId, leg.token, leg.tsym);
+        }
+    }
+
+    // A leg's sell was refused or failed. Returns 'closed' when the leg is no longer held anywhere (closed neutral: nothing booked, no invented
+    // P&L) and the caller must NOT put it back; 'retry' when it is still held (or unknown) and the caller keeps it, now behind a back-off.
+    // 'nothing sellable' = the never-short guard saw nothing to sell: the platform's leg is stale (a manual sell, a GTT, a fill event that was
+    // never booked; live 2026-11-20 11:16: 65 refusals in 30 s on a leg sold by hand). When the broker's live quantity is 0 the leg is closed after
+    // TRIP_FILL_WAIT_MS (the grace a fill event gets to arrive); when the broker still holds lots (resting sells cover them) it is retried.
+    private async onSellFailed(leg: Leg, e: unknown, label: string): Promise<'closed' | 'retry'> {
+        const msg = String((e as any)?.message ?? e);
+        if (/nothing sellable/.test(msg)) {
+            const held = await this.heldAtBroker(leg);
+            if (held === 0) {
+                if (this.sellGuard.goneExpired(leg.token)) {
+                    this.sellGuard.forget(leg.token);
+                    this.sellAlertAt.delete(leg.token);
+                    Log.log(`[${this.deps.ownerType}] ALERT: ${label}: ${leg.tsym} (${leg.totalQuantity} tracked) is no longer held by the broker - closed outside the platform, closing the leg neutral (no P&L booked, nothing sold)`);
+                    if (!leg.isRoot) {
+                        this.freeParentSlot(leg);
+                        await this.maybePromoteDeferredRootRefill();
+                    }
+                    await this.cancelChildRefills(leg);
+                    return 'closed';
+                }
+                Log.log(`[${this.deps.ownerType}] ${label}: ${leg.tsym} has nothing sellable and the broker holds none - waiting ${TRIP_FILL_WAIT_MS / 1000}s for its fill event before closing the leg`);
+            } else {
+                this.sellGuard.clearGone(leg.token);
+            }
+        }
+        const n = this.sellGuard.fail(leg.token);
+        if (this.sellGuard.shouldLogFailure(n)) Log.log(`[${this.deps.ownerType}] ${label} sell failed (failure ${n}), leg remains open, retried with back-off:`, e);
+        const now = Date.now();
+        if (now - (this.sellAlertAt.get(leg.token) ?? 0) >= LegManager.SELL_ALERT_EVERY_MS) {
+            this.sellAlertAt.set(leg.token, now);
+            Log.log(`[${this.deps.ownerType}] ALERT: ${label}: the sell of ${leg.tsym} (${leg.totalQuantity}) keeps failing (failure ${n}): ${msg.slice(0, 200)} - retried with back-off, next ALERT for this leg in 10 min`);
+        }
+        return 'retry';
+    }
+
     private async sellBack(tsym: string, token: string, qty: number, exchange: 'NFO' | 'BFO'): Promise<void> {
         const prev = this.ignoredSellEchoes.get(token);
         const live = prev && prev.expires > Date.now() ? prev.qty : 0;
@@ -757,6 +821,7 @@ export class LegManager {
         const why = this.maxProfitTripped ? 'Max-profit' : this.maxLossTripped ? 'Max-loss' : 'End-of-day';
         for (const leg of Array.from(this.legsByToken.values())) {
             if (leg.status !== 'OPEN') continue; // already closing (this call, or a previous tick's)
+            if (!this.sellDue(leg)) continue; // a refused sell waits out its back-off; the other legs are still sold below
             leg.status = 'CLOSING'; // synchronous, before any await
             const ltp = leg.lastLtp ?? leg.avgPrice;
             // Deleted BEFORE the sell await (not after) - see handleFillOrExternalSell's
@@ -769,9 +834,9 @@ export class LegManager {
             try {
                 fillPrice = await this.sellLeg(leg);
             } catch (e) {
+                if (await this.onSellFailed(leg, e, `${why} mass close`) === 'closed') continue; // gone at the broker: stays off the book
                 this.legsByToken.set(leg.token, leg); // still live at broker - put back for retry
                 leg.status = 'OPEN';
-                Log.log(`[${this.deps.ownerType}] ${why} mass close sell failed, leg remains open for retry:`, e);
                 continue;
             }
             const pnl = ((fillPrice ?? ltp) - leg.avgPrice) * leg.totalQuantity;
@@ -797,6 +862,8 @@ export class LegManager {
     private async sellLeg(leg: Leg): Promise<number | undefined> {
         try {
             const res: any = await this.currentOps().sell(this.deps.userId, leg.tsym, leg.token, leg.totalQuantity, leg.exchange);
+            this.sellGuard.forget(leg.token);
+            this.sellAlertAt.delete(leg.token);
             const px = Number(res?.avgPrice);
             return Number.isFinite(px) && px > 0 ? px : undefined;
         } catch (e) {
@@ -954,6 +1021,7 @@ export class LegManager {
         // has been averaged at least once, so this is unchanged for a never-averaged leg.
         const target = this.targetFor(leg, cfg, D);
         if (ltp >= target) {
+            if (!this.sellDue(leg)) return; // a refused sell waits out its back-off
             leg.status = 'CLOSING'; // synchronous, before any await - blocks re-entry into this branch for concurrent ticks
             this.closesInFlight++; // held until the refill below is registered - see the field comment
             try {
@@ -964,9 +1032,9 @@ export class LegManager {
                 try {
                     fillPrice = await this.sellLeg(leg);
                 } catch (e) {
+                    if (await this.onSellFailed(leg, e, 'Target-hit') === 'closed') return; // gone at the broker: no refill either
                     this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
                     leg.status = 'OPEN';
-                    Log.log(`[${this.deps.ownerType}] Target-hit sell failed, leg remains open for retry:`, e);
                     return;
                 }
                 const pnl = ((fillPrice ?? ltp) - leg.avgPrice) * leg.totalQuantity;
@@ -1013,6 +1081,7 @@ export class LegManager {
 
         const squareOffDistance = cfg.squareOffDistance ?? 50; // default preserves the old 5*slDistance(10)=50 behavior
         if (adverseMove >= squareOffDistance) {
+            if (!this.sellDue(leg)) return; // a refused sell waits out its back-off
             leg.status = 'CLOSING'; // synchronous, before any await - blocks re-entry into this branch for concurrent ticks
             this.closesInFlight++;
             try {
@@ -1023,9 +1092,9 @@ export class LegManager {
                 try {
                     fillPrice = await this.sellLeg(leg);
                 } catch (e) {
+                    if (await this.onSellFailed(leg, e, 'Square-off') === 'closed') return;
                     this.legsByToken.set(leg.token, leg); // sell never reached the broker - leg is still live there, keep tracking it for retry
                     leg.status = 'OPEN';
-                    Log.log(`[${this.deps.ownerType}] Square-off sell failed, leg remains open for retry:`, e);
                     return;
                 }
                 const pnl = ((fillPrice ?? ltp) - leg.avgPrice) * leg.totalQuantity;

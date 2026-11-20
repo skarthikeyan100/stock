@@ -57,3 +57,6 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 - After the restart (market closed): `npm run sync -- --strategies`. Expected for NIFTY23NOV2625300CE: ScaledHedged-Breeze phantom L3 closed, a short round trip row of -474.50 written, Simple-Breeze 585; ScaledHedged cancels its resting 65 @188.25 on its next tick; check the log lines `order-id attribution breeze`.
 - Open (117): a fill delivered while a strategy is disabled is not in its realizedPnl (ScaledHedged-Breeze L5, +650); the trader decides.
 - Same restart also loads the open-P&L pricing fallback (open-review-items.md 119): ANT quote 2 s, then the broker's own last price, then a price seen within 120 s; closed (qty 0) rows are skipped without an alert. After the restart check the log for `cannot be priced live` on NIFTY23NOV2625350CE.
+
+## LegManager never-short refusal storm (2026-11-20)
+- Restart the strategies process after market hours to load the LegManager sell back-off / closed-outside handling and the LimitEntry close back-off (open-review-items.md 121). Open: the order side still books the manual Kite sells of 11:09 as not placed by the platform (a restart restores the stale NIFTY26NOV25550CE leg and closes it neutral after 60 s); trader decides whether to book such sells.

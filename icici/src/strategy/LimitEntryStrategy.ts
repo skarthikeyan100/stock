@@ -16,6 +16,7 @@ import { configuredBrokersOf, normalizeBrokerName } from '../util/brokerName';
 import { splitIntoFreezeQtyChunks } from '../util/quantityChunks';
 import { isPastEodClose } from '../util/eodClose';
 import { exchangeForTsym } from '../util/underlyings';
+import { TripGuard } from './maxProfitLock';
 import { isGlobalMaxProfitLatched } from './globalMaxProfitLatch';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
 import type { MwState } from './mandwCycle';
@@ -948,8 +949,13 @@ export abstract class LimitEntryStrategy extends Strategy {
 
     // Takes a held leg off the book at market: removes the protection first (a surviving GTT could sell a flat account later), then
     // the resting target sell, then sells what is still held.
+    // A failed close is retried after 5/10/20/40/60 s, not on every tick/housekeeping pass (live 2026-11-20: a never-short refusal looped twice a second
+    // elsewhere); the ALERT is logged on the 1st failure and every 10th.
+    private closeGuard = new TripGuard();
     protected async closeLeg(leg: Leg, why: string): Promise<void> {
         if (leg.closing || leg.status !== 'filled') return;
+        const guardKey = `${leg.broker}|${leg.tsym}`;
+        if (!this.closeGuard.due(guardKey)) return;
         leg.closing = true;
         try {
             if (leg.exit === 'gtt' || leg.exit === 'exitMonitor') {
@@ -964,9 +970,11 @@ export abstract class LimitEntryStrategy extends Strategy {
                 Log.log(`[${this.logTag}] closing ${leg.broker} ${leg.tsym} qty=${remaining} (${why})`);
                 await OrderClient.getInstance().chunkedSquareOff(this.userId, { tradingSymbol: leg.tsym, quantity: remaining, broker: leg.broker as any });
             }
+            this.closeGuard.forget(guardKey);
         } catch (e: any) {
-            leg.closing = false; // retried on the next housekeeping pass
-            Log.log(`[${this.logTag}] ALERT: closing ${leg.broker} ${leg.tsym} (${why}) failed, will retry: ${e?.message ?? e}`);
+            leg.closing = false; // retried after the back-off
+            const n = this.closeGuard.fail(guardKey);
+            if (this.closeGuard.shouldLogFailure(n)) Log.log(`[${this.logTag}] ALERT: closing ${leg.broker} ${leg.tsym} (${why}) failed (failure ${n}), will retry with back-off: ${e?.message ?? e}`);
         }
         this.save();
     }

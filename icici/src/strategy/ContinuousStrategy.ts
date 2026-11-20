@@ -63,6 +63,7 @@ export default class ContinuousStrategy extends Strategy {
             getConfig: (): LegManagerConfig => this.cfg() as unknown as LegManagerConfig,
             getLastUnderlyingLtp: () => this.lastNiftyLtp,
             recordOutcome: (outcome, pnl) => this.recordOutcome(outcome, pnl),
+            getBroker: () => this.cfg()?.broker,
             ops: brokerLegOps(() => this.cfg()?.broker), // follows this instance's own `broker:` key, read at call time
             onSpawnBuyError: (e) => this.noteUnconfirmedBuy(e),
             isOrderingBlocked: () => this.manualReview,

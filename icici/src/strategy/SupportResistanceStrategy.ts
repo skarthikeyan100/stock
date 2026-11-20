@@ -53,6 +53,7 @@ export default class SupportResistanceStrategy extends Strategy {
             getConfig: (): LegManagerConfig => this.cfg() as unknown as LegManagerConfig,
             getLastUnderlyingLtp: () => this.lastNiftyLtp,
             recordOutcome: (outcome, pnl) => this.recordOutcome(outcome, pnl),
+            getBroker: () => this.cfg()?.broker,
             ops: brokerLegOps(() => this.cfg()?.broker), // `broker: ant` used to throw here: the ANT-only contract pick was never wired in
         });
     }
