@@ -63,6 +63,7 @@ export interface Leg {
     exitAttempts?: number;
     exitRetryAt?: number;
     exitQty?: number; // quantity the exit currently covers; below filledQty while later partial fills still need protecting
+    exitTarget?: number; // RecommendationStrategy: the target price the exit was placed at (rebased to the fill), so a later fill's resting sell uses the same one
     stop?: number; // tick-driven stop: market out when the option's LTP falls to this (set only for a self-managed exit)
     targetTrigger?: number; // exit 'target': the option's LTP at which the limit sell is placed
     targetSellQty?: number; // exit 'target': quantity the target sell covers; set BEFORE the order goes out, so a later fill is topped up and a retry never doubles it
@@ -499,12 +500,12 @@ export abstract class LimitEntryStrategy extends Strategy {
     // Target + stop on a filled leg: the broker-side protection (Kite GTT, ANT in-app exitMonitor) when attachProtection can place it,
     // else a resting limit sell at the target plus a tick-driven stop here. The stop is armed first (it needs only ticks), so if the
     // sell cannot be placed the downside is still covered and the error is thrown so the sell is retried.
-    protected async protectLeg(leg: Leg, target: number, stop: number): Promise<void> {
+    protected async protectLeg(leg: Leg, target: number, stop: number, note = ''): Promise<void> {
         const avg = this.avgPrice(leg);
         try {
             const res = await OrderClient.getInstance().attachProtection(this.userId, { broker: leg.broker as any, tradingSymbol: leg.tsym, targetPrice: target, stopLossPrice: stop });
             leg.exit = res.mode;
-            Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym} qty=${leg.filledQty} avg=${avg.toFixed(2)}: target ${target} / stop ${stop} protected via ${res.mode}${res.gttTriggerId ? ' (GTT ' + res.gttTriggerId + ')' : ''}`);
+            Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym} qty=${leg.filledQty} avg=${avg.toFixed(2)}: target ${target} / stop ${stop} protected via ${res.mode}${res.gttTriggerId ? ' (GTT ' + res.gttTriggerId + ')' : ''}${note}`);
             return;
         } catch (e: any) {
             Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: no broker-side protection (${e?.message ?? e}) - using a resting target sell + tick-driven stop here`);

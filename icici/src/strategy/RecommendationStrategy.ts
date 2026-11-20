@@ -2,7 +2,7 @@ import Log from '../util/Log';
 import { NiftyQuote } from '../model/model';
 import OrderClient from '../processes/strategies/OrderClient';
 import configService from '../prism/ConfigService';
-import { roundToTick } from '../util/tick';
+import { roundToTick, NFO_TICK_SIZE } from '../util/tick';
 import { isPastTime } from '../util/marketHours';
 import { isPastEodClose } from '../util/eodClose';
 import { investmentForBroker, resolveMaxInvestment } from '../prism/configVocabulary';
@@ -23,8 +23,9 @@ import { LimitEntryStrategy, Leg, ResolvedEntry } from './LimitEntryStrategy';
 // Config (config.yml):
 //   contract: '22750 CE'          - strike and CE/PE
 //   entryPrice: 120               - recommended entry; the order goes in at entryPrice - entryOffset
-//   targetPrice: 150              - absolute option price
-//   stopLoss: 95                  - absolute option price; must be below the order price
+//   targetPrice: 150              - option price at the recommended entry; kept as a DISTANCE (targetPrice - entryPrice) and rebased to the fill
+//   stopLoss: 95                  - option price at the recommended entry; kept as a DISTANCE (entryPrice - stopLoss) and rebased to the fill; must be below the order price
+//   (the buy fills at or below the order price, so the exits are placed at fill + targetDistance / fill - stopDistance, not at the raw prices)
 //   maxInvestment: 100000   - rupee budget per broker
 //   entryOffset: 5                - default 5
 //   index: NIFTY                  - default NIFTY
@@ -42,6 +43,18 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         return `${cfg.contract}|${Number(cfg.entryPrice)}|${Number(cfg.targetPrice)}|${Number(cfg.stopLoss)}|${Number(cfg.maxInvestment)}|${offset}`;
     }
 
+    // The recommendation's target and stop are distances from its entry price; the exits sit the same distances from the real (average) fill.
+    // Rounded to the tick like the raw prices were. A stop that would be at or below zero is held at one tick (it can never trigger below that).
+    static rebaseLevels(cfg: any, avg: number): { target: number; stop: number; targetDist: number; stopDist: number; stopClamped: boolean } {
+        const entry = Number(cfg.entryPrice);
+        const targetDist = Number(cfg.targetPrice) - entry;
+        const stopDist = entry - Number(cfg.stopLoss);
+        const target = roundToTick(avg + targetDist);
+        const rawStop = roundToTick(avg - stopDist);
+        const stopClamped = rawStop < NFO_TICK_SIZE;
+        return { target, stop: stopClamped ? NFO_TICK_SIZE : rawStop, targetDist, stopDist, stopClamped };
+    }
+
     // The recommendation without its target and stop: what stays the same when the operator only moves the exits of an open trade.
     static baseKeyOf(cfg: any): string {
         const offset = cfg.entryOffset == null ? 5 : Number(cfg.entryOffset);
@@ -56,14 +69,16 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         const legs = this.legs().filter((l) => l.status === 'filled' && !l.closing && l.exit && l.exit !== 'none');
         for (const leg of legs) {
             const avg = this.avgPrice(leg);
-            if (!(stop < avg && avg < target)) {
-                Log.log(`[${this.logTag}] ALERT: new stop ${stop} / target ${target} do not bracket ${leg.broker} ${leg.tsym} avg fill ${avg.toFixed(2)} - exits NOT moved`);
+            const lv = RecommendationStrategy.rebaseLevels(cfg, avg);
+            if (!(lv.stop < avg && avg < lv.target)) {
+                Log.log(`[${this.logTag}] ALERT: new stop ${lv.stop} / target ${lv.target} (rebased to the fill) do not bracket ${leg.broker} ${leg.tsym} avg fill ${avg.toFixed(2)} - exits NOT moved`);
                 this.markCycle(key);
                 return true;
             }
         }
         for (const leg of legs) {
-            if (await this.dropExit(leg)) Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: exits moved to target ${target} / stop ${stop} (config edit of an open trade)`);
+            const lv = RecommendationStrategy.rebaseLevels(cfg, this.avgPrice(leg)), avg = this.avgPrice(leg);
+            if (await this.dropExit(leg)) Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: exits moved to target ${lv.target} / stop ${lv.stop} (rebased to avg fill ${avg.toFixed(2)}; config edit of an open trade)`);
         }
         this.markCycle(key);
         return true;
@@ -110,7 +125,7 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
             try {
                 const ltp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
                 if (ltp > 0 && orderPrice > ltp) {
-                    Log.log(`[${this.logTag}] ALERT: ${c.tsym} LTP ${ltp} is BELOW the order price ${orderPrice}: the buy will fill at about the LTP, not at ${orderPrice}, so target ${target} / stop ${stop} are measured from the real fill - rebase them (edit targetPrice/stopLoss) if they assumed ${entryPrice}`);
+                    Log.log(`[${this.logTag}] ALERT: ${c.tsym} LTP ${ltp} is BELOW the order price ${orderPrice}: the buy will fill at about the LTP, not at ${orderPrice}, so the target (+${target - entryPrice}) and stop (-${entryPrice - stop}) distances from the entry ${entryPrice} are applied to the real fill automatically (rebased on fill)`);
                 } else if (ltp > 0) {
                     Log.log(`[${this.logTag}] ${c.tsym} LTP ${ltp}, order price ${orderPrice}`);
                 }
@@ -158,7 +173,7 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
             await this.placeExit(leg);
             return;
         }
-        const target = roundToTick(Number((this.cfg() as any).targetPrice));
+        const target = leg.exitTarget ?? RecommendationStrategy.rebaseLevels(this.cfg(), this.avgPrice(leg)).target;
         await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
             broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: delta, price: target, exchange: leg.exchange,
         });
@@ -167,16 +182,18 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
 
     protected async placeExit(leg: Leg): Promise<void> {
         const cfg = this.cfg() as any;
-        const target = roundToTick(Number(cfg.targetPrice));
-        const stop = roundToTick(Number(cfg.stopLoss));
         const avg = this.avgPrice(leg);
+        const { target, stop, targetDist, stopDist, stopClamped } = RecommendationStrategy.rebaseLevels(cfg, avg);
         if (!(stop < avg && avg < target)) {
-            // Filled outside the recommended band (e.g. the limit filled and price already ran through the stop or the target).
+            // Cannot bracket the fill (a fill at or below one tick): nothing sensible to protect with.
             Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: fill avg ${avg.toFixed(2)} is not inside stop ${stop} / target ${target} - closing at market`);
             leg.exit = 'none';
             await this.closeLeg(leg, 'fill outside stop/target band');
             return;
         }
-        await this.protectLeg(leg, target, stop);
+        if (stopClamped) Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: stop distance ${stopDist} is not below the fill ${avg.toFixed(2)} - stop held at ${stop} (one tick)`);
+        Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: rebased to avg fill ${avg.toFixed(2)}: target ${target} (+${targetDist}) / stop ${stop} (-${stopDist}); recommended ${cfg.targetPrice} / ${cfg.stopLoss} from entry ${cfg.entryPrice}`);
+        leg.exitTarget = target;
+        await this.protectLeg(leg, target, stop, ` [rebased to the fill from the recommended ${cfg.targetPrice} / ${cfg.stopLoss} at entry ${cfg.entryPrice}]`);
     }
 }

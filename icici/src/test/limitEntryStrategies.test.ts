@@ -63,7 +63,13 @@ const last = (fn: string) => calls.filter((c) => c.fn === fn).pop();
 
     await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 845, 115));
     const att = last('attachProtection');
-    assert(att?.args[1].targetPrice === 150 && att?.args[1].stopLossPrice === 95, 'target and stop attached after the fill');
+    assert(att?.args[1].targetPrice === 145 && att?.args[1].stopLossPrice === 90, `target/stop are the entry-120 distances (+30/-25) rebased to the fill 115 (got ${att?.args[1].targetPrice}/${att?.args[1].stopLossPrice})`);
+    assert(rec.legs()[0].exitTarget === 145, 'the rebased target is kept on the leg');
+    const rb = (e: number, t: number, st: number, avg: number) => RecommendationStrategy.rebaseLevels({ entryPrice: e, targetPrice: t, stopLoss: st }, avg);
+    assert(rb(130, 150, 110, 123.95).target === 143.95 && rb(130, 150, 110, 123.95).stop === 103.95, 'fill 123.95 on entry 130/150/110 -> 143.95 / 103.95');
+    assert(rb(130, 150, 110, 130).target === 150 && rb(130, 150, 110, 130).stop === 110, 'fill equal to entry changes nothing');
+    assert(rb(130, 150, 110, 131.1).target === 151.1 && rb(130, 150, 110, 131.1).stop === 111.1, 'fill above entry moves the levels up');
+    assert(rb(130, 150, 110, 15).stop === 0.05 && rb(130, 150, 110, 15).stopClamped, 'a stop that would be <= 0 is held at one tick');
     assert(rec.legs()[0].exit === 'gtt', 'leg is protected via GTT');
     await rec.updateTrade(fill('NIFTY22750CE', 'Sell', 845, 150));
     assert(rec.legs()[0].status === 'closed', 'sell fill closes the leg');
@@ -73,9 +79,9 @@ const last = (fn: string) => calls.filter((c) => c.fn === fn).pop();
     await rec.processNiftyQuote({ ltp: 22700 });
     await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 845, 115, 'breeze'));
     const sell = last('brokerPlaceLimitSellBare');
-    assert(sell?.args[1].price === 150 && sell?.args[1].quantity === 845, 'no broker protection -> resting sell at target');
-    assert(rec.legs()[0].stop === 95 && rec.legs()[0].exit === 'self', 'tick-driven stop armed');
-    await rec.processOptionQuote({ token: 'T1', ltp: 94 });
+    assert(sell?.args[1].price === 145 && sell?.args[1].quantity === 845, 'no broker protection -> resting sell at target');
+    assert(rec.legs()[0].stop === 90 && rec.legs()[0].exit === 'self', 'tick-driven stop armed');
+    await rec.processOptionQuote({ token: 'T1', ltp: 89 });
     assert(calls.some((c) => c.fn === 'chunkedSquareOff' && c.args[1].quantity === 845), 'stop hit -> market close of the whole quantity');
 
     calls = []; attachFails = false;

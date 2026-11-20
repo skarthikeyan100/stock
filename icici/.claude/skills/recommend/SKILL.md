@@ -23,7 +23,7 @@ The target block is `type: RecommendationStrategy` with `userId: Recommendation-
    - The order price `entry - entryOffset` must be above the stop: `entry - entryOffset > stop`. The strategy refuses otherwise.
    - All prices are positive.
 
-2b. **Check the entry against the market.** If the contract's live LTP is known (the user states it, or it is readable from the running app's option ticks), compare it with the order price `entry - entryOffset`. If the order price is ABOVE the LTP, the limit buy fills at about the LTP, not at the entry, and the supplied target and stop (meant for the entry) become mis-sized (2026-11-02: entry 110 against an LTP of 80 filled at 78.85, so target 172 / stop 50 turned into +93 / -29). Say so and ask whether to rebase target and stop by the same distance from the LTP, or keep them as given; do not set `enabled: true` until they answer. If the LTP is not obtainable, say that, and note the strategy logs an ALERT with the LTP when it places the order.
+2b. **Check the entry against the market (information only, never asks).** If the contract's live LTP is known (the user states it, or it is readable from the running app's option ticks), compare it with the order price `entry - entryOffset`. If the order price is ABOVE the LTP, the limit buy fills at about the LTP, not at the entry. That is fine: target and stop are kept as distances from the recommended entry (`target - entry`, `entry - stop`) and the strategy rebases them to the real average fill automatically once the buy fills (2026-11-20: entry 130 / target 150 / stop 110 filled at 123.95 -> target 143.95 / stop 103.95). Do not ask the user whether to rebase; just mention the LTP and the rebase in the report. If the LTP is not obtainable, say that; the strategy logs an ALERT with the LTP when it places the order.
 
 3. **Refuse if a trade is in progress.** Both checks, and refuse if either finds something:
    - `curl -s "localhost:3000/strategyPnl?match=Recommendation"`: any row with `open > 0` means a position is open.
@@ -46,6 +46,7 @@ The target block is `type: RecommendationStrategy` with `userId: Recommendation-
 
 ## Notes
 
+- `targetPrice` and `stopLoss` in the block are the analyst's levels at the recommended entry. The strategy treats them as distances and places the protection at fill + (target - entry) / fill - (entry - stop), per broker, over partial fills (weighted average) and across restarts.
 - Changing the values of a block is a new recommendation, and it is placed once more. The same recommendation is never placed twice on a day, even across restarts.
 - A recommendation sent while a trade is in progress is refused by this skill. If one reaches the strategy another way (a hand edit), the strategy drops it and never picks it up later.
 - Do not run `npm run test:*` for this change unless the user asks.
