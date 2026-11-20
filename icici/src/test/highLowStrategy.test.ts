@@ -4,7 +4,7 @@
  */
 import '../util/tz';
 import OrderClient from '../processes/strategies/OrderClient';
-import HighLowStrategy, { c2QualityFailure, opensOutside, breakoutConfirmed } from '../strategy/HighLowStrategy';
+import HighLowStrategy, { c2QualityFailure, higherHighLowSignal, breakoutConfirmed } from '../strategy/HighLowStrategy';
 import configService from '../prism/ConfigService';
 import { settingFor } from '../prism/configVocabulary';
 const tokenRouter = require('../processes/strategies/tokenRouter');
@@ -113,37 +113,40 @@ async function twoCandles(s: any, c2: { high: number; low: number; close: number
     assert(buys().length === 1, 'both relaxed: buys');
 
     console.log('  opensOutside / breakoutConfirmed helpers');
-    assert(opensOutside({ high: 110, low: 90 }, { open: 110 }, 'CE') === true, 'CE: c2 open 110 = c1 high counts');
-    assert(opensOutside({ high: 110, low: 90 }, { open: 109.9 }, 'CE') === false, 'CE: c2 open below c1 high does not');
-    assert(opensOutside({ high: 110, low: 90 }, { open: 90 }, 'PE') === true, 'PE: c2 open 90 = c1 low counts');
-    assert(opensOutside({ high: 110, low: 90 }, { open: 90.1 }, 'PE') === false, 'PE: c2 open above c1 low does not');
-    assert(opensOutside({ high: 110, low: 90 }, { open: NaN }, 'CE') === false, 'non-numeric: false');
+    const k1 = { high: 110, low: 90, close: 100 };
+    assert(higherHighLowSignal(k1, { high: 115, low: 95, close: 112 }) === 'CE', 'CE: higher high, low and close');
+    assert(higherHighLowSignal(k1, { high: 115, low: 90, close: 112 }) === undefined, 'CE needs a strictly higher low');
+    assert(higherHighLowSignal(k1, { high: 110, low: 95, close: 112 }) === undefined, 'CE needs a strictly higher high');
+    assert(higherHighLowSignal(k1, { high: 115, low: 95, close: 100 }) === undefined, 'CE needs a strictly higher close');
+    assert(higherHighLowSignal(k1, { high: 105, low: 85, close: 88 }) === 'PE', 'PE: lower high, low and close');
+    assert(higherHighLowSignal(k1, { high: 105, low: 85, close: 100 }) === undefined, 'PE needs a strictly lower close');
+    assert(higherHighLowSignal(k1, { high: 115, low: 85, close: 100 }) === undefined, 'outside bar both ways: none');
+    assert(higherHighLowSignal(k1, { high: NaN, low: 95, close: 112 }) === undefined, 'non-numeric: none');
     assert(breakoutConfirmed({ high: 110, low: 90 }, { close: 111 }, 'CE') === true && breakoutConfirmed({ high: 110, low: 90 }, { close: 110 }, 'CE') === false, 'CE: c3 close must be above c1 high');
     assert(breakoutConfirmed({ high: 110, low: 90 }, { close: 89 }, 'PE') === true && breakoutConfirmed({ high: 110, low: 90 }, { close: 90 }, 'PE') === false, 'PE: c3 close must be below c1 low');
 
-    console.log('  openOutside: c2 opens at or above c1 high');
-    // c1 = 10:05-10:15 (H 23510 L 23490); c2 opens at 23515 (above c1 high), low 23512, high 23530, close 23528
-    const outsideC2 = async (st: any, open: number) => {
-        await tick(st, 23500, at(10, 5, 0)); await tick(st, 23510, at(10, 8, 30)); await tick(st, 23490, at(10, 12, 0));
-        await tick(st, open, at(10, 15, 0)); await tick(st, 23530, at(10, 18, 30)); await tick(st, 23512, at(10, 21, 0)); await tick(st, 23528, at(10, 24, 50));
-        await tick(st, 23520, at(10, 25, 5));
-    };
+    console.log('  higherHighLow: candle structure replaces the 10-point close rule');
+    // c1 = 10:05-10:15 (H 23510 L 23490 C 23490 via twoCandles ticks... close = last tick 23490); c2 high 23520 low 23495 close 23518 (< c1 high + 10)
     calls = [];
-    s = make('HL-fo-on', { openOutside: true });
-    await outsideC2(s, 23515);
-    assert(buys().length === 1 && resolves()[0]?.right === 'CE', 'openOutside on, c2 opens above c1 high: buys CE');
+    s = make('HL-hh-on', { higherHighLow: true, bodyDominance: 0, closeLocation: 0 });
+    await twoCandles(s, { high: 23520, low: 23495, close: 23518 });
+    assert(buys().length === 1 && resolves()[0]?.right === 'CE', 'structure CE buys although the close is only 8 above c1 high');
     calls = [];
-    s = make('HL-fo-block', { openOutside: true });
+    s = make('HL-hh-off', { bodyDominance: 0, closeLocation: 0 });
+    await twoCandles(s, { high: 23520, low: 23495, close: 23518 });
+    assert(buys().length === 0, 'default rule: close only 8 above c1 high -> no buy');
+    calls = [];
+    s = make('HL-hh-lowlow', { higherHighLow: true, bodyDominance: 0, closeLocation: 0 });
+    await twoCandles(s, { high: 23520, low: 23485, close: 23518 });
+    assert(buys().length === 0, 'c2 low below c1 low: no buy');
+    calls = [];
+    s = make('HL-hh-body', { higherHighLow: true });
+    await twoCandles(s, { high: 23560, low: 23495, close: 23525 });
+    assert(buys().length === 0, 'bodyDominance / closeLocation still apply (weak body blocks)');
+    calls = [];
+    s = make('HL-hh-bad', { higherHighLow: 'yes' });
     await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
-    assert(buys().length === 0, 'openOutside on, c2 opens 23500 below c1 high 23510: no buy');
-    calls = [];
-    s = make('HL-fo-off');
-    await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
-    assert(buys().length === 1, 'openOutside off (default): same candles buy');
-    calls = [];
-    s = make('HL-fo-bad', { openOutside: 'yes' });
-    await twoCandles(s, { high: 23530, low: 23495, close: 23525 });
-    assert(buys().length === 1, "openOutside 'yes' (not a boolean) is treated as false");
+    assert(buys().length === 1, "higherHighLow 'yes' (not a boolean) is treated as false");
 
     console.log('  confirmCandle: the next candle must still close beyond c1');
     const c3 = async (st: any, close: number) => { // c3 = 10:25-10:35: opens 23500 (twoCandles), then ticks, then a tick in 10:35 closes it

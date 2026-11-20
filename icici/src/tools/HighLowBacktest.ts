@@ -10,7 +10,7 @@
  * target and the end-of-day close sell at the last tick price (no slippage, spread or brokerage). Only strikes present in the stored
  * OptionQuote data can be bought.
  *
- * Usage: tsc && MOCK_BROKER=true node ./dist/tools/HighLowBacktest.js [--allDays <dir>] [--day Nov-13] [--openOutside] [--confirmCandle] [--out report.html] [--verbose]
+ * Usage: tsc && MOCK_BROKER=true node ./dist/tools/HighLowBacktest.js [--allDays <dir>] [--day Nov-13] [--higherHighLow] [--confirmCandle] [--out report.html] [--verbose]
  */
 import '../util/tz';
 import * as fs from 'fs';
@@ -64,7 +64,7 @@ async function main() {
     if (!block) throw new Error('no HighLowStrategy block in config.yml');
     const cfg: any = { ...block, userId: 'HighLow-Backtest', enabled: true };
     for (const k of ['target', 'stopLoss', 'quantity', 'candleMinutes', 'bodyDominance', 'closeLocation']) { const v = getArg(k, ''); if (v !== '') cfg[k] = Number(v); }
-    for (const k of ['openOutside', 'confirmCandle']) { if (getFlag(k)) cfg[k] = true; if (getArg(k, '') === 'false') cfg[k] = false; }
+    for (const k of ['higherHighLow', 'confirmCandle']) { if (getFlag(k)) cfg[k] = true; if (getArg(k, '') === 'false') cfg[k] = false; }
     const brokerName = String((cfg.brokers && cfg.brokers[0]) || 'paper');
     const strategy: any = new HighLowStrategy(cfg.userId);
     strategy.enabled = true;

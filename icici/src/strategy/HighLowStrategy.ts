@@ -29,7 +29,8 @@ import { INDEX_LOT_SIZE } from '../constants';
 //   candleMinutes: 10        - candle length in whole minutes (1..375; absent = 10; invalid = ALERT + 10), per strategy block
 //   bodyDominance: 60        - c2's body must exceed this % of its range R2 = H2 - L2: CE (c2-o2)/R2*100 > it, PE (o2-c2)/R2*100 > it (absent = 60; invalid = ALERT + 60)
 //   closeLocation: 70        - c2's close location value CLV = (c2-l2)/R2*100: CE needs >= it, PE needs <= 100 - it (absent = 70; invalid = ALERT + 70)
-//   openOutside: false      - true = c2 must OPEN at or beyond c1's extreme: CE c2.open >= c1.high, PE c2.open <= c1.low (absent = false; not a boolean = ALERT + false)
+//   higherHighLow: false    - true = the signal is the candle structure instead of the 10-point close rule: CE c2.high > c1.high and c2.low > c1.low and c2.close > c1.close;
+//                              PE c2.high < c1.high and c2.low < c1.low and c2.close < c1.close. bodyDominance / closeLocation still apply (absent = false; not a boolean = ALERT + false)
 //   confirmCandle: false     - true = false-breakout check: a signal on c2 is held and the NEXT candle c3 must still close beyond c1's extreme
 //                              (CE c3.close > c1.high, PE c3.close < c1.low); then the entry goes out at c3's close. A c3 that closes back inside
 //                              c1's range cancels the signal. Held in memory only (a restart / candleMinutes change / new day drops it).
@@ -74,10 +75,12 @@ export function c2QualityFailure(c2: Ohlc, side: HighLowSide, bodyDominance: num
     return undefined;
 }
 
-// c2 opens at or beyond c1's extreme: CE c2.open >= c1.high, PE c2.open <= c1.low.
-export function opensOutside(c1: Pick<Ohlc, 'high' | 'low'>, c2: Pick<Ohlc, 'open'>, side: HighLowSide): boolean {
-    if (![c1.high, c1.low, c2.open].every((v) => Number.isFinite(v))) return false;
-    return side === 'CE' ? c2.open >= c1.high : c2.open <= c1.low;
+// Candle-structure signal: CE = higher high, higher low and higher close than c1; PE = lower high, lower low and lower close.
+export function higherHighLowSignal(c1: Pick<Ohlc, 'high' | 'low' | 'close'>, c2: Pick<Ohlc, 'high' | 'low' | 'close'>): HighLowSide | undefined {
+    if (![c1.high, c1.low, c1.close, c2.high, c2.low, c2.close].every((v) => Number.isFinite(v))) return undefined;
+    if (c2.high > c1.high && c2.low > c1.low && c2.close > c1.close) return 'CE';
+    if (c2.high < c1.high && c2.low < c1.low && c2.close < c1.close) return 'PE';
+    return undefined;
 }
 
 // The confirmation candle c3 still closes beyond c1's extreme (it did not fall back inside c1's range).
@@ -141,7 +144,7 @@ export default class HighLowStrategy extends CandleEntryStrategy {
     }
 
     // A boolean key of this block, read from the live config: absent = false; a non-boolean = ALERT (once per value) and false.
-    private boolKey(key: 'openOutside' | 'confirmCandle'): boolean {
+    private boolKey(key: 'higherHighLow' | 'confirmCandle'): boolean {
         const raw = (this.cfg() as any)[key];
         if (raw === undefined || raw === null) return false;
         if (typeof raw === 'boolean') return raw;
@@ -229,13 +232,15 @@ export default class HighLowStrategy extends CandleEntryStrategy {
             right = pending.side;
             confirmed = true;
         } else {
-            right = highLowSignal(c1, c2);
-            if (!right) return skip(`c2 did not close outside c1's range by ${MIN_BREAKOUT_POINTS}+ points (above c1 high or below c1 low)`);
+            if (this.boolKey('higherHighLow')) {
+                right = higherHighLowSignal(c1, c2);
+                if (!right) return skip(`c2 is not a higher-high/higher-low/higher-close (CE) or lower-high/lower-low/lower-close (PE) candle vs c1`);
+            } else {
+                right = highLowSignal(c1, c2);
+                if (!right) return skip(`c2 did not close outside c1's range by ${MIN_BREAKOUT_POINTS}+ points (above c1 high or below c1 low)`);
+            }
             const bad = c2QualityFailure(c2, right, this.pctKey('bodyDominance', DEFAULT_BODY_DOMINANCE), this.pctKey('closeLocation', DEFAULT_CLOSE_LOCATION));
             if (bad) return skip(`${right} signal but ${bad}`);
-            if (this.boolKey('openOutside') && !opensOutside(c1, c2, right)) {
-                return skip(`${right} signal but c2 did not open beyond c1's extreme (c2 O ${c2.open} vs c1 H ${c1.high} L ${c1.low})`);
-            }
         }
         const lastEntry = String((this.cfg() as any).lastEntryTime ?? '15:00');
         if (isPastTime(lastEntry, '15:00')) return skip(`${right} signal but past lastEntryTime ${lastEntry}`);
