@@ -12,6 +12,7 @@ import { PUT, CALL, UNKNOWN_USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVE
 import * as exitMonitor from './exitMonitor';
 import { collapseFillsByOrderId, netFifoLots, pairFillsFifo, netWithShortCover } from './fillNetting';
 import { recordOrderOwner, loadOrderOwners } from './orderOwners';
+import { foreignSellExcess, piecesForShortfall, type TimedFill } from './foreignSells';
 import configService from '../../prism/ConfigService';
 import { drawdownDecision } from '../../prism/percentConfig';
 import { levelRules } from '../../levelRules';
@@ -1551,6 +1552,7 @@ class OrderBookkeeping {
             return false;
         }
         this.mergeRestored(restored);
+        await this.bookForeignSellShortfall('kite', { notifyStrategies: false, graceMs: 0, confirm: false }); // a manual sell that took the platform's lots: at its trade-book price, before the flat-position close below
         await this.syncExternalClosesSafe('kite'); // a position the broker closed on its own is booked (the readers above only add)
         return true;
     }
@@ -1974,6 +1976,146 @@ class OrderBookkeeping {
         return booked;
     }
 
+    // ---- Non-platform sells that took the platform's lots (2026-11-20, user decision) ----
+    // A sale made outside the platform (the broker's own app) is the user's own business and is never booked - EXCEPT the part that came out of lots the
+    // platform's book holds: when the broker's net quantity of a contract is below what the platform's open trades hold, and non-platform SELL fills in the
+    // broker's trade book exceed the user's own manual buys of that contract (see foreignSells.ts), that shortfall IS a sale of the platform's lots. It is
+    // booked as a Sell of the platform's open trade at the ACTUAL trade-book price (P&L = (fill - entry) x qty), under the fill's broker order id (so it is
+    // booked once: recordFill / Mongo already know the id after the first time, across polls, restarts and `npm run sync`), and - when `notifyStrategies` -
+    // through the normal fill path so the strategy's leg closes like any sale. Quantity booked = min(platform open - broker net, the unexplained manual
+    // sells), newest sells first, never more than the platform holds. Several users holding the contract cannot be told apart: ALERT only. kite only
+    // (the only broker whose trade book is read with fill times here); the other brokers are listed in open-review-items.md.
+    private foreignShortfallAlerted = new Map<string, string>();
+
+    private async readKiteTimedFills(): Promise<TimedFill[] | null> {
+        try {
+            const rows = await Kite.getInstance().getTrades();
+            if (!Array.isArray(rows)) return null;
+            return rows.flatMap((r: any) => {
+                const action = String(r.transaction_type).toUpperCase() === 'BUY' ? 'Buy' : String(r.transaction_type).toUpperCase() === 'SELL' ? 'Sell' : null;
+                const at = new Date(r.fill_timestamp ?? r.exchange_timestamp ?? r.order_timestamp).getTime();
+                if (!action || !r.order_id || !Number.isFinite(at)) return [];
+                return [{ orderId: String(r.order_id), tradeId: String(r.trade_id ?? ''), action, tsym: String(r.tradingsymbol), qty: Number(r.quantity) || 0, price: Number(r.average_price) || 0, at } as TimedFill];
+            });
+        } catch (e: any) {
+            Log.log('[order] readKiteTimedFills: trade book not readable:', e?.message ?? e);
+            return null;
+        }
+    }
+
+    // Contracts where the platform's open quantity exceeds the broker's net, with the non-platform sells that explain it. Reads only.
+    private async foreignShortfalls(broker: BrokerKey, opts: { isOwnOrder?: (orderId: string) => boolean; graceMs?: number }, rows: BrokerRow[]): Promise<{ tsym: string; platformQty: number; brokerQty: number; shortfall: number; excessQty: number; foreignBuyQty: number; foreignSellQty: number; pieces: ReturnType<typeof foreignSellExcess>['pieces'] }[] | null> {
+        const byTsym = new Map<string, Trade[]>();
+        for (const t of this.trades) if (t.broker === broker && Number(t.quantity) > 0) byTsym.set(t.tsym, [...(byTsym.get(t.tsym) ?? []), t]);
+        const short: { tsym: string; platformQty: number; brokerQty: number; shortfall: number; ts: Trade[]; since: number }[] = [];
+        for (const [tsym, ts] of byTsym) {
+            const platformQty = ts.reduce((s, t) => s + Number(t.quantity), 0);
+            const brokerQty = Math.max(0, OrderBookkeeping.rowsFor(rows, ts[0]).reduce((s, r) => s + r.qty, 0));
+            // The platform's lots exist from its earliest open buy on: a sell before that cannot have taken them (the booking time is a little after the
+            // fill, so a few seconds of slack). No entry time known = no lower bound.
+            const times = ts.map((t) => (t.entryTime ? new Date(t.entryTime).getTime() : NaN)).filter((n) => Number.isFinite(n));
+            const since = times.length === ts.length ? Math.min(...times) - 5000 : -Infinity;
+            if (platformQty > brokerQty) short.push({ tsym, platformQty, brokerQty, shortfall: platformQty - brokerQty, ts, since });
+        }
+        if (short.length === 0) return [];
+        const fills = await this.readKiteTimedFills();
+        if (!fills) return null;
+        const have = await this.mongoFillKeys(broker);
+        if (!have) return null;
+        const wanted = fills.filter((f) => short.some((x) => x.tsym === f.tsym));
+        const owners = await loadOrderOwners(Array.from(new Set(wanted.map((f) => f.orderId))));
+        const isPlatform = (id: string) => have.keys.has(`Buy|${id}`) || have.keys.has(`Sell|${id}`) || owners.has(id) || this.processedFillIds.has(id) || (opts.isOwnOrder ? opts.isOwnOrder(id) : Kite.getInstance().isOwnOrder(id));
+        const maxSellAt = Date.now() - (opts.graceMs ?? 0);
+        return short.map((x) => {
+            const e = foreignSellExcess(wanted.filter((f) => f.tsym === x.tsym), isPlatform, maxSellAt, x.since);
+            return { tsym: x.tsym, platformQty: x.platformQty, brokerQty: x.brokerQty, shortfall: x.shortfall, excessQty: e.excessQty, foreignBuyQty: e.foreignBuyQty, foreignSellQty: e.foreignSellQty, pieces: e.pieces };
+        });
+    }
+
+    // One concise line for the NEVER-SHORT refusal: does a non-platform sell explain the mismatch between the platform's book and the broker? Never throws.
+    async explainNeverShort(broker: BrokerKey, tsym: string, isOwnOrder?: (orderId: string) => boolean): Promise<string> {
+        try {
+            if (broker !== 'kite') return 'cause not checked (non-platform sell check is wired for kite only)';
+            const rows = await this.readBrokerRows(broker);
+            if (!rows) return 'cause unknown (broker positions not readable)';
+            const r = (await this.foreignShortfalls(broker, { isOwnOrder }, rows))?.find((x) => x.tsym === tsym);
+            if (r === undefined) {
+                const held = this.trades.filter((t) => t.broker === broker && t.tsym === tsym && Number(t.quantity) > 0).reduce((s, t) => s + Number(t.quantity), 0);
+                return held > 0 ? `platform holds ${held} and the broker holds at least that - the sell is covered by resting sells or another cause, not a non-platform sell` : 'the platform holds nothing on this contract (position tracking of the caller is stale)';
+            }
+            if (r.excessQty <= 0) return `platform holds ${r.platformQty}, broker net ${r.brokerQty}, no non-platform sell beyond the user's own buys (manual buys ${r.foreignBuyQty}, manual sells ${r.foreignSellQty}) - not explained by a non-platform sell`;
+            return `YES, a non-platform sell explains it: platform holds ${r.platformQty}, broker net ${r.brokerQty} (short ${r.shortfall}); manual buys ${r.foreignBuyQty}, manual sells ${r.foreignSellQty}, ${r.excessQty} sold beyond the manual buys in order(s) ${r.pieces.map((p) => `${p.orderId} (${p.qty} @ ${p.price.toFixed(2)})`).join(', ')}`;
+        } catch (e: any) {
+            return `cause check failed: ${e?.message ?? e}`;
+        }
+    }
+
+    // Books the shortfall described above. Returns the number of sells booked. Never throws. `confirm` re-reads the broker 3 s later and books only
+    // what both reads agree on (the live poll); the sync passes confirm=false after its own reads.
+    async bookForeignSellShortfall(broker: BrokerKey, opts: { notifyStrategies: boolean; isOwnOrder?: (orderId: string) => boolean; graceMs?: number; confirm?: boolean }): Promise<number> {
+        if (broker !== 'kite') return 0;
+        try {
+            if (!this.trades.some((t) => t.broker === broker && Number(t.quantity) > 0)) return 0;
+            const rows1 = await this.readBrokerRows(broker);
+            if (!rows1) return 0;
+            let found = await this.foreignShortfalls(broker, opts, rows1);
+            if (!found || found.length === 0) return 0;
+            if (found.some((x) => x.excessQty > 0) && opts.confirm) {
+                await new Promise((r) => setTimeout(r, 3000));
+                const rows2 = await this.readBrokerRows(broker);
+                if (!rows2) return 0;
+                found = await this.foreignShortfalls(broker, opts, rows2);
+                if (!found) return 0;
+            }
+            let booked = 0;
+            for (const f of found) {
+                const holders = this.trades.filter((t) => t.broker === broker && t.tsym === f.tsym && Number(t.quantity) > 0);
+                const users = Array.from(new Set(holders.map((t) => t.user)));
+                if (f.excessQty <= 0) {
+                    const state = `none:${f.platformQty}/${f.brokerQty}`;
+                    if (this.foreignShortfallAlerted.get(`${broker}|${f.tsym}`) !== state) {
+                        this.foreignShortfallAlerted.set(`${broker}|${f.tsym}`, state);
+                        Log.log(`[order] ALERT: ${f.tsym} (${broker}) platform holds ${f.platformQty}, broker net ${f.brokerQty}, but no non-platform sell beyond the user's own manual buys explains the ${f.shortfall} missing (manual buys ${f.foreignBuyQty}, manual sells ${f.foreignSellQty}) - nothing booked`);
+                    }
+                    continue;
+                }
+                if (users.length !== 1) {
+                    const state = `multi:${f.platformQty}/${f.brokerQty}/${f.excessQty}`;
+                    if (this.foreignShortfallAlerted.get(`${broker}|${f.tsym}`) !== state) {
+                        this.foreignShortfallAlerted.set(`${broker}|${f.tsym}`, state);
+                        Log.log(`[order] ALERT: ${f.tsym} (${broker}) a non-platform sell took ${Math.min(f.shortfall, f.excessQty)} lots out of the platform's book, but ${users.length} users hold the contract (${users.join(', ')}) and whose lots went cannot be told - nothing booked, POST /reconcile after settling it by hand`);
+                    }
+                    continue;
+                }
+                const q = Math.min(f.shortfall, f.excessQty);
+                for (const piece of piecesForShortfall(f.pieces, q)) {
+                    const id = piece.orderId;
+                    if (this.processedFillIds.has(id) || await this.fillAlreadyStored({ brokerOrderId: id, action: 'Sell' } as Trade)) continue; // booked before: never twice
+                    const target = this.trades.find((t) => t.broker === broker && t.tsym === f.tsym && t.user === users[0] && Number(t.quantity) > 0);
+                    if (!target) continue;
+                    const qty = Math.min(piece.qty, Number(target.quantity));
+                    if (!(qty > 0)) continue;
+                    const ev = new Trade();
+                    ev.tsym = target.tsym; ev.token = target.token; ev.right = target.right; ev.quantity = qty; ev.price = piece.price;
+                    ev.action = 'Sell'; ev.status = 'COMPLETE'; ev.user = target.user; ev.broker = broker; ev.strategy = target.strategy; ev.brokerOrderId = id;
+                    Log.log(`[order] ALERT: ${target.user} ${target.tsym} (${broker}) - a sell made outside the platform (order ${id}, trade ${piece.tradeIds.join('/')}) took ${qty} of the platform's lots (platform held ${f.platformQty}, broker net ${f.brokerQty}; manual buys ${f.foreignBuyQty}, manual sells ${f.foreignSellQty}) - booking it as a sell @ ${piece.price.toFixed(2)} (entry ${Number(target.price).toFixed(2)}, P&L ${((piece.price - Number(target.price)) * qty).toFixed(2)})`);
+                    recordOrderOwner(id, ev.user, broker);
+                    if (opts.notifyStrategies) await this.recordFill(ev);
+                    else {
+                        this.processedFillIds.add(id);
+                        try { await this._processTradeEvent(ev); } catch (e) { this.processedFillIds.delete(id); throw e; }
+                    }
+                    booked++;
+                }
+                this.foreignShortfallAlerted.delete(`${broker}|${f.tsym}`);
+            }
+            return booked;
+        } catch (e: any) {
+            Log.log(`[order] bookForeignSellShortfall(${broker}) failed (nothing further booked):`, e?.message ?? e);
+            return 0;
+        }
+    }
+
     // ---- End-of-day repair (2026-11-11): broker trade book + positions -> Mongo ----
     // One central job (user's design): after the close, and on demand (`npm run sync`), look at Mongo and at what each broker says it did today
     // (trade book / order book fills, open positions) and update Mongo to match. It reads brokers and writes Mongo and bookkeeping only; it places no
@@ -2073,7 +2215,9 @@ class OrderBookkeeping {
                 continue;
             }
             const owner = owners.get(f.orderId);
-            const target = owner ? holders.find((t) => t.user === owner) : holders.length === 1 ? holders[0] : undefined;
+            // kite: a sell with no recorded owner is a non-platform sell; whether it took the platform's lots is decided by bookForeignSellShortfall (it
+            // separates the user's own manual buys from the platform's lots), not guessed here from "exactly one holder".
+            const target = owner ? holders.find((t) => t.user === owner) : broker !== 'kite' && holders.length === 1 ? holders[0] : undefined;
             const qty = target ? Math.min(f.qty, Number(target.quantity)) : 0;
             if (!target || !(qty > 0) || trackedTotal - qty < held) {
                 mismatches.push({ kind: 'unattributedFill', broker, tsym: f.tsym, brokerQty: held, mongoQty: trackedTotal, note: `a Sell of ${f.qty} @ ${f.price.toFixed(2)} (order ${f.orderId}) is at the broker but not in Mongo and cannot be attributed with evidence - not booked` });
@@ -2305,8 +2449,11 @@ class OrderBookkeeping {
                 Log.log(`[order] ALERT: EOD sync ${broker}: ${report.error}`);
                 return report;
             }
+            // Sells made outside the platform that took the platform's lots: booked at the trade-book price BEFORE the flat-position sync, which would
+            // otherwise close them at an implied price. No strategy is notified (a sync places nothing); they learn from their own reconcile.
+            report.bookedFills += await this.bookForeignSellShortfall(broker, { notifyStrategies: false, graceMs: 0, confirm: false });
             const fills = await this.readBrokerFills(broker);
-            if (fills) report.bookedFills = await this.bookMissingSellFills(broker, fills, rows, report.mismatches);
+            if (fills) report.bookedFills += await this.bookMissingSellFills(broker, fills, rows, report.mismatches);
             else report.mismatches.push({ kind: 'unattributedFill', broker, tsym: '*', note: 'the broker trade book could not be read - closes were booked from position totals only' });
             report.bookedFlat = await this.syncExternalCloses(broker, 0); // contracts flat at the broker with no exact fill: implied price
             this.collectEodMismatches(broker, (await this.readBrokerRows(broker)) ?? rows, report.mismatches);

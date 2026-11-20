@@ -47,7 +47,7 @@ import { startMirrorBuy, undoMirrorBuy, onUserSell, mirrorSetTargetStopLoss, for
 import * as prismExecutor from './order/prismExecutor';
 import { getBrokerExecutor, getExecutorByBroker } from './order/brokerExecutors';
 import { onPaperTick } from './order/paperExecutor';
-import { BrokerExecutor, withSellLock, OrderAlreadyFilledError } from './order/BrokerExecutor';
+import { BrokerExecutor, withSellLock, OrderAlreadyFilledError, waitUntilNotResting } from './order/BrokerExecutor';
 import Kite from '../kite/Kite';
 import ANT from '../ant/ANT';
 import NorenRestApi from '../prism/RestAPI';
@@ -456,6 +456,7 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
     const pending = executor.findPendingOrders(userId, tsym).filter((o) => o.action === action);
     let filledQty = 0;
     let cancelFailed = false;
+    const racedFill: string[] = [];
     for (const order of pending) {
         try {
             await executor.cancelOrder(order.orderId, order.exchange);
@@ -469,6 +470,7 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
                 // the force-close below, leaving it unprotected - see
                 // gaps.md's "Partial-fill accounting" entry.
                 filledQty += e.filledQuantity;
+                racedFill.push(order.orderId);
                 Log.log(`[order] cancelAnyRestingLimitSell: ${order.orderId} (${tsym}, ${userId}) already filled qty=${e.filledQuantity}/${order.quantity} - excluding filled portion from force-close`);
             } else {
                 cancelFailed = true;
@@ -476,6 +478,11 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
             }
         }
     }
+    // A cancel that raced a fill leaves the order TRACKED (the poller books the fill, then untracks it). Until then the never-short guard
+    // still counts it as a resting sell (live 2026-11-20 11:44:19: the replacement sell for the remaining 195 was refused with 'live=195,
+    // resting sells=455' while the 260 fill of the cancelled 455 was booked 9 s later). So wait, bounded, until none of the raced orders is
+    // tracked any more (fill booked); on timeout say so and go on - the caller's own guard/retry then decides.
+    if (racedFill.length > 0) await waitUntilNotResting(() => executor.findPendingOrders(userId, tsym), racedFill, `${tsym} (${userId})`);
     return { filledQty, cancelFailed };
 }
 

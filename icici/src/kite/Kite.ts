@@ -277,7 +277,36 @@ class Kite {
     // incident: a MARKET square-off filled below entry on a stray tick that
     // never reflected a real tradable price).
     // Contracts with a sell currently between its sellable-quantity check and the broker accepting the order.
-    private sellsInFlight = new Set<string>();
+    // Serialized per contract (user decision 2026-11-20): a second sell for the same contract WAITS for the first (which ends once the broker has
+    // accepted/refused it, so it is visible as an open sell) and then re-runs the never-short check on fresh broker state. It used to be refused
+    // ('another sell is in flight'): 2026-11-20 10:00:04 ScaledHedged's sell of NIFTY26NOV25550CE was refused because SimpleContinuous's sell on the
+    // same contract was mid-flight. The wait is bounded; on timeout the sell is refused with one ALERT.
+    // Set by the order process: says whether a non-platform sell explains a refusal (bookkeeping.explainNeverShort). Diagnostic only.
+    static neverShortExplainer?: (tradingSymbol: string) => Promise<string>;
+    private sellLocks = new Map<string, Promise<void>>();
+    static SELL_LOCK_WAIT_MS = 45_000; // static (not readonly) so a unit test can shorten it
+
+    private async acquireSellLock(tradingSymbol: string): Promise<() => void> {
+        const prev = this.sellLocks.get(tradingSymbol) ?? Promise.resolve();
+        let release!: () => void;
+        const mine = new Promise<void>((r) => { release = r; });
+        const tail = prev.then(() => mine);
+        this.sellLocks.set(tradingSymbol, tail);
+        const done = () => { release(); if (this.sellLocks.get(tradingSymbol) === tail) this.sellLocks.delete(tradingSymbol); };
+        let timer: NodeJS.Timeout | undefined;
+        const timedOut = await Promise.race([
+            prev.then(() => false),
+            new Promise<boolean>((r) => { timer = setTimeout(() => r(true), Kite.SELL_LOCK_WAIT_MS); }),
+        ]);
+        if (timer) clearTimeout(timer);
+        if (timedOut) {
+            // Our turn stays in the chain but is released as soon as the earlier holder finishes, so later sells are not blocked by us.
+            done();
+            Log.log(`[Kite] ALERT: NEVER-SHORT GUARD: an earlier sell for ${tradingSymbol} did not finish within ${Kite.SELL_LOCK_WAIT_MS / 1000}s - refusing this sell`);
+            throw new Error(`NEVER-SHORT GUARD: an earlier sell for ${tradingSymbol} did not finish within ${Kite.SELL_LOCK_WAIT_MS / 1000}s - refusing this sell (retry later)`);
+        }
+        return done;
+    }
 
     // A refused sell (nothing sellable) is remembered per contract for SELL_REFUSAL_TTL_MS: the guard's check costs two broker REST calls
     // (positions + orders), and a caller that retries at tick rate (live 2026-11-12 10:11: 279 refusals in 90 s on one contract after the
@@ -316,10 +345,9 @@ class Kite {
             throw new Error('No active session. Please login first.');
         }
         // Held from the check until the broker has accepted the order (so it shows up as an open sell
-        // for the next check): two concurrent sells for one contract can never both pass.
-        if (this.sellsInFlight.has(tradingSymbol)) {
-            throw new Error(`NEVER-SHORT GUARD: another sell for ${tradingSymbol} is in flight - refusing a concurrent sell`);
-        }
+        // for the next check): two concurrent sells for one contract can never both pass; the later one waits its turn.
+        const releaseSellLock = await this.acquireSellLock(tradingSymbol);
+        try {
         const cached = this.sellRefusals.get(tradingSymbol);
         if (cached && Date.now() < cached.until) {
             cached.suppressed++;
@@ -330,14 +358,24 @@ class Kite {
             }
             throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${tradingSymbol} (sellable=0, refusal remembered for ${Kite.SELL_REFUSAL_TTL_MS / 1000}s) - refusing to sell ${quantity}`);
         }
-        this.sellsInFlight.add(tradingSymbol);
-        try {
+        {
             const sellable = await this.getSellableQuantity(tradingSymbol);
             if (sellable <= 0) {
                 const prev = this.sellRefusals.get(tradingSymbol);
                 const logNow = !prev || Date.now() - prev.loggedAt >= Kite.SELL_REFUSAL_LOG_EVERY_MS;
                 this.sellRefusals.set(tradingSymbol, { until: Date.now() + Kite.SELL_REFUSAL_TTL_MS, suppressed: 0, loggedAt: logNow ? Date.now() : prev!.loggedAt });
-                if (logNow) Log.log(`[Kite] ALERT: NEVER-SHORT GUARD refused a sell of ${quantity} ${tradingSymbol} - nothing sellable (sellable=${sellable}); the caller's position tracking is out of sync with the broker`);
+                if (logNow) {
+                    Log.log(`[Kite] ALERT: NEVER-SHORT GUARD refused a sell of ${quantity} ${tradingSymbol} - nothing sellable (sellable=${sellable}); the caller's position tracking is out of sync with the broker`);
+                    if (Kite.neverShortExplainer) {
+                        let timer: NodeJS.Timeout | undefined;
+                        const why = await Promise.race([
+                            Kite.neverShortExplainer(tradingSymbol).catch((e: any) => `cause check failed: ${e?.message ?? e}`),
+                            new Promise<string>((r) => { timer = setTimeout(() => r('cause check timed out'), 8000); }),
+                        ]);
+                        if (timer) clearTimeout(timer);
+                        Log.log(`[Kite] NEVER-SHORT cause for ${tradingSymbol}: ${why}`);
+                    }
+                }
                 throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${tradingSymbol} (sellable=${sellable}) - refusing to sell ${quantity}`);
             }
             const requestedQuantity = quantity;
@@ -359,8 +397,9 @@ class Kite {
             this.placedOrderIds.add(response.order_id);
             // quantity/clamped let callers see that less than requested was actually placed.
             return { orderId: response.order_id, quantity, clamped: quantity < requestedQuantity };
+        }
         } finally {
-            this.sellsInFlight.delete(tradingSymbol);
+            releaseSellLock();
         }
     }
 

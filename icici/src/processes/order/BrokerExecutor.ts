@@ -373,3 +373,21 @@ export interface BrokerExecutor {
     // `exchange` (when the caller knows it, e.g. from the pending-order tracker) is used by brokers whose cancel API needs it (Breeze).
     cancelOrder(orderId: string, exchange?: OptionExchange): Promise<void>;
 }
+
+// After a cancel that raced a fill the order stays TRACKED until the poller books the fill and untracks it; the never-short guard counts a tracked
+// sell as resting, so a replacement sell placed at once is refused (live 2026-11-20 11:44:19, lock-profits re-price: 'live=195, resting sells=455').
+// Waits, bounded, until none of `orderIds` is tracked any more. Returns false (with an ALERT) when the wait ran out.
+export const RACED_FILL_WAIT_MS = { max: 45_000, step: 500 }; // object so a unit test can shorten it
+export async function waitUntilNotResting(findPending: () => { orderId: string }[], orderIds: string[], label: string): Promise<boolean> {
+    const deadline = Date.now() + RACED_FILL_WAIT_MS.max;
+    const stillTracked = () => findPending().some((o) => orderIds.includes(o.orderId));
+    while (stillTracked()) {
+        if (Date.now() >= deadline) {
+            Log.log(`[order] ALERT: ${label}: order(s) ${orderIds.join(',')} filled in the cancel race but are still counted as resting after ${RACED_FILL_WAIT_MS.max / 1000}s (fill not booked yet) - continuing; a replacement sell may be refused by the never-short guard until the fill is booked`);
+            return false;
+        }
+        await new Promise((r) => setTimeout(r, RACED_FILL_WAIT_MS.step));
+    }
+    Log.log(`[order] ${label}: raced fill(s) ${orderIds.join(',')} booked and no longer resting - continuing`);
+    return true;
+}

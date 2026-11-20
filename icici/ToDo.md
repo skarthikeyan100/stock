@@ -60,3 +60,4 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 
 ## LegManager never-short refusal storm (2026-11-20)
 - Restart the strategies process after market hours to load the LegManager sell back-off / closed-outside handling and the LimitEntry close back-off (open-review-items.md 121). Also loads LegManager.reconcileLegsWithBroker (open-review-items.md 122): legs are verified against the broker's live quantity (kite/ant) and closed neutral / shrunk when sold by hand; verify live after the restart. Open (122): Simple/ScaledHedged/LimitEntry have no such reconcile; trader decides whether `npm run sync` should book manual sells.
+- Restart the order process after market hours to load open-review-items.md 123-125 (non-platform sell booking, Kite per-contract sell lock, raced-fill wait); then the user fixes the wrong 12:00 sync row (item 123 (4)).
