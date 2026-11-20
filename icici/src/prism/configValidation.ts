@@ -356,7 +356,7 @@ export function validateConfigFile(parsed: any): string[] {
             if (s.index !== undefined && s.index !== 'NIFTY') errors.push(`${s.type}.index must be NIFTY (got ${JSON.stringify(s.index)})`);
             if (s.lastEntryTime !== undefined && (typeof s.lastEntryTime !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.lastEntryTime))) errors.push(`${s.type}.lastEntryTime must be HH:mm (got ${JSON.stringify(s.lastEntryTime)})`);
             if (s.candleMinutes !== undefined && !(isNum(s.candleMinutes) && Number.isInteger(s.candleMinutes) && s.candleMinutes >= 1 && s.candleMinutes <= 375)) errors.push(`${s.type}.candleMinutes must be a whole number of minutes from 1 to 375 (got ${JSON.stringify(s.candleMinutes)})`);
-            for (const key of ['fullyOutside', 'confirmCandle']) if (s[key] !== undefined && s[key] !== null && typeof s[key] !== 'boolean') errors.push(`${s.type}.${key} must be true or false (got ${JSON.stringify(s[key])})`);
+            for (const key of ['openOutside', 'confirmCandle']) if (s[key] !== undefined && s[key] !== null && typeof s[key] !== 'boolean') errors.push(`${s.type}.${key} must be true or false (got ${JSON.stringify(s[key])})`);
             for (const key of ['bodyDominance', 'closeLocation']) if (s[key] !== undefined && !(isNum(s[key]) && s[key] >= 0 && s[key] <= 100)) errors.push(`${s.type}.${key} must be a percentage from 0 to 100 (got ${JSON.stringify(s[key])})`);
             for (const key of ['target', 'stopLoss']) {
                 const v = s[key] !== undefined && s[key] !== null ? s[key] : parsed.settings?.[key];
