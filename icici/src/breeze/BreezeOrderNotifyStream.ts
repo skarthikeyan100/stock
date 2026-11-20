@@ -56,6 +56,8 @@ export function pushFillPrice(data: any, minPrice: number, maxPrice: number): nu
 class BreezeOrderNotifyStream {
     private static instance: BreezeOrderNotifyStream;
     private connected = false;
+    // Every push of the order-notification socket (set by the order process: the non-platform-sell booking).
+    static onPush?: (data: any) => void;
 
     // Keyed by orderId (best-guess: orderReference). Handles both settling an already-registered
     // waitForFill call and buffering a terminal push that arrived with no waiter registered yet -
@@ -111,6 +113,7 @@ class BreezeOrderNotifyStream {
             return;
         }
         const key = String(orderId);
+        try { BreezeOrderNotifyStream.onPush?.(data); } catch (e: any) { Log.log('[BreezeOrderNotifyStream] onPush failed:', e?.message ?? e); }
 
         const status = data.orderStatus;
         // Only 'Executed' (the whole order's quantity filled) resolves this

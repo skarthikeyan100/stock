@@ -41,6 +41,7 @@ import AntContractMaster from '../ant/AntContractMaster';
 import PrismContractMaster from '../prism/PrismContractMaster';
 import Prism from '../prism';
 import BreezeOrderNotifyStream from '../breeze/BreezeOrderNotifyStream';
+import { parseBrokerTime } from './order/timedFills';
 import AntOrderNotifyStream from '../ant/AntOrderNotifyStream';
 import * as exitMonitor from './order/exitMonitor';
 import { startMirrorBuy, undoMirrorBuy, onUserSell, mirrorSetTargetStopLoss, forgetRestingMirror, type MirrorLeg, type MirrorHook } from './order/mirror';
@@ -157,6 +158,20 @@ exitMonitor.setAggregateResolver((t, broker) =>
 // already discards those) - getUserSession() is null in exactly that case, so
 // gate on it instead of letting connect() fail every time this process starts
 // before the day's ANT login has happened.
+// Non-platform sells (the user's own app orders, a broker's auto square-off) are booked when they HAPPEN (user decision 2026-11-20): the order-update
+// streams hand every row of the account to bookkeeping.noteBrokerOrderEvent, which triggers the attribution for a sell whose order id is not the
+// platform's. Whether a stream delivers orders the platform did not place is NOT established (no such row exists in the logs; the ANT stream did not
+// deliver the broker's own 2026-11-11 15:16 square-off), so the safety poll below stays on for every broker.
+AntOrderNotifyStream.onOrderRow = (d) => {
+    const filled = Number(d.flqty) > 0 || d.reporttype === 'Fill';
+    void bookkeeping.noteBrokerOrderEvent('ant', { orderId: String(d.norenordno), side: d.trantype === 'S' ? 'Sell' : d.trantype === 'B' ? 'Buy' : null, tsym: d.tsym ? String(d.tsym) : undefined, filled, fillAt: parseBrokerTime(d.fltm) });
+};
+BreezeOrderNotifyStream.onPush = (d) => {
+    const filled = d.orderStatus === 'Executed' || d.orderStatus === 'Partially Executed';
+    void bookkeeping.noteBrokerOrderEvent('breeze', { orderId: String(d.orderReference ?? d.orderPipeId ?? ''), side: d.orderFlow === 'Sell' ? 'Sell' : d.orderFlow === 'Buy' ? 'Buy' : null, filled, fillAt: parseBrokerTime(`${d.messageDate ?? ''} ${d.messageTime ?? ''}`.trim()) });
+};
+bookkeeping.setPendingOrderSource((b) => TRACKERS[b].all());
+
 function connectAntOrderNotifyIfSessionValid(context: string): void {
     if (!ANT.getInstance().getUserSession()) {
         Log.log(`[order] ANT session not valid for today (${context}) - skipping AntOrderNotifyStream connect until next ANT login`);
@@ -1638,6 +1653,7 @@ export async function startOrderProcess() {
     // Open positions are restored from Mongo alone, here, with no broker read and no login (user's design, 2026-11-11). Mongo is kept equal to
     // the brokers by the end-of-day sync and `npm run sync`, not by the restart. The strategies process then restores its own state from them.
     await runMongoRestore('startup').catch((e) => Log.log('[order] startup: restore from Mongo threw:', e));
+    bookkeeping.enableForeignSellWatch(); // from here on a non-platform sell event / own booking / refusal / poll may trigger the booking
     exitMonitor.reconcileFromTrades(bookkeeping.trades);
 
     // Restore any resting root-refill limit orders tracked before this restart,
@@ -1730,7 +1746,11 @@ export async function startOrderProcess() {
     };
     guardedInterval('evaluateOpenDrawdowns', () => bookkeeping.evaluateOpenDrawdowns(), 10_000);
     guardedInterval('pollGttFills', pollGttFills, 60_000);
-    guardedInterval('reconcileManualSells', reconcileManualSells, 60_000);
+    guardedInterval('reconcileManualSells', reconcileManualSells, 60_000); // kite: the 'not placed by this platform' ALERT only (the booking is the watch below)
+    // Safety poll of the non-platform-sell booking, all four brokers, ONLY for a broker whose lots the platform holds (flat = nothing scheduled, no call).
+    // Each check reads the broker's positions once (the trade book only when the platform holds more than the broker) and the watch lets one check run
+    // per (broker, contract) per 15 s and one per broker at a time, so it can never exceed a few reads a minute per broker.
+    guardedInterval('pollForeignSells', async () => bookkeeping.pollForeignSells(), 15_000);
     // The broker -> Mongo sync is an END-OF-DAY job (user's design, 2026-11-11), not a periodic one: it runs once after the close (eodReconcileTick) and
     // on demand (`npm run sync` -> POST /sync). No broker is read intraday for it.
     guardedInterval('eodReconcile', eodReconcileTick, 60_000);

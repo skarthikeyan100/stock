@@ -20,7 +20,7 @@ import type { TimedFill } from './foreignSells';
 
 export interface TimedBook {
     fills: TimedFill[]; // rows with a parsed time
-    untimed: { orderId: string; tsym: string; aliases?: string[]; token?: string }[]; // rows that could not be given a time
+    untimed: { orderId: string; tsym: string; aliases?: string[]; token?: string; action?: 'Buy' | 'Sell'; qty?: number; price?: number; tradeId?: string }[]; // rows that could not be given a time (the row's side/qty/price kept so a time learnt elsewhere, e.g. the order-update stream, can complete it)
 }
 
 const IST_OFFSET_MS = 5.5 * 3600_000;
@@ -82,7 +82,7 @@ export function describeRowKeys(broker: string, rows: any[]): string | null {
 export function resetRowKeysLogged(): void { keysLogged = new Set(); }
 
 function finish(fills: TimedFill[], untimed: TimedBook['untimed'], row: any, base: { orderId: string; tsym: string; action: 'Buy' | 'Sell'; qty: number; price: number; aliases?: string[]; token?: string }, tradeId: string | null, idx: number, at: number | null): void {
-    if (at == null) { untimed.push({ orderId: base.orderId, tsym: base.tsym, aliases: base.aliases, token: base.token }); return; }
+    if (at == null) { untimed.push({ orderId: base.orderId, tsym: base.tsym, aliases: base.aliases, token: base.token, action: base.action, qty: base.qty, price: base.price, tradeId: tradeId ?? `${base.orderId}#${idx}` }); return; }
     fills.push({ ...base, tradeId: tradeId ?? `${base.orderId}#${idx}`, at } as TimedFill);
 }
 

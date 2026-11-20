@@ -64,6 +64,8 @@ class AntOrderNotifyStream {
     // buffering a terminal push that arrived with no waiter registered yet - see this file's
     // header comment and PendingFillRegistry.ts's own header for why both cases are real.
     private fills = new PendingFillRegistry<number>(20000);
+    // Every 'om' row of the account's order-update stream, before any status filtering (set by the order process: the non-platform-sell booking).
+    static onOrderRow?: (data: any) => void;
 
     static getInstance(): AntOrderNotifyStream {
         if (!AntOrderNotifyStream.instance) {
@@ -225,6 +227,7 @@ class AntOrderNotifyStream {
         const orderNo = data.norenordno ?? data.brokerOrderId ?? data.orderNo;
         if (!orderNo) return;
         const key = String(orderNo);
+        try { AntOrderNotifyStream.onOrderRow?.(data); } catch (e: any) { Log.log('[AntOrderNotify] onOrderRow failed:', e?.message ?? e); }
 
         const status = data.status ?? data.orderStatus;
         let outcome: { fillPrice?: number; error?: Error } | null = null;

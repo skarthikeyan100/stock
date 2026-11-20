@@ -13,7 +13,8 @@ import * as exitMonitor from './exitMonitor';
 import { collapseFillsByOrderId, netFifoLots, pairFillsFifo, netWithShortCover } from './fillNetting';
 import { recordOrderOwner, loadOrderOwners } from './orderOwners';
 import { foreignSellExcess, piecesForShortfall } from './foreignSells';
-import { timedFillsFromKite, timedFillsFromAnt, timedFillsFromBreeze, timedFillsFromPrism, describeRowKeys, type TimedBook } from './timedFills';
+import { ForeignSellWatch, type WatchReason } from './foreignSellWatch';
+import { timedFillsFromKite, timedFillsFromAnt, timedFillsFromBreeze, timedFillsFromPrism, describeRowKeys, parseBrokerTime, type TimedBook } from './timedFills';
 import configService from '../../prism/ConfigService';
 import { drawdownDecision } from '../../prism/percentConfig';
 import { levelRules } from '../../levelRules';
@@ -22,6 +23,7 @@ import { startOfWeek } from '../../util/weekWindow';
 import AntContractMaster from '../../ant/AntContractMaster';
 import { normalizeBrokerName, normalizeBrokerList } from '../../util/brokerName';
 import { localDayKey } from '../../strategy/dayKey';
+import { isWithinTradingWindow } from '../../util/marketHours';
 import { exchangeForTsym } from '../../util/underlyings';
 import { isGlobalMaxProfitLatched } from '../../strategy/globalMaxProfitLatch';
 import type { BrokerName } from '../../util/brokerName';
@@ -47,6 +49,15 @@ const OPEN_PNL_ANT_QUOTE_MS = 2_000;
 const OPEN_PNL_BROKER_PRICE_MS = 1_500;
 // A price last seen live this recently still stands in when both live sources fail.
 const OPEN_PNL_STALE_PRICE_MS = 120_000;
+// A contract with a live GTT: a sell on it may be the GTT's own exit, which the GTT poll (60 s) books; the foreign-sell check leaves such a sell alone this long.
+const GTT_EXIT_GRACE_MS = 2 * 60_000;
+// Event-driven non-platform-sell booking (see OrderBookkeeping.foreignWatch). Settle: long enough for the platform's own fill booking that is about to land
+// (the confirm step adds a second broker read 3 s later); a refusal waits less, its caller is already stuck. One run per (broker, contract) per 15 s.
+const FOREIGN_WATCH_SETTLE_MS = 5_000;
+const FOREIGN_WATCH_REFUSAL_SETTLE_MS = 2_000;
+const FOREIGN_WATCH_MAX_WAIT_MS = 20_000;
+const FOREIGN_WATCH_MIN_GAP_MS = 15_000;
+interface ForeignOutcome { state: 'booked' | 'already' | 'untimed' | 'mixed' | 'none' | 'multi'; text: string; at: number; orders: string[] }
 
 // Local YYYY-MM-DD, same key as PnlStop's latch day.
 function dayKeyLocal(): string {
@@ -1149,6 +1160,9 @@ class OrderBookkeeping {
         }
         if (id) this.failedBookingFillIds.delete(id);
         for (const l of this.fillListeners) l(tradeEvent.user || 'Default', tradeEvent);
+        // 'Whenever another trade happens': any booked trade of this broker and contract re-checks it for a non-platform sell (debounced; a sell booked by
+        // the check itself does not re-trigger it).
+        if (tradeEvent.broker && tradeEvent.broker !== 'paper' && !this.foreignBookedIds.has(String(id ?? ''))) this.foreignWatch.request(tradeEvent.broker as BrokerKey, tradeEvent.tsym, 'own-trade');
     }
 
     // Dedicated recorder for a strategy's own SellToOpen/BuyToClose fills (e.g.
@@ -1232,6 +1246,13 @@ class OrderBookkeeping {
 
     // Prism/Shoonya websocket 'om' message shape - kept for the legacy order path.
     async updateTradeFromPrismMessage(data: any): Promise<Trade | void> {
+        // Every fill row of the account arrives here, the platform's and the user's own (app) orders alike. An order that is not the platform's (not placed
+        // by this process, not tracked, not booked, not in the owner ledger) is never booked as the 'Default' user (it used to be: a foreign fill of the
+        // account would have become a 'Default' trade); a SELL of it triggers the non-platform-sell attribution instead.
+        if (data.flqty != undefined && data.norenordno) {
+            const foreign = await this.noteBrokerOrderEvent('prism', { orderId: String(data.norenordno), side: data.trantype === 'S' ? 'Sell' : data.trantype === 'B' ? 'Buy' : null, tsym: data.tsym ? String(data.tsym) : undefined, filled: true, fillAt: parseBrokerTime(data.fltm) });
+            if (foreign) { Log.log(`[order] prism order ${data.norenordno} (${data.trantype} ${data.tsym}) is not the platform's - not booked as a platform fill`); return; }
+        }
         const user = this.resolveUser(data.norenordno, data.tsym);
         if (data.flqty == undefined) return;
 
@@ -2008,6 +2029,25 @@ class OrderBookkeeping {
 
     // The broker's executed rows with fill times. null = unreadable. Never throws.
     private async readTimedFills(broker: BrokerKey): Promise<TimedBook | null> {
+        const book = await this.readTimedFillsRaw(broker);
+        return book ? this.applyEventFillTimes(broker, book) : book;
+    }
+
+    // A row the trade book gave no time for (ant/breeze until their time field is confirmed, item 126) takes the fill time the order-update stream
+    // delivered for that order (ant `fltm`, a real fill time seen in the 2026-11-20 rows; breeze push messageDate+messageTime, the push's own time, so
+    // an approximation of the fill time). No stream time seen for the order (e.g. the stream was down) = the row stays untimed and nothing is booked.
+    private applyEventFillTimes(broker: BrokerKey, book: TimedBook): TimedBook {
+        if (book.untimed.length === 0) return book;
+        const fills = [...book.fills]; const untimed: TimedBook['untimed'] = [];
+        for (const u of book.untimed) {
+            const at = this.eventFillTimes.get(`${broker}|${u.orderId}`);
+            if (at != null && u.action && (u.qty ?? 0) > 0) fills.push({ orderId: u.orderId, tradeId: u.tradeId ?? u.orderId, action: u.action, tsym: u.tsym, qty: u.qty!, price: u.price ?? 0, at, token: u.token, aliases: u.aliases });
+            else untimed.push(u);
+        }
+        return { fills, untimed };
+    }
+
+    private async readTimedFillsRaw(broker: BrokerKey): Promise<TimedBook | null> {
         try {
             let rows: any[];
             if (broker === 'kite') {
@@ -2048,9 +2088,9 @@ class OrderBookkeeping {
     }
 
     // Contracts where the platform's open quantity exceeds the broker's net, with the non-platform sells that explain it. Reads only.
-    private async foreignShortfalls(broker: BrokerKey, opts: { isOwnOrder?: (orderId: string) => boolean; graceMs?: number }, rows: BrokerRow[]): Promise<ForeignShortfall[] | null> {
+    private async foreignShortfalls(broker: BrokerKey, opts: { isOwnOrder?: (orderId: string) => boolean; graceMs?: number; onlyTsym?: string }, rows: BrokerRow[]): Promise<ForeignShortfall[] | null> {
         const byTsym = new Map<string, Trade[]>();
-        for (const t of this.trades) if (t.broker === broker && Number(t.quantity) > 0) byTsym.set(t.tsym, [...(byTsym.get(t.tsym) ?? []), t]);
+        for (const t of this.trades) if (t.broker === broker && Number(t.quantity) > 0 && (!opts.onlyTsym || opts.onlyTsym === '*' || t.tsym === opts.onlyTsym)) byTsym.set(t.tsym, [...(byTsym.get(t.tsym) ?? []), t]);
         const short: { tsym: string; platformQty: number; brokerQty: number; shortfall: number; ts: Trade[]; since: number; mixed: boolean }[] = [];
         for (const [tsym, ts] of byTsym) {
             const platformQty = ts.reduce((s, t) => s + Number(t.quantity), 0);
@@ -2077,9 +2117,11 @@ class OrderBookkeeping {
         const wanted = book.fills.filter((f) => short.some((x) => belongs(x, f)));
         const owners = await loadOrderOwners(Array.from(new Set(wanted.map((f) => f.orderId))));
         const own = opts.isOwnOrder ?? await this.clientOwnOrderTest(broker);
-        const isPlatform = (id: string) => have.keys.has(`Buy|${id}`) || have.keys.has(`Sell|${id}`) || owners.has(id) || this.processedFillIds.has(id) || own(id);
-        const maxSellAt = Date.now() - (opts.graceMs ?? 0);
+        const extraOwn = this.extraOwnOrderTests.get(broker);
+        const isPlatform = (id: string) => have.keys.has(`Buy|${id}`) || have.keys.has(`Sell|${id}`) || owners.has(id) || this.processedFillIds.has(id) || own(id) || (extraOwn?.(id) ?? false);
+        const graceFor = (x: { ts: Trade[] }) => x.ts.some((t) => t.gttTriggerId != null) ? Math.max(opts.graceMs ?? 0, GTT_EXIT_GRACE_MS) : (opts.graceMs ?? 0); // a GTT-triggered exit is booked by the GTT poll: its sell order id is unknown to the platform until then
         return short.map((x) => {
+            const maxSellAt = Date.now() - graceFor(x);
             const mine = wanted.filter((f) => belongs(x, f));
             const canon = new Set(mine.filter((f) => f.tsym !== x.tsym && f.aliases?.includes(x.tsym)).map((f) => f.tsym));
             const ambiguous = !mine.some((f) => f.tsym === x.tsym) && canon.size > 1;
@@ -2093,6 +2135,7 @@ class OrderBookkeeping {
 
     // One concise line for the NEVER-SHORT refusal: does a non-platform sell explain the mismatch between the platform's book and the broker? Never throws.
     async explainNeverShort(broker: BrokerKey, tsym: string, isOwnOrder?: (orderId: string) => boolean): Promise<string> {
+        this.requestNeverShortRepair(broker, tsym); // every broker's guard calls this on a refusal: the refusal is also the trigger to repair the data
         try {
             const rows = await this.readBrokerRows(broker);
             if (!rows) return 'cause unknown (broker positions not readable)';
@@ -2111,14 +2154,135 @@ class OrderBookkeeping {
         }
     }
 
+    // ---- Event-driven trigger (2026-11-20 user decision) -------------------------------------------------------------------------------------------
+    // WHEN the booking above runs. Triggers (all feed `foreignWatch`, which debounces per (broker, contract), serialises per broker and allows one run per
+    // contract per FOREIGN_WATCH_MIN_GAP_MS):
+    //   1. a fill event of a NON-platform SELL on the broker's order-update stream (ant order-notify WS, prism WS, breeze order-notification WS):
+    //      `noteBrokerOrderEvent`;
+    //   2. the platform booking ANY trade of that broker and contract (`recordFill`, the 'whenever another trade happens' rule);
+    //   3. a NEVER-SHORT 'nothing sellable' refusal for the contract (`explainNeverShort` is called by every broker's guard on a refusal: it requests the
+    //      repair) -> `repairAfterRefusal` says in one line what the repair did;
+    //   4. a safety poll (`pollForeignSells`, orderProcess.ts) while the platform holds open lots of the broker (no poll when flat).
+    // Every run is bookForeignSellShortfall with confirm=true (two broker reads 3 s apart must agree) and notifyStrategies=true (recordFill, so the
+    // strategy's leg closes and the retrying caller stops), idempotent by broker order id (processedFillIds / Mongo / owner ledger).
+    private foreignWatch = new ForeignSellWatch(
+        (broker, tsym, reasons) => this.runForeignCheck(broker as BrokerKey, tsym, reasons),
+        { settleMs: FOREIGN_WATCH_SETTLE_MS, maxWaitMs: FOREIGN_WATCH_MAX_WAIT_MS, minGapMs: FOREIGN_WATCH_MIN_GAP_MS, onError: (b, t, e: any) => Log.log(`[order] foreign-sell check ${b} ${t} failed:`, e?.message ?? e) },
+    );
+    // Extra own-order tests per broker (tracked pending orders), registered by the executors: the owner ledger covers them after a restart.
+    private extraOwnOrderTests = new Map<BrokerKey, (orderId: string) => boolean>();
+    // The platform's pending (resting) orders of a broker, injected by the order process (the trackers live in modules that import this one).
+    private pendingSource?: (broker: BrokerKey) => { orderId: string; userId: string; tradingSymbol: string; action: 'Buy' | 'Sell'; quantity: number }[];
+    setPendingOrderSource(fn: (broker: BrokerKey) => { orderId: string; userId: string; tradingSymbol: string; action: 'Buy' | 'Sell'; quantity: number }[]): void {
+        this.pendingSource = fn;
+        for (const b of ['kite', 'ant', 'breeze', 'prism'] as BrokerKey[]) {
+            const prev = this.extraOwnOrderTests.get(b);
+            this.extraOwnOrderTests.set(b, (id) => (prev?.(id) ?? false) || (this.pendingSource?.(b).some((o) => o.orderId === id) ?? false));
+        }
+    }
+    // Resting sell quantity per user on one contract, from the pending-order trackers (an order found there is the platform's and has an owner).
+    private restingSellsByUser(broker: BrokerKey, tsym: string): Map<string, number> {
+        const m = new Map<string, number>();
+        try { for (const o of this.pendingSource?.(broker) ?? []) if (o.action === 'Sell' && o.tradingSymbol === tsym) m.set(o.userId, (m.get(o.userId) ?? 0) + Number(o.quantity)); } catch { /* none known */ }
+        return m;
+    }
+    registerOwnOrderTest(broker: BrokerKey, test: (orderId: string) => boolean): void { this.extraOwnOrderTests.set(broker, test); }
+    // Fill times learnt from the order-update streams (`<broker>|<order id>` -> epoch ms): complete a trade-book row that has no time.
+    private eventFillTimes = new Map<string, number>();
+    private foreignOutcomes = new Map<string, ForeignOutcome>();
+    private refusalAlertAt = new Map<string, number>();
+    private foreignBookedIds = new Set<string>(); // order ids booked by bookForeignSellShortfall (they do not re-trigger it)
+
+    // Called once the order process has finished its startup reconcile: before that nothing may be booked from an event.
+    enableForeignSellWatch(): void { this.foreignWatch.enable(); }
+    stopForeignSellWatch(): void { this.foreignWatch.stop(); }
+    foreignWatchRuns(): number { return this.foreignWatch.runs; }
+    foreignWatchPending(): number { return this.foreignWatch.pending(); }
+
+    // True when the platform has, in memory, a trade of this broker (and contract unless '*').
+    private holdsOpen(broker: BrokerKey, tsym: string): boolean {
+        return this.trades.some((t) => t.broker === broker && Number(t.quantity) > 0 && (tsym === '*' || t.tsym === tsym));
+    }
+
+    // Safety poll: only brokers the platform holds open lots of (flat = no call at all, not even a scheduled check). Rate-limited by the watch.
+    pollForeignSells(): void {
+        if (!this.foreignWatch.isEnabled() || !isWithinTradingWindow()) return;
+        const brokers = new Set<BrokerKey>();
+        for (const t of this.trades) if (Number(t.quantity) > 0 && t.broker && t.broker !== 'paper') brokers.add(t.broker as BrokerKey);
+        for (const b of brokers) this.foreignWatch.request(b, '*', 'poll', 0);
+    }
+
+    // One order-update row of a broker's stream. `fillAt` = the row's own fill time when it carries one. A fill of a SELL whose order id is not the
+    // platform's (not placed by this process, not booked, not in the owner ledger, not a tracked pending order) triggers the check. Returns true when the
+    // order is NOT the platform's (the prism handler then does not book it as the 'Default' user). Never throws.
+    async noteBrokerOrderEvent(broker: BrokerKey, row: { orderId: string; side: 'Buy' | 'Sell' | null; tsym?: string; filled: boolean; fillAt?: number | null }): Promise<boolean> {
+        try {
+            const id = String(row.orderId ?? '');
+            if (!id) return false;
+            if (this.processedFillIds.has(id) || this.orderUserMap.has(id)) return false;
+            if (row.fillAt != null && Number.isFinite(row.fillAt) && row.filled) this.eventFillTimes.set(`${broker}|${id}`, row.fillAt);
+            const own = (await this.clientOwnOrderTest(broker))(id) || (this.extraOwnOrderTests.get(broker)?.(id) ?? false);
+            if (own) return false;
+            if ((await loadOrderOwners([id])).has(id)) return false;
+            if (row.side === 'Sell' && row.filled && (row.tsym ? this.holdsOpen(broker, row.tsym) : this.holdsOpen(broker, '*'))) {
+                this.foreignWatch.request(broker, row.tsym ?? '*', 'foreign-sell-event');
+            }
+            return true;
+        } catch (e: any) {
+            Log.log(`[order] noteBrokerOrderEvent(${broker}) failed:`, e?.message ?? e);
+            return false;
+        }
+    }
+
+    // A NEVER-SHORT 'nothing sellable' refusal for (broker, contract): repair the platform's data now (rate-limited, never once per refused call).
+    requestNeverShortRepair(broker: BrokerKey, tsym: string): void {
+        this.foreignWatch.request(broker, tsym, 'refusal', FOREIGN_WATCH_REFUSAL_SETTLE_MS);
+    }
+
+    private async runForeignCheck(broker: BrokerKey, tsym: string, reasons: WatchReason[]): Promise<void> {
+        const refusal = reasons.includes('refusal');
+        if (!this.holdsOpen(broker, tsym)) {
+            if (refusal) this.reportRepair(broker, tsym, 'flat', `the platform's own book holds nothing on this contract, so no non-platform sell can be booked against it: the refused caller's leg/position tracking is stale (nothing sold, nothing booked); LegManager's broker reconcile (cf6602f) or the strategy's reconcile must close it`);
+            return;
+        }
+        this.foreignOutcomes.delete(`${broker}|${tsym}`);
+        const booked = await this.bookForeignSellShortfall(broker, { notifyStrategies: true, graceMs: FOREIGN_WATCH_SETTLE_MS, confirm: true, onlyTsym: tsym, quiet: !refusal });
+        if (!refusal) return;
+        const targets = tsym === '*' ? [] : [tsym];
+        for (const t of targets) {
+            const o = this.foreignOutcomes.get(`${broker}|${t}`);
+            if (o && o.state === 'booked') this.reportRepair(broker, t, 'booked', `a sell made outside the platform took the platform's lots: ${o.text} - the platform's book now matches the broker and the strategy was told (the leg closes now, the retry stops)`);
+            else if (o && o.state === 'already') this.reportRepair(broker, t, 'already', `${o.text}; the platform's book already matches (nothing booked twice)`);
+            else if (o) this.reportRepair(broker, t, o.state, `NOT explained by a booked non-platform sell (${o.text}); ${o.state === 'untimed' ? 'a human must check the trade book' : o.state === 'multi' ? 'a human must settle it (POST /reconcile)' : o.state === 'mixed' ? 'a human must check the products at the broker' : 'a stale leg/lock: LegManager (cf6602f) or the strategy reconcile, or a human, must fix the data'} - nothing guessed, nothing booked`);
+            else this.reportRepair(broker, t, 'covered', `platform holds ${this.trades.filter((x) => x.broker === broker && x.tsym === t && Number(x.quantity) > 0).reduce((a, x) => a + Number(x.quantity), 0)} and the broker holds at least that (or the broker could not be read): no lots are missing, so the refusal comes from RESTING sells at the broker (the guard counts sellable = held - resting sells) or an unreadable read; nothing was booked and no order was cancelled`);
+        }
+        if (booked > 0) Log.log(`[order] NEVER-SHORT repair ${broker} ${tsym}: ${booked} sell(s) booked`);
+    }
+
+    // The one line after a repair; the ALERT (once per contract per 10 min) is for the cases a human or a reconcile must fix.
+    private reportRepair(broker: BrokerKey, tsym: string, state: string, text: string): void {
+        Log.log(`[order] NEVER-SHORT repair ${broker} ${tsym}: ${text}`);
+        if (state === 'booked' || state === 'already') return;
+        const key = `${broker}|${tsym}`;
+        if (Date.now() - (this.refusalAlertAt.get(key) ?? 0) < 10 * 60_000) return;
+        this.refusalAlertAt.set(key, Date.now());
+        Log.log(`[order] ALERT: NEVER-SHORT refusal for ${tsym} (${broker}) is not a non-platform sell the platform can book (${state}) - a human or the LegManager/strategy reconcile must fix the data`);
+    }
+
+    // After a broker position read that found no shortfall: the contract is covered (the repair line then says so). Only for a contract-specific check.
+    private markCovered(broker: BrokerKey, onlyTsym: string | undefined, _rows: BrokerRow[]): void {
+        if (onlyTsym && onlyTsym !== '*') this.foreignOutcomes.delete(`${broker}|${onlyTsym}`);
+    }
+
     // Books the shortfall described above. Returns the number of sells booked. Never throws. `confirm` re-reads the broker 3 s later and books only
     // what both reads agree on (the live poll); the sync passes confirm=false after its own reads.
-    async bookForeignSellShortfall(broker: BrokerKey, opts: { notifyStrategies: boolean; isOwnOrder?: (orderId: string) => boolean; graceMs?: number; confirm?: boolean }): Promise<number> {
+    async bookForeignSellShortfall(broker: BrokerKey, opts: { notifyStrategies: boolean; isOwnOrder?: (orderId: string) => boolean; graceMs?: number; confirm?: boolean; onlyTsym?: string; quiet?: boolean }): Promise<number> {
         try {
-            if (!this.trades.some((t) => t.broker === broker && Number(t.quantity) > 0)) return 0;
+            if (!this.trades.some((t) => t.broker === broker && Number(t.quantity) > 0 && (!opts.onlyTsym || opts.onlyTsym === '*' || t.tsym === opts.onlyTsym))) return 0;
             const rows1 = await this.readBrokerRows(broker);
             if (!rows1) return 0;
             let found = await this.foreignShortfalls(broker, opts, rows1);
+            if (found && found.length === 0) this.markCovered(broker, opts.onlyTsym, rows1);
             if (!found || found.length === 0) return 0;
             if (found.some((x) => x.excessQty > 0) && opts.confirm) {
                 await new Promise((r) => setTimeout(r, 3000));
@@ -2126,8 +2290,11 @@ class OrderBookkeeping {
                 if (!rows2) return 0;
                 found = await this.foreignShortfalls(broker, opts, rows2);
                 if (!found) return 0;
+                if (found.length === 0) { this.markCovered(broker, opts.onlyTsym, rows2); return 0; } // the second read disagrees: the first was a transient (own booking landing)
             }
             let booked = 0;
+            // What this check found per contract, for the NEVER-SHORT repair's one-line report (repairAfterRefusal).
+            const outcome = (f: ForeignShortfall, state: ForeignOutcome['state'], text: string, orders: string[] = []) => this.foreignOutcomes.set(`${broker}|${f.tsym}`, { state, text, at: Date.now(), orders });
             const alertOnce = (f: ForeignShortfall, state: string, msg: string) => {
                 if (this.foreignShortfallAlerted.get(`${broker}|${f.tsym}`) === state) return;
                 this.foreignShortfallAlerted.set(`${broker}|${f.tsym}`, state);
@@ -2135,26 +2302,51 @@ class OrderBookkeeping {
             };
             for (const f of found) {
                 const holders = this.trades.filter((t) => t.broker === broker && t.tsym === f.tsym && Number(t.quantity) > 0);
-                const users = Array.from(new Set(holders.map((t) => t.user)));
+                let users = Array.from(new Set(holders.map((t) => t.user)));
                 if (f.untimedOrders.length > 0) {
+                    outcome(f, 'untimed', `the ${broker} trade book gave no fill time for non-platform order(s) ${f.untimedOrders.join(', ')}`);
                     alertOnce(f, `untimed:${f.platformQty}/${f.brokerQty}/${f.untimedOrders.join(',')}`, `platform holds ${f.platformQty}, broker net ${f.brokerQty} (short ${f.shortfall}), but the ${broker} trade book carries no fill time for non-platform order(s) ${f.untimedOrders.join(', ')} - which sells took the platform's lots cannot be told - nothing booked`);
                     continue;
                 }
                 if (f.mixedProducts || f.ambiguousTsym) {
+                    outcome(f, 'mixed', f.mixedProducts ? 'the contract is long in one product and short in another at the broker' : 'the platform trade has an expiry-less contract name and the trade book holds several expiries behind it');
                     alertOnce(f, `mixed:${f.platformQty}/${f.brokerQty}`, f.mixedProducts
                         ? `platform holds ${f.platformQty}, broker net ${f.brokerQty}: the contract is long in one product and short in another at the broker, the net cannot be attributed to a sell of the platform's lots - nothing booked`
                         : `platform holds ${f.platformQty}, broker net ${f.brokerQty}: the platform trade has an expiry-less contract name and the trade book holds several expiries behind it - nothing booked`);
                     continue;
                 }
                 if (f.excessQty <= 0) {
-                    alertOnce(f, `none:${f.platformQty}/${f.brokerQty}`, `platform holds ${f.platformQty}, broker net ${f.brokerQty}, but no non-platform sell beyond the user's own manual buys explains the ${f.shortfall} missing (manual buys ${f.foreignBuyQty}, manual sells ${f.foreignSellQty}) - nothing booked`);
+                    outcome(f, 'none', `platform holds ${f.platformQty}, broker net ${f.brokerQty} (short ${f.shortfall}) and no non-platform sell beyond the user's own buys explains it (manual buys ${f.foreignBuyQty}, manual sells ${f.foreignSellQty}; a sell newer than the settle window or on a GTT contract is not counted yet)`);
+                    if (!opts.quiet) alertOnce(f, `none:${f.platformQty}/${f.brokerQty}`, `platform holds ${f.platformQty}, broker net ${f.brokerQty}, but no non-platform sell beyond the user's own manual buys explains the ${f.shortfall} missing (manual buys ${f.foreignBuyQty}, manual sells ${f.foreignSellQty}) - nothing booked`);
                     continue;
                 }
+                let q = Math.min(f.shortfall, f.excessQty);
                 if (users.length !== 1) {
-                    alertOnce(f, `multi:${f.platformQty}/${f.brokerQty}/${f.excessQty}`, `a non-platform sell took ${Math.min(f.shortfall, f.excessQty)} lots out of the platform's book, but ${users.length} users hold the contract (${users.join(', ')}) and whose lots went cannot be told - nothing booked, POST /reconcile after settling it by hand`);
-                    continue;
+                    // Several platform users hold the contract: whose lots did the non-platform sell take? Evidence only (user rule 2026-11-20): a user whose
+                    // held lots are all covered by a LIVE resting sell of the platform is accounted for (that sell still holds them at the broker); only a
+                    // user with lots free of any resting sell can be the one whose lots are missing. One candidate = booked against it; several = booked only
+                    // when exactly one candidate's free quantity equals the excess; otherwise ALERT naming the candidates, never a guess.
+                    const resting = this.restingSellsByUser(broker, f.tsym);
+                    const cands = users.map((u) => {
+                        const held = holders.filter((t) => t.user === u).reduce((a, t) => a + Number(t.quantity), 0);
+                        const rest = Math.min(held, resting.get(u) ?? 0);
+                        return { user: u, held, rest, free: held - rest };
+                    });
+                    const free = cands.filter((c) => c.free > 0);
+                    const exact = free.filter((c) => c.free === q);
+                    const pick = free.length === 1 ? free[0] : exact.length === 1 ? exact[0] : undefined;
+                    const how = free.length === 1 ? 'the only holder with lots free of a resting sell' : 'the only holder whose free quantity equals the excess';
+                    if (!pick) {
+                        const list = cands.map((c) => `${c.user} holds ${c.held}, resting sells ${c.rest}, free ${c.free}`).join('; ');
+                        outcome(f, 'multi', `${users.length} users hold the contract and the evidence does not separate them (${list}; excess ${f.excessQty}, shortfall ${f.shortfall})`);
+                        alertOnce(f, `multi:${f.platformQty}/${f.brokerQty}/${f.excessQty}`, `a non-platform sell took ${q} lots out of the platform's book, but the owner of the lots cannot be told from the evidence (order ids, resting sells, open trades): ${list}; no candidate is the only one free of a resting sell and none holds exactly ${q} free - nothing booked, POST /reconcile after settling it by hand`);
+                        continue;
+                    }
+                    Log.log(`[order] ${f.tsym} (${broker}): ${users.length} users hold the contract; the non-platform sell of ${q} is attributed to ${pick.user} (${how}: ${cands.map((c) => `${c.user} held ${c.held} resting ${c.rest}`).join('; ')})`);
+                    users = [pick.user];
+                    q = Math.min(q, pick.free);
                 }
-                const q = Math.min(f.shortfall, f.excessQty);
+                const bookedOrders: string[] = [];
                 for (const piece of piecesForShortfall(f.pieces, q)) {
                     const id = piece.orderId;
                     if (this.processedFillIds.has(id) || await this.fillAlreadyStored({ brokerOrderId: id, action: 'Sell' } as Trade)) continue; // booked before: never twice
@@ -2167,13 +2359,16 @@ class OrderBookkeeping {
                     ev.action = 'Sell'; ev.status = 'COMPLETE'; ev.user = target.user; ev.broker = broker; ev.strategy = target.strategy; ev.brokerOrderId = id;
                     Log.log(`[order] ALERT: ${target.user} ${target.tsym} (${broker}) - a sell made outside the platform (order ${id}, trade ${piece.tradeIds.join('/')}) took ${qty} of the platform's lots (platform held ${f.platformQty}, broker net ${f.brokerQty}; manual buys ${f.foreignBuyQty}, manual sells ${f.foreignSellQty}) - booking it as a sell @ ${piece.price.toFixed(2)} (entry ${Number(target.price).toFixed(2)}, P&L ${((piece.price - Number(target.price)) * qty).toFixed(2)})`);
                     recordOrderOwner(id, ev.user, broker);
+                    this.foreignBookedIds.add(id);
                     if (opts.notifyStrategies) await this.recordFill(ev);
                     else {
                         this.processedFillIds.add(id);
                         try { await this._processTradeEvent(ev); } catch (e) { this.processedFillIds.delete(id); throw e; }
                     }
                     booked++;
+                    bookedOrders.push(`${id} (${qty} @ ${piece.price.toFixed(2)})`);
                 }
+                outcome(f, bookedOrders.length > 0 ? 'booked' : 'already', bookedOrders.length > 0 ? `booked ${bookedOrders.join(', ')}` : 'the non-platform sell(s) were already booked', bookedOrders);
                 this.foreignShortfallAlerted.delete(`${broker}|${f.tsym}`);
             }
             return booked;

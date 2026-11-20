@@ -283,6 +283,9 @@ class Kite {
     // same contract was mid-flight. The wait is bounded; on timeout the sell is refused with one ALERT.
     // Set by the order process: says whether a non-platform sell explains a refusal (bookkeeping.explainNeverShort). Diagnostic only.
     static neverShortExplainer?: (tradingSymbol: string) => Promise<string>;
+    // Set by the order process: a refusal also triggers the repair of the platform's data (bookkeeping.requestNeverShortRepair; rate-limited there, so it is
+    // called on EVERY refusal including the ones answered from memory, and the repair never runs once per refused call).
+    static neverShortRepair?: (tradingSymbol: string) => void;
     private sellLocks = new Map<string, Promise<void>>();
     static SELL_LOCK_WAIT_MS = 45_000; // static (not readonly) so a unit test can shorten it
 
@@ -351,6 +354,7 @@ class Kite {
         const cached = this.sellRefusals.get(tradingSymbol);
         if (cached && Date.now() < cached.until) {
             cached.suppressed++;
+            try { Kite.neverShortRepair?.(tradingSymbol); } catch { /* never blocks the refusal */ }
             if (Date.now() - cached.loggedAt >= Kite.SELL_REFUSAL_LOG_EVERY_MS) {
                 Log.log(`[Kite] ALERT: NEVER-SHORT GUARD still refusing sells of ${tradingSymbol} (${cached.suppressed} refusal(s) answered from memory, no broker call)`);
                 cached.loggedAt = Date.now();
@@ -361,6 +365,7 @@ class Kite {
         {
             const sellable = await this.getSellableQuantity(tradingSymbol);
             if (sellable <= 0) {
+                try { Kite.neverShortRepair?.(tradingSymbol); } catch { /* never blocks the refusal */ }
                 const prev = this.sellRefusals.get(tradingSymbol);
                 const logNow = !prev || Date.now() - prev.loggedAt >= Kite.SELL_REFUSAL_LOG_EVERY_MS;
                 this.sellRefusals.set(tradingSymbol, { until: Date.now() + Kite.SELL_REFUSAL_TTL_MS, suppressed: 0, loggedAt: logNow ? Date.now() : prev!.loggedAt });

@@ -1061,6 +1061,8 @@ export async function reconcileManualSells(): Promise<void> {
 // booked under that strategy's user by contract name alone: it fabricated an orderOwners row, closed the strategy's leg at the foreign
 // price and distorted its P&L. All that remains is a log ALERT, once per order, when a foreign sell touches a contract a tracked leg
 // holds - the strategy's own view of that leg may then be stale.
+Kite.neverShortRepair = (tsym) => bookkeeping.requestNeverShortRepair('kite', tsym);
+bookkeeping.registerOwnOrderTest('kite', (id) => isTrackedPendingOrder(id));
 Kite.neverShortExplainer = (tsym) => bookkeeping.explainNeverShort('kite', tsym, (id) => Kite.getInstance().isOwnOrder(id) || isTrackedPendingOrder(id));
 const FOREIGN_SELL_GRACE_MS = 2 * 60_000; // a GTT-triggered exit is booked by pollGttFills shortly after it fills; give that time to claim it
 const foreignSellAlerted = new Set<string>();
@@ -1073,8 +1075,9 @@ async function reconcileManualSellsOnce(): Promise<void> {
     // A non-platform sell that took the platform's own lots (broker net below the platform's open quantity, the manual sells exceeding the user's
     // own manual buys) is booked first, at its trade-book price, through the normal fill path (the strategy's leg closes like any sale). The ALERT
     // below then only names the sells that stay the user's own business.
-    const bookedForeign = await bookkeeping.bookForeignSellShortfall('kite', { notifyStrategies: true, graceMs: FOREIGN_SELL_GRACE_MS, confirm: true, isOwnOrder: (id) => kite.isOwnOrder(id) || isTrackedPendingOrder(id) });
-    if (bookedForeign > 0 && bookkeeping.trades.length === 0) return;
+    // (the booking itself is event-driven now: bookkeeping's foreign-sell watch, fed by the platform's own bookings, NEVER-SHORT refusals and a 15 s poll;
+    // this 60 s pass only names the sells that stay the user's business)
+    if (bookkeeping.trades.length === 0) return;
 
     let orders: any[];
     try {
