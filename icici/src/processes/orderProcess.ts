@@ -978,6 +978,19 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
+            case 'contractHolders': {
+                const { broker, tradingSymbol } = req.payload as { broker: string; tradingSymbol: string };
+                if (reconcileInFlight) await reconcileInFlight; // the books must have settled before they are compared with the broker
+                const live = await getExecutorByBroker(broker, 'getLiveQuantity').getLiveQuantity(tradingSymbol);
+                const byUser: Record<string, number> = {};
+                for (const t of bookkeeping.trades) {
+                    if (t.tsym !== tradingSymbol || (t.broker ?? 'kite') !== broker) continue;
+                    const q = Number(t.quantity);
+                    if (q > 0) byUser[t.user] = (byUser[t.user] ?? 0) + q;
+                }
+                return { kind: 'response', id: req.id, ok: true, result: { live, byUser } };
+            }
+
             case 'getPendingSells': {
                 // Broker-uniform: dispatch to whichever tracker owns this broker's pending
                 // orders, filter to SELL generically here (not per-tracker) since all four

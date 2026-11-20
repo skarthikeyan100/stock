@@ -66,6 +66,9 @@ export type OrderRequestType =
     // Live net position of one contract on one broker, read inside `order` (where the broker sessions live). Strategies used to import
     // the executors directly and query through a second, unmanaged session in their own process.
     | 'getLiveQuantity'
+    // Read-only: the broker's live net quantity of one contract plus what this platform's bookkeeping holds open on it per user, so a strategy can
+    // tell a position closed outside the platform from lots another strategy of this platform holds (LegManager.reconcileLegsWithBroker).
+    | 'contractHolders'
     // ANT-specific (not broker-generic like the 'Bare' family above, which
     // has no ant branch) - used by TopStockOptionsOpeningGapStrategy, which
     // runs in the separate `strategies` process and so cannot call

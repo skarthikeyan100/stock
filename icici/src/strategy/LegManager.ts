@@ -18,6 +18,7 @@ import { LegBrokerOps, PartialSellError, defaultLegOps, dryRunOps } from './LegB
 import { TripGuard, TRIP_FILL_WAIT_MS } from './maxProfitLock';
 import { heldQuantity } from './openTrades';
 import { normalizeBrokerName } from '../util/brokerName';
+import { sleep } from '../util/sleep';
 import OrderClient from '../processes/strategies/OrderClient';
 
 // Extracted from ContinuousStrategy.ts (2026-09-11) so the same loss-driven
@@ -44,6 +45,7 @@ interface LegLineageDoc {
     isRoot: boolean;
     ownerType?: string;
     createdAt: Date;
+    closedNeutralAt?: Date; // set when the leg was closed neutral because the broker no longer held it - restoreFromOpenTrades skips it
 }
 
 // Sentinel used to reserve a level slot synchronously (before the spawn's
@@ -279,14 +281,8 @@ export class LegManager {
             const held = await this.heldAtBroker(leg);
             if (held === 0) {
                 if (this.sellGuard.goneExpired(leg.token)) {
-                    this.sellGuard.forget(leg.token);
-                    this.sellAlertAt.delete(leg.token);
-                    Log.log(`[${this.deps.ownerType}] ALERT: ${label}: ${leg.tsym} (${leg.totalQuantity} tracked) is no longer held by the broker - closed outside the platform, closing the leg neutral (no P&L booked, nothing sold)`);
-                    if (!leg.isRoot) {
-                        this.freeParentSlot(leg);
-                        await this.maybePromoteDeferredRootRefill();
-                    }
-                    await this.cancelChildRefills(leg);
+                    this.closeLegNeutral(leg, `[${this.deps.ownerType}] ALERT: ${label}: ${leg.tsym} (${leg.totalQuantity} tracked) is no longer held by the broker - closed outside the platform, closing the leg neutral (no P&L booked, nothing sold)`);
+                    await this.finishNeutralClose(leg);
                     return 'closed';
                 }
                 Log.log(`[${this.deps.ownerType}] ${label}: ${leg.tsym} has nothing sellable and the broker holds none - waiting ${TRIP_FILL_WAIT_MS / 1000}s for its fill event before closing the leg`);
@@ -302,6 +298,134 @@ export class LegManager {
             Log.log(`[${this.deps.ownerType}] ALERT: ${label}: the sell of ${leg.tsym} (${leg.totalQuantity}) keeps failing (failure ${n}): ${msg.slice(0, 200)} - retried with back-off, next ALERT for this leg in 10 min`);
         }
         return 'retry';
+    }
+
+    // ---- Reconcile against the broker (live 2026-11-20 11:16: the user sold a contract's lots by hand, the platform's leg stayed OPEN at its
+    // old size, fed the max-profit total and then looped on a refused sell). A foreign sell is never booked (kiteExecutor 'not placed by this
+    // platform') so no fill event ever reaches handleFillOrExternalSell: the only truth is the broker's live quantity, read here on a rate limit.
+    // Never sells, never books P&L: a leg whose lots no longer exist is closed neutral / shrunk to what the broker holds.
+    // Only brokers whose live-quantity read throws on failure (instead of reading flat) are checked proactively; the others keep the
+    // sell-refusal path (onSellFailed).
+    private static readonly VERIFY_BROKERS = new Set(['kite', 'ant']);
+    private static readonly VERIFY_EVERY_MS = 30_000; // rate limit of the periodic check (one positions read per distinct contract)
+    private static readonly VERIFY_FRESH_MS = 10_000; // a trip decision may rest on a check no older than this
+    private static readonly VERIFY_CONFIRM_MS = 3_000; // the mismatch must be read twice, this far apart, before the leg is changed
+    private static readonly VERIFY_ALERT_EVERY_MS = 10 * 60_000;
+    private legQtySeen = new Map<string, { qty: number; since: number }>(); // when each leg last changed size (ticks keep it current)
+    private lastVerifyAt = 0;
+    private verifyRun: Promise<void> | null = null;
+    private tripNeedsVerify = false;
+    private verifyAlertAt = new Map<string, number>();
+
+    private verifyBroker(): string { return normalizeBrokerName(this.deps.getBroker?.()) || 'kite'; }
+    private canVerifyAgainstBroker(): boolean {
+        return !this.dryRunLatched && LegManager.VERIFY_BROKERS.has(this.verifyBroker());
+    }
+    // True when a max-profit / max-loss trip would rest on legs the broker has not been asked about recently.
+    private tripNeedsFreshVerify(): boolean {
+        return this.canVerifyAgainstBroker() && this.legsByToken.size > 0 && Date.now() - this.lastVerifyAt > LegManager.VERIFY_FRESH_MS;
+    }
+    private noteLegSize(leg: Leg): void {
+        const seen = this.legQtySeen.get(leg.token);
+        if (!seen || seen.qty !== leg.totalQuantity) this.legQtySeen.set(leg.token, { qty: leg.totalQuantity, since: Date.now() });
+    }
+
+    private async readHolders(leg: Leg): Promise<{ live: number; byUser: Record<string, number> } | undefined> {
+        try {
+            const h = await OrderClient.getInstance().getContractHolders(this.deps.userId, this.verifyBroker(), leg.tsym);
+            return Number.isFinite(Number(h?.live)) ? { live: Number(h.live), byUser: h.byUser ?? {} } : undefined;
+        } catch (e) {
+            Log.log(`[${this.deps.ownerType}] reconcile vs broker: could not read ${leg.tsym} (${String((e as any)?.message ?? e).slice(0, 120)}) - leg left as it is`);
+            return undefined;
+        }
+    }
+
+    // Compares every settled OPEN leg with the broker. The broker holds nothing -> the leg is closed neutral. The broker holds less than the leg and
+    // no other strategy of this platform has lots on the contract -> the leg shrinks to what the broker holds. Other strategies share the contract and
+    // the broker holds some -> whose lots left cannot be told: ALERT only, nothing changed. Unreadable broker -> nothing changed.
+    // `force` ignores the rate limit (a trip is about to rest on these legs). Concurrent calls return at once.
+    async reconcileLegsWithBroker(force = false): Promise<void> {
+        if (this.verifyRun) { if (force) await this.verifyRun; return; } // a forced caller (a trip) waits for the run in progress
+        if (!this.canVerifyAgainstBroker() || this.legsByToken.size === 0) return;
+        if (!force && Date.now() - this.lastVerifyAt < LegManager.VERIFY_EVERY_MS) return;
+        const run = this.verifyLegs();
+        this.verifyRun = run.finally(() => { this.verifyRun = null; });
+        await this.verifyRun;
+    }
+
+    private async verifyLegs(): Promise<void> {
+        try {
+            const done = new Set<string>();
+            let complete = true;
+            for (const leg of Array.from(this.legsByToken.values())) {
+                if (leg.status !== 'OPEN' || done.has(leg.tsym)) continue;
+                const seen = this.legQtySeen.get(leg.token);
+                // A fresh or just-resized leg: the broker's position (and the fill events) may still be catching up.
+                if (!seen || seen.qty !== leg.totalQuantity || Date.now() - seen.since < TRIP_FILL_WAIT_MS) continue;
+                done.add(leg.tsym);
+                const first = await this.readHolders(leg);
+                if (!first) { complete = false; continue; }
+                if (!this.legMismatch(leg, first)) continue;
+                await sleep(LegManager.VERIFY_CONFIRM_MS);
+                const second = await this.readHolders(leg);
+                if (!second) { complete = false; continue; }
+                // The leg may have been sold, resized or closed by a tick while the broker was read.
+                if (this.legsByToken.get(leg.token) !== leg || leg.status !== 'OPEN' || this.legQtySeen.get(leg.token)?.qty !== leg.totalQuantity) continue;
+                if (!this.legMismatch(leg, second) || Math.max(0, second.live) !== Math.max(0, first.live)) continue;
+                await this.applyBrokerHolding(leg, second);
+            }
+            if (complete) this.lastVerifyAt = Date.now();
+        } catch (e) {
+            Log.log(`[${this.deps.ownerType}] reconcile vs broker failed (legs left as they are):`, e);
+        }
+    }
+
+    private legMismatch(leg: Leg, h: { live: number; byUser: Record<string, number> }): boolean {
+        return Math.max(0, h.live) < leg.totalQuantity;
+    }
+
+    private async applyBrokerHolding(leg: Leg, h: { live: number; byUser: Record<string, number> }): Promise<void> {
+        const live = Math.max(0, h.live);
+        const mine = Number(h.byUser[this.deps.userId] ?? 0);
+        const others = Object.entries(h.byUser).reduce((n, [u, q]) => (u === this.deps.userId ? n : n + (Number(q) || 0)), 0);
+        const tag = `[${this.deps.ownerType}] ALERT: ${leg.tsym}: the platform leg is ${leg.totalQuantity} (order side ${mine}), the broker holds ${live} (other strategies of this platform: ${others})`;
+        if (live === 0) {
+            this.closeLegNeutral(leg, `${tag} - the lots were closed outside the platform (a manual sell); closing the leg neutral (nothing sold, no P&L booked)`);
+            await this.finishNeutralClose(leg);
+            return;
+        }
+        if (others > 0) {
+            const last = this.verifyAlertAt.get(leg.tsym) ?? 0;
+            if (Date.now() - last >= LegManager.VERIFY_ALERT_EVERY_MS) {
+                this.verifyAlertAt.set(leg.tsym, Date.now());
+                Log.log(`${tag} - lots were closed outside the platform but another strategy shares this contract, so whose lots left cannot be told; the leg is NOT changed (decide by hand)`);
+            }
+            return;
+        }
+        Log.log(`${tag} - part was closed outside the platform; shrinking the leg to ${live} (nothing sold, no P&L booked)`);
+        leg.totalQuantity = live;
+        this.noteLegSize(leg);
+    }
+
+    // The synchronous half of closing a leg that no longer exists at the broker: off the book, no sell, no P&L, never restored after a restart.
+    private closeLegNeutral(leg: Leg, alert: string): void {
+        this.legsByToken.delete(leg.token);
+        this.legQtySeen.delete(leg.token);
+        this.sellGuard.forget(leg.token);
+        this.sellAlertAt.delete(leg.token);
+        this.verifyAlertAt.delete(leg.tsym);
+        Log.log(alert);
+        Mongo.getInstance()?.db.collection('legLineage')
+            .updateMany({ userId: this.deps.userId, legRef: leg.legRef }, { $set: { closedNeutralAt: new Date() } })
+            .catch((e) => Log.log(`[${this.deps.ownerType}] legLineage closedNeutral write failed (continuing):`, e));
+    }
+
+    private async finishNeutralClose(leg: Leg): Promise<void> {
+        if (!leg.isRoot) {
+            this.freeParentSlot(leg);
+            await this.maybePromoteDeferredRootRefill();
+        }
+        await this.cancelChildRefills(leg);
     }
 
     private async sellBack(tsym: string, token: string, qty: number, exchange: 'NFO' | 'BFO'): Promise<void> {
@@ -567,7 +691,7 @@ export class LegManager {
     // instead of exposure. maxProfit is a % of maxInvestment (the CONFIGURED
     // cap, not live deployed capital). Unset/null maxProfit disables the
     // feature entirely (no-op).
-    private checkAndMaybeTripMaxProfit(cfg: LegManagerConfig): void {
+    private checkAndMaybeTripMaxProfit(cfg: LegManagerConfig, verified = false): void {
         this.rollDayIfNeeded();
         if (this.maxProfitTripped) return; // latched permanently - see field comment
         // The block's own maxProfit (a % of maxInvestment) wins; without one, settings.maxProfit (rupees, one value for all brokers) applies.
@@ -584,6 +708,8 @@ export class LegManager {
             return;
         }
         if (!(cumulative >= threshold)) return;
+        // Never trip on a total that includes a leg the broker no longer holds: the caller verifies the legs first and asks again.
+        if (!verified && this.tripNeedsFreshVerify()) { this.tripNeedsVerify = true; return; }
         this.maxProfitTripped = true;
         const cooldownSec = Number(cfg.profitCooldownSeconds ?? 0);
         this.profitCooldownUntil = Number.isFinite(cooldownSec) && cooldownSec > 0 ? Date.now() + cooldownSec * 1000 : null;
@@ -678,7 +804,7 @@ export class LegManager {
     // compared with the unrealized P&L of the legs open right now (computeOpenUnrealized). Realized gains earlier in the session
     // do not offset it - on 2026-10-28 +12.9k of realized profit hid a -16.5k open leg from a -12k stop, so it never fired.
     // (maxProfit stays cumulative.) Unset/null maxLoss disables it.
-    private checkAndMaybeTripMaxLoss(cfg: LegManagerConfig): void {
+    private checkAndMaybeTripMaxLoss(cfg: LegManagerConfig, verified = false): void {
         this.rollDayIfNeeded();
         if (this.maxLossTripped) return;
         if (cfg.maxLoss == null) return;
@@ -689,6 +815,7 @@ export class LegManager {
         const openUnrealized = this.computeOpenUnrealized();
         if (!Number.isFinite(openUnrealized)) return; // fail safe (computeOpenUnrealized already skips and alerts on a bad leg)
         if (!(openUnrealized <= -threshold)) return;
+        if (!verified && this.tripNeedsFreshVerify()) { this.tripNeedsVerify = true; return; }
         this.maxLossTripped = true;
         const cut = Number(cfg.lossInvestmentCut ?? 0);
         if (Number.isFinite(cut) && cut > 0) this.lossInvestmentCutTotal += cut;
@@ -1002,10 +1129,21 @@ export class LegManager {
         // NaN (any comparison with NaN is false in JS) - a spurious trip, not a real one.
         const validLtp = Number.isFinite(ltp) && ltp > 0; // a depth-only tick can carry ltp undefined/0
         if (leg && validLtp) leg.lastLtp = ltp;
+        if (leg) this.noteLegSize(leg);
 
+        // The broker is asked (rate limited) whether the open legs still exist there BEFORE they feed a max-profit / max-loss total or a sell.
+        await this.reconcileLegsWithBroker();
         if (!this.maxProfitTripped) this.checkAndMaybeTripMaxProfit(this.deps.getConfig());
         if (!this.maxLossTripped) this.checkAndMaybeTripMaxLoss(this.deps.getConfig());
+        if (this.tripNeedsVerify) {
+            // A trip was about to latch on unverified legs: read the broker now (leg sizes are corrected), then decide again on the corrected total.
+            this.tripNeedsVerify = false;
+            await this.reconcileLegsWithBroker(true);
+            if (!this.maxProfitTripped) this.checkAndMaybeTripMaxProfit(this.deps.getConfig(), true);
+            if (!this.maxLossTripped) this.checkAndMaybeTripMaxLoss(this.deps.getConfig(), true);
+        }
         if (this.maxProfitTripped || this.maxLossTripped || this.eodClosing) { await this.closeAllLegsAndCancelReEntries(); return; }
+        if (leg && this.legsByToken.get(token) !== leg) return; // closed neutral by the broker reconcile above: nothing to act on
 
         if (!validLtp) return;
         if (!leg) {
@@ -1538,6 +1676,10 @@ export class LegManager {
             // broker-reported open trades on the same token into one Leg.
             if (this.legsByToken.has(trade.token)) {
                 Log.log(`[${this.deps.ownerType}] reconcile: REFUSING to merge - order reports more than one open trade for token ${trade.token} (${trade.tsym}); keeping the first, skipping the rest`);
+                continue;
+            }
+            if (lineageByToken.get(trade.token)?.closedNeutralAt) {
+                Log.log(`[${this.deps.ownerType}] reconcile: NOT restoring ${trade.tsym} (${trade.quantity}) - this leg was closed neutral earlier because the broker no longer held it (closed outside the platform)`);
                 continue;
             }
             const contract = AntContractMaster.getInstance().findByToken(trade.token);

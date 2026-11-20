@@ -30,7 +30,7 @@ export type ChunkedBuyIndexResult = ChunkedFillResult & {
 // every request NOT on this read-only list is refused here, in one place, instead of trusting each strategy to remember. Default-deny: a new request
 // type is blocked inside a reconcile until someone decides it is a read.
 const READ_ONLY_REQUESTS: ReadonlySet<OrderRequestType> = new Set<OrderRequestType>([
-    'openTrades', 'getPendingSells', 'getLiveQuantity', 'stats', 'canPlaceOrder', 'brokerSessions', 'getToken',
+    'openTrades', 'getPendingSells', 'getLiveQuantity', 'contractHolders', 'stats', 'canPlaceOrder', 'brokerSessions', 'getToken',
     'getContractByPriceRange', 'getContractByPriceRangeBare', 'getPCR', 'getATMTokens', 'resolveOptionContract', 'getOptionLtp',
     // Not orders: they restore a runtime cap / setting that a latched strategy re-applies when it reloads.
     'setBrokerInvestmentCap', 'updateUserSettings', 'reloadUserLimits', 'restoreFromMongo',
@@ -450,6 +450,12 @@ class OrderClient {
     // Live net quantity of a contract on a broker, read in the order process (throws when the broker cannot be read).
     async getLiveQuantity(userId: string, broker: string, tradingSymbol: string): Promise<number> {
         return this.call('getLiveQuantity', userId, { broker, tradingSymbol });
+    }
+
+    // The broker's live signed net quantity of a contract plus the quantity this platform's bookkeeping holds open on it, per user (strategy name),
+    // on that broker. Read-only; throws when the broker cannot be read.
+    async getContractHolders(userId: string, broker: string, tradingSymbol: string): Promise<{ live: number; byUser: Record<string, number> }> {
+        return this.call('contractHolders', userId, { broker, tradingSymbol });
     }
 
 
