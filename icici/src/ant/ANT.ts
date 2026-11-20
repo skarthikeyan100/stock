@@ -59,6 +59,10 @@ class ANT {
     private tokenUrl = 'https://a3.aliceblueonline.com/open-api/od/v1/vendor/getUserDetails';
     private userSession: string | null = null;
     private userId: string | null = null;
+    // Every ANT order this process has placed (all placement paths go through submitOrder): lets the non-platform-sell attribution
+    // (bookkeeping.bookForeignSellShortfall) tell a platform order whose fill is not booked yet from a manual one.
+    private placedOrderIds = new Set<string>();
+    isOwnOrder(orderId: string): boolean { return this.placedOrderIds.has(String(orderId)); }
     private sessionFile = path.join(__dirname, '../../.ant_session.json');
 
     // AliceBlue's OHLC endpoint (getQuote/getQuotes) rate-limits (429) after
@@ -683,6 +687,7 @@ class ANT {
         if (!orderNo) {
             throw new Error(`ANT ${label} failed: ${JSON.stringify(resp.data)}`);
         }
+        this.placedOrderIds.add(String(orderNo));
         return { orderNo };
     }
 

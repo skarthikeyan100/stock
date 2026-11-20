@@ -68,7 +68,7 @@ export async function sellContract(userId: string, contract: string, quantity: n
     const token = await prism.getToken(contract);
     const exchange: 'NFO' | 'BFO' = exchangeForTsym(contract);
     // Resting sells were cancelled by squareOffOnPrism, so none count against the live position.
-    quantity = await neverShortSellable({ label: `${contract} (${userId}, Prism)`, quantity, livePosition: () => liveNetQuantityOnPrism(contract), restingSellQuantity: 0 });
+    quantity = await neverShortSellable({ label: `${contract} (${userId}, Prism)`, quantity, livePosition: () => liveNetQuantityOnPrism(contract), restingSellQuantity: 0, explainRefusal: () => bookkeeping.explainNeverShort('prism', contract) });
     const { orderId } = await prism.placeLimitSellBare(contract, token, quantity, limitPrice, userId, exchange);
 
     const book = async (qty: number, px: number): Promise<Trade> => {
@@ -394,6 +394,7 @@ export async function placeLimitSellBareOnPrism(userId: string, tradingSymbol: s
     quantity = await neverShortSellable({
         label: `${tradingSymbol} (${userId}, Prism)`, quantity, livePosition: () => liveNetQuantityOnPrism(tradingSymbol),
         restingSellQuantity: prismRestingSells(userId, tradingSymbol).own, otherUsersRestingSellQuantity: prismRestingSells(userId, tradingSymbol).others, recheckIfFlat: true,
+        explainRefusal: () => bookkeeping.explainNeverShort('prism', tradingSymbol),
     });
     Log.log(`[order] Bare Prism limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await Prism.getInstance().placeLimitSellBare(tradingSymbol, instrumentId, quantity, price, userId, exchange);

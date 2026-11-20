@@ -75,6 +75,9 @@ class Breeze {
     private appSecret = '5b459373860r3(CK2j1s(9918Y4y7360';
 
     private breeze: any;
+    // Every Breeze order this process has placed (placeOrder and squareOff): see ANT.placedOrderIds.
+    private placedOrderIds = new Set<string>();
+    isOwnOrder(orderId: string): boolean { return this.placedOrderIds.has(String(orderId)); }
     private apiSession: string | null = null;
     private sessionFile = path.join(__dirname, '../../.breeze_session.json');
     // Tracks the in-flight constructor-time session restore (see loadSession) -
@@ -446,6 +449,7 @@ class Breeze {
             throw new Error(`Breeze placeOrder returned no order_id: ${JSON.stringify(response)}`);
         }
         Log.log(`[Breeze] Order placed: ${orderId}`);
+        this.placedOrderIds.add(String(orderId));
         return { orderId };
     }
 
@@ -471,6 +475,7 @@ class Breeze {
         if (!orderId) {
             throw new Error(`Breeze squareOff returned no order_id: ${JSON.stringify(response)}`);
         }
+        this.placedOrderIds.add(String(orderId));
         return { orderId };
     }
 

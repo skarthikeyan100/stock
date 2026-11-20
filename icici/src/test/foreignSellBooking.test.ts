@@ -56,7 +56,7 @@ const b: any = bookkeeping;
 let brokerNet = 0;
 let book: TimedFill[] = [];
 b.readBrokerRows = async () => [{ tsyms: [TS], tokens: ['55555'], qty: brokerNet }];
-b.readKiteTimedFills = async () => book;
+b.readTimedFills = async () => ({ fills: book, untimed: [] });
 b.mongoFillKeys = async () => ({ keys: new Set(docs.filter((d) => d.brokerOrderId).map((d) => `${d.action}|${d.brokerOrderId}`)), tsyms: new Set([TS]) });
 const notified: Trade[] = [];
 bookkeeping.onFill((_u, t) => { notified.push(t); });

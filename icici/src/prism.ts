@@ -1182,6 +1182,10 @@ export default class Prism {
         await this._placeOrderWithForce(order, user)
     }
 
+    // Every Prism order this process has placed (both place_order sites): see ANT.placedOrderIds.
+    private placedOrderIds = new Set<string>();
+    isOwnOrder = (orderId: string): boolean => this.placedOrderIds.has(String(orderId));
+
     _placeOrderWithForce = async (order, user?: string) => {
         Log.log('Place Order ', order);
         if (user) {
@@ -1195,6 +1199,7 @@ export default class Prism {
             const response = await NorenRestApi.place_order(order) as any;
             Log.log('User: ', user, 'Response from place_order: ', response)
             this._assertOrderAccepted(response, order);
+            this.placedOrderIds.add(String(response.norenordno));
             if (user && response?.norenordno) {
                 bookkeeping.trackOrder(response.norenordno, user);
             }
@@ -1260,6 +1265,7 @@ export default class Prism {
             // The axios interceptor in RestAPI.ts already unwraps `.data`.
             const orderReply = await NorenRestApi.place_order(order) as any;
             this._assertOrderAccepted(orderReply, order);
+            this.placedOrderIds.add(String(orderReply.norenordno));
             if (user) {
                 bookkeeping.trackOrder(orderReply.norenordno, user);
             }

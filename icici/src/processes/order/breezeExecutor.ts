@@ -457,7 +457,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
             return emptyExitTrade(userId, tsym, 'breeze');
         }
         // Resting sells were cancelled above, so none count against the live position.
-        let remainingQty = await neverShortSellable({ label: `${tsym} (${userId}, Breeze)`, quantity: settled.quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0 });
+        let remainingQty = await neverShortSellable({ label: `${tsym} (${userId}, Breeze)`, quantity: settled.quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0, explainRefusal: () => bookkeeping.explainNeverShort('breeze', tsym) });
         let bookingFailure: unknown; // a confirmed fill that could not be booked - reported, never retried with a fresh sell
         // Why the retry loop stopped early (one variable, so the two reasons cannot drift apart):
         //  'resting-order' - an order we could neither cancel nor confirm closed: it may still be resting at the broker
@@ -935,6 +935,7 @@ export async function placeLimitSellBareOnBreeze(userId: string, tradingSymbol: 
     quantity = await neverShortSellable({
         label: `${tradingSymbol} (${userId}, Breeze)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),
         restingSellQuantity: breezeRestingSells(userId, tradingSymbol).own, otherUsersRestingSellQuantity: breezeRestingSells(userId, tradingSymbol).others, recheckIfFlat: true,
+        explainRefusal: () => bookkeeping.explainNeverShort('breeze', tradingSymbol),
     });
     Log.log(`[order] Bare Breeze limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderId } = await placeLimitOptionOrder(contract, 'sell', quantity, price);

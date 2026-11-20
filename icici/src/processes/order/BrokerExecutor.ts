@@ -73,6 +73,9 @@ export async function neverShortSellable(args: {
     // Re-read once after a short wait before refusing on a flat reading. Only for a sell placed right after the entry fill (a target
     // sell, a sell-back), where the positions endpoint can lag; never for a stop-loss/EOD exit, which must not wait.
     recheckIfFlat?: boolean;
+    // One line saying whether a sell made outside the platform explains a 'nothing sellable' refusal (bookkeeping.explainNeverShort). Diagnostic only,
+    // bounded to 8 s, never throws.
+    explainRefusal?: () => Promise<string>;
 }): Promise<number> {
     const others = args.otherUsersRestingSellQuantity ?? 0;
     let live: number;
@@ -98,6 +101,15 @@ export async function neverShortSellable(args: {
     }
     if (sellable <= 0) {
         Log.log(`[order] ALERT: NEVER-SHORT GUARD refused a sell of ${args.quantity} ${args.label} - nothing sellable (live=${live}, resting sells=${args.restingSellQuantity}, other users'=${others}); position tracking is out of sync with the broker`);
+        if (args.explainRefusal) {
+            let timer: NodeJS.Timeout | undefined;
+            const why = await Promise.race([
+                args.explainRefusal().catch((e: any) => `cause check failed: ${e?.message ?? e}`),
+                new Promise<string>((r) => { timer = setTimeout(() => r('cause check timed out'), 8000); }),
+            ]);
+            if (timer) clearTimeout(timer);
+            Log.log(`[order] NEVER-SHORT cause for ${args.label}: ${why}`);
+        }
         throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${args.label} (live=${live}, resting=${args.restingSellQuantity}) - refusing to sell ${args.quantity}`);
     }
     if (args.quantity > sellable) {

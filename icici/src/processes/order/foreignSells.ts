@@ -13,6 +13,14 @@ export interface TimedFill {
     qty: number;
     price: number;
     at: number; // fill time, epoch ms
+    token?: string; // the broker's own instrument id when the row carries it (ant instrumentId, prism token)
+    aliases?: string[]; // other spellings of the same contract (breeze's old expiry-less tsym)
+}
+
+// Equal-width numeric ids compare numerically (BigInt: broker ids exceed 2^53), anything else as text; never NaN.
+export function compareIds(a: string, b: string): number {
+    if (/^\d+$/.test(a) && /^\d+$/.test(b)) { const x = BigInt(a), y = BigInt(b); return x < y ? -1 : x > y ? 1 : 0; }
+    return a < b ? -1 : a > b ? 1 : 0;
 }
 
 export interface ForeignSellPiece {
@@ -38,7 +46,7 @@ export interface ForeignExcess {
 export function foreignSellExcess(fills: TimedFill[], isPlatformOrder: (orderId: string) => boolean, maxSellAt = Infinity, minSellAt = -Infinity): ForeignExcess {
     const foreign = fills
         .filter((f) => f.qty > 0 && !isPlatformOrder(f.orderId))
-        .sort((a, b) => a.at - b.at || Number(a.tradeId) - Number(b.tradeId));
+        .sort((a, b) => a.at - b.at || compareIds(a.tradeId, b.tradeId));
     let inventory = 0;
     let foreignBuyQty = 0;
     let foreignSellQty = 0;

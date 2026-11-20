@@ -765,6 +765,7 @@ export async function placeLimitSellBareOnAnt(userId: string, tradingSymbol: str
     quantity = await neverShortSellable({
         label: `${tradingSymbol} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tradingSymbol),
         restingSellQuantity: antRestingSells(userId, tradingSymbol).own, otherUsersRestingSellQuantity: antRestingSells(userId, tradingSymbol).others, recheckIfFlat: true,
+        explainRefusal: () => bookkeeping.explainNeverShort('ant', tradingSymbol, (id) => ant.isOwnOrder(id) || isPendingAntOrder(id)),
     });
     Log.log(`[order] Bare ANT limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
     const { orderNo } = await ant.placeOrder({
@@ -1169,7 +1170,7 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
                 throw new Error(`Square-off for ${tsym}: no live quote and no trigger price - exit NOT placed, manual action required`);
             }
             // Resting sells were cancelled above, so none count against the live position.
-            quantity = await neverShortSellable({ label: `${tsym} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0 });
+            quantity = await neverShortSellable({ label: `${tsym} (${userId}, ANT)`, quantity, livePosition: () => getLiveNetQuantity(tsym), restingSellQuantity: 0, explainRefusal: () => bookkeeping.explainNeverShort('ant', tsym) });
             let orderNo: string;
             try {
                 ({ orderNo } = await ant.placeOrder({
