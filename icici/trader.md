@@ -29,7 +29,7 @@ Needs the user's explicit instruction first:
 | Status (the word "status"): 3 tables, trades opened today only; `status all` adds earlier-day trades closed or still open today | `monitor-strategies` skill, which runs `scripts/strategy-status.sh [all]` |
 | Status users ("status users", "users status"): the real users who trade from the frontend (emails), not strategies: BY USER, BY BROKER, OPEN POSITIONS, closed TRADES; `status users all` adds earlier-day trades | `monitor-strategies` skill, which runs `scripts/strategy-status.sh users [all]` |
 | Options of status (the words "status list"): the list of every status option with one line each | `monitor-strategies` skill, which runs `scripts/strategy-status.sh list` |
-| Net P&L (the words "status net"): table of the brokers' own position books (REALIZED, UNREALIZED, TOTAL per broker, then a TOTAL row) and the line `NET <number>`; manual non-platform orders INCLUDED (the one exception to the manual-orders rule); paste it as is | `monitor-strategies` skill, which runs `scripts/strategy-status.sh net` |
+| Net P&L (the words "status net"): table of the brokers' own position books (REALIZED, UNREALIZED, TOTAL per broker, then a TOTAL row; Breeze is computed FIFO from its trade book; a broker that cannot be read shows `ERROR: ...` and the NET line says it excludes it) and the line `NET <number>`; manual non-platform orders INCLUDED (the one exception to the manual-orders rule); paste it as is | `monitor-strategies` skill, which runs `scripts/strategy-status.sh net` |
 | Paper broker report (the words "status paper"; never part of `status` / `status all`): GammaBurst, HighLow on `brokers: [paper]`, in memory, nothing in Mongo | `monitor-strategies` skill ("status paper": config, `/broker/paper/positions` and `/trades`, and the day's log lines) |
 | Open contracts, capital, parent/child tree | `scripts/continuous-strategy-trades.sh` |
 | Alerts (errors, ALERTs, limit trips, missed slots) | `scripts/monitor-strategies-alerts.sh` via Monitor, 30 min, always armed until 15:30 (re-arm the moment it expires) |
@@ -136,7 +136,7 @@ passes, and report afterwards.
 **C. Realized-P&L reconcile (on request, e.g. "reconcile realized per broker"):** FIFO per contract from each broker's trade book against
 `/strategyPnl?by=broker&opened=today` realized. Kite and ANT sort by fill time; Breeze lists newest first (reverse it); Prism fills are in
 `fltm` (`dd-mm-yyyy hh:mm:ss`, `trantype` B/S, `flqty`, `flprc`). Compare with FIFO, not with the brokers' own average-cost P&L fields (they
-differ by method) and not with `status net` (Breeze positions return `pnl: null`, so Breeze shows 0 there). Filter to today's trade date: the
+differ by method); `status net` computes its Breeze row with this same FIFO from the trade book (Breeze positions return `pnl: null`). Filter to today's trade date: the
 Breeze book carries earlier days. Result on 2026-11-23: Kite exact, Breeze 2.20, Prism 2.35, ANT 83 apart (ANT difference not traced).
 
 ## Fixing code

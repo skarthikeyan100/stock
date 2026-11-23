@@ -46,12 +46,28 @@ BulkPcr's normal "Cycle complete" are filtered out at the source.
 
 ## 2. Status on demand
 
-When asked "status", "what is the status now" or similar, run `scripts/strategy-status.sh` and show
-its output as-is: realized and unrealized P&L for ONLY the strategies enabled in `config.yml` (expanded per broker; zeros until it trades; trades of a disabled strategy are left out of all three tables, user's rule 2026-11-13; no fixed list), plus a
+When asked "status", "what is the status now" or similar, run `scripts/strategy-status.sh` (by default ONLY trades opened today, IST day of the trade's entry time, count, realized and unrealized; a trade bought earlier and sold today, or still open from an earlier day, is left out; a trade with no entry time counts as today) and show
+its output as-is. If the user asks "status all" run `scripts/strategy-status.sh all`, which also counts trades opened on an earlier day but closed today and positions still open from earlier days. If the user asks "status users" (the real users who trade from the frontend, identified by email, as opposed to strategies) run `scripts/strategy-status.sh users` (`users all` for earlier-day trades too) and show its output as-is: BY USER (realized, unrealized, open, closed per email), BY BROKER, OPEN POSITIONS by user (target/stop as stored on the position, "-" if none) and TRADES (one row per closed trade: entry, exit, times, realized). Admin rows can include mirrored shares of other users' buys (settings.mirrorPercentage); a trade row does not record that, so the footer says it instead of marking rows. If TRADES says "unavailable ... restart", the web server predates `?closed=1`: say so. If the script prints a WARNING that the web server predates the ?opened filter, the numbers are the all-trades picture: say so. The output is: realized and unrealized P&L for ONLY the strategies enabled in `config.yml` (expanded per broker; zeros until it trades; trades of a disabled strategy are left out of all three tables, user's rule 2026-11-13; no fixed list), plus a
 total, a table by broker, and a third table, **UNREALIZED BY BROKER AND STRATEGY**: one row per open position with broker, strategy, contract, qty,
 bought price, live price, resting sell price and unrealized P&L (unrealized only). The resting sell price is read from the strategy's own
 "resting sell @ <price>" log line for that contract (the position does not store it), or from its "target <price> / stop <price> protected via gtt" line, shown as `<price> (gtt)`; `-` means none was logged (RuleBased exits on ticks), and `(tick)` marks a tick-monitored target. A `*` after a live price means no live quote, last known price.
 Add nothing else (no event history) unless the user asks.
+
+**"status net" (user's command).** Run `scripts/strategy-status.sh net` and paste its output as-is, in a code block: a table with one row per broker (kite, ant, prism, breeze) with REALIZED, UNREALIZED and TOTAL, a TOTAL row, and then the line `NET <number>`. It is today's P&L taken from the brokers' own position books, so orders placed outside the platform (manual Kite orders) count too. This is the one place where manual orders are counted; everywhere else they are ignored. Breeze reports no P&L itself, so its row is computed from its trade book (today's trades, FIFO per contract; open legs priced at the positions ltp). A broker that cannot be read shows `ERROR: <what> unavailable` (never 0) and the NET line then ends with `(EXCLUDES <broker> ...)`. Kite reports every day-position P&L as unrealised; the script counts a contract with net quantity 0 as realized and a contract still open as unrealized. No explanation. `status net all` is accepted.
+
+**"status list".** Run `scripts/strategy-status.sh list` and paste its output as-is: the options that can be used with `status` (`status`, `status all`, `status users`, `status users all`, `status net`, `status paper`, `status list`) with one line each. `status all` includes disabled strategies; plain `status` lists enabled ones only. Add nothing else.
+
+**"status paper" (only when the user says `paper`; never part of `status`, `status all` or `status users`, and those never show paper rows).** The paper broker
+(`brokers: [paper]`: GammaBurst-NIFTY, HighLow-NIFTY) keeps everything in the trading process's memory and writes nothing to Mongo, so
+`scripts/strategy-status.sh` and `/strategyPnl` cannot show it. Report it from these sources, naming each in the reply:
+1. `config.yml`: which of the three blocks are `enabled: true`, with `quantity`/`maxInvestment`, `target`, `stopLoss`; confirm each lists only `paper`.
+2. `curl -s localhost:3000/broker/paper/positions` and `/broker/paper/trades` (open paper positions and the day's paper fills, as the endpoint returns them; say "empty" if it is).
+3. Today's orchestrator log (`logs/orchestrator-<today>.log`): every line with `[paper]` or a paper strategy tag (`HighLow:`, `GammaBurst:`), i.e. each paper entry,
+   resting sell, stop, exit and `[skip]` reason. Pair each buy with its sell by contract and quantity to give one row per paper trade (entry, exit, times, reason).
+Output: a table of paper trades per strategy (contract, qty, entry, exit or "open", realized), the open paper legs with their resting sell and stop, and per-strategy
+realized and open counts. Realized is computed from the logged fill prices; an open leg's unrealized is marked at the live price only if a source gave one, else say
+"unrealized not available". Say that the figures are from the log and the paper endpoints, not Mongo, are lost on a processes restart (a restart closes paper legs
+with neutral P&L; the log keeps the history), and are gross (no brokerage or taxes). If a restart happened today, list the restart time: trades before it are in the log only.
 
 Only when asked for the position picture / open contracts / capital, run
 `scripts/continuous-strategy-trades.sh` (Capital Used, open contracts, parent/child tree; legs

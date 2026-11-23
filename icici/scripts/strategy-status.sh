@@ -17,7 +17,7 @@
 # does not record that, so admin rows are not marked. The strategy tables are not printed in this mode; `all` works the same way.
 # `net` prints ONE number and nothing else: today's net P&L (realized + unrealized) from the brokers' OWN position books (kite, ant, prism,
 # breeze), so orders placed outside the platform (manual) count too. This is the one exception to the manual-orders-are-ignored rule.
-# It prints a table (broker, realized, unrealized, total; a broker that cannot be read shows "unreadable" and is not counted) and then the NET line.
+# It prints a table (broker, realized, unrealized, total; a broker that cannot be read shows "ERROR: <what> unavailable", is never counted as 0, and the NET line then says it excludes that broker) and then the NET line. Breeze is computed from its trade book (FIFO per contract, today only).
 # Usage: scripts/strategy-status.sh [net|users] [all] [port]
 #   e.g.  scripts/strategy-status.sh   |  scripts/strategy-status.sh all 3000  |  scripts/strategy-status.sh 3000  |  scripts/strategy-status.sh users  |  scripts/strategy-status.sh users all
 OPENED=today
@@ -40,10 +40,11 @@ LIST
 fi; done
 if [ "$NET" = 1 ]; then
   # User's rule (2026-11-20, `status net` only): the broker's OWN books, so non-platform (manual) orders count too. Per broker, today's net P&L
-  # as the broker reports it: kite = sum of day-position pnl, ant = realizedPnl + unrealizedPnl, prism = rpnl + urmtom, breeze = pnl rows.
+  # as the broker reports it: kite = sum of day-position pnl, ant = realizedPnl + unrealizedPnl, prism = rpnl + urmtom, breeze = computed from its trade book (it reports no P&L on its positions).
   K="$(curl -s -m20 "localhost:$PORT/broker/kite/positions")"; A="$(curl -s -m20 "localhost:$PORT/broker/ant/positions")"
   P="$(curl -s -m20 "localhost:$PORT/broker/prism/positions")"; B="$(curl -s -m20 "localhost:$PORT/broker/breeze/positions")"
-  K="$K" A="$A" P="$P" B="$B" node -e '
+  BT="$(curl -s -m20 "localhost:$PORT/broker/breeze/trades")"
+  K="$K" A="$A" P="$P" B="$B" BT="$BT" node -e '
 const parse=s=>{try{return JSON.parse(s)}catch{return null}};
 const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:0};
 const sum=(rows,f)=>rows.reduce((a,r)=>a+f(r),0);
@@ -57,20 +58,53 @@ const a=parse(process.env.A);
 brokers.push(a&&a.success&&Array.isArray(a.positions)?{name:"ant",r:sum(a.positions,p=>num(p.realizedPnl)),u:sum(a.positions,p=>num(p.unrealizedPnl))}:{name:"ant"});
 const p=parse(process.env.P);
 brokers.push(p&&p.success&&Array.isArray(p.positions)?{name:"prism",r:sum(p.positions,x=>num(x.rpnl)),u:sum(p.positions,x=>num(x.urmtom))}:{name:"prism"});
-const b=parse(process.env.B);
-brokers.push(b&&b.success&&Array.isArray(b.positions)?{name:"breeze",r:sum(b.positions,x=>num(x.realizedPnl)),u:sum(b.positions,x=>num(x.unrealizedPnl)+num(x.pnl))}:{name:"breeze"});
+// Breeze reports no P&L (positions "pnl" is null, no realized field), so it is computed from its trade book: today'"'"'s trades (trade_date
+// dd-Mon-yyyy, IST), oldest first (the book lists newest first), FIFO per contract (expiry_date+strike_price+right): a Sell consumes the
+// oldest open Buy lots, realized += qty*(sell - lot price); unrealized = each lot left open, qty*(ltp - lot price), ltp from the matching
+// /broker/breeze/positions row (else the ltp on the trade-book row of that contract). Either read failing is an ERROR row, never 0.
+const breeze=()=>{
+  const bt=parse(process.env.BT),b=parse(process.env.B);
+  if(!(bt&&bt.success===true&&Array.isArray(bt.trades)))return {name:"breeze",err:"trade book unavailable"};
+  if(!(b&&b.success===true&&Array.isArray(b.positions)))return {name:"breeze",err:"positions unavailable"};
+  const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const ist=new Date(Date.now()+330*60000);
+  const today=String(ist.getUTCDate()).padStart(2,"0")+"-"+MON[ist.getUTCMonth()]+"-"+ist.getUTCFullYear();
+  const key=t=>[t.expiry_date,num(t.strike_price),t.right].join("|");
+  const lots=new Map(),tradeLtp=new Map();let r=0;
+  for(const t of bt.trades.filter(t=>t.trade_date===today).reverse()){
+    const q=num(t.quantity),px=num(t.average_cost),k=key(t);
+    if(!(q>0)||!(px>0)||(t.action!=="Buy"&&t.action!=="Sell"))return {name:"breeze",err:"trade book has an unreadable row"};
+    if(t.ltp!=null&&num(t.ltp)>0)tradeLtp.set(k,num(t.ltp));
+    if(!lots.has(k))lots.set(k,[]);
+    const L=lots.get(k);
+    if(t.action==="Buy"){L.push({q,px});continue}
+    let rem=q;
+    while(rem>0&&L.length){const c=Math.min(rem,L[0].q);r+=c*(px-L[0].px);L[0].q-=c;rem-=c;if(L[0].q===0)L.shift()}
+    if(rem>0)return {name:"breeze",err:"trade book has a sell with no earlier buy today"};
+  }
+  const posLtp=new Map(b.positions.map(x=>[key(x),num(x.ltp)]).filter(e=>e[1]>0));
+  let u=0;
+  for(const [k,L] of lots){
+    if(!L.length)continue;
+    const ltp=posLtp.get(k)??tradeLtp.get(k);
+    if(ltp===undefined)return {name:"breeze",err:"no ltp for an open leg"};
+    for(const l of L)u+=l.q*(ltp-l.px);
+  }
+  return {name:"breeze",r,u};
+};
+brokers.push(breeze());
 const f=n=>(n<0?"-":"")+Math.abs(Math.round(n)).toLocaleString("en-US");
 const pad=(t,w)=>String(t).padStart(w);
-let R=0,U=0;
+let R=0,U=0;const bad=[];
 console.log("BROKER   "+pad("REALIZED",12)+pad("UNREALIZED",12)+pad("TOTAL",12));
 for(const x of brokers){
-  if(x.r===undefined){console.log(x.name.padEnd(8)+"  "+pad("unreadable",36));continue}
+  if(x.r===undefined){const e=x.err||"positions unavailable";console.log(x.name.padEnd(8)+"  ERROR: "+e);bad.push(x.name+" ("+e+")");continue}
   R+=x.r;U+=x.u;
   console.log(x.name.padEnd(8)+"  "+pad(f(x.r),12)+pad(f(x.u),12)+pad(f(x.r+x.u),12));
 }
 console.log("TOTAL   "+"  "+pad(f(R),12)+pad(f(U),12)+pad(f(R+U),12));
 console.log("");
-console.log("NET "+f(R+U));'
+console.log("NET "+f(R+U)+(bad.length?"  (EXCLUDES "+bad.join(", ")+")":""));'
   exit 0
 fi
 HDR="$(mktemp)"; trap 'rm -f "$HDR"' EXIT
