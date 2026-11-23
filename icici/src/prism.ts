@@ -1299,6 +1299,15 @@ export default class Prism {
         return orders
     }
 
+    // The broker-side trade book (Shoonya /TradeBook): one row per fill (norenordno, trantype, tsym, flqty, flprc, fltm, ...). Throws on a
+    // failed read (expired session, rate limit, non-array reply) - never [] for an error; only a genuine 'no data' reply is an empty book.
+    getTrades = async (): Promise<any[]> => {
+        const raw: any = await NorenRestApi.get_tradebook();
+        if (!Array.isArray(raw)) throw new Error(`Prism get_tradebook returned a non-array reply: ${JSON.stringify(raw)?.slice(0, 200)}`);
+        return raw;
+    }
+
+    // Platform bookkeeping rows (in-memory, order process only) - NOT the broker trade book; see getTrades.
     getTradeList = () => {
         return bookkeeping.trades;
     }

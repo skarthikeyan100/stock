@@ -483,6 +483,23 @@ class NorenRestApi {
        * @param no params
        */
 
+  get_tradebook = async function () {
+    if (MOCK_BROKER) {
+      return [];
+    }
+
+    let values = {};
+    values["uid"] = this.userId;
+    values["actid"] = this.userId;
+
+    const reply: any = await this.post_request("tradebook", values);
+    // Shoonya answers an empty book with an object ({stat:'Not_Ok', emsg:'no data'}), not []. Only a genuine "no data" reply means no
+    // fills today; any other Not_Ok (e.g. an expired session) must surface rather than read as "no trades".
+    if (Array.isArray(reply)) return reply;
+    if (reply && reply.stat === 'Not_Ok' && /no data/i.test(String(reply.emsg ?? ''))) return [];
+    throw new Error(`Prism tradebook not Ok: ${reply?.emsg ?? JSON.stringify(reply)?.slice(0, 200)}`);
+  };
+
   /**
        * Description
        * @method get_holdings

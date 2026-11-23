@@ -72,3 +72,6 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 
 ## ScaledHedged reset opens root gate (2026-11-23)
 - [DONE IN CODE, needs strategies-process restart after market hours, NOT LIVE-VERIFIED] ScaledHedgedStrategy.reset() re-opens the one-root gate like SimpleContinuous (see open-review-items.md 129). After the restart, reset ScaledHedged when flat and check the log for `reset: closed root(s) ... re-opened for selection` and a new root on the next Nifty tick.
+
+## Prism trade book (2026-11-23)
+- [DONE IN CODE, needs frontend restart after market hours, live-read once OK] GET /broker/prism/trades now reads Shoonya /TradeBook (RestAPI.get_tradebook, Prism.getTrades) and fails with 500 instead of returning [] (see open-review-items.md 130). After the restart: curl /broker/prism/trades returns today's fills.

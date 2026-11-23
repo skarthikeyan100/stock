@@ -24,7 +24,7 @@ export const BROKER_CLIENTS: Record<BrokerName, BrokerClient> = {
             Log.log('Authorization code received, exchanging for token');
             await Prism.getInstance().loginWithGenAcsTok(code);
         },
-        getTrades: async () => Prism.getInstance().getTradeList(),
+        getTrades: () => Prism.getInstance().getTrades(),
         getPositions: async () => Prism.getInstance().getPositions(),
     },
     ant: {

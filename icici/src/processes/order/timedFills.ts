@@ -3,7 +3,7 @@
 //
 // What each broker's book really gives (checked against the repo, 2026-11-20):
 //  - kite   trade book `getTrades()`: order_id, trade_id, transaction_type, tradingsymbol, quantity, average_price, fill_timestamp (live-used since 7412a3b).
-//  - prism  (Shoonya) has NO trade book wired (`get_tradebook` is a comment in RestAPI.ts); the ORDER book is read (`getOrderBook`). One row per order:
+//  - prism  (Shoonya) has a trade book (RestAPI.get_tradebook / Prism.getTrades, added 2026-11-23, serves GET /broker/prism/trades only, per-fill rows with flid/fltm/flqty/flprc); this reader still reads the ORDER book (`getOrderBook`). One row per order:
 //           norenordno, trantype 'B'/'S', tsym, prd ('M' NRML / 'I' MIS), status, fillshares, avgprc, norentm 'HH:MM:SS DD-MM-YYYY' and exch_tm
 //           'DD-MM-YYYY HH:MM:SS' (both real rows from logs/orchestrator-2026-11-20.log, exchange-local = IST, no offset in the string). The time is the
 //           order's exchange time, not a per-fill time; the trade id is the order id.
