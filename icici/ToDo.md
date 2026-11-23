@@ -87,3 +87,6 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 
 ## Paper broker endpoints (2026-11-23)
 - [DONE IN CODE, needs a trading/order process restart AND a frontend process restart after market hours; NOT LIVE-VERIFIED] /broker/paper/positions and /trades now read the live paper book over the order IPC ('paperBook'), 500 on a failed read (see open-review-items.md 133). Note a restart empties the paper book by design, so verify with the next paper entry.
+
+## Orders priced at the best bid / best offer (2026-11-23)
+- [DONE IN CODE, needs a trading AND order process restart after market hours; NOT LIVE-VERIFIED] Orders intended as market / LTP orders are priced by one central order-process function (src/processes/order/orderPrice.ts, request `getOrderPrice`): BUY = REST best bid rounded down, SELL = REST best offer rounded up, all brokers and paper (see open-review-items.md 135). After the restart verify on paper: `[order] price pick:` lines, a resting paper buy at the bid, a Gamma/HighLow entry that rests or is cancelled by its timeout, and a target-hit sell resting at the ask. Rollback = `git revert` of the commit (no config key).

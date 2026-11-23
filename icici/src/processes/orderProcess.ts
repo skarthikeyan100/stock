@@ -30,6 +30,7 @@ import bookkeeping, { MongoRestoreResult, EodBrokerReport } from './order/bookke
 import { onEntryFill, onEntryCancelled } from './order/entryExits';
 import { buyIndexOnKite, manualBuyOnKite, setTargetStopLoss, pollGttFills, reconcileManualSells } from './order/kiteExecutor';
 import * as antExecutor from './order/antExecutor';
+import { getOrderPrice } from './order/orderPrice';
 import { buyIndexOnBreeze, manualBuyOnBreeze, getMarketableBreezeBuyPrice, tsymFor } from './order/breezeExecutor';
 import { attachProtection, cancelProtection } from './order/attachProtection';
 import { isLockedSell, onLockedSellCancelled, recordLockedSells, loadLockedSellsFromMongo } from './order/lockedSells';
@@ -1160,6 +1161,12 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
             // ANT ScripDetails quote; the token is the ANT common token every broker's Trade.token carries.
             case 'getOptionLtp': {
                 const result = await ANT.getInstance().getScripQuote(req.payload.exchange, req.payload.token);
+                return { kind: 'response', id: req.id, ok: true, result };
+            }
+
+            case 'getOrderPrice': {
+                const { tradingSymbol, token, exchange, side, broker } = req.payload;
+                const result = await getOrderPrice({ side, tsym: tradingSymbol, token: String(token), exchange, broker: normalizeBrokerName(broker) || bookkeeping.getUserBroker(req.userId) });
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 

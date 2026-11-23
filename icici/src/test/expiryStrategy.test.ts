@@ -26,6 +26,7 @@ const fake: any = new Proxy({}, {
             case 'resolveOptionContract': return { tsym: `NIFTY${args[1].strike}${args[1].right}`, token: `${args[1].right}-T`, exchange: 'NFO' };
             case 'placeLimitBuyBare': return { orderId: `B${calls.filter((c) => c.fn === 'placeLimitBuyBare').length}` };
             case 'getOptionLtp': return optionLtp;
+            case 'getOrderPrice': return { price: optionLtp, bid: optionLtp, ask: optionLtp, ltp: optionLtp, spread: 0 };
             case 'attachProtection': return { mode: 'gtt' };
             case 'cancelRestingLimitSells': return { cancelFailed: false, filledQty: 0 };
             case 'cancelRestingLimitBuys': return { cancelFailed: false, filledQty: 0 };

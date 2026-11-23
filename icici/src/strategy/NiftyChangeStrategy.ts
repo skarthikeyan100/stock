@@ -11,7 +11,7 @@ import { entryStopPrice, minMovePoints } from './entryStop';
 
 // At each configured HH:mm slot, buys the option in the direction of Nifty's move since the previous slot (Nifty LTP at this slot minus
 // its LTP at the previous slot today, from the live tick; the first slot of the day compares with the previous day's close): up -> CE,
-// down -> PE, flat -> nothing. The LTP seen at each slot is kept in memory as the reference for the next one. The order is a LIMIT buy at (the option's LTP - limitOffset; the default offset is 0, i.e. the LTP itself) on every
+// down -> PE, flat -> nothing. The LTP seen at each slot is kept in memory as the reference for the next one. The order is a LIMIT buy at the option's best bid (the central order price; limitOffset is no longer used) on every
 // configured broker, sized from maxInvestment (the amount PER broker, see investmentForBroker; maxInvestmentByBroker overrides one broker). When it fills, a resting limit sell goes in at
 // (fill price + targetPoints), and when stopLossPercent / stopLossPoints (and/or maxLossPerLeg, rupees per leg) is set a stop below the fill is attached with it
 // (attachProtection: Kite GTT, ANT in-app exitMonitor, Breeze resting sell + tick stop). An unfilled entry is cancelled after entryTimeoutMinutes, and a position still held at
@@ -30,7 +30,7 @@ import { entryStopPrice, minMovePoints } from './entryStop';
 //   times: ['10:40', '11:40', '12:30', '13:40', '14:30']
 //   maxInvestment: 100000     - the amount PER broker
 //   minMovePoints: 10       - skip a slot whose |Nifty move| is below this (0 / omitted: any non-zero move trades)
-//   limitOffset: 0          - entry limit = option LTP - limitOffset (0 = the LTP itself; a limit below the market fills only on a dip)
+//   limitOffset: 0          - no longer used: the entry limit is the best bid (central order price); the key is still readable
 //   targetPoints: 5
 //   stopLossPercent: 10     - stop = fill * (1 - 10%); wins over stopLossPoints when set
 //   stopLossPoints: 8       - stop = fill - stopLossPoints (used only without stopLossPercent; omit both for no stop)
@@ -125,19 +125,15 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
         const minMove = minMovePoints(cfg);
         if (Math.abs(change) < minMove) { Log.log(`[${this.logTag}] ${timeStr}: Nifty ${ltp} vs ${referenceLabel} ${reference}: move ${change > 0 ? '+' : ''}${change.toFixed(2)} is below minMovePoints ${minMove} - not trading`); return; }
         const budget = resolveMaxInvestment(cfg);
-        const offset = cfg.limitOffset == null ? 0 : Number(cfg.limitOffset);
         const targetPoints = Number(cfg.targetPoints);
-        if (!(budget > 0) || !Number.isFinite(offset) || offset < 0 || !(targetPoints > 0)) {
-            Log.log(`[${this.logTag}] ALERT: ${timeStr}: maxInvestment (${budget}), limitOffset (${cfg.limitOffset}) or targetPoints (${cfg.targetPoints}) invalid - not trading`);
+        if (!(budget > 0) || !(targetPoints > 0)) {
+            Log.log(`[${this.logTag}] ALERT: ${timeStr}: maxInvestment (${budget}) or targetPoints (${cfg.targetPoints}) invalid - not trading`);
             return;
         }
         const right: 'CE' | 'PE' = change > 0 ? 'CE' : 'PE';
         const strike = AntContractMaster.getInstance().entryStrike(ltp, right, 'NIFTY');
         Log.log(`[${this.logTag}] ${timeStr}: Nifty ${ltp} vs ${referenceLabel} ${reference}: difference ${change > 0 ? '+' : ''}${change.toFixed(2)} points -> direction ${change > 0 ? 'up' : 'down'} -> ${right} ${strike}`);
-        await this.startCycle(key, { index: 'NIFTY', strike, right }, (b) => investmentForBroker(cfg, b), async (c) => {
-            const optionLtp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
-            return roundToTick(optionLtp - offset);
-        });
+        await this.startCycle(key, { index: 'NIFTY', strike, right }, (b) => investmentForBroker(cfg, b), undefined); // the entry limit is the central order price (the best bid); limitOffset no longer prices it
     }
 
     // Stop price for a filled leg (stopLossPercent, else stopLossPoints, tightened to maxLossPerLeg when that is nearer); see entryStop.ts.

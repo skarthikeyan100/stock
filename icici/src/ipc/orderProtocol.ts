@@ -118,6 +118,9 @@ export type OrderRequestType =
     | 'cancelProtection'
     // Last traded price of one option contract from its broker's quote API. payload: { tradingSymbol, token, exchange }.
     | 'getOptionLtp'
+    // Read-only: THE order price for an order intended as a market / LTP order - BUY: REST best bid rounded down, SELL: REST best offer rounded up (orderPrice.ts).
+    // payload: { tradingSymbol, token, exchange, side: 'BUY' | 'SELL', broker } -> { price, bid, ask, ltp, spread }.
+    | 'getOrderPrice'
     // Read-only: the in-memory paper book (open paper legs, resting paper orders, the day's paper fills) for GET /broker/paper/positions|trades.
     | 'paperBook';
 

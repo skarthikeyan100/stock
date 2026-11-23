@@ -31,7 +31,7 @@ export type ChunkedBuyIndexResult = ChunkedFillResult & {
 // type is blocked inside a reconcile until someone decides it is a read.
 const READ_ONLY_REQUESTS: ReadonlySet<OrderRequestType> = new Set<OrderRequestType>([
     'openTrades', 'getPendingSells', 'getLiveQuantity', 'contractHolders', 'stats', 'platformSells', 'canPlaceOrder', 'brokerSessions', 'getToken',
-    'getContractByPriceRange', 'getContractByPriceRangeBare', 'getPCR', 'getATMTokens', 'resolveOptionContract', 'getOptionLtp', 'paperBook',
+    'getContractByPriceRange', 'getContractByPriceRangeBare', 'getPCR', 'getATMTokens', 'resolveOptionContract', 'getOptionLtp', 'getOrderPrice', 'paperBook',
     // Not orders: they restore a runtime cap / setting that a latched strategy re-applies when it reloads.
     'setBrokerInvestmentCap', 'updateUserSettings', 'reloadUserLimits', 'restoreFromMongo',
 ]);
@@ -394,6 +394,11 @@ class OrderClient {
 
     async getOptionLtp(userId: string, payload: { tradingSymbol: string; token: string; exchange: 'NFO' | 'BFO' }): Promise<number> {
         return this.call('getOptionLtp', userId, payload);
+    }
+
+    // The central order price (see orderProtocol 'getOrderPrice'); strategies never compute an LTP-derived order price themselves.
+    async getOrderPrice(userId: string, payload: { tradingSymbol: string; token: string; exchange: 'NFO' | 'BFO'; side: 'BUY' | 'SELL'; broker: BrokerName | string }): Promise<{ price: number; bid: number; ask: number; ltp: number; spread: number | null }> {
+        return this.call('getOrderPrice', userId, payload);
     }
 
     async reloadSession(userId = 'Default'): Promise<void> {

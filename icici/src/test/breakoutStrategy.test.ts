@@ -23,6 +23,7 @@ const fake: any = new Proxy({}, {
             case 'resolveOptionContract': return { tsym: `NIFTY${args[1].strike}${args[1].right}-W${args[1].expiryOffset ?? 0}`, token: `${args[1].right}-T`, exchange: 'NFO' };
             case 'placeLimitBuyBare': return { orderId: 'B1' };
             case 'getOptionLtp': return 100;
+            case 'getOrderPrice': return { price: 100, bid: 100, ask: 100.05, ltp: 100, spread: 0.05 };
             default: return {};
         }
     },

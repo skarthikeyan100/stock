@@ -150,10 +150,7 @@ export default class BreakoutStrategy extends CandleEntryStrategy {
         const strike = this.atmStrike(this.lastNifty.ltp);
         Log.log(`[${this.logTag}] ${head} -> BUY ${right} ${strike} (NIFTY ${this.lastNifty.ltp}), nearest expiry, quantity ${this.configuredQuantity()} per broker`);
         this.candle1.traded = true;
-        await this.startCycle(key, { index: 'NIFTY', strike, right }, () => 1, async (c) => {
-            const optionLtp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
-            return roundToTick(optionLtp);
-        });
+        await this.startCycle(key, { index: 'NIFTY', strike, right }, () => 1, undefined);
     }
 
     // Analysis only: never places an order.

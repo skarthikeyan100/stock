@@ -857,10 +857,13 @@ export default class Prism {
     // absolute price) this will reject or silently mis-bracket the position,
     // exactly the same caveat class ANT's placeBracketOrder/placeCoverOrder
     // already carry.
-    placeCoverOrder = async (contract: string, qty: number, stopLossPoints: number, userContext?: UserContext): Promise<any> => {
-        const quote = await this.getStockOptionQuote(contract);
-        const ltp = quote.ltp;
-        const limitPrice = Math.round(ltp * 1.01 * 20) / 20;
+    // `entryLimit`: the entry price from the central order price (the best bid); without it the legacy LTP + 1% is used.
+    placeCoverOrder = async (contract: string, qty: number, stopLossPoints: number, userContext?: UserContext, entryLimit?: number): Promise<any> => {
+        let limitPrice = entryLimit as number;
+        if (entryLimit === undefined) {
+            const quote = await this.getStockOptionQuote(contract);
+            limitPrice = Math.round(quote.ltp * 1.01 * 20) / 20;
+        }
         const bookLossPrice = Math.round((limitPrice - stopLossPoints) * 20) / 20;
 
         if (!qty) {

@@ -262,10 +262,7 @@ export default class HighLowStrategy extends CandleEntryStrategy {
         }
         const strike = this.atmStrike(niftyLtp);
         Log.log(`[${this.logTag}] ${head} -> BUY ${right} ${strike}`);
-        await this.startCycle(key, { index: 'NIFTY', strike, right }, (b) => investmentForBroker(this.cfg() as any, b), async (c) => {
-            const optionLtp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
-            return roundToTick(optionLtp);
-        });
+        await this.startCycle(key, { index: 'NIFTY', strike, right }, (b) => investmentForBroker(this.cfg() as any, b), undefined);
     }
 
     // `quantity` when set (fixed lots), else whole lots that fit the broker's rupee budget at the option's price.

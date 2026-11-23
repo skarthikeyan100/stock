@@ -23,6 +23,7 @@ const fake: any = new Proxy({}, {
             case 'resolveOptionContract': return { tsym: `NIFTY${args[1].strike}${args[1].right}-W${args[1].expiryOffset ?? 0}`, token: `${args[1].right}-T`, exchange: 'NFO' };
             case 'placeLimitBuyBare': return { orderId: 'B1' };
             case 'getOptionLtp': return 100;
+            case 'getOrderPrice': return { price: 100, bid: 100, ask: 100.05, ltp: 100, spread: 0.05 };
             default: return {};
         }
     },
@@ -76,7 +77,7 @@ async function feed(s: any, b: { open: number; mid: number; close: number }, nex
     assert(count('resolveOptionContract') === 1 && resolve?.args[1].right === 'CE' && resolve?.args[1].strike === 24050 && resolve?.args[1].expiryOffset === 1, `CE at the ATM strike 24050 on the NEXT expiry (expiryOffset 1) (got ${JSON.stringify(resolve?.args[1])})`);
     const buy = last('placeLimitBuyBare');
     assert(count('placeLimitBuyBare') === 1 && buy?.args[3] === 65 && buy?.args[4] === 100, `one limit buy of exactly 65 at the option price 100 (qty ${buy?.args[3]} @ ${buy?.args[4]})`);
-    assert(count('getOptionLtp') >= 1, 'the entry price comes from the option LTP');
+    assert(count('getOrderPrice') >= 1, 'the entry price comes from the central order price');
 
     console.log('  the first candle of the day never trades (its predecessor is yesterday)');
     calls = [];

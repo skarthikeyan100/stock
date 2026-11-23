@@ -225,6 +225,7 @@ last price. It needs web-admin login, so do the same two steps directly:
 
 ## Principles
 
+- **Orders intended as market / LTP orders are priced at the REST best bid (buy, rounded down) or best offer (sell, rounded up) through one central order-process path (`getOrderPrice`), on every broker and on paper; one `[order] price pick:` log line per order shows it.** Exempt: stop / EOD / square-off exits, lock-profits and max-profit latch sells, and orders with their own price (fill-based targets and stops, fixed re-buys). Such an order rests passively and may not fill; there is no fallback to the LTP, so a buy that does not fill is cancelled by its own timeout and a sell stays resting until it fills or the close cancels it.
 - **Your job is to fix (MANDATORY):** when an error, ALERT, repeated failure or mismatch points to a code or data cause, start the fixing agent in the same turn, as soon as the cause is confirmed from the log. Do not report it and wait, do not ask the user to choose first, and do not call a retry loop "not a storm" and leave it. The only things that wait for the user are the items under "Needs the user's explicit instruction first".
 - **FIX IT, NEVER DESCRIBE IT (user's rule: "When you can fix, you should fix."):** a gap you can fix is
   a task, not a remark. If you are about to write "X is still excluded / returns null / shows 0 / is not computed / cannot be matched / is a

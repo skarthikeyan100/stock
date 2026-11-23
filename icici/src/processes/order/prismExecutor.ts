@@ -11,6 +11,7 @@ import { BuyRequest, BrokerPosition, cancelOrderWithFillRecheck, cancelRestingSe
 import { trackPendingPrismLimitOrder, untrackPendingPrismLimitOrder, findPendingOrdersForSymbol, beginCancelOfPendingPrismLimitOrders, endCancelOfPendingPrismLimitOrders, silenceListenersOfPendingPrismLimitOrders, prismRestingSells } from './pendingPrismLimitOrders';
 import { sleep } from '../../util/sleep';
 import { roundToTick } from '../../util/tick';
+import { orderPriceOf } from './orderPrice';
 import { exchangeForTsym } from '../../util/underlyings';
 import { markNotPlaced } from '../../util/notPlaced';
 
@@ -38,6 +39,8 @@ export async function getToken(contract: string): Promise<string> {
 
 export async function buyContract(userId: string, contract: string, quantity: number, price?: number): Promise<any> {
     Log.log(`[order] Buying (Prism) ${contract} qty=${quantity} for ${userId}`);
+    // Always the central order price (the best bid): a caller-supplied price here was only ever the strategy's LTP.
+    price = await orderPriceOf({ side: 'BUY', tsym: contract, token: '', exchange: exchangeForTsym(contract), broker: 'prism' });
     const response = await Prism.getInstance().buyContract(contract, quantity, price);
     if (!response) throw new Error(`buyContract failed for ${contract}`);
 
@@ -192,7 +195,8 @@ export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
     const { userId, tradingSymbol, brokerToken: instrumentId, quantity, stopLossPoints, exchange } = request;
     if (stopLossPoints && stopLossPoints > 0) {
         Log.log(`[order] Buying (Prism) ${tradingSymbol} qty=${quantity} for ${userId} via cover order (sl=${stopLossPoints})`);
-        const response = await Prism.getInstance().placeCoverOrder(tradingSymbol, quantity, stopLossPoints);
+        const coverPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: instrumentId, exchange: (exchange as 'NFO' | 'BFO') ?? 'NFO', broker: 'prism' });
+        const response = await Prism.getInstance().placeCoverOrder(tradingSymbol, quantity, stopLossPoints, undefined, coverPrice);
         if (!response) throw new Error(`placeCoverOrder failed for ${tradingSymbol}`);
 
         const trade = new Trade();
@@ -225,8 +229,7 @@ export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
     // waitForPrismBuyFill's comment).
     Log.log(`[order] Buying (Prism) ${tradingSymbol} qty=${quantity} for ${userId} via verified limit order`);
     const prism = Prism.getInstance();
-    const quote = await prism.getStockOptionQuote(tradingSymbol);
-    const limitPrice = quote.ltp;
+    const limitPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: instrumentId, exchange: (exchange as 'NFO' | 'BFO') ?? 'NFO', broker: 'prism' });
     const { orderId } = await prism.placeLimitBuyBare(tradingSymbol, instrumentId, quantity, limitPrice, userId, (exchange as 'NFO' | 'BFO') ?? 'NFO');
     let fillPrice: number;
     try {
@@ -278,8 +281,7 @@ export async function buyOnPrism(request: BuyRequest): Promise<Trade> {
 // not a silent phantom short.
 export async function enterShortOnPrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const prism = Prism.getInstance();
-    const quote = await prism.getStockOptionQuote(tradingSymbol);
-    const limitPrice = quote.ltp;
+    const limitPrice = await orderPriceOf({ side: 'SELL', tsym: tradingSymbol, token: instrumentId, exchange, broker: 'prism' });
     Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) (Prism) ${tradingSymbol} qty=${quantity} @ ${limitPrice} for ${userId}`);
     const { orderId } = await prism.placeLimitSellBare(tradingSymbol, instrumentId, quantity, limitPrice, userId, exchange);
     const fillPrice = await waitForPrismBuyFill(orderId, tradingSymbol, userId);
@@ -306,8 +308,7 @@ export async function enterShortOnPrism(userId: string, tradingSymbol: string, i
 // mistakes this for a new long position.
 export async function buyToClosePrism(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const prism = Prism.getInstance();
-    const quote = await prism.getStockOptionQuote(tradingSymbol);
-    const limitPrice = quote.ltp;
+    const limitPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: instrumentId, exchange, broker: 'prism' });
     Log.log(`[order] [BUTTERFLY] Buy-to-close (Prism) ${tradingSymbol} qty=${quantity} @ ${limitPrice} for ${userId}`);
     const { orderId } = await prism.placeLimitBuyBare(tradingSymbol, instrumentId, quantity, limitPrice, userId, exchange);
     const fillPrice = await waitForPrismBuyFill(orderId, tradingSymbol, userId);

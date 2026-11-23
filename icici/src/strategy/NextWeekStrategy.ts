@@ -166,9 +166,6 @@ export default class NextWeekStrategy extends CandleEntryStrategy {
         const right = trend === 'call' ? 'CE' : 'PE';
         const strike = this.atmStrike(niftyLtp);
         Log.log(`[${this.logTag}] ${head} -> ${verdict} -> BUY ${right} ${strike} on the next-week expiry, quantity ${this.configuredQuantity()} per broker`);
-        await this.startCycle(key, { index: 'NIFTY', strike, right, expiryOffset: 1 }, () => 1, async (c) => {
-            const optionLtp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
-            return roundToTick(optionLtp);
-        });
+        await this.startCycle(key, { index: 'NIFTY', strike, right, expiryOffset: 1 }, () => 1, undefined);
     }
 }

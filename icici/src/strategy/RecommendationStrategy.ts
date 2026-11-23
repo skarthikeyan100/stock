@@ -235,10 +235,8 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         this.save();
         if (live.length === 0) { await this.disableBlock(); return; }
         const right = oppositeRight(w.right), strike = atmStrike(quote.ltp);
-        Log.log(`[${this.logTag}] reverse: ${cfg.contract} is back at ${cfg.entryPrice} - buying ${strike} ${right} at its LTP on ${live.join(', ')}`);
-        await this.startCycle(`${key}|reverse`, { index: w.index, strike, right }, (b) => investmentForBroker(cfg, b), async (c) => {
-            return await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
-        }, live);
+        Log.log(`[${this.logTag}] reverse: ${cfg.contract} is back at ${cfg.entryPrice} - buying ${strike} ${right} at the best bid on ${live.join(', ')}`);
+        await this.startCycle(`${key}|reverse`, { index: w.index, strike, right }, (b) => investmentForBroker(cfg, b), undefined, live);
     }
 
     private watching(quote: OptionQuote): boolean {

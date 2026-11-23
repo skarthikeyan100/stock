@@ -4,6 +4,7 @@ import { getSpotLtp } from './spotQuote';
 import ANT from '../../ant/ANT';
 import { cancelOrderWithFillRecheck, emptyExitTrade } from './BrokerExecutor';
 import { roundToTick } from '../../util/tick';
+import { orderPriceOf } from './orderPrice';
 import AntOrderNotifyStream from '../../ant/AntOrderNotifyStream';
 import AntContractMaster from '../../ant/AntContractMaster';
 import configService from '../../prism/ConfigService';
@@ -221,13 +222,15 @@ export async function enterPosition(
 
     let orderNo: string;
     if (useCover) {
-        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT cover order (sl=${stopLossPoints})`);
+        const coverPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: instrumentId, exchange, broker: 'ant' });
+        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT cover order (limit ${coverPrice} at the best bid, sl=${stopLossPoints})`);
         ({ orderNo } = await ant.placeCoverOrder({
             exchange,
             instrumentId,
             tradingSymbol,
             quantity,
             transactionType: 'BUY',
+            price: coverPrice,
             stopLossPoints,
         }));
     } else if (useBracket) {
@@ -235,9 +238,8 @@ export async function enterPosition(
         // ("Market orders are not allowed") - needs a LIMIT price. Priced
         // slightly above the current LTP (a marketable limit) so it fills
         // immediately like a market buy would.
-        const ltp = await entryLtp(knownLtp, exchange, instrumentId);
-        const limitPrice = roundToTick(ltp * 1.01);
-        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT bracket order (ltp=${ltp} limit=${limitPrice} target=${targetPoints} sl=${stopLossPoints})`);
+        const limitPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: instrumentId, exchange, broker: 'ant' });
+        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT bracket order (limit=${limitPrice} at the best bid, target=${targetPoints} sl=${stopLossPoints})`);
         ({ orderNo } = await ant.placeBracketOrder({
             exchange,
             instrumentId,
@@ -249,25 +251,10 @@ export async function enterPosition(
             stopLossPoints,
         }));
     } else if (marketEntry) {
-        // MARKET + market protection: no pre-trade LTP needed (skips entryLtp -> throttled OHLC quote).
-        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT MARKET order (protection=${marketEntry.marketProtectionPercent}%)`);
-        try {
-            ({ orderNo } = await ant.placeOrder({
-                exchange, instrumentId, tradingSymbol, quantity, transactionType: 'BUY',
-                marketProtectionPercent: marketEntry.marketProtectionPercent,
-                product: marketEntry.product,
-            }));
-        } catch (e: any) {
-            // Fall back ONLY on the known broker rejection of MARKET orders. Any other error (timeout, network)
-            // may mean the order was actually accepted, so re-placing could double-buy: rethrow those.
-            const detail = `${e?.message ?? ''} ${JSON.stringify(e?.response?.data ?? '')}`;
-            if (!/EC965|Market orders are not allowed/i.test(detail)) throw e;
-            Log.log(`[order] ALERT: ANT rejected MARKET+protection for ${tradingSymbol} (${detail.slice(0, 200)}) - falling back to marketable LIMIT via ScripDetails quote`);
-            const ltp = await ant.getScripQuote(exchange, instrumentId);
-            if (!(ltp > 0)) throw new Error(`ANT fallback quote unusable for ${tradingSymbol} - order not placed`);
-            const limitPrice = roundToTick(ltp * 1.01);
-            ({ orderNo } = await ant.placeOrder({ exchange, instrumentId, tradingSymbol, quantity, transactionType: 'BUY', price: limitPrice, product: marketEntry.product }));
-        }
+        // Intended as a market buy: priced by the central order price (a limit at the best bid, product kept) instead of a MARKET order.
+        const limitPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: instrumentId, exchange, broker: 'ant' });
+        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT limit order at the best bid ${limitPrice} (target-only entry)`);
+        ({ orderNo } = await ant.placeOrder({ exchange, instrumentId, tradingSymbol, quantity, transactionType: 'BUY', price: limitPrice, product: marketEntry.product }));
     } else {
         // Confirmed live 2026-10-12: AliceBlue now rejects MARKET orders on
         // this plain (non-bracket) regular-order path too, with the same
@@ -275,10 +262,8 @@ export async function enterPosition(
         // already worked around - not just a bracket-specific restriction.
         // Same fix: a marketable LIMIT 1% above LTP, fills immediately like
         // a market order would from the caller's point of view.
-        const ltp = await entryLtp(knownLtp, exchange, instrumentId);
-        // BFO (SENSEX) buys are limited at LTP itself, not LTP+1% (user decision 2026-10-19); NFO keeps the 1% cushion.
-        const limitPrice = exchange === 'BFO' ? roundToTick(ltp) : roundToTick(ltp * 1.01);
-        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order (ltp=${ltp} limit=${limitPrice})`);
+        const limitPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: instrumentId, exchange, broker: 'ant' });
+        Log.log(`[order] Buying ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order (limit=${limitPrice} at the best bid)`);
         ({ orderNo } = await ant.placeOrder({
             exchange,
             instrumentId,
@@ -428,11 +413,8 @@ export async function enterPosition(
 // here would risk the exact same orphaned-position class of bug for a short leg.
 export async function enterShortPosition(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade> {
     const ant = ANT.getInstance();
-    const ltp = await entryLtp(undefined, exchange, instrumentId);
-    // BFO (SENSEX) priced at LTP itself, NFO at a marketable 1% cushion BELOW LTP (the sell-side
-    // mirror of enterPosition's own BFO/NFO buy-side convention a few lines up in this file).
-    const limitPrice = exchange === 'BFO' ? roundToTick(ltp) : roundToTick(ltp * 0.99);
-    Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order (ltp=${ltp} limit=${limitPrice})`);
+    const limitPrice = await orderPriceOf({ side: 'SELL', tsym: tradingSymbol, token: instrumentId, exchange, broker: 'ant' });
+    Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order (limit=${limitPrice} at the best offer)`);
     const { orderNo } = await ant.placeOrder({
         exchange,
         instrumentId,
@@ -483,9 +465,8 @@ export async function enterShortPosition(userId: string, tradingSymbol: string, 
 // fill-confirmation discipline exactly. Records via recordShortFill with action='BuyToClose'.
 export async function buyToClosePosition(userId: string, tradingSymbol: string, instrumentId: string, quantity: number, exchange: 'NFO' | 'BFO'): Promise<Trade> {
     const ant = ANT.getInstance();
-    const ltp = await entryLtp(undefined, exchange, instrumentId);
-    const limitPrice = exchange === 'BFO' ? roundToTick(ltp) : roundToTick(ltp * 1.01);
-    Log.log(`[order] [BUTTERFLY] Buy-to-close ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order (ltp=${ltp} limit=${limitPrice})`);
+    const limitPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: instrumentId, exchange, broker: 'ant' });
+    Log.log(`[order] [BUTTERFLY] Buy-to-close ${tradingSymbol} qty=${quantity} for ${userId} via ANT regular order (limit=${limitPrice} at the best bid)`);
     const { orderNo } = await ant.placeOrder({
         exchange,
         instrumentId,

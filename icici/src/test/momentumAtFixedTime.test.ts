@@ -28,6 +28,7 @@ const fake: any = new Proxy({}, {
             case 'placeLimitBuyBare': return { orderId: 'B1' };
             case 'brokerPlaceLimitSellBare': return { orderId: 'S1' };
             case 'getOptionLtp': return typeof optionLtp === 'function' ? optionLtp(args) : optionLtp;
+            case 'getOrderPrice': { const v = typeof optionLtp === 'function' ? 100 : optionLtp; return { price: v, bid: v, ask: v, ltp: v, spread: 0 }; }
             case 'cancelRestingLimitBuys': case 'cancelRestingLimitSells': return { filledQty: 0, cancelFailed: false };
             default: return {};
         }

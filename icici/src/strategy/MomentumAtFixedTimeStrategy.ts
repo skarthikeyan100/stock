@@ -258,10 +258,7 @@ export default class MomentumAtFixedTimeStrategy extends LimitEntryStrategy {
         if (!priceMatches) { Log.log(`[${this.logTag}] ${timeStr}: price move does not match ${direction} - no trade`); return; }
 
         // 3. Entry: one limit buy per broker at the prevailing option price, sized from maxInvestment.
-        await this.startCycle(key, { index: 'NIFTY', strike: chosen.strike, right: chosen.right }, (b) => investmentForBroker(cfg, b), async (c) => {
-            const optionLtp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
-            return roundToTick(optionLtp);
-        });
+        await this.startCycle(key, { index: 'NIFTY', strike: chosen.strike, right: chosen.right }, (b) => investmentForBroker(cfg, b), undefined);
     }
 
     // Option ticks: depth ticks for the order-book read go to MomentumSignal; leg ticks go to the target logic in LimitEntryStrategy.

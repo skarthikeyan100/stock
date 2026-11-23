@@ -271,12 +271,10 @@ export default class ExpiryStrategy extends LimitEntryStrategy {
             b.cycleStrike = strike;
             b.cyclePrice = p.price;
             this.save();
-            Log.log(`[${this.logTag}] ${broker} ${p.reason}: BUY ${p.right} ${strike} (nearest expiry)${p.price !== undefined ? ` limit ${p.price.toFixed(2)}` : ' limit at the option LTP'} [${key}]`);
-            await this.startCycle(key, { index: 'NIFTY', strike, right: p.right }, (br) => investmentForBroker(this.cfg() as any, br), async (c) => {
-                if (p.price !== undefined) return roundToTick(p.price);
-                const optionLtp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
-                return roundToTick(optionLtp);
-            }, [broker]);
+            Log.log(`[${this.logTag}] ${broker} ${p.reason}: BUY ${p.right} ${strike} (nearest expiry)${p.price !== undefined ? ` limit ${p.price.toFixed(2)}` : ' limit at the best bid'} [${key}]`);
+            await this.startCycle(key, { index: 'NIFTY', strike, right: p.right }, (br) => investmentForBroker(this.cfg() as any, br),
+                // A fixed price (buy again at the original price) stays as given; otherwise undefined = the central order price (the best bid).
+                p.price !== undefined ? async () => roundToTick(p.price as number) : undefined, [broker]);
             const leg = this.state.legs[broker];
             if (leg && this.unfilledBuy(leg) && this.driftPoints() !== null) this.armSelfStop(leg);
         } finally {

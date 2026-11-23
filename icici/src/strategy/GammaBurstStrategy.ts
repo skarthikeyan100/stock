@@ -178,10 +178,7 @@ export default class GammaBurstStrategy extends CandleEntryStrategy {
         const right = trend === 'call' ? 'CE' : 'PE';
         const strike = this.atmStrike(niftyLtp);
         Log.log(`[${this.logTag}] ${head} -> ${verdict} -> BUY ${right} ${strike} on this week's expiry, investment ${this.brokers().map((b) => `${b} ${investmentForBroker(this.cfg() as any, b)}`).join(', ')}`);
-        await this.startCycle(key, { index: 'NIFTY', strike, right, expiryOffset: 0 }, (b) => investmentForBroker(this.cfg() as any, b), async (c) => {
-            const optionLtp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
-            return roundToTick(optionLtp);
-        });
+        await this.startCycle(key, { index: 'NIFTY', strike, right, expiryOffset: 0 }, (b) => investmentForBroker(this.cfg() as any, b), undefined);
     }
 
     // Budget-sized, not a fixed quantity: whole lots of NIFTY that fit the rupee budget at the option's price (LimitEntryStrategy's rule).

@@ -35,6 +35,7 @@ const fake: any = new Proxy({}, {
             case 'getOpenTrades': return openTrades;
             case 'getPendingSells': return pendingFor(args[2]);
             case 'getOptionLtp': return 100;
+            case 'getOrderPrice': return { price: 100, bid: 100, ask: 100.05, ltp: 100, spread: 0.05 };
             case 'cancelRestingLimitSells': return { filledQty: 0, cancelFailed: false };
             case 'getContractByPriceRangeBare': {
                 const [, , type] = args;

@@ -1,6 +1,7 @@
 import Log from '../../util/Log';
 import { Trade } from '../../model/model';
 import ANT from '../../ant/ANT';
+import { orderPriceOf } from './orderPrice';
 import AntContractMaster from '../../ant/AntContractMaster';
 import { exchangeForIndex } from '../../util/underlyings';
 import bookkeeping from './bookkeeping';
@@ -17,7 +18,9 @@ import type { CancelledListener } from './pendingOrderTracker';
 //                ExpiryStrategy target sell / re-buy looped 171 fills in 23 s (2026-11-23 13:29).
 //   Limit sell:  rests in the in-memory book; filled in full at its limit price by the first option tick at or above it (or at once when
 //                the last known price already is).
-//   Market exit: filled at once at the last tick price (else ANT's quote) - squareOff, marketSell.
+//   Market buy:  priced by the central order price (the REST best bid, orderPrice.ts) and placed as a limit buy that rests; waits up to 30 s for
+//                its fill, else cancels and throws - like the real brokers' market-style buys.
+//   Market exit: filled at once at the last tick price (else ANT's quote) - squareOff, marketSell (stop / EOD exits are not repriced).
 // Contracts are the ANT contract master's, so ticks and tokens are ANT's, like every other broker's.
 
 interface PaperOrder {
@@ -219,14 +222,26 @@ async function marketSellOf(userId: string, tsym: string, token: string | undefi
     return trade;
 }
 
+// An intended market buy: priced by the central order price (the best bid, like every real broker) and placed as a limit buy that rests until the
+// market is at or below it. Like the real executors it waits for the fill, and on timeout cancels and throws (nothing is booked then).
+const MARKET_BUY_WAIT_MS = 30000;
 async function marketBuyOf(userId: string, tsym: string, token: string, quantity: number, exchange: OptionExchange): Promise<Trade> {
-    const price = await marketPrice(token, exchange);
-    const o: PaperOrder = { orderId: nextId(), userId, tradingSymbol: tsym, token, quantity, price, exchange, action: 'Buy' };
-    filledQty.set(o.orderId, quantity);
-    const trade = fillTrade(o, price);
-    Log.log(`[paper] Buy market ${tsym} qty=${quantity} filled @ ${price} for ${userId}`);
-    await bookkeeping.recordFill(trade);
-    return trade;
+    const price = await orderPriceOf({ side: 'BUY', tsym, token, exchange, broker: 'paper' });
+    const { orderId } = await placeLimit('Buy', userId, tsym, token, quantity, price, exchange);
+    const until = Date.now() + MARKET_BUY_WAIT_MS;
+    while (Date.now() < until) {
+        const done = fills.find((f) => f.orderId === orderId);
+        if (done) {
+            const t = new Trade();
+            t.tsym = tsym; t.token = token; t.quantity = done.quantity; t.price = done.price; t.lastTradePrice = done.price;
+            t.action = 'Buy'; t.status = 'COMPLETE'; t.user = userId; t.broker = 'paper'; t.brokerOrderId = orderId;
+            return t; // already booked by the fill itself (fillOrder)
+        }
+        await new Promise((r) => setTimeout(r, 250));
+    }
+    const o = orders.get(orderId);
+    if (o) { orders.delete(orderId); releaseTick(o); bookkeeping.releaseReservationForOrder(orderId); }
+    throw new Error(`paper: buy ${tsym} @ ${price} (best bid) did not fill within ${MARKET_BUY_WAIT_MS / 1000}s - cancelled`);
 }
 
 const unsupported = (what: string) => async (): Promise<never> => { throw new Error(`paper broker does not support ${what}`); };

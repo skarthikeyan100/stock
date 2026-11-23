@@ -5,6 +5,7 @@ import Kite from '../../kite/Kite';
 import { roundToTick } from '../../util/tick';
 import KiteContractMaster from '../../kite/KiteContractMaster';
 import AntContractMaster from '../../ant/AntContractMaster';
+import { orderPriceOf } from './orderPrice';
 import ANT from '../../ant/ANT';
 import configService from '../../prism/ConfigService';
 import { Trade } from '../../model/model';
@@ -90,14 +91,15 @@ async function getFillBookingPartial(kite: Kite, orderId: string, mk: (qty: numb
 // comment). ANT.getQuote itself short-TTL-caches by exchange+token now (see
 // its own comment), so a CHUNKED order's several calls for the SAME contract
 // already collapse to one HTTP call there - no separate cache needed here.
-async function getMarketableKitePrice(antToken: string, exchange: 'NFO' | 'BFO', direction: 'BUY' | 'SELL'): Promise<number> {
+// SELL only (stop / EOD / square-off exits): every BUY and every intended-market SELL is priced by the central order price (orderPrice.ts).
+async function getMarketableKitePrice(antToken: string, exchange: 'NFO' | 'BFO', direction: 'SELL'): Promise<number> {
     // Live bid/ask first (the cached OHLC getQuote lags a fast option by a minute or more - see
     // ANT.getLiveQuote); fall back to getQuote if the live call fails (e.g. a 429).
     let ltp: number;
     try {
         const live = await ANT.getInstance().getLiveQuote(exchange, antToken);
-        // The price a taker actually crosses: the ask for a buy, the bid for a sell (never worse than LTP).
-        ltp = direction === 'BUY' ? Math.max(live.ltp, live.ask) : (live.bid > 0 ? Math.min(live.ltp, live.bid) : live.ltp);
+        // The price a taker actually crosses on a sell: the bid (never worse than LTP).
+        ltp = live.bid > 0 ? Math.min(live.ltp, live.bid) : live.ltp;
     } catch (e) {
         Log.log(`[order] getMarketableKitePrice: live quote failed for ${exchange}|${antToken}, falling back to cached getQuote:`, e);
         ltp = await ANT.getInstance().getQuote(exchange, antToken);
@@ -107,7 +109,7 @@ async function getMarketableKitePrice(antToken: string, exchange: 'NFO' | 'BFO',
     // (an 88 quote vs a 91 market at 12:30 on 2026-10-19), so even a 3% cap sat below the ask and 'did not fill
     // within timeout' about once a minute. Kite fills a marketable limit at the best available price, so a wider
     // cap costs no extra slippage.
-    const buffered = direction === 'BUY' ? ltp * 1.05 : ltp * 0.95;
+    const buffered = ltp * 0.95;
     return roundToTick(buffered);
 }
 
@@ -237,7 +239,7 @@ export async function buyIndexOnKite(req: BuyIndexRequest): Promise<Trade> {
 
     req.mirror?.({ userId: req.userId, broker: 'kite', tsym: contract.tradingSymbol, token: commonToken, exchange: contract.exchange, quantity: req.quantity,
         place: (adminId, qty) => buyContractOnKite(adminId, contract.tradingSymbol, commonToken, qty, contract.exchange, targetPoints, stopLossPoints) });
-    const buyPrice = await getMarketableKitePrice(commonToken, contract.exchange, 'BUY');
+    const buyPrice = await orderPriceOf({ side: 'BUY', tsym: contract.tradingSymbol, token: String(commonToken), exchange: contract.exchange, broker: 'kite' });
     const { orderId } = await kite.placeLimitBuyOption(contract.tradingSymbol, req.quantity, buyPrice, contract.exchange);
     const mkPartial = (qty: number, price: number): Trade => kiteFillTrade({ tsym: contract.tradingSymbol, token: commonToken, action: 'Buy', userId: req.userId, orderId: orderId, right: req.right }, qty, price);
     const entryPrice = await getFillBookingPartial(kite, orderId, mkPartial, (t) => finalizeEntry(t, req.userId, contract.exchange, targetPoints, stopLossPoints));
@@ -370,7 +372,7 @@ async function buyContractOnKite(userId: string, tradingSymbol: string, commonTo
 async function buyOneContractOnKite(userId: string, tradingSymbol: string, commonToken: string, quantity: number, exchange: 'NFO' | 'BFO', targetPoints: number | undefined, stopLossPoints: number | undefined, inAppExit: boolean): Promise<Trade> {
     const kite = Kite.getInstance();
     Log.log(`[order] Buying (manual) ${tradingSymbol} qty=${quantity} for ${userId}`);
-    const buyPrice = await getMarketableKitePrice(commonToken, exchange, 'BUY');
+    const buyPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: String(commonToken), exchange, broker: 'kite' });
     const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
     const mkPartial = (qty: number, px: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: commonToken, action: 'Buy', userId: userId, orderId: orderId }, qty, px);
     // Always wait for the real fill: a caller-supplied price used to skip this and book the order as filled at that price, so an
@@ -558,7 +560,7 @@ export async function buyResolvedOnKite(request: BuyRequest): Promise<Trade> {
     // this once per chunk, same request.brokerToken every time) naturally
     // reuses one ANT quote fetch across the whole chunk batch instead of one
     // per chunk.
-    const buyPrice = await getMarketableKitePrice(request.brokerToken, exchange, 'BUY');
+    const buyPrice = await orderPriceOf({ side: 'BUY', tsym: request.tradingSymbol, token: String(request.brokerToken), exchange, broker: 'kite' });
     // Shared by the full-fill path below and the partial-fill-on-drift-cancel
     // path in the catch block - both build an identical Trade shape, differing
     // only in quantity/price.
@@ -638,7 +640,7 @@ export async function marketBuyBareOnKite(userId: string, tradingSymbol: string,
     // always resolve it that way - live option ticks are keyed by ANT's
     // token, not Kite's own instrumentToken), which is what
     // getMarketableKitePrice needs to query ANT for a live quote.
-    const buyPrice = await getMarketableKitePrice(instrumentToken, exchange, 'BUY');
+    const buyPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: String(instrumentToken), exchange, broker: 'kite' });
     const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
     // Tracked (persisted, owner-ledgered) from placement until its fill is booked: this call waits for the fill in-process, so an
     // order-process restart in that window used to lose the fill - a real broker position with no Buy doc, which reconcile can only
@@ -689,7 +691,7 @@ export async function enterShortOnKite(userId: string, tradingSymbol: string, in
         throw new Error('Kite session not active - complete /kite/login first.');
     }
     Log.log(`[order] [BUTTERFLY] Short-entry (sell-to-open) ${tradingSymbol} qty=${quantity} for ${userId}`);
-    const sellPrice = await getMarketableKitePrice(instrumentToken, exchange, 'SELL');
+    const sellPrice = await orderPriceOf({ side: 'SELL', tsym: tradingSymbol, token: String(instrumentToken), exchange, broker: 'kite' });
     const { orderId } = await kite.placeShortEntryOption(tradingSymbol, quantity, sellPrice, exchange);
     const mk = (qty: number, price: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: instrumentToken, action: 'SellToOpen', userId: userId, orderId: orderId }, qty, price);
     const fillPrice = await getFillBookingPartial(kite, orderId, mk, (t) => bookkeeping.recordShortFill(t));
@@ -710,7 +712,7 @@ export async function buyToCloseOnKite(userId: string, tradingSymbol: string, in
         throw new Error('Kite session not active - complete /kite/login first.');
     }
     Log.log(`[order] [BUTTERFLY] Buy-to-close ${tradingSymbol} qty=${quantity} for ${userId}`);
-    const buyPrice = await getMarketableKitePrice(instrumentToken, exchange, 'BUY');
+    const buyPrice = await orderPriceOf({ side: 'BUY', tsym: tradingSymbol, token: String(instrumentToken), exchange, broker: 'kite' });
     const { orderId } = await kite.placeLimitBuyOption(tradingSymbol, quantity, buyPrice, exchange);
     const mk = (qty: number, price: number): Trade => kiteFillTrade({ tsym: tradingSymbol, token: instrumentToken, action: 'BuyToClose', userId: userId, orderId: orderId }, qty, price);
     const fillPrice = await getFillBookingPartial(kite, orderId, mk, (t) => bookkeeping.recordShortFill(t));

@@ -483,11 +483,20 @@ export abstract class LimitEntryStrategy extends Strategy {
         if (leg.targetSellQty !== undefined || (leg.targetRetryAt ?? 0) > Date.now()) return;
         const qty = leg.filledQty - leg.soldQty;
         if (qty <= 0) return;
-        const price = roundToTick(ltp);
-        leg.targetSellQty = leg.filledQty; // claimed before the await: ticks arriving meanwhile cannot place a second sell
+        leg.targetSellQty = leg.filledQty; // claimed before any await: ticks arriving meanwhile cannot place a second sell
+        // The trigger was the tick LTP; the sell itself is the central order price (the REST best offer, rounded up), not that LTP.
+        let price: number;
+        try {
+            price = (await OrderClient.getInstance().getOrderPrice(this.userId, { tradingSymbol: leg.tsym, token: leg.token, exchange: leg.exchange, side: 'SELL', broker: leg.broker })).price;
+        } catch (e: any) {
+            leg.targetSellQty = undefined; // nothing placed: try again on a later tick
+            leg.targetRetryAt = Date.now() + 5000;
+            Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: could not read the order price for the target sell (${e?.message ?? e}) - retrying`);
+            return;
+        }
         leg.targetSellPrice = price;
         this.save();
-        Log.log(`[${this.logTag}] TARGET reached on ${leg.broker} ${leg.tsym}: ltp ${ltp} >= ${leg.targetTrigger} - limit sell ${qty} @ ${price}`);
+        Log.log(`[${this.logTag}] TARGET reached on ${leg.broker} ${leg.tsym}: ltp ${ltp} >= ${leg.targetTrigger} - limit sell ${qty} @ ${price} (best offer)`);
         try {
             await OrderClient.getInstance().brokerPlaceLimitSellBare(this.userId, {
                 broker: leg.broker as any, tradingSymbol: leg.tsym, instrumentToken: leg.token, quantity: qty, price, exchange: leg.exchange,
@@ -540,12 +549,14 @@ export abstract class LimitEntryStrategy extends Strategy {
         unwatchTokenOnSource('ant', leg.token, this, leg.exchange);
     }
 
-    // Starts a cycle: one limit buy per configured broker. `priceFor` is asked once per broker for that broker's limit price.
+    // Starts a cycle: one limit buy per configured broker. `priceFor` is asked once per broker for that broker's limit price; undefined = the central
+    // order price (the REST best bid, asked of the order process at order time) - a strategy never computes an LTP-derived price itself. Only an
+    // entry with its own deliberate price (an analyst's fixed entry, an original-price re-buy) passes a function.
     // The cycle key and every leg are persisted BEFORE the order goes out, so a crash or restart mid-way can never place it twice;
     // an order whose outcome is unknown is left as a leg and never retried blind.
     // `only` (optional): start the cycle on just these brokers and leave every other broker's legs untouched - for a strategy whose brokers act
     // independently (ExpiryStrategy). Without it, one cycle covers every configured broker and replaces all legs.
-    protected async startCycle(key: string, entry: ResolvedEntry, budgetOf: (broker: string) => number, priceFor: (c: { tsym: string; token: string; exchange: 'NFO' | 'BFO' }) => Promise<number>, only?: string[]): Promise<void> {
+    protected async startCycle(key: string, entry: ResolvedEntry, budgetOf: (broker: string) => number, priceFor: ((c: { tsym: string; token: string; exchange: 'NFO' | 'BFO' }) => Promise<number>) | undefined, only?: string[]): Promise<void> {
         this.ensureLoaded();
         if (this.placing) return; // callers check cycleStarted(key) first and may have marked the key already
         if ((only ? this.legs().filter((l) => only.includes(l.broker)) : this.legs()).some((l) => this.isActive(l))) {
@@ -565,7 +576,7 @@ export abstract class LimitEntryStrategy extends Strategy {
                 try {
                     const perBroker = budgetOf(broker); // the amount is PER broker: each one buys with its own full budget
                     const contract = await OrderClient.getInstance().resolveOptionContract(this.userId, { broker: broker as any, index: entry.index, strike: entry.strike, right: entry.right, skipNearestExpiryDay: this.skipNearestExpiryDay(), expiryOffset: entry.expiryOffset });
-                    const price = roundToTick(await priceFor(contract));
+                    const price = roundToTick(priceFor ? await priceFor(contract) : (await OrderClient.getInstance().getOrderPrice(this.userId, { tradingSymbol: contract.tsym, token: contract.token, exchange: contract.exchange, side: 'BUY', broker })).price);
                     const qty = this.sizeOrder(perBroker, price, entry.index);
                     if (!(price > 0) || qty <= 0) {
                         Log.log(`[${this.logTag}] ${key} ${broker} ${contract.tsym}: nothing to buy (price=${price}, budget=${perBroker}) - skipped`);
