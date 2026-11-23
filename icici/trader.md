@@ -99,6 +99,46 @@ Before restarting `npm run processes` with any open leg or enabled strategy:
    change is not applied to a running child unless hot restart is allowed (see `shouldApplyCodeChange` in
    `src/orchestratorPolicy.ts`).
 
+### Restart-safety check and hot restart in market hours (done 2026-11-23, user's rule: "hesitation costs me more")
+
+When a completed fix needs a restart, or the user says "check and restart", do this at once. Do not wait for 15:30 or for the positions to
+close: waiting until the open legs are flat can cost the legs' P&L (expiry day: the open legs expire worthless). Run it now, restart if it
+passes, and report afterwards.
+
+**A. Check (read-only, about two minutes; a restart changes no open position if all of these hold):**
+1. Status: `scripts/strategy-status.sh`; note every open leg (broker, contract, qty, resting sell).
+2. Resting sells in Mongo: `mongosh --quiet stocks`, collections `pendingLimitOrders`, `pendingAntLimitOrders`, `pendingBreezeLimitOrders`,
+   `pendingPrismLimitOrders`. One doc per resting sell; contract and qty must equal the status table (a leg that rolled, e.g. a hedge, must
+   show its new contract).
+3. Each of those order ids in the day's log: placed, and no later cancel / reject line
+   (`grep <id> logs/orchestrator-<date>.log`).
+4. State files (`.<Strategy>.<userId>.json`): open legs' `sellQty` equals the resting-sell qty, `profitTripped` / `exit` / `exitQty` are
+   recorded, so nothing places a second order.
+5. Latches that must survive: `db.strategyLatches.find({day:"<today>"})` in Mongo (GlobalMaxProfit rows, e.g. Expiry-NIFTY) plus
+   `profitTripped` in the state files.
+6. Legs with no broker-side sell (e.g. HighLow: stop and checkpoint watched on ticks, saved in its state file): the stop must be far from the
+   price; the restart leaves them unwatched for a few seconds. Say so in the report; it is not a reason to wait.
+7. Broker sessions valid (`scripts/check-broker-sessions.sh`) and `npm run sync` booked 0 fills (Mongo equals the brokers).
+8. Auto-start strategies that would buy at start (restart checklist step 4) and strategies keeping entry state only in memory.
+
+**B. Restart only the changed child, `data` never (it owns the broker websockets):**
+1. `src/processes/`, `src/strategy/`, `src/prism/`, `src/kite/`, shared dirs -> `trading`; `src/routes/`, `src/server.ts`, `src/user.ts` ->
+   `frontend`. A held-back change is not re-fired when the flag flips (the watcher stores the new hash first), so a content change is needed.
+2. Set `settings.hotRestartDuringMarketHours: true` in `config.yml` (value only).
+3. Append a comment line to the changed child's entry file in `dist/` (`printf '\n// hot-restart marker <date>\n' >> dist/processes/tradingProcess.js`
+   and/or `dist/server.js`). The watcher logs `Restarting trading|frontend (the other children untouched)`.
+4. Set `settings.hotRestartDuringMarketHours` back to `false` at once.
+5. Before the restart save the log's line count; afterwards check from the log lines after it: `Restored N open trade(s) from Mongo alone`
+   with N equal to the open legs, `Startup restore complete`, no `ALERT`, no `placed` / `Bare limit` lines, the pending-order collections
+   unchanged, `scripts/strategy-status.sh` open legs the same as before.
+6. The alerts monitor tails the orchestrator log and survives a child restart; keep it armed.
+
+**C. Realized-P&L reconcile (on request, e.g. "reconcile realized per broker"):** FIFO per contract from each broker's trade book against
+`/strategyPnl?by=broker&opened=today` realized. Kite and ANT sort by fill time; Breeze lists newest first (reverse it); Prism fills are in
+`fltm` (`dd-mm-yyyy hh:mm:ss`, `trantype` B/S, `flqty`, `flprc`). Compare with FIFO, not with the brokers' own average-cost P&L fields (they
+differ by method) and not with `status net` (Breeze positions return `pnl: null`, so Breeze shows 0 there). Filter to today's trade date: the
+Breeze book carries earlier days. Result on 2026-11-23: Kite exact, Breeze 2.20, Prism 2.35, ANT 83 apart (ANT difference not traced).
+
 ## Fixing code
 
 The trader does not write code fixes. Every fix goes to a separate fixing agent, and the trader decides afterwards whether to restart.
