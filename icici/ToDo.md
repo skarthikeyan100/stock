@@ -75,3 +75,7 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 
 ## Prism trade book (2026-11-23)
 - [DONE IN CODE, needs frontend restart after market hours, live-read once OK] GET /broker/prism/trades now reads Shoonya /TradeBook (RestAPI.get_tradebook, Prism.getTrades) and fails with 500 instead of returning [] (see open-review-items.md 130). After the restart: curl /broker/prism/trades returns today's fills.
+
+## status net vs status discrepancy (2026-11-23)
+- Restart the order process after market hours to load open-review-items.md 131 (ANT booked the last chunk's price `flprc` instead of the order's `avgprc`; ANT trade-book `tradedPrice` is a cumulative average, now read via src/ant/tradeBook.ts). `status net` already uses the fix (script, no restart).
+- Optional, when the user agrees: `node scripts/repair-closed-trades.js` (dry run) then `node scripts/repair-closed-trades.js --apply` corrects today's 5 already-written rows (ant +50.70, prism -2.60, breeze -1.95); restart the order process afterwards so its in-memory rows match Mongo.

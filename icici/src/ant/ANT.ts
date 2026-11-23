@@ -7,6 +7,7 @@ import path from 'path';
 import axiosModule from 'axios';
 import { runOrderWrite } from '../util/brokerOrderQueue';
 import { sleep } from '../util/sleep';
+import { antOrderAveragePrices } from './tradeBook';
 import AntContractMaster from './AntContractMaster';
 import { SessionValidityCache } from '../util/SessionValidityCache';
 
@@ -949,15 +950,14 @@ class ANT {
             throw new Error(`ANT trade book not Ok: ${JSON.stringify(tradesResp.data)}`);
         }
         const trades: any[] = emptyBook ? [] : (tradesResp.data.result ?? []);
+        // tradedPrice is a cumulative average per row (see tradeBook.ts), so the order's average is its last row's price, not a quantity-weighted sum.
         let qty = 0;
-        let value = 0;
         for (const t of trades) {
             if (String(t.brokerOrderId) !== String(orderNo)) continue;
-            const q = Number(t.filledQuantity ?? 0);
-            qty += q;
-            value += q * Number(t.tradedPrice ?? 0);
+            qty += Number(t.filledQuantity ?? 0);
         }
-        return { quantity: qty, avgPrice: qty > 0 ? value / qty : 0 };
+        const avg = antOrderAveragePrices(trades.filter((t) => String(t.brokerOrderId) === String(orderNo))).get(String(orderNo)) ?? 0;
+        return { quantity: qty, avgPrice: qty > 0 ? avg : 0 };
     }
 
     // Single-shot status check (no retry loop) - for a poller that checks a

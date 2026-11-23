@@ -33,9 +33,8 @@ const axios = axiosModule.create({ timeout: ANT_HTTP_TIMEOUT_MS });
 //     for the same concept than the REST orders/history endpoint uses) -
 //     CONFIRMED live 2026-10-15 to be the exact same value as the REST
 //     brokerOrderId for a real bracket order (buy, SL leg and target leg all
-//     matched correctly by string equality). flprc (fill price) and
-//     fillshares (fill quantity) are also confirmed live on the COMPLETE/Fill
-//     push.
+//     matched correctly by string equality). flprc (the LAST chunk's fill price), avgprc (the
+//     order's average fill price, cumulative) and fillshares (cumulative fill quantity) are confirmed live on the Fill/COMPLETE push.
 //
 // CONFIRMED live 2026-10-15 (previously this session's biggest unverified
 // assumption): waitForFill() is keyed by the same brokerOrderId
@@ -235,7 +234,9 @@ class AntOrderNotifyStream {
             // Noren convention (matches Shoonya's fill messages elsewhere in this repo -
             // bookkeeping.updateTradeFromPrismMessage): flprc is the fill price - confirmed
             // live 2026-10-15 against a real fill push.
-            const fillPrice = [data.flprc, data.averageTradedPrice, data.avgprc].map(Number).find((n) => Number.isFinite(n) && n > 0);
+            // The ORDER's average fill price comes first (avgprc / averageTradedPrice). flprc is only the LAST chunk's price: an order filled in
+            // several chunks (e.g. 135.10, 135.10, 135.15, 135.20 -> avgprc 135.13) was booked at the last chunk's 135.20 (live 2026-11-23).
+            const fillPrice = [data.avgprc, data.averageTradedPrice, data.flprc].map(Number).find((n) => Number.isFinite(n) && n > 0);
             outcome = fillPrice
                 ? { fillPrice }
                 : { error: new Error(`ANT order ${orderNo} COMPLETE but no recognizable fill-price field: ${raw}`) };

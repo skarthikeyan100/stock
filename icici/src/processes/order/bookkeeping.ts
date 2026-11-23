@@ -14,6 +14,7 @@ import { collapseFillsByOrderId, netFifoLots, pairFillsFifo, netWithShortCover }
 import { recordOrderOwner, loadOrderOwners } from './orderOwners';
 import { foreignSellExcess, piecesForShortfall } from './foreignSells';
 import { ForeignSellWatch, type WatchReason } from './foreignSellWatch';
+import { antOrderAveragePrices } from '../../ant/tradeBook';
 import { timedFillsFromKite, timedFillsFromAnt, timedFillsFromBreeze, timedFillsFromPrism, describeRowKeys, parseBrokerTime, type TimedBook } from './timedFills';
 import configService from '../../prism/ConfigService';
 import { drawdownDecision } from '../../prism/percentConfig';
@@ -1260,7 +1261,8 @@ class OrderBookkeeping {
         const tradeEvent = new Trade();
         tradeEvent.tsym = data.tsym as string;
         tradeEvent.quantity = parseInt(data.qty);
-        tradeEvent.price = parseFloat(data.flprc);
+        // The order's average (avgprc, cumulative) first: flprc is only the last chunk's price when the order filled in several chunks.
+        tradeEvent.price = parseFloat(data.avgprc ?? data.flprc);
         tradeEvent.action = data.trantype == 'S' ? 'Sell' : 'Buy';
         tradeEvent.status = data.status;
         tradeEvent.right = /PE$/i.test(tradeEvent.tsym) ? PUT : CALL;
@@ -2416,7 +2418,8 @@ class OrderBookkeeping {
             if (broker === 'ant') {
                 const rows = await ANT.getInstance().getTrades();
                 if (!Array.isArray(rows)) return null;
-                return sum(rows.flatMap((r: any) => { const a = act(r.transactionType); return a ? [{ orderId: String(r.brokerOrderId ?? ''), action: a, tsym: String(r.tradingSymbol), token: r.instrumentId != null ? String(r.instrumentId) : undefined, qty: num(r.filledQuantity), price: num(r.tradedPrice) }] : []; }));
+                const antAvg = antOrderAveragePrices(rows); // tradedPrice is a cumulative average per row: the order's average is its last row's price
+                return sum(rows.flatMap((r: any) => { const a = act(r.transactionType); return a ? [{ orderId: String(r.brokerOrderId ?? ''), action: a, tsym: String(r.tradingSymbol), token: r.instrumentId != null ? String(r.instrumentId) : undefined, qty: num(r.filledQuantity), price: antAvg.get(String(r.brokerOrderId)) ?? num(r.tradedPrice) }] : []; }));
             }
             if (broker === 'breeze') {
                 if (!(await withTimeout(Breeze.getInstance().hasValidSession(), 15000, 'Breeze hasValidSession'))) return null;

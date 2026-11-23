@@ -17,6 +17,7 @@
 // Every string time without an explicit offset is read as IST (UTC+05:30), independent of the server's TZ.
 import { breezeTsym, breezeLegacyTsym } from '../../breeze/BreezeContractMaster';
 import type { TimedFill } from './foreignSells';
+import { antOrderAveragePrices } from '../../ant/tradeBook';
 
 export interface TimedBook {
     fills: TimedFill[]; // rows with a parsed time
@@ -99,11 +100,13 @@ export function timedFillsFromKite(rows: any[]): TimedBook {
 
 export function timedFillsFromAnt(rows: any[]): TimedBook {
     const fills: TimedFill[] = []; const untimed: TimedBook['untimed'] = [];
+    // Every row of an order carries the order's average price (tradedPrice is a cumulative average per row, see ant/tradeBook.ts), never its own chunk's.
+    const avg = antOrderAveragePrices(rows);
     rows.forEach((r, i) => {
         const action = side(r.transactionType);
         if (!action || !r.brokerOrderId) return;
         const t = detectRowTime(r);
-        finish(fills, untimed, r, { orderId: String(r.brokerOrderId), tsym: String(r.tradingSymbol), action, qty: num(r.filledQuantity), price: num(r.tradedPrice), token: r.instrumentId != null ? String(r.instrumentId) : undefined }, detectTradeId(r), i, t?.at ?? null);
+        finish(fills, untimed, r, { orderId: String(r.brokerOrderId), tsym: String(r.tradingSymbol), action, qty: num(r.filledQuantity), price: avg.get(String(r.brokerOrderId)) ?? num(r.tradedPrice), token: r.instrumentId != null ? String(r.instrumentId) : undefined }, detectTradeId(r), i, t?.at ?? null);
     });
     return { fills, untimed };
 }
