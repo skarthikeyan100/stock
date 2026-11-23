@@ -1,3 +1,4 @@
+import { bookPlatformSoldLegs } from './platformSells';
 import * as fs from 'fs';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import * as path from 'path';
@@ -83,6 +84,10 @@ export interface State {
     legs: Record<string, Leg>;
     // NiftyChangeStrategy only: Nifty's LTP at the last slot evaluated today, kept here so a restart still has the reference.
     slotPrice?: number | null;
+    // Broker order ids of the sells this strategy's fill handler (or a reconcile that attributed a platform sell) already booked. sellIdsTracked is set only on a state
+    // created by code that records them: a state without it is legacy and its reconcile falls back to quantities (see platformSells.ts).
+    sellIdsTracked?: boolean;
+    seenSells?: string[];
     // RecommendationStrategy only: the recommendation's identity apart from target/stop (contract, entry, offset, amount). Lets a later edit of
     // target/stop on the SAME open trade be told apart from a new recommendation (see adjustOpenTrade).
     baseKey?: string;
@@ -105,7 +110,7 @@ export interface ResolvedEntry {
 }
 
 export abstract class LimitEntryStrategy extends Strategy {
-    protected state: State = { day: localDayKey(), keys: [], legs: {} };
+    protected state: State = { day: localDayKey(), keys: [], legs: {}, sellIdsTracked: true, seenSells: [] };
     private loaded = false;
     private busy = false;
     private lastHousekeeping = 0;
@@ -152,7 +157,7 @@ export abstract class LimitEntryStrategy extends Strategy {
         const today = localDayKey();
         if (this.loaded && this.state.day === today) return;
         this.loaded = true;
-        let fresh: State = { day: today, keys: [], legs: {} };
+        let fresh: State = { day: today, keys: [], legs: {}, sellIdsTracked: true, seenSells: [] };
         try {
             const raw = JSON.parse(fs.readFileSync(this.stateFile(), 'utf8')) as State;
             if (raw?.day === today) fresh = raw;
@@ -676,6 +681,7 @@ export abstract class LimitEntryStrategy extends Strategy {
             this.save();
             await this.protectFilled(leg);
         } else if (trade.action === 'Sell') {
+            this.noteSeenSells(trade.brokerOrderId ? [String(trade.brokerOrderId)] : []);
             leg.soldQty += qty;
             leg.soldValue += qty * price;
             if (leg.soldQty >= leg.filledQty) {
@@ -716,6 +722,9 @@ export abstract class LimitEntryStrategy extends Strategy {
         let open: any[] = [];
         try { open = await OrderClient.getInstance().getOpenTrades(this.userId); } catch (e) { Log.log(`[${this.logTag}] reconcile: could not read open trades:`, e); return; }
         let closedAny = false;
+        // A leg the order side no longer holds that the platform's OWN order sold (a lock-profits sell that filled while this strategy was disabled and so
+        // was not told) is booked as a normal close; only the lots no platform sell explains reach the 'closed outside the platform' ALERT below.
+        if (await this.bookPlatformSoldLegs(open)) closedAny = true;
         for (const leg of this.legs()) {
             if (leg.status !== 'resting' && leg.status !== 'filled') continue;
             const held = open.filter((t) => t.tsym === leg.tsym && (t.broker ?? 'kite') === leg.broker).reduce((s, t) => s + Math.max(0, Number(t.quantity) || 0), 0);
@@ -804,7 +813,7 @@ export abstract class LimitEntryStrategy extends Strategy {
 
     reset(): void {
         super.reset();
-        this.state = { day: localDayKey(), keys: [], legs: {} };
+        this.state = { day: localDayKey(), keys: [], legs: {}, sellIdsTracked: true, seenSells: [] };
         this.loaded = true;
         this.save();
     }
@@ -825,6 +834,45 @@ export abstract class LimitEntryStrategy extends Strategy {
         if (!orderId) return false;
         if (leg.chunks && leg.chunks.length > 0) return !this.placingLegs.has(leg) && !leg.chunks.some((c) => c.id === String(orderId));
         return !!leg.orderId && String(orderId) !== String(leg.orderId);
+    }
+
+    private noteSeenSells(ids: string[]): void {
+        if (ids.length === 0) return;
+        const seen = this.state.seenSells ?? (this.state.seenSells = []);
+        for (const id of ids) if (!seen.includes(id)) seen.push(id);
+    }
+
+    // reconcile(): books, as normal closes, the lots of filled legs that the order side no longer holds and the platform's own sells explain. Same P&L
+    // bookkeeping as updateTrade's Sell branch (soldQty / soldValue, outcome), no order and no follow-up. Returns true when a leg was closed by it.
+    private async bookPlatformSoldLegs(open: any[]): Promise<boolean> {
+        let closedAny = false;
+        const brokers = Array.from(new Set(this.legs().filter((l) => l.status === 'filled' && l.broker !== 'paper').map((l) => l.broker)));
+        for (const broker of brokers) {
+            const mine = this.legs().filter((l) => l.broker === broker);
+            const view = (l: Leg) => ({ id: `${l.broker}|${l.tsym}|${l.placedAt}`, tsym: l.tsym, qty: l.filledQty, soldQty: l.soldQty, status: l.status, ref: l });
+            const gone = mine.filter((l) => l.status === 'filled' && l.filledQty - l.soldQty > 0
+                && !open.some((t) => t.tsym === l.tsym && (t.broker ?? 'kite') === l.broker)).map(view);
+            if (gone.length === 0) continue;
+            await bookPlatformSoldLegs({
+                tag: this.logTag, userId: this.userId, broker,
+                legs: mine.map(view), gone,
+                seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null,
+                markSeen: (ids) => this.noteSeenSells(ids),
+                book: (v: any, qty: number, price: number) => {
+                    const leg: Leg = v.ref;
+                    leg.soldQty += qty;
+                    leg.soldValue += qty * price;
+                    if (leg.soldQty >= leg.filledQty) {
+                        leg.status = 'closed';
+                        this.unwatch(leg);
+                        this.recordOutcomeOnce(leg);
+                        closedAny = true;
+                    }
+                },
+            });
+        }
+        if (closedAny) this.save();
+        return closedAny;
     }
 
     private recordOutcomeOnce(leg: Leg): void {

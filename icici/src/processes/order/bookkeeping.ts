@@ -1821,6 +1821,44 @@ class OrderBookkeeping {
         return rows.filter((r) => r.tsyms.includes(t.tsym) || (t.token != null && r.tokens.includes(String(t.token))));
     }
 
+    // The sells of one contract that the PLATFORM itself placed for `user` today (a strategy asks for them in its reconcile to tell a leg its own order sold
+    // - e.g. a lock-profits limit sell that filled while the strategy was disabled and so never saw the fill - from one closed outside the platform).
+    // Evidence = a Sell fill in Mongo's `Trade` (user + broker + contract, today) whose order id the order-owner ledger names for the SAME user and does not
+    // mark `foreign` (a broker-side sell booked against the user's lots: bookForeignSellShortfall, the BROKER-SYNC close). A fill with no order id, no
+    // ledger row or another owner is not evidence. Fills of one order id are summed (qty, qty-weighted price). The paper broker has no Mongo rows and no
+    // foreign sells: its own closed trades in memory are the record. Oldest first. null when the evidence cannot be read.
+    async platformSells(user: string, broker: BrokerKey | 'paper', tsym: string): Promise<{ orderId: string; quantity: number; price: number; at: number }[] | null> {
+        if (broker === 'paper') {
+            const rows = this.closedTrades.filter((c) => c.action === 'Sell' && c.broker === 'paper' && c.user === user && c.tsym === tsym && Number(c.quantity) > 0);
+            return rows.map((c, i) => ({ orderId: `paper:${new Date(c.exitTime).getTime()}:${i}`, quantity: Number(c.quantity), price: Number(c.price) + (Number(c.realizedPnL) || 0) / Number(c.quantity), at: new Date(c.exitTime).getTime() }))
+                .sort((a, b) => a.at - b.at);
+        }
+        const db = Mongo.getInstance()?.db;
+        if (!db) return null;
+        try {
+            const brokerMatch = { $or: [{ broker: broker === 'kite' ? { $in: ['kite', /^\s*zerodha\s*$/i] } : broker }, { broker: { $exists: false } }] };
+            const docs: any[] = await db.collection('Trade').find({ user, tsym, action: 'Sell', brokerOrderId: { $exists: true, $nin: [null, ''] }, entryTime: { $gte: OrderBookkeeping.startOfDay() }, ...brokerMatch }).sort({ entryTime: 1 }).toArray();
+            const ids = Array.from(new Set(docs.map((d) => String(d.brokerOrderId)).filter((id) => !id.startsWith('BROKER-SYNC-'))));
+            if (ids.length === 0) return [];
+            const ledger: any[] = await db.collection('orderOwners').find({ orderId: { $in: ids } }).toArray();
+            const own = new Set(ledger.filter((r) => String(r.user) === user && r.foreign !== true).map((r) => String(r.orderId)));
+            const byOrder = new Map<string, { orderId: string; quantity: number; value: number; at: number }>();
+            for (const d of docs) {
+                const id = String(d.brokerOrderId);
+                if (!own.has(id)) continue;
+                const q = Number(d.quantity) || 0;
+                if (!(q > 0)) continue;
+                const cur = byOrder.get(id) ?? { orderId: id, quantity: 0, value: 0, at: new Date(d.entryTime).getTime() };
+                cur.quantity += q; cur.value += q * (Number(d.price) || 0);
+                byOrder.set(id, cur);
+            }
+            return Array.from(byOrder.values()).map((o) => ({ orderId: o.orderId, quantity: o.quantity, price: o.value / o.quantity, at: o.at }));
+        } catch (e: any) {
+            Log.log('[order] platformSells: Mongo read failed:', e?.message ?? e);
+            return null;
+        }
+    }
+
     // Today's sells already in Mongo for the contract (every user), so the broker's sell totals minus these are the sells nobody booked.
     private async bookedSellsToday(broker: BrokerKey, tsyms: string[]): Promise<{ qty: number; value: number } | null> {
         const db = Mongo.getInstance()?.db;
@@ -1917,7 +1955,7 @@ class OrderBookkeeping {
         ev.tsym = t.tsym; ev.token = t.token; ev.right = t.right; ev.quantity = t.quantity; ev.price = price;
         ev.action = 'Sell'; ev.status = 'COMPLETE'; ev.user = t.user; ev.broker = t.broker; ev.strategy = t.strategy;
         ev.brokerOrderId = `BROKER-SYNC-${t.broker}-${t.tsym}-${Date.now()}`;
-        recordOrderOwner(ev.brokerOrderId, ev.user, ev.broker ?? 'kite');
+        recordOrderOwner(ev.brokerOrderId, ev.user, ev.broker ?? 'kite', { foreign: true });
         Log.log(`[order] ALERT: ${t.user} ${t.tsym} (${t.broker}) qty=${t.quantity} was closed outside the platform (the broker position is flat) - booked as a sell @ ${price.toFixed(2)} ${how}; entry ${Number(t.price).toFixed(2)}`);
         await this._processTradeEvent(ev);
     }
@@ -2368,7 +2406,7 @@ class OrderBookkeeping {
                     ev.tsym = target.tsym; ev.token = target.token; ev.right = target.right; ev.quantity = qty; ev.price = piece.price;
                     ev.action = 'Sell'; ev.status = 'COMPLETE'; ev.user = target.user; ev.broker = broker; ev.strategy = target.strategy; ev.brokerOrderId = id;
                     Log.log(`[order] ALERT: ${target.user} ${target.tsym} (${broker}) - a sell made outside the platform (order ${id}, trade ${piece.tradeIds.join('/')}) took ${qty} of the platform's lots (platform held ${f.platformQty}, broker net ${f.brokerQty}; manual buys ${f.foreignBuyQty}, manual sells ${f.foreignSellQty}) - booking it as a sell @ ${piece.price.toFixed(2)} (entry ${Number(target.price).toFixed(2)}, P&L ${((piece.price - Number(target.price)) * qty).toFixed(2)})`);
-                    recordOrderOwner(id, ev.user, broker);
+                    recordOrderOwner(id, ev.user, broker, { foreign: true });
                     this.foreignBookedIds.add(id);
                     if (opts.notifyStrategies) await this.recordFill(ev);
                     else {

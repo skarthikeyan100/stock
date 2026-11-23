@@ -10,6 +10,7 @@ import AntContractMaster from '../ant/AntContractMaster';
 import { brokerLegOps, chunkedLegSell } from './LegBrokerOps';
 import { isUnconfirmedBuyError } from './LegManager';
 import { resolveUnconfirmedBuy as resolveUnconfirmedBuyShared, UnconfirmedBuyResolution } from './unconfirmedBuy';
+import { bookPlatformSoldLegs } from './platformSells';
 import { fetchOpenTradesWithRetry, heldQuantity } from './openTrades';
 import { registerTrade, unregisterTrade } from '../processes/strategies/tokenRouter';
 import { localDayKey } from './dayKey';
@@ -96,7 +97,10 @@ export interface SimpleLeg {
     lastLtp?: number;       // last option tick (in memory use only; refreshed by ticks)
 }
 
-interface State { day: string; legs: Record<string, SimpleLeg>; seq: number; pnlStarted?: boolean; realizedPnl: number; profitTripped: boolean }
+interface State { day: string; legs: Record<string, SimpleLeg>; seq: number; pnlStarted?: boolean; realizedPnl: number; profitTripped: boolean;
+    // Broker order ids of the sells this strategy's fill handler (or a reconcile that attributed a platform sell) already booked. sellIdsTracked is set only on a state
+    // created by code that records them: a state without it is legacy and its reconcile falls back to quantities (see platformSells.ts).
+    sellIdsTracked?: boolean; seenSells?: string[] }
 
 const opposite = (r: Right): Right => (r === 'CE' ? 'PE' : 'CE');
 
@@ -181,7 +185,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         const today = localDayKey();
         if (this.loaded && this.state.day === today) return;
         this.loaded = true;
-        let fresh: State = { day: today, legs: {}, seq: 0, pnlStarted: true, realizedPnl: 0, profitTripped: false };
+        let fresh: State = { day: today, legs: {}, seq: 0, pnlStarted: true, realizedPnl: 0, profitTripped: false, sellIdsTracked: true, seenSells: [] };
         try {
             const raw = JSON.parse(fs.readFileSync(this.stateFile(), 'utf8')) as State;
             if (raw?.day === today) {
@@ -286,6 +290,17 @@ export default class SimpleContinuousStrategy extends Strategy {
         this.blocked = false;
         const byKey = new Map<string, Trade>();
         for (const t of openTrades) byKey.set(String(t.token), t);
+        // A leg the broker no longer holds that the platform's OWN order sold (a lock-profits sell that filled while this strategy was disabled and so
+        // was not told) is booked as a normal close here; only what no platform sell explains is closed outside the platform below.
+        await bookPlatformSoldLegs({
+            tag: this.name, userId: this.userId, broker: this.brokerOrKite(),
+            legs: Object.values(this.state.legs),
+            gone: this.openLegs().filter((leg) => { const t = byKey.get(leg.token) ?? openTrades.find((x) => x.tsym === leg.tsym); return !t || !(Number(t.quantity) > 0); }),
+            seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null,
+            markSeen: (ids) => this.noteSeenSells(ids),
+            book: (leg, qty, price) => this.bookPlatformSell(leg, qty, price),
+        });
+        this.save();
         // Persisted open legs: the broker's quantity is the truth; a leg the broker no longer holds was sold meanwhile.
         for (const leg of this.openLegs()) {
             const t = byKey.get(leg.token) ?? openTrades.find((x) => x.tsym === leg.tsym);
@@ -453,6 +468,31 @@ export default class SimpleContinuousStrategy extends Strategy {
         this.watch(leg);
         this.save();
         return leg;
+    }
+
+    private noteSeenSells(ids: string[]): void {
+        if (ids.length === 0) return;
+        const seen = this.state.seenSells ?? (this.state.seenSells = []);
+        for (const id of ids) if (!seen.includes(id)) seen.push(id);
+    }
+
+    // A sell of `qty` @ price that the platform's own order made while this strategy was not told (reconcile only): the same P&L bookkeeping as updateTrade
+    // (realizedPnl / the maxProfit total, the leg's sold quantity), but no hedge / re-entry / max-profit check - a reconcile places nothing.
+    private bookPlatformSell(leg: SimpleLeg, qty: number, price: number): void {
+        const ref = leg.pnlRefPending ? price : (leg.pnlRef ?? leg.entry);
+        this.state.realizedPnl += qty * (price - ref);
+        leg.soldQty += qty;
+        leg.soldValue += qty * price;
+        if (leg.soldQty < leg.qty) return; // the rest is closed neutral by the caller (no platform sell behind it)
+        leg.status = 'closed';
+        leg.sellQty = 0;
+        leg.sellShortfall = 0;
+        leg.hedgeWaiting = false;
+        this.unwatch(leg);
+        const avgSell = leg.soldValue / leg.soldQty;
+        const pnl = (avgSell - leg.entry) * leg.qty;
+        this.recordOutcome(pnl >= 0 ? 'win' : 'loss', pnl);
+        Log.log(`[SimpleContinuousStrategy] ${leg.tsym} closed qty=${leg.qty} entry=${leg.entry.toFixed(2)} sell=${avgSell.toFixed(2)} pnl=${Math.round(pnl)}`);
     }
 
     // ---- resting sell ----
@@ -705,6 +745,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         if (!leg) return;
         const qty = Number(trade.quantity);
         if (!(qty > 0)) return;
+        this.noteSeenSells(trade.brokerOrderId ? [String(trade.brokerOrderId)] : []);
         // The maxProfit total: this fill's P&L from the leg's reference (a leg that was open when counting started and has had no tick yet: 0).
         const fillPrice = Number(trade.price);
         const ref = leg.pnlRefPending ? fillPrice : (leg.pnlRef ?? leg.entry);

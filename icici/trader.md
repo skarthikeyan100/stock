@@ -205,6 +205,11 @@ last price. It needs web-admin login, so do the same two steps directly:
 5. To trade again: set `enabled: true` on the wanted strategies in `config.yml`, then `POST /reconcile` (or `npm run sync -- --strategies`).
    A max-profit latch that tripped earlier the same day is cleared only on the user's instruction (see the `strategies reset` call in the
    latch recipe if one exists, otherwise `StrategiesClient.reset(type)` after `connect()`).
+6. A restart after a lock reconciles each strategy from the order process's own sell records: a leg that a lock sell closed is booked as a normal
+   close at the booked sell price with an INFO line, and must not alert. A "closed outside the platform" ALERT after a lock therefore means no sell of
+   the platform's own explains that leg (a manual sell, an expiry, a square-off): investigate it, never dismiss it. A strategy state written before this
+   behaviour existed is matched by quantity and, when that is ambiguous, still alerts. A lock sell the user re-prices at the broker keeps its order id, so
+   it stays the platform's order and its fill is booked at the actual fill price.
 
 ## Debugging
 

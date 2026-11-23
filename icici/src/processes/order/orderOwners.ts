@@ -16,7 +16,9 @@ const unconfirmed = new Map<string, string>();
 const writing = new Set<string>();
 const MAX_UNCONFIRMED = 5000;
 
-export function recordOrderOwner(orderId: string | undefined, user: string | undefined, broker: string): void {
+// `foreign` marks an order the platform did NOT place (a manual/broker-side sell booked against a user's lots): the ledger names the user whose
+// position it closed, but the order is not the platform's. platformSells() relies on it to book only the platform's own sells to a strategy.
+export function recordOrderOwner(orderId: string | undefined, user: string | undefined, broker: string, opts: { foreign?: boolean } = {}): void {
     if (!orderId || !user) return;
     const id = String(orderId);
     if (cache.has(id) || writing.has(id)) return;
@@ -28,7 +30,7 @@ export function recordOrderOwner(orderId: string | undefined, user: string | und
     const col = Mongo.getInstance()?.db?.collection(COLLECTION); // db?: an instance whose connection is not up yet must not make recordFill throw
     if (!col) return;
     writing.add(id);
-    col.updateOne({ orderId: id }, { $setOnInsert: { orderId: id, user, broker, at: new Date() } }, { upsert: true })
+    col.updateOne({ orderId: id }, { $setOnInsert: { orderId: id, user, broker, at: new Date(), ...(opts.foreign ? { foreign: true } : {}) } }, { upsert: true })
         .then(async (res) => {
             // $setOnInsert is a no-op when a row already exists: read back the real first writer instead of assuming it was us.
             let owner = user;
