@@ -239,6 +239,15 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
         }
     }
 
+    // entryStartTime: global only ('HH:mm', 24-hour): earliest new entry for ScaledHedgedStrategy and HighLowStrategy.
+    if (obj.entryStartTime != null) {
+        if (label !== 'settings') {
+            errors.push(`${label}.entryStartTime is a global setting - move it to settings.entryStartTime`);
+        } else if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(obj.entryStartTime))) {
+            errors.push(`${label}.entryStartTime must be 'HH:mm' (24-hour), got ${JSON.stringify(obj.entryStartTime)}`);
+        }
+    }
+
     // eodReconcileTime: global only ('HH:mm', 24-hour); the end-of-day sync books what the brokers did during the day, so it must not be set before
     // the 15:30 close.
     if (obj.eodReconcileTime != null) {
@@ -327,7 +336,7 @@ export function validateConfigFile(parsed: any): string[] {
         const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'], ScaledHedgedStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'] };
         // Strategies that take their target and stop from the global exits: each must be set in the block or in settings (a value or 'none').
         // An absent key is refused rather than read as "no stop" (strategies/exitRules.ts).
-        if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy' || s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy' || s.type === 'MandWStrategy' || s.type === 'HighLowStrategy') {
+        if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy' || s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy' || s.type === 'HighLowStrategy' || s.type === 'ExpiryStrategy') {
             for (const key of ['target', 'stopLoss', ...(s.type === 'RuleBasedStrategy' ? ['maxHoldTimeMinutes'] : [])]) {
                 const set = (o: any) => o?.[key] !== undefined && o?.[key] !== null;
                 if (!set(s) && !set(parsed.settings)) errors.push(`${s.type}.${key} is not set in the block or in settings (give a value, or 'none')`);
@@ -341,10 +350,14 @@ export function validateConfigFile(parsed: any): string[] {
             // No-gain timeout: minutes after the entry, or 'none' / absent for off. A typo must not silently disable it.
             if (s.noGainTimeoutMinutes !== undefined && s.noGainTimeoutMinutes !== null && s.noGainTimeoutMinutes !== 'none' && !(isNum(s.noGainTimeoutMinutes) && s.noGainTimeoutMinutes > 0)) errors.push(`${s.type}.noGainTimeoutMinutes must be a positive number of minutes or 'none' (got ${JSON.stringify(s.noGainTimeoutMinutes)})`);
         }
-        if (s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy' || s.type === 'MandWStrategy') {
+        if (s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy') {
             // A fixed quantity per broker (whole lots), not a rupee budget.
             if (!isNum(s.quantity) || !(s.quantity > 0) || !Number.isInteger(s.quantity) || s.quantity % INDEX_LOT_SIZE.NIFTY !== 0) errors.push(`${s.type}.quantity must be a positive multiple of the NIFTY lot size ${INDEX_LOT_SIZE.NIFTY} (per broker; got ${JSON.stringify(s.quantity)})`);
             if (s.index !== undefined && s.index !== 'NIFTY') errors.push(`${s.type}.index must be NIFTY (got ${JSON.stringify(s.index)})`);
+        }
+        if (s.type === 'RecommendationStrategy') {
+            // repeat / reverse: after a target only; an absent key is false.
+            for (const key of ['repeat', 'reverse']) if (s[key] !== undefined && s[key] !== null && typeof s[key] !== 'boolean') errors.push(`${s.type}.${key} must be true or false (got ${JSON.stringify(s[key])})`);
         }
         if (s.type === 'HighLowStrategy') {
             // Exactly one sizing key: a fixed quantity (whole lots) or a rupee budget (maxInvestment, per broker).
@@ -358,6 +371,18 @@ export function validateConfigFile(parsed: any): string[] {
             if (s.candleMinutes !== undefined && !(isNum(s.candleMinutes) && Number.isInteger(s.candleMinutes) && s.candleMinutes >= 1 && s.candleMinutes <= 375)) errors.push(`${s.type}.candleMinutes must be a whole number of minutes from 1 to 375 (got ${JSON.stringify(s.candleMinutes)})`);
             for (const key of ['higherHighLow', 'confirmCandle']) if (s[key] !== undefined && s[key] !== null && typeof s[key] !== 'boolean') errors.push(`${s.type}.${key} must be true or false (got ${JSON.stringify(s[key])})`);
             for (const key of ['bodyDominance', 'closeLocation']) if (s[key] !== undefined && !(isNum(s[key]) && s[key] >= 0 && s[key] <= 100)) errors.push(`${s.type}.${key} must be a percentage from 0 to 100 (got ${JSON.stringify(s[key])})`);
+            for (const key of ['target', 'stopLoss']) {
+                const v = s[key] !== undefined && s[key] !== null ? s[key] : parsed.settings?.[key];
+                if (typeof v === 'string' && v.trim().toLowerCase() === 'none') errors.push(`${s.type}.${key} must not be 'none' (the strategy needs both a target and a stop)`);
+            }
+        }
+        if (s.type === 'ExpiryStrategy') {
+            // Sized from the rupee budget per broker, never a fixed quantity. It re-enters on every target / stop / drift, so it needs a real target AND stop.
+            if (s.quantity !== undefined) errors.push(`${s.type}.quantity is not used - size with maxInvestment (per broker)`);
+            if (!isNum(s.maxInvestment) || !(s.maxInvestment > 0)) errors.push(`${s.type}.maxInvestment is required for an enabled strategy (the rupee budget per broker, e.g. 100000)`);
+            if (s.right !== 'CE' && s.right !== 'PE') errors.push(`${s.type}.right must be CE or PE (got ${JSON.stringify(s.right)})`);
+            if (!isNum(s.driftPoints) || !(s.driftPoints > 0)) errors.push(`${s.type}.driftPoints must be a positive number of option points (got ${JSON.stringify(s.driftPoints)})`);
+            if (s.index !== undefined && s.index !== 'NIFTY') errors.push(`${s.type}.index must be NIFTY (got ${JSON.stringify(s.index)})`);
             for (const key of ['target', 'stopLoss']) {
                 const v = s[key] !== undefined && s[key] !== null ? s[key] : parsed.settings?.[key];
                 if (typeof v === 'string' && v.trim().toLowerCase() === 'none') errors.push(`${s.type}.${key} must not be 'none' (the strategy needs both a target and a stop)`);
@@ -378,20 +403,6 @@ export function validateConfigFile(parsed: any): string[] {
             else if (exitValueError(`${s.type}`, 'target', targetRaw)) errors.push(exitValueError(`${s.type}`, 'target', targetRaw) as string);
             else if (typeof targetRaw === 'string' && targetRaw.trim().toLowerCase() === 'none') errors.push(`${s.type}.target must be a value: this strategy takes its profit at the target (got 'none')`);
             if (typeof s.stopLoss !== 'string' || s.stopLoss.trim().toLowerCase() !== 'none') errors.push(`${s.type}.stopLoss must be set to 'none' on this block - the strategy has no stop loss (got ${JSON.stringify(s.stopLoss)})`);
-        }
-        if (s.type === 'MandWStrategy') {
-            // Reverses on every stop / pattern all day, so it needs the global profit cap and exits it can classify (target AND stop, not 'none').
-            if (s.startSide !== 'CE' && s.startSide !== 'PE') errors.push(`${s.type}.startSide must be CE or PE (got ${JSON.stringify(s.startSide)})`);
-            if (typeof s.startTime !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.startTime)) errors.push(`${s.type}.startTime must be HH:mm (got ${JSON.stringify(s.startTime)})`);
-            if (s.patternTimeoutMinutes !== undefined && !(isNum(s.patternTimeoutMinutes) && s.patternTimeoutMinutes > 0)) errors.push(`${s.type}.patternTimeoutMinutes must be a positive number of minutes (got ${JSON.stringify(s.patternTimeoutMinutes)})`);
-            if (s.trailDistance !== undefined && !(isNum(s.trailDistance) && s.trailDistance > 0)) errors.push(`${s.type}.trailDistance must be a positive number of option points (got ${JSON.stringify(s.trailDistance)})`);
-            for (const key of ['target', 'stopLoss']) {
-                const v = s[key] !== undefined && s[key] !== null ? s[key] : parsed.settings?.[key];
-                if (typeof v === 'string' && v.trim().toLowerCase() === 'none') errors.push(`${s.type}.${key} must not be 'none' (the strategy needs both a target and a stop)`);
-            }
-            if (s.maxProfit !== undefined) errors.push(`${s.type}.maxProfit is not read for this strategy - remove it and set settings.maxProfit (rupees)`);
-            const g = parsed.settings?.maxProfit;
-            if (!(typeof g === 'number' && Number.isFinite(g) && g > 0)) errors.push(`${s.type} needs settings.maxProfit to be a positive number of rupees`);
         }
         // maxProfit is an AMOUNT in rupees for SimpleContinuous (the other strategies' maxProfit is a percent of maxInvestment): a '%' string
         // or a non-positive number is rejected, and the key is required (no default in code).

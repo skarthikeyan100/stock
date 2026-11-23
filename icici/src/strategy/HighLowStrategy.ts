@@ -6,6 +6,7 @@ import { localDayKey } from './dayKey';
 import { CandleEntryStrategy } from './CandleEntryStrategy';
 import { createStatsBuilder } from '../processes/strategies/niftyStatsBuilder';
 import { isPastTime } from '../util/marketHours';
+import { entryStartTime, isBeforeEntryStart } from '../util/entryStart';
 import { investmentForBroker } from '../prism/configVocabulary';
 import { INDEX_LOT_SIZE } from '../constants';
 
@@ -219,6 +220,7 @@ export default class HighLowStrategy extends CandleEntryStrategy {
         if (this.incompleteCandles.has(Number(c1.candleTime))) return skip('c1 is an incomplete candle (started mid-candle after a restart)');
         const late = tickLtt - (start + this.bucketSeconds);
         if (late > LATE_CANDLE_SECONDS) return skip(`candle closed ${late}s ago (more than ${LATE_CANDLE_SECONDS}s) - not traded late`);
+        if (isBeforeEntryStart()) return skip(`before settings.entryStartTime ${entryStartTime()} - no signal is taken or held`);
         // A held signal (confirmCandle): this candle is c3. It confirms when it follows the signal candle at once and still closes beyond c1's extreme.
         const pending = this.pendingConfirm;
         this.pendingConfirm = null;

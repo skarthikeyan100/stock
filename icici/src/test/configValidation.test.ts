@@ -162,6 +162,24 @@ async function main() {
         assert(validateConfigFile(sc({ brokers: ['kite', 'ant'], maxProfit: 4000 }, {})).filter((e) => e.includes('maxProfit')).length === 0,
             `${type} with its own maxProfit needs no global cap`);
     }
+    for (const key of ['repeat', 'reverse']) {
+        assert(validateConfigFile(blk({ type: 'RecommendationStrategy', [key]: true }, {})).every((e) => !e.includes(`${key} must be`)), `RecommendationStrategy.${key}: true is accepted`);
+        assert(validateConfigFile(blk({ type: 'RecommendationStrategy', [key]: 'yes' }, {})).some((e) => e.includes(`RecommendationStrategy.${key} must be true or false`)), `RecommendationStrategy.${key}: 'yes' is rejected`);
+    }
+    {
+        const ex = (over: Record<string, any>, settings: Record<string, any> = { target: 10, stopLoss: 8 }) => validateConfigFile(blk({ type: 'ExpiryStrategy', right: 'CE', maxInvestment: 100000, driftPoints: 10, ...over }, settings));
+        assert(ex({}).length === 0, 'an enabled ExpiryStrategy block with right, maxInvestment, driftPoints and target/stopLoss (settings) is accepted');
+        assert(ex({ right: undefined }).some((e) => e.includes('right must be CE or PE')), 'ExpiryStrategy without right is rejected');
+        assert(ex({ right: 'XX' }).some((e) => e.includes('right must be CE or PE')), 'ExpiryStrategy with right XX is rejected');
+        assert(ex({ driftPoints: undefined }).some((e) => e.includes('driftPoints')), 'ExpiryStrategy without driftPoints is rejected');
+        assert(ex({ driftPoints: 0 }).some((e) => e.includes('driftPoints')), 'ExpiryStrategy with driftPoints 0 is rejected');
+        assert(ex({ maxInvestment: undefined }).some((e) => e.includes('maxInvestment')), 'ExpiryStrategy without maxInvestment is rejected');
+        assert(ex({ quantity: 65 }).some((e) => e.includes('quantity is not used')), 'ExpiryStrategy with a quantity key is rejected');
+        assert(ex({}, {}).some((e) => e.includes('target is not set')) && ex({}, {}).some((e) => e.includes('stopLoss is not set')), 'ExpiryStrategy with no target / stopLoss anywhere is rejected');
+        assert(ex({ stopLoss: 'none' }).some((e) => e.includes("stopLoss must not be 'none'")), "ExpiryStrategy with stopLoss 'none' is rejected");
+        assert(ex({ target: 'none' }).some((e) => e.includes("target must not be 'none'")), "ExpiryStrategy with target 'none' is rejected");
+        assert(ex({ enabled: false, right: undefined, brokers: undefined }).length === 0, 'a disabled ExpiryStrategy block is exempt');
+    }
     assert(validateConfigFile({ settings: { maxProfit: 5000 }, strategies: [] }).length === 0, 'settings.maxProfit as one number of rupees is accepted');
     for (const bad of [{ kite: 5000 }, [5000], '5000', '5000%', 0, -5]) {
         assert(validateConfigFile({ settings: { maxProfit: bad }, strategies: [] }).some((e) => e.includes('settings.maxProfit must be a positive number of rupees')), `settings.maxProfit = ${JSON.stringify(bad)} is rejected`);
@@ -196,6 +214,12 @@ async function main() {
     fs.writeFileSync(cfgPath, 'settings:\n  maxDailyDrawdownPercent: 0%\n');
     configService.reloadNow();
     assert((configService.getConfig().settings as any).maxDailyDrawdownPercent === 40, 'an invalid file on reload keeps the previous config');
+
+    // --- settings.entryStartTime: global only, 'HH:mm' ---
+    const startErrs = (settings: any, block: any = {}) => validateConfigFile({ settings, strategies: [{ type: 'HighLowStrategy', enabled: true, userId: 'H', brokers: ['kite'], quantity: 130, target: 10, stopLoss: 8, ...block }] });
+    assert(startErrs({ entryStartTime: '10:00' }).length === 0, "settings.entryStartTime '10:00' is valid");
+    assert(startErrs({ entryStartTime: '9:5' }).some((e) => /entryStartTime must be 'HH:mm'/.test(e)), 'a malformed settings.entryStartTime is refused');
+    assert(startErrs({}, { entryStartTime: '10:00' }).some((e) => /entryStartTime is a global setting/.test(e)), 'entryStartTime on a strategy block is refused');
 
     fs.rmSync(cfgDir, { recursive: true, force: true });
 

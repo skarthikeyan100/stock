@@ -36,10 +36,11 @@ const files = [...sources].sort();
 // Several tests print ALL TESTS PASSED but never exit (a Mongo handle or the config watcher keeps the event loop alive). With no
 // timeout the runner hung forever on the first of them, so each test gets TEST_TIMEOUT_MS; one that was killed by the timeout counts
 // as passed only if it said so and printed no failed assertion.
+// scripts/test-autoexit.js (preloaded below) ends a test whose only remaining handles are those watchers, so the timeout is now a backstop.
 const TEST_TIMEOUT_MS = Number(process.env.TEST_TIMEOUT_MS) || 60_000;
 for (const f of files) {
     const started = Date.now();
-    const res = spawnSync('node', [path.join(distTests, f)], {
+    const res = spawnSync('node', ['-r', path.join(__dirname, 'test-autoexit.js'), path.join(distTests, f)], {
         cwd: root, env: { MOCK_BROKER: 'true', ...process.env }, timeout: TEST_TIMEOUT_MS, killSignal: 'SIGKILL', encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
     });
     const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;

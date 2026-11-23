@@ -14,7 +14,7 @@ async function main() {
 
     console.log('welcome:');
     const wi = renderWelcome(ind, '1.1', new Date('2026-11-16T05:00:00Z'));
-    assert(/Welcome/.test(wi.subject) && wi.html.includes('v1.1') && wi.html.includes('Individual (PAN)') && /Up or Down/.test(wi.html), 'Individual: agreement version, kind and forecasting wording');
+    assert(/Welcome/.test(wi.subject) && wi.html.includes('v1.1') && wi.html.includes('Researcher (PAN)') && /Up or Down/.test(wi.html), 'Individual: agreement version, kind and forecasting wording');
     assert(!wi.html.includes('<script>') && wi.html.includes('&lt;script&gt;'), 'the name is HTML-escaped');
     assert(/new invitation/i.test(wi.html) && /no login page/i.test(wi.html) && /clear your browser/i.test(wi.html), 'explains that a logout or cleared cookies needs a re-invite');
     const wb = renderWelcome(biz, '1.1', new Date());

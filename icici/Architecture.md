@@ -105,7 +105,7 @@ Data flow of a Beginner forecast: `POST /forecast` -> record (write-once) -> bot
 **How a strategy gets registered** (all of these, for a new type `FooStrategy`):
 - `src/strategy/StrategyFactory.ts`: `STRATEGY_REGISTRY.set('FooStrategy', FooStrategy)` (type name -> class; the constructor takes the `userId`). `createStrategy` sets `enabled` from the block.
 - `src/util/strategyInstances.ts`: a type in `MULTI_BROKER_TYPES` is ONE instance that fans out over `brokers:` itself (per-broker legs inside its state); any other type is expanded in
-  memory into `<id>`, `<id>-ANT`, `<id>-Breeze` instances. The LimitEntry family (Recommendation, NiftyChange, MomentumAtFixedTime, NextWeek, Breakout, GammaBurst) is multi-broker, one cycle across all brokers; MandW is multi-broker too but its brokers are independent: per-broker state (`state.mw.brokers`) and `startCycle(..., [broker])`, so one broker's cycle, latch or refusal never affects another.
+  memory into `<id>`, `<id>-ANT`, `<id>-Breeze` instances. The LimitEntry family (Recommendation, NiftyChange, MomentumAtFixedTime, NextWeek, Breakout, GammaBurst) is multi-broker, one cycle across all brokers.
 - `src/prism/configValidation.ts`: per-type required keys (`requiredByType`, the global target/stop list, the fixed-`quantity` NIFTY-lot check). Only enabled blocks are validated.
 - `config.yml`: a block with `type`, `enabled`, `userId`, `brokers: [...]`. Blocks are never deleted, only disabled. Global keys under `settings` apply unless the block sets its own.
 - `enabled` is the one switch and is enforced centrally (`strategiesProcess.ts` / `tokenRouter.ts`): a disabled strategy gets no ticks, fills or cancellations. A new strategy gets it for free.
@@ -121,7 +121,6 @@ Data flow of a Beginner forecast: `POST /forecast` -> record (write-once) -> bot
 candle). `closes()` returns closes only, so a strategy that needs OHLC keeps its own array (see `NextWeekStrategy.liveToday`); `seed(candles)` preloads history (Yahoo `^NSEI` via
 `lib/yahooCandles.ts`, cached in Mongo, today's own candles in `candles15Live`). `strategiesProcess` keeps one shared 300 s builder and hands its closes to `receive()`; the LimitEntry family does not
 use it and builds its own (`NextWeek`/`Breakout`: 900 s, aligned to 09:15; `GammaBurst`: 120 s on the 09:15 grid via `originSeconds`, its own Mongo `candles2Live`). `decision.ts` is NOT a live candle source (only `/replay` instantiates it). There is no candle builder for option prices:
-`MandWStrategy` works on option ticks directly.
 
 **How an option contract is selected:** the strategy picks a strike and side, `OrderClient.resolveOptionContract(userId, { broker, index, strike, right, skipNearestExpiryDay, expiryOffset })`
 returns `{ tsym, token, exchange }` for that broker (nearest expiry; `expiryOffset: 1` = the next one). The LimitEntry strategies use `atmStrike(ltp) = round(ltp / 50) * 50` of the last NIFTY tick,

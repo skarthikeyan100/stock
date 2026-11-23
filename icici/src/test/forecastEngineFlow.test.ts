@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { editYaml } from './editYaml';
 import * as crypto from 'crypto';
 import express from 'express';
 import bodyParser from 'body-parser';
@@ -34,7 +35,7 @@ import { contractorGuard } from '../contractors/guard';
 let failed = 0;
 function assert(condition: boolean, message: string) { console.log(`  ${condition ? 'PASS' : 'FAIL'}: ${message}`); if (!condition) { failed++; process.exitCode = 1; } }
 const cookieFor = (value: string) => `session=${encodeURIComponent('s:' + signature.sign(value, SECRET))}`;
-const setCfg = (mut: (t: string) => string) => { const f = path.join(tmp, 'config.yml'); fs.writeFileSync(f, mut(fs.readFileSync(f, 'utf8'))); configService.reloadNow(); };
+const setCfg = (mut: (cfg: any) => void) => { editYaml(path.join(tmp, 'config.yml'), mut); configService.reloadNow(); };
 
 async function main() {
     const db = installFakeDb();
@@ -117,7 +118,7 @@ async function main() {
     assert(dec6 && dec6.accepted === false && /snapshot is 4000 ms old/.test(dec6.reason), 'a depth snapshot older than 3 s rejects');
 
     console.log('orders (master switch) and the contractor\'s own order:');
-    setCfg((t) => t.replace('    enabled: false                 # MASTER switch', '    enabled: true                 # MASTER switch'));
+    setCfg((c) => { c.forecast.orders.enabled = true; });
     assert(engine.ordersEnabled(), 'the master switch reads from config');
     // the real option price needs ANT; the engine reports it as unavailable here and places nothing
     const t1130 = new Date('2026-11-17T11:30:00+05:30').getTime();

@@ -21,7 +21,6 @@
     "backtest:supportResistanceStrategy": "tsc && MOCK_BROKER=true node ./dist/tools/SupportResistanceStrategyBacktest.js",
     "backtest:simpleContinuous": "tsc && MOCK_BROKER=true node ./dist/tools/SimpleContinuousBacktest.js",
     "backtest:highlow": "tsc && MOCK_BROKER=true node ./dist/tools/HighLowBacktest.js",
-    "backtest:mandw": "tsc && MOCK_BROKER=true node ./dist/tools/MandWBacktest.js",
     "backtest:scaledHedged": "tsc && MOCK_BROKER=true node ./dist/tools/ScaledHedgedBacktest.js",
     "backtest:ruleBased": "tsc && MOCK_BROKER=true node ./dist/tools/RuleBasedBacktest.js",
     "backtest:ruleBlock": "tsc && MOCK_BROKER=true node ./dist/tools/RuleBlockBacktest.js",

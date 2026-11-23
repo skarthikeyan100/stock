@@ -1,5 +1,5 @@
 import Log from '../util/Log';
-import { NiftyQuote } from '../model/model';
+import { NiftyQuote, OptionQuote } from '../model/model';
 import OrderClient from '../processes/strategies/OrderClient';
 import configService from '../prism/ConfigService';
 import { roundToTick, NFO_TICK_SIZE } from '../util/tick';
@@ -7,6 +7,10 @@ import { isPastTime } from '../util/marketHours';
 import { isPastEodClose } from '../util/eodClose';
 import { investmentForBroker, resolveMaxInvestment } from '../prism/configVocabulary';
 import { LimitEntryStrategy, Leg, ResolvedEntry } from './LimitEntryStrategy';
+import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
+import { isGlobalMaxProfitLatched } from './globalMaxProfitLatch';
+import { normalizeBrokerName } from '../util/brokerName';
+import { RecState, RecWatch, atmStrike, backAtEntry, hitTarget, nextAction, oppositeRight } from './recommendationCycle';
 
 // Trades one analyst recommendation given in config.yml: a contract ("22750 CE"), an entry price, a target and a stop loss.
 // Places a LIMIT buy at (entryPrice - entryOffset) on every configured broker, sized from maxInvestment (the amount PER
@@ -30,6 +34,13 @@ import { LimitEntryStrategy, Leg, ResolvedEntry } from './LimitEntryStrategy';
 //   entryOffset: 5                - default 5
 //   index: NIFTY                  - default NIFTY
 //   brokers: [kite]
+//   repeat: false                 - true: after the trade SELLS AT ITS TARGET, buy the same contract again at the same order price (entryPrice - entryOffset), same
+//                                   target/stop distances; that second trade ends the strategy (unless reverse is on). Default false.
+//   reverse: false                - true: after the last target (the first trade, or the repeat when repeat is on) wait for the option to fall back to entryPrice,
+//                                   then buy the OPPOSITE right at the ATM strike (market LTP, same distances, sized from maxInvestment); that trade ends the
+//                                   strategy. Default false. Both act only after a target (a stop, end of day or unfilled entry ends the strategy as before).
+//                                   Every re-entry checks the global max-profit latch per broker; end of day ends a pending reverse. Brokers whose trade did not
+//                                   reach its target drop out; the next step waits until every broker's current trade is over.
 //   startTime: '09:20'            - not placed before this; entryTimeoutMinutes: optional (the EOD close is settings.eodCloseTime)
 export default class RecommendationStrategy extends LimitEntryStrategy {
     protected readonly logTag = `Recommendation:${this.userId}`;
@@ -89,9 +100,10 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         return m ? { strike: Number(m[1]), right: m[2].toUpperCase() as 'CE' | 'PE' } : null;
     }
 
-    protected async onNiftyTick(_quote: NiftyQuote): Promise<void> {
+    protected async onNiftyTick(quote: NiftyQuote): Promise<void> {
         const cfg = this.cfg() as any;
-        if (isPastEodClose() || !isPastTime(cfg.startTime, '09:20')) return;
+        if (isPastEodClose()) { await this.dropWatchAtEod(); return; }
+        if (!isPastTime(cfg.startTime, '09:20')) return;
         const parsed = RecommendationStrategy.parseContract(cfg.contract);
         const entryPrice = Number(cfg.entryPrice);
         const target = Number(cfg.targetPrice);
@@ -108,7 +120,7 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
             if (this.invalidLogged !== key) { this.invalidLogged = key; Log.log(`[${this.logTag}] ALERT: invalid recommendation, not placed: ${problem}`); }
             return;
         }
-        if (this.cycleStarted(key)) return;
+        if (this.cycleStarted(key)) { await this.runReverse(cfg, key, quote); return; }
         if (this.hasActiveLeg() && await this.adjustOpenTrade(cfg, key, target, stop)) return;
         if (this.hasActiveLeg()) {
             // A trade is still in progress (open order or position): this recommendation is dropped, not held for later. The key is
@@ -119,6 +131,7 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         }
         const entry: ResolvedEntry = { index: this.index(), strike: parsed.strike, right: parsed.right };
         this.state.baseKey = RecommendationStrategy.baseKeyOf(cfg);
+        this.state.rec = { stage: 0 };
         await this.startCycle(key, entry, (b) => investmentForBroker(cfg, b), async (c) => {
             // Logged with the order: a limit buy ABOVE the market fills at the market, and the supplied target/stop were meant for the
             // entry price (2026-11-02: entry 110 vs LTP 80 filled at 78.85, so target 172 / stop 50 became +93 / -29 from the real cost).
@@ -141,11 +154,114 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
     // and hot-reloaded. Runs only while enabled (a disabled block takes no action).
     protected async onCycleEnded(): Promise<void> {
         if (!this.enabled) return;
-        if (this.priceBandRefusal && !this.hasActiveLeg()) {
+        if (this.priceBandRefusal && !this.hasActiveLeg() && (this.state.rec?.stage ?? 0) === 0) {
             this.priceBandRefusal = false;
             Log.log(`[${this.logTag}] ALERT: the entry was refused for its price (outside the broker's allowed range); the block stays enabled - change entryPrice/entryOffset to a price near the contract's LTP (a changed price is a new recommendation)`);
             return;
         }
+        if (await this.continueAfterTarget()) return;
+        await this.disableBlock();
+    }
+
+    // repeat / reverse (see the header). Returns true when the strategy goes on (a repeat was placed, or the reverse watch is armed), false when it is over.
+    private async continueAfterTarget(): Promise<boolean> {
+        const cfg = this.cfg() as any;
+        const repeat = cfg.repeat === true, reverse = cfg.reverse === true;
+        if (!repeat && !reverse) return false;
+        const rec: RecState = this.state.rec ?? (this.state.rec = { stage: 0 });
+        if (rec.watch) return true; // already waiting for the option to come back
+        if (isPastEodClose()) return false;
+        const candidates = rec.brokers ?? this.legs().map((l) => l.broker);
+        const hit: string[] = [];
+        for (const leg of this.legs()) {
+            if (!candidates.includes(leg.broker) || leg.status !== 'closed' || !hitTarget(leg) || hit.includes(leg.broker)) continue;
+            if (await isGlobalMaxProfitLatched(this.userId, normalizeBrokerName(leg.broker))) {
+                Log.log(`[${this.logTag}] ${leg.broker}: the global max profit is hit - no repeat / reverse on that broker`);
+                continue;
+            }
+            hit.push(leg.broker);
+        }
+        const action = nextAction(rec.stage, repeat, reverse, hit.length > 0);
+        const parsed = RecommendationStrategy.parseContract(cfg.contract);
+        if (action === 'finish' || !parsed) return false;
+        const key = RecommendationStrategy.keyOf(cfg);
+        if (action === 'repeat') {
+            rec.stage = 1;
+            rec.brokers = hit;
+            this.save();
+            const orderPrice = roundToTick(Number(cfg.entryPrice) - (cfg.entryOffset == null ? 5 : Number(cfg.entryOffset)));
+            Log.log(`[${this.logTag}] TARGET reached on ${hit.join(', ')} - repeat: buying ${cfg.contract} again at ${orderPrice}`);
+            await this.startCycle(`${key}|repeat`, { index: this.index(), strike: parsed.strike, right: parsed.right }, (b) => investmentForBroker(cfg, b), async () => orderPrice, hit);
+            return true;
+        }
+        // reverse: watch the contract of the trade that reached its target (the last stage's right: the stage-1 repeat is the same contract)
+        const legs = this.legs().filter((l) => hit.includes(l.broker));
+        const watch: RecWatch = { brokers: hit, tokens: legs.map((l) => ({ token: l.token, exchange: l.exchange })), right: parsed.right, index: this.index() };
+        rec.brokers = hit;
+        rec.watch = watch;
+        this.save();
+        for (const t of watch.tokens) watchTokenOnSource('ant', t.token, this, t.exchange);
+        Log.log(`[${this.logTag}] TARGET reached on ${hit.join(', ')} - reverse: waiting for ${cfg.contract} to fall back to ${cfg.entryPrice}, then buying the opposite right`);
+        return true;
+    }
+
+    private unwatchRec(w: RecWatch): void {
+        for (const t of w.tokens) unwatchTokenOnSource('ant', t.token, this, t.exchange);
+    }
+
+    // End of day with the reverse still waiting: the strategy is over.
+    private async dropWatchAtEod(): Promise<void> {
+        const w = this.state.rec?.watch;
+        if (!w || !this.enabled) return;
+        this.unwatchRec(w);
+        this.state.rec!.watch = undefined;
+        this.save();
+        Log.log(`[${this.logTag}] end of day - the reverse never triggered, strategy finished`);
+        await this.disableBlock();
+    }
+
+    // The reverse watch fired (option back at entryPrice): buy the opposite right at the ATM strike for the brokers still in.
+    private async runReverse(cfg: any, key: string, quote: NiftyQuote): Promise<void> {
+        const rec = this.state.rec, w = rec?.watch;
+        if (!rec || !w) return;
+        for (const t of w.tokens) watchTokenOnSource('ant', t.token, this, t.exchange); // re-armed after a restart
+        if (!w.triggered || this.hasActiveLeg() || !(quote.ltp > 0)) return;
+        const live: string[] = [];
+        for (const b of w.brokers) if (!(await isGlobalMaxProfitLatched(this.userId, normalizeBrokerName(b)))) live.push(b);
+        this.unwatchRec(w);
+        rec.watch = undefined;
+        rec.stage = 2;
+        rec.brokers = live;
+        this.save();
+        if (live.length === 0) { await this.disableBlock(); return; }
+        const right = oppositeRight(w.right), strike = atmStrike(quote.ltp);
+        Log.log(`[${this.logTag}] reverse: ${cfg.contract} is back at ${cfg.entryPrice} - buying ${strike} ${right} at its LTP on ${live.join(', ')}`);
+        await this.startCycle(`${key}|reverse`, { index: w.index, strike, right }, (b) => investmentForBroker(cfg, b), async (c) => {
+            return await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
+        }, live);
+    }
+
+    private watching(quote: OptionQuote): boolean {
+        return !!this.state.rec?.watch?.tokens.some((t) => t.token === String(quote.token));
+    }
+
+    canHandleOptionQuote(quote: OptionQuote): boolean {
+        return super.canHandleOptionQuote(quote) || (this.enabled && this.watching(quote));
+    }
+
+    async processOptionQuote(quote: OptionQuote): Promise<void> {
+        await super.processOptionQuote(quote);
+        const w = this.state.rec?.watch;
+        if (!this.enabled || !w || w.triggered || !this.watching(quote)) return;
+        const entry = Number((this.cfg() as any).entryPrice);
+        if (backAtEntry(quote.ltp, entry)) {
+            w.triggered = true;
+            this.save();
+            Log.log(`[${this.logTag}] option back at ${quote.ltp} <= entry ${entry}: reverse fires on the next NIFTY tick`);
+        }
+    }
+
+    private async disableBlock(): Promise<void> {
         try {
             const cfg = configService.getConfig();
             const block = (cfg.strategies || []).find((s) => s.type === this.strategyType && (s.userId || s.type) === this.userId);

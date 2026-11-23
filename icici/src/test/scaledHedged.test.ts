@@ -101,7 +101,7 @@ const ceRoot = (s: any, entry = 180) => {
         assert(ltp === 175 ? buys().length === 0 : !!b && b.args[1] === 'N23900PE' && b.args[3] === want, `CE 180 -> ${ltp}: ${ltp === 175 ? 'no hedge yet (drop 5 < 10)' : `PE hedge qty ${want} (got ${b?.args[3]})`}`);
     }
 
-    console.log('a falling hedge leg buys the CE again: the same contract, added to its open leg');
+    console.log('a falling hedge leg never adds to the open CE leg: it waits (one leg per contract per cycle)');
     calls = [];
     s = make();
     const root = ceRoot(s);
@@ -110,20 +110,11 @@ const ceRoot = (s: any, entry = 180) => {
     assert(!!pe && pe.qty === 130 && s.state.pair.PE.tsym === undefined && s.state.pair.PE.tradingSymbol === 'N23900PE', 'PE hedge 130 bought, its contract fixed as the PE of the pair');
     pe.sellQty = 130;
     calls = [];
-    await s.processOptionQuote(tick('PE23900', 85)); // PE 100 -> 85: drop 15 -> 65 + 1.5 x 65 = 162.5 -> 130
-    const addBuy = buys()[0];
-    const legsNow = Object.values(s.state.legs).length;
-    const avg = (180 * 65 + 100 * 130) / 195;
-    assert(!!addBuy && addBuy.args[1] === 'N23900CE' && addBuy.args[3] === 130, `the SAME CE contract is bought again, qty 130 (got ${addBuy?.args[1]} ${addBuy?.args[3]})`);
-    assert(legsNow === 2 && root.qty === 195 && Math.abs(root.entry - avg) < 1e-9, `no new leg: added to the open CE leg (qty ${root.qty}, average ${root.entry.toFixed(2)} vs ${avg.toFixed(2)})`);
-    const order = calls.map((c) => c.fn);
-    assert(order.indexOf('cancelRestingLimitSells') >= 0 && order.indexOf('cancelRestingLimitSells') < order.indexOf('buyContractBare') && order.indexOf('buyContractBare') < order.lastIndexOf('chunkedSquareOffLimit'), 'resting sell cancelled, then the buy, then a new resting sell');
-    const sell = last('chunkedSquareOffLimit');
-    assert(sell?.args[1].quantity === 195 && sell?.args[1].price === roundToTick(avg + 10), `the new resting sell covers all 195 at the new average + 10 (${sell?.args[1].price} vs ${roundToTick(avg + 10)})`);
-    assert(pe.hedged === true && root.hedged === false && root.added === true, 'the falling PE stays hedged; the CE leg is re-armed from its new average');
-    calls = [];
-    await s.processOptionQuote(tick('CE23900', root.entry - 11)); // the re-armed CE leg falls 10 below its NEW average
-    assert(buys().length === 1 && buys()[0].args[1] === 'N23900PE', 'the re-armed CE leg hedges again by buying the PE contract of the pair');
+    await s.processOptionQuote(tick('PE23900', 85)); // PE 100 -> 85: drop 15: the CE contract is still open
+    assert(buys().length === 0, `nothing is bought: the CE contract already has an open leg (got ${buys()[0]?.args[1]} ${buys()[0]?.args[3]})`);
+    assert(Object.values(s.state.legs).length === 2 && root.qty === 65 && Math.abs(root.entry - 180) < 1e-9, `no new leg and no add: the open CE leg is unchanged (qty ${root.qty}, average ${root.entry.toFixed(2)})`);
+    assert(!calls.some((c) => c.fn === 'cancelRestingLimitSells' || c.fn === 'chunkedSquareOffLimit'), "the open CE leg's resting sell is left untouched");
+    assert(pe.hedged === false && pe.hedgeWaiting === true && root.added !== true, 'the falling PE is NOT marked hedged: it waits until the CE contract has no open leg');
 
     console.log('no double-up; same-direction re-buy only when the contract is not open');
     calls = [];

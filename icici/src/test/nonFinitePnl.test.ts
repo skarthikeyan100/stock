@@ -148,7 +148,7 @@ function addLeg(s: any, id: string, o: any = {}) {
         lm.legsByToken.set('a', leg('a', { lastLtp: NaN, avgPrice: undefined }));
         lm.legsByToken.set('b', leg('b', { lastLtp: 400 }));
         // b alone is +30000 >= 5000: the bad leg is skipped, b still trips; with the OLD sum NaN it would have been skipped silently or (inverted) tripped
-        lm.checkAndMaybeTripMaxProfit(cfg);
+        lm.checkAndMaybeTripMaxProfit(cfg, true); // verified = true: the broker check before a trip (tripNeedsFreshVerify) is not what this test covers
         assert(lm.maxProfitTripped && alerts().length === 1 && alerts()[0].includes('a:'), 'bad leg skipped + alerted once, the good leg trips the cap');
         ({ lm, cfg } = mkLm({})); logged = [];
         lm.legsByToken.set('a', leg('a', { totalQuantity: NaN, lastLtp: 400 }));
@@ -160,7 +160,7 @@ function addLeg(s: any, id: string, o: any = {}) {
         assert(!lm.maxProfitTripped && alerts().length === 1, 'NaN realized: no trip, one alert');
         ({ lm, cfg } = mkLm({})); logged = [];
         lm.legsByToken.set('a', leg('a', { lastLtp: NaN })); lm.legsByToken.set('b', leg('b', { lastLtp: 40 })); // loss -6000 <= -5000
-        lm.checkAndMaybeTripMaxLoss(cfg);
+        lm.checkAndMaybeTripMaxLoss(cfg, true);
         assert(lm.maxLossTripped, 'max-loss: a good losing leg trips next to a bad leg');
     }
 

@@ -117,6 +117,8 @@ const SR_HYPOTHESIS = {
 };
 const CONFIRM_WINDOW_MS = SR_HYPOTHESIS.confirmWindowMin * 60_000; // 180000
 const BREACH_CONFIRM_MS = SR_HYPOTHESIS.breachConfirmSec * 1000; // 15000
+// A fixed epoch-ms base for the synthetic ticks: Strategy.toMillis() treats a falsy ltt (0) as 'no timestamp' and falls back to the wall clock, and a value under 1e12 as seconds.
+const T0 = 1_800_000_000_000;
 
 function setConfig(overrides: Record<string, any> = {}) {
     const base = {
@@ -218,7 +220,7 @@ async function testHeldConfirmedBreachOpensLeg() {
     mock.nextEntryPrice = 150;
     const s = newStrategy();
 
-    await feedResistanceBreach(s, 465_000, 0); // within [407s, 651s]
+    await feedResistanceBreach(s, 465_000, T0); // within [407s, 651s]
 
     assert(legs(s).size === 1, 'one leg opened on a held-confirmed breach');
     const leg = Array.from(legs(s).values())[0];
@@ -234,7 +236,7 @@ async function testHeldTooShortDoesNotOpen() {
     installMock();
     const s = newStrategy();
 
-    await feedResistanceBreach(s, 16_000, 0); // well below 407s
+    await feedResistanceBreach(s, 16_000, T0); // well below 407s
 
     assert(legs(s).size === 0, 'no leg opened - held duration outside the confirmed window');
     assert(mock.buyContractCalls.length === 0, 'no buy attempted');
@@ -246,7 +248,7 @@ async function testHeldTooLongDoesNotOpen() {
     installMock();
     const s = newStrategy();
 
-    await feedResistanceBreach(s, 700_000, 0); // above 651s
+    await feedResistanceBreach(s, 700_000, T0); // above 651s
 
     assert(legs(s).size === 0, 'no leg opened - held duration exceeds the confirmed window');
 }
@@ -259,7 +261,7 @@ async function testHasOpenLegOfRightBlocksSecondEntry() {
     mock.nextEntryPrice = 150;
     const s = newStrategy();
 
-    const firstConfirmAt = await feedResistanceBreach(s, 465_000, 0);
+    const firstConfirmAt = await feedResistanceBreach(s, 465_000, T0);
     assert(legs(s).size === 1, 'first breach opens a leg');
     const buysAfterFirst = mock.buyContractCalls.length;
 
@@ -281,7 +283,7 @@ async function testCombinedMaxProfitAcrossBothSides() {
     mock.nextEntryPrice = 150;
     const s = newStrategy();
 
-    await feedResistanceBreach(s, 465_000, 0); // opens a CALL leg
+    await feedResistanceBreach(s, 465_000, T0); // opens a CALL leg
     assert(legs(s).size === 1, 'CALL leg opened');
 
     // A large unrealized gain on the open CALL leg (via a big option-tick

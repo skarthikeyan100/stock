@@ -52,7 +52,6 @@ async function main() {
     assert(check({ quantity: 100 }).some((e) => /multiple of the NIFTY lot/.test(e)), 'non-lot quantity refused');
     assert(check({ quantity: 130, stopLoss: 'none' }).some((e) => /stopLoss must not be 'none'/.test(e)), "stopLoss 'none' refused");
     assert(check({ quantity: 130, target: undefined }).some((e) => /target is not set/.test(e)), 'missing target refused');
-    assert(check({ quantity: 130, trailDistance: -1 }).some((e) => /trailDistance/.test(e)), 'bad trailDistance refused');
     assert(check({ quantity: 130, brokers: ['nope'] }).some((e) => /unknown broker/.test(e)), 'unknown broker refused');
     assert(expandBrokerInstances({ type: 'HighLowStrategy', userId: 'H', brokers: ['paper', 'kite'] } as any).length === 1, 'HighLow is one multi-broker instance');
 

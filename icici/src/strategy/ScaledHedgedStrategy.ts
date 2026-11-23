@@ -18,6 +18,7 @@ import { clearPrice, tripSellPrice, keepTripSell, TripGuard, TRIP_FILL_WAIT_MS, 
 import { effectiveMaxProfit } from './effectiveMaxProfit';
 import { expiryDayOverrideOf } from '../util/expirySkip';
 import { isPastEodClose } from '../util/eodClose';
+import { entryStartTime, isBeforeEntryStart } from '../util/entryStart';
 import { BrokerName, normalizeBrokerName } from '../util/brokerName';
 import { NOT_PLACED_TAG, OrderCancelledNotification } from '../ipc/orderProtocol';
 import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY } from '../constants';
@@ -436,6 +437,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             return;
         }
         if (!this.isTimeInRange()) { this.gateLog.log('outside time window'); return; }
+        if (isBeforeEntryStart('10:00')) { this.gateLog.log(`before settings.entryStartTime ${entryStartTime() ?? '10:00'}`); return; }
         if (this.buysBlocked()) { this.gateLog.log('manual review / unconfirmed hedge buy pending'); return; }
         if (this.blocked || !this.stateLoaded) { this.gateLog.log('state not loaded / open trades unreadable'); return; }
         await this.retryWaitingHedges();

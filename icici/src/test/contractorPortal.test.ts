@@ -175,7 +175,7 @@ async function main() {
     const storedPdf = fs.readFileSync(stored.agreementFile);
     assert(sha(storedPdf) === acc[0].fileSha256 && sha(storedPdf) === stored.agreementSha256, 'the stored personalised PDF is exactly the file whose hash was recorded');
     const t1 = text(storedPdf);
-    assert(/The Contractor: Test Person, resident at 12 Some Street, Chennai \(PAN: ABCDE1234F\)/.test(t1.replace(/\s+/g, ' ')), 'the Parties clause is filled with the name, address and PAN they gave');
+    assert(/The Researcher: Test Person, resident at 12 Some Street, Chennai \(PAN: ABCDE1234F\)/.test(t1.replace(/\s+/g, ' ')), 'the Parties clause is filled with the name, address and PAN they gave');
     assert(/Karthikeyan S/.test(t1) && !/\bthe Company\b/.test(t1), 'the other party is named, not "the Company"');
     r = await request(app).post(`/invite/${inv1.token}/accept`).send(good());
     assert(r.status === 410, 'the same link cannot be used twice');
@@ -227,7 +227,7 @@ async function main() {
     r = await request(app).post(`/invite/${biz.token}/accept`).send(bgood(bizKyc, { email: 'someone@else.com' }));
     assert(r.status === 400 && /different email/.test(r.body.error), 'an email-locked invite refuses another email');
     const fx = await createInvite({ type: 'BUSINESS', createdBy: 'o' });
-    r = await request(app).post(`/invite/${fx.token}/accept`).send({ email: 'fixed@acme.com', acceptTerms: true, dpdpConsent: true, kyc: { gstin: '33ABCDE1234F1Z5' } });
+    r = await request(app).post(`/invite/${fx.token}/accept`).send({ email: 'fixed@acme.com', acceptTerms: true, dpdpConsent: true, kyc: bizKyc }); // no representation6A5; the Research Analyst KYC (SEBI number) is still required
     assert(r.status === 200, 'clause 6A.5 is optional: an Advanced contractor can accept without confirming it');
     const fxDoc: any = (await contractorsCol().find({ email: 'fixed@acme.com' }).toArray())[0];
     assert(fxDoc.feeModels?.length === 1 && fxDoc.feeModels[0].model === 'FIXED_PERIOD' && fxDoc.feeModels[0].durationMonths === 1 && !fxDoc.representation6A5At, 'not confirming 6A.5 puts the contractor on the fixed fee per Fee Period (6A.6, 1 month by default) from the acceptance date');
@@ -235,11 +235,11 @@ async function main() {
     assert(fxAcc.representation6A5 === false, 'and the acceptance record says the confirmation was not given');
     const tfx = require('child_process').spawnSync('pdftotext', ['-raw', '-', '-'], { input: fs.readFileSync(fxDoc.agreementFile) }).stdout.toString().replace(/\s+/g, ' ');
     assert(/Fixed fee per Fee Period under clause 6A\.6, from the Effective Date/.test(tfx) && /Not applicable \(the fixed fee applies\)/.test(tfx) && /not give this confirmation when accepting this Agreement, clause 6A\.6 applies/.test(tfx), 'the agreement they accepted shows the fixed fee, not the Profit Share');
-    assert(!/Retainer/.test(tfx) && /Schedule 2 – Recommendation and Risk Rules/.test(tfx) && /Schedule 3 – Invoice Requirements/.test(tfx), 'Schedule 1 has no retainer; the rules are Schedule 2 and the invoice requirements Schedule 3');
+    assert(!/Retainer/.test(tfx) && /Schedule 1 – Recommendation and Risk Rules/.test(tfx) && /Schedule 2 – Fee Schedule/.test(tfx) && /Schedule 3 – Invoice Requirements/.test(tfx), 'no retainer; Schedule 1 is the rules, Schedule 2 the fee schedule, Schedule 3 the invoice requirements');
     const sch = await createInvite({ type: 'BUSINESS', createdBy: 'o' });
     r = await request(app).get(`/invite/${sch.token}`);
     const secs = (r.body.schedule?.rows ?? []).map((x: any) => x.section).filter(Boolean);
-    assert(r.status === 200 && JSON.stringify(secs) === JSON.stringify(['Schedule 1 – Fee Schedule', 'Schedule 2 – Recommendation and Risk Rules']) && !(r.body.schedule.rows.some((x: any) => x.item === 'Retainer')), 'the invitation page gets Schedules 1 and 2 as one table');
+    assert(r.status === 200 && JSON.stringify(secs) === JSON.stringify(['Schedule 1 – Recommendation and Risk Rules', 'Schedule 2 – Fee Schedule']) && !(r.body.schedule.rows.some((x: any) => x.item === 'Retainer')), 'the invitation page gets Schedules 1 and 2 as one table');
     assert((await db.collection('notifications').find({ type: 'fee_model' }).toArray()).length === 1, 'the owner is told to set the fixed amount');
     r = await request(app).post(`/invite/${biz.token}/accept`).send(bgood({ ...bizKyc, gstin: '33ABCDE1234F1Y5' }));
     assert(r.status === 400, 'a malformed GSTIN is refused');
@@ -249,12 +249,12 @@ async function main() {
     assert(r.status === 200 && r.body.type === 'BUSINESS' && r.body.sebi.verified === false && decodeURIComponent(cookieFromRes(r)).includes('|90'), 'Business accepted; SEBI recorded but unverified; 90-day session');
     const bizStored: any = (await contractorsCol().find({ email: 'forecaster@acme.com' }).toArray())[0];
     const tb = require('child_process').spawnSync('pdftotext', ['-layout', '-', '-'], { input: fs.readFileSync(bizStored.agreementFile) }).stdout.toString().replace(/\s+/g, ' ');
-    assert(/The Contractor: Acme Research LLP, registered office 5 Market Road, Mumbai \(PAN ABCDE1234F; GSTIN 33ABCDE1234F1Z5\), acting through D Forecaster, its Research Analyst \(the “Contractor”\)/.test(tb) && /registration number INH000012345, valid until 2027-03-31/.test(tb), 'Business: entity, address, PAN (derived from the GSTIN), GSTIN, the one Research Analyst name and SEBI details fill the Parties clause');
-    assert(/through its Research Analyst, D Forecaster/.test(tb) && !/Signatures/.test(tb) && !/third part/i.test(tb) && !/7 days’ notice/.test(tb) && !/not give the same Recommendation/.test(tb), 'clause 3.4 names the forecaster; no Signatures section, no 4.3 third-party clause, no 7-day notice, no old 9.3');
+    assert(/The Research Analyst: Acme Research LLP \(PAN ABCDE1234F; GSTIN 33ABCDE1234F1Z5\), acting through D Forecaster, its Research Analyst \(the “Research Analyst”\)/.test(tb) && /registration number INH000012345, valid until 2027-03-31/.test(tb), 'Business: entity, address, PAN (derived from the GSTIN), GSTIN, the one Research Analyst name and SEBI details fill the Parties clause');
+    assert(/through its representative, D Forecaster/.test(tb) && !/Signatures/.test(tb) && !/third part/i.test(tb) && !/7 days’ notice/.test(tb) && !/not give the same Recommendation/.test(tb), 'clause 3.4 names the forecaster; no Signatures section, no 4.3 third-party clause, no 7-day notice, no old 9.3');
     const noBlanks = (t: string) => !/\[[^\]]*\]/.test(t) && !/_{3,}/.test(t) && !/undefined|null|NaN/.test(t);
     assert(noBlanks(tb) && noBlanks(t1.replace(/\s+/g, ' ')), 'no placeholder, blank line or "undefined" in either personalised PDF');
     assert(/Research Analyst Services Agreement/.test(tb) && !/Researcher Services Agreement/.test(tb) && /Researcher Services Agreement/.test(t1), 'the Business document is a Research Analyst Services Agreement; the Individual one stays a Researcher Services Agreement');
-    assert(/Karthikeyan S, an individual resident in Chennai, Tamil Nadu, carrying on business under the name “Nivedha Tech”; and/.test(tb) && !/PAN:/.test(tb.split('The Contractor:')[0]), 'the owner is named without an address or PAN');
+    assert(/Karthikeyan S, an individual resident in Chennai, Tamil Nadu, carrying on business under the name “Nivedha Tech”; and/.test(tb) && !/PAN:/.test(tb.split('The Research Analyst:')[0]), 'the owner is named without an address or PAN');
     assert(/25% of net Trade Profit per Settlement Week/.test(tb) && /3 per Trading Day/.test(tb) && /09:20 to 15:00 IST/.test(tb) && /Term\s+6 months/.test(tb), 'the Schedule carries real values from config');
     assert(!/Signatures/.test(t1), 'the Individual agreement has no Signatures section either');
     const bizUser: any = await db.collection('users').findOne({ email: 'forecaster@acme.com' });
@@ -262,16 +262,16 @@ async function main() {
     r = await request(app).post(`/invite/${(await createInvite({ type: 'INDIVIDUAL', createdBy: 'o' })).token}/accept`).send(good());
     assert(r.status === 409, 'an already-registered email is told to ask for a re-invite');
 
-    console.log('only the tax identity is required:');
+    console.log('only the tax identity and the SEBI registration are required:');
     const min = await createInvite({ type: 'BUSINESS', createdBy: 'o' });
     r = await request(app).post(`/invite/${min.token}/accept`).send({ email: 'min@acme.com', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc: {} });
     assert(r.status === 400 && /GSTIN/.test(r.body.error), 'without a GSTIN a Business contractor cannot accept');
-    r = await request(app).post(`/invite/${min.token}/accept`).send({ email: 'min@acme.com', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc: { gstin: '33ABCDE1234F1Z5' } });
-    assert(r.status === 200 && r.body.name === 'min' && r.body.missingDetails.includes('bank account') && r.body.missingDetails.includes('address'), 'with only the GSTIN (and email) it is accepted, and the profile lists what is still missing ' + r.status + ' ' + JSON.stringify(r.body).slice(0, 200));
+    r = await request(app).post(`/invite/${min.token}/accept`).send({ email: 'min@acme.com', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc: { gstin: '33ABCDE1234F1Z5', sebiNumber: 'INH000012345', sebiValidUntil: '2027-03-31' } });
+    assert(r.status === 200 && r.body.name === 'min' && r.body.missingDetails.includes('bank account') && r.body.missingDetails.includes('address'), 'with only the GSTIN, the SEBI number and its valid-until date (and email) it is accepted, and the profile lists what is still missing ' + r.status + ' ' + JSON.stringify(r.body).slice(0, 200));
     const minCk = cookieFromRes(r);
     const minDoc: any = (await contractorsCol().find({ email: 'min@acme.com' }).toArray())[0];
     const tm = require('child_process').spawnSync('pdftotext', ['-layout', '-', '-'], { input: fs.readFileSync(minDoc.agreementFile) }).stdout.toString().replace(/\s+/g, ' ');
-    assert(!/\[[^\]]*\]/.test(tm) && !/_{3,}/.test(tm) && !/undefined|null/.test(tm) && /GSTIN 33ABCDE1234F1Z5/.test(tm) && !/registered office/.test(tm) && !/registration number/.test(tm), 'with only the GSTIN given the PDF simply leaves out what is unknown: no blanks');
+    assert(!/\[[^\]]*\]/.test(tm) && !/_{3,}/.test(tm) && !/undefined|null/.test(tm) && /GSTIN 33ABCDE1234F1Z5/.test(tm) && !/registered office/.test(tm) && /registration number INH000012345/.test(tm), 'with only the GSTIN and SEBI number given the PDF simply leaves out what is unknown: no blanks');
     r = await request(app).post('/contractor/profile').set('Cookie', minCk).send({ entityName: 'Min Research LLP', analystName: 'Mina Analyst', address: '7 Late Street, Pune', bankHolder: 'Min Research LLP', bankAccount: '555555555555', bankIfsc: 'HDFC0001234' });
     assert(r.status === 200 && r.body.name === 'Mina Analyst' && r.body.kyc.bankAccountMasked === 'XXXXXXXX5555' && !r.body.missingDetails.includes('bank account'), 'the rest is completed on the profile page');
     r = await request(app).post('/contractor/profile').set('Cookie', minCk).send({ bankAccount: '666666666666', bankHolder: 'X', bankIfsc: 'HDFC0001234' });
@@ -281,7 +281,7 @@ async function main() {
     r = await request(app).post('/contractor/profile').set('Cookie', minCk).send({ bankAccount: '12' });
     assert(r.status === 409 || r.status === 400, 'a bad bank value is refused');
     const bad = await createInvite({ type: 'BUSINESS', createdBy: 'o' });
-    r = await request(app).post(`/invite/${bad.token}/accept`).send({ email: 'bad@acme.com', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc: { gstin: '33ABCDE1234F1Z5', bankAccount: '12' } });
+    r = await request(app).post(`/invite/${bad.token}/accept`).send({ email: 'bad@acme.com', acceptTerms: true, dpdpConsent: true, representation6A5: true, kyc: { gstin: '33ABCDE1234F1Z5', sebiNumber: 'INH000012345', bankAccount: '12' } });
     assert(r.status === 400, 'what IS given is still checked (a bad account number)');
 
     console.log('auto-activation and the cap:');

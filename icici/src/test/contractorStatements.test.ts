@@ -2,6 +2,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { editYaml } from './editYaml';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'st-'));
 fs.copyFileSync(path.resolve(__dirname, '..', '..', 'config.yml'), path.join(tmp, 'config.yml'));
 process.env.CONFIG_PATH = path.join(tmp, 'config.yml');
@@ -16,7 +17,7 @@ import { contractorsCol } from '../contractors/store';
 
 let failed = 0;
 function assert(condition: boolean, message: string) { console.log(`  ${condition ? 'PASS' : 'FAIL'}: ${message}`); if (!condition) { failed++; process.exitCode = 1; } }
-const setCfg = (mut: (t: string) => string) => { const f = path.join(tmp, 'config.yml'); fs.writeFileSync(f, mut(fs.readFileSync(f, 'utf8'))); configService.reloadNow(); };
+const setCfg = (mut: (cfg: any) => void) => { editYaml(path.join(tmp, 'config.yml'), mut); configService.reloadNow(); };
 
 async function main() {
     const db = installFakeDb();
@@ -40,7 +41,7 @@ async function main() {
     assert(s.gross === 200 && s.lines.correct === 2 && s.lines.incorrect === 1 && s.lines.neutral === 1 && s.lines.void === 1, 'only the two CORRECT forecasts of the week earn; others contribute 0');
     assert(await weeklyAccuracyStatement(ind, { from: '2026-11-11', to: '2026-11-17' }) === null, 'one statement per period: running again creates nothing');
     assert(s.status === 'DRAFT', 'a statement starts as a DRAFT');
-    setCfg((t) => t.replace('    monthlyCap: 0                  # rupees per month; 0 = no cap', '    monthlyCap: 250                # rupees per month; 0 = no cap'));
+    setCfg((c) => { c.forecast.fees.monthlyCap = 250; });
     await F('h', '2026-11-19', 'CORRECT'); await F('i', '2026-11-20', 'CORRECT'); await F('j', '2026-11-23', 'CORRECT');
     const s2: any = await weeklyAccuracyStatement(ind, { from: '2026-11-18', to: '2026-11-24' });
     assert(s2.gross === 50 && s2.lines.cappedByMonthlyCap === 1, 'capped by what is left of the monthly cap (250 - 200 already earned = 50)');
@@ -52,7 +53,7 @@ async function main() {
     assert((await statementsCol().find({}).toArray() as any[]).every((x) => x.gross >= 0), 'no statement amount is negative');
 
     console.log('retainer:');
-    setCfg((t) => t.replace('    retainerMonthly: 0\n', '    retainerMonthly: 3000\n'));
+    setCfg((c) => { c.forecast.fees.retainerMonthly = 3000; });
     for (let d = 1; d <= 16; d++) await db.collection('forecasts').insertOne({ id: `r${d}`, contractorId: 'i1', day: `2026-10-${String(d).padStart(2, '0')}`, outcome: 'INCORRECT', feeAmount: 0 });
     const r1: any = await monthlyRetainerStatement(ind, '2026-10');
     assert(r1.gross === 3000 * 31 / 31 && r1.lines.participationDays === 16, 'a full month with 16 participation days pays the retainer');
@@ -168,7 +169,7 @@ async function main() {
     assert(st.ok === true && st.doc.status === 'PAID' && st.doc.utr === 'UTR123' && !st.doc.invoiceDueAt, 'APPROVED -> PAID with the UTR; no invoice for a Beginner');
     st = await markPaid('ts1', 'boss', 'UTR9', { isTest: true } as any);
     assert(st.ok === false && st.status === 409, 'a paid statement cannot be paid again');
-    setCfg((t) => t.replace(/\n# Contractor portal \(spec[^\n]*\nforecast:\n/, (m) => m + '  taxPhaseComplete: true\n'));
+    setCfg((c) => { c.forecast.taxPhaseComplete = true; });
     st = await approveStatement(draft.id, 'boss', ind);
     assert(st.ok === true, 'with forecast.taxPhaseComplete: true a real contractor\'s statement can be approved');
 

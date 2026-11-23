@@ -22,7 +22,7 @@ import MomentumAtFixedTimeStrategy from './MomentumAtFixedTimeStrategy';
 import NextWeekStrategy from './NextWeekStrategy';
 import GammaBurstStrategy from './GammaBurstStrategy';
 import BreakoutStrategy from './BreakoutStrategy';
-import MandWStrategy from './MandWStrategy';
+import ExpiryStrategy from './ExpiryStrategy';
 import HighLowStrategy from './HighLowStrategy';
 import { StrategyInstanceConfig } from '../prism/AppConfig';
 import { expandRuleBasedConfig, expandStrategyInstances } from '../util/strategyInstances';
@@ -48,7 +48,7 @@ STRATEGY_REGISTRY.set('MomentumAtFixedTimeStrategy', MomentumAtFixedTimeStrategy
 STRATEGY_REGISTRY.set('NextWeekStrategy', NextWeekStrategy);
 STRATEGY_REGISTRY.set('GammaBurstStrategy', GammaBurstStrategy);
 STRATEGY_REGISTRY.set('BreakoutStrategy', BreakoutStrategy);
-STRATEGY_REGISTRY.set('MandWStrategy', MandWStrategy);
+STRATEGY_REGISTRY.set('ExpiryStrategy', ExpiryStrategy);
 STRATEGY_REGISTRY.set('HighLowStrategy', HighLowStrategy);
 STRATEGY_REGISTRY.set('SimpleContinuousStrategy', SimpleContinuousStrategy);
 STRATEGY_REGISTRY.set('ScaledHedgedStrategy', ScaledHedgedStrategy);

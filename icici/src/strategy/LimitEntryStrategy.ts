@@ -19,8 +19,9 @@ import { exchangeForTsym } from '../util/underlyings';
 import { TripGuard } from './maxProfitLock';
 import { isGlobalMaxProfitLatched } from './globalMaxProfitLatch';
 import { watchTokenOnSource, unwatchTokenOnSource } from '../processes/strategies/tokenRouter';
-import type { MwState } from './mandwCycle';
 import { HalfTrailState, stepHalfTrail } from './halfTrail';
+import type { RecState } from './recommendationCycle';
+import type { ExState } from './expiryCycle';
 import { CheckpointState, FiveMinuteCloses, checkpointTrigger, lockedStop, SECOND_TARGET_FACTOR } from './checkpointTrail';
 
 // Shared engine of RecommendationStrategy and NiftyChangeStrategy: one LIMIT buy per configured broker, sized from a rupee budget (per broker: every broker gets its own full amount),
@@ -85,10 +86,12 @@ export interface State {
     // RecommendationStrategy only: the recommendation's identity apart from target/stop (contract, entry, offset, amount). Lets a later edit of
     // target/stop on the SAME open trade be told apart from a new recommendation (see adjustOpenTrade).
     baseKey?: string;
+    // RecommendationStrategy only: repeat / reverse progress (stage, brokers still in, the reverse watch); durable across a restart.
+    rec?: RecState;
+    // ExpiryStrategy only: each broker's cycle, pending entry and retry count (durable, so a restart resumes it; see expiryCycle.ts).
+    ex?: ExState;
     // Signature of the cycle state onCycleEnded last ran for (see endIfIdle). Durable, so a restart does not end the same cycle again.
     endedSig?: string;
-    // MandWStrategy only: the pattern watch / pending reversal (durable, so a restart resumes it; see mandwCycle.ts).
-    mw?: MwState;
     // GammaBurstStrategy only: epoch ms when its last trade closed (the 1-minute wait before the next entry; durable across a restart).
     cycleEndedAt?: number;
 }
@@ -536,7 +539,7 @@ export abstract class LimitEntryStrategy extends Strategy {
     // The cycle key and every leg are persisted BEFORE the order goes out, so a crash or restart mid-way can never place it twice;
     // an order whose outcome is unknown is left as a leg and never retried blind.
     // `only` (optional): start the cycle on just these brokers and leave every other broker's legs untouched - for a strategy whose brokers act
-    // independently (MandWStrategy). Without it, one cycle covers every configured broker and replaces all legs.
+    // independently (ExpiryStrategy). Without it, one cycle covers every configured broker and replaces all legs.
     protected async startCycle(key: string, entry: ResolvedEntry, budgetOf: (broker: string) => number, priceFor: (c: { tsym: string; token: string; exchange: 'NFO' | 'BFO' }) => Promise<number>, only?: string[]): Promise<void> {
         this.ensureLoaded();
         if (this.placing) return; // callers check cycleStarted(key) first and may have marked the key already

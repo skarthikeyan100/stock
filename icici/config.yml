@@ -10,18 +10,19 @@ settings:
   maxWeeklyDrawdownPercent: 50%
   targetPoints: 2
   stopLossPoints: 10
-  target: 10              # global exit: points above entry, or "N%", or none (strategies override with their own target)
-  stopLoss: 20            # global exit: points below entry, or "N%", or none
-  maxHoldTimeMinutes: 60  # global timeout: minutes a position is held (winners and losers alike); 'none' = no timeout
+  target: 10
+  stopLoss: 20
+  maxHoldTimeMinutes: 60
   skipNearestExpiryOnEve: false
-  skipNearestExpiryOnExpiryDay: true
+  skipNearestExpiryOnExpiryDay: false
   hotRestartDuringMarketHours: false
-  eodReconcileTime: '15:45'  # when the broker -> Mongo sync runs by itself each trading day (>= 15:30); `npm run sync` runs it on demand
-  entryTimeoutMinutes: 5  # global: cancel an unfilled limit entry (LimitEntry family) after this many minutes; a strategy block's own entryTimeoutMinutes overrides it
-  eodCloseTime: '23:59'  # 2026-11-11: moved from 15:50 so no strategy sells at the close; today's open positions carry overnight (user's instruction). Restore a real close time when wanted.
-  maxProfit: 5000         # global max profit in rupees, one value for every broker: each strategy on each of its brokers trips at this P&L (a strategy block's own maxProfit overrides it; absent = no global cap)
-  mirrorPercentage: 100%  # admin mirrors this % of every frontend user's lots (floor to whole lots) with its own real order; 0 = no mirror
-  levelRules:             # rules per proficiency level (a user's `proficiencyLevel`, default beginner): loss limits and the per-trade loss cap (% of allocated capital), starting capital (rupees), the user's profit share (%). No maximum payment.
+  eodReconcileTime: '15:45'
+  entryTimeoutMinutes: 5
+  eodCloseTime: '15:30'
+  entryStartTime: '10:00'
+  maxProfit: 5000
+  mirrorPercentage: 100%
+  levelRules:
     beginner:
       maxDailyDrawdownPercent: 15%
       maxWeeklyDrawdownPercent: 30%
@@ -34,11 +35,12 @@ settings:
       maxLossPerTradePercent: 10%
       capital: 200000
       profitSplitPercent: 25
-  eodEmailTestRecipient: admin@nivedhatech.com  # EVERY customer email (EOD summary, payout paid) goes only to this address until the content is approved; remove to email real users
+  eodEmailTestRecipient: admin@nivedhatech.com
 strategies:
   - type: SentimentStrategy
     enabled: false
-    brokers: [kite]
+    brokers:
+      - kite
     averageThreshold: 40
     targetPrice: 10
     orderQuantity: 65
@@ -85,7 +87,8 @@ strategies:
     logEnabled: true
   - type: GapStrategy
     enabled: false
-    brokers: [kite]
+    brokers:
+      - kite
     coverOrderEnabled: false
     coverOrderUserEmail: ''
     coverOrderQuantity: 0
@@ -99,27 +102,22 @@ strategies:
     gapReversalMode: false
     gapReversalThreshold: 100
     logEnabled: true
-  # One RuleBased block = one strategy. Each line under indicators is a RULE; commas join indicators that must agree within that rule.
-  # A rule that fires buys; rules that disagree on the same candle (one CE, one PE) give no trade. One position at a time.
-  # Six rules: 3 pairs and 3 single indicators, chosen from the 20-rule block by backtest (backtest-results/rulebased-final, 5-minute).
-  # The other rules fired on the same candles and added no trades (npm run analyze:ruleBlockLevers). See analysis_next.md.
-  # DISABLED: 4 days, all rising; the backtest does not show them beating always-CALL on net P&L. Enable deliberately only.
   - type: RuleBasedStrategy
     enabled: false
-    brokers: [kite]
-    # Two single-indicator rules (2026-11-11). The earlier six-rule set is kept in strategies.md ("RuleBasedStrategy: previous rule set").
+    brokers:
+      - kite
     indicators:
       - Bollinger_5_1
       - MACD_4_8_3
     quantity: 65
-    # One exit set for the whole block: 10-point target, no stop, 60-minute timeout (backtest-results/ruleblock-final, grid).
     target: 10
     stopLoss: none
     maxHoldTimeMinutes: 60
     logEnabled: true
   - type: GoodMorningStrategy
     enabled: false
-    brokers: [kite]
+    brokers:
+      - kite
     quantity: 65
     targetPoints: 10
     stopLossPoints: 10
@@ -130,7 +128,8 @@ strategies:
     minMovementPoints: 10
   - type: GoodMorningSensexStrategy
     enabled: false
-    brokers: [kite]
+    brokers:
+      - kite
     quantity: 200
     targetPoints: 30
     stopLossPoints: 30
@@ -169,7 +168,8 @@ strategies:
     logEnabled: true
   - type: TargetReachStrategy
     enabled: false
-    brokers: [kite]
+    brokers:
+      - kite
     symbol: NIFTY
     strike: 0
     expiry: '2026-01-01'
@@ -330,10 +330,10 @@ strategies:
   - type: RecommendationStrategy
     enabled: false
     userId: Recommendation-1
-    contract: 25600 CE
-    entryPrice: 160
-    targetPrice: 180
-    stopLoss: 140
+    contract: 25500 CE
+    entryPrice: 130
+    targetPrice: 150
+    stopLoss: 110
     entryOffset: 5
     maxInvestment: 100000
     index: NIFTY
@@ -363,6 +363,7 @@ strategies:
   - type: MomentumAtFixedTimeStrategy
     enabled: false
     userId: MomentumAtFixedTime-NIFTY
+    skipNearestExpiryOnExpiryDay: true
     times:
       - '10:00'
       - '10:10'
@@ -396,119 +397,134 @@ strategies:
       - '14:50'
     maxInvestment: 50000
     minMovePoints: 10
-    target: 5               # exit override: 5 points above the fill
-    stopLoss: "30%"         # exit override: stop 30% below the fill
-    noGainTimeoutMinutes: 30  # close at market 30 min after entry if the option LTP is not above the fill ('none' = off)
+    target: 5
+    stopLoss: 30%
+    noGainTimeoutMinutes: 30
     upDownSampleMinutes: 1
     entryTimeoutMinutes: 5
     index: NIFTY
     brokers:
       - kite
-      - ant
   - type: NextWeekStrategy
-    enabled: false          # set true to trade (requested: enabled, quantity 65)
+    enabled: false
     userId: NextWeek-NIFTY
-    quantity: 65            # units per broker (one NIFTY lot), whole lots only
-    # target / stopLoss / entryTimeoutMinutes are not set here: the global settings apply (set a key on this block to override)
+    quantity: 65
     index: NIFTY
     brokers:
       - kite
   - type: BreakoutStrategy
-    enabled: false          # set true to trade (requested: enabled, quantity 65)
+    enabled: false
     userId: Breakout-NIFTY
-    quantity: 65            # units per broker (one NIFTY lot), whole lots only
-    # target / stopLoss / entryTimeoutMinutes are not set here: the global settings apply (set a key on this block to override)
+    quantity: 65
     index: NIFTY
     brokers:
       - kite
   - type: GammaBurstStrategy
-    enabled: false          # set true to trade. Trades ONLY on the NIFTY expiry day, from 14:00, this week's expiry (see strategies.md)
-    userId: GammaBurst-NIFTY
-    maxInvestment: 100000   # per broker: 1 lakh, whole lots that fit it at the option's price
-    target: 2               # option points above the entry (a resting sell)
-    stopLoss: 'none'        # no stop loss: required on this block (a settings stopLoss is not inherited)
-    lastEntryTime: '15:00'  # no entry at or after this time
-    index: NIFTY
-    brokers:
-      - paper               # paper broker: in-memory fills, nothing real, nothing in Mongo (strategies.md "Paper broker")
-  - type: MandWStrategy
-    enabled: false          # M / W pattern on the option price (see strategies.md); needs settings.maxProfit (global cap), target and stopLoss both set
-    userId: MandW-NIFTY
-    quantity: 130           # units per broker (2 NIFTY lots), whole lots only; 2+ lots lets trailDistance split half / trail
-    startSide: CE           # CE | PE: the first entry of the day
-    startTime: '09:20'      # first entry fires only in [startTime, startTime + 5 min) and never for a time before the process started
-    # target / stopLoss (option points) come from settings unless set on this block; both are required (not 'none')
-    # trailDistance: 4      # optional (option points): sell floor(lots/2) lots at the target, trail the rest (floor = the target, no stop); needs quantity of 2+ lots, off with 1 lot
-    patternTimeoutMinutes: 30  # ends the watch of a sold position without the pattern or the stop; the same side is then bought again
-    lastEntryTime: '15:00'
-    index: NIFTY
-    brokers:
-      - paper               # paper broker: in-memory fills, nothing real, nothing in Mongo (strategies.md "Paper broker")
-  - type: HighLowStrategy
-    enabled: false          # two 2-minute NIFTY candles: higher high + higher low = buy CE, lower high + lower low = buy PE (see strategies.md)
-    userId: HighLow-NIFTY
-    quantity: 130           # units per broker (2 NIFTY lots), whole lots only. Use EITHER quantity OR maxInvestment (a rupee budget per broker), not both
-    # maxInvestment: 100000
-    target: 10              # option points above the entry (or "N%"); both target and stopLoss are required
-    stopLoss: 8             # option points below the entry (or "N%")
-    trailDistance: 4        # optional (option points): sell half the lots at the target, trail the rest; needs 2+ lots
-    candleMinutes: 10       # candle length in whole minutes (1..375; absent = 10); the 09:15 grid
-    lastEntryTime: '15:00'
-    index: NIFTY
-    brokers:
-      - paper               # paper broker: in-memory fills, nothing real, nothing in Mongo
-  - type: SimpleContinuousStrategy
     enabled: false
+    userId: GammaBurst-NIFTY
+    maxInvestment: 100000
+    target: 2
+    stopLoss: none
+    lastEntryTime: '15:00'
+    index: NIFTY
+    brokers:
+      - paper
+  - type: HighLowStrategy
+    enabled: true
+    userId: HighLow-NIFTY
+    quantity: 130
+    target: 10
+    stopLoss: 8
+    candleMinutes: 10
+    higherHighLow: true
+    confirmCandle: true
+    bodyDominance: 60
+    closeLocation: 70
+    lastEntryTime: '15:00'
+    index: NIFTY
     brokers:
       - kite
+  - type: ExpiryStrategy
+    enabled: false
+    userId: Expiry-NIFTY
+    right: CE
+    maxInvestment: 100000
+    target: 10
+    stopLoss: 8
+    driftPoints: 10
+    index: NIFTY
+    brokers:
+      - paper
+  - type: SimpleContinuousStrategy
+    enabled: true
+    brokers:
+      - kite
+      - prism
+      - ant
       - breeze
     initialQuantity: 1300
     skipNearestExpiryOnExpiryDay: false
     onePositionPerSide: true
     maxInvestment: 100000
+    maxInvestmentByBroker:
+      kite: 100000
+      ant: 50000
+      prism: 50000
+      breeze: 50000
     maxProfit: 5000
     priceDiff: 10
     maxLegsPerSide: 5
     stackRecoveryPoints: 20
   - type: ScaledHedgedStrategy
-    enabled: false       # false stops it; the root buys initialQuantity, a hedge buys initialQuantity + drop/priceDiff x initialQuantity, one CE and one PE contract per cycle (strategies.md)
+    enabled: true
     brokers:
       - kite
-      - breeze
-    initialQuantity: 65
+    initialQuantity: 260
     skipNearestExpiryOnExpiryDay: false
-    onePositionPerSide: true   # ignored: this strategy always keeps one open leg per side
-    maxInvestment: 200000   # honoured by every buy (root, hedge, add), per broker
+    onePositionPerSide: true
+    maxInvestment: 200000
     maxProfit: 5000
     priceDiff: 10
-
-# Contractor portal (spec SPEC-forecast-contractor-portal-v2.1.md). Read by the frontend process (src/forecast/*, src/contractors/*); hot-reloaded.
 forecast:
-  company: { name: 'Karthikeyan S' }   # the owner as the contracting party (no registered company), named in every agreement
+  company:
+    name: Karthikeyan S
   maxActiveContractors: 5
-  sessionDays: { individual: 365, business: 90 }
-  hours: { start: '09:20', end: '15:00', expiryEnd: '14:30' }   # Beginner forecasting hours (IST); expiry day ends earlier
-  dailyLimit: 3                    # forecasts per contractor per trading day
-  windowMinutes: 15                # a forecast is scored this long after it is recorded
-  neutralThresholdPoints: 5        # a move smaller than this is NEUTRAL
-  holidays: []                     # exchange holidays, YYYY-MM-DD (there is no calendar elsewhere): keep it up to date
-  recommendationHours: { start: '09:20', end: '15:00' }  # Advanced: when a recommendation is accepted
+  sessionDays:
+    individual: 365
+    business: 90
+  hours:
+    start: '09:20'
+    end: '15:00'
+    expiryEnd: '14:30'
+  dailyLimit: 3
+  windowMinutes: 15
+  neutralThresholdPoints: 5
+  holidays: []
+  recommendationHours:
+    start: '09:20'
+    end: '15:00'
   recommendationsPerDay: 3
   filters:
-    orderBook: { upRatio: 1.2, downRatio: 1.2, maxAgeMs: 3000 }   # NIFTY future total buy/sell quantity
-    trend: { emaPeriod: 9, minCandles: 10, maxStaleMinutes: 2 }   # 1-minute candles
-    minRejectionRate: 0.1          # pass-through alarm: alert when fewer than this share of the last 30 forecasts were rejected
+    orderBook:
+      upRatio: 1.2
+      downRatio: 1.2
+      maxAgeMs: 3000
+    trend:
+      emaPeriod: 9
+      minCandles: 10
+      maxStaleMinutes: 2
+    minRejectionRate: 0.1
   orders:
-    enabled: false                 # MASTER switch for placing orders from passed forecasts. false = decisions are logged, nothing is traded.
-    noNewAfter: '14:45'            # no new position after this time (IST)
-    maxOpenPositions: 3            # across all contractors
-    dailyLossLimit: 0              # rupees; when the contractors' P&L today reaches -limit no new forecast position is placed (0 = off)
-    maxInvestment: 200000          # rupees per contractor trade (forecast and approved recommendation): as many whole lots as this buys, at least one
-    targetPoints: 10               # option points above the entry
-    stopLossPoints: 20             # option points below the entry
-    recommendationSharePercent: 50 # Research Analyst (GSTIN) recommendations: the first order uses this % of maxInvestment; Add More (once per recommendation) takes the rest, so the total reaches maxInvestment
+    enabled: false
+    noNewAfter: '14:45'
+    maxOpenPositions: 3
+    dailyLossLimit: 0
+    maxInvestment: 200000
+    targetPoints: 10
+    stopLossPoints: 20
+    recommendationSharePercent: 50
   fees:
-    feePerCorrect: 0               # rupees per correct forecast (Beginner); set before the first statement
-    monthlyCap: 0                  # rupees per month; 0 = no cap
+    feePerCorrect: 0
+    monthlyCap: 0
     retainerMonthly: 0
     minParticipationDays: 15

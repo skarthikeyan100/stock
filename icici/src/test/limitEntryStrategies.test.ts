@@ -156,7 +156,72 @@ const last = (fn: string) => calls.filter((c) => c.fn === fn).pop();
     assert(sells.length === 2 && sells[0].args[1].quantity === 400 && sells[1].args[1].quantity === 445, 'self-managed exit: resting sell per fill, stop watched for the whole quantity');
     attachFails = false;
 
-    for (const id of ['Rec-test', 'Rec-test-b', 'Rec-test-c', 'NC-test', 'NC-test-b', 'NC-test-c', 'NC-test-d', 'NC-test-e', 'Rec-test-e', 'Rec-test-f']) {
+    // ---- repeat / reverse ----
+    const tokenRouter = require('../processes/strategies/tokenRouter');
+    const latch = require('../strategy/globalMaxProfitLatch');
+    tokenRouter.watchTokenOnSource = () => {};
+    tokenRouter.unwatchTokenOnSource = () => {};
+    latch.isGlobalMaxProfitLatched = async () => false;
+    const buys = () => calls.filter((c) => c.fn === 'placeLimitBuyBare');
+    const sellOf = async (r: any, tsym: string, price: number) => { await r.updateTrade(fill(tsym, 'Sell', 845, price)); };
+
+    console.log('repeat + reverse: target, repeat at the same order price, target, option back at entry, opposite ATM, target, done');
+    calls = [];
+    rec = make(RecommendationStrategy, { ...recCfg, userId: 'Rec-rr', repeat: true, reverse: true });
+    await rec.processNiftyQuote({ ltp: 22700 });
+    await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 845, 115));
+    await sellOf(rec, 'NIFTY22750CE', 145);
+    assert(buys().length === 2 && buys()[1].args[4] === 115 && buys()[1].args[1] === 'NIFTY22750CE', `repeat: same contract bought again at 115 (buys ${buys().map((c) => c.args[1] + '@' + c.args[4])})`);
+    assert(rec.state.rec.stage === 1 && !rec.state.rec.watch, 'stage 1, no watch yet');
+    await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 845, 115));
+    await sellOf(rec, 'NIFTY22750CE', 146);
+    assert(buys().length === 2 && !!rec.state.rec.watch && rec.state.rec.watch.right === 'CE', 'repeat reached its target: reverse watch armed, nothing bought yet');
+    await rec.processOptionQuote({ token: 'T1', ltp: 130 });
+    await rec.processNiftyQuote({ ltp: 22724 });
+    assert(buys().length === 2, 'option at 130 (above the entry 120): no reverse');
+    await rec.processOptionQuote({ token: 'T1', ltp: 120 });
+    await rec.processNiftyQuote({ ltp: 22724 });
+    assert(buys().length === 3 && buys()[2].args[1] === 'NIFTY22700PE' && buys()[2].args[4] === 100, `option back at 120: opposite right at the ATM strike bought at its LTP (got ${buys()[2]?.args[1]}@${buys()[2]?.args[4]})`);
+    assert(rec.state.rec.stage === 2 && !rec.state.rec.watch, 'stage 2');
+    await rec.updateTrade(fill('NIFTY22700PE', 'Buy', 1000, 100));
+    await rec.updateTrade(fill('NIFTY22700PE', 'Sell', 1000, 131));
+    await rec.processNiftyQuote({ ltp: 22724 });
+    assert(buys().length === 3, 'the reverse trade ends the strategy: nothing more is bought');
+
+    console.log('repeat only: the repeat ends it; a stop never repeats; defaults unchanged');
+    calls = [];
+    rec = make(RecommendationStrategy, { ...recCfg, userId: 'Rec-r1', repeat: true });
+    await rec.processNiftyQuote({ ltp: 22700 });
+    await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 845, 115));
+    await sellOf(rec, 'NIFTY22750CE', 145);
+    await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 845, 115));
+    await sellOf(rec, 'NIFTY22750CE', 145);
+    assert(buys().length === 2 && !rec.state.rec.watch, 'repeat only: one repeat, no reverse watch');
+    calls = [];
+    rec = make(RecommendationStrategy, { ...recCfg, userId: 'Rec-r2', repeat: true, reverse: true });
+    await rec.processNiftyQuote({ ltp: 22700 });
+    await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 845, 115));
+    await sellOf(rec, 'NIFTY22750CE', 90);
+    assert(buys().length === 1 && !rec.state.rec.watch, 'stop hit: no repeat, no reverse');
+    calls = [];
+    rec = make(RecommendationStrategy, { ...recCfg, userId: 'Rec-r3' });
+    await rec.processNiftyQuote({ ltp: 22700 });
+    await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 845, 115));
+    await sellOf(rec, 'NIFTY22750CE', 145);
+    assert(buys().length === 1 && !rec.state.rec.watch, 'repeat/reverse absent (false): target ends the strategy as before');
+
+    console.log('reverse only: watch after the first target');
+    calls = [];
+    rec = make(RecommendationStrategy, { ...recCfg, userId: 'Rec-v1', reverse: true });
+    await rec.processNiftyQuote({ ltp: 22700 });
+    await rec.updateTrade(fill('NIFTY22750CE', 'Buy', 845, 115));
+    await sellOf(rec, 'NIFTY22750CE', 145);
+    assert(buys().length === 1 && !!rec.state.rec.watch, 'reverse only: no repeat, watch armed after the first target');
+    await rec.processOptionQuote({ token: 'T1', ltp: 119 });
+    await rec.processNiftyQuote({ ltp: 22740 });
+    assert(buys().length === 2 && buys()[1].args[1] === 'NIFTY22750PE', `opposite right at the ATM strike (got ${buys()[1]?.args[1]})`);
+
+    for (const id of ['Rec-rr', 'Rec-r1', 'Rec-r2', 'Rec-r3', 'Rec-v1', 'Rec-test', 'Rec-test-b', 'Rec-test-c', 'NC-test', 'NC-test-b', 'NC-test-c', 'NC-test-d', 'NC-test-e', 'Rec-test-e', 'Rec-test-f']) {
         try { require('fs').unlinkSync(`/tmp/limit-entry-test-${id}-${process.pid}.json`); } catch { /* none written */ }
     }
     process.exit(process.exitCode ?? 0); // config watcher / singletons keep the loop alive

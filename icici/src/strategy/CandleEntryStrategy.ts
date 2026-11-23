@@ -59,7 +59,7 @@ export abstract class CandleEntryStrategy extends LimitEntryStrategy {
         return false;
     }
 
-    // Points below the peak at which the trailed half ends (half-at-target + trail exit, halfTrail.ts). 0 = off (the default; MandWStrategy reads its config key).
+    // Points below the peak at which the trailed half ends (half-at-target + trail exit, halfTrail.ts). 0 = off (the default; no strategy turns it on today).
     protected trailDistance(): number {
         return 0;
     }

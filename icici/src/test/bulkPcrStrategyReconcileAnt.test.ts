@@ -77,6 +77,19 @@ function mockOrderClient(
     };
 }
 
+// BulkPcr's deferred restore actions (the protective sell a reconcile found missing) run from ticks and only inside the trading window by the
+// wall clock, so the test pins the clock to 11:00 while it runs them: the result no longer depends on the hour the suite is run at.
+async function runDeferredInTradingWindow(strategy: any): Promise<void> {
+    const RealDate = Date;
+    const fixed = new RealDate('2026-11-23T11:00:00+05:30').getTime();
+    class FixedDate extends RealDate {
+        constructor(...a: any[]) { if (a.length === 0) super(fixed); else super(...(a as [any])); }
+        static now() { return fixed; }
+    }
+    (global as any).Date = FixedDate;
+    try { await strategy.runDeferredRestoreActions(); } finally { (global as any).Date = RealDate; }
+}
+
 async function testAntSingleLegWithNoPersistedState() {
     console.log('Test: ant - one naked CE leg, no persisted state, no PE open');
     setConfig('bulkpcr-test-1', ['ant']);
@@ -89,6 +102,7 @@ async function testAntSingleLegWithNoPersistedState() {
     const strategy = new BulkPcrStrategy('bulkpcr-test-1') as any;
     strategy.enabled = true; // a disabled strategy places no order (2026-10-29 rule); these tests exercise the enabled path
     await strategy.reconcile();
+    await runDeferredInTradingWindow(strategy); // a reconcile never trades (f98802e): the protective sell is placed from ticks
 
     const callSlot = strategy.positions.get('ant_call');
     const putSlot = strategy.positions.get('ant_put');
@@ -118,6 +132,7 @@ async function testAntBothLegsNakedSimultaneously() {
     const strategy = new BulkPcrStrategy('bulkpcr-test-2') as any;
     strategy.enabled = true; // a disabled strategy places no order (2026-10-29 rule); these tests exercise the enabled path
     await strategy.reconcile();
+    await runDeferredInTradingWindow(strategy); // a reconcile never trades (f98802e): the protective sell is placed from ticks
 
     const callSlot = strategy.positions.get('ant_call');
     const putSlot = strategy.positions.get('ant_put');
@@ -200,6 +215,7 @@ async function testNonAntSingleSidedNoPersistedState() {
     const strategy = new BulkPcrStrategy('bulkpcr-test-4') as any;
     strategy.enabled = true; // a disabled strategy places no order (2026-10-29 rule); these tests exercise the enabled path
     await strategy.reconcile();
+    await runDeferredInTradingWindow(strategy); // a reconcile never trades (f98802e): the protective sell is placed from ticks
 
     // Every broker runs the pair now: the open CE is restored into its own <broker>_call slot.
     const slot = strategy.positions.get('breeze_call');

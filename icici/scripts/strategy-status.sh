@@ -15,13 +15,64 @@
 # OPEN POSITIONS by user (target/stop as stored on the position, "-" if none) and the day's closed TRADES one row each (?match=@ on /strategyPnl,
 # ?closed=1 for the closed rows). The admin email also carries the mirrored shares of other users buys (settings.mirrorPercentage); a trade row
 # does not record that, so admin rows are not marked. The strategy tables are not printed in this mode; `all` works the same way.
-# Usage: scripts/strategy-status.sh [users] [all] [port]
+# `net` prints ONE number and nothing else: today's net P&L (realized + unrealized) from the brokers' OWN position books (kite, ant, prism,
+# breeze), so orders placed outside the platform (manual) count too. This is the one exception to the manual-orders-are-ignored rule.
+# It prints a table (broker, realized, unrealized, total; a broker that cannot be read shows "unreadable" and is not counted) and then the NET line.
+# Usage: scripts/strategy-status.sh [net|users] [all] [port]
 #   e.g.  scripts/strategy-status.sh   |  scripts/strategy-status.sh all 3000  |  scripts/strategy-status.sh 3000  |  scripts/strategy-status.sh users  |  scripts/strategy-status.sh users all
 OPENED=today
 USERS=0
+NET=0
 ARGS=()
-for a in "$@"; do if [ "$a" = "all" ]; then OPENED=all; elif [ "$a" = "users" ]; then USERS=1; else ARGS+=("$a"); fi; done
+for a in "$@"; do if [ "$a" = "all" ]; then OPENED=all; elif [ "$a" = "users" ]; then USERS=1; elif [ "$a" = "net" ]; then NET=1; else ARGS+=("$a"); fi; done
 PORT="${ARGS[0]:-3000}"
+for a in "$@"; do if [ "$a" = "list" ]; then
+  cat <<'LIST'
+status             3 tables (BY STRATEGY, BY BROKER, UNREALIZED BY BROKER AND STRATEGY): trades opened today, enabled strategies only
+status all         the same 3 tables, also trades opened on an earlier day and closed today or still open; includes disabled strategies
+status users       the real users (emails) who trade from the frontend: BY USER, BY BROKER, OPEN POSITIONS, closed TRADES (opened today)
+status users all   the same, also earlier-day trades
+status net         table of the brokers' own books (realized, unrealized, total per broker) then NET; manual non-platform orders included
+status paper       paper-broker strategies (GammaBurst, HighLow on paper): config, paper positions and trades, log lines
+status list        this list
+LIST
+  exit 0
+fi; done
+if [ "$NET" = 1 ]; then
+  # User's rule (2026-11-20, `status net` only): the broker's OWN books, so non-platform (manual) orders count too. Per broker, today's net P&L
+  # as the broker reports it: kite = sum of day-position pnl, ant = realizedPnl + unrealizedPnl, prism = rpnl + urmtom, breeze = pnl rows.
+  K="$(curl -s -m20 "localhost:$PORT/broker/kite/positions")"; A="$(curl -s -m20 "localhost:$PORT/broker/ant/positions")"
+  P="$(curl -s -m20 "localhost:$PORT/broker/prism/positions")"; B="$(curl -s -m20 "localhost:$PORT/broker/breeze/positions")"
+  K="$K" A="$A" P="$P" B="$B" node -e '
+const parse=s=>{try{return JSON.parse(s)}catch{return null}};
+const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:0};
+const sum=(rows,f)=>rows.reduce((a,r)=>a+f(r),0);
+// Per broker: realized / unrealized as the broker reports them. Kite labels every day-position P&L "unrealised" (realised is always 0), so
+// a contract with net quantity 0 counts as realized and a contract still open counts as unrealized (its figure then also holds that
+// contract earlier closed trades; Kite does not split them).
+const brokers=[];
+const k=parse(process.env.K);
+brokers.push(k&&k.success&&k.positions&&Array.isArray(k.positions.day)?{name:"kite",r:sum(k.positions.day.filter(p=>num(p.quantity)===0),p=>num(p.pnl)),u:sum(k.positions.day.filter(p=>num(p.quantity)!==0),p=>num(p.pnl))}:{name:"kite"});
+const a=parse(process.env.A);
+brokers.push(a&&a.success&&Array.isArray(a.positions)?{name:"ant",r:sum(a.positions,p=>num(p.realizedPnl)),u:sum(a.positions,p=>num(p.unrealizedPnl))}:{name:"ant"});
+const p=parse(process.env.P);
+brokers.push(p&&p.success&&Array.isArray(p.positions)?{name:"prism",r:sum(p.positions,x=>num(x.rpnl)),u:sum(p.positions,x=>num(x.urmtom))}:{name:"prism"});
+const b=parse(process.env.B);
+brokers.push(b&&b.success&&Array.isArray(b.positions)?{name:"breeze",r:sum(b.positions,x=>num(x.realizedPnl)),u:sum(b.positions,x=>num(x.unrealizedPnl)+num(x.pnl))}:{name:"breeze"});
+const f=n=>(n<0?"-":"")+Math.abs(Math.round(n)).toLocaleString("en-US");
+const pad=(t,w)=>String(t).padStart(w);
+let R=0,U=0;
+console.log("BROKER   "+pad("REALIZED",12)+pad("UNREALIZED",12)+pad("TOTAL",12));
+for(const x of brokers){
+  if(x.r===undefined){console.log(x.name.padEnd(8)+"  "+pad("unreadable",36));continue}
+  R+=x.r;U+=x.u;
+  console.log(x.name.padEnd(8)+"  "+pad(f(x.r),12)+pad(f(x.u),12)+pad(f(x.r+x.u),12));
+}
+console.log("TOTAL   "+"  "+pad(f(R),12)+pad(f(U),12)+pad(f(R+U),12));
+console.log("");
+console.log("NET "+f(R+U));'
+  exit 0
+fi
 HDR="$(mktemp)"; trap 'rm -f "$HDR"' EXIT
 if [ "$USERS" = 1 ]; then
 Q="opened=$OPENED&match=%40"

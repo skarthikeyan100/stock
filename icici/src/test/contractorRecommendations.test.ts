@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { editYaml } from './editYaml';
 import * as crypto from 'crypto';
 import express from 'express';
 import bodyParser from 'body-parser';
@@ -17,7 +18,7 @@ const signature = require('cookie-signature');
 // A temp copy of config.yml, set BEFORE ConfigService loads, so approving never touches the real file.
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'recs-'));
 fs.copyFileSync(path.resolve(__dirname, '..', '..', 'config.yml'), path.join(tmp, 'config.yml'));
-{ const f = path.join(tmp, 'config.yml'); const t = fs.readFileSync(f, 'utf8'); const w = t.replace("recommendationHours: { start: '09:20', end: '15:00' }", "recommendationHours: { start: '00:00', end: '23:59' }"); if (w === t) throw new Error('forecast.recommendationHours not found in config.yml'); fs.writeFileSync(f, w); }
+editYaml(path.join(tmp, 'config.yml'), (c) => { if (!c.forecast?.recommendationHours) throw new Error('forecast.recommendationHours not found in config.yml'); c.forecast.recommendationHours = { start: '00:00', end: '23:59' }; });
 process.env.CONFIG_PATH = path.join(tmp, 'config.yml');
 process.env.KYC_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
 const SECRET = 'test-secret';
@@ -97,7 +98,7 @@ async function main() {
     app.use(bodyParser.json()); app.use(cookieParser(SECRET)); app.use(contractorGuard); app.use(recRoutes); app.use(ownerRoutes);
     const c1 = cookieFor(sessionCookieValue('c1@acme.com')), c2 = cookieFor(sessionCookieValue('c2@acme.com')), admin = cookieFor(sessionCookieValue('boss@x.com'));
     const body = { index: 'NIFTY', strike: 24150, right: 'CE', entry: 140, target: 160, stop: 120 };
-    const setPerDay = (n: number) => { const f = path.join(tmp, 'config.yml'); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace(/recommendationsPerDay: \d+/, `recommendationsPerDay: ${n}`)); configService.reloadNow(); };
+    const setPerDay = (n: number) => { editYaml(path.join(tmp, 'config.yml'), (c) => { c.forecast.recommendationsPerDay = n; }); configService.reloadNow(); };
 
     setPerDay(1);
     let r = await request(app).post('/recommendations').set('Cookie', c1).send(body);
