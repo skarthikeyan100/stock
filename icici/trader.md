@@ -36,7 +36,7 @@ Needs the user's explicit instruction first:
 | Sentiment events | `scripts/monitor-sentiment-events.sh --once` |
 | Broker login, token and WebSocket | `scripts/check-broker-sessions.sh` (the `check-broker-sessions` skill) |
 | Logins | `scripts/login.sh` (pass the broker name, e.g. `prism`) |
-| Stop everything (lock profits) | `POST /order/lock-profits` (needs user approval) |
+| Stop everything (lock profits) | The user's words "lock profits" are the approval: run the recipe in "Lock profits" below at once, with no look-up first. The HTTP route `POST /order/lock-profits` needs web-admin login, so the trader does not call it. |
 | Broker ↔ Mongo repair | `npm run sync` (on demand; the platform also runs it by itself at 15:45, `settings.eodReconcileTime`); `npm run sync -- --strategies` also re-reads Mongo into the strategies. It places no order. Its first step (Mongo only, needs no login) writes a `closedTrades` row for every Sell fill that has none (`repairedClosed`; the row carries `repairedFromFills: true`), so P&L, reports and payouts match the fills. |
 | End of day (the user says "run eod") | The "Run EOD" section: disable every strategy, sync, check against the brokers, report, stop the processes. No emails on eod (user's rule) |
 | Positions and trade books | `GET /broker/<kite|ant|breeze|prism>/positions` and `/trades` |
@@ -180,6 +180,31 @@ The trader does not write code fixes. Every fix goes to a separate fixing agent,
    `npm run processes` restart is only for a change to the orchestrator itself (`src/orchestrator.ts`, `src/orchestratorPolicy.ts`) or when a hot restart
    cannot be used. A change that needs no restart (frontend build, `config.yml` values, which every process hot-reloads) gets none.
 6. **Verify** the change at the next trigger (slot, tick, or fill) and report what was seen.
+
+## Lock profits (the user says "lock profits"; recipe used 2026-11-23, run it without looking anything up)
+
+The user's words are the explicit instruction. The route `POST /order/lock-profits` (`src/routes/trading.ts`) does two things in this order:
+it sets every enabled strategy to `enabled: false` and writes `config.yml`, then it asks the order process to limit-sell every open long at its
+last price. It needs web-admin login, so do the same two steps directly:
+
+1. Disable every enabled strategy (values only, never delete a block): `grep -n "enabled: true" config.yml`, then
+   `sed -i "<line>s/enabled: true/enabled: false/" config.yml` for each line. Do this before any order is touched. (`settings` keys are not
+   strategy blocks; only strategy blocks are changed.)
+2. Lock over the order socket (`ORDER_IPC_SOCKET`, default `/tmp/icici-order.sock`); the client must `connect()` and wait before the call:
+   ```
+   node -e "require('dotenv').config(); const O=require('./dist/processes/strategies/OrderClient').default; const c=O.getInstance(); c.connect();
+   setTimeout(()=>c.lockProfits({}).then(r=>{console.log(JSON.stringify(r));process.exit(0)}).catch(e=>{console.log('ERR',e.message);process.exit(1)}),2000)"
+   ```
+   Payload: `{}` = every broker with an open position; `{ broker: 'kite' }` = one broker; `{ reprice: true }` = re-price a lock that is still
+   resting to the current price (only on the user's word, it sells below the first lock price when the price has moved away).
+3. The reply lists each position (`user`, `broker`, `tsym`, `quantity`, `entryAvg`, `limitPrice`, `lockedPnl`, `orderIds`, `status`) and
+   `totalLockedPnl`. Paste it as a table.
+4. Afterwards read `GET /strategyPnl?by=broker&opened=today` and `scripts/strategy-status.sh net` (the status script prints "no strategy
+   enabled" while every strategy is disabled, that is expected). Report what filled and what is still resting (a limit sell at the last
+   price does not fill if the price moves away), per broker and contract. Do not re-price unless the user says so.
+5. To trade again: set `enabled: true` on the wanted strategies in `config.yml`, then `POST /reconcile` (or `npm run sync -- --strategies`).
+   A max-profit latch that tripped earlier the same day is cleared only on the user's instruction (see the `strategies reset` call in the
+   latch recipe if one exists, otherwise `StrategiesClient.reset(type)` after `connect()`).
 
 ## Debugging
 
