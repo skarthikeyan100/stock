@@ -22,6 +22,7 @@ import { maxLotsForLossCap } from '../../levelLimits';
 import { startOfWeek } from '../../util/weekWindow';
 import AntContractMaster from '../../ant/AntContractMaster';
 import { normalizeBrokerName, normalizeBrokerList } from '../../util/brokerName';
+import { lastLiveDayMs } from '../../util/optionTsym';
 import { localDayKey } from '../../strategy/dayKey';
 import { isWithinTradingWindow } from '../../util/marketHours';
 import { exchangeForTsym } from '../../util/underlyings';
@@ -1728,7 +1729,14 @@ class OrderBookkeeping {
                 if (!OrderBookkeeping.isOptionContract(g.newest)) continue;
                 if (!g.token) { result.skippedNoToken.push(`${g.broker}:${g.newest}`); continue; }
                 const contract = AntContractMaster.getInstance().findByToken(g.token);
-                if (!contract) { result.skippedUnknownToken.push(`${g.broker}:${g.newest}(${g.token})`); continue; }
+                if (!contract) {
+                    // An expired contract drops out of the masters, so "unknown" may just be "expired": read the expiry off the tsym (any broker's spelling).
+                    // Only a tsym whose expiry cannot be read, or that is not yet past, is a live position that cannot be restored (ALERT).
+                    const lastLive = lastLiveDayMs(g.newest);
+                    if (lastLive !== undefined && lastLive < todayStartUtc) result.skippedExpired.push(`${g.broker}:${g.newest}`);
+                    else result.skippedUnknownToken.push(`${g.broker}:${g.newest}(${g.token})`);
+                    continue;
+                }
                 if (contract.expiryMs < todayStartUtc) { result.skippedExpired.push(`${g.broker}:${g.newest}`); continue; }
                 result.contracts++;
                 const others = Array.from(g.tsyms).filter((t) => t !== g.newest);

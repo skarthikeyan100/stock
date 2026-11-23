@@ -36,3 +36,19 @@ export function readOptionTsym(tsym: string): OptionTsymReading[] {
     }
     return out;
 }
+
+// The last UTC-midnight day on which the contract a tsym names can still be live, or undefined when the spelling does not say (no tsym reading,
+// or only the expiry-less legacy form). Used for a contract that has dropped out of the contract masters after expiring, so it can still be told
+// from a contract that is genuinely unknown. Spellings overlap (see above), so the answer is the LATEST day any dated reading allows: a tsym is
+// only called expired when every dated reading is. A weekly/day reading is live through its own day (a contract expiring today is live); a
+// monthly reading is live through the month's last day (the exact monthly expiry day is not in the spelling).
+export function lastLiveDayMs(tsym: string): number | undefined {
+    let latest: number | undefined;
+    for (const r of readOptionTsym(tsym)) {
+        if (r.expiry.kind === 'nearest' || r.expiry.month < 0) continue;
+        const ms = r.expiry.kind === 'day' ? Date.UTC(r.expiry.year, r.expiry.month, r.expiry.day) : Date.UTC(r.expiry.year, r.expiry.month + 1, 0);
+        if (ms > Date.now() + 400 * 86400000) continue; // no listed option expires over a year out: a far-future reading is a spurious overlap (SENSEX26OCT82600CE also reads as day 26-OCT-2082)
+        if (latest === undefined || ms > latest) latest = ms;
+    }
+    return latest;
+}
