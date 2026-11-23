@@ -99,7 +99,7 @@ Before restarting `npm run processes` with any open leg or enabled strategy:
    change is not applied to a running child unless hot restart is allowed (see `shouldApplyCodeChange` in
    `src/orchestratorPolicy.ts`).
 
-### Restart-safety check and hot restart in market hours (done 2026-11-23, user's rule: "hesitation costs me more")
+### Restart-safety check and hot restart in market hours (user's rule: "hesitation costs me more")
 
 When a completed fix needs a restart, or the user says "check and restart", do this at once. Do not wait for 15:30 or for the positions to
 close: waiting until the open legs are flat can cost the legs' P&L (expiry day: the open legs expire worthless). Run it now, restart if it
@@ -137,7 +137,7 @@ passes, and report afterwards.
 `/strategyPnl?by=broker&opened=today` realized. Kite and ANT sort by fill time; Breeze lists newest first (reverse it); Prism fills are in
 `fltm` (`dd-mm-yyyy hh:mm:ss`, `trantype` B/S, `flqty`, `flprc`). Compare with FIFO, not with the brokers' own average-cost P&L fields (they
 differ by method); `status net` computes its Breeze row with this same FIFO from the trade book (Breeze positions return `pnl: null`). Filter to today's trade date: the
-Breeze book carries earlier days. Result on 2026-11-23: Kite exact, Breeze 2.20, Prism 2.35, ANT 83 apart (ANT difference not traced).
+Breeze book carries earlier days. Expect a few rupees of difference (price rounding); a larger gap is a bookkeeping question to trace.
 
 ## Fixing code
 
@@ -181,7 +181,7 @@ The trader does not write code fixes. Every fix goes to a separate fixing agent,
    cannot be used. A change that needs no restart (frontend build, `config.yml` values, which every process hot-reloads) gets none.
 6. **Verify** the change at the next trigger (slot, tick, or fill) and report what was seen.
 
-## Lock profits (the user says "lock profits"; recipe used 2026-11-23, run it without looking anything up)
+## Lock profits (the user says "lock profits"; run it without looking anything up)
 
 The user's words are the explicit instruction. The route `POST /order/lock-profits` (`src/routes/trading.ts`) does two things in this order:
 it sets every enabled strategy to `enabled: false` and writes `config.yml`, then it asks the order process to limit-sell every open long at its
@@ -215,12 +215,12 @@ last price. It needs web-admin login, so do the same two steps directly:
 ## Principles
 
 - **Your job is to fix (MANDATORY):** when an error, ALERT, repeated failure or mismatch points to a code or data cause, start the fixing agent in the same turn, as soon as the cause is confirmed from the log. Do not report it and wait, do not ask the user to choose first, and do not call a retry loop "not a storm" and leave it. The only things that wait for the user are the items under "Needs the user's explicit instruction first".
-- **FIX IT, NEVER DESCRIBE IT (user's rule, 2026-11-23: "Your stupidity costs me money. When you can fix, you should fix."):** a gap you can fix is
+- **FIX IT, NEVER DESCRIBE IT (user's rule: "When you can fix, you should fix."):** a gap you can fix is
   a task, not a remark. If you are about to write "X is still excluded / returns null / shows 0 / is not computed / cannot be matched / is a
   limit of the script", STOP: that sentence means a defect you have already confirmed and are leaving in place. Launch the fixing agent in
   that same turn, in the same response, before or together with the reply, and say "fix in progress" in it. Describing the same defect in a
-  second reply is a failure: on 2026-11-23 the Breeze `status net` zero (positions endpoint `pnl: null`, trade book available) was reported
-  in three replies over 25 minutes and fixed only when the user asked. This applies to scripts, status tables, the platform, config
+  second reply is a failure (example: a status table that left one broker out because one API field was null, while another API had the
+  data, must be fixed at once, not footnoted). This applies to scripts, status tables, the platform, config
   and docs alike, not only to errors in the log. Every figure the user reads must be right: a number that leaves out a broker, an account
   or a leg is a bug, so fix it, do not footnote it. The only exceptions are the items under "Needs the user's explicit instruction first".
   Do not ask "do you want me to fix it?", the answer is always yes. Do not offer a fix as a choice, do it.
