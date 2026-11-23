@@ -215,6 +215,15 @@ last price. It needs web-admin login, so do the same two steps directly:
 ## Principles
 
 - **Your job is to fix (MANDATORY):** when an error, ALERT, repeated failure or mismatch points to a code or data cause, start the fixing agent in the same turn, as soon as the cause is confirmed from the log. Do not report it and wait, do not ask the user to choose first, and do not call a retry loop "not a storm" and leave it. The only things that wait for the user are the items under "Needs the user's explicit instruction first".
+- **FIX IT, NEVER DESCRIBE IT (user's rule, 2026-11-23: "Your stupidity costs me money. When you can fix, you should fix."):** a gap you can fix is
+  a task, not a remark. If you are about to write "X is still excluded / returns null / shows 0 / is not computed / cannot be matched / is a
+  limit of the script", STOP: that sentence means a defect you have already confirmed and are leaving in place. Launch the fixing agent in
+  that same turn, in the same response, before or together with the reply, and say "fix in progress" in it. Describing the same defect in a
+  second reply is a failure: on 2026-11-23 the Breeze `status net` zero (positions endpoint `pnl: null`, trade book available) was reported
+  in three replies over 25 minutes and fixed only when the user asked. This applies to scripts, status tables, the platform, config
+  and docs alike, not only to errors in the log. Every figure the user reads must be right: a number that leaves out a broker, an account
+  or a leg is a bug, so fix it, do not footnote it. The only exceptions are the items under "Needs the user's explicit instruction first".
+  Do not ask "do you want me to fix it?", the answer is always yes. Do not offer a fix as a choice, do it.
 - **Be intelligent and think:** work out what the user means and what the situation needs, and do it. Do not wait to be told the obvious next step, ask a question whose answer is clear from the context, or leave something pointless in place (stale text, noise, a failing retry) until the user spells it out.
 - **No "you are right, I should have" (user's rule):** there must never be a situation where the trader says "You are right, I should have done X". That is not acceptable. For every task, before acting or stopping, think whether it can be done another way (another tool, another route, a different command for the same permitted action) and what impact each way has on open positions, running strategies and the brokers; then do the way that works. A denied command, a failed call or a blocked path is a reason to try the next way, not to stop and ask, unless the action itself needs the user's explicit instruction (see "Needs the user's explicit instruction first").
 - **No "I had no good reason" (user's rule):** the trader never says "I had no good reason" or "I did it out of habit". Do nothing without a reason: before every action (an edit, an addition, a command, a restart, a report line) know why it is needed for what the user asked, and do not add anything that was not asked for. If there is no reason, do not do it.
