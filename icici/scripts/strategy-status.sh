@@ -18,6 +18,8 @@
 # `net` prints ONE number and nothing else: today's net P&L (realized + unrealized) from the brokers' OWN position books (kite, ant, prism,
 # breeze), so orders placed outside the platform (manual) count too. This is the one exception to the manual-orders-are-ignored rule.
 # It prints a table (broker, realized, unrealized, total; a broker that cannot be read shows "ERROR: <what> unavailable", is never counted as 0, and the NET line then says it excludes that broker) and then the NET line. Breeze and ANT are computed from their trade books (FIFO per contract, today only; an ANT order is priced at its last execution row, whose tradedPrice is the order's cumulative average).
+# Paper is left out by the BROKER of each trade / position, never by a strategy's current config: a real trade of a strategy that is on paper now stays
+# in BY STRATEGY and BY BROKER (their TOTALs agree), a paper trade never shows, and a paper-only strategy with no real trade has no row.
 # Usage: scripts/strategy-status.sh [net|users] [all] [port]
 #   e.g.  scripts/strategy-status.sh   |  scripts/strategy-status.sh all 3000  |  scripts/strategy-status.sh 3000  |  scripts/strategy-status.sh users  |  scripts/strategy-status.sh users all
 OPENED=today
@@ -156,7 +158,8 @@ const byUser=parse(process.env.BY_USER);
 if(!byUser){console.log("order process not reachable");process.exit(1)}
 if(process.env.OPENED==="today"&&process.env.FILTER_OK!=="1")console.log("WARNING: the web server predates the ?opened filter (needs a restart): the tables below count ALL trades, not only those opened today");
 console.log(process.env.OPENED==="all"?"(all trades: also those opened on an earlier day)":"(trades opened today only; "+String.fromCharCode(96)+"all"+String.fromCharCode(96)+" adds earlier-day trades closed or still open today)");
-const detail=parse(process.env.DETAIL)||[];
+const notPaper=rows=>rows.filter(r=>r.broker!=="paper"); // paper is reported only by "status paper" (a server that predates the real-only route still lists it)
+const detail=notPaper(parse(process.env.DETAIL)||[]);
 // one ?detail=1 snapshot prices every table, so unrealized agrees across them (each endpoint call re-prices at its own moment)
 const snap=(rows,key)=>{for(const r of rows)r.unrealized=detail.filter(d=>key(d)===key(r)).reduce((a,d)=>a+d.unrealized,0)};
 snap(byUser,r=>r.strategy);
@@ -171,7 +174,7 @@ byUser.sort((a,b)=>a.strategy.localeCompare(b.strategy));
 if(!byUser.length){console.log("no real-user trades");process.exit(0)}
 const lab=Math.max(10,...byUser.map(r=>r.strategy.length));
 table("BY USER",byUser,lab);
-const byBroker=parse(process.env.BY_BROKER)||[];
+const byBroker=(parse(process.env.BY_BROKER)||[]).filter(r=>r.strategy!=="paper"&&r.broker!=="paper");
 snap(byBroker,r=>r.broker??r.strategy);
 byBroker.sort((a,b)=>a.strategy.localeCompare(b.strategy));
 if(byBroker.length){console.log("");table("BY BROKER",byBroker,lab)}
@@ -189,7 +192,7 @@ else{
   if(detail.some(r=>!r.liveQuote))console.log("  * no live quote, last known price");
 }
 console.log("\nTRADES (closed)");
-const closed=process.env.CLOSED_OK==="1"?parse(process.env.CLOSED):null;
+const closed=process.env.CLOSED_OK==="1"?(parse(process.env.CLOSED)||null)&&notPaper(parse(process.env.CLOSED)):null;
 if(!closed)console.log("  (closed-trade list unavailable: the web server predates the ?closed=1 option - restart it)");
 else if(!closed.length)console.log("  none closed");
 else{
@@ -206,9 +209,10 @@ fi
 BY_STRATEGY="$(curl -s -m10 -D "$HDR" "localhost:$PORT/strategyPnl?opened=$OPENED")"
 if [ "$OPENED" = today ] && ! grep -qi '^x-opened-filter: today' "$HDR"; then echo "WARNING: the web server predates the ?opened filter (needs a restart): the tables below count ALL trades, not only today's"; fi
 DETAIL="$(curl -s -m20 "localhost:$PORT/strategyPnl?detail=1&opened=$OPENED")"
+CLOSED_ALL="$(curl -s -m10 "localhost:$PORT/strategyPnl?closed=1&opened=$OPENED")"
 ROOT="$(dirname "$(readlink -f "$0")")/.."
 LOG="$(dirname "$(readlink -f "$0")")/../logs/orchestrator-$(date +%F).log"
-OPENED="$OPENED" PORT="$PORT" BY_STRATEGY="$BY_STRATEGY" DETAIL="$DETAIL" LOG="$LOG" ROOT="$ROOT" node -e '
+OPENED="$OPENED" PORT="$PORT" BY_STRATEGY="$BY_STRATEGY" DETAIL="$DETAIL" CLOSED_ALL="$CLOSED_ALL" LOG="$LOG" ROOT="$ROOT" node -e '
 const f=n=>(n>=0?"+":"")+n.toFixed(2);
 const parse=(s)=>{try{const r=JSON.parse(s);return Array.isArray(r)?r:null}catch{return null}};
 const table=(title,rows)=>{
@@ -222,35 +226,52 @@ const byStrategy=parse(process.env.BY_STRATEGY);
 if(!byStrategy){console.log("order process not reachable");process.exit(1)}
 // The three endpoint calls each re-price open legs at the tick of their own moment, so their unrealized totals drift apart by a few hundred.
 // Realized and counts do not move with ticks; unrealized is overwritten below from the single ?detail=1 snapshot so every table agrees.
+// Paper is excluded by the BROKER of each trade / position (never by the strategy'"'"'s current config: a strategy switched from kite to paper
+// mid-day keeps its real trades). A server that predates the real-only /strategyPnl still mixes paper into its rows; the paper share is then
+// taken out of the rows here from the per-trade (?closed=1) and per-position (?detail=1) lists, which carry the broker. A current server returns no paper.
+const isPaperRow=r=>r&&r.broker==="paper";
 const detailSnap=parse(process.env.DETAIL);
+if(detailSnap)for(let i=detailSnap.length-1;i>=0;i--)if(isPaperRow(detailSnap[i]))detailSnap.splice(i,1);
+{
+  const paperShare=new Map();
+  const share=s=>{if(!paperShare.has(s))paperShare.set(s,{realized:0,open:0,closed:0});return paperShare.get(s)};
+  for(const t of (parse(process.env.CLOSED_ALL)||[]))if(isPaperRow(t)){const p=share(t.strategy);p.realized+=t.realizedPnL;p.closed++}
+  for(const t of (parse(process.env.DETAIL)||[]))if(isPaperRow(t))share(t.strategy).open++;
+  for(let i=byStrategy.length-1;i>=0;i--){
+    const p=paperShare.get(byStrategy[i].strategy);if(!p)continue;
+    const r=byStrategy[i];r.realized=+(r.realized-p.realized).toFixed(2);r.closed-=p.closed;r.open-=p.open;
+    if(r.closed<=0&&r.open<=0)byStrategy.splice(i,1); // nothing real left: a paper-only strategy has no row
+  }
+}
 // The source is the snapshot rows of the strategies the table covers (see keepDetail): a BY BROKER row summed over EVERY open position of that broker
 // also counted real users and disabled strategies that the other tables leave out (2026-11-18: Breeze showed the user position on top).
 const snapUnreal=(rows,key,src=detailSnap)=>{if(!src)return;for(const r of rows){const k=key(r);r.unrealized=src.filter(d=>key(d)===k).reduce((a,d)=>a+d.unrealized,0)}};
 snapUnreal(byStrategy,r=>r.strategy);
 // Strategies enabled in config.yml, named as the platform names its instances (src/util/strategyInstances.ts, compiled in dist/).
 let enabledNames=null;
-let paperNames=new Set();
+let zeroNames=new Set();
 try{
   const {expandStrategyInstances}=require(process.env.ROOT+"/dist/util/strategyInstances.js");
   const cfg=require(process.env.ROOT+"/node_modules/js-yaml").load(require("fs").readFileSync(process.env.CONFIG_PATH||process.env.ROOT+"/config.yml","utf8"));
-  // Paper-only blocks (brokers: [paper], in-memory, nothing in Mongo) are left out: `paper` is reported only by the "status paper" check.
+  // enabledNames: every enabled strategy (its REAL trades are listed even when its block is paper-only now). zeroNames: the ones shown with a
+  // zero row before they trade; a paper-only block (brokers: [paper], in memory, nothing in Mongo) is not, since `paper` is reported only by "status paper".
   const isPaperOnly=c=>Array.isArray(c.brokers)&&c.brokers.length>0&&c.brokers.every(b=>b==="paper");
-  enabledNames=new Set(expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&c.enabled===true&&!isPaperOnly(c))).map(c=>c.userId||c.type));
-  paperNames=new Set(expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&isPaperOnly(c))).map(c=>c.userId||c.type));
+  enabledNames=new Set(expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&c.enabled===true)).map(c=>c.userId||c.type));
+  zeroNames=new Set(expandStrategyInstances((cfg.strategies||[]).filter(c=>c&&c.enabled===true&&!isPaperOnly(c))).map(c=>c.userId||c.type));
 }catch(e){console.log("(could not read the enabled strategies from config.yml: "+e.message+")")}
 // status (today): enabled strategies only (rule of 2026-11-13). status all: every strategy with trades, enabled or disabled/latched
 // (rule of 2026-11-17), never the real users (their rows contain an @ sign).
 const allMode=process.env.OPENED==="all";
 const isUserName=n=>n.includes("@");
 // The open positions every table must be built from: the same strategies as BY STRATEGY (enabled only; with `all` every non-user, non-paper one).
-const keepDetail=s=>allMode?!(isUserName(s)||paperNames.has(s)):(!enabledNames||enabledNames.has(s));
+const keepDetail=s=>allMode?!isUserName(s):(!enabledNames||enabledNames.has(s));
 const tableDetail=detailSnap?detailSnap.filter(d=>keepDetail(d.strategy)):null;
 if(allMode){
-  for(let i=byStrategy.length-1;i>=0;i--)if(isUserName(byStrategy[i].strategy)||paperNames.has(byStrategy[i].strategy))byStrategy.splice(i,1);
+  for(let i=byStrategy.length-1;i>=0;i--)if(isUserName(byStrategy[i].strategy))byStrategy.splice(i,1);
 }else if(enabledNames){
   for(let i=byStrategy.length-1;i>=0;i--)if(!enabledNames.has(byStrategy[i].strategy))byStrategy.splice(i,1);
   const have=new Set(byStrategy.map(r=>r.strategy));
-  for(const name of enabledNames)if(!have.has(name))byStrategy.push({strategy:name,realized:0,unrealized:0,open:0,closed:0});
+  for(const name of zeroNames)if(!have.has(name))byStrategy.push({strategy:name,realized:0,unrealized:0,open:0,closed:0});
 }
 byStrategy.sort((a,b)=>a.strategy.localeCompare(b.strategy));
 if(!byStrategy.length){console.log("no strategy enabled and no trades this session");process.exit(0)}
@@ -259,7 +280,7 @@ table("BY STRATEGY",byStrategy);
 const esc=n=>n.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
 const matchQ=allMode?"&match="+encodeURIComponent("^[^@]+$"):(enabledNames?"&match="+encodeURIComponent("^("+[...enabledNames].map(esc).join("|")+")$"):"");
 const byBroker=parse(require("child_process").execFileSync("curl",["-s","-m10","localhost:"+process.env.PORT+"/strategyPnl?by=broker&opened="+process.env.OPENED+matchQ]).toString());
-if(byBroker&&allMode){for(let i=byBroker.length-1;i>=0;i--)if(byBroker[i].strategy==="paper"||byBroker[i].broker==="paper")byBroker.splice(i,1)}
+if(byBroker){for(let i=byBroker.length-1;i>=0;i--)if(byBroker[i].strategy==="paper"||byBroker[i].broker==="paper")byBroker.splice(i,1)} // paper is its own broker row on a server that predates the real-only route
 if(byBroker)snapUnreal(byBroker,r=>r.broker??r.strategy,tableDetail);
 if(byBroker&&byBroker.length){console.log("");table("BY BROKER",byBroker)}
 else console.log("\n(by-broker table unavailable: the API process predates the ?by=broker option - restart it)");
@@ -269,7 +290,7 @@ const detail=parse(process.env.DETAIL);
 if(detail){
   for(let i=detail.length-1;i>=0;i--){
     const s=detail[i].strategy;
-    if(!keepDetail(s))detail.splice(i,1);
+    if(isPaperRow(detail[i])||!keepDetail(s))detail.splice(i,1);
   }
 }
 if(!detail){console.log("\n(position table unavailable: the API process predates the ?detail=1 option - restart it)");process.exit(0)}

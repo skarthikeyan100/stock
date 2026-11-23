@@ -205,6 +205,9 @@ router.get('/order/contract-quote', requireAuth, async function (req: express.Re
 router.get('/strategyPnl', requireAdmin, async function (req: express.Request, res) {
     try {
         const stats = await orderClient.stats();
+        // Real trades only: the paper broker (in memory, nothing in Mongo) is reported only by the "status paper" check, so a paper trade
+        // is left out here by ITS broker (a strategy that ran on kite earlier and is on paper now keeps its real trades and loses only the paper ones).
+        const isPaper = (t: Trade) => String(t.broker || '') === 'paper';
         const re = req.query.match ? new RegExp(String(req.query.match), 'i') : null;
         const byBroker = req.query.by === 'broker';
         const todayOnly = openedFilterOf(req.query.opened) === 'today';
@@ -214,7 +217,7 @@ router.get('/strategyPnl', requireAdmin, async function (req: express.Request, r
         // (scripts/strategy-status.sh users). The header tells the script a server that has this option from one that ignored it.
         if (req.query.closed === '1') {
             res.setHeader('X-Closed-Rows', '1');
-            res.json(closedTradeRows(stats.closedTrades as Trade[], re, todayOnly));
+            res.json(closedTradeRows((stats.closedTrades as Trade[]).filter((t) => !isPaper(t)), re, todayOnly));
             return;
         }
         const rows = new Map<string, { strategy: string; realized: number; unrealized: number; open: number; closed: number }>();
@@ -224,11 +227,12 @@ router.get('/strategyPnl', requireAdmin, async function (req: express.Request, r
             return rows.get(key)!;
         };
         for (const t of stats.closedTrades as Trade[]) {
+            if (isPaper(t)) continue;
             if (re && !re.test(t.strategy || t.user || '')) continue;
             if (!wanted(t)) continue;
             const r = row(t); r.closed++; r.realized += Number(t.realizedPnL) || 0;
         }
-        const openTrades = (stats.trades as Trade[]).filter((t) => (!re || re.test(t.strategy || t.user || '')) && wanted(t));
+        const openTrades = (stats.trades as Trade[]).filter((t) => !isPaper(t) && (!re || re.test(t.strategy || t.user || '')) && wanted(t));
         // The order process never fills Trade.unrealizedPnL (only the legacy in-process Monitor does) and keeps lastTradePrice
         // fresh only for trades whose exits it monitors itself (resting-sell and reconcile-restored legs stay at their entry price),
         // so price each open trade from a live quote, falling back to lastTradePrice when the quote call fails.
