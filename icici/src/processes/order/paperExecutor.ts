@@ -28,18 +28,21 @@ interface PaperOrder {
     action: 'Buy' | 'Sell';
 }
 
+interface PaperFill { orderId: string; user: string; tsym: string; token: string; side: 'Buy' | 'Sell'; quantity: number; price: number; time: string }
+
 const orders = new Map<string, PaperOrder>();
 const filledQty = new Map<string, number>(); // orderId -> quantity filled (so a late cancel reports OrderAlreadyFilledError)
 const lastLtp = new Map<string, number>();    // ANT token -> last option tick price
 const subscribed = new Set<string>();         // tokens the book holds a tick subscription for
 const cancelledListeners: CancelledListener[] = [];
+const fills: PaperFill[] = [];             // one row per paper fill of the day, in fill order (the 'paperBook' read; lost on restart by design)
 let seq = 0;
 
 const nextId = (): string => `PAPER-${Date.now()}-${++seq}`;
 
 // Test hook: forgets every order, fill memory and price.
 export function resetPaperBook(): void {
-    orders.clear(); filledQty.clear(); lastLtp.clear(); subscribed.clear(); seq = 0;
+    orders.clear(); filledQty.clear(); lastLtp.clear(); subscribed.clear(); fills.length = 0; seq = 0;
 }
 
 // The TrackerHandle shape (pendingTrackers.ts) over the in-memory book: nothing to load or poll.
@@ -68,6 +71,7 @@ function releaseTick(o: PaperOrder): void {
 }
 
 function fillTrade(o: PaperOrder, price: number): Trade {
+    fills.push({ orderId: o.orderId, user: o.userId, tsym: o.tradingSymbol, token: o.token, side: o.action, quantity: o.quantity, price, time: new Date().toISOString() });
     const t = new Trade();
     t.tsym = o.tradingSymbol;
     t.token = o.token;
@@ -95,6 +99,22 @@ async function fillOrder(orderId: string, price: number): Promise<void> {
     } catch (e) {
         Log.log('[paper] ALERT: booking a paper fill failed:', o.orderId, o.tradingSymbol, e);
     }
+}
+
+// Read-only view of the in-memory paper book for GET /broker/paper/positions and /trades (IPC 'paperBook'): the open paper legs (bookkeeping's
+// broker 'paper' rows, marked at the last option tick), the resting paper orders, and every paper fill so far.
+export function paperBookSnapshot(): { positions: any[]; orders: any[]; trades: PaperFill[] } {
+    const positions = bookkeeping.trades.filter((t) => t.broker === 'paper' && Number(t.quantity) > 0).map((t) => {
+        const last = lastLtp.get(String(t.token)) ?? Number(t.ltp ?? t.lastTradePrice);
+        const lastPrice = last > 0 ? last : null;
+        return {
+            tradingsymbol: t.tsym, quantity: t.quantity, averagePrice: t.price, lastPrice,
+            pnl: lastPrice === null ? null : Math.round((lastPrice - t.price) * t.quantity * 100) / 100,
+            user: t.user, strategy: t.user, targetPrice: t.targetPrice ?? null, stopLossPrice: t.stopLossPrice ?? null,
+        };
+    });
+    const resting = [...orders.values()].map((o) => ({ orderId: o.orderId, user: o.userId, tradingsymbol: o.tradingSymbol, side: o.action, quantity: o.quantity, price: o.price }));
+    return { positions, orders: resting, trades: fills.map((f) => ({ ...f, tradingsymbol: f.tsym, strategy: f.user })) };
 }
 
 // Quantity of a contract the user holds on paper, and how much of it already rests in sells.

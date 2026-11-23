@@ -2,19 +2,22 @@ import Kite from '../kite/Kite';
 import ANT from '../ant/ANT';
 import Breeze from '../breeze/Breeze';
 import Prism from '../prism';
+import OrderClient from '../processes/strategies/OrderClient';
 import Log from '../util/Log';
 import { BrokerName, normalizeBrokerName } from '../util/brokerName';
 import { BrokerClient, MissingCredentialsError } from './BrokerClient';
 
 // Wraps the four client singletons behind BrokerClient. Thin: each method is the singleton's own call.
 export const BROKER_CLIENTS: Record<BrokerName, BrokerClient> = {
-    // Not a real broker: no login, no broker-side trades; positions are the in-memory paper book (bookkeeping, broker 'paper').
+    // Not a real broker: no login. Its book lives in memory in the order/trading process, so every read goes over the order IPC ('paperBook');
+    // a failed read throws (the route answers 500), it never turns into an empty list.
     paper: {
         label: 'Paper',
         getLoginUrl: () => { throw new MissingCredentialsError('The paper broker has no login'); },
         exchangeToken: async () => { throw new MissingCredentialsError('The paper broker has no login'); },
-        getTrades: async () => [],
-        getPositions: async () => [],
+        getTrades: async () => (await OrderClient.getInstance().paperBook()).trades,
+        getPositions: async () => (await OrderClient.getInstance().paperBook()).positions,
+        getOpenOrders: async () => (await OrderClient.getInstance().paperBook()).orders,
     },
     prism: {
         label: 'Shoonya',

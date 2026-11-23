@@ -13,6 +13,8 @@ export type OrderRequestType =
     | 'squareOff'
     | 'canPlaceOrder'
     | 'stats'
+    // The platform's own Sell fills of one contract for the caller's user today (read-only; a strategy's reconcile uses it, see bookkeeping.platformSells).
+    | 'platformSells'
     | 'getContractByPriceRange'
     | 'getToken'
     | 'manualBuy'
@@ -115,7 +117,9 @@ export type OrderRequestType =
     // Undoes attachProtection (deletes the Kite GTT, drops the exitMonitor watch) before a manual close. payload: { broker, tradingSymbol }.
     | 'cancelProtection'
     // Last traded price of one option contract from its broker's quote API. payload: { tradingSymbol, token, exchange }.
-    | 'getOptionLtp';
+    | 'getOptionLtp'
+    // Read-only: the in-memory paper book (open paper legs, resting paper orders, the day's paper fills) for GET /broker/paper/positions|trades.
+    | 'paperBook';
 
 export interface OrderRequest {
     kind: 'request';

@@ -30,8 +30,8 @@ export type ChunkedBuyIndexResult = ChunkedFillResult & {
 // every request NOT on this read-only list is refused here, in one place, instead of trusting each strategy to remember. Default-deny: a new request
 // type is blocked inside a reconcile until someone decides it is a read.
 const READ_ONLY_REQUESTS: ReadonlySet<OrderRequestType> = new Set<OrderRequestType>([
-    'openTrades', 'getPendingSells', 'getLiveQuantity', 'contractHolders', 'stats', 'canPlaceOrder', 'brokerSessions', 'getToken',
-    'getContractByPriceRange', 'getContractByPriceRangeBare', 'getPCR', 'getATMTokens', 'resolveOptionContract', 'getOptionLtp',
+    'openTrades', 'getPendingSells', 'getLiveQuantity', 'contractHolders', 'stats', 'platformSells', 'canPlaceOrder', 'brokerSessions', 'getToken',
+    'getContractByPriceRange', 'getContractByPriceRangeBare', 'getPCR', 'getATMTokens', 'resolveOptionContract', 'getOptionLtp', 'paperBook',
     // Not orders: they restore a runtime cap / setting that a latched strategy re-applies when it reloads.
     'setBrokerInvestmentCap', 'updateUserSettings', 'reloadUserLimits', 'restoreFromMongo',
 ]);
@@ -256,6 +256,17 @@ class OrderClient {
 
     async sellContract(userId: string, contract: string, quantity: number, price?: number): Promise<any> {
         return this.call('sellContract', userId, { contract, quantity, price });
+    }
+
+    // The sells the platform itself placed and booked for this user on one contract today, oldest first (order id, summed quantity, average price, time).
+    // null = the evidence could not be read (the caller must not conclude anything from it).
+    async platformSells(userId: string, broker: string, tradingSymbol: string): Promise<{ orderId: string; quantity: number; price: number; at: number }[] | null> {
+        return this.call('platformSells', userId, { broker, tradingSymbol });
+    }
+
+    // The paper broker's in-memory book (read-only), held by the order process.
+    async paperBook(): Promise<{ positions: any[]; orders: any[]; trades: any[] }> {
+        return this.call('paperBook', 'Default', {});
     }
 
     async stats(userId = 'Default'): Promise<{ trades: any[]; closedTrades: any[]; userPnL: Record<string, number> }> {

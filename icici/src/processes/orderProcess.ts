@@ -47,7 +47,7 @@ import * as exitMonitor from './order/exitMonitor';
 import { startMirrorBuy, undoMirrorBuy, onUserSell, mirrorSetTargetStopLoss, forgetRestingMirror, type MirrorLeg, type MirrorHook } from './order/mirror';
 import * as prismExecutor from './order/prismExecutor';
 import { getBrokerExecutor, getExecutorByBroker } from './order/brokerExecutors';
-import { onPaperTick } from './order/paperExecutor';
+import { onPaperTick, paperBookSnapshot } from './order/paperExecutor';
 import { BrokerExecutor, withSellLock, OrderAlreadyFilledError, waitUntilNotResting } from './order/BrokerExecutor';
 import Kite from '../kite/Kite';
 import ANT from '../ant/ANT';
@@ -1163,6 +1163,9 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                 return { kind: 'response', id: req.id, ok: true, result };
             }
 
+            case 'paperBook':
+                return { kind: 'response', id: req.id, ok: true, result: paperBookSnapshot() };
+
             case 'buyContract': {
                 const estimatedValue = req.payload.price && req.payload.quantity ? req.payload.price * req.payload.quantity : undefined;
                 return await placeOrderWithPendingGuard(req, estimatedValue, () =>
@@ -1305,6 +1308,12 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                     Log.log('[order] reconcileBrokerPositions failed:', e);
                     return { kind: 'response', id: req.id, ok: false, error: e?.message ?? String(e) };
                 }
+            }
+
+            case 'platformSells': {
+                if (reconcileInFlight) await reconcileInFlight;
+                const b = req.payload?.broker === 'paper' ? 'paper' : normalizeBrokerName(req.payload?.broker ?? 'kite');
+                return { kind: 'response', id: req.id, ok: true, result: await bookkeeping.platformSells(req.userId, b as any, String(req.payload?.tradingSymbol ?? '')) };
             }
 
             case 'openTrades':

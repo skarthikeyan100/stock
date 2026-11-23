@@ -138,7 +138,6 @@ function brokerEntry(broker: string): BrokerClient {
     return client;
 }
 const getBrokerTrades = (broker: string): Promise<any[]> => brokerEntry(broker).getTrades();
-const getBrokerPositions = (broker: string): Promise<any[]> => brokerEntry(broker).getPositions();
 
 router.get('/broker/:broker/trades', requireAdmin, async function (req, res) {
     try {
@@ -152,8 +151,10 @@ router.get('/broker/:broker/trades', requireAdmin, async function (req, res) {
 
 router.get('/broker/:broker/positions', requireAdmin, async function (req, res) {
     try {
-        const positions = await getBrokerPositions(req.params.broker);
-        res.json({ success: true, broker: req.params.broker, positions });
+        const client = brokerEntry(req.params.broker);
+        const positions = await client.getPositions();
+        const orders = client.getOpenOrders ? await client.getOpenOrders() : undefined; // paper: the resting paper orders
+        res.json({ success: true, broker: req.params.broker, positions, ...(orders ? { orders } : {}) });
     } catch (e: any) {
         Log.log(`${req.params.broker} positions error:`, e);
         res.status(e.message.startsWith('Unknown broker') ? 400 : 500).json({ error: 'Failed to fetch positions' });

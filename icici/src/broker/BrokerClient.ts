@@ -22,4 +22,6 @@ export interface BrokerClient {
     exchangeToken(params: CallbackParams): Promise<void>;
     getTrades(): Promise<any[]>;
     getPositions(): Promise<any[]>;
+    // Resting orders, for a broker whose book this platform holds itself (paper).
+    getOpenOrders?(): Promise<any[]>;
 }

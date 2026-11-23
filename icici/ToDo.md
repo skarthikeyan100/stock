@@ -82,3 +82,6 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 
 ## ExpiryStrategy maxProfit 20000 (2026-11-23)
 - [DONE IN CODE, needs trading-process restart after the trader agrees; NOT LIVE-VERIFIED] Block-level rupee `maxProfit` on ExpiryStrategy is now honoured by the global max-profit monitor (see open-review-items.md 132). Trader: set `maxProfit: 20000` on the ExpiryStrategy block in config.yml (hot-reloaded each cycle once the new code runs).
+
+## Paper broker endpoints (2026-11-23)
+- [DONE IN CODE, needs a trading/order process restart AND a frontend process restart after market hours; NOT LIVE-VERIFIED] /broker/paper/positions and /trades now read the live paper book over the order IPC ('paperBook'), 500 on a failed read (see open-review-items.md 133). Note a restart empties the paper book by design, so verify with the next paper entry.
