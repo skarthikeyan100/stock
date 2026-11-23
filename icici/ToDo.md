@@ -69,3 +69,6 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 
 ## MAX PROFIT trip double sell (2026-11-23)
 - [DONE IN CODE, needs strategies-process restart after market hours, NOT LIVE-VERIFIED] SimpleContinuous / ScaledHedged lockProfitOnLeg no longer cancel-and-replace a resting trip sell whose fill the order side already holds as sold (see open-review-items.md 128). After the restart, check the next trip: no 'sold per the order side ... waiting for its fill events' loop beyond a few seconds, no NEVER-SHORT refusal on a trip.
+
+## ScaledHedged reset opens root gate (2026-11-23)
+- [DONE IN CODE, needs strategies-process restart after market hours, NOT LIVE-VERIFIED] ScaledHedgedStrategy.reset() re-opens the one-root gate like SimpleContinuous (see open-review-items.md 129). After the restart, reset ScaledHedged when flat and check the log for `reset: closed root(s) ... re-opened for selection` and a new root on the next Nifty tick.
