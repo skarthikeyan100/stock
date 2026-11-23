@@ -69,3 +69,5 @@ logs/
 
 # RuleBased backtest output
 backtest-results/
+certs/
+storage/

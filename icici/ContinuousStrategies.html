@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Continuous Strategies Comparison</title>
+<style>
+:root { --bg:#fff; --fg:#1a1a1a; --muted:#555; --line:#ddd; --head:#f3f4f6; --accent:#1d4ed8; }
+@media (prefers-color-scheme: dark) { :root { --bg:#111418; --fg:#e6e6e6; --muted:#a0a6ad; --line:#2d333b; --head:#1b2027; --accent:#6ea8ff; } }
+body { background:var(--bg); color:var(--fg); font:15px/1.55 system-ui,sans-serif; max-width:1000px; margin:0 auto; padding:24px 16px; }
+h1 { font-size:1.5rem; } h2 { font-size:1.2rem; margin-top:2rem; border-bottom:1px solid var(--line); padding-bottom:4px; color:var(--accent); }
+.note { color:var(--muted); font-size:.9rem; }
+ul { padding-left:1.2rem; } li { margin:4px 0; }
+code { background:var(--head); padding:1px 5px; border-radius:4px; font-size:.9em; }
+table { border-collapse:collapse; width:100%; display:block; overflow-x:auto; }
+th, td { border:1px solid var(--line); padding:6px 10px; text-align:left; vertical-align:top; min-width:140px; }
+th { background:var(--head); }
+</style>
+</head>
+<body>
+<h1>ContinuousStrategy vs SimpleContinuousStrategy vs ScaledHedgedStrategy</h1>
+<p class="note">Source: header comments of <code>src/strategy/ContinuousStrategy.ts</code>, <code>SimpleContinuousStrategy.ts</code>, <code>ScaledHedgedStrategy.ts</code>, and <code>strategies.md</code>. <code>LegManager.ts</code> was not read; ContinuousStrategy exit details come from those comments and docs. Written 2026-11-19.</p>
+
+<h2>At a glance</h2>
+<table>
+<tr><th></th><th>ContinuousStrategy</th><th>SimpleContinuousStrategy</th><th>ScaledHedgedStrategy</th></tr>
+<tr><td>Leg engine</td><td><code>LegManager</code> (shared with SupportResistanceStrategy)</td><td>Own leg logic</td><td>Own leg logic (derived from Simple)</td></tr>
+<tr><td>Entry</td><td>PCR root (T1), 09:30–15:00, optional momentum veto</td><td>One root per day by PCR</td><td>One root per day by PCR</td></tr>
+<tr><td>Root size</td><td><code>initialQuantity</code></td><td><code>initialQuantity</code>, or as many lots as <code>maxInvestment</code> pays for with <code>onePositionPerSide</code></td><td>Always <code>initialQuantity</code></td></tr>
+<tr><td>Adverse move</td><td>Stacked levels 1x–Nx of <code>slDistance</code> (up to <code>maxLevels</code>) spawn opposite-direction legs; hard square-off at <code>squareOffDistance</code></td><td>Opposite option hedge at entry − <code>priceDiff</code>, once per leg</td><td>Opposite option bought again at each <code>priceDiff</code> fall, sized by drop</td></tr>
+<tr><td>Target</td><td>Refill at original entry price (gated by parent alive)</td><td>Resting sell at entry + <code>priceDiff</code>; profit → same right, loss → opposite</td><td>Resting sell at entry + <code>priceDiff</code>; hedge after target buys <code>initialQuantity</code></td></tr>
+<tr><td>Stop loss</td><td>Hard square-off distance</td><td>None</td><td>None</td></tr>
+<tr><td>Double-up</td><td>No (averaging via <code>averageQuantityMode</code>)</td><td>Removed 2026-11-13</td><td>None</td></tr>
+<tr><td><code>maxInvestment</code></td><td>Capital check in LegManager</td><td>Root only</td><td>Every buy (cut to lots that fit, or held back)</td></tr>
+<tr><td><code>maxProfit</code></td><td>% of <code>maxInvestment</code>; plus max-loss trip</td><td>Rupees per broker</td><td>Rupees per broker</td></tr>
+<tr><td>State</td><td>In memory + latches; restored from broker trades</td><td><code>.SimpleContinuousStrategy.&lt;userId&gt;.json</code></td><td><code>.ScaledHedgedStrategy.&lt;userId&gt;.json</code></td></tr>
+</table>
+
+<h2>ContinuousStrategy</h2>
+<ul>
+<li><b>Engine:</b> the strategy class handles entry only. All leg handling is in <code>LegManager</code>.</li>
+<li><b>Entry (T1):</b> PCR direction, re-checked every 5 minutes, opens a root leg. Window 09:30–15:00. Optional momentum veto (<code>momentumEnabled</code>, order-book imbalance). If <code>cfg.right</code> is set, PCR must agree.</li>
+<li><b>Adverse moves:</b> each level at 1x to Nx of <code>slDistance</code> (up to <code>maxLevels</code>) spawns a new opposite-direction leg. Separate hard square-off at <code>squareOffDistance</code>. Averaging into the same leg is possible (<code>averageQuantityMode</code>, <code>postAverageTargetDistance</code>).</li>
+<li><b>Target hit:</b> the leg refills at its original entry price. Refills are gated: a nested leg refills only while its parent is alive; child refills are cancelled when a leg stops refilling.</li>
+<li><b>Limits:</b> <code>maxProfit</code> is a % of <code>maxInvestment</code>; also a max-loss trip. Supports <code>cooldownSeconds</code>, <code>minPremium</code>, spawn/average quantity modes.</li>
+<li><b>Hedging:</b> none. The tree is built from stacked adverse levels.</li>
+</ul>
+
+<h2>SimpleContinuousStrategy</h2>
+<ul>
+<li><b>Entry:</b> one root per day (PCR direction, <code>initialQuantity</code> at market). With <code>onePositionPerSide: true</code> the root buys as many lots as <code>maxInvestment</code> pays for, capped at the freeze quantity.</li>
+<li><b>Exit:</b> resting limit sell at entry + <code>priceDiff</code> right after each fill. No stop loss; a leg ends only through its sell or the EOD close.</li>
+<li><b>Hedge:</b> every leg is hedged exactly once by buying the opposite option at the strike nearest the money for the same quantity. It fires when the price falls to entry − <code>priceDiff</code>, or when the resting sell fills. The hedge is itself a leg with its own sell and its own one-time hedge, so the chain is unlimited.</li>
+<li><b>Direction after a sell:</b> a profitable sell is followed by the same right. A hedge triggered by an adverse move, or by a sell at a loss, buys the opposite right.</li>
+<li><b>Caps:</b> <code>maxInvestment</code> gates only the root, never hedges. <code>maxProfit</code> in rupees per broker; on a trip all legs are closed by limit sells that lock the cap, then the strategy stays idle for the day.</li>
+<li><b>Stacking:</b> <code>onePositionPerSide</code> (off by default), or optional <code>maxLegsPerSide</code> with <code>stackRecoveryPoints</code>.</li>
+<li><b>Double-up:</b> removed 2026-11-13.</li>
+<li><b>First-order rule:</b> a root that hits its target with no hedge ever bought restarts contract selection for a fresh root instead of re-buying.</li>
+</ul>
+
+<h2>ScaledHedgedStrategy (differences from SimpleContinuous)</h2>
+<ul>
+<li><b>A. Root size:</b> always <code>initialQuantity</code>, never sized from <code>maxInvestment</code>.</li>
+<li><b>B. Hedge size:</b> <code>initialQuantity + (entry − price now) / priceDiff × initialQuantity</code>, floored to whole lots. A CE down 10 gets a PE of 2× quantity. A hedge opened by a target fill buys <code>initialQuantity</code>.</li>
+<li><b>C. Falling leg:</b> a leg that falls by <code>priceDiff</code> makes the opposite option be bought again. No double-up.</li>
+<li><b>D. One contract per right:</b> one CE and one PE contract per cycle, kept in <code>state.pair</code>. If that contract's leg is open, nothing is bought and no trigger is re-armed; a new leg opens only after it closes. (Rule dated 2026-11-17; before it the ladder added quantity to the open contract.)</li>
+<li><b>F. <code>maxInvestment</code>:</b> applies to every buy; a buy is cut to the whole lots that fit, or held back and retried when none fits. Simple applies it to the root only.</li>
+<li><b>G. Same-direction re-buy:</b> skipped when that contract already has an open leg.</li>
+<li><b><code>onePositionPerSide</code>:</b> always behaves as on; the config key is ignored.</li>
+<li><b>Extra state:</b> an unconfirmed hedge or add buy is persisted as <code>pendingHedge</code> and settled against the broker. Simple resolves unconfirmed buys too, but with no persisted record.</li>
+</ul>
+
+<h2>Shared by Simple and Scaled</h2>
+<ul>
+<li>Same PCR root and the same resting-sell-at-<code>priceDiff</code> target.</li>
+<li>No stop loss.</li>
+<li>Same rupee <code>maxProfit</code> latch.</li>
+<li>Per-day JSON state file.</li>
+<li>Own leg logic rather than <code>LegManager</code>.</li>
+</ul>
+</body>
+</html>

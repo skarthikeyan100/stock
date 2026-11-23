@@ -330,7 +330,7 @@ strategies:
   - type: RecommendationStrategy
     enabled: false
     userId: Recommendation-1
-    contract: 25500 CE
+    contract: 25700 PE
     entryPrice: 130
     targetPrice: 150
     stopLoss: 110
@@ -430,7 +430,7 @@ strategies:
     brokers:
       - paper
   - type: HighLowStrategy
-    enabled: true
+    enabled: false
     userId: HighLow-NIFTY
     quantity: 130
     target: 10
@@ -449,14 +449,15 @@ strategies:
     userId: Expiry-NIFTY
     right: CE
     maxInvestment: 100000
-    target: 10
+    maxProfit: 20000
+    target: 3
     stopLoss: 8
     driftPoints: 10
     index: NIFTY
     brokers:
       - paper
   - type: SimpleContinuousStrategy
-    enabled: true
+    enabled: false
     brokers:
       - kite
       - prism
@@ -471,12 +472,12 @@ strategies:
       ant: 50000
       prism: 50000
       breeze: 50000
-    maxProfit: 5000
+    maxProfit: 10000
     priceDiff: 10
     maxLegsPerSide: 5
     stackRecoveryPoints: 20
   - type: ScaledHedgedStrategy
-    enabled: true
+    enabled: false
     brokers:
       - kite
     initialQuantity: 260
