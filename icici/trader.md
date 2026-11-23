@@ -334,3 +334,18 @@ Rules for the report:
 - Quote values as reported. Mark anything that could not be confirmed as unconfirmed rather than assuming an outcome.
 - If the market was closed or no strategy ran, say so and still record the configuration and open positions.
 - When the day has an unresolved order or a position with no protection, put it first in carry-over and say who must act.
+
+## Updating this file (rules for every edit of trader.md)
+
+The user has had to repeat these. Follow them every time, without being told.
+
+- **Concepts only.** Write the rule, the reason in one clause, and the steps. No dates, no times, no order ids, no P&L or other figures from the
+  session that taught it, no "done on <day>", no story of what went wrong. If an example helps, make it generic.
+- **Edit, do not append.** Look for an existing section or bullet that already covers the topic and change it. A second copy of a rule,
+  or a new section for something a row or bullet already owns, is a defect. Update a table row when the topic is a tool or script.
+- **Short and checkable.** One idea per bullet; commands in code spans; a step the trader can run as written. No hedging words.
+- **Right place.** Permissions in "Permissions", tools in the table, routines in their section, standing rules in "Principles", recipes in
+  their own named section. Keep the user's own wording only where it is a quote of a rule ("user's rule: ...").
+- **Do it in the same turn.** When the user states a rule or a recipe is worked out, write it into this file in that turn, then commit and push
+  only `trader.md` (and the skill file if the same rule lives there). Do not wait to be asked, and do not ask whether to.
+- **Keep other files consistent.** If a rule here changes what a script, skill or doc says, fix that in the same turn through the fixing agent.
