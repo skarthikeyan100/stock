@@ -1029,6 +1029,19 @@ export default class ScaledHedgedStrategy extends Strategy {
                 if (missing > 0) await this.placeTripSell(leg, missing, leg.sellPrice, true, cap); // the unplaced rest rests at the same price
                 return;
             }
+            // Re-price pass over a resting trip sell the leg still books as resting: that sell may already have FILLED with its fill event not yet delivered
+            // to this strategy (live 2026-11-23 10:02:38-42: filled 88.65, the next 5 s pass re-priced it; the cancel found nothing resting and reported no fill, so
+            // a second full-size sell was placed for the closed leg, stopped only by Kite's never-short guard). Nothing is cancelled or placed while the order
+            // side's held quantity is below what the leg still holds: the events book the fill (closing the leg) or, after TRIP_FILL_WAIT_MS, the leg is settled below.
+            const heldNow = await heldQuantity(this.userId, leg.token, leg.tsym);
+            if (leg.status !== 'open' || this.remaining(leg) <= 0) return; // the fill events arrived while the position was read
+            if (heldNow !== undefined && heldNow < this.remaining(leg)) {
+                this.tripGuard.markFill(leg.id);
+                const expired = Date.now() - (this.tripGuard.fillWait(leg.id) ?? Date.now()) > TRIP_FILL_WAIT_MS;
+                if (!expired) { Log.log(`[ScaledHedgedStrategy] MAX PROFIT: ${leg.tsym} is (partly) sold per the order side (held ${heldNow} of ${this.remaining(leg)}), waiting for its fill events before re-pricing (nothing cancelled or placed)`); return; }
+                this.tripGuard.clearFill(leg.id);
+                if (heldNow === 0) { this.closeOutside(leg, 'MAX PROFIT (fill events never arrived)'); return; }
+            }
             const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
             if (res.cancelFailed) {
                 const n = this.tripGuard.fail(leg.id);
@@ -1073,6 +1086,7 @@ export default class ScaledHedgedStrategy extends Strategy {
 
     // One limit sell for `quantity` of `leg` at `price` after a maxProfit trip. `add` = the leg already has a resting sell at this price and this is its unplaced rest.
     private async placeTripSell(leg: SimpleLeg, quantity: number, price: number, add: boolean, cap: number, prev?: { qty: number; price: number }): Promise<void> {
+        if (leg.status !== 'open' || this.remaining(leg) <= 0) return; // re-read: a fill event may have closed the leg since this pass was decided (never sell a closed leg)
         try {
             const res: any = await OrderClient.getInstance().chunkedSquareOffLimit(this.userId, {
                 tradingSymbol: leg.tsym, instrumentId: leg.token, quantity, price, broker: this.brokerOrKite(), locked: true,
@@ -1143,7 +1157,7 @@ export default class ScaledHedgedStrategy extends Strategy {
     private async closeAllLegs(label: 'EOD' | 'MAX PROFIT'): Promise<void> {
         const cap = this.maxProfit();
         for (const leg of this.openLegs()) {
-            if (this.busy.has(leg.id)) continue;
+            if (leg.status !== 'open' || this.busy.has(leg.id)) continue;
             this.busy.add(leg.id);
             try {
                 if (label === 'MAX PROFIT' && cap > 0) { await this.lockProfitOnLeg(leg, cap); continue; }
