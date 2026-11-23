@@ -98,6 +98,12 @@ Before restarting `npm run processes` with any open leg or enabled strategy:
 6. If the orchestrator itself changed, restart `npm run processes`; a child restart is not enough. During market hours a code
    change is not applied to a running child unless hot restart is allowed (see `shouldApplyCodeChange` in
    `src/orchestratorPolicy.ts`).
+7. **Always reset the paper strategies after a restart of the trading process.** Paper broker state lives in memory only, so a restart
+   drops every paper position and the strategy on paper ends its cycle as "neither target nor stop", after which it places nothing. Right
+   after the restart is confirmed, reset each enabled strategy whose `brokers` is `paper` (`StrategiesClient.reset(<type>)` after `connect()`;
+   it re-arms that strategy's global max-profit latch rows for all its brokers, a paper broker is never latched, so say so if the strategy
+   also lists a real broker) and confirm from `GET /broker/paper/positions` that the new entry appears. Restart with a paper leg open only
+   when the change needs it, and say that the paper leg is lost.
 
 ### Restart-safety check and hot restart in market hours (user's rule: "hesitation costs me more")
 
