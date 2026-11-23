@@ -406,9 +406,10 @@ export function validateConfigFile(parsed: any): string[] {
         }
         // maxProfit is an AMOUNT in rupees for SimpleContinuous (the other strategies' maxProfit is a percent of maxInvestment): a '%' string
         // or a non-positive number is rejected, and the key is required (no default in code).
-        if ((s.type === 'SimpleContinuousStrategy' || s.type === 'ScaledHedgedStrategy') && s.maxProfit !== undefined && !(typeof s.maxProfit === 'number' && Number.isFinite(s.maxProfit) && s.maxProfit > 0)) {
+        if ((s.type === 'SimpleContinuousStrategy' || s.type === 'ScaledHedgedStrategy' || s.type === 'ExpiryStrategy') && s.maxProfit !== undefined && !(typeof s.maxProfit === 'number' && Number.isFinite(s.maxProfit) && s.maxProfit > 0)) {
             errors.push(`${s.type}.maxProfit must be a positive number of rupees, not a percent (got ${JSON.stringify(s.maxProfit)})`);
         }
+        // (ExpiryStrategy: the block's maxProfit is the rupee cap the global monitor uses instead of settings.maxProfit; optional there.)
         // Their maxProfit is the block's own value, or else settings.maxProfit (one number of rupees) must be set: one error per block.
         if ((s.type === 'SimpleContinuousStrategy' || s.type === 'ScaledHedgedStrategy') && s.maxProfit === undefined) {
             const g = parsed.settings?.maxProfit;

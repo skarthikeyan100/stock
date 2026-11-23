@@ -79,3 +79,6 @@ This file is a snapshot of pending/in-progress work, kept current automatically 
 ## status net vs status discrepancy (2026-11-23)
 - Restart the order process after market hours to load open-review-items.md 131 (ANT booked the last chunk's price `flprc` instead of the order's `avgprc`; ANT trade-book `tradedPrice` is a cumulative average, now read via src/ant/tradeBook.ts). `status net` already uses the fix (script, no restart).
 - Optional, when the user agrees: `node scripts/repair-closed-trades.js` (dry run) then `node scripts/repair-closed-trades.js --apply` corrects today's 5 already-written rows (ant +50.70, prism -2.60, breeze -1.95); restart the order process afterwards so its in-memory rows match Mongo.
+
+## ExpiryStrategy maxProfit 20000 (2026-11-23)
+- [DONE IN CODE, needs trading-process restart after the trader agrees; NOT LIVE-VERIFIED] Block-level rupee `maxProfit` on ExpiryStrategy is now honoured by the global max-profit monitor (see open-review-items.md 132). Trader: set `maxProfit: 20000` on the ExpiryStrategy block in config.yml (hot-reloaded each cycle once the new code runs).

@@ -4,7 +4,7 @@ import { configuredBrokersOf } from '../../util/brokerName';
 import { isWithinTradingWindow } from '../../util/marketHours';
 import { isOpenedToday } from '../../util/openedToday';
 import { exchangeForTsym } from '../../util/underlyings';
-import { globalMaxProfit } from '../../strategy/effectiveMaxProfit';
+import { effectiveMaxProfit } from '../../strategy/effectiveMaxProfit';
 import { clearPrice, LockLeg, tripSellPrice, keepTripSell, TripGuard, isNonTransientRejection, MAX_NON_TRANSIENT } from '../../strategy/maxProfitLock';
 import { latchGlobalMaxProfit, globalMaxProfitLatchedBrokers } from '../../strategy/globalMaxProfitLatch';
 import { NonFiniteAlert } from '../../strategy/finiteGuard';
@@ -20,6 +20,15 @@ import type { Strategy } from '../../strategy/strategy';
 const OWN_MAX_PROFIT = new Set([
     'ContinuousStrategy', 'SupportResistanceStrategy', 'BulkPcrStrategy', 'BulkPcrAutoStartStrategy', 'SimpleContinuousStrategy', 'ScaledHedgedStrategy',
 ]);
+// Strategy types whose block `maxProfit` is an AMOUNT IN RUPEES (per broker, same unit as the global cap): it replaces settings.maxProfit for that
+// block. For every other type a numeric block maxProfit is a percent of maxInvestment (configValidation), never read here as rupees.
+const RUPEE_BLOCK_MAX_PROFIT = new Set(['ExpiryStrategy']);
+// Cap of one instance in rupees: the block's own positive number when the type takes a rupee block value, else settings.maxProfit (through
+// effectiveMaxProfit). A '%' string, 0, a negative or a non-number block value is not a rupee cap: the global value applies, as before.
+export function capForBlock(cfg: { type?: string; maxProfit?: unknown } | undefined | null): number {
+    const own = cfg && RUPEE_BLOCK_MAX_PROFIT.has(String(cfg.type)) && typeof cfg.maxProfit === 'number' && Number.isFinite(cfg.maxProfit) && cfg.maxProfit > 0 ? cfg.maxProfit : undefined;
+    return effectiveMaxProfit(own);
+}
 const INTERVAL_MS = 5000;
 const REPRICE_AFTER_MS = 20_000;
 
@@ -123,20 +132,20 @@ async function runOnce(list: Strategy[]): Promise<void> {
     if (running || !isWithinTradingWindow()) return;
     running = true;
     try {
-        const candidates: Array<{ userId: string; brokers: string[] }> = [];
+        const candidates: Array<{ userId: string; brokers: string[]; cap: number }> = [];
         for (const s of list) {
             if (OWN_MAX_PROFIT.has(s.getClassName()) || !s.enabled || !s.stateLoaded) continue; // a disabled strategy takes no action of any kind
             const cfg = configService.getInstances().find((c) => (c.userId || c.type) === s.userId);
             if (!cfg || cfg.enabled === false) continue;
-            candidates.push({ userId: s.userId, brokers: configuredBrokersOf(cfg) });
+            candidates.push({ userId: s.userId, brokers: configuredBrokersOf(cfg), cap: capForBlock(cfg) }); // read from the live config each cycle
         }
         if (candidates.length === 0) return;
         const stats = await OrderClient.getInstance().stats();
         for (const c of candidates) {
             const latched = new Set(await globalMaxProfitLatchedBrokers(c.userId));
             for (const broker of c.brokers) {
-                // No global cap set: nothing to judge or lock (a latch set earlier today keeps blocking new buys in the order process).
-                const cap = globalMaxProfit();
+                // No cap (neither the block's own nor the global one): nothing to judge or lock (a latch set earlier today keeps blocking new buys in the order process).
+                const cap = c.cap;
                 if (!(cap > 0)) continue;
                 if (broker === 'paper') continue; // the paper broker has no global max-profit latch
                 try { await checkOne(c.userId, broker, cap, stats, latched); } catch (e) { Log.log(`[GlobalMaxProfit] ${c.userId} ${broker} check failed:`, e); }
