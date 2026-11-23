@@ -10,8 +10,11 @@ import type { CancelledListener } from './pendingOrderTracker';
 
 // The `paper` broker: not a real broker. Everything lives in this process's memory - orders, fills, positions - and nothing is read from
 // or written to Mongo (bookkeeping skips every Mongo write for broker 'paper'), so a restart forgets it all.
-//   Limit buy:   accepted at once, filled in full at its limit price a moment later (after the caller has the order id: the strategy and
-//                the reservation both need it before the fill arrives).
+//   Limit buy:   accepted at once (the caller has the order id first: the strategy and the reservation both need it). A moment later it is
+//                checked against the market like a real limit order: option price at or below the limit -> filled in full at the limit price;
+//                above it -> it RESTS in the in-memory book and is filled at the limit price by the first tick at or below it. It can be
+//                cancelled meanwhile (entry timeout, drift, reset). Without this a re-buy below the market filled instantly and an
+//                ExpiryStrategy target sell / re-buy looped 171 fills in 23 s (2026-11-23 13:29).
 //   Limit sell:  rests in the in-memory book; filled in full at its limit price by the first option tick at or above it (or at once when
 //                the last known price already is).
 //   Market exit: filled at once at the last tick price (else ANT's quote) - squareOff, marketSell.
@@ -33,6 +36,8 @@ interface PaperFill { orderId: string; user: string; tsym: string; token: string
 const orders = new Map<string, PaperOrder>();
 const filledQty = new Map<string, number>(); // orderId -> quantity filled (so a late cancel reports OrderAlreadyFilledError)
 const lastLtp = new Map<string, number>();    // ANT token -> last option tick price
+const lastTickAt = new Map<string, number>(); // ANT token -> when that tick arrived (ms)
+const FRESH_TICK_MS = 5000;                    // a tick younger than this is the market for a new limit buy; else ANT's quote is asked
 const subscribed = new Set<string>();         // tokens the book holds a tick subscription for
 const cancelledListeners: CancelledListener[] = [];
 const fills: PaperFill[] = [];             // one row per paper fill of the day, in fill order (the 'paperBook' read; lost on restart by design)
@@ -42,7 +47,7 @@ const nextId = (): string => `PAPER-${Date.now()}-${++seq}`;
 
 // Test hook: forgets every order, fill memory and price.
 export function resetPaperBook(): void {
-    orders.clear(); filledQty.clear(); lastLtp.clear(); subscribed.clear(); fills.length = 0; seq = 0;
+    orders.clear(); filledQty.clear(); lastLtp.clear(); lastTickAt.clear(); subscribed.clear(); fills.length = 0; seq = 0;
 }
 
 // The TrackerHandle shape (pendingTrackers.ts) over the in-memory book: nothing to load or poll.
@@ -140,9 +145,33 @@ export async function onPaperTick(quote: { token?: any; ltp?: number }): Promise
     const ltp = Number(quote?.ltp);
     if (!token || !(ltp > 0)) return;
     lastLtp.set(token, ltp);
+    lastTickAt.set(token, Date.now());
     for (const o of [...orders.values()]) {
-        if (o.token === token && o.action === 'Sell' && ltp >= o.price) await fillOrder(o.orderId, o.price);
+        if (o.token !== token) continue;
+        if (o.action === 'Sell' && ltp >= o.price) await fillOrder(o.orderId, o.price);
+        else if (o.action === 'Buy' && ltp <= o.price) await fillOrder(o.orderId, o.price); // a resting limit buy: the market came down to it
     }
+}
+
+// The option price a new limit buy is judged against: a fresh tick, else ANT's quote, else the last (older) tick; undefined when none is known.
+async function marketForBuy(token: string, exchange: OptionExchange): Promise<number | undefined> {
+    const seen = lastLtp.get(token);
+    if (seen !== undefined && seen > 0 && Date.now() - (lastTickAt.get(token) ?? 0) <= FRESH_TICK_MS) return seen;
+    try {
+        const q = Number(await ANT.getInstance().getScripQuote(exchange, token));
+        if (q > 0) return q;
+    } catch (e) { Log.log('[paper] no quote for a limit buy, judging it by the last tick:', e); }
+    return seen !== undefined && seen > 0 ? seen : undefined;
+}
+
+// A just-placed paper limit buy: filled at its limit when the market is at or below it, else it keeps resting (onPaperTick fills it later).
+async function settleBuy(orderId: string): Promise<void> {
+    const o = orders.get(orderId);
+    if (!o || o.action !== 'Buy') return;
+    const market = await marketForBuy(o.token, o.exchange);
+    if (!orders.has(orderId)) return; // cancelled or filled by a tick meanwhile
+    if (market !== undefined && market <= o.price) { await fillOrder(orderId, o.price); return; }
+    Log.log(`[paper] Buy limit ${o.tradingSymbol} @ ${o.price} rests (market ${market ?? 'unknown'}) for ${o.userId} (${orderId})`);
 }
 
 async function placeLimit(action: 'Buy' | 'Sell', userId: string, tradingSymbol: string, token: string, quantity: number, price: number, exchange: OptionExchange): Promise<{ orderId: string; quantity: number }> {
@@ -157,8 +186,10 @@ async function placeLimit(action: 'Buy' | 'Sell', userId: string, tradingSymbol:
     orders.set(o.orderId, o);
     Log.log(`[paper] ${action} limit ${tradingSymbol} qty=${o.quantity} price=${price} for ${userId} (${o.orderId})`);
     if (action === 'Buy') {
-        // Filled "immediately", but after the placing call has returned its order id.
-        setTimeout(() => { void fillOrder(o.orderId, price); }, 0);
+        // Held in the book (and its ticks subscribed) from the start; whether the market already allows the fill is decided a moment later,
+        // after the placing call has returned its order id.
+        holdTick(o);
+        setTimeout(() => { void settleBuy(o.orderId); }, 0);
     } else {
         holdTick(o);
         const seen = lastLtp.get(token);

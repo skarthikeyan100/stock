@@ -57,6 +57,7 @@ async function main() {
 
     console.log('paper executor: buy fills at once, after the call returned');
     resetPaperBook();
+    await onPaperTick({ token: TOK, ltp: 100 }); // the market is at the limit: a limit buy fills at once
     const placed = await PaperExecutor.placeLimitBuy(USER, TSYM, TOK, 130, 100, 'NFO');
     assert(typeof placed.orderId === 'string' && placed.orderId.startsWith('PAPER-'), 'returns an order id');
     assert(bookkeeping.trades.filter((t) => t.user === USER).length === 0, 'not booked before the caller has the id');
@@ -79,6 +80,7 @@ async function main() {
     assert(PAPER_TRACKER.find(USER, TSYM).length === 0, 'book is empty');
 
     console.log('paper executor: squareOff cancels the resting sell and sells the rest at the last tick');
+    await onPaperTick({ token: TOK, ltp: 100 });
     await PaperExecutor.placeLimitBuy(USER, TSYM, TOK, 130, 100, 'NFO');
     await wait();
     await PaperExecutor.squareOffLimit(USER, TSYM, TOK, 65, 'NFO', 130);
@@ -88,6 +90,25 @@ async function main() {
     assert(PAPER_TRACKER.find(USER, TSYM).length === 0 && !bookkeeping.trades.some((t) => t.user === USER && t.broker === 'paper'), 'resting sell cancelled, position flat');
     const flat = await PaperExecutor.squareOff(USER, TSYM, 130, 'NFO');
     assert(flat.quantity === 0, 'square-off of a flat position is an empty trade, not an error');
+
+    console.log('paper executor: a limit buy below the market rests, fills at its limit on a tick at or below it, and can be cancelled');
+    await onPaperTick({ token: TOK, ltp: 103 });
+    const rest = await PaperExecutor.placeLimitBuy(USER, TSYM, TOK, 130, 100, 'NFO');
+    await wait();
+    assert(PAPER_TRACKER.find(USER, TSYM).length === 1 && !bookkeeping.trades.some((t) => t.user === USER && t.broker === 'paper'), 'buy at 100 with the market at 103 rests, nothing booked');
+    await onPaperTick({ token: TOK, ltp: 101 });
+    assert(PAPER_TRACKER.find(USER, TSYM).length === 1, 'tick 101 above the limit: still resting');
+    await onPaperTick({ token: TOK, ltp: 99.5 });
+    const got = bookkeeping.trades.filter((t) => t.user === USER && t.broker === 'paper');
+    assert(got.length === 1 && got[0].quantity === 130 && got[0].price === 100 && PAPER_TRACKER.find(USER, TSYM).length === 0, 'tick 99.5: filled at the limit 100');
+    await PaperExecutor.squareOff(USER, TSYM, 130, 'NFO');
+    await onPaperTick({ token: TOK, ltp: 103 });
+    const rest2 = await PaperExecutor.placeLimitBuy(USER, TSYM, TOK, 130, 100, 'NFO');
+    await wait();
+    await PaperExecutor.cancelOrder(rest2.orderId);
+    await onPaperTick({ token: TOK, ltp: 99 });
+    assert(PAPER_TRACKER.find(USER, TSYM).length === 0 && !bookkeeping.trades.some((t) => t.user === USER && t.broker === 'paper'), 'a cancelled resting buy never fills');
+    void rest;
 
     console.log('paper executor: nothing is stored in Mongo');
     assert(!bookkeeping.trades.some((t) => t.broker === 'paper' && t.user === USER), 'no leftover');
