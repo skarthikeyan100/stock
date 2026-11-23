@@ -65,6 +65,9 @@ export interface Leg {
     exit?: ExitKind;
     exitAttempts?: number;
     exitRetryAt?: number;
+    topUpFails?: number; // consecutive failed attempts to extend the exit over later fills (backs the retry off; reset on success)
+    topUpRetryAt?: number; // earliest time the next top-up is tried after a failure (a NEW fill bypasses it)
+    topUpFailedAt?: number; // filledQty when the last top-up failed
     exitQty?: number; // quantity the exit currently covers; below filledQty while later partial fills still need protecting
     exitTarget?: number; // RecommendationStrategy: the target price the exit was placed at (rebased to the fill), so a later fill's resting sell uses the same one
     stop?: number; // tick-driven stop: market out when the option's LTP falls to this (set only for a self-managed exit)
@@ -684,9 +687,19 @@ export abstract class LimitEntryStrategy extends Strategy {
                 return;
             }
             const chunk = leg.chunks?.find((c) => c.id === String(trade.brokerOrderId));
-            if (chunk) chunk.filled += qty;
-            leg.filledQty += qty;
-            leg.boughtValue += qty * price;
+            let bookQty = qty;
+            if (chunk) {
+                // One order can never fill more than it was placed for: anything above is a duplicate / mis-sized delivery, not a late fill.
+                const room = Math.max(0, chunk.qty - chunk.filled);
+                if (qty > room) {
+                    Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: fill of ${qty} for order ${trade.brokerOrderId} exceeds what it has left (${room} of ${chunk.qty}) - booking ${room}`);
+                    bookQty = room;
+                }
+                if (bookQty <= 0) return;
+                chunk.filled += bookQty;
+            }
+            leg.filledQty += bookQty;
+            leg.boughtValue += bookQty * price;
             if (leg.status === 'resting' || leg.status === 'placing') leg.status = 'filled';
             if (leg.exit && leg.filledQty > leg.qty) Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: a late entry fill took the position to ${leg.filledQty} (ordered ${leg.qty}) - extending the exit over the extra`);
             this.save();
@@ -907,6 +920,8 @@ export abstract class LimitEntryStrategy extends Strategy {
     private toppingUp = new Set<Leg>();
     private async topUp(leg: Leg): Promise<void> {
         if (this.toppingUp.has(leg) || leg.closing) return;
+        // After a failure the retry backs off (5 s, 15 s, 45 s ... up to 5 min); a NEW fill (filledQty changed) is tried at once.
+        if (leg.topUpRetryAt !== undefined && Date.now() < leg.topUpRetryAt && leg.topUpFailedAt === leg.filledQty) return;
         this.toppingUp.add(leg);
         try {
             let covered = leg.exitQty ?? 0;
@@ -915,16 +930,46 @@ export abstract class LimitEntryStrategy extends Strategy {
                 try {
                     await this.topUpExit(leg, target - covered);
                 } catch (e: any) {
-                    Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: could not extend the exit over ${target - covered} more filled (covered ${covered}/${leg.filledQty}) - that part is UNPROTECTED until the next housekeeping retry: ${e?.message ?? e}`);
+                    await this.topUpFailed(leg, covered, target, e);
                     break;
                 }
                 covered = target;
                 leg.exitQty = covered;
+                leg.topUpFails = undefined; leg.topUpRetryAt = undefined; leg.topUpFailedAt = undefined;
             }
         } finally {
             this.toppingUp.delete(leg);
         }
         this.save();
+    }
+
+    // A failed exit extension: back the retry off, alert only the first few times, and when the broker holds LESS than this leg believes (two failures
+    // in a row agree) correct the leg down to the broker's position instead of retrying a sell that can never be placed.
+    private async topUpFailed(leg: Leg, covered: number, target: number, e: any): Promise<void> {
+        const fails = (leg.topUpFails ?? 0) + 1;
+        leg.topUpFails = fails;
+        leg.topUpFailedAt = leg.filledQty;
+        leg.topUpRetryAt = Date.now() + Math.min(300_000, 5_000 * Math.pow(3, fails - 1));
+        const msg = `${leg.broker} ${leg.tsym}: could not extend the exit over ${target - covered} more filled (covered ${covered}/${leg.filledQty}) - that part is UNPROTECTED until the next retry (attempt ${fails}): ${e?.message ?? e}`;
+        if (fails <= 3) Log.log(`[${this.logTag}] ALERT: ${msg}`);
+        else if (fails % 10 === 0) Log.log(`[${this.logTag}] ${msg}`);
+        if (fails < 2) return;
+        try {
+            const open = await OrderClient.getInstance().getOpenTrades(this.userId);
+            const held = open.filter((t) => t.tsym === leg.tsym && (t.broker ?? 'kite') === leg.broker).reduce((sum, t) => sum + Math.max(0, Number(t.quantity) || 0), 0);
+            const tracked = leg.filledQty - leg.soldQty;
+            if (held >= tracked || leg.filledQty !== leg.topUpFailedAt) return;
+            const newFilled = held + leg.soldQty;
+            Log.log(`[${this.logTag}] ALERT: ${leg.broker} ${leg.tsym}: the broker holds ${held} but this leg tracked ${tracked} unsold (filled ${leg.filledQty}) - correcting the leg to filled ${newFilled}; no further exit extension is retried`);
+            const avg = leg.filledQty > 0 ? leg.boughtValue / leg.filledQty : 0;
+            leg.filledQty = newFilled;
+            leg.boughtValue = avg * newFilled;
+            if ((leg.exitQty ?? 0) > newFilled) leg.exitQty = newFilled;
+            if ((leg.exitQty ?? 0) >= newFilled) { leg.topUpFails = undefined; leg.topUpRetryAt = undefined; leg.topUpFailedAt = undefined; }
+            this.save();
+        } catch (err) {
+            Log.log(`[${this.logTag}] ${leg.broker} ${leg.tsym}: could not read the broker position to check the leg (${(err as any)?.message ?? err})`);
+        }
     }
 
     private async entryComplete(leg: Leg): Promise<void> {
