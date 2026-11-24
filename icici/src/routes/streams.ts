@@ -9,7 +9,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import StrategiesClient from '../ipc/StrategiesClient';
 import { DataLink } from '../ipc/DataLink';
 import { isLoopback } from '../middleware/cloudflareOnly';
-import { demoLeaseHeld, addSubscriberIp, removeSubscriberIp, ipHoldsToken } from './demoLease';
+import { demoLeaseHeld, addSubscriberIp, removeSubscriberIp, ipHoldsToken, mergeRestoredHold } from './demoLease';
 import { asyncRouter } from './asyncRouter';
 import { resolveUser, requireAuth, requireAdmin, requireSelfOrAdmin } from './session';
 
@@ -200,7 +200,7 @@ router.get('/demo/subscribe', async function (req, res) {
                 try {
                     await strategiesClient.unsubscribeToken(token);
                 } catch (e) {
-                    demoSubscribed.set(token, 1); demoLastSubscribeAt.set(token, Date.now()); if (ips) demoTokenIps.set(token, ips); // the hold is still in place: keep counting it so a retry can release it
+                    const m = mergeRestoredHold(ips, demoSubscribed.get(token), demoTokenIps.get(token)); demoSubscribed.set(token, m.count); demoLastSubscribeAt.set(token, Date.now()); demoTokenIps.set(token, m.ips); // merged, not overwritten: a subscribe during the await created fresh entries; the hold is still in place: keep counting it so a retry can release it
                     throw e;
                 }
             } else {

@@ -21,3 +21,11 @@ export function removeSubscriberIp(ips: Map<string, number>, ip: string): void {
 export function ipHoldsToken(ips: Map<string, number> | undefined, ip: string): boolean {
     return (ips?.get(ip) ?? 0) > 0;
 }
+
+// Restores a token's hold after a failed unsubscribe, MERGING into whatever a concurrent subscribe created during the await (count added, per-IP counts
+// summed) instead of overwriting it, so the new holder is not lost. `current*` are the entries now in the maps (undefined = none).
+export function mergeRestoredHold(restoredIps: Map<string, number> | undefined, currentCount: number | undefined, currentIps: Map<string, number> | undefined, restoredCount = 1): { count: number; ips: Map<string, number> } {
+    const ips = new Map<string, number>(currentIps ?? []);
+    for (const [ip, n] of restoredIps ?? []) ips.set(ip, (ips.get(ip) ?? 0) + n);
+    return { count: (currentCount ?? 0) + restoredCount, ips };
+}

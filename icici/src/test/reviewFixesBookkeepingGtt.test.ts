@@ -8,7 +8,7 @@ import bookkeeping from '../processes/order/bookkeeping';
 import Kite from '../kite/Kite';
 import Mongo from '../tools/mongo';
 import { cancelProtection } from '../processes/order/attachProtection';
-import { cancelAndRecheck, withSellLock, OrderAlreadyFilledError, setSellLockMaxWaitMsForTest } from '../processes/order/BrokerExecutor';
+import { cancelAndRecheck, cancelOrderWithFillRecheck, withSellLock, OrderAlreadyFilledError, setSellLockMaxWaitMsForTest } from '../processes/order/BrokerExecutor';
 
 setSellLockMaxWaitMsForTest(300);
 
@@ -51,8 +51,8 @@ async function main() {
 
     // 2. cancelProtection
     const deleted: number[] = [];
-    let failId = -1;
-    (Kite.getInstance() as any).deleteGTT = async (id: number) => { if (id === failId) throw new Error('boom'); deleted.push(id); };
+    let failId = -1; let failMsg = 'boom';
+    (Kite.getInstance() as any).deleteGTT = async (id: number) => { if (id === failId) throw { status: 'error', message: failMsg, error_type: 'InputException' }; deleted.push(id); };
     const updates: any[] = [];
     (Mongo as any).getInstance = () => ({ db: { collection: () => ({ updateMany: async (q: any, u: any) => { updates.push(q); } }) } });
     const r = bookkeeping.trades.find((t) => t.tsym === 'NIFTYRV2')!;
@@ -65,12 +65,27 @@ async function main() {
     let threw = false;
     try { await cancelProtection('RvUser', 'kite', 'NIFTYRV2'); } catch { threw = true; }
     assert(threw && r.gttTriggerId == null && (r.extraGttTriggerIds ?? []).join() === '22', 'failed extra delete throws and keeps that id');
+    // already-gone GTT (Kite not found) is forgotten like a successful delete; other errors still throw
+    r.gttTriggerId = 31; r.extraGttTriggerIds = undefined; failId = 31; failMsg = 'Trigger not found'; updates.length = 0;
+    await cancelProtection('RvUser', 'kite', 'NIFTYRV2');
+    assert(r.gttTriggerId == null && JSON.stringify(updates[0]?.gttTriggerId) === '{"$in":[31]}', 'not-found delete is treated as gone: id cleared in memory and Mongo');
+    r.gttTriggerId = 32; failId = 32; failMsg = 'No response from server with error code: ECONNRESET';
+    threw = false;
+    try { await cancelProtection('RvUser', 'kite', 'NIFTYRV2'); } catch { threw = true; }
+    assert(threw && r.gttTriggerId === 32, 'a network error still throws and keeps the id');
 
     // 3. cancelAndRecheck
     let untracked = false;
     let n = 0;
     await cancelAndRecheck({ orderId: 'o1', label: 't', cancel: async () => {}, isFilled: async () => { if (++n === 2) throw new Error('net'); return { filledQuantity: 0, terminal: true }; }, untrack: () => { untracked = true; } });
-    assert(untracked, 'second read failure after a clean cancel still untracks');
+    assert(!untracked, 'second read failure after a clean cancel keeps the order tracked (a late partial must still be booked by polling)');
+    let silenced = false;
+    n = 0;
+    await cancelOrderWithFillRecheck({ orderId: 'o1b', label: 't', cancel: async () => {}, isFilled: async () => { if (++n === 2) throw new Error('net'); return { filledQuantity: 0, terminal: true }; }, untrack: () => { untracked = true; }, beginCancel: () => {}, endCancel: () => {}, silenceListeners: () => { silenced = true; } });
+    assert(!untracked && silenced, 'wrapper does not fail the cancel and silences listeners while the order stays tracked');
+    n = 0; untracked = false;
+    await cancelAndRecheck({ orderId: 'o1c', label: 't', cancel: async () => {}, isFilled: async () => ({ filledQuantity: 0, terminal: true }), untrack: () => { untracked = true; } });
+    assert(untracked, 'two clean reads still untrack');
     n = 0; untracked = false;
     let err: any;
     try { await cancelAndRecheck({ orderId: 'o2', label: 't', cancel: async () => {}, isFilled: async () => ({ filledQuantity: ++n === 2 ? 5 : 0, terminal: true }), untrack: () => { untracked = true; } }); } catch (e) { err = e; }

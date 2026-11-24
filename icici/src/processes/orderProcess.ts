@@ -1573,20 +1573,22 @@ async function loadEodMarker(): Promise<{ brokers?: Record<string, { ok?: boolea
     } catch { return null; }
 }
 
-function runEodRepair(context: string, brokers: readonly (typeof EOD_BROKERS)[number][] = EOD_BROKERS): Promise<Record<string, EodBrokerReport>> {
+// readOnlyFills (the automatic re-read for a parked Sell, intraday): no implied-price flat closes and no eodReconcileRuns marker, so it can neither book a guess nor
+// overwrite today's EOD marker.
+function runEodRepair(context: string, brokers: readonly (typeof EOD_BROKERS)[number][] = EOD_BROKERS, readOnlyFills = false): Promise<Record<string, EodBrokerReport>> {
     if (eodRun) return eodRun;
     const run = (async () => {
         Log.log(`[order] End-of-day sync starting (${context}) for ${brokers.join(', ')}`);
         const reports: Record<string, EodBrokerReport> = {};
         for (const b of brokers) {
-            reports[b] = await bookkeeping.eodRepairBroker(b);
+            reports[b] = await bookkeeping.eodRepairBroker(b, { skipImpliedCloses: readOnlyFills });
             const r = reports[b];
             Log.log(`[order] EOD sync ${b}: ${r.ok ? 'ok' : 'FAILED'}${r.skipped ? ` (${r.skipped})` : ''}${r.error ? ` - ${r.error}` : ''}; booked ${r.bookedFills} fill(s) from the broker's own fills and ${r.bookedFlat} flat close(s) at an implied price; wrote ${r.repairedClosed} missing closed trade(s) from the fills; ${r.mismatches.length} unattributed difference(s)`);
         }
         // Order book: let the pending-limit-order trackers resolve what the brokers now say (they already poll every 15 s; this is one more pass).
         for (const name of TRACKER_BROKERS) await TRACKERS[name].poll().catch((e: any) => Log.log(`[order] EOD sync: pending ${name} order poll failed:`, e?.message ?? e));
         exitMonitor.reconcileFromTrades(bookkeeping.trades);
-        try {
+        if (!readOnlyFills) try {
             const set: Record<string, unknown> = { updatedAt: new Date() };
             // afterClose: only a run made at/after the EOD sync time counts as "the EOD sync is done" - an intraday /reconcile or `npm run sync` must not stop the scheduled one.
             const afterClose = isPastTime(effectiveEodReconcileTime(), '15:45');
@@ -1624,7 +1626,7 @@ function requestUnresolvedSellSync(broker: string, tsym: string): void {
         try {
             while (reconcileInFlight || eodRun) await (eodRun ?? reconcileInFlight)?.catch(() => undefined);
             Log.log(`[order] unresolved Sell on ${b} (${tsym}): re-reading the broker trade book`);
-            await runEodRepair(`unresolved Sell fill ${tsym}`, [b]);
+            await runEodRepair(`unresolved Sell fill ${tsym}`, [b], true);
         } catch (e: any) {
             Log.log(`[order] ALERT: sync for unresolved Sell on ${b} failed:`, e?.message ?? e);
         } finally { unresolvedSyncPending.delete(b); }
@@ -1808,7 +1810,7 @@ export async function startOrderProcess() {
     // The broker -> Mongo sync is an END-OF-DAY job (user's design, 2026-11-11), not a periodic one: it runs once after the close (eodReconcileTick) and
     // on demand (`npm run sync` -> POST /sync). No broker is read intraday for it.
     guardedInterval('eodReconcile', eodReconcileTick, 60_000);
-    setInterval(unresolvedFillsTick, 5 * 60_000).unref();
+    guardedInterval('unresolvedFillsTick', async () => unresolvedFillsTick(), 5 * 60_000);
     for (const name of TRACKER_BROKERS) guardedInterval(`pollPending${name === 'kite' ? '' : name[0].toUpperCase() + name.slice(1)}LimitOrders`, () => TRACKERS[name].poll(), 15_000);
     // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
     // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than

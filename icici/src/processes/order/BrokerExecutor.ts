@@ -207,7 +207,9 @@ export async function cancelOrderWithFillRecheck(params: Parameters<typeof cance
 }): Promise<void> {
     params.beginCancel();
     try {
-        await cancelAndRecheck(params);
+        // false = the second post-cancel read failed and the order was left tracked: the poller will book any late partial from the
+        // CANCELLED status, but must not tell the cancelled listeners (this caller owns the remainder), same as after a race-window fill.
+        if (!(await cancelAndRecheck(params))) params.silenceListeners();
     } catch (e) {
         if (e instanceof OrderAlreadyFilledError) params.silenceListeners();
         throw e;
@@ -242,7 +244,7 @@ export async function cancelAndRecheck(params: {
     // risking a double-sell if both eventually fill.
     isFilled: () => Promise<{ filledQuantity: number; terminal: boolean }>;
     untrack: () => void;
-}): Promise<void> {
+}): Promise<boolean> { // true = untracked; false = left tracked because the second post-cancel read could not be completed
     let cancelFailed = false;
     let cancelError: unknown;
     try {
@@ -301,11 +303,13 @@ export async function cancelAndRecheck(params: {
         }
     } catch (e) {
         if (e instanceof OrderAlreadyFilledError) throw e;
-        // The cancel is already confirmed clean and the first read showed no fill: this extra look is best-effort, so a failed read must not
-        // turn a confirmed cancel into a reported failure.
-        Log.log(`[order] ${params.label}: second post-cancel read of ${params.orderId} failed - cancel was confirmed, untracking:`, e);
+        // The cancel is confirmed clean, so this must not be reported as a failure; but the read exists to catch a partial fill the first
+        // read missed, so on failure leave the order tracked (the poller books any partial from the CANCELLED status) instead of untracking.
+        Log.log(`[order] ${params.label}: second post-cancel read of ${params.orderId} failed - cancel was confirmed, leaving tracked so polling resolves it:`, e);
+        return false;
     }
     params.untrack();
+    return true;
 }
 
 // Broker-agnostic order-placement contract - see kiteExecutor.ts,

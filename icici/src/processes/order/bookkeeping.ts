@@ -201,7 +201,7 @@ class OrderBookkeeping {
     private markSellBooked(id: string | undefined | null): void {
         if (id == null || id === '') return;
         this.bookedFillIds.add(String(id));
-        this.unresolvedFills.delete(String(id));
+        this.dropParked(String(id));
     }
     // Sell fills that arrived with an unusable price and were deliberately NOT booked (see recordFill); cleared when the same order is later booked.
     private unresolvedFills: Map<string, { tsym: string; user: string; broker?: string; quantity: number; brokerOrderId?: string; at: Date; alertedAt?: number; seen: number }> = new Map();
@@ -210,14 +210,62 @@ class OrderBookkeeping {
     // id-less fill is keyed broker|user|tsym|qty: a redelivery (poller / sync every cycle) refreshes that entry instead of adding one. Two
     // genuinely distinct id-less unpriced Sells of the same size on one contract collapse into one entry (accepted: the alert still shows).
     private static readonly MAX_UNRESOLVED = 200;
+    // Parked entries are mirrored in Mongo ('unresolvedSells', _id = the map key): written on park, deleted on every clear, reloaded by
+    // restoreOpenTradesFromMongo. Without it an order-process restart (which restores open positions from Mongo and reads no broker) lost the
+    // parked Sell, its repeated ALERT and the trade-book sync trigger while the position stayed open. Write failures are logged, memory still holds.
+    private persistParked(key: string): void {
+        const f = this.unresolvedFills.get(key);
+        if (!f) return;
+        try {
+            const col = Mongo.getInstance()?.db?.collection('unresolvedSells');
+            if (!col) return;
+            const { alertedAt: _a, ...doc } = f;
+            Promise.resolve(col.replaceOne({ _id: key } as any, { ...doc, updatedAt: new Date() } as any, { upsert: true }))
+                .catch((e: any) => Log.log(`[order] ALERT: could not persist parked Sell ${key} (memory still holds it; lost on restart):`, e?.message ?? e));
+        } catch (e: any) { Log.log(`[order] ALERT: could not persist parked Sell ${key}:`, e?.message ?? e); }
+    }
+    private dropParked(key: string): void {
+        if (!this.unresolvedFills.delete(key)) return;
+        try {
+            const col = Mongo.getInstance()?.db?.collection('unresolvedSells');
+            if (!col) return;
+            Promise.resolve(col.deleteOne({ _id: key } as any))
+                .catch((e: any) => Log.log(`[order] ALERT: could not delete persisted parked Sell ${key} (it may reappear after a restart):`, e?.message ?? e));
+        } catch (e: any) { Log.log(`[order] ALERT: could not delete persisted parked Sell ${key}:`, e?.message ?? e); }
+    }
+    // Startup (called at the end of restoreOpenTradesFromMongo, after positions are restored). Reloads today's parked Sells whose contract is still
+    // open for that broker/user; entries from an earlier day or for a contract that is flat now are moot and are deleted.
+    async restoreUnresolvedSells(): Promise<number> {
+        let n = 0;
+        try {
+            const col = Mongo.getInstance()?.db?.collection('unresolvedSells');
+            if (!col) return 0;
+            const rows: any[] = await col.find({}).toArray();
+            for (const r of rows) {
+                const key = String(r._id);
+                if (this.unresolvedFills.has(key)) continue;
+                const broker = r.broker ?? 'kite', user = r.user || 'Default';
+                const at = new Date(r.at);
+                const open = this.trades.some((x) => (x.broker ?? 'kite') === broker && (x.user || 'Default') === user && x.tsym === r.tsym && Number(x.quantity) > 0);
+                if (!open || !(at.getTime() >= OrderBookkeeping.startOfDay().getTime())) { await col.deleteOne({ _id: key } as any); continue; }
+                this.unresolvedFills.set(key, { tsym: r.tsym, user, broker: r.broker, quantity: Number(r.quantity), brokerOrderId: r.brokerOrderId, at, seen: Number(r.seen) || 1 });
+                n++;
+            }
+            if (n > 0) Log.log(`[order] ALERT: ${n} parked unresolved Sell(s) restored from Mongo after a restart (position still open, Sell not booked): ${this.getUnresolvedFills().map((f) => `${f.user} ${f.tsym} qty ${f.quantity} order ${f.brokerOrderId ?? 'unknown'}`).join('; ')}`);
+        } catch (e: any) {
+            Log.log('[order] ALERT: could not reload parked unresolved Sells from Mongo:', e?.message ?? e);
+        }
+        return n;
+    }
     private parkUnresolvedSell(t: Trade): void {
         const key = t.brokerOrderId != null ? String(t.brokerOrderId) : `${this.unresolvedKey(t)}|noid|${Number(t.quantity)}`;
         const prev = this.unresolvedFills.get(key);
         this.unresolvedFills.set(key, { tsym: t.tsym, user: t.user || 'Default', broker: t.broker, quantity: Number(t.quantity), brokerOrderId: t.brokerOrderId, at: prev?.at ?? new Date(), alertedAt: prev?.alertedAt, seen: (prev?.seen ?? 0) + 1 });
+        this.persistParked(key);
         while (this.unresolvedFills.size > OrderBookkeeping.MAX_UNRESOLVED) {
             const oldest = this.unresolvedFills.keys().next().value as string;
             const ev = this.unresolvedFills.get(oldest);
-            this.unresolvedFills.delete(oldest);
+            this.dropParked(oldest);
             Log.log(`[order] ALERT: unresolved-sell list is full (${OrderBookkeeping.MAX_UNRESOLVED}); evicted the oldest parked Sell without it being booked: user ${ev?.user}, ${ev?.tsym}, broker ${ev?.broker ?? 'kite'}, qty ${ev?.quantity}, order ${ev?.brokerOrderId ?? 'unknown'}${OrderBookkeeping.seenText(ev) ? `, ${OrderBookkeeping.seenText(ev)}` : ''}`);
         }
     }
@@ -229,20 +277,20 @@ class OrderBookkeeping {
     // an id claimed by a delivery still mid-booking (which may yet throw) or one merely found stored in Mongo proves nothing and stays parked. Only
     // that order's own entry may go - never the quantity or flat rules, which are limited to a Sell booked just now. (An unpriced redelivery returns before it.)
     private clearParkedSellById(t: Trade): void {
-        if (t.action === 'Sell' && t.brokerOrderId != null && this.bookedFillIds.has(String(t.brokerOrderId))) this.unresolvedFills.delete(String(t.brokerOrderId));
+        if (t.action === 'Sell' && t.brokerOrderId != null && this.bookedFillIds.has(String(t.brokerOrderId))) this.dropParked(String(t.brokerOrderId));
     }
     // hadRow: the contract had a tracked row when this Sell was booked. A Sell against an untracked contract booked nothing, so it is no proof
     // the contract is flat (untracked != closed): the flat rule is skipped then.
     private clearParkedSells(t: Trade, hadRow = true): void {
         if (!hadRow) return; // a Sell that reduced no tracked row proves nothing was booked: every parked entry stays
-        if (t.brokerOrderId != null) this.unresolvedFills.delete(String(t.brokerOrderId));
-        this.unresolvedFills.delete(`${this.unresolvedKey(t)}|noid|${Number(t.quantity)}`);
+        if (t.brokerOrderId != null) this.dropParked(String(t.brokerOrderId));
+        this.dropParked(`${this.unresolvedKey(t)}|noid|${Number(t.quantity)}`);
         const broker = t.broker ?? 'kite', user = t.user || 'Default';
         if (this.trades.some((x) => (x.broker ?? 'kite') === broker && (x.user || 'Default') === user && x.tsym === t.tsym && Number(x.quantity) > 0)) return;
         for (const [k, v] of this.unresolvedFills) {
             if ((v.broker ?? 'kite') !== broker || v.user !== user || v.tsym !== t.tsym) continue;
             Log.log(`[order] Parked Sell dropped by the flat rule (${t.tsym} is flat after order ${t.brokerOrderId ?? 'unknown'}): user ${v.user}, broker ${broker}, qty ${v.quantity}, order ${v.brokerOrderId ?? 'unknown'}, seen ${v.seen}x`);
-            this.unresolvedFills.delete(k);
+            this.dropParked(k);
         }
     }
     // An entry with an order id counts redeliveries of that order; only an id-less entry merges distinct same-size sells.
@@ -1212,6 +1260,13 @@ class OrderBookkeeping {
                 // A Sell booked at 0 would book (0 - entry) * qty as realized loss and feed the drawdown/lockout. Do not book it: no realizedPnL, no
                 // userPnL, no Trade doc, no change to the tracked position, and the order id is NOT claimed so a later redelivery of this fill
                 // (poller, trade-book sync) with a usable price is booked normally. The unresolved fill stays visible via getUnresolvedFills().
+                // A redelivery of a Sell this process already claimed or booked (a duplicate with a bad price) must not be parked: nothing could ever
+                // clear that entry (the Sell is booked), giving a false 'NOT booked' ALERT and a trade-book sync until restart.
+                const dupId = tradeEvent.brokerOrderId;
+                if (dupId != null && (this.processedFillIds.has(dupId) || this.bookedFillIds.has(String(dupId)))) {
+                    Log.log(`[order] Ignoring redelivered Sell for broker order ${dupId} (${tradeEvent.tsym}) with unusable price ${tradeEvent.price} - already processed, not parked`);
+                    return;
+                }
                 Log.log(`[order] ALERT: Sell fill price ${tradeEvent.price} is unusable (${tradeEvent.tsym}, user ${tradeEvent.user}, order ${tradeEvent.brokerOrderId}, qty ${tradeEvent.quantity}) - NOT booked; position left open in memory, reconcile against the broker / book it with the real price`);
                 this.parkUnresolvedSell(tradeEvent);
                 // Actively resolve: ask the order process to re-read the broker's trade book (it debounces and respects the in-flight sync guards).
@@ -1897,6 +1952,7 @@ class OrderBookkeeping {
             }
             this.mergeRestored(restored);
             await this.restoreShortTradesFromMongo(db);
+            await this.restoreUnresolvedSells();
             result.restored = restored.length;
             result.ok = true;
             Log.log(`[order] Restored ${restored.length} open trade(s) from Mongo alone (${result.contracts} live contract(s) with a recent Buy; no broker was read)`);
@@ -2942,7 +2998,9 @@ class OrderBookkeeping {
     }
 
     // One broker's end-of-day repair. Never throws.
-    async eodRepairBroker(broker: BrokerKey): Promise<EodBrokerReport> {
+    // skipImpliedCloses: do not book flat closes at an implied price (used by the automatic intraday re-read for a parked Sell: it may only book fills the broker
+    // really reports; implied-price closes stay with the scheduled EOD sync and the user's on-demand POST /sync).
+    async eodRepairBroker(broker: BrokerKey, opts: { skipImpliedCloses?: boolean } = {}): Promise<EodBrokerReport> {
         const report: EodBrokerReport = { ok: false, bookedFills: 0, bookedFlat: 0, repairedClosed: 0, mismatches: [] };
         try {
             const restored = await this.restoreOpenTradesFromMongo(); // idempotent: memory must equal Mongo before it is compared with the broker
@@ -2964,7 +3022,7 @@ class OrderBookkeeping {
             const fills = await this.readBrokerFills(broker);
             if (fills) report.bookedFills += await this.bookMissingSellFills(broker, fills, rows, report.mismatches);
             else report.mismatches.push({ kind: 'unattributedFill', broker, tsym: '*', note: 'the broker trade book could not be read - closes were booked from position totals only' });
-            report.bookedFlat = await this.syncExternalCloses(broker, 0); // contracts flat at the broker with no exact fill: implied price
+            if (!opts.skipImpliedCloses) report.bookedFlat = await this.syncExternalCloses(broker, 0); // contracts flat at the broker with no exact fill: implied price
             this.collectEodMismatches(broker, (await this.readBrokerRows(broker)) ?? rows, report.mismatches);
             for (const m of report.mismatches) Log.log(`[order] ALERT: EOD sync ${broker}: ${m.kind} ${m.tsym}${m.brokerQty != null ? ` broker=${m.brokerQty}` : ''}${m.mongoQty != null ? ` mongo=${m.mongoQty}` : ''}${m.note ? ' - ' + m.note : ''}`);
             report.ok = true;

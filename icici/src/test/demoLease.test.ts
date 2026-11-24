@@ -1,5 +1,5 @@
 import assert from 'assert';
-import { demoLeaseHeld, addSubscriberIp, removeSubscriberIp, ipHoldsToken } from '../routes/demoLease';
+import { demoLeaseHeld, addSubscriberIp, removeSubscriberIp, ipHoldsToken, mergeRestoredHold } from '../routes/demoLease';
 
 const open = new Map<string, number>([['1.1.1.1', 1]]);
 assert.strictEqual(demoLeaseHeld(new Map([['1.1.1.1', 1]]), open), true, 'subscriber IP still streaming -> held');
@@ -26,5 +26,12 @@ assert.strictEqual(demoLeaseHeld(new Map([['1.1.1.1', 1]]), new Map()), false, '
     assert.strictEqual(ipHoldsToken(undefined, '1.1.1.1'), false, 'no IP map -> rejected');
     removeSubscriberIp(ips, '1.1.1.1');
     assert.strictEqual(ipHoldsToken(ips, '1.1.1.1'), false, 'IP that already released its subscriptions may not unsubscribe again');
+}
+{
+    const r = mergeRestoredHold(new Map([['1.1.1.1', 1]]), undefined, undefined);
+    assert.strictEqual(r.count, 1); assert.deepStrictEqual([...r.ips], [['1.1.1.1', 1]]);
+    const m = mergeRestoredHold(new Map([['1.1.1.1', 1]]), 2, new Map([['1.1.1.1', 1], ['2.2.2.2', 1]]));
+    assert.strictEqual(m.count, 3, 'concurrent holders kept plus the restored one');
+    assert.strictEqual(m.ips.get('1.1.1.1'), 2); assert.strictEqual(m.ips.get('2.2.2.2'), 1);
 }
 console.log('demoLease: all passed');

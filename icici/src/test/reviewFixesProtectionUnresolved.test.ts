@@ -8,6 +8,7 @@ import bookkeeping from '../processes/order/bookkeeping';
 import Kite from '../kite/Kite';
 import * as exitMonitor from '../processes/order/exitMonitor';
 import Log from '../util/Log';
+import Mongo from '../tools/mongo';
 import { cancelProtection } from '../processes/order/attachProtection';
 
 function assert(c: boolean, m: string) { console.log(`  ${c ? 'PASS' : 'FAIL'}: ${m}`); if (!c) process.exitCode = 1; }
@@ -94,12 +95,13 @@ async function main() {
     await bookkeeping.recordFill(fill('Buy', 'NIFTYPU6', 200, 100, 'pub6'));
     await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, 110, 'pub6x'));
     await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 40, NaN, undefined));
-    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, NaN, 'pub6x'));
-    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, NaN, 'pub6x'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, NaN, 'pub6p'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, NaN, 'pub6p'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, NaN, 'pub6x')); // already booked above: not parked
     assert(c6() === 2, 'unpriced redelivery of an id stays parked (one entry per id)');
-    assert(bookkeeping.getUnresolvedFills().find((f) => f.brokerOrderId === 'pub6x')?.seen === 2, 'entry counts times seen');
-    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, 110, 'pub6x'));
-    assert(c6() === 1, 'already-processed redelivery with a price clears that order id only');
+    assert(bookkeeping.getUnresolvedFills().find((f) => f.brokerOrderId === 'pub6p')?.seen === 2, 'entry counts times seen');
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, 110, 'pub6p'));
+    assert(c6() === 1, 'a priced delivery of the parked order books it and clears that order id only');
     assert(bookkeeping.getUnresolvedFills().some((f) => f.tsym === 'NIFTYPU6' && f.quantity === 40), 'the other (id-less) entry is untouched');
 
     // 7. A Sell against an untracked contract (no row) does not flat-clear parked entries of that contract.
@@ -117,9 +119,9 @@ async function main() {
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
     (bookkeeping as any)._processTradeEvent = async (ev: Trade, skip?: boolean) => { await gate; throw new Error('booking failed'); };
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU8', 50, NaN, 'pub8x')); // parked before the priced delivery claims the id
     const first = bookkeeping.recordFill(fill('Sell', 'NIFTYPU8', 50, 110, 'pub8x')).catch(() => 'threw');
     await new Promise((r) => setTimeout(r, 50));
-    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU8', 50, NaN, 'pub8x')); // parked while the first delivery is mid-booking
     await bookkeeping.recordFill(fill('Sell', 'NIFTYPU8', 50, 110, 'pub8x')); // early return: already claimed
     assert(c8() === 1, 'redelivery of an id mid-booking does not clear the parked entry');
     release();
@@ -165,9 +167,9 @@ async function main() {
         (bookkeeping as any).markSellBooked('pub11x');
         assert(c11('NIFTYPU11') === 0, 'markSellBooked clears the entry');
         await bookkeeping.recordFill(fill('Sell', 'NIFTYPU11', 50, NaN, 'pub11x'));
-        assert(c11('NIFTYPU11') === 1, 'an unpriced redelivery parks again');
+        assert(c11('NIFTYPU11') === 0, 'an unpriced redelivery of a booked id (bookedFillIds) is not parked again');
         await bookkeeping.recordFill(fill('Sell', 'NIFTYPU11', 50, 110, 'pub11x'));
-        assert(c11('NIFTYPU11') === 0, 'stored early return clears it when the id is in bookedFillIds');
+        assert(c11('NIFTYPU11') === 0, 'stored early return leaves nothing parked when the id is in bookedFillIds');
     } finally {
         (bookkeeping as any).fillAlreadyStored = origStored11;
         bookkeeping.trades.splice(0, bookkeeping.trades.length, ...bookkeeping.trades.filter((t) => !/^NIFTYPU11/.test(t.tsym)));
@@ -213,5 +215,43 @@ async function main() {
     } finally { (Log as any).log = origLog; }
     for (const k of Array.from((bookkeeping as any).bookedFillIds as Set<string>)) if (/^pub/.test(k)) (bookkeeping as any).bookedFillIds.delete(k);
     bookkeeping.setUnresolvedSellHandler(undefined);
+
+    // 16. A redelivery of an ALREADY-BOOKED Sell with an unusable price is not parked (nothing could ever clear it).
+    bookkeeping.setUnresolvedSellHandler(() => {});
+    await bookkeeping.recordFill(fill('Buy', 'NIFTYPU16', 50, 100, 'pub16b'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU16', 50, 110, 'pub16s'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU16', 50, 0 / 0, 'pub16s'));
+    assert(bookkeeping.getUnresolvedFills().filter((f) => f.tsym === 'NIFTYPU16').length === 0, 'unpriced redelivery of a booked Sell is not parked');
+    bookkeeping.setUnresolvedSellHandler(undefined);
+
+    // 17. Parked Sells are persisted in Mongo (write on park, delete on clear) and reloaded after a restart while the position is open.
+    const store = new Map<string, any>();
+    const fakeCol = {
+        replaceOne: async (q: any, d: any) => { store.set(q._id, { _id: q._id, ...d }); },
+        deleteOne: async (q: any) => { store.delete(q._id); },
+        find: () => ({ toArray: async () => [...store.values()] }),
+    };
+    const origGet = Mongo.getInstance;
+    (Mongo as any).getInstance = () => ({ db: { collection: (n: string) => (n === 'unresolvedSells' ? fakeCol : undefined) } });
+    try {
+        bookkeeping.setUnresolvedSellHandler(() => {});
+        await bookkeeping.recordFill(fill('Buy', 'NIFTYPU17', 50, 100, 'pub17b'));
+        await bookkeeping.recordFill(fill('Sell', 'NIFTYPU17', 50, NaN, 'pub17x'));
+        assert(store.has('pub17x') && store.get('pub17x').tsym === 'NIFTYPU17', 'parked Sell written to Mongo');
+        const mem = (bookkeeping as any).unresolvedFills as Map<string, any>;
+        mem.delete('pub17x'); // simulate the restart: memory empty, Mongo row and open position remain
+        assert(await bookkeeping.restoreUnresolvedSells() === 1 && bookkeeping.getUnresolvedFills().some((f) => f.brokerOrderId === 'pub17x'), 'parked Sell reloaded after restart');
+        // stale-day entry and an entry for a flat contract are dropped, not reloaded
+        mem.delete('pub17x');
+        store.set('old1', { _id: 'old1', tsym: 'NIFTYPU17', user: 'PuUser', broker: 'kite', quantity: 50, brokerOrderId: 'old1', at: new Date(Date.now() - 3 * 86400000), seen: 1 });
+        store.set('flat1', { _id: 'flat1', tsym: 'NIFTYPU17FLAT', user: 'PuUser', broker: 'kite', quantity: 50, brokerOrderId: 'flat1', at: new Date(), seen: 1 });
+        await bookkeeping.restoreUnresolvedSells();
+        assert(!store.has('old1') && !store.has('flat1') && !bookkeeping.getUnresolvedFills().some((f) => f.brokerOrderId === 'old1' || f.brokerOrderId === 'flat1'), 'stale-day and flat-contract entries dropped');
+        await bookkeeping.recordFill(fill('Sell', 'NIFTYPU17', 50, 110, 'pub17x'));
+        assert(!store.has('pub17x') && bookkeeping.getUnresolvedFills().filter((f) => f.tsym === 'NIFTYPU17').length === 0, 'booking the Sell deletes the persisted row');
+    } finally {
+        (Mongo as any).getInstance = origGet;
+        bookkeeping.setUnresolvedSellHandler(undefined);
+    }
 }
 main().then(() => process.exit(process.exitCode ?? 0), (e) => { console.error(e); process.exit(1); });

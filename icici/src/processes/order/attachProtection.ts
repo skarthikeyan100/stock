@@ -60,6 +60,16 @@ export async function attachProtection(
     return { mode: 'exitMonitor' };
 }
 
+// The kiteconnect SDK rejects with a plain object {status, message, error_type} (the HTTP status is not kept): the broker's own message for a
+// missing trigger, or statusText 'Not Found' with error_type NetworkException when the 404 has no JSON body. Network failures ('No response
+// from server...'), 429, auth and 5xx messages never match, so they still count as a failed delete. The exact broker wording for an already
+// triggered/removed GTT is not verified against a live response: the match is deliberately limited to "not found"-style messages.
+export function isGttGone(e: any): boolean {
+    if (!e) return false;
+    if (e.status === 404 || e.response?.status === 404) return true;
+    return /not found|does not exist|no such trigger/i.test(String(e.message ?? e));
+}
+
 // Removes whatever attachProtection armed on a position (the Kite GTT, the in-app exitMonitor watch) so the caller can close it
 // by hand without a trigger firing later against a flat account. Idempotent; a GTT delete failure throws (the trigger may be live).
 export async function cancelProtection(
@@ -79,7 +89,12 @@ export async function cancelProtection(
             await Kite.getInstance().deleteGTT(id);
             deleted.push(id);
             gttDeleted = true;
-        } catch (e) { deleteError = deleteError ?? e; }
+        } catch (e) {
+            // Already triggered/removed at Kite: nothing left to cancel, so forget the id like a successful delete (keeping it made every
+            // later cancelProtection throw and dropExit unable to replace the exit).
+            if (isGttGone(e)) { deleted.push(id); Log.log(`[order] cancelProtection: GTT ${id} of ${tradingSymbol} (${userId}) is already gone at Kite - forgetting it`); }
+            else deleteError = deleteError ?? e;
+        }
     }
     if (deleted.length > 0) {
         // Forget only the ids actually deleted: a GTT whose delete failed is still live and keeps its persisted id.
