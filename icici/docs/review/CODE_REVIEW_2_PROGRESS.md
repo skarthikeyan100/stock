@@ -69,3 +69,6 @@ Still open: Breeze 429 (HTML page from the proxy, seen in logs 11-16 and 11-18) 
 
 ## Last reviewed commit (updated)
 Committed code reviewed up to `851f7fc`; HEAD is still `851f7fc`. All fixes of both rounds above are UNCOMMITTED in the working tree (that is what the user wants reviewed next). When they are committed, record that commit id here; the next review is `git diff 851f7fc..<that id>`.
+
+## Last reviewed commit (updated 2026-11-24, third review)
+Second-review fixes committed as `a2c8f10` (they were reviewed in the working tree before the commit). Third review: `git diff 851f7fc..a2c8f10` (the committed form of those fixes) and later work starts at `a2c8f10`. Record the id covered by the third review below when it finishes.
