@@ -132,3 +132,6 @@ via `LimitEntryStrategy.startCycle`, which resolves the contract per broker, tak
 a rupee budget for the others), splits it at the freeze quantity and persists the leg BEFORE the order goes out. The expiry-day skip (`skipNearestExpiryOnExpiryDay`, `skipNearestExpiryOnEve`) is a
 global setting a block can override (`util/expirySkip.ts`); an explicit `expiryOffset` is never bumped. The half-days-to-expiry OTM shift (`AntContractMaster.entryStrike`) applies only to spot-index buys
 (`chunkedBuyIndex`), not to these strategies, which pass an explicit strike.
+
+### Demo subscribe lease limitation
+`/demo/subscribe` holds are leased for 30 minutes and refreshed only while an IP that subscribed the token (counted per IP, removed when it unsubscribes) has a `/demo/optionstream` open (`src/routes/demoLease.ts`). A client whose subscribe and stream calls come from different IPs (IPv4/IPv6, mobile network switch) is not recognised as a holder and loses its tokens when the lease lapses while streaming. A per-client id shared by both calls would fix it but needs a frontend change.

@@ -46,5 +46,22 @@ async function main() {
     assert(!bookkeeping.trades.some((t) => t.tsym === 'NIFTYPU2'), 'later Sell books the position');
     assert(bookkeeping.getUnresolvedFills().filter((f) => f.tsym === 'NIFTYPU2').length === 0, 'parked id-less entry is cleared');
     bookkeeping.setUnresolvedSellHandler(undefined);
+
+    // 3. Two id-less parked Sells of one tsym are both kept; a Buy / other-qty Sell does not clear them; a matching priced Sell clears one each.
+    bookkeeping.setUnresolvedSellHandler(() => {});
+    const cnt = () => bookkeeping.getUnresolvedFills().filter((f) => f.tsym === 'NIFTYPU3').length;
+    await bookkeeping.recordFill(fill('Buy', 'NIFTYPU3', 200, 100, 'pub3'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU3', 50, NaN, undefined));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU3', 75, NaN, undefined));
+    assert(cnt() === 2, 'two id-less parked sells both reported');
+    await bookkeeping.recordFill(fill('Buy', 'NIFTYPU3', 10, 100, 'pub3b'));
+    assert(cnt() === 2, 'booking a Buy leaves parked sells');
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU3', 30, 110, 'pub3s30'));
+    assert(cnt() === 2, 'Sell of a different quantity leaves parked sells');
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU3', 50, 110, 'pub3s50'));
+    assert(cnt() === 1 && bookkeeping.getUnresolvedFills().some((f) => f.tsym === 'NIFTYPU3' && f.quantity === 75), 'matching Sell clears only its own parked entry');
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU3', 75, 110, 'pub3s75'));
+    assert(cnt() === 0, 'second matching Sell clears the other');
+    bookkeeping.setUnresolvedSellHandler(undefined);
 }
 main().then(() => process.exit(process.exitCode ?? 0), (e) => { console.error(e); process.exit(1); });

@@ -9,7 +9,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import StrategiesClient from '../ipc/StrategiesClient';
 import { DataLink } from '../ipc/DataLink';
 import { isLoopback } from '../middleware/cloudflareOnly';
-import { demoLeaseHeld } from './demoLease';
+import { demoLeaseHeld, addSubscriberIp, removeSubscriberIp } from './demoLease';
 import { asyncRouter } from './asyncRouter';
 import { resolveUser, requireAuth, requireAdmin, requireSelfOrAdmin } from './session';
 
@@ -138,7 +138,7 @@ const demoHits = new Map<string, { n: number; resetAt: number }>();
 // (the stream is shared by all tokens, so the IP is the only link between a stream and its tokens). Tokens of closed tabs still expire.
 const DEMO_LEASE_MS = 30 * 60_000;
 const demoLastSubscribeAt = new Map<string, number>();
-const demoTokenIps = new Map<string, Set<string>>(); // token -> client IPs that subscribed it
+const demoTokenIps = new Map<string, Map<string, number>>(); // token -> client IP -> its live subscription count
 setInterval(() => {
     const now = Date.now();
     const cutoff = now - DEMO_LEASE_MS;
@@ -172,8 +172,9 @@ function clientIp(req: express.Request): string {
 }
 router.get('/demo/subscribe', async function (req, res) {
     let counted: string | null = null;
+    let ip = 'unknown';
     try {
-        const ip = clientIp(req);
+        ip = clientIp(req);
         const now = Date.now();
         if (demoHits.size > 2000) for (const [k, v] of demoHits) if (v.resetAt < now) demoHits.delete(k);
         const hit = demoHits.get(ip);
@@ -200,6 +201,8 @@ router.get('/demo/subscribe', async function (req, res) {
                 }
             } else {
                 demoSubscribed.set(token, count - 1);
+                const tokenIps = demoTokenIps.get(token);
+                if (tokenIps) removeSubscriberIp(tokenIps, ip); // the departed IP must not keep the token's lease refreshed
             }
         } else {
             if (!demoAllowedTokens.has(token)) { res.status(403).json({ error: 'Unknown demo token' }); return; }
@@ -207,7 +210,7 @@ router.get('/demo/subscribe', async function (req, res) {
             demoSubscribed.set(token, (demoSubscribed.get(token) ?? 0) + 1);
             counted = token;
             demoLastSubscribeAt.set(token, Date.now());
-            (demoTokenIps.get(token) ?? demoTokenIps.set(token, new Set()).get(token)!).add(ip);
+            addSubscriberIp(demoTokenIps.get(token) ?? demoTokenIps.set(token, new Map()).get(token)!, ip);
             await strategiesClient.subscribeToken(token);
             counted = null;
         }
@@ -216,7 +219,12 @@ router.get('/demo/subscribe', async function (req, res) {
         // The subscribe did not happen: undo the count taken before the await, or a failure leaks the 20-token cap.
         if (counted) {
             const c = (demoSubscribed.get(counted) ?? 1) - 1;
-            if (c <= 0) { demoSubscribed.delete(counted); demoTokenIps.delete(counted); } else demoSubscribed.set(counted, c);
+            if (c <= 0) { demoSubscribed.delete(counted); demoTokenIps.delete(counted); }
+            else {
+                demoSubscribed.set(counted, c);
+                const tokenIps = demoTokenIps.get(counted);
+                if (tokenIps) removeSubscriberIp(tokenIps, ip);
+            }
         }
         Log.log(e);
         res.status(500).json({ error: 'Subscription failed' });

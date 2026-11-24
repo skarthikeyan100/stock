@@ -193,6 +193,7 @@ class OrderBookkeeping {
     private failedBookingFillIds: Set<string> = new Set();
     // Sell fills that arrived with an unusable price and were deliberately NOT booked (see recordFill); cleared when the same order is later booked.
     private unresolvedFills: Map<string, { tsym: string; user: string; broker?: string; quantity: number; brokerOrderId?: string; at: Date; alertedAt?: number }> = new Map();
+    private unresolvedSeq = 0;
     private unresolvedKey(t: { broker?: string; user?: string; tsym: string }): string { return `${t.broker ?? 'kite'}|${t.user || 'Default'}|${t.tsym}`; }
     getUnresolvedFills() { return [...this.unresolvedFills.values()]; }
     // Set by the order process: asked (debounced there) to re-read the broker's trade book when a Sell is parked for an unusable price.
@@ -1155,7 +1156,7 @@ class OrderBookkeeping {
                 // userPnL, no Trade doc, no change to the tracked position, and the order id is NOT claimed so a later redelivery of this fill
                 // (poller, trade-book sync) with a usable price is booked normally. The unresolved fill stays visible via getUnresolvedFills().
                 Log.log(`[order] ALERT: Sell fill price ${tradeEvent.price} is unusable (${tradeEvent.tsym}, user ${tradeEvent.user}, order ${tradeEvent.brokerOrderId}, qty ${tradeEvent.quantity}) - NOT booked; position left open in memory, reconcile against the broker / book it with the real price`);
-                this.unresolvedFills.set(String(tradeEvent.brokerOrderId ?? this.unresolvedKey(tradeEvent)), { tsym: tradeEvent.tsym, user: tradeEvent.user || 'Default', broker: tradeEvent.broker, quantity: Number(tradeEvent.quantity), brokerOrderId: tradeEvent.brokerOrderId, at: new Date() });
+                this.unresolvedFills.set(tradeEvent.brokerOrderId != null ? String(tradeEvent.brokerOrderId) : `${this.unresolvedKey(tradeEvent)}|noid|${++this.unresolvedSeq}`, { tsym: tradeEvent.tsym, user: tradeEvent.user || 'Default', broker: tradeEvent.broker, quantity: Number(tradeEvent.quantity), brokerOrderId: tradeEvent.brokerOrderId, at: new Date() });
                 // Actively resolve: ask the order process to re-read the broker's trade book (it debounces and respects the in-flight sync guards).
                 try { this.unresolvedSellHandler?.(tradeEvent.broker ?? 'kite', tradeEvent.tsym); } catch (e) { Log.log('[order] unresolved-sell handler threw:', e); }
                 return;
@@ -1167,7 +1168,14 @@ class OrderBookkeeping {
         }
         // Clear the parked entry by order id and by the stable id-less key (a parked Sell without an order id would otherwise never clear).
         this.unresolvedFills.delete(String(tradeEvent.brokerOrderId ?? ''));
-        this.unresolvedFills.delete(this.unresolvedKey(tradeEvent));
+        if (tradeEvent.action === 'Sell') {
+            // Id-less parked Sells (one entry each, keyed by a sequence) are cleared only by a booked Sell of the same broker/user/tsym and the same
+            // quantity (oldest first, one per booked Sell). A Buy, another tsym/user, or a Sell of a different quantity leaves them visible.
+            const prefix = `${this.unresolvedKey(tradeEvent)}|noid|`;
+            for (const [k, v] of this.unresolvedFills) {
+                if (k.startsWith(prefix) && v.quantity === Number(tradeEvent.quantity)) { this.unresolvedFills.delete(k); break; }
+            }
+        }
         let skipInsert = false;
         const id = tradeEvent.brokerOrderId;
         // Paper broker (in-memory only): nothing is read from or written to Mongo; the id is still claimed so a redelivered fill is ignored.

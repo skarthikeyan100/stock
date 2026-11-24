@@ -5,6 +5,9 @@
  */
 import AntDataStream from '../processes/data/AntDataStream';
 import AntSession from '../ant/AntSession';
+// AntDataStream does not retry after the market close; pin the clock to market hours so the test does not depend on the time of day it runs.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+(require('../util/marketHours') as { isPastMarketClose: () => boolean }).isPastMarketClose = () => false;
 import { nextReconnectDelayMs, isAuthError, RECONNECT_MAX_MS, RECONNECT_AUTH_MIN_MS, RECONNECT_AUTH_MAX_MS } from '../processes/data/connectRetry';
 
 function assert(c: boolean, m: string) {
