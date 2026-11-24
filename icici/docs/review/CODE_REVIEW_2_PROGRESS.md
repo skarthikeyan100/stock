@@ -72,3 +72,8 @@ Committed code reviewed up to `851f7fc`; HEAD is still `851f7fc`. All fixes of b
 
 ## Last reviewed commit (updated 2026-11-24, third review)
 Second-review fixes committed as `a2c8f10` (they were reviewed in the working tree before the commit). Third review: `git diff 851f7fc..a2c8f10` (the committed form of those fixes) and later work starts at `a2c8f10`. Record the id covered by the third review below when it finishes.
+
+## Third review - done 2026-11-24
+`/code-review medium 851f7fc..a2c8f10`: 6 findings. #1 demo lease, #2 cancelProtection, #3 parked Sell key, #4 sell-lock env var, #5 Kite rate-limit match FIXED (tsc clean, 126/126 tests). #6 trading give-up limit 2: no code change, documented in Architecture.md.
+Last reviewed commit: `447bcbc` (fixes) - the next review starts at `447bcbc`.
+Open: demo lease is per client IP, so two tabs behind one IP share a lease.
