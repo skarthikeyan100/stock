@@ -77,3 +77,7 @@ Second-review fixes committed as `a2c8f10` (they were reviewed in the working tr
 `/code-review medium 851f7fc..a2c8f10`: 6 findings. #1 demo lease, #2 cancelProtection, #3 parked Sell key, #4 sell-lock env var, #5 Kite rate-limit match FIXED (tsc clean, 126/126 tests). #6 trading give-up limit 2: no code change, documented in Architecture.md.
 Last reviewed commit: `447bcbc` (fixes) - the next review starts at `447bcbc`.
 Open: demo lease is per client IP, so two tabs behind one IP share a lease.
+
+## Fourth review - 2026-11-24
+`/code-review medium a2c8f10..447bcbc`: 5 findings. Parked-sell clearing (only a matching Sell clears; per-fill keys) and per-IP demo lease counts FIXED; different-IP subscribe/stream limitation documented in Architecture.md; cancelProtection ordering verified correct, no change. Also pinned the market clock in antDataStreamRetry.test (it failed after 15:30). tsc clean, 126/126 tests.
+Last reviewed commit: `447bcbc`; fixes are in `4527d8b`. The fifth review covers `447bcbc..4527d8b`.
