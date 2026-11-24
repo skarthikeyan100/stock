@@ -9,7 +9,7 @@ Pending work lives in `../ToDo.md` (kept at the repo root because `CLAUDE.md` an
 
 ## guides/
 - `strategies.md` - every strategy and its config keys
-- `trader.md` - the trader role: pre-market, monitoring, end-of-day steps
+- `trader.md` - pointer to the trader agent at `.claude/agents/trader.md` (pre-market, monitoring, end-of-day steps)
 - `learnings.md` - mistakes and lessons
 - `onboarding-user.md` - open items for user onboarding
 - `RuleBasedStrategy.md` - rule-based strategy and its backtests
