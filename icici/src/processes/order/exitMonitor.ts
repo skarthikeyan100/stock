@@ -32,7 +32,7 @@ type ExitHandler = (trade: Trade, exchange: 'NFO' | 'BFO') => Promise<void>;
 type PriceUpdateListener = () => void;
 
 // Composite key so two users holding a position in the *same* option
-// contract (same token) are tracked independently - see bugs.md
+// contract (same token) are tracked independently - see docs/status/bugs.md
 // "Cross-user protection loss on shared contracts". Previously this map was
 // keyed by trade.token alone, so a second user's registerTrade() for a
 // token already held by a different user silently overwrote the first

@@ -791,7 +791,7 @@ export async function cancelOrderOnKite(orderId: string): Promise<void> {
         // driftCheck recheck, which already trusts this same field). Checking
         // status === 'COMPLETE' alone (the old version) returned false for a
         // genuine partial fill, since Kite reports that as 'CANCELLED' - see
-        // gaps.md's "Partial-fill accounting" entry. terminal mirrors
+        // docs/status/gaps.md's "Partial-fill accounting" entry. terminal mirrors
         // Kite.getFillPrice's own terminal-status check - COMPLETE/
         // CANCELLED/REJECTED are all final, anything else (OPEN etc.) means
         // the order can still fill further.

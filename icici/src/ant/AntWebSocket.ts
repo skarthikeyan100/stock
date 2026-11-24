@@ -20,7 +20,7 @@ class AntWebSocket {
   // 4x the heartbeat interval: tolerates a couple of missed pings/transient
   // network jitter without false-positiving, while still catching a real
   // zombie connection ~60x faster than the 12-minute incident that motivated
-  // this fix. See plans/bug-07-zombie-websocket-undetectable.md for the
+  // this fix. See docs/archive/plans/bugs/bug-07-zombie-websocket-undetectable.md for the
   // full rationale.
   private staleThresholdMs = this.heartbeatMs * 4; // 12000ms
   private lastMessageTime = 0;

@@ -697,7 +697,7 @@ export default class Prism {
     // discovered here, just not previously wired into getOrderStatus). This
     // means a partial-fill-then-cancel record (status CANCELED/CANCELLED
     // with nonzero fillshares) is no longer indistinguishable from a true
-    // non-fill - see gaps.md's "Partial-fill accounting" entry.
+    // non-fill - see docs/status/gaps.md's "Partial-fill accounting" entry.
     getOrderStatus = async (orderNo: string, orders?: any[]): Promise<{ status: string; fillPrice?: number; filledQuantity?: number }> => {
         const list = orders ?? (await this.getOrderBook());
         const match = list.find((o) => o.norenordno === orderNo);

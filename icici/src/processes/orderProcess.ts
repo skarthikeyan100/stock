@@ -484,7 +484,7 @@ async function cancelAnyRestingLimitSell(executor: BrokerExecutor, userId: strin
                 // remainder was cancelled, not filled). Using order.quantity
                 // here would wrongly exclude that still-open remainder from
                 // the force-close below, leaving it unprotected - see
-                // gaps.md's "Partial-fill accounting" entry.
+                // docs/status/gaps.md's "Partial-fill accounting" entry.
                 filledQty += e.filledQuantity;
                 racedFill.push(order.orderId);
                 Log.log(`[order] cancelAnyRestingLimitSell: ${order.orderId} (${tsym}, ${userId}) already filled qty=${e.filledQuantity}/${order.quantity} - excluding filled portion from force-close`);

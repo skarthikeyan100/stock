@@ -1,6 +1,6 @@
 /**
  * Researcher Services Agreement, Individual Researcher (PAN), v1.1: v1.0 verbatim except the three edits listed in agreements/v1.1/BUILD-NOTES.md
- * (Section 3 second bullet and Section 5 third bullet, from Business-Agreement-v1.1-amendment-text.md "Individual agreement edits"; and the
+ * (Section 3 second bullet and Section 5 third bullet, from docs/specs/Business-Agreement-v1.1-amendment-text.md "Individual agreement edits"; and the
  * electronic-acceptance line, because there is no Google sign-in for researchers any more).
  */
 import type { AgreementDoc, AgreementDetails } from '../agreementPdf';

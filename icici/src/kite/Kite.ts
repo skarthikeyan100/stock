@@ -354,7 +354,7 @@ class Kite {
     // the lower of the broker's net position and the net implied by today's orders (overnight qty +
     // filled buys - filled sells; covers a position update that lags a fill), minus quantity already
     // resting in open sells. 2026-10-19: strategies sold their tracked quantity again on retries and
-    // mass closes while earlier sells had already filled, leaving a naked short (see bugs.md).
+    // mass closes while earlier sells had already filled, leaving a naked short (see docs/status/bugs.md).
     async getSellableQuantity(tradingSymbol: string): Promise<number> {
         const positions = await (this.kc as any).getPositions();
         const pos = (positions?.net ?? []).find((p: any) => p.tradingsymbol === tradingSymbol);

@@ -1,6 +1,6 @@
 # Spec v2: Invite-only Forecasting Contractor Portal
 
-**Status:** DRAFT for review. Replaces `SPEC-forecast-contractor-portal.md` (kept unchanged). See `SPEC-differences.md` for every change and the open items.
+**Status:** DRAFT for review. Replaces `docs/archive/specs/SPEC-forecast-contractor-portal.md` (kept unchanged). See `docs/specs/SPEC-differences.md` for every change and the open items.
 **Owner:** Nivedha Tech (sole proprietor)
 **Applies to:** the existing React front end and Node/TypeScript back end for nivedhatech.com.
 

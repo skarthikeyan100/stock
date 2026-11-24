@@ -1,7 +1,7 @@
 // Trailing profit exit for ONE position. Pure decision logic: it places no orders, so each strategy keeps its own
 // exit path. One instance per position (never shared), so two positions never share a peak.
 //
-// Rule (scope.md):
+// Rule (docs/status/scope.md):
 //   - Nothing happens until the price first reaches entry + activation. That tick arms the trail and sells nothing.
 //   - Once armed, the peak follows the highest price seen and the exit level is max(entry + activation, peak - trail):
 //     it only ever moves up, and never sits below the activation (target) price.

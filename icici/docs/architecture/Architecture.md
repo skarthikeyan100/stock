@@ -12,7 +12,7 @@ Kept out of `CLAUDE.md` on purpose (that file is loaded on every prompt). Read t
 
 ## Broker naming
 
-Exactly four real brokers are supported, plus the internal `paper` broker (2026-11-17: in-memory fills for strategies only, nothing in Mongo, no login; `src/processes/order/paperExecutor.ts`, see `strategies.md`). Use only the canonical name in code, config, Mongo, API, UI and docs.
+Exactly four real brokers are supported, plus the internal `paper` broker (2026-11-17: in-memory fills for strategies only, nothing in Mongo, no login; `src/processes/order/paperExecutor.ts`, see `docs/guides/strategies.md`). Use only the canonical name in code, config, Mongo, API, UI and docs.
 
 | Use | Never use |
 |---|---|
@@ -64,7 +64,7 @@ Each child watches its own entry/dir plus shared dirs under `dist/` (`HOT_RESTAR
 
 | Child restarts when these change | Effect of the restart |
 |---|---|
-| `trading`: `processes/order`, `orderProcess.js`, `strategy`, `processes/strategies`, `strategiesProcess.js`, `tradingProcess.js`, `ant`, `kite`, `breeze`, `model`, `util`, `prism`, `tools`, `ipc`, `lib` | Order-notify streams, exit monitor and all strategy state restart; the startup reconcile rebuilds legs from the brokers' open positions. Per-user `sessionPnL` resets to 0 (not resynced from Mongo, see `Analysis.md`). **Avoid with open positions.** |
+| `trading`: `processes/order`, `orderProcess.js`, `strategy`, `processes/strategies`, `strategiesProcess.js`, `tradingProcess.js`, `ant`, `kite`, `breeze`, `model`, `util`, `prism`, `tools`, `ipc`, `lib` | Order-notify streams, exit monitor and all strategy state restart; the startup reconcile rebuilds legs from the brokers' open positions. Per-user `sessionPnL` resets to 0 (not resynced from Mongo, see `docs/archive/analysis/Analysis.md`). **Avoid with open positions.** |
 | `frontend`: `server.js`, `ant`, `kite`, `breeze`, `model`, `util`, `prism`, `tools`, `ipc`, `middleware`, `lib` | API and SSE clients reconnect. Broker connections untouched. |
 
 Shared dirs (`ant`, `model`, `util`, `prism`, `tools`, `ipc`) restart `trading` and `frontend` together. Edit them with that in mind.

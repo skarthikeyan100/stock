@@ -615,7 +615,7 @@ class Breeze {
     // order's fill price - every caller of getFillPrice assumes the quantity
     // it asked for is what filled, so resolving early on a partial silently
     // misrecords bookkeeping quantity (overstates a buy, or understates a
-    // sell's true remainder) - see gaps.md's "Partial-fill accounting" entry.
+    // sell's true remainder) - see docs/status/gaps.md's "Partial-fill accounting" entry.
     // A caller that specifically needs to recognize + record a genuine
     // partial fill (e.g. cancelOrderOnBreeze's post-cancel recheck) uses
     // breezeExecutor.ts's getBreezeOrderFillInfo instead, not this function.

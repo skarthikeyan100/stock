@@ -1,5 +1,5 @@
 /**
- * Research Analyst Services Agreement, Business Research Analyst (GSTIN), v1.1. Source of the text: Business-Agreement-v1.1-amendment-text.md (the owner's
+ * Research Analyst Services Agreement, Business Research Analyst (GSTIN), v1.1. Source of the text: docs/specs/Business-Agreement-v1.1-amendment-text.md (the owner's
  * reviewed clauses) applied to the v1.0 PDF. Sections the amendment leaves alone (8, 10, 12, 16, 17) are v1.0 verbatim except for the consequential
  * wording changes listed in agreements/v1.1/BUILD-NOTES.md (marked there as "consequential"). The fee model (clause 6A.6, a fixed fee per Fee Period,
  * pro rata to Net Realized Profit against the Reference Investment) and Schedules 1 to 3 are the owner's change of the fallback fee.

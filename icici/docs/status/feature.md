@@ -2,7 +2,7 @@
 
 Purpose: checklist for later review. One line per feature, no detail. Excludes tests and backtests (`src/test/`, `*Backtest*`, `ruleBacktest/`, `analysis/` ML, `pipeline`/`analyze` research tools).
 Note: the older `features.md` (plural) describes the pre-migration monolith and is stale; this file replaces it as the review checklist.
-Basis: `strategies.md`, `Architecture.md`, `docs/current-state.md`, `config.yml` and the header comments and exports of `src/**`. Each item below should be checked against code during review.
+Basis: `docs/guides/strategies.md`, `docs/architecture/Architecture.md`, `docs/architecture/current-state.md`, `config.yml` and the header comments and exports of `src/**`. Each item below should be checked against code during review.
 
 ---
 
@@ -183,4 +183,4 @@ Basis: `strategies.md`, `Architecture.md`, `docs/current-state.md`, `config.yml`
 - Per-user routes: `/users/:email/notifications`, `/trades/open|closed|pnl-summary`, `/payouts/estimate`, `delete-account`; `GET /admin/erasure-log`; `/contractor/trades`, `/contractor/positionstream`; `/demo/health|subscribe|resolve|symbols`
 
 ## 13. Known dead/legacy (for review awareness)
-- Retired Breeze-direct paths, legacy Prism password/OTP login (`prism.ts` legacy flows), legacy `minPrice`/`maxPrice` price filter (`orderList.ts`), and docs that still mention removed strategies (`strategies.md`, `HighLowStrategy.ts` header says `[paper]`, config says `[kite]`)
+- Retired Breeze-direct paths, legacy Prism password/OTP login (`prism.ts` legacy flows), legacy `minPrice`/`maxPrice` price filter (`orderList.ts`), and docs that still mention removed strategies (`docs/guides/strategies.md`, `HighLowStrategy.ts` header says `[paper]`, config says `[kite]`)

@@ -413,7 +413,7 @@ export default class BulkPcrStrategy extends Strategy {
         return Number.isFinite(n) && n > 0 ? n : 0;
     }
 
-    // Hedge trail exit (scope.md): config `hedgeTrailDistance` (points below the peak). Unset / 0 = off, and the hedge
+    // Hedge trail exit (docs/status/scope.md): config `hedgeTrailDistance` (points below the peak). Unset / 0 = off, and the hedge
     // keeps its fixed targetPoints resting sell exactly as before.
     private hedgeTrailDistance(): number {
         const n = Number(this.cfg().hedgeTrailDistance);

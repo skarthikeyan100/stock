@@ -1,7 +1,7 @@
 /**
  * Invite acceptance (public: the single-use link is the credential) and the contractor's own endpoints under /contractor and /agreements.
  * No login exists for contractors: accepting an invite sets the long-lived session cookie (src/contractors/session.ts); a logout or cleared
- * cookie means a new invite. Spec: SPEC-forecast-contractor-portal-v2.1.md sections 3 to 6.
+ * cookie means a new invite. Spec: docs/specs/SPEC-forecast-contractor-portal-v2.1.md sections 3 to 6.
  */
 import express from 'express';
 import { acquireKeyLock } from '../util/keyedLock';

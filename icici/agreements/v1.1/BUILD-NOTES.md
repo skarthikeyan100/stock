@@ -1,6 +1,6 @@
 # Agreements v1.1: what was built and what changed beyond the amendment text
 
-Source: `Business-Agreement-v1.1-amendment-text.md` applied to the v1.0 PDFs. Content lives in `src/agreements/content/*.ts`; rebuild with `npx tsc && node dist/tools/buildAgreements.js` (a rebuild gives a new SHA-256, so build once, commit, and record the hash from the served file).
+Source: `docs/specs/Business-Agreement-v1.1-amendment-text.md` applied to the v1.0 PDFs. Content lives in `src/agreements/content/*.ts`; rebuild with `npx tsc && node dist/tools/buildAgreements.js` (a rebuild gives a new SHA-256, so build once, commit, and record the hash from the served file).
 
 ## Business (GSTIN) v1.1
 Applied exactly as written: Parties (Contractor paragraph), Definitions, 3, 4, 5, 5A, 6, 6A.1 to 6A.7, 7 (added sentence), 9, 13 (added bullet), 14 (second bullet), Schedule 1, signature line.

@@ -194,7 +194,7 @@ class OrderClient {
             // technically connected), this used to leave the caller awaiting
             // forever - the socket 'close' handler above only covers the
             // socket actually dropping, not "still open but silent". See
-            // plans/bug-09-no-timeout-broker-http-ipc.md.
+            // docs/archive/plans/bugs/bug-09-no-timeout-broker-http-ipc.md.
             const timer = setTimeout(() => {
                 if (this.pending.delete(id)) {
                     Log.log(`[strategies] Order request '${type}' (id=${id}) timed out after ${timeoutMs}ms - order process may be stuck`);

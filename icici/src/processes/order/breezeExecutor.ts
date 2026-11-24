@@ -437,7 +437,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
         // getBreezeOrderFillInfo's comment); recording the full requested
         // quantity for a partial fill would silently book MORE as sold than
         // actually happened, leaving a real residual position untracked and
-        // unclosable - see gaps.md's "Partial-fill accounting" entry. Each
+        // unclosable - see docs/status/gaps.md's "Partial-fill accounting" entry. Each
         // call here represents one broker fill event, same as a normal
         // multi-chunk fill sequence.
         const buildSellTrade = (orderId: string, exitPrice: number, filledQty: number): Trade => {

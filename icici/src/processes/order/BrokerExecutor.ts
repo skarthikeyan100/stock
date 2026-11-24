@@ -58,7 +58,7 @@ export type OptionExchange = Exclude<Exchange, 'NSE'>; // an option contract's e
 // quantity-pending-cancelled), and a caller that assumes "already filled"
 // always means "the whole order" will silently either double-sell the
 // genuinely-still-open remainder or drop the real partial fill from
-// bookkeeping entirely - see gaps.md's "Partial-fill accounting" entry for
+// bookkeeping entirely - see docs/status/gaps.md's "Partial-fill accounting" entry for
 // the full incident history. Every caller of this error MUST use
 // filledQuantity, never the order's own requested quantity, to decide how
 // much is actually closed.

@@ -7,7 +7,7 @@
  * arriving. A real WebSocket connection can't be exercised in this repo's
  * hand-rolled test harness (no live server, no mocking infra for `ws`), so
  * this tests the extracted pure function directly instead - see
- * plans/bug-07-zombie-websocket-undetectable.md for why this is the
+ * docs/archive/plans/bugs/bug-07-zombie-websocket-undetectable.md for why this is the
  * feasible test given the constraints.
  * Run: npm run build (compile), then: node ./dist/test/antWebSocketWatchdog.test.js
  */

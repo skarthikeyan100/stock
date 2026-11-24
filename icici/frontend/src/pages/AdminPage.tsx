@@ -19,7 +19,7 @@ interface UserRow extends AuthUser {
 // Derived from `StrategyFactory.STRATEGY_REGISTRY` + config.yml (userId
 // defaults to `type` when no explicit `userId:` override exists, which is the
 // case for every one of these). `buySellStrategy`/`intermittentStrategy` have
-// no config.yml entry at all (legacy/dead UI - see strategies.md) so they get
+// no config.yml entry at all (legacy/dead UI - see docs/guides/strategies.md) so they get
 // no badge. `ruleBasedStrategy` is also left out: its actual runtime userId
 // is dynamically derived per indicator group by `expandRuleBasedConfig`
 // (e.g. 'Rule-RSI_5_80_20, EMA_5_13'), not the literal class name, so a
@@ -252,7 +252,7 @@ export default function AdminPage() {
 
 
   // Auto-fetch (debounced) on user/date-range change instead of a manual Load
-  // click - see Analysis.md's admin-trade-filtering finding.
+  // click - see docs/archive/analysis/Analysis.md's admin-trade-filtering finding.
   useEffect(() => {
     if (activeTab !== 'trades') return;
     const timer = setTimeout(loadTrades, 300);

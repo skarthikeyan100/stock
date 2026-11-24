@@ -1,6 +1,6 @@
 # Differences: Spec v2 vs the original spec
 
-Compares `SPEC-forecast-contractor-portal-v2.md` with `SPEC-forecast-contractor-portal.md` (original, unchanged). Original section numbers in brackets.
+Compares `docs/specs/SPEC-forecast-contractor-portal-v2.md` with `docs/archive/specs/SPEC-forecast-contractor-portal.md` (original, unchanged). Original section numbers in brackets.
 
 ## 1. What changed
 

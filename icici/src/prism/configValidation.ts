@@ -1,5 +1,5 @@
 // Server-side validation for POST /config, run before ConfigService writes
-// the posted flat config to disk. See plans/bug-12-config-no-server-validation.md
+// the posted flat config to disk. See docs/archive/plans/bugs/bug-12-config-no-server-validation.md
 // for the full investigation behind the field lists and the grandfathering
 // behavior in validateFlatConfig.
 

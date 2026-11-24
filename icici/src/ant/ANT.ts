@@ -33,7 +33,7 @@ export interface ContractSnapshot {
 // order placement, via OrderClient -> order process -> ANT) stuck forever
 // with no error surfaced anywhere. 15s is generous headroom over
 // AliceBlue's typical sub-second-to-a-few-second REST latency while still
-// bounding the worst case. See plans/bug-09-no-timeout-broker-http-ipc.md.
+// bounding the worst case. See docs/archive/plans/bugs/bug-09-no-timeout-broker-http-ipc.md.
 export const ANT_HTTP_TIMEOUT_MS = 15000;
 const axios = axiosModule.create({ timeout: ANT_HTTP_TIMEOUT_MS });
 // Exported for testability only (see src/test/antHttpTimeout.test.ts) - not
@@ -978,7 +978,7 @@ class ANT {
     // filledQuantity/pendingQuantity/cancelledQuantity as separate fields
     // from orderStatus - so a partial-fill-then-cancel comes back as a
     // 'CANCELED'/'CANCELLED' record with a nonzero filledQuantity, not
-    // "not filled" (see gaps.md's "Partial-fill accounting" entry, now
+    // "not filled" (see docs/status/gaps.md's "Partial-fill accounting" entry, now
     // resolved for ANT). Returned alongside status rather than folded into
     // the boolean callers used to derive from status alone.
     async getOrderStatus(orderNo: string): Promise<{ status: string; fillPrice?: number; filledQuantity?: number; rejectReason?: string }> {

@@ -32,8 +32,8 @@ const GATE_LOG_THROTTLE_MS = PCR_RECHECK_MS;
 // while its own parent is still a live leg (isParentAlive), a leg that ends
 // up not refilling cancels its own children's pending refills
 // (cancelChildRefills), and a new deeper/retraced spawn under a leg first
-// cancels that leg's own shallower still-resting refills. See spec.md and
-// continuous-strategy-plan.md at the repo root for the full design.
+// cancels that leg's own shallower still-resting refills. See docs/archive/plans/spec.md and
+// docs/archive/plans/continuous-strategy-plan.md at the repo root for the full design.
 //
 // The actual leg lifecycle (spawn-on-loss, same-leg averaging, refill-on-
 // target, capitalCheck, maxProfit trip/close-all) lives in LegManager.ts

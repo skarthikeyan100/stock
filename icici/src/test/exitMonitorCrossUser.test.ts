@@ -1,6 +1,6 @@
 /**
  * Verifies exitMonitor tracks multiple users' trades on the SAME option
- * token independently - see bugs.md "Cross-user protection loss on shared
+ * token independently - see docs/status/bugs.md "Cross-user protection loss on shared
  * contracts". Before the fix, `monitored` was keyed by token alone, so a
  * second user's registerTrade() for a token already held by another user
  * silently overwrote the first user's entry (no error, no self-healing).

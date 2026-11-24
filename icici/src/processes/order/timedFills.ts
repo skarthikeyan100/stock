@@ -10,7 +10,7 @@
 //  - ant    (Alice Blue open-api) trade book `GET /open-api/od/v1/orders/trades`: brokerOrderId, transactionType, tradingSymbol, instrumentId, filledQuantity,
 //           tradedPrice (one row per execution, confirmed live 2026-10-14). NO time or trade-id field name is confirmed anywhere in the repo.
 //  - breeze `getTradeList` (NFO): order_id, action, stock_code, expiry_date ('17-Nov-2026'), strike_price, right ('Call'/'Put'), quantity, average_cost and a
-//           `trade_date` (a date only, urgent.md 2026-11-09). NO time field is confirmed in the repo.
+//           `trade_date` (a date only, docs/status/urgent.md 2026-11-09). NO time field is confirmed in the repo.
 // For ant and breeze the time (and trade id) is therefore AUTO-DETECTED: the first key whose name says time/stamp and whose value parses as a full
 // date-time. A row without one is returned in `untimed` and the attribution refuses to guess (ALERT only; see bookkeeping.foreignShortfalls). The key names
 // of the first row are logged once per process (`describeRowKeys`) so the real field is visible after the next live run.

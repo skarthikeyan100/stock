@@ -133,7 +133,7 @@ class BreezeOrderNotifyStream {
         // caller (breezeExecutor.ts's waitForBreezeFill) record the FULL
         // requested quantity at a partial fill's price - silently
         // overstating a buy or understating a sell's genuine remainder, the
-        // same class of bug as gaps.md's "Partial-fill accounting" entry.
+        // same class of bug as docs/status/gaps.md's "Partial-fill accounting" entry.
         // A partial push just means keep waiting for the terminal one
         // (Executed, or Rejected/Cancelled/Expired for whatever's left) -
         // the caller's own cancel-then-recheck path (cancelOrderOnBreeze's

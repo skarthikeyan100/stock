@@ -304,7 +304,7 @@ the steps in this order and do not skip one. If the market is still open (before
    in contract and quantity. Report each difference. Positions the user placed and manages by hand (the Kite app) are not counted. A
    difference you cannot explain goes first in the carry-over, with who must act.
 5. **Write the end-of-day report** exactly as described under "End-of-day report" below (the `trades-summary` HTML and
-   `reports/eod-YYYY-MM-DD.md`), from the post-sync state. Section 5 (configuration at close) states that run eod disabled the strategies and
+   `docs/reports/eod-YYYY-MM-DD.md`), from the post-sync state. Section 5 (configuration at close) states that run eod disabled the strategies and
    lists the ones that were enabled; the carry-over includes "enable these strategies tomorrow, after logins, `npm run sync` and a status
    check" with that list.
 6. **Stop the processes.** Find the orchestrator wrapper's PID (`pgrep -f "node .*/node_modules/.bin/concurrently"`; never `pkill -f` with a
@@ -326,7 +326,7 @@ the steps in this order and do not skip one. If the market is still open (before
 
 Write one report per trading day after the market closes (15:30) and before the next session. The trade table is the
 `trades-summary` skill's output, `trades-YYYY-MM-DD.html` in the repo root (per-trade rows with buy and sell reasons, realized and
-unrealized P&L, and totals). Write the end-of-day sections below in `reports/eod-YYYY-MM-DD.md` alongside it, and pass each
+unrealized P&L, and totals). Write the end-of-day sections below in `docs/reports/eod-YYYY-MM-DD.md` alongside it, and pass each
 incident and configuration change as a `--note` so the HTML records it.
 Keep it factual: numbers from the platform and the broker, not from memory. Sections, in order:
 

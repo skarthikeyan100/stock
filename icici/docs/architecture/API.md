@@ -133,7 +133,7 @@ See `src/model/model.ts` (`Trade`, `OptionQuote`, `NiftyQuote`, `SensexQuote`) a
 
 ---
 
-## Research portal (invite-only; the code and API say "contractor" for the legal role; spec `SPEC-forecast-contractor-portal-v2.1.md`)
+## Research portal (invite-only; the code and API say "contractor" for the legal role; spec `docs/specs/SPEC-forecast-contractor-portal-v2.1.md`)
 
 Contractors have **no login**: a single-use invite link (`/join/<token>` in the UI, `/invite/<token>` in the API) creates the contractor and sets a long-lived signed `session` cookie (`email|issuedAt|days`, 365 days Individual / 90 Business, re-issued at most daily). A logout or cleared cookie means a new invite. `POST /auth/login` (Google) now accepts **admin emails only**. A session whose user has `role: 'contractor'` is fenced by `src/contractors/guard.ts` (default deny): it may call only the routes marked **C** below plus `/auth/me`, `/auth/logout`, `/niftystream`, `/notificationstream` and its own `/users/:email/notifications*`; everything else is 403. `GET /auth/me` answers a contractor with a contractor-safe view (no capital, limits or broker fields).
 

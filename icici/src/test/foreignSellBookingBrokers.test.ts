@@ -2,7 +2,7 @@
  * Non-platform sells that took the platform's lots, for ant / prism / breeze (extends foreignSellBooking.test.ts, which covers kite and the pure rule).
  * Rows are the real shapes: the Shoonya order book rows are copied from logs/orchestrator-2026-11-20.log (norentm 'HH:MM:SS DD-MM-YYYY', exch_tm
  * 'DD-MM-YYYY HH:MM:SS', trantype 'B'/'S', fillshares, avgprc); the ANT trade book from ANT.getTrades (brokerOrderId, transactionType, tradingSymbol,
- * instrumentId, filledQuantity, tradedPrice); the Breeze trade list from urgent.md (order_id, action, stock_code, expiry_date, strike_price, right, quantity,
+ * instrumentId, filledQuantity, tradedPrice); the Breeze trade list from docs/status/urgent.md (order_id, action, stock_code, expiry_date, strike_price, right, quantity,
  * average_cost, trade_date). The ANT/Breeze TIME field name is not confirmed anywhere in the repo, so those books are tested both with a plausible time
  * field (auto-detected) and without any (ALERT only, nothing booked, logged single-holder fallback in the sync).
  * Run: npx tsc, then: MOCK_BROKER=true node ./dist/test/foreignSellBookingBrokers.test.js

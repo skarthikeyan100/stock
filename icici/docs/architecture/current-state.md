@@ -1,6 +1,6 @@
 # Current state map (before the contractor-portal work, 2026-11-15)
 
-Where each of the things in spec section 0 lives today. Nothing below is changed by the contractor portal except where `SPEC-forecast-contractor-portal-v2.1.md` says additive.
+Where each of the things in spec section 0 lives today. Nothing below is changed by the contractor portal except where `docs/specs/SPEC-forecast-contractor-portal-v2.1.md` says additive.
 
 | Area | Where |
 |---|---|

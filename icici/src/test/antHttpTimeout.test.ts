@@ -4,7 +4,7 @@
  * (e.g. a strategy awaiting order placement, via OrderClient -> order
  * process -> ANT) forever. A real network hang isn't practically
  * unit-testable without a mock HTTP server - see
- * plans/bug-09-no-timeout-broker-http-ipc.md's Verification section for a
+ * docs/archive/plans/bugs/bug-09-no-timeout-broker-http-ipc.md's Verification section for a
  * manual live-check instead. This asserts the instance-level config that
  * every axios.get/axios.post call in ANT.ts relies on.
  * Run: npm run build (compile), then: node ./dist/test/antHttpTimeout.test.js

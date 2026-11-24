@@ -1,5 +1,7 @@
 # ICICI Trading Platform - Project Guide
 
+Documentation index: `docs/README.md`.
+
 ## Core Operational Rules
 - **Full Permissions:** Linux commands, bash operations, reading/editing any project files run in accept-edits mode with no permission requests needed.
 - **Questions Get Answers Only:** If the user asks a question (phrased like "can we...", "how...", "what...", etc.), give **only the answer**. Make no changes, do not write a plan, and do not fix bugs unless explicitly instructed (report bugs in the answer instead). Exception: The trader role fixes bugs immediately.
