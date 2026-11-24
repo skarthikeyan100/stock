@@ -7,7 +7,9 @@ import AntDataStream from '../processes/data/AntDataStream';
 import AntSession from '../ant/AntSession';
 // AntDataStream does not retry after the market close; pin the clock to market hours so the test does not depend on the time of day it runs.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-(require('../util/marketHours') as { isPastMarketClose: () => boolean }).isPastMarketClose = () => false;
+const marketHoursModule = require('../util/marketHours') as { isPastMarketClose: (now?: Date) => boolean };
+const originalIsPastMarketClose = marketHoursModule.isPastMarketClose;
+marketHoursModule.isPastMarketClose = () => false;
 import { nextReconnectDelayMs, isAuthError, RECONNECT_MAX_MS, RECONNECT_AUTH_MIN_MS, RECONNECT_AUTH_MAX_MS } from '../processes/data/connectRetry';
 
 function assert(c: boolean, m: string) {
@@ -18,6 +20,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const http = (status: number) => Object.assign(new Error(`Request failed with status code ${status}`), { response: { status } });
 
 async function main() {
+  try {
+    await run();
+  } finally {
+    marketHoursModule.isPastMarketClose = originalIsPastMarketClose;
+  }
+}
+async function run() {
     // pure policy
     assert(nextReconnectDelayMs(2000, http(500)) === 4000, '500 doubles the delay');
     assert(nextReconnectDelayMs(50_000, http(502)) === RECONNECT_MAX_MS, 'delay is capped');

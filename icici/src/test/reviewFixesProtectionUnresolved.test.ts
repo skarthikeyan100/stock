@@ -63,5 +63,28 @@ async function main() {
     await bookkeeping.recordFill(fill('Sell', 'NIFTYPU3', 75, 110, 'pub3s75'));
     assert(cnt() === 0, 'second matching Sell clears the other');
     bookkeeping.setUnresolvedSellHandler(undefined);
+
+    // 4. Redelivery of the same id-less unpriced Sell does not add entries; a redelivered BOOKED Sell does not clear another parked entry.
+    bookkeeping.setUnresolvedSellHandler(() => {});
+    const c4 = () => bookkeeping.getUnresolvedFills().filter((f) => f.tsym === 'NIFTYPU4').length;
+    await bookkeeping.recordFill(fill('Buy', 'NIFTYPU4', 300, 100, 'pub4'));
+    for (let i = 0; i < 5; i++) await bookkeeping.recordFill(fill('Sell', 'NIFTYPU4', 75, NaN, undefined));
+    assert(c4() === 1, 'redelivered id-less unpriced Sell is one entry');
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU4', 40, NaN, 'pub4p'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU4', 50, 110, 'pub4s50'));
+    assert(c4() === 2, 'unrelated booked Sell leaves both parked');
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU4', 50, 110, 'pub4s50'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU4', 75, 110, 'pub4s50'));
+    assert(c4() === 2, 'redelivery of an already-booked Sell does not clear a parked entry');
+
+    // 5. Parked 75 booked later as pieces 50 + 25 is cleared once the position is flat (not before).
+    await bookkeeping.recordFill(fill('Buy', 'NIFTYPU5', 75, 100, 'pub5'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU5', 75, NaN, undefined));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU5', 50, 110, 'pub5a'));
+    const c5 = () => bookkeeping.getUnresolvedFills().filter((f) => f.tsym === 'NIFTYPU5').length;
+    assert(c5() === 1, 'after piece 50 (position not flat) the parked entry stays');
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU5', 25, 110, 'pub5b'));
+    assert(c5() === 0, 'after piece 25 (flat) the parked entry is cleared');
+    bookkeeping.setUnresolvedSellHandler(undefined);
 }
 main().then(() => process.exit(process.exitCode ?? 0), (e) => { console.error(e); process.exit(1); });

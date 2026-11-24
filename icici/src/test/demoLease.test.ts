@@ -1,5 +1,5 @@
 import assert from 'assert';
-import { demoLeaseHeld, addSubscriberIp, removeSubscriberIp } from '../routes/demoLease';
+import { demoLeaseHeld, addSubscriberIp, removeSubscriberIp, ipHoldsToken } from '../routes/demoLease';
 
 const open = new Map<string, number>([['1.1.1.1', 1]]);
 assert.strictEqual(demoLeaseHeld(new Map([['1.1.1.1', 1]]), open), true, 'subscriber IP still streaming -> held');
@@ -18,5 +18,13 @@ assert.strictEqual(demoLeaseHeld(new Map([['1.1.1.1', 1]]), new Map()), false, '
     assert.strictEqual(ips.size, 0, 'IP removed at zero');
     removeSubscriberIp(ips, '9.9.9.9');
     assert.strictEqual(ips.size, 0, 'removing unknown IP is a no-op');
+}
+{
+    const ips = new Map<string, number>([['1.1.1.1', 1]]);
+    assert.strictEqual(ipHoldsToken(ips, '1.1.1.1'), true, 'subscriber IP may unsubscribe');
+    assert.strictEqual(ipHoldsToken(ips, '2.2.2.2'), false, 'IP that never subscribed the token may not unsubscribe it');
+    assert.strictEqual(ipHoldsToken(undefined, '1.1.1.1'), false, 'no IP map -> rejected');
+    removeSubscriberIp(ips, '1.1.1.1');
+    assert.strictEqual(ipHoldsToken(ips, '1.1.1.1'), false, 'IP that already released its subscriptions may not unsubscribe again');
 }
 console.log('demoLease: all passed');

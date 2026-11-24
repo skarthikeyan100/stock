@@ -9,7 +9,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import StrategiesClient from '../ipc/StrategiesClient';
 import { DataLink } from '../ipc/DataLink';
 import { isLoopback } from '../middleware/cloudflareOnly';
-import { demoLeaseHeld, addSubscriberIp, removeSubscriberIp } from './demoLease';
+import { demoLeaseHeld, addSubscriberIp, removeSubscriberIp, ipHoldsToken } from './demoLease';
 import { asyncRouter } from './asyncRouter';
 import { resolveUser, requireAuth, requireAdmin, requireSelfOrAdmin } from './session';
 
@@ -188,6 +188,7 @@ router.get('/demo/subscribe', async function (req, res) {
         if (subscribe === 'false') {
             const count = demoSubscribed.get(token) ?? 0;
             if (count === 0) { res.status(403).json({ error: 'Token was not subscribed by the demo' }); return; }
+            if (!ipHoldsToken(demoTokenIps.get(token), ip)) { res.status(403).json({ error: 'Token was not subscribed by this client' }); return; }
             if (count === 1) {
                 demoSubscribed.delete(token);
                 demoLastSubscribeAt.delete(token);

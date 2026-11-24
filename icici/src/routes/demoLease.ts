@@ -16,3 +16,8 @@ export function removeSubscriberIp(ips: Map<string, number>, ip: string): void {
     const n = (ips.get(ip) ?? 0) - 1;
     if (n <= 0) ips.delete(ip); else ips.set(ip, n);
 }
+
+// Unsubscribe is anonymous: only an IP that itself holds a subscription to the token may release one, so a stranger cannot decrement the shared count.
+export function ipHoldsToken(ips: Map<string, number> | undefined, ip: string): boolean {
+    return (ips?.get(ip) ?? 0) > 0;
+}
