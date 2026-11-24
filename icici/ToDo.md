@@ -1,6 +1,6 @@
 # ToDo
 
-This file is a snapshot of pending/in-progress work, kept current automatically by a SessionEnd hook (see `.claude/settings.json`). It reflects current state, not a historical log. Resolved items are removed. Open code-review findings live in `open-review-items.md`; open bugs in `docs/status/bugs.md`.
+This file is a snapshot of pending/in-progress work, kept current by hand (there is no SessionEnd hook any more). It reflects current state, not a historical log. Resolved items are removed. Open code-review findings live in `open-review-items.md`; open bugs in `docs/status/bugs.md`.
 
 ## Open decisions / unfinished work
 

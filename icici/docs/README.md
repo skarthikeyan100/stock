@@ -1,6 +1,6 @@
 # Documentation index
 
-Pending work lives in `../ToDo.md` (kept at the repo root: the SessionEnd hook updates it and `CLAUDE.md` cites it). Project rules are in `../CLAUDE.md`.
+Pending work lives in `../ToDo.md` (kept at the repo root because `CLAUDE.md` and code comments cite it). Project rules are in `../CLAUDE.md`.
 
 ## architecture/
 - `Architecture.md` - processes, IPC, broker model
