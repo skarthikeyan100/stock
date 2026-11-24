@@ -107,5 +107,46 @@ async function main() {
     await bookkeeping.recordFill(fill('Sell', 'NIFTYPU7', 30, 110, 'pub7'));
     assert(c7() === 1, 'untracked contract: booked Sell does not flat-clear the parked entry');
     bookkeeping.setUnresolvedSellHandler(undefined);
+
+    // 8. An id claimed by a delivery still mid-booking is NOT proof of booking: the early return leaves the parked entry; it goes only once booked.
+    bookkeeping.setUnresolvedSellHandler(() => {});
+    const c8 = () => bookkeeping.getUnresolvedFills().filter((f) => f.tsym === 'NIFTYPU8').length;
+    await bookkeeping.recordFill(fill('Buy', 'NIFTYPU8', 100, 100, 'pub8'));
+    const origProc = (bookkeeping as any)._processTradeEvent.bind(bookkeeping);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    (bookkeeping as any)._processTradeEvent = async (ev: Trade, skip?: boolean) => { await gate; throw new Error('booking failed'); };
+    const first = bookkeeping.recordFill(fill('Sell', 'NIFTYPU8', 50, 110, 'pub8x')).catch(() => 'threw');
+    await new Promise((r) => setTimeout(r, 50));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU8', 50, NaN, 'pub8x')); // parked while the first delivery is mid-booking
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU8', 50, 110, 'pub8x')); // early return: already claimed
+    assert(c8() === 1, 'redelivery of an id mid-booking does not clear the parked entry');
+    release();
+    assert(await first === 'threw', 'the in-flight booking failed');
+    assert(c8() === 1, 'parked entry still there after the booking threw');
+    (bookkeeping as any)._processTradeEvent = origProc;
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU8', 50, 110, 'pub8x')); // retry books for real
+    assert(c8() === 0, 'parked entry cleared once the Sell is verifiably booked');
+
+    // 9. "Already stored in Mongo" does not prove memory was reduced: the parked entry stays.
+    const c9 = () => bookkeeping.getUnresolvedFills().filter((f) => f.tsym === 'NIFTYPU9').length;
+    await bookkeeping.recordFill(fill('Buy', 'NIFTYPU9', 100, 100, 'pub9'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU9', 50, NaN, 'pub9x'));
+    const origStored = (bookkeeping as any).fillAlreadyStored;
+    (bookkeeping as any).fillAlreadyStored = async () => true;
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU9', 50, 110, 'pub9x'));
+    (bookkeeping as any).fillAlreadyStored = origStored;
+    assert(c9() === 1, 'stored-in-Mongo early return leaves the parked entry');
+    assert(bookkeeping.trades.find((t) => t.tsym === 'NIFTYPU9')?.quantity === 100, 'and memory was not reduced by it');
+
+    // 10. A zero-quantity row is not an open position: a Sell booked against it does not flat-clear parked entries.
+    const c10 = () => bookkeeping.getUnresolvedFills().filter((f) => f.tsym === 'NIFTYPU10').length;
+    const zero = Object.assign(new Trade(), { tsym: 'NIFTYPU10', token: 'tok-NIFTYPU10', quantity: 0, price: 100, action: 'Buy', user: 'PuUser', broker: 'kite' });
+    bookkeeping.trades.push(zero);
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU10', 75, NaN, undefined));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU10', 30, 110, 'pub10'));
+    assert(c10() === 1, 'zero-quantity row: booked Sell does not flat-clear the parked entry');
+    bookkeeping.trades.splice(bookkeeping.trades.indexOf(zero), 1);
+    bookkeeping.setUnresolvedSellHandler(undefined);
 }
 main().then(() => process.exit(process.exitCode ?? 0), (e) => { console.error(e); process.exit(1); });

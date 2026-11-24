@@ -188,8 +188,9 @@ router.get('/demo/subscribe', async function (req, res) {
         if (subscribe === 'false') {
             const count = demoSubscribed.get(token) ?? 0;
             if (count === 0) { res.status(403).json({ error: 'Token was not subscribed by the demo' }); return; }
-            // A client whose IP changed since subscribing gets 403 here; its hold is not stuck: the lease sweep above releases the token once no
-            // subscribing IP has an option stream open and DEMO_LEASE_MS has passed since the last subscribe.
+            // A client whose IP changed since subscribing gets 403 here; its hold is not stuck: the lease sweep above releases the token only once no
+            // subscribing IP has an option stream open AND the DEMO_LEASE_MS (30 min) lease has expired (the sweep keeps renewing the lease while any
+            // subscribing IP is streaming).
             if (!ipHoldsToken(demoTokenIps.get(token), ip)) { res.status(403).json({ error: 'Token was not subscribed by this client' }); return; }
             if (count === 1) {
                 demoSubscribed.delete(token);
