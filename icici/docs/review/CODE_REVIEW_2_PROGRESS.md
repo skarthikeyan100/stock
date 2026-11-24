@@ -81,3 +81,7 @@ Open: demo lease is per client IP, so two tabs behind one IP share a lease.
 ## Fourth review - 2026-11-24
 `/code-review medium a2c8f10..447bcbc`: 5 findings. Parked-sell clearing (only a matching Sell clears; per-fill keys) and per-IP demo lease counts FIXED; different-IP subscribe/stream limitation documented in Architecture.md; cancelProtection ordering verified correct, no change. Also pinned the market clock in antDataStreamRetry.test (it failed after 15:30). tsc clean, 126/126 tests.
 Last reviewed commit: `447bcbc`; fixes are in `4527d8b`. The fifth review covers `447bcbc..4527d8b`.
+
+## Fifth review - 2026-11-24
+`/code-review medium 447bcbc..4527d8b` (+docs): 5 findings, all FIXED (parked-Sell dedupe by broker|user|tsym|qty with 200 cap, cleared only after a Sell is newly booked and by order id/qty or when the contract is flat; demo unsubscribe rejected for non-holder IPs; test restores the market clock; comment). tsc clean, 126/126.
+Last reviewed commit: `4527d8b`; fixes are in `59d6def`. Sixth review covers `4527d8b..59d6def`.
