@@ -100,4 +100,5 @@ const tick = (l: any, ltp: number) => Object.assign(new OptionQuote(), { token: 
     s = make({ slDistance: 50 }, [pe]);
     await s.processOptionQuote(tick(pe, 90));
     assert(count('chunkedSquareOff') === 1, 'PE at entry-50 is sold');
+    process.exit(process.exitCode ?? 0); // ConfigService's config.yml watcher would otherwise keep the process alive
 })();

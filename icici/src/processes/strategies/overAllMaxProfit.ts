@@ -15,7 +15,7 @@ import OrderClient from './OrderClient';
 // One trip per day, durable in Mongo (strategyLatches, ownerType 'OverAllMaxProfit'): re-enabling strategies afterwards does not trip it again
 // the same day. A trip whose lock failed (`locked` false) is retried every cycle.
 export const OVERALL_MAX_PROFIT_OWNER = 'OverAllMaxProfit';
-const INTERVAL_MS = 5000;
+const INTERVAL_MS = 60_000; // one check a minute (user's rule 2026-11-25)
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const nonFiniteAlert = new NonFiniteAlert();
 let running = false;
