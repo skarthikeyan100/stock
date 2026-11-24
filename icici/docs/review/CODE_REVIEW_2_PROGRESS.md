@@ -101,3 +101,7 @@ Last reviewed commit: `0bf7fe8`; fixes are in `58d9816`. Ninth review covers `0b
 ## Ninth review - 2026-11-24
 `/code-review medium 0bf7fe8..58d9816`: 5 findings, all FIXED by simplifying: restore never clears parked sells; markSellBooked only when a tracked row was reduced (hadRow); EOD sync claims processedFillIds and releases on throw; test stubs in try/finally; alert text matches. tsc clean, 126/126.
 Last reviewed commit: `58d9816`; fixes are in `3e5b9de`. Tenth review covers `58d9816..3e5b9de`.
+
+## Tenth review - 2026-11-24
+`/code-review medium 58d9816..3e5b9de`: 4 nits. Fixed: EOD sync log order; hadQty captured before booking in both syncs; clearParkedSells now does nothing when no tracked row was reduced (also gates the by-order-id delete). Token-match on hadRow refuted (_processTradeEvent matches rows by tsym only), pinned by test 15. EOD-sync skip test not added (no harness). tsc clean, 126/126.
+Last reviewed commit: `3e5b9de`; fixes are in `52d6366`. Next: one high-effort review of the whole parked-Sell area (bookkeeping.ts unresolvedFills / markSellBooked / clearParkedSells / syncs).
