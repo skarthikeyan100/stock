@@ -25,7 +25,7 @@ const fake: any = new Proxy({}, {
     get: (_t, fn: string) => async (..._args: any[]) => {
         calls.push(fn);
         if (fn === 'getOpenTrades') return open;
-        if (fn === 'getPendingSells') return [];
+        if (fn === 'getPendingSells' || fn === 'platformSells') return []; // platformSells: read-only, the platform's own sells of the contract (none here)
         if (fn === 'chunkedSquareOffLimit' && sellError) throw sellError;
         return {};
     },
@@ -54,7 +54,7 @@ function make(Cls: any, id: string, legs: any[], realizedPnl = 1234) {
         assert(Object.values<any>(s.state.legs).every((l) => l.sellQty === 0), 'resting-sell records cleared');
         assert(s.state.realizedPnl === 1234, 'realizedPnl untouched (neutral: the sync booked the real P&L)');
         assert(JSON.parse(fs.readFileSync(s.stateFile(), 'utf8')).legs.L1.status === 'closed', 'closed state persisted to the file');
-        assert(!calls.some((c) => c !== 'getOpenTrades' && c !== 'getPendingSells'), `reconcile placed no order (calls: ${[...new Set(calls)].join(',')})`);
+        assert(!calls.some((c) => c !== 'getOpenTrades' && c !== 'getPendingSells' && c !== 'platformSells'), `reconcile placed no order (calls: ${[...new Set(calls)].join(',')})`);
 
         console.log(`${name}: CE gone, PE partly held (325 of 650)`);
         open = [{ token: '45395', tsym: 'N25200PE', quantity: 325, price: 249 }];

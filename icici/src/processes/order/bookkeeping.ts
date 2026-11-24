@@ -191,6 +191,24 @@ class OrderBookkeeping {
     private processedFillIds: Set<string> = new Set();
     // Fill ids whose booking threw after the raw doc may have been written (see recordFill).
     private failedBookingFillIds: Set<string> = new Set();
+    // Sell fills that arrived with an unusable price and were deliberately NOT booked (see recordFill); cleared when the same order is later booked.
+    private unresolvedFills: Map<string, { tsym: string; user: string; broker?: string; quantity: number; brokerOrderId?: string; at: Date; alertedAt?: number }> = new Map();
+    getUnresolvedFills() { return [...this.unresolvedFills.values()]; }
+    // Set by the order process: asked (debounced there) to re-read the broker's trade book when a Sell is parked for an unusable price.
+    private unresolvedSellHandler?: (broker: string, tsym: string) => void;
+    setUnresolvedSellHandler(fn: ((broker: string, tsym: string) => void) | undefined): void { this.unresolvedSellHandler = fn; }
+    // Repeated ALERT (once per `repeatMs` per order) for a parked Sell still unbooked after `ageMs`. Returns the entries alerted.
+    alertStaleUnresolvedFills(now = Date.now(), ageMs = 15 * 60_000, repeatMs = 15 * 60_000) {
+        const out: { tsym: string; user: string; broker?: string; quantity: number; brokerOrderId?: string; at: Date }[] = [];
+        for (const f of this.unresolvedFills.values()) {
+            if (now - f.at.getTime() < ageMs) continue;
+            if (f.alertedAt !== undefined && now - f.alertedAt < repeatMs) continue;
+            f.alertedAt = now;
+            Log.log(`[order] ALERT: Sell fill still NOT booked after ${Math.round((now - f.at.getTime()) / 60_000)} min (unusable price): user ${f.user}, ${f.tsym}, broker ${f.broker ?? 'kite'}, qty ${f.quantity}, order ${f.brokerOrderId ?? 'unknown'} - the position is still open in memory; run POST /sync or book it manually`);
+            out.push(f);
+        }
+        return out;
+    }
     // Raw-doc inserts still in flight, by broker order id: a retry waits for them so its stored-doc lookup is not racing the write.
     private pendingFillInserts: Map<string, Promise<unknown>> = new Map();
     // Per-session, per-user set of drawdown-warning thresholds (80, 100) already
@@ -1124,15 +1142,29 @@ class OrderBookkeeping {
     async recordFill(tradeEvent: Trade): Promise<void> {
         this.rollPnlDay();
         // A NaN/negative price or a non-positive quantity would poison the aggregate average, every later P&L and the investment gate
-        // (NaN >= cap is false, so the gate opens). Quantity cannot be repaired; an unusable price is booked as 0 (the callers already treat 0 as "unknown").
+        // (NaN >= cap is false, so the gate opens). Quantity cannot be repaired. recordFill has no broker context (callers pass the price they
+        // read from the order / trade book), so an unusable price cannot be recovered here.
         if (!(Number(tradeEvent.quantity) > 0)) {
             Log.log(`[order] ALERT: ignoring fill with unusable quantity ${tradeEvent.quantity} (${tradeEvent.tsym}, order ${tradeEvent.brokerOrderId})`);
             return;
         }
         if (!Number.isFinite(Number(tradeEvent.price)) || Number(tradeEvent.price) < 0) {
+            if (tradeEvent.action === 'Sell') {
+                // A Sell booked at 0 would book (0 - entry) * qty as realized loss and feed the drawdown/lockout. Do not book it: no realizedPnL, no
+                // userPnL, no Trade doc, no change to the tracked position, and the order id is NOT claimed so a later redelivery of this fill
+                // (poller, trade-book sync) with a usable price is booked normally. The unresolved fill stays visible via getUnresolvedFills().
+                Log.log(`[order] ALERT: Sell fill price ${tradeEvent.price} is unusable (${tradeEvent.tsym}, user ${tradeEvent.user}, order ${tradeEvent.brokerOrderId}, qty ${tradeEvent.quantity}) - NOT booked; position left open in memory, reconcile against the broker / book it with the real price`);
+                this.unresolvedFills.set(String(tradeEvent.brokerOrderId ?? `${tradeEvent.broker ?? 'kite'}|${tradeEvent.user}|${tradeEvent.tsym}|${Date.now()}`), { tsym: tradeEvent.tsym, user: tradeEvent.user || 'Default', broker: tradeEvent.broker, quantity: Number(tradeEvent.quantity), brokerOrderId: tradeEvent.brokerOrderId, at: new Date() });
+                // Actively resolve: ask the order process to re-read the broker's trade book (it debounces and respects the in-flight sync guards).
+                try { this.unresolvedSellHandler?.(tradeEvent.broker ?? 'kite', tradeEvent.tsym); } catch (e) { Log.log('[order] unresolved-sell handler threw:', e); }
+                return;
+            }
+            // A Buy is still booked (at 0, which callers already treat as "unknown price"): the shares are really held, and an untracked position
+            // would escape the never-short guard, exit monitoring and the investment gate; a 0 entry only understates cost until reviewed.
             Log.log(`[order] ALERT: fill price ${tradeEvent.price} is unusable (${tradeEvent.tsym}, order ${tradeEvent.brokerOrderId}) - booking it at 0, manual review required`);
             tradeEvent.price = 0;
         }
+        this.unresolvedFills.delete(String(tradeEvent.brokerOrderId ?? ''));
         let skipInsert = false;
         const id = tradeEvent.brokerOrderId;
         // Paper broker (in-memory only): nothing is read from or written to Mongo; the id is still claimed so a redelivered fill is ignored.

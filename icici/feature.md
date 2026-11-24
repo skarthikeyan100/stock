@@ -178,7 +178,7 @@ Basis: `strategies.md`, `Architecture.md`, `docs/current-state.md`, `config.yml`
 - Tools: gap screener generate/quote/cover-order, order-tree printers, email senders, `buildAgreements`, `extractLegal`, `makeLevelTerms`, `makeDemoTicks`, `migrateTestUserToContractor`, quote date range, ANT batch quote, sentiment analyzer, shared `emitter`
 - Skills: check-broker-sessions, monitor-strategies, recommend, trades-summary
 - Config API: `GET/POST /config` with validation and diff-based write
-- Global price/exit settings: `minPrice`, `maxPrice`, `targetPoints`, `stopLossPoints`, `targetPriceDiff`, `stopLossPriceDiff`, `trailingDistance`, `cooldownSeconds` (also seed per-user defaults and the level table)
+- Global price/exit settings: `minPrice`, `maxPrice`, `targetPoints`, `stopLossPoints`, `targetPriceDiff`, `stopLossPriceDiff`, `cooldownSeconds` (also seed per-user defaults and the level table). `trailingDistance` is accepted and validated but no code reads it (setting it has no effect). `minPrice`/`maxPrice` have almost no live consumer: the order-list filter only runs for a Prism-broker RoC/RuleBased strategy and the Breeze push fill-price sanity band reads them
 - Per-broker OAuth routes `/:broker/login|callback`, `POST /breeze/callback`, `GET /shoonya/callback`, `POST /ant/connect`
 - Per-user routes: `/users/:email/notifications`, `/trades/open|closed|pnl-summary`, `/payouts/estimate`, `delete-account`; `GET /admin/erasure-log`; `/contractor/trades`, `/contractor/positionstream`; `/demo/health|subscribe|resolve|symbols`
 

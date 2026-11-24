@@ -17,7 +17,9 @@ function assert(condition: boolean, message: string) {
     if (!condition) process.exitCode = 1;
 }
 
-const contract: FnoRecord = { token: 'BZ1', instrumentName: 'OPTIDX', shortName: 'NIFTY', series: 'OPTION', expiryDate: '17-Nov-2026', strikePrice: '25150', optionType: 'CE', lotSize: 65, tickSize: 0.05, companyName: 'NIFTY', exchange: 'NFO' };
+// A future expiry computed at run time (a week out, Breeze's DD-Mon-YYYY) so the fixture never goes stale; findOption is stubbed below to return the fixture.
+const futureExpiry = (() => { const d = new Date(Date.now() + 7 * 86400000); return `${String(d.getUTCDate()).padStart(2, '0')}-${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()]}-${d.getUTCFullYear()}`; })();
+const contract: FnoRecord = { token: 'BZ1', instrumentName: 'OPTIDX', shortName: 'NIFTY', series: 'OPTION', expiryDate: futureExpiry, strikePrice: '25150', optionType: 'CE', lotSize: 65, tickSize: 0.05, companyName: 'NIFTY', exchange: 'NFO' };
 
 async function main() {
     const placed: any[] = [];
@@ -36,13 +38,14 @@ async function main() {
     (ANT.getInstance() as any).getLiveQuote = async () => ({ ltp: 118, bid: 117, ask: 120 });
     (BreezeContractMaster.getInstance() as any).findNearestExpiryOption = async () => contract;
     (BreezeContractMaster.getInstance() as any).findATMOption = async () => contract;
+    (BreezeContractMaster.getInstance() as any).findOption = async () => contract;
     (AntContractMaster.getInstance() as any).findExactOption = () => ({ token: 'A1', exch: 'NFO', tradingSymbol: 'x', lotSize: '65' });
     (bookkeeping as any).recordFill = async (t: Trade) => { booked.push(t); };
 
     // 1. canonical contract, default quantity (one lot), full fill.
     const trade = await manualBuyOnBreeze({ userId: 'BreezeUser', contract: 'NIFTY_25150_CE', targetPoints: 10, stopLossPoints: 5 });
     assert(placed.length === 1 && placed[0].action === 'buy' && placed[0].orderType === 'limit' && placed[0].exchangeCode === 'NFO', 'one limit buy placed on Breeze');
-    assert(Number(placed[0].price) === 120, 'limit is the widest of the sources (ANT ask 120, not Breeze 100)');
+    assert(Number(placed[0].price) === 99, 'limit is the best bid of the widened quote (min of Breeze 99 and ANT 117), not the stale ask; the guard still widens the ask to ANT 120');
     assert(Number(placed[0].quantity) === 65, 'default quantity is one lot');
     assert(trade.broker === 'breeze' && trade.token === 'BZ1' && trade.quantity === 65 && trade.price === 120 && trade.right === 'call', 'trade is a Breeze Buy on the contract token');
     assert(trade.targetPrice === 130 && trade.stopLossPrice === 115, 'target/stop levels set from the fill price (in-app exit, no GTT on Breeze)');

@@ -113,7 +113,7 @@ router.post('/config', requireAdmin, async (req, res) => {
     if (dropped.length > 0 && req.query.allowRemove !== 'true') {
         return res.status(400).json({ error: `Save would remove strategy instance(s): ${dropped.map((s: any) => `${s.type}:${s.userId || s.type}`).join(', ')}. Re-send with ?allowRemove=true if intended.` });
     }
-    configService.writeConfig(nextConfig);
+    configService.writeConfig(nextConfig, { preserveTopLevelKeys: true }); // flatToConfig carries settings + strategies only: keep forecast: etc.
     configService.reloadNow(); // this process's own in-memory copy shouldn't lag its own write either
 
     // config.yml is hot-*read* (ConfigService.watchConfig), but several

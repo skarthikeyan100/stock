@@ -9,21 +9,25 @@ import type { BrokerName } from '../../util/brokerName';
 // placed a second full-quantity sell (90.50): two sells for one position. Every sell placement (limit or market) of a contract therefore runs
 // under this lock, so the second one starts only after the first is tracked and then sees it (the guard clamps or refuses it). Not re-entrant:
 // never call a locked sell from inside another one for the same key.
-const SELL_LOCK_MAX_WAIT_MS = 60_000;
+const SELL_LOCK_MAX_WAIT_MS = Number(process.env.SELL_LOCK_MAX_WAIT_MS_TEST) > 0 ? Number(process.env.SELL_LOCK_MAX_WAIT_MS_TEST) : 60_000;
 const sellLocks = new Map<string, Promise<void>>();
 export async function withSellLock<T>(broker: string, userId: string, tradingSymbol: string, fn: () => Promise<T>): Promise<T> {
     const key = `${broker}|${userId}|${tradingSymbol}`;
     const prev = sellLocks.get(key) ?? Promise.resolve();
     let release!: () => void;
     const mine = new Promise<void>((r) => { release = r; });
-    const tail = prev.then(() => mine);
+    let tail = prev.then(() => mine);
     sellLocks.set(key, tail);
     // Bounded wait: one sell whose broker call hangs must not queue every later sell of this contract (a stop-loss, the 15:15 force close)
     // behind it forever. After the bound this one proceeds anyway (the never-short guard still protects against an over-sell).
     let waitTimer: NodeJS.Timeout | undefined;
     const timedOut = await Promise.race([prev.then(() => false), new Promise<boolean>((r) => { waitTimer = setTimeout(() => r(true), SELL_LOCK_MAX_WAIT_MS); })]);
     if (waitTimer) clearTimeout(waitTimer);
-    if (timedOut) Log.log(`[order] ALERT: sell lock for ${key} still held after ${SELL_LOCK_MAX_WAIT_MS / 1000}s - proceeding without it`);
+    if (timedOut) {
+        Log.log(`[order] ALERT: sell lock for ${key} still held after ${SELL_LOCK_MAX_WAIT_MS / 1000}s - proceeding without it`);
+        // Later sells must queue behind THIS one, not behind the stuck holder (else each would wait another full bound).
+        if (sellLocks.get(key) === tail) { tail = mine; sellLocks.set(key, tail); }
+    }
     try {
         return await fn();
     } finally {
@@ -210,7 +214,7 @@ export async function cancelOrderWithFillRecheck(params: Parameters<typeof cance
     }
 }
 
-async function cancelAndRecheck(params: {
+export async function cancelAndRecheck(params: {
     orderId: string;
     label: string; // e.g. 'cancelOrderOnAnt' - only used for log lines
     cancel: () => Promise<void>;
@@ -295,8 +299,9 @@ async function cancelAndRecheck(params: {
         }
     } catch (e) {
         if (e instanceof OrderAlreadyFilledError) throw e;
-        Log.log(`[order] ${params.label}: second post-cancel read of ${params.orderId} failed - leaving tracked:`, e);
-        throw e;
+        // The cancel is already confirmed clean and the first read showed no fill: this extra look is best-effort, so a failed read must not
+        // turn a confirmed cancel into a reported failure.
+        Log.log(`[order] ${params.label}: second post-cancel read of ${params.orderId} failed - cancel was confirmed, untracking:`, e);
     }
     params.untrack();
 }

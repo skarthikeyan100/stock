@@ -145,7 +145,10 @@ async function main() {
     antBook = [
         antRow(AM0, 'SELL', 195, 109, ['fillTimestamp', '2026-11-20 10:37:00']),
         antRow(A1, 'BUY', 195, 114, ['fillTimestamp', '2026-11-20 10:50:00']),
-        antRow(AM3, 'SELL', 130, 104, ['fillTimestamp', '2026-11-20 11:10:00'], 'T1'), antRow(AM3, 'SELL', 65, 105, ['fillTimestamp', '2026-11-20 11:10:01'], 'T2'),
+        // ANT trade-book semantics (src/ant/tradeBook.ts, commit 61aadf3): a row's tradedPrice is the order's CUMULATIVE AVERAGE after that execution, and the
+        // order's average is its highest-exchangeTradeId row. Executions 130 @104 then 65 @105 therefore come back as rows 104 and (130*104+65*105)/195.
+        { ...antRow(AM3, 'SELL', 130, 104, ['fillTimestamp', '2026-11-20 11:10:00'], 'T1'), exchangeTradeId: '900001' },
+        { ...antRow(AM3, 'SELL', 65, (130 * 104 + 65 * 105) / 195, ['fillTimestamp', '2026-11-20 11:10:01'], 'T2'), exchangeTradeId: '900002' },
     ];
     b.trades.push(platformTrade('ant', AT, 'ContinuousStrategy-Ant', 195, 114, ist(10, 50, 5))); antNet = 0;
     n = await bookkeeping.bookForeignSellShortfall('ant', { notifyStrategies: false, graceMs: 0, confirm: false });

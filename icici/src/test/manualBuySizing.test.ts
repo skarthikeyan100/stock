@@ -20,7 +20,9 @@ function assert(condition: boolean, message: string) {
     if (!condition) process.exitCode = 1;
 }
 const STOP = 'STOP-AFTER-SIZING';
-const bz: FnoRecord = { token: 'BZ1', instrumentName: 'OPTIDX', shortName: 'NIFTY', series: 'OPTION', expiryDate: '17-Nov-2026', strikePrice: '25150', optionType: 'CE', lotSize: 65, tickSize: 0.05, companyName: 'NIFTY', exchange: 'NFO' };
+// A future expiry computed at run time (a week out, Breeze's DD-Mon-YYYY) so the fixture never goes stale; findOption is stubbed below to return the fixture.
+const futureExpiry = (() => { const d = new Date(Date.now() + 7 * 86400000); return `${String(d.getUTCDate()).padStart(2, '0')}-${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()]}-${d.getUTCFullYear()}`; })();
+const bz: FnoRecord = { token: 'BZ1', instrumentName: 'OPTIDX', shortName: 'NIFTY', series: 'OPTION', expiryDate: futureExpiry, strikePrice: '25150', optionType: 'CE', lotSize: 65, tickSize: 0.05, companyName: 'NIFTY', exchange: 'NFO' };
 const antRow = { token: 'A1', exch: 'NFO', tradingSymbol: 'NIFTY26N1725150CE', lotSize: '65' };
 
 let captured = 0;
@@ -48,6 +50,7 @@ async function main() {
     am.resolveCommonToken = () => 'C1';
     (KiteContractMaster.getInstance() as any).findATMOption = async () => ({ tradingSymbol: 'NIFTY26N1725150CE', lotSize: 65, exchange: 'NFO' });
     (BreezeContractMaster.getInstance() as any).findATMOption = async () => bz;
+    (BreezeContractMaster.getInstance() as any).findOption = async () => bz;
 
     const brokers: Array<[string, (u: string) => Promise<unknown>]> = [
         ['kite', (u) => manualBuyOnKite({ userId: u, right: 'call', index: 'NIFTY' })],

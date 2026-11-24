@@ -105,14 +105,14 @@ function make<T>(Cls: new (id: string) => T, cfg: any): any {
     nc = make(NiftyChangeStrategy, { ...ncCfg, userId: 'NCF-b' });
     await nc.processNiftyQuote({ ltp: 22680, prevClose: 22650 });
     const b = last('placeLimitBuyBare');
-    assert(!!b && b.args[4] === 100, `no limitOffset configured -> limit buy at the option LTP itself (got ${b?.args[4]})`);
+    assert(!!b && b.args[4] === 100, `limit buy at the central order price (best bid 100) (got ${b?.args[4]})`);
     await nc.updateTrade(fill('NIFTY22750CE', 'Buy', 975, 100));
     const att = last('attachProtection');
     assert(att?.args[1].targetPrice === 110 && att?.args[1].stopLossPrice === 90, `target 110 / stop 90 (10% of 100, not 8 points) (got ${att?.args[1].targetPrice}/${att?.args[1].stopLossPrice})`);
     calls = [];
     nc = make(NiftyChangeStrategy, { ...ncCfg, userId: 'NCF-c', minMovePoints: undefined, limitOffset: 3 });
     await nc.processNiftyQuote({ ltp: 22651, prevClose: 22650 });
-    assert(last('placeLimitBuyBare')?.args[4] === 97, 'without minMovePoints a +1 move trades, and an explicit limitOffset 3 still applies');
+    assert(last('placeLimitBuyBare')?.args[4] === 100, 'without minMovePoints a +1 move trades, and an explicit limitOffset 3 no longer prices the entry (central order price, best bid 100)');
 
     console.log('MomentumAtFixedTimeStrategy');
     MomentumAtFixedTimeStrategy.processStartedAt = moment().subtract(1, 'hour');

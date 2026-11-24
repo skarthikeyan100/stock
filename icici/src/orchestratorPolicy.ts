@@ -19,3 +19,26 @@ export function shouldApplyCodeChange(input: { envHotRestart: string | undefined
     if (input.configAllows) return true;
     return !input.inMarketHours;
 }
+
+// Give-up limits of the crash respawner. `trading` is given up on like the other roles but sooner (user decision, 2026-11-24: it must not
+// retry continuously when it keeps being rejected or crashing): 2 instead of 10, for both limits below. After giving up, the respawner
+// stays stopped until the next code change or orchestrator restart.
+export const MAX_QUICK_CRASHES = 10;
+export const MAX_FAILED_RESTARTS = 10;
+export const MAX_QUICK_CRASHES_TRADING = 2;
+export const MAX_FAILED_RESTARTS_TRADING = 2;
+
+// Consecutive children that spawned fine but exited within a minute of starting.
+export function maxQuickCrashes(role: string): number {
+    return role === 'trading' ? MAX_QUICK_CRASHES_TRADING : MAX_QUICK_CRASHES;
+}
+// Consecutive restarts that could not even spawn a child.
+export function maxFailedRestarts(role: string): number {
+    return role === 'trading' ? MAX_FAILED_RESTARTS_TRADING : MAX_FAILED_RESTARTS;
+}
+export function shouldGiveUpOnQuickCrashes(role: string, quickCrashes: number): boolean {
+    return quickCrashes >= maxQuickCrashes(role);
+}
+export function shouldGiveUpOnFailedRestarts(role: string, failedRestarts: number): boolean {
+    return failedRestarts >= maxFailedRestarts(role);
+}

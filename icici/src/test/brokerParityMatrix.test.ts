@@ -7,6 +7,7 @@
 import { KiteExecutor, AntExecutor, PrismExecutor, BreezeExecutor } from '../processes/order/brokerExecutors';
 import * as priceRange from '../processes/order/antExecutor';
 import Prism from '../prism';
+import ANT from '../ant/ANT';
 import PrismContractMaster from '../prism/PrismContractMaster';
 import AntContractMaster from '../ant/AntContractMaster';
 import bookkeeping from '../processes/order/bookkeeping';
@@ -42,6 +43,7 @@ async function main() {
     (AntContractMaster as any).getInstance = () => ({
         findNearestExpiryOption: (p: any) => ({ token: 'a' + p.strike, tradingSymbol: `NIFTY${p.strike}${p.optionType}`, exch: 'NFO', lotSize: '65' }),
         // ANT's price-range pick resolves the contract from the token the premium came from (ant-<strike> in the stub above).
+        findByAnyBrokerTradingSymbol: () => undefined, // the central order price looks the ANT token up by symbol for prism; none -> the request's token is used
         findByToken: (t: string) => { const strike = Number(t.replace('ant-', '')); return { token: t, strike, optionType: 'CE', exch: 'NFO', tradingSymbol: `NIFTY${strike}CE`, lotSize: '65' }; },
     });
     const c = await PrismExecutor.getContractByPriceRange(22750, 'CE', 'NIFTY', 100, new Set());
@@ -65,7 +67,8 @@ async function main() {
     }
 
     // A buy cancelled after a partial fill is booked before the error surfaces.
-    prism.getStockOptionQuote = async () => ({ ltp: 100 });
+    // The buy limit is the central order price (REST best bid via ANT getLiveQuote), no longer Prism's getStockOptionQuote LTP.
+    (ANT.getInstance() as any).getLiveQuote = async () => ({ ltp: 100, bid: 100, ask: 100.05 });
     prism.placeLimitBuyBare = async () => ({ orderId: 'P-2' });
     prism.getOrderStatus = async () => ({ status: 'CANCELED', filledQuantity: 40, fillPrice: 100 });
     let partial: any;

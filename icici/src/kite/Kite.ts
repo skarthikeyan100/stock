@@ -28,17 +28,33 @@ export function stopLimitPrice(stopTrigger: number): number {
 }
 
 
-// A Kite placeOrder failure is a definite refusal when Kite answered with a client-side error type (bad input / margin / token /
-// permission); a timeout or network failure (no `error_type`, or NetworkException) means the order may have been accepted.
-function classifyKitePlacementError(e: any): any {
+// Classifies a failed Kite placeOrder (queuedPlaceOrder applies it):
+//  - NOT placed (markNotPlaced, safe to retry): Kite answered with a client-side error type (InputException, TokenException, PermissionException,
+//    MarginException, OrderException = the OMS refused the order; an `error_type` body is Kite's own reply, see kiteconnect/lib/connect.js), or a
+//    local TypeError/RangeError that carries no request/response (thrown before any HTTP call). A missing access token is not local: the SDK
+//    sends the request and Kite answers TokenException.
+//  - MAY BE LIVE (orderMayBeLive, blocks a blind retry): NetworkException (no response, or an HTTP error without a Kite body), timeouts and socket
+//    errors (ETIMEDOUT, ECONNRESET, ECONNABORTED, ESOCKETTIMEDOUT, EAI_AGAIN, a "timeout" message), and everything else unclassifiable:
+//    GeneralException and DataException (the SDK also uses them for unknown replies), untyped errors and non-Error rejections.
+//  - Rate limit (HTTP 429) = NOT placed: the request was rejected before reaching the OMS, so a retry is safe. Verified in kiteconnect/lib/connect.js
+//    (response interceptor): the SDK has no rate-limit exception class and the rejected object carries no HTTP status. If Kite's reply body has
+//    `error_type` that body is the error; otherwise the error is {error_type:'NetworkException', message:<HTTP statusText>}, so a 429 arrives as a
+//    NetworkException with message 'Too Many Requests'. GeneralException ('Unknown error') and DataException ('Unknown content type') are the SDK's own
+//    fallbacks, not reply-derived. So it is recognised by the message /too many requests/i (or a numeric 429 in status/statusCode/response.status if
+//    present) and checked BEFORE the network class. It matches nothing else, so 'timed out' style messages stay may-be-live.
+const KITE_REFUSAL_TYPES = /^(InputException|TokenException|PermissionException|MarginException|OrderException)$/;
+const RATE_LIMIT_MESSAGE = /too many requests/i;
+const NETWORK_ERROR_CODES = /^(ETIMEDOUT|ECONNRESET|ECONNABORTED|ESOCKETTIMEDOUT|EAI_AGAIN)$/;
+export function classifyKitePlacementError(e: any): any {
     if (isNotPlaced(e)) return e;
     const type = String(e?.error_type ?? '');
-    if (/^(InputException|TokenException|PermissionException|MarginException)$/.test(type)) return markNotPlaced(e);
-    if (!type || type === 'NetworkException') {
-        if (e && typeof e === 'object') { e.orderMayBeLive = true; return e; }
-        return Object.assign(new Error(String(e)), { orderMayBeLive: true });
-    }
-    return e;
+    if (KITE_REFUSAL_TYPES.test(type)) return markNotPlaced(e);
+    const httpStatus = Number(e?.status ?? e?.statusCode ?? e?.response?.status);
+    if (httpStatus === 429 || RATE_LIMIT_MESSAGE.test(String(e?.message ?? ''))) return markNotPlaced(e);
+    const networkClass = type === 'NetworkException' || NETWORK_ERROR_CODES.test(String(e?.code ?? '')) || /timeout|timed out/i.test(String(e?.message ?? ''));
+    if (!networkClass && !type && (e instanceof TypeError || e instanceof RangeError) && !(e as any).request && !(e as any).response) return markNotPlaced(e);
+    if (e && typeof e === 'object') { e.orderMayBeLive = true; return e; }
+    return Object.assign(new Error(String(e)), { orderMayBeLive: true });
 }
 
 class Kite {

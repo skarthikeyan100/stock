@@ -1214,6 +1214,8 @@ export async function handleRequest(req: OrderRequest): Promise<OrderResponse> {
                         shortTrades: bookkeeping.shortTrades,
                         closedTrades: bookkeeping.closedTrades,
                         userPnL: Object.fromEntries(bookkeeping.userPnL),
+                        // Sell fills parked for an unusable price (not booked, position still open in memory) - see bookkeeping.recordFill.
+                        unresolvedFills: { count: bookkeeping.getUnresolvedFills().length, entries: bookkeeping.getUnresolvedFills() },
                     },
                 };
 
@@ -1607,6 +1609,37 @@ async function runEodRepairNow(context: string): Promise<Record<string, EodBroke
     return runEodRepair(context);
 }
 
+// A Sell parked for an unusable price (bookkeeping.recordFill) asks for the broker's trade book to be re-read: the same broker repair as POST /sync
+// (runEodRepair), for that one broker, at most one per broker per 60 s, never concurrent with another sync (it waits for the in-flight one).
+const UNRESOLVED_SYNC_MIN_GAP_MS = 60_000;
+const unresolvedSyncLastAt = new Map<string, number>();
+const unresolvedSyncPending = new Set<string>();
+function requestUnresolvedSellSync(broker: string, tsym: string): void {
+    const b = (EOD_BROKERS as readonly string[]).includes(broker) ? broker as (typeof EOD_BROKERS)[number] : null;
+    if (!b) { Log.log(`[order] unresolved Sell ${tsym}: broker '${broker}' has no trade-book sync - needs a manual look`); return; }
+    if (unresolvedSyncPending.has(b) || Date.now() - (unresolvedSyncLastAt.get(b) ?? 0) < UNRESOLVED_SYNC_MIN_GAP_MS) return;
+    unresolvedSyncPending.add(b);
+    unresolvedSyncLastAt.set(b, Date.now());
+    (async () => {
+        try {
+            while (reconcileInFlight || eodRun) await (eodRun ?? reconcileInFlight)?.catch(() => undefined);
+            Log.log(`[order] unresolved Sell on ${b} (${tsym}): re-reading the broker trade book`);
+            await runEodRepair(`unresolved Sell fill ${tsym}`, [b]);
+        } catch (e: any) {
+            Log.log(`[order] ALERT: sync for unresolved Sell on ${b} failed:`, e?.message ?? e);
+        } finally { unresolvedSyncPending.delete(b); }
+    })();
+}
+bookkeeping.setUnresolvedSellHandler(requestUnresolvedSellSync);
+
+// Every 5 minutes, only while a parked Sell exists: repeat the ALERT for entries older than 15 min and ask for another (debounced) sync.
+function unresolvedFillsTick(): void {
+    const open = bookkeeping.getUnresolvedFills();
+    if (open.length === 0) return;
+    bookkeeping.alertStaleUnresolvedFills();
+    for (const f of open) requestUnresolvedSellSync(f.broker ?? 'kite', f.tsym);
+}
+
 // Scheduled once per trading day after settings.eodReconcileTime (default 15:45): runs the brokers whose report is not ok in today's
 // `eodReconcileRuns` marker, retried every 5 minutes until 23:30. The marker is in Mongo, so a restart neither repeats nor loses it.
 let lastEodAttemptAt = 0;
@@ -1775,6 +1808,7 @@ export async function startOrderProcess() {
     // The broker -> Mongo sync is an END-OF-DAY job (user's design, 2026-11-11), not a periodic one: it runs once after the close (eodReconcileTick) and
     // on demand (`npm run sync` -> POST /sync). No broker is read intraday for it.
     guardedInterval('eodReconcile', eodReconcileTick, 60_000);
+    setInterval(unresolvedFillsTick, 5 * 60_000).unref();
     for (const name of TRACKER_BROKERS) guardedInterval(`pollPending${name === 'kite' ? '' : name[0].toUpperCase() + name.slice(1)}LimitOrders`, () => TRACKERS[name].poll(), 15_000);
     // Force-close every open position by 3:15pm on NIFTY's weekly expiry day
     // (Tuesday) - see isPastExpirySquareOffTime's comment. Polled rather than

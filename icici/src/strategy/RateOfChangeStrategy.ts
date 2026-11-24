@@ -6,9 +6,10 @@ import * as niftyQuoteHistory from '../processes/strategies/niftyQuoteHistory';
 import { CALL, PUT } from '../constants';
 import configService from '../prism/ConfigService';
 
+const SELL_RETRY_DELAY_MS = 5000;
 const round = (num: number) => Math.round(num * 100) / 100;
 
-class RateOfChangeContract {
+export class RateOfChangeContract {
     contract: string = '';
     token: string = '';
     price: number = 0;
@@ -18,6 +19,8 @@ class RateOfChangeContract {
     buyOrderPlaced: boolean = false;
     sellOrderPlaced: boolean = false;
     ltp: number = 0;
+    timeoutRecorded = false; // the timeout outcome is recorded once per timeout exit, not once per retried sell
+    sellRetryAt = 0; // earliest Date.now() at which a failed timeout sell is retried
     buyFailedAt = 0; // when buyContract returned null (the outcome is unknown: a timeout may still have placed the order)
 
     clear() {
@@ -31,6 +34,8 @@ class RateOfChangeContract {
         this.sellOrderPlaced = false;
         this.ltp = 0;
         this.buyFailedAt = 0;
+        this.timeoutRecorded = false;
+        this.sellRetryAt = 0;
     }
 
     async processOptionQuote(quote: OptionQuote, strategy: RateOfChangeStrategy): Promise<boolean> {
@@ -52,14 +57,19 @@ class RateOfChangeContract {
         // Monitor handles target/SL exits; strategy only handles timeout
         const timeout = config.maxHoldTimeMinutes > 0 && timeElapsed >= config.maxHoldTimeMinutes * 60 * 1000;
 
-        if (timeout && !this.sellOrderPlaced) {
+        if (timeout && !this.sellOrderPlaced && Date.now() >= this.sellRetryAt) {
             Log.log(`[RoC] Selling ${this.contract}: TIMEOUT P&L=${round(profit)}`);
             this.sellOrderPlaced = true;
-            strategy.recordOutcome('timeout', profit);
+            if (!this.timeoutRecorded) {
+                this.timeoutRecorded = true;
+                strategy.recordOutcome('timeout', profit);
+            }
             try {
                 await strategy.sellContract(this.contract, this.quantity, quote.ltp);
             } catch (e) {
-                this.sellOrderPlaced = false; // a failed timeout sell is retried on the next tick (the never-short guard bounds an over-sell)
+                this.sellOrderPlaced = false;
+                this.sellRetryAt = Date.now() + SELL_RETRY_DELAY_MS;
+                // a failed timeout sell is retried on the next tick (the never-short guard bounds an over-sell)
                 Log.log('[RoC] timeout sell failed, will retry:', e);
             }
         }
@@ -97,6 +107,7 @@ class RateOfChangeContract {
             if (this.sellOrderPlaced) {
                 // Strategy-triggered sell (timeout): recordOutcome already called in processOptionQuote
                 this.sellOrderPlaced = false;
+                this.timeoutRecorded = false;
                 if (config.logEnabled) {
                     Log.log(`[RoC] Sell confirmed (timeout): ${this.contract}`);
                 }

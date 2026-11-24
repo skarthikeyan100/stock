@@ -23,13 +23,17 @@ function assert(condition: boolean, message: string) {
 
 let calls: { fn: string; args: any[] }[] = [];
 let cancelResult: any = { filledQty: 0, cancelFailed: false };
-let heldTrades: any[] | 'error' = []; // what the order side holds open (read by heldQuantity)
+// What the order side holds open (read by heldQuantity). 'mirror' = the order side holds exactly what each open leg still holds (the normal state of a leg whose resting
+// trip sell has NOT filled). Since commit 50c7152 a re-price pass cancels/replaces a resting trip sell only when the held quantity is not below what the leg holds
+// (otherwise the sell may already have filled with its event lagging, and nothing is cancelled or placed), so those scenarios need the order side to hold the legs.
+let heldTrades: any[] | 'error' | 'mirror' = 'mirror';
+const allLegs: any[] = [];
 const fake: any = new Proxy({}, {
     get: (_t, fn: string) => async (...args: any[]) => {
         calls.push({ fn, args });
         if (fn === 'cancelRestingLimitSells') return cancelResult;
         if (fn === 'getPendingSells') return [];
-        if (fn === 'getOpenTrades') { if (heldTrades === 'error') throw new Error('unreadable'); return heldTrades; }
+        if (fn === 'getOpenTrades') { if (heldTrades === 'error') throw new Error('unreadable'); if (heldTrades === 'mirror') return allLegs.filter((l) => l.status === 'open').map((l) => ({ token: l.token, tsym: l.tsym, quantity: l.qty - l.soldQty })); return heldTrades; }
         return {};
     },
 });
@@ -55,7 +59,7 @@ function addLeg(s: any, id: string, o: any = {}) {
         id, tsym: `T${id}`, token: `K${id}`, exchange: 'NFO', strike: 25000, right: id === 'L1' ? 'PE' : 'CE', role: 'root', entry: 100, qty: 100, soldQty: 0, soldValue: 0,
         hedged: false, doubled: true, status: 'open', sellQty: 100, sellShortfall: 0, sellPrice: 110, pnlRef: 100, lastLtp: 140, ...o,
     };
-    s.state.legs[id] = leg;
+    s.state.legs[id] = leg; allLegs.push(leg);
     return leg;
 }
 const sellFill = (leg: any, qty: number, price: number) => Object.assign(new Trade(), { tsym: leg.tsym, token: leg.token, action: 'Sell', quantity: qty, price, broker: 'breeze' });
@@ -116,8 +120,10 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
         assert(limitSells().length === 1 && limitSells()[0].price === 150 && limitSells()[0].quantity === 100, `one limit sell of 100 @150: ${JSON.stringify(limitSells())}`);
         assert(of('chunkedSquareOff').length === 0, 'no sell at the bid');
         assert(leg.status === 'open' && leg.sellQty === 100 && leg.sellPrice === 150, 'leg open, resting at 150');
+        const mutating = () => calls.filter((c) => c.fn !== 'getOpenTrades').length; // the held-quantity read (commit 50c7152) is not an order action
+        assert(mutating() === 2, 'cancel + one limit sell');
         await s.closeAllLegs('MAX PROFIT');
-        assert(calls.length === 2, 'the next pass leaves the new sell alone');
+        assert(mutating() === 2, 'the next pass leaves the new sell alone');
         await s.updateTrade(sellFill(leg, 100, 150));
         assert(s.state.realizedPnl >= 5000 && leg.status === 'closed', `filled at 150: realized ${s.state.realizedPnl} >= 5000, leg closed`);
 
@@ -148,7 +154,7 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
         assert(limitSells().length === 1 && limitSells()[0].quantity === 60 && limitSells()[0].price === 163.35, `60 left re-priced @163.35: ${JSON.stringify(limitSells())}`);
         await s.updateTrade(sellFill(leg, 60, 163.35));
         assert(s.state.realizedPnl >= 5000, `booked ${s.state.realizedPnl} >= 5000 in total`);
-        heldTrades = [];
+        heldTrades = 'mirror';
 
         console.log('partial placement: the unplaced rest is placed at the same price on the next pass');
         calls = [];
@@ -218,10 +224,11 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
         (OrderClient as any).getInstance = () => fake;
 
         console.log('cancel returned FILLED-ALL, fill event lagging (14:35:21/29): the next pass places NOTHING');
-        calls = []; cancelResult = { filledQty: 195, cancelFailed: false }; heldTrades = [];
+        calls = []; cancelResult = { filledQty: 195, cancelFailed: false }; heldTrades = 'mirror'; // the cancel pass runs while the order side still holds the leg
         s = make(Cls); leg = addLeg(s, 'L1', { qty: 195, sellQty: 195, sellPrice: 99, lastLtp: 140 });
         await s.closeAllLegs('MAX PROFIT');
         assert(limitSells().length === 0 && leg.sellQty === 0, 'cancel pass places nothing');
+        heldTrades = []; // the sell filled: the order side now holds nothing
         cancelResult = { filledQty: 0, cancelFailed: false };
         await s.closeAllLegs('MAX PROFIT');
         await s.closeAllLegs('MAX PROFIT');
@@ -232,25 +239,27 @@ const nifty = () => Object.assign(new NiftyQuote(), { ltp: 25000 });
         assert(limitSells().length === 0, 'closed: still nothing placed');
 
         console.log('fill event never arrives (grace over): the leg is closed neutral, no sell');
-        calls = []; cancelResult = { filledQty: 195, cancelFailed: false };
+        calls = []; cancelResult = { filledQty: 195, cancelFailed: false }; heldTrades = 'mirror';
         s = make(Cls); leg = addLeg(s, 'L1', { qty: 195, sellQty: 195, sellPrice: 99, lastLtp: 140 });
         await s.closeAllLegs('MAX PROFIT');
+        heldTrades = [];
         cancelResult = { filledQty: 0, cancelFailed: false };
         s.tripGuard['fillSince'].set(leg.id, Date.now() - 61000);
         await s.closeAllLegs('MAX PROFIT');
         assert(leg.status === 'closed' && limitSells().length === 0, 'closed outside, nothing placed');
 
         console.log('cancel returned FILLED-PART (65 of 195), events lagging: waits, then places ONLY the remainder (130)');
-        calls = []; cancelResult = { filledQty: 65, cancelFailed: false }; heldTrades = [{ token: 'KL1', tsym: 'TL1', quantity: 130 }];
+        calls = []; cancelResult = { filledQty: 65, cancelFailed: false }; heldTrades = 'mirror';
         s = make(Cls); leg = addLeg(s, 'L1', { qty: 195, sellQty: 195, sellPrice: 99, lastLtp: 140 });
         await s.closeAllLegs('MAX PROFIT');
+        heldTrades = [{ token: 'KL1', tsym: 'TL1', quantity: 130 }];
         cancelResult = { filledQty: 0, cancelFailed: false };
         await s.closeAllLegs('MAX PROFIT');
         assert(limitSells().length === 0, 'order side holds 130 but the leg still counts 195: wait for the fill events');
         await s.updateTrade(sellFill(leg, 65, 130));
         await s.closeAllLegs('MAX PROFIT');
         assert(limitSells().length === 1 && limitSells()[0].quantity === 130, `only the remaining 130 placed: ${JSON.stringify(limitSells())}`);
-        heldTrades = [];
+        heldTrades = 'mirror';
 
         console.log("'nothing sellable' refusal on a trip sell with nothing held: graced, then the leg is closed (no ALERT retry loop)");
         calls = [];

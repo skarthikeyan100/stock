@@ -70,16 +70,29 @@ export async function cancelProtection(
     const trade = bookkeeping.trades.find((t) => t.tsym === tradingSymbol && t.user === userId && (t.broker ?? 'kite') === broker);
     if (!trade) return { gttDeleted: false };
     let gttDeleted = false;
-    if (trade.gttTriggerId != null) {
-        await Kite.getInstance().deleteGTT(trade.gttTriggerId);
-        trade.gttTriggerId = undefined as any;
-        gttDeleted = true;
+    // The row's primary GTT plus the GTTs of later buys merged into it (extraGttTriggerIds): every one is live at Kite and must go with the exit watch.
+    const ids = [trade.gttTriggerId, ...(trade.extraGttTriggerIds ?? [])].filter((id): id is number => id != null);
+    const deleted: number[] = [];
+    let deleteError: unknown;
+    for (const id of ids) {
+        try {
+            await Kite.getInstance().deleteGTT(id);
+            deleted.push(id);
+            gttDeleted = true;
+        } catch (e) { deleteError = deleteError ?? e; }
+    }
+    if (deleted.length > 0) {
+        // Forget only the ids actually deleted: a GTT whose delete failed is still live and keeps its persisted id.
+        if (trade.gttTriggerId != null && deleted.includes(trade.gttTriggerId)) trade.gttTriggerId = undefined as any;
+        const remaining = (trade.extraGttTriggerIds ?? []).filter((x) => !deleted.includes(x));
+        trade.extraGttTriggerIds = remaining.length > 0 ? remaining : undefined;
         // The Buy document keeps the id written by persistGttTriggerId: forget it there too, or a restart restores the deleted GTT, the GTT
         // poll finds it missing and falls back to an in-app watch that re-arms the exits the caller just cancelled.
         try {
-            await Mongo.getInstance()?.db.collection('Trade').updateMany({ tsym: trade.tsym, user: trade.user, action: 'Buy', gttTriggerId: { $exists: true } }, { $unset: { gttTriggerId: '' } });
+            await Mongo.getInstance()?.db.collection('Trade').updateMany({ tsym: trade.tsym, user: trade.user, action: 'Buy', gttTriggerId: { $in: deleted } }, { $unset: { gttTriggerId: '' } });
         } catch (e) { Log.log(`[order] cancelProtection: could not clear the stored GTT id of ${tradingSymbol} (${userId}):`, e); }
     }
+    if (deleteError) throw deleteError; // a GTT may still be live: the caller must know (its id was kept)
     if (trade.token && (broker === 'kite' || broker === 'ant')) exitMonitor.unregisterTrade(userId, trade.token, broker);
     bookkeeping.notifyTargetStopLossChanged();
     return { gttDeleted };

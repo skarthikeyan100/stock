@@ -11,7 +11,7 @@ import fs from 'fs';
 import { createHash } from 'crypto';
 import path from 'path';
 import { sleep } from './util/sleep';
-import { shouldAutoRestart, shouldApplyCodeChange } from './orchestratorPolicy';
+import { shouldAutoRestart, shouldApplyCodeChange, shouldGiveUpOnQuickCrashes, shouldGiveUpOnFailedRestarts } from './orchestratorPolicy';
 import * as yaml from 'js-yaml';
 
 // NOTE: do NOT force IPv4 globally here (e.g. via NODE_OPTIONS=--dns-result-
@@ -103,9 +103,7 @@ function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
 // Backoff for crash respawns: 1s, 2s, 4s ... capped at 30s; reset once a process has stayed up for a minute.
 type RestartOutcome = 'started' | 'skipped' | 'failed';
 
-const MAX_FAILED_RESTARTS = 10;
-
-function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) => Promise<RestartOutcome>): () => void {
+function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) => Promise<RestartOutcome>): { respawn: () => void; reset: () => void } {
     let failures = 0;
     let failedRestarts = 0; // consecutive restarts that could not start a child (a persistently missing dist file would loop forever)
     let quickCrashes = 0; // consecutive respawns of a child that spawned fine but exited again within a minute (a startup that throws every time)
@@ -113,12 +111,12 @@ function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) 
     let pending = false;
     const respawn = (): void => {
         if (pending || shuttingDown) return;
-        if (failedRestarts >= MAX_FAILED_RESTARTS) {
+        if (shouldGiveUpOnFailedRestarts(name, failedRestarts)) {
             log(name, `ALERT: ${failedRestarts} consecutive restarts failed - giving up until the next code change or orchestrator restart`);
             return;
         }
         if (Date.now() - lastStart > 60_000) quickCrashes = 0; else quickCrashes++;
-        if (quickCrashes >= MAX_FAILED_RESTARTS) {
+        if (shouldGiveUpOnQuickCrashes(name, quickCrashes)) {
             log(name, `ALERT: ${quickCrashes} consecutive crashes within a minute of starting - giving up until the next code change or orchestrator restart`);
             return;
         }
@@ -138,7 +136,9 @@ function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) 
             else if (outcome === 'failed') { failedRestarts++; respawn(); } // no child is running and no exit event will come: try again with a longer backoff
         }, delay);
     };
-    return respawn;
+    // A code change or manual restart starts from a clean slate: the next crash after it is not counted against the old streak.
+    const reset = (): void => { failures = 0; failedRestarts = 0; quickCrashes = 0; lastStart = Date.now(); };
+    return { respawn, reset };
 }
 
 // sha1 of every file under `target` (a file or a directory tree), keyed by path.
@@ -249,6 +249,7 @@ interface Role {
     start(): void;
     restart(opts?: { onlyIfDead?: boolean }): Promise<RestartOutcome>;
     respawn(): void;
+    resetRespawn(): void;
 }
 function makeRole(name: string, script: string, env: Record<string, string>): Role {
     const role: Role = {
@@ -263,8 +264,11 @@ function makeRole(name: string, script: string, env: Record<string, string>): Ro
             return 'started';
         }),
         respawn: () => { /* replaced just below: it needs role.restart */ },
+        resetRespawn: () => { /* replaced just below */ },
     };
-    role.respawn = makeRespawner(name, role.restart);
+    const respawner = makeRespawner(name, role.restart);
+    role.respawn = respawner.respawn;
+    role.resetRespawn = respawner.reset;
     return role;
 }
 
@@ -272,6 +276,7 @@ function makeRole(name: string, script: string, env: Record<string, string>): Ro
 function hotRestart(name: string, role: Role, watchPaths: string[]): void {
     watchAndRestart(name, watchPaths, () => {
         log('dev', `Restarting ${name} (the other children untouched)...`);
+        role.resetRespawn(); // a code change revives a respawner that gave up
         void role.restart().then((outcome) => { if (outcome === 'failed') role.respawn(); });
     });
 }

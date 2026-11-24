@@ -90,7 +90,8 @@ const DEMO_STREAM_PER_IP = 3;
 const DEMO_STREAM_TOTAL = 200;
 const demoStreamOpen = new Map<string, number>();
 let demoStreamTotal = 0;
-function demoStream(clients: Set<express.Response>, replay?: () => string | null) {
+let demoOptionStreamsOpen = 0; // open anonymous /demo/optionstream connections (streams are not per token: every option tick goes to every client)
+function demoStream(clients: Set<express.Response>, replay?: () => string | null, countsAsOptionStream = false) {
     return (req: express.Request, res: express.Response) => {
         const ip = clientIp(req);
         if (demoStreamTotal >= DEMO_STREAM_TOTAL || (demoStreamOpen.get(ip) ?? 0) >= DEMO_STREAM_PER_IP) {
@@ -99,10 +100,12 @@ function demoStream(clients: Set<express.Response>, replay?: () => string | null
         }
         demoStreamTotal++;
         demoStreamOpen.set(ip, (demoStreamOpen.get(ip) ?? 0) + 1);
+        if (countsAsOptionStream) demoOptionStreamsOpen++;
         let released = false;
         const release = () => {
             if (released) return;
             released = true;
+            if (countsAsOptionStream) demoOptionStreamsOpen--;
             demoStreamTotal--;
             const n = (demoStreamOpen.get(ip) ?? 1) - 1;
             if (n <= 0) demoStreamOpen.delete(ip); else demoStreamOpen.set(ip, n);
@@ -112,7 +115,7 @@ function demoStream(clients: Set<express.Response>, replay?: () => string | null
     };
 }
 router.get('/demo/niftystream', demoStream(niftyStreamClients, replayNifty));
-router.get('/demo/optionstream', demoStream(optionStreamClients));
+router.get('/demo/optionstream', demoStream(optionStreamClients, undefined, true));
 // Front-end liveness probe: the static site (Cloudflare Pages) calls this once at page load; an answer means the trading server is up
 // (sign-in is then offered). The demo itself runs from a trimmed CSV in the browser and never needs it.
 router.get('/demo/health', (_req, res) => { res.json({ ok: true }); });
@@ -127,12 +130,15 @@ const demoSubscribed = new Map<string, number>(); // token -> demo subscriber co
 const DEMO_MAX_TOKENS = 20;
 const demoHits = new Map<string, { n: number; resetAt: number }>();
 // Lease: a visitor who closes the tab never sends the unsubscribe, which leaked a hold until restart (20 leaks = demo subscribe refused for everyone).
-// A token not re-subscribed for DEMO_LEASE_MS is released.
+// A token not re-subscribed for DEMO_LEASE_MS is released - unless a demo option stream is still connected: the stream is shared by all
+// tokens (not one per token), so while any is open every held token's lease is refreshed instead.
 const DEMO_LEASE_MS = 30 * 60_000;
 const demoLastSubscribeAt = new Map<string, number>();
 setInterval(() => {
-    const cutoff = Date.now() - DEMO_LEASE_MS;
+    const now = Date.now();
+    const cutoff = now - DEMO_LEASE_MS;
     for (const [token, at] of Array.from(demoLastSubscribeAt)) {
+        if (demoOptionStreamsOpen > 0 && demoSubscribed.has(token)) { demoLastSubscribeAt.set(token, now); continue; }
         if (at >= cutoff) continue;
         demoLastSubscribeAt.delete(token);
         if (!demoSubscribed.has(token)) continue;
@@ -177,10 +183,11 @@ router.get('/demo/subscribe', async function (req, res) {
             if (count === 0) { res.status(403).json({ error: 'Token was not subscribed by the demo' }); return; }
             if (count === 1) {
                 demoSubscribed.delete(token);
+                demoLastSubscribeAt.delete(token);
                 try {
                     await strategiesClient.unsubscribeToken(token);
                 } catch (e) {
-                    demoSubscribed.set(token, 1); // the hold is still in place: keep counting it so a retry can release it
+                    demoSubscribed.set(token, 1); demoLastSubscribeAt.set(token, Date.now()); // the hold is still in place: keep counting it so a retry can release it
                     throw e;
                 }
             } else {

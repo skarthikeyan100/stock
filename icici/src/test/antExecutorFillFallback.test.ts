@@ -51,6 +51,11 @@ class MockAnt {
         return 100;
     }
 
+    // Central order pricing (src/processes/order/orderPrice.ts, commit 7e22448) fetches the REST best bid/offer through getLiveQuote at order time.
+    async getLiveQuote(_exchange: string, _token: string): Promise<{ ltp: number; bid: number; ask: number }> {
+        return { ltp: 100, bid: 99.95, ask: 100.05 };
+    }
+
     async getFillPrice(orderNo: string): Promise<number> {
         this.getFillPriceCalls.push(orderNo);
         if (this.getFillPriceResult instanceof Error) throw this.getFillPriceResult;

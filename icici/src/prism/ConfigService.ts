@@ -65,16 +65,17 @@ class ConfigService {
     return fresh as AppConfig;
   }
 
-  public writeConfig(configIn: AppConfig) {
+  public writeConfig(configIn: AppConfig, opts?: { preserveTopLevelKeys?: boolean }) {
     const config = this.mergeIntoFile(configIn);
     const shaped: AppConfig = {
       ...config,
       settings: formatPercentFields(config.settings as any),
       strategies: (config.strategies || []).map(s => formatPercentFields(s)),
     } as AppConfig;
-    // A caller that built the config from settings + strategies only (POST /config via flatToConfig) must not delete the other top-level
-    // blocks of the file (`forecast:` and any future one): keep every top-level key the file has and the new object lacks.
-    try {
+    // Opt-in (POST /config only): that caller built the config from settings + strategies only (flatToConfig) and must not delete the
+    // other top-level blocks of the file (`forecast:` and any future one), so keep every top-level key the file has and the new object
+    // lacks. Every other caller writes the full in-memory config and keeps the plain behaviour.
+    if (opts?.preserveTopLevelKeys) try {
       const onDisk: any = load(readFileSync(this.configPath, 'utf8'));
       if (onDisk && typeof onDisk === 'object') for (const k of Object.keys(onDisk)) if (!(k in shaped)) (shaped as any)[k] = onDisk[k];
     } catch { /* unreadable file: write what we have */ }

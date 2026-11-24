@@ -1773,6 +1773,11 @@ export default class BulkPcrStrategy extends Strategy {
         }
         if (orderIds.length === 0) {
             const message = typeof failure?.message === 'string' ? failure.message : String(failure);
+            // This attempt placed no order, so a Buy fill buffered while placing belongs to something else (an earlier cancelled limit, a manual
+            // buy): never replay it into a re-buy that does not exist, and never drop it silently either.
+            const strayFills = pos.placingRebuy?.fills ?? [];
+            pos.placingRebuy = undefined;
+            for (const f of strayFills) Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${pos.right} Buy fill ${f.tsym} qty=${f.quantity} @ ${f.price} arrived while the re-buy limit was being placed, but the placement placed no order - not attributed to this re-buy, manual review required`);
             if (carriedQty > 0) {
                 Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${pos.right} re-buy re-place @ ${price} failed (${message}) - exiting the ${carriedQty} already bought`);
                 await exitCarried();

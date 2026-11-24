@@ -114,13 +114,15 @@ export function processTick(state: SRState, tick: SRTick, config: SRConfig): { s
 
     const cutoff = tick.ltt - config.confirmWindowMs;
     // The span is proven by ANY tick at or before the cutoff (the old filter-then-compare only held when a tick landed exactly on it).
-    // Keep the newest such tick as the anchor; the range is judged on the ticks inside the window.
+    // Keep the newest such tick as the anchor. Its price was in force at the window start, so it takes part in the range unless a tick
+    // sits exactly on the cutoff (dense feed: unchanged behaviour).
     const spanReached = buffer.length > 0 && buffer[0].ltt <= cutoff;
     const older = buffer.filter(t => t.ltt < cutoff);
     const anchor = older.length > 0 ? [older[older.length - 1]] : [];
     buffer = buffer.filter(t => t.ltt >= cutoff);
     if (spanReached) {
         const prices = buffer.map(t => t.ltp);
+        if (anchor.length > 0 && (buffer.length === 0 || buffer[0].ltt > cutoff)) prices.push(anchor[0].ltp);
         const min = Math.min(...prices);
         const max = Math.max(...prices);
         if (max - min <= config.maxRangeWidth) {
