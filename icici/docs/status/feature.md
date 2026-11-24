@@ -92,6 +92,7 @@ Basis: `docs/guides/strategies.md`, `docs/architecture/Architecture.md`, `docs/a
 - Restart safety: reconcile without orders, platform-sell evidence, open-trades retry, unconfirmed-buy resolution
 - Global settings with per-block override: `target`, `stopLoss`, `maxHoldTimeMinutes`, `maxProfit`, `skipNearestExpiryOnEve/OnExpiryDay`, `entryTimeoutMinutes`; global-only: `eodCloseTime`, `entryStartTime`
 - Global `settings.maxProfit` (rupees, per strategy per broker): trip locks the cap with limit sells, latches for the day, survives restart; monitor for strategies without their own stop
+- Profit monitors (global `maxProfit`, `overAllMaxProfit`) value open positions from the last option tick the strategies process received (`markPrice.ts`); a live ANT quote is fetched only for a position with no tick (cached 30 s, calls 1.2 s apart, 60 s back-off after a 429)
 - `settings.overAllMaxProfit` (rupees, optional): combined day P&L of all strategies on all real brokers reaching it (checked once a minute) runs lock-profits once a day (disables every strategy in config.yml, limit-sells every open long); latch durable in Mongo (`strategyLatches`, ownerType `OverAllMaxProfit`); `src/processes/strategies/overAllMaxProfit.ts`
 - SimpleContinuousStrategy `slDistance` (points, optional): any leg falling to entry - slDistance is cancelled and sold at market; the loss is booked through the fill event
 - Non-finite P&L fail-safe on every trip decision

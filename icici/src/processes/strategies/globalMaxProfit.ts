@@ -8,6 +8,7 @@ import { clearPrice, LockLeg, tripSellPrice, keepTripSell, TripGuard, isNonTrans
 import { latchGlobalMaxProfit, globalMaxProfitLatchedBrokers } from '../../strategy/globalMaxProfitLatch';
 import { NonFiniteAlert } from '../../strategy/finiteGuard';
 import OrderClient from './OrderClient';
+import { markPrice } from './markPrice';
 import type { Strategy } from '../../strategy/strategy';
 
 // The GLOBAL maxProfit (config.yml settings.maxProfit: one number of rupees, the same for every broker) for every strategy that has no profit stop of its own, per strategy
@@ -38,12 +39,8 @@ let running = false;
 const nonFiniteAlert = new NonFiniteAlert();
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
-// Value of an open row: the last price the order process holds for it (lastTradePrice, refreshed by ticks), else its cost. No broker call (user's rule
-// 2026-11-25: this monitor makes no ANT price calls). A row no tick has updated (restored by reconcile) is valued at cost: 0 unrealized, so the total
-// under-counts and never trips early, and the trip sell's marketable floor (tripSellPrice) is taken from that price until a tick arrives.
-function markOf(t: any): number {
-    return num(t.lastTradePrice) > 0 ? num(t.lastTradePrice) : num(t.price);
-}
+// An open row is valued by markPrice (tick price first, a throttled live quote only when no tick exists, then the stored price / cost): see markPrice.ts.
+const markOf = markPrice;
 
 export async function checkOne(userId: string, broker: string, cap: number, stats: { trades: any[]; closedTrades: any[] }, latchedBrokers: Set<string>): Promise<void> {
     const mine = (t: any) => t.user === userId && String(t.broker || 'kite') === broker && isOpenedToday(t.entryTime);
@@ -57,7 +54,7 @@ export async function checkOne(userId: string, broker: string, cap: number, stat
     let realized = stats.closedTrades.filter(mine).reduce((s, t) => s + num(t.realizedPnL), 0);
     realized += open.reduce((s, t) => s + num(t.realizedPnL), 0); // partial exits of a still-open trade
     const marks = new Map<any, number>();
-    for (const t of open) marks.set(t, markOf(t));
+    for (const t of open) marks.set(t, await markOf(t));
     const unrealized = open.reduce((s, t) => s + (marks.get(t)! - num(t.price)) * num(t.quantity), 0);
     const total = realized + unrealized;
 

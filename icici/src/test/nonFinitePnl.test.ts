@@ -7,6 +7,7 @@
  * Run: npx tsc, then: node ./dist/test/nonFinitePnl.test.js
  */
 process.env.MOCK_BROKER = 'true';
+import { __reset as markPriceReset } from '../processes/strategies/markPrice';
 import Log from '../util/Log';
 import OrderClient from '../processes/strategies/OrderClient';
 import SimpleContinuousStrategy from '../strategy/SimpleContinuousStrategy';
@@ -192,7 +193,7 @@ function addLeg(s: any, id: string, o: any = {}) {
         logged = []; latched = 0;
         await checkOne('G1', 'kite', 5000, stats([T({})], [T({ realizedPnL: NaN })]) as any, new Set()); // 5000 unrealized... exactly 100*(150-100)=5000
         assert(latched === 1, 'NaN realizedPnL of a closed trade counts 0, the finite part (5000) trips');
-        logged = []; latched = 0; fakeLtp = 120;
+        logged = []; latched = 0; fakeLtp = 120; markPriceReset(); // the 30 s live-price cache must not carry the 150 of the cases above
         await checkOne('G2', 'kite', 5000, stats([T({ user: 'G2' })], [T({ user: 'G2', realizedPnL: 'junk' })]) as any, new Set()); // other user: the alert throttle is per user+broker
         assert(latched === 0 && alerts().length === 1, 'below the cap with a junk realizedPnL: no trip, one alert');
     }

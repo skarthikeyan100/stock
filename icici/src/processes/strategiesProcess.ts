@@ -20,6 +20,7 @@ import { exchangeForTsym } from '../util/underlyings';
 import { shouldPokeEod } from '../util/eodClose';
 import { startGlobalMaxProfitMonitor } from './strategies/globalMaxProfit';
 import { startOverAllMaxProfitMonitor } from './strategies/overAllMaxProfit';
+import { recordTick } from './strategies/markPrice';
 
 // Entry point for the `strategies` process. No Prism/Kite dependency at all -
 // ticks arrive over the DataLink socket from `data`, orders go out
@@ -347,6 +348,7 @@ async function onTick(tick: any) {
     } else if (tick.type === 'option') {
         const quote = Object.assign(new OptionQuote(), tick.quote) as OptionQuote;
         const source = (tick.source ?? DEFAULT_FEED_SOURCE) as FeedSource;
+        recordTick(source, quote.token, quote.ltp); // the profit monitors value open positions from this (markPrice.ts)
         // One latest-wins slot per (feed, token, strategy): a strategy awaiting a broker call only coalesces its own ticks.
         for (const strategy of optionTickTargets(source, quote.token)) {
             enqueueLatest(`${source}:${quote.token}:${strategy.getClassName()}:${strategy.userId}`, quote, (q) => deliverOptionTick(strategy, q));
