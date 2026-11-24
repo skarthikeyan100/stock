@@ -171,7 +171,7 @@ async function main() {
     } finally {
         (bookkeeping as any).fillAlreadyStored = origStored11;
         bookkeeping.trades.splice(0, bookkeeping.trades.length, ...bookkeeping.trades.filter((t) => !/^NIFTYPU11/.test(t.tsym)));
-        for (const k of ['pub11x', 'pub11bx']) (bookkeeping as any).bookedFillIds.delete(k);
+        (bookkeeping as any).bookedFillIds.delete('pub11x');
     }
 
     // 12. bookedFillIds holds only Sell ids (a Buy id is never recorded).
@@ -179,6 +179,22 @@ async function main() {
     await bookkeeping.recordFill(fill('Sell', 'NIFTYPU12', 10, 110, 'pub12s'));
     assert(!(bookkeeping as any).bookedFillIds.has('pub12b') && (bookkeeping as any).bookedFillIds.has('pub12s'), 'only the Sell id is recorded as booked');
     (bookkeeping as any).bookedFillIds.delete('pub12s');
+
+    // 14. A Sell against an untracked contract is not recorded in bookedFillIds (it reduced nothing).
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU14', 10, 110, 'pub14s'));
+    assert(!(bookkeeping as any).bookedFillIds.has('pub14s'), 'a Sell against an untracked contract is not recorded as booked');
+
+    // 15. A Sell matching an open row only by token (different tsym) reduces nothing, so it records no booked proof.
+    bookkeeping.setUnresolvedSellHandler(() => {});
+    await bookkeeping.recordFill(fill('Buy', 'NIFTYPU15', 50, 100, 'pub15b'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU15', 50, NaN, 'pub15x'));
+    const tokSell = fill('Sell', 'NIFTYPU15ALT', 50, 110, 'pub15x');
+    tokSell.token = 'tok-NIFTYPU15';
+    await bookkeeping.recordFill(tokSell);
+    assert(!(bookkeeping as any).bookedFillIds.has('pub15x'), 'a token-only match reduced no row: no booked proof');
+    assert(bookkeeping.trades.find((t) => t.tsym === 'NIFTYPU15')?.quantity === 50, 'the token-only Sell did not touch the row');
+    bookkeeping.trades.splice(0, bookkeeping.trades.length, ...bookkeeping.trades.filter((t) => !/^NIFTYPU15/.test(t.tsym)));
+    bookkeeping.setUnresolvedSellHandler(undefined);
 
     // 13. Counts in the alerts: id-bearing entries report redeliveries (seen - 1), nothing when delivered once.
     const logs: string[] = [];

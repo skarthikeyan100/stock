@@ -234,11 +234,11 @@ class OrderBookkeeping {
     // hadRow: the contract had a tracked row when this Sell was booked. A Sell against an untracked contract booked nothing, so it is no proof
     // the contract is flat (untracked != closed): the flat rule is skipped then.
     private clearParkedSells(t: Trade, hadRow = true): void {
+        if (!hadRow) return; // a Sell that reduced no tracked row proves nothing was booked: every parked entry stays
         if (t.brokerOrderId != null) this.unresolvedFills.delete(String(t.brokerOrderId));
         this.unresolvedFills.delete(`${this.unresolvedKey(t)}|noid|${Number(t.quantity)}`);
         const broker = t.broker ?? 'kite', user = t.user || 'Default';
         if (this.trades.some((x) => (x.broker ?? 'kite') === broker && (x.user || 'Default') === user && x.tsym === t.tsym && Number(x.quantity) > 0)) return;
-        if (!hadRow) return;
         for (const [k, v] of this.unresolvedFills) {
             if ((v.broker ?? 'kite') !== broker || v.user !== user || v.tsym !== t.tsym) continue;
             Log.log(`[order] Parked Sell dropped by the flat rule (${t.tsym} is flat after order ${t.brokerOrderId ?? 'unknown'}): user ${v.user}, broker ${broker}, qty ${v.quantity}, order ${v.brokerOrderId ?? 'unknown'}, seen ${v.seen}x`);
@@ -1267,6 +1267,8 @@ class OrderBookkeeping {
             }
         }
         // hadRow: an OPEN row (quantity > 0) existed, so this Sell reduced a position; a zero-quantity row proves nothing about flatness.
+        // Matches tsym ONLY, on purpose: _processTradeEvent reduces a row by tsym+user+broker, so a token-only match (different tsym) would not
+        // reduce anything and must not count as proof. (The sync paths build their event from the holder's own tsym, so their token match is safe.)
         const hadRow = this.trades.some((x) => (x.broker ?? 'kite') === (tradeEvent.broker ?? 'kite') && (x.user || 'Default') === (tradeEvent.user || 'Default') && x.tsym === tradeEvent.tsym && Number(x.quantity) > 0);
         try {
             await this._processTradeEvent(tradeEvent, skipInsert);
@@ -2595,7 +2597,7 @@ class OrderBookkeeping {
                     if (opts.notifyStrategies) await this.recordFill(ev);
                     else {
                         this.processedFillIds.add(id);
-                        try { await this._processTradeEvent(ev); this.markSellBooked(id); /* target qty > 0 */ } catch (e) { this.processedFillIds.delete(id); throw e; }
+                        const hadQty = Number(target.quantity) > 0; try { await this._processTradeEvent(ev); if (hadQty) this.markSellBooked(id); } catch (e) { this.processedFillIds.delete(id); throw e; }
                     }
                     booked++;
                     bookedOrders.push(`${id} (${qty} @ ${piece.price.toFixed(2)})`);
@@ -2728,12 +2730,13 @@ class OrderBookkeeping {
             ev.tsym = target.tsym; ev.token = target.token; ev.right = target.right; ev.quantity = qty; ev.price = f.price;
             ev.action = 'Sell'; ev.status = 'COMPLETE'; ev.user = target.user; ev.broker = broker; ev.strategy = target.strategy; ev.brokerOrderId = f.orderId;
             recordOrderOwner(f.orderId, ev.user, broker);
-            Log.log(`[order] ALERT: EOD sync ${broker}: ${target.user} ${target.tsym} - a Sell of ${qty} @ ${f.price.toFixed(2)} (order ${f.orderId}) is in the broker's own fills but was never booked - booking it now`);
             // Claim the id like the sibling foreign-sell sync: a live delivery of the same order must not book it a second time.
             if (this.processedFillIds.has(f.orderId)) continue;
+            Log.log(`[order] ALERT: EOD sync ${broker}: ${target.user} ${target.tsym} - a Sell of ${qty} @ ${f.price.toFixed(2)} (order ${f.orderId}) is in the broker's own fills but was never booked - booking it now`);
             this.processedFillIds.add(f.orderId);
+            const hadQty = Number(target.quantity) > 0; // captured before the booking mutates the row
             try { await this._processTradeEvent(ev); } catch (e) { this.processedFillIds.delete(f.orderId); throw e; }
-            this.markSellBooked(f.orderId); // target has qty > 0 (checked above): this Sell reduced a tracked row
+            if (hadQty) this.markSellBooked(f.orderId);
             booked++;
         }
         return booked;
