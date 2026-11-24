@@ -83,13 +83,13 @@ ws_status() {
 
 feed_liveness() {
     local dow hm now_s line ts t_s age
-    dow=$(date +%u); hm=$(date +%H%M)
+    dow=$(TZ=Asia/Kolkata date +%u); hm=$(TZ=Asia/Kolkata date +%H%M)
     # weekday, 09:20-15:25 only (before that, or after, silence is normal)
     if [ "$dow" -gt 5 ] || [ "$hm" -lt 0925 ] || [ "$hm" -ge 1525 ]; then return; fi
     line=$(grep -E "\[VWAP-FEED\] .* ltp " "$ORCH_LOG" 2>/dev/null | tail -1)
     ts=$(echo "$line" | grep -oE '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\]' | tr -d '[]')
     if [ -z "$ts" ]; then echo "FAIL (no tick heartbeat logged today)"; return; fi
-    now_s=$(( 10#$(date +%H) * 3600 + 10#$(date +%M) * 60 + 10#$(date +%S) ))
+    now_s=$(( 10#$(TZ=Asia/Kolkata date +%H) * 3600 + 10#$(TZ=Asia/Kolkata date +%M) * 60 + 10#$(TZ=Asia/Kolkata date +%S) ))
     t_s=$(( 10#${ts:0:2} * 3600 + 10#${ts:3:2} * 60 + 10#${ts:6:2} ))
     age=$(( now_s - t_s ))
     if [ "$age" -gt 180 ]; then echo "FAIL (no ticks for $((age / 60))m, last $ts)"; else echo "OK (ticks, last $ts)"; fi

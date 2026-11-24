@@ -47,6 +47,7 @@ rsync -avz --progress \
   --exclude '.bulkpcr_armed_slots.*' \
   --exclude '.topStockOptionsOpeningGap_firedToday.*' \
   --exclude '.gapscreener_cover_placed.json' \
+  --exclude '.*Strategy.*.json' \
   --exclude 'ngrok.json' \
   --exclude 'analysis' \
   --exclude 'breeze_venv' \

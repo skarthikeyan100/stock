@@ -56,7 +56,7 @@ async function loadOrders(broker) {
     if (!r || r.success !== true || !Array.isArray(r.trades)) throw new Error(`${broker} trade book unreadable`);
     const rows = r.trades; const orders = new Map();
     const add = (id, side, key, qty, price, at, seq) => { if (!id || !key || !(qty > 0)) return; const k = `${side}|${id}`; const o = orders.get(k) || { id, side, key, qty: 0, value: 0, at: 0, seq: 0 }; o.qty += qty; o.value += qty * price; o.at = Math.max(o.at, at); o.seq = Math.max(o.seq, seq); orders.set(k, o); };
-    if (broker === 'kite') rows.forEach((t, i) => add(String(t.order_id), t.transaction_type === 'BUY' ? 'B' : 'S', keyFromTsym(String(t.tradingsymbol)), num(t.quantity), num(t.average_price), Date.parse(t.fill_timestamp) || 0, i));
+    if (broker === 'kite') rows.forEach((t, i) => add(String(t.order_id), t.transaction_type === 'BUY' ? 'B' : 'S', keyFromTsym(String(t.tradingsymbol)), num(t.quantity), num(t.average_price), Date.parse(/[zZ]|[+-]\d{2}:?\d{2}$/.test(String(t.fill_timestamp)) ? String(t.fill_timestamp) : String(t.fill_timestamp).replace(' ', 'T') + '+05:30') || 0, i)); // zone-less Kite time is IST, not the shell's zone
     else if (broker === 'prism') rows.forEach((t, i) => { if (String(t.fltm || '').slice(0, 10) !== TODAY_DMY) return; add(String(t.norenordno), t.trantype === 'B' ? 'B' : 'S', keyFromTsym(String(t.tsym)), num(t.flqty), num(t.flprc), parseDMYHMS(t.fltm), i); });
     else if (broker === 'breeze') rows.forEach((t, i) => { if (t.trade_date !== TODAY_BREEZE) return; add(String(t.order_id), t.action === 'Buy' ? 'B' : 'S', keyOf(String(t.stock_code), t.strike_price, t.right === 'Call' ? 'CE' : 'PE'), num(t.quantity), num(t.average_cost), 0, rows.length - i); });
     else if (broker === 'ant') {
@@ -89,7 +89,7 @@ function fifo(orders, broker) {
 
 (async () => {
     const { MongoClient } = require('mongodb');
-    const client = await MongoClient.connect('mongodb://localhost:27017/stocks', { useUnifiedTopology: true });
+    const client = await MongoClient.connect(process.env.MONGO_URL || 'mongodb://localhost:27017/stocks', { useUnifiedTopology: true });
     const col = client.db('stocks').collection('closedTrades');
     const logLines = []; const changes = [];
     const tot = {};

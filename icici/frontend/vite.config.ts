@@ -8,7 +8,7 @@ const API_PREFIXES = [
   '/order', '/optionstream', '/positionstream', '/niftystream', '/notificationstream', '/auth', '/users', '/admin', '/config',
   '/strategies', '/prism', '/demo', '/ant', '/kite', '/breeze', '/shoonya', '/broker', '/reconcile', '/user', '/level-rules',
   // contractor portal
-  '/invite', '/contractor', '/forecast', '/recommendations', '/agreements', '/owner',
+  '/act-as', '/invite', '/contractor', '/forecast', '/recommendations', '/agreements', '/owner',
 ];
 
 export default defineConfig({

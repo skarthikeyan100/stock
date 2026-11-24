@@ -9,6 +9,8 @@
 // "strategy" and "tsym" match by substring, case-insensitive. Reads Mongo directly (stocks db), no process needed.
 process.env.NODE_NO_WARNINGS = '1';
 const { MongoClient } = require('mongodb');
+// Exchange freeze quantity per underlying (was 1755 for every contract, including SENSEX): NIFTY 27 x 65, SENSEX 50 x 20.
+const freezeFor = (tsym) => (/^SENSEX/i.test(String(tsym || '')) ? 1000 : 1755);
 const [q, arg, dayArg] = process.argv.slice(2);
 const dayOf = (s) => { const d = s || new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10); const from = new Date(`${d}T00:00:00+05:30`); return { d, from, to: new Date(from.getTime() + 864e5) }; };
 const rx = (s) => ({ $regex: String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' });
@@ -37,9 +39,9 @@ const pad = (s, n) => String(s).padEnd(n);
             for (const r of rows) {
                 const net = r.buyQty - r.sellQty;
                 if (q === 'open' && net === 0) continue;
-                if (q === 'anomalies' && !(net < 0 || r.maxFill > 1755)) continue;
+                if (q === 'anomalies' && !(net < 0 || r.maxFill > freezeFor(r._id.t))) continue;
                 n++;
-                console.log(`${pad(r._id.u, 28)} ${pad(r._id.b || '-', 6)} ${pad(r._id.t, 20)} net ${String(net).padStart(6)}  bought ${r.buyQty} avg ${r.buyQty ? f2(r.buyVal / r.buyQty) : '-'}  sold ${r.sellQty} avg ${r.sellQty ? f2(r.sellVal / r.sellQty) : '-'}  last ${hhmmss(r.last)}${r.maxFill > 1755 ? '  MAXFILL ' + r.maxFill : ''}`);
+                console.log(`${pad(r._id.u, 28)} ${pad(r._id.b || '-', 6)} ${pad(r._id.t, 20)} net ${String(net).padStart(6)}  bought ${r.buyQty} avg ${r.buyQty ? f2(r.buyVal / r.buyQty) : '-'}  sold ${r.sellQty} avg ${r.sellQty ? f2(r.sellVal / r.sellQty) : '-'}  last ${hhmmss(r.last)}${r.maxFill > freezeFor(r._id.t) ? '  MAXFILL ' + r.maxFill : ''}`);
             }
             if (!n) console.log(q === 'open' ? 'no open net positions from today\'s fills' : 'no anomalies');
         } else if (q === 'resting') {

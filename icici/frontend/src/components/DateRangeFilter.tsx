@@ -17,7 +17,8 @@ function toDateInputValue(d: Date): string {
 // Resolves a mode into a concrete from/to pair using local calendar dates
 // (not UTC - a UTC day boundary would be wrong for IST users near midnight).
 export function resolveDateRange(mode: DateRangeMode, customFrom: string, customTo: string): DateRange {
-  const now = new Date();
+  // The trading day is IST whatever the browser's zone: a Date whose local fields are the IST wall clock.
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
   if (mode === 'day') {
     const today = toDateInputValue(now);
     return { mode, from: today, to: today };

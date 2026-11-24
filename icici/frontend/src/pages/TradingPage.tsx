@@ -130,8 +130,8 @@ export default function TradingPage() {
               }
             >
               {trades.length > 0 ? (
-                trades.map((trade, i) => (
-                  <PositionCard key={`${trade.token}-${i}`} trade={trade} />
+                trades.map((trade) => (
+                  <PositionCard key={`${trade.token}|${(trade as any).broker ?? ''}|${trade.user ?? ''}`} trade={trade} /> /* a position is token + broker (+ user): an index key moved unsent target/stop text to another row */
                 ))
               ) : (
                 <div className="text-center text-muted py-4">
@@ -171,7 +171,7 @@ export default function TradingPage() {
         {!tradingBlocked && !canSearch && (
           <div className="mt-4 p-3 border rounded text-center text-muted small">
             <strong>Search &amp; Buy</strong> (pick any strike and expiry) is available at the Advanced level.{' '}
-            <a href="/levels">See what changes</a> or <a href="/profile#upgrade">request Advanced</a>.
+            <a href="/profile#upgrade">Request Advanced</a>.
           </div>
         )}
       </Container>

@@ -4,8 +4,8 @@ import ThemeToggle from '../components/ThemeToggle';
 
 // The public page: no sign-up, no sign-in, no marketing (spec v2.1 sections 3 and 13). Access is by an invitation link only.
 export default function LandingPage() {
-  const { isLoggedIn, isAdmin, isContractor, loading } = useAuth();
-  if (!loading && isLoggedIn) return <Navigate to={isAdmin ? '/trade' : isContractor ? '/my' : '/'} replace />;
+  const { isLoggedIn, isContractor, loading } = useAuth();
+  if (!loading && isLoggedIn) return <Navigate to={isContractor ? '/my' : '/trade'} replace />;
   return (
     <div className="landing-page d-flex flex-column min-vh-100">
       <nav className="landing-nav">

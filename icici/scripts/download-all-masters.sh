@@ -132,10 +132,6 @@ done
 
 echo "=== Done (failures: $fail) ==="
 
-# Every contract-master cache above (AntContractMaster, KiteContractMaster,
-# BreezeContractMaster, Prism.cacheFile) is loaded once and cached in-memory
-# per process - a running order/strategies process will NOT pick up these new
-# files until it restarts (e.g. `npm run processes` again, or let tsc-watch's
-# hot-restart happen on the next code change). Restart manually if you need
-# the refreshed data live immediately.
+# Reload behaviour of the caches above: ANT hot-reloads its JSON when the file's mtime changes, and Kite and Breeze refresh themselves daily.
+# Only the Prism cache (PrismContractMaster / Prism.lines) is loaded once per process: restart the trading process to pick up a new Prism file.
 exit $fail

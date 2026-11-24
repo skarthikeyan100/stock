@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Col, Container, Form, Row, Table } from 'react-bootstrap';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -41,9 +41,10 @@ export default function JoinPage() {
   const [f, setF] = useState<Record<string, string>>(() => ({ sebiValidUntil: oneMonthFromToday() }));
   const [chk, setChk] = useState({ accept: false, dpdp: false, rep: false, notGst: false });
   const [pdfUrl, setPdfUrl] = useState<string | null>(null); // the agreement with the details typed so far, from the server
+  const previewSeq = useRef(0);
   const [previewing, setPreviewing] = useState(false);
   // Changing a detail invalidates the preview: what is accepted must be exactly what was shown.
-  const set = (k: string) => (e: React.ChangeEvent<any>) => { setPdfUrl(null); setChk((c) => ({ ...c, accept: false, dpdp: false })); setF((x) => ({ ...x, [k]: e.target.value })); };
+  const set = (k: string) => (e: React.ChangeEvent<any>) => { previewSeq.current++; setPdfUrl((old) => { if (old) URL.revokeObjectURL(old); return null; }); setChk((c) => ({ ...c, accept: false, dpdp: false })); setF((x) => ({ ...x, [k]: e.target.value })); };
 
   useEffect(() => {
     apiFetch(`/invite/${encodeURIComponent(token)}`).then(async (r) => {
@@ -72,11 +73,16 @@ export default function JoinPage() {
       if (missing.length) { setErr(`Please give ${missing.join(' and ')} first.`); return; }
     }
     setPreviewing(true);
+    const mySeq = ++previewSeq.current; // only the newest request may set the PDF: a slower earlier one showed an agreement that did not match the form
     try {
       const res = await apiPost(`/invite/${encodeURIComponent(token)}/preview`, re ? { representation6A5: chk.rep } : { name: f.name, kyc: kycBody(), representation6A5: chk.rep });
+      if (mySeq !== previewSeq.current) return;
       if (!res.ok) { setErr(await readError(res)); return; }
-      setPdfUrl(URL.createObjectURL(await res.blob()));
-    } finally { setPreviewing(false); }
+      const blob = await res.blob();
+      if (mySeq !== previewSeq.current) return;
+      const url = URL.createObjectURL(blob);
+      setPdfUrl((old) => { if (old) URL.revokeObjectURL(old); return url; }); // release the previous blob
+    } finally { if (mySeq === previewSeq.current) setPreviewing(false); }
   };
   useEffect(() => { if (re && re.needsAgreement) void preview(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [re?.needsAgreement]);
 

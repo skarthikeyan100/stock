@@ -85,11 +85,16 @@ const stickyActionsStyle: CSSProperties = {
 };
 
 async function patchVerify(email: string, field: 'email' | 'phone' | 'address' | 'dob' | 'pan', verified: boolean) {
-  await apiFetch(`/users/${encodeURIComponent(email)}/verify`, {
+  const res = await apiFetch(`/users/${encodeURIComponent(email)}/verify`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ field, verified }),
   });
+  // A refused verify used to look like a no-op: say so.
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    window.alert(`Could not ${verified ? 'verify' : 'unverify'} ${field} for ${email}: ${body?.error ?? `HTTP ${res.status}`}`);
+  }
 }
 
 interface UserEditRow {

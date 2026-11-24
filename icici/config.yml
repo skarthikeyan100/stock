@@ -529,3 +529,16 @@ forecast:
     monthlyCap: 0
     retainerMonthly: 0
     minParticipationDays: 15
+# Detector tuning shared by SupportResistanceStrategy and the offline SupportResistanceHypothesisTest/Backtest (restored from git history, commit b3f4d78^).
+srHypothesis:
+  confirmWindowMin: 2
+  maxJump: 15
+  maxRangeWidth: 30
+  buffer: 10
+  target: 10
+  stopLoss: 10
+  breachBuffer: 0
+  breachConfirmSec: 0
+  heldMinSec: 407
+  heldMaxSec: 651
+  csvOutput: false

@@ -61,7 +61,7 @@ export default function NiftyTicker({ url = '/niftystream', feed = false, enable
     const n = Number(ltt);
     if (!isNaN(n) && n > 1000000) {
       const d = new Date(n * 1000);
-      return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+      return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' });
     }
     return String(ltt).slice(0, 5); // take "HH:MM" from "HH:MM:SS"
   };

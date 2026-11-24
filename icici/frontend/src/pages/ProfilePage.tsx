@@ -266,11 +266,14 @@ export default function ProfilePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ investmentMode }),
       });
-      if (!res.ok) throw new Error('Failed to save');
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error || 'Failed to save investment mode');
+      }
       setModeSaved(true);
       setTimeout(() => setModeSaved(false), 3000);
-    } catch {
-      setModeError('Failed to save investment mode');
+    } catch (e) {
+      setModeError(e instanceof Error ? e.message : 'Failed to save investment mode'); // the server's own reason (e.g. Beginner accounts cannot use fixed lots)
     } finally {
       setModeSaving(false);
     }
@@ -455,7 +458,6 @@ export default function ProfilePage() {
           <span className="fw-bold">My Profile</span>
           <ThemeToggle />
           <NotificationBell />
-          <Button variant="outline-secondary" size="sm" onClick={() => navigate('/rules')}>Rules</Button>
           <Button variant="outline-secondary" size="sm" onClick={() => navigate('/trade')}>← Trading</Button>
           <Button variant="outline-secondary" size="sm" onClick={handleLogout}>Logout</Button>
         </Container>
@@ -528,7 +530,7 @@ export default function ProfilePage() {
                 onChange={e => setInvestmentMode(e.target.value as 'lotCount' | 'investmentAmount')}
               >
                 <option value="investmentAmount">Investment Amount</option>
-                <option value="lotCount">Lot Count</option>
+                <option value="lotCount" disabled={user?.proficiencyLevel !== 'advanced' && user?.role !== 'admin'}>Lot Count{user?.proficiencyLevel !== 'advanced' && user?.role !== 'admin' ? ' (Advanced only)' : ''}</option>
               </Form.Select>
               {user?.investmentModeLocked && <Form.Text className="text-muted">Locked by an admin - contact them to change it.</Form.Text>}
             </Form.Group>
@@ -760,7 +762,7 @@ export default function ProfilePage() {
             <Card.Body>
               <p className="small mb-2">
                 Deleting your account permanently removes your personal information: name, picture, phone, KYC numbers and documents, bank and UPI details,
-                and the documents we emailed you. Your trade records are kept, without your name or email. You will be logged out and can sign up again later as a new user. This cannot be undone.
+                and the documents we emailed you. Your trade records are kept, without your name or email. You will be logged out and would need a new invitation to come back. This cannot be undone.
               </p>
               {!deleteOpen ? (
                 <Button size="sm" variant="outline-danger" onClick={() => { setDeleteOpen(true); setDeleteText(''); setDeleteError(null); }}>Delete my account</Button>

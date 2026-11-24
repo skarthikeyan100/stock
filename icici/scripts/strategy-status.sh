@@ -211,7 +211,7 @@ if [ "$OPENED" = today ] && ! grep -qi '^x-opened-filter: today' "$HDR"; then ec
 DETAIL="$(curl -s -m20 "localhost:$PORT/strategyPnl?detail=1&opened=$OPENED")"
 CLOSED_ALL="$(curl -s -m10 "localhost:$PORT/strategyPnl?closed=1&opened=$OPENED")"
 ROOT="$(dirname "$(readlink -f "$0")")/.."
-LOG="$(dirname "$(readlink -f "$0")")/../logs/orchestrator-$(date +%F).log"
+LOG="$(dirname "$(readlink -f "$0")")/../logs/orchestrator-$(TZ=Asia/Kolkata date +%F).log"
 OPENED="$OPENED" PORT="$PORT" BY_STRATEGY="$BY_STRATEGY" DETAIL="$DETAIL" CLOSED_ALL="$CLOSED_ALL" LOG="$LOG" ROOT="$ROOT" node -e '
 const f=n=>(n>=0?"+":"")+n.toFixed(2);
 const parse=(s)=>{try{const r=JSON.parse(s);return Array.isArray(r)?r:null}catch{return null}};

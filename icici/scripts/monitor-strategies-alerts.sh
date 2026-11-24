@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Attention-only feed for the Claude Code Monitor tool, covering BulkPcr, ContinuousStrategy, SimpleContinuousStrategy, NiftyChange, MomentumAtFixedTime and Recommendation.
 #
-# Runs the compact event feeds (BulkPcr, Continuous, limit-entry, SentimentStrategy) and keeps only their "!!!" lines (errors, failures, fail-closed blocks,
-# MAX PROFIT / MAX LOSS trips, ALERTs). Routine buy/sell/fill/spawn/target events and BulkPcr's normal
+# Runs the compact event feeds. The BulkPcr and Continuous feeds are filtered to their "!!!" lines (errors, failures, fail-closed blocks,
+# MAX PROFIT / MAX LOSS trips, ALERTs); the limit-entry and SentimentStrategy feeds are passed through UNFILTERED (Sentiment's routine lines included). Routine buy/sell/fill/spawn/target events and BulkPcr's normal
 # "Cycle complete" are dropped. Use scripts/strategy-status.sh for the P&L picture.
 #
 # NiftyChange / Recommendation are low-volume, so ALL their lifecycle lines (fills, protection attached, stop/target, cancels, ALERTs)
@@ -10,7 +10,7 @@
 # Also emits one "=== SLOT MISSED" line per slot that BulkPcrAutoStart / NiftyChange did not trade, with the reason.
 # A filled buy+sell pair is routine and is NOT notified.
 #
-# Usage: scripts/monitor-strategies-alerts.sh [--all|--once]   (passed through to both feeds)
+# Usage: scripts/monitor-strategies-alerts.sh [--all|--once]   (passed through to every feed)
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 trap 'kill $(jobs -p) 2>/dev/null' EXIT
