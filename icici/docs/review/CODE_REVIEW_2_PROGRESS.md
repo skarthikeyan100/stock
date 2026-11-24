@@ -97,3 +97,7 @@ Last reviewed commit: `a36a96f`; fixes are in `0bf7fe8`. Eighth review covers `a
 ## Eighth review - 2026-11-24
 `/code-review medium a36a96f..0bf7fe8`: 4 findings, all FIXED (central markSellBooked used by recordFill, foreign-sell sync, EOD sync and restore netting; stale ALERT text corrected; redelivery count seen-1; bookedFillIds is Sell-only, unpruned like processedFillIds). Still parked by design: a user fully closed in Mongo with no restored row. tsc clean, 126/126.
 Last reviewed commit: `0bf7fe8`; fixes are in `58d9816`. Ninth review covers `0bf7fe8..58d9816`.
+
+## Ninth review - 2026-11-24
+`/code-review medium 0bf7fe8..58d9816`: 5 findings, all FIXED by simplifying: restore never clears parked sells; markSellBooked only when a tracked row was reduced (hadRow); EOD sync claims processedFillIds and releases on throw; test stubs in try/finally; alert text matches. tsc clean, 126/126.
+Last reviewed commit: `58d9816`; fixes are in `3e5b9de`. Tenth review covers `58d9816..3e5b9de`.
