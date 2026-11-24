@@ -7,6 +7,7 @@ import { Trade } from '../model/model';
 import bookkeeping from '../processes/order/bookkeeping';
 import Kite from '../kite/Kite';
 import * as exitMonitor from '../processes/order/exitMonitor';
+import Log from '../util/Log';
 import { cancelProtection } from '../processes/order/attachProtection';
 
 function assert(c: boolean, m: string) { console.log(`  ${c ? 'PASS' : 'FAIL'}: ${m}`); if (!c) process.exitCode = 1; }
@@ -147,6 +148,53 @@ async function main() {
     await bookkeeping.recordFill(fill('Sell', 'NIFTYPU10', 30, 110, 'pub10'));
     assert(c10() === 1, 'zero-quantity row: booked Sell does not flat-clear the parked entry');
     bookkeeping.trades.splice(bookkeeping.trades.indexOf(zero), 1);
+    bookkeeping.setUnresolvedSellHandler(undefined);
+
+    // 11. A restore that netted a stored Sell into a row it really added marks it booked: the stored-in-Mongo early return then clears the parked entry.
+    // A restore row refused as a duplicate (already tracked) proves nothing: that entry stays.
+    bookkeeping.setUnresolvedSellHandler(() => {});
+    const c11 = (t: string) => bookkeeping.getUnresolvedFills().filter((f) => f.tsym === t).length;
+    const origStored11 = (bookkeeping as any).fillAlreadyStored;
+    (bookkeeping as any).fillAlreadyStored = async () => true;
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU11', 50, NaN, 'pub11x'));
+    const restoredRow = Object.assign(new Trade(), { tsym: 'NIFTYPU11', token: 'tok-NIFTYPU11', quantity: 50, price: 100, action: 'Buy', user: 'PuUser', broker: 'kite' });
+    (bookkeeping as any).restoredSellIds.set(restoredRow, ['pub11x']);
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU11', 50, 110, 'pub11x'));
+    assert(c11('NIFTYPU11') === 1, 'before the restore adds the row: stored early return leaves the entry');
+    (bookkeeping as any).mergeRestored([restoredRow]);
+    assert(c11('NIFTYPU11') === 0, 'restore adding the row clears the parked entry of the Sell it netted');
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU11', 50, NaN, 'pub11x'));
+    assert(c11('NIFTYPU11') === 1, 'an unpriced redelivery parks again');
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU11', 50, 110, 'pub11x'));
+    assert(c11('NIFTYPU11') === 0, 'stored early return now clears it (id is in bookedFillIds)');
+    // duplicate row refused: not marked booked
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU11B', 50, NaN, 'pub11bx'));
+    bookkeeping.trades.push(Object.assign(new Trade(), { tsym: 'NIFTYPU11B', token: 'tok-NIFTYPU11B', quantity: 80, price: 100, action: 'Buy', user: 'PuUser', broker: 'kite' }));
+    const dup = Object.assign(new Trade(), { tsym: 'NIFTYPU11B', token: 'tok-NIFTYPU11B', quantity: 30, price: 100, action: 'Buy', user: 'PuUser', broker: 'kite' });
+    (bookkeeping as any).restoredSellIds.set(dup, ['pub11bx']);
+    (bookkeeping as any).mergeRestored([dup]);
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU11B', 50, 110, 'pub11bx'));
+    assert(c11('NIFTYPU11B') === 1, 'a refused duplicate restore row does not clear the entry');
+    (bookkeeping as any).fillAlreadyStored = origStored11;
+    bookkeeping.trades.splice(0, bookkeeping.trades.length, ...bookkeeping.trades.filter((t) => !/^NIFTYPU11/.test(t.tsym)));
+
+    // 12. bookedFillIds holds only Sell ids (a Buy id is never recorded).
+    await bookkeeping.recordFill(fill('Buy', 'NIFTYPU12', 10, 100, 'pub12b'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU12', 10, 110, 'pub12s'));
+    assert(!(bookkeeping as any).bookedFillIds.has('pub12b') && (bookkeeping as any).bookedFillIds.has('pub12s'), 'only the Sell id is recorded as booked');
+
+    // 13. Counts in the alerts: id-bearing entries report redeliveries (seen - 1), nothing when delivered once.
+    const logs: string[] = [];
+    const origLog = Log.log;
+    (Log as any).log = (...a: any[]) => { logs.push(a.map(String).join(' ')); };
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU13', 50, NaN, 'pub13x'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU13', 50, NaN, 'pub13x'));
+    bookkeeping.alertStaleUnresolvedFills(Date.now() + 3_600_000);
+    const stale = logs.find((l) => l.includes('still NOT booked') && l.includes('pub13x')) ?? '';
+    assert(stale.includes('redelivered 1x') && !stale.includes('redelivered 2x'), 'stale ALERT: two deliveries = redelivered 1x');
+    const seenText = (bookkeeping.constructor as any).seenText.bind(bookkeeping.constructor);
+    assert(seenText({ brokerOrderId: 'a', seen: 1 }) === '' && seenText({ brokerOrderId: 'a', seen: 3 }) === 'redelivered 2x' && seenText({ seen: 3 }) === 'seen 3x', 'seenText: id-bearing seen-1, hidden at 1; id-less seen N');
+    (Log as any).log = origLog;
     bookkeeping.setUnresolvedSellHandler(undefined);
 }
 main().then(() => process.exit(process.exitCode ?? 0), (e) => { console.error(e); process.exit(1); });
