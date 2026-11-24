@@ -39,7 +39,7 @@ let running = false;
 const nonFiniteAlert = new NonFiniteAlert();
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
-async function markOf(t: any): Promise<number> {
+export async function markOf(t: any): Promise<number> {
     try {
         const ltp = await OrderClient.getInstance().getOptionLtp(t.user, { tradingSymbol: t.tsym, token: String(t.token), exchange: exchangeForTsym(t.tsym) });
         if (num(ltp) > 0) return num(ltp);

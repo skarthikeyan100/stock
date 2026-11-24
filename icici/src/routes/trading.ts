@@ -10,6 +10,7 @@ import AntContractMaster from '../ant/AntContractMaster';
 import { CanonicalSymbol, formatCanonicalSymbol, parseCanonicalSymbol } from '../model/CanonicalSymbol';
 import { exchangeForIndex } from '../util/underlyings';
 import OrderClient from '../processes/strategies/OrderClient';
+import { disableAllAndLockProfits } from '../processes/lockAllProfits';
 import { asyncRouter } from './asyncRouter';
 import { isOpenedToday, openedFilterOf } from '../util/openedToday';
 import { closedTradeRows } from '../util/closedTradeRows';
@@ -106,19 +107,7 @@ router.post('/order/lock-profits', requireAdmin, async function (req, res) {
     try {
         const broker = typeof req.query.broker === 'string' && req.query.broker.trim() ? req.query.broker.trim() : undefined;
         const reprice = req.query.reprice === 'true';
-        // Persist the disables before touching an order; a write that fails stops the call here, with nothing sold.
-        const cfg = configService.getConfig();
-        const toDisable = (cfg.strategies || []).filter((s: any) => s.enabled);
-        const disabledStrategies = toDisable.map((s: any) => s.userId || s.type);
-        toDisable.forEach((s: any) => { s.enabled = false; });
-        try {
-            configService.writeConfig(cfg);
-        } catch (writeErr) {
-            toDisable.forEach((s: any) => { s.enabled = true; }); // the file was not changed: this process's copy must not claim it was
-            throw writeErr;
-        }
-        configService.reloadNow();
-        const lock = await orderClient.lockProfits({ broker, reprice });
+        const { disabledStrategies, lock } = await disableAllAndLockProfits(orderClient, { broker, reprice });
         res.json({ disabledStrategies, lock });
     } catch (e: any) {
         Log.log('lock-profits failed:', e);

@@ -33,7 +33,10 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //      leg of its own with its own resting sell at its entry + priceDiff, and it is hedged once in turn, so the chain is unlimited.
 //      A leg whose sell fills at a profit is followed by the SAME right (follow the direction), root and hedge legs alike; a hedge
 //      triggered by an adverse move (nothing sold) or by a sell at a loss buys the opposite right. This is fixed, not configurable.
-//   4. There is no stop loss: a leg ends only through its resting sell (or the EOD close).
+//   4. Stop loss (`slDistance`, points, optional; absent / 0 = none, a leg then ends only through its resting sell or the EOD close): when ANY leg's
+//      price falls to entry - slDistance it is exited (its resting sell is cancelled and the rest sold at market) and the loss is booked through
+//      the normal fill path (realizedPnl / the maxProfit total). The hedge of a falling leg is bought at entry - priceDiff and then follows the
+//      normal chain (it sells at its own entry + priceDiff, the next one is bought, ...); the stop only removes the falling leg.
 //   5. NO double-up (removed 2026-11-13, user's decision; ScaledHedgedStrategy has had none since 1a3c54e): a hedge leg whose sell fills at a
 //      profit buys nothing for its parent. A leg restored from a state file written before that (fields `doubled` / `doubleDue`, a quantity
 //      above the root rule's, e.g. 1170) is carried unchanged: those fields are ignored, `doubleDue: true` triggers no buy, its quantity is
@@ -119,6 +122,7 @@ export default class SimpleContinuousStrategy extends Strategy {
     private tripGuard = new TripGuard(); // retry backoff / fill-event wait of the maxProfit trip sells (in memory throttle only)
     private busy = new Set<string>();           // leg ids with a hedge / sell placement in flight
     private lastSellAttempt = new Map<string, number>();
+    private slSentAt = new Map<string, number>(); // leg id -> when its stop-loss sell was last sent (in-memory throttle only: the fill event closes the leg)
     private lastEodAttempt = 0;
     private lastWaitingHedgeRetry = 0;
     private gateLog = new GateLogger('[SimpleContinuousStrategy] gate:', PCR_RECHECK_MS);
@@ -143,6 +147,12 @@ export default class SimpleContinuousStrategy extends Strategy {
 
     private priceDiff(): number {
         return Number(this.cfg()?.priceDiff);
+    }
+
+    // slDistance (points, optional): a leg is stopped out when its price falls to entry - slDistance. Absent / 0 / not a positive number = no stop loss.
+    private slDistance(): number {
+        const v = Number(this.cfg()?.slDistance);
+        return Number.isFinite(v) && v > 0 ? v : 0;
     }
 
     // maxProfit (rupees) is required in the block or as settings.maxProfit: no default here. Missing / not a positive number blocks every new entry (see the gate in
@@ -612,6 +622,8 @@ export default class SimpleContinuousStrategy extends Strategy {
         if (this.isStopped()) return;
         await this.checkMaxProfit();
         if (this.isStopped()) return;
+        const sl = this.slDistance();
+        if (sl > 0 && quote.ltp <= leg.entry - sl) { await this.stopLossExit(leg, sl); return; }
         // A leg whose sell never got placed (placement failed, or a restart found none resting) is retried.
         if (leg.sellQty === 0 && !this.busy.has(leg.id) && Date.now() - (this.lastSellAttempt.get(leg.id) ?? 0) > SELL_RETRY_MS) {
             await this.placeSell(leg);
@@ -622,6 +634,39 @@ export default class SimpleContinuousStrategy extends Strategy {
             await this.hedge(leg, 'adverse move');
         }
     };
+
+    // Stop loss of one leg: cancel its resting sell(s) and sell what is left at market. The leg stays open until the sell's fill event closes it
+    // (updateTrade books the loss into realizedPnl and the maxProfit total, and hedges the leg if it never was). A sell already sent waits
+    // TRIP_FILL_WAIT_MS for that event; after that the sell is repeated, and the broker's 'nothing sellable' refusal closes a leg that is no longer held
+    // (closeIfNotHeld). A failure is retried on the next tick after SELL_RETRY_MS.
+    private async stopLossExit(leg: SimpleLeg, sl: number): Promise<void> {
+        if (leg.status !== 'open' || this.busy.has(leg.id)) return;
+        const sent = this.slSentAt.get(leg.id);
+        if (sent !== undefined && Date.now() - sent < TRIP_FILL_WAIT_MS) return;
+        this.busy.add(leg.id);
+        try {
+            if (leg.sellQty > 0 || (leg.sellShortfall ?? 0) > 0) {
+                const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
+                if (res.cancelFailed) { this.slSentAt.set(leg.id, Date.now() - TRIP_FILL_WAIT_MS + SELL_RETRY_MS); Log.log(`[SimpleContinuousStrategy] STOP LOSS: could not cancel the resting sell of ${leg.tsym}, retrying`); return; }
+                leg.sellQty = 0;
+                leg.sellShortfall = 0;
+                this.save();
+                if (res.filledQty > 0) { this.slSentAt.set(leg.id, Date.now()); Log.log(`[SimpleContinuousStrategy] STOP LOSS: ${res.filledQty} of ${leg.tsym} sold while cancelling the resting sell - the rest is handled after its fill events`); return; }
+            }
+            const quantity = this.remaining(leg);
+            if (quantity <= 0) return;
+            Log.log(`[SimpleContinuousStrategy] STOP LOSS: ${leg.tsym} ${leg.lastLtp} <= entry ${leg.entry.toFixed(2)} - slDistance ${sl}: selling ${quantity} at market`);
+            await chunkedLegSell(this.userId, leg.tsym, quantity, this.broker());
+            this.slSentAt.set(leg.id, Date.now());
+        } catch (e) {
+            if (await this.closeIfNotHeld(leg, e)) return;
+            if (isCoveredByOthers(e)) { this.waitCovered(leg, this.remaining(leg)); return; }
+            this.slSentAt.set(leg.id, Date.now() - TRIP_FILL_WAIT_MS + SELL_RETRY_MS); // a failed attempt is repeated after SELL_RETRY_MS, not on every tick
+            Log.log(`[SimpleContinuousStrategy] ALERT: STOP LOSS sell of ${leg.tsym} failed (retried every ${SELL_RETRY_MS / 1000}s):`, e);
+        } finally {
+            this.busy.delete(leg.id);
+        }
+    }
 
     // ---- hedge ----
 

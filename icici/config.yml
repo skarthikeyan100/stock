@@ -476,6 +476,7 @@ strategies:
     priceDiff: 10
     maxLegsPerSide: 5
     stackRecoveryPoints: 20
+    slDistance: 50
   - type: ScaledHedgedStrategy
     enabled: false
     brokers:
