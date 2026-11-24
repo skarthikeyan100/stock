@@ -85,3 +85,7 @@ Last reviewed commit: `447bcbc`; fixes are in `4527d8b`. The fifth review covers
 ## Fifth review - 2026-11-24
 `/code-review medium 447bcbc..4527d8b` (+docs): 5 findings, all FIXED (parked-Sell dedupe by broker|user|tsym|qty with 200 cap, cleared only after a Sell is newly booked and by order id/qty or when the contract is flat; demo unsubscribe rejected for non-holder IPs; test restores the market clock; comment). tsc clean, 126/126.
 Last reviewed commit: `4527d8b`; fixes are in `59d6def`. Sixth review covers `4527d8b..59d6def`.
+
+## Sixth review - 2026-11-24
+`/code-review medium 4527d8b..59d6def`: 6 findings. 5 fixed (late clear by order id on early-return paths; eviction ALERT + seen count; flat-clear logged and skipped when no tracked row existed; demo 403 kept, released by the 30-min lease sweep, comment added; test stub signature). The 6th (SessionEnd hook removed from .claude/settings.json) is not ours: working-tree change by the user, not touched. tsc clean, 126/126.
+Last reviewed commit: `59d6def`; fixes are in `a36a96f`. Seventh review covers `59d6def..a36a96f`.
