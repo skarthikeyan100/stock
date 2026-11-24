@@ -86,5 +86,26 @@ async function main() {
     await bookkeeping.recordFill(fill('Sell', 'NIFTYPU5', 25, 110, 'pub5b'));
     assert(c5() === 0, 'after piece 25 (flat) the parked entry is cleared');
     bookkeeping.setUnresolvedSellHandler(undefined);
+
+    // 6. A parked entry whose order id is later seen on an early-return (already processed) path is cleared by id only; an unpriced redelivery stays parked.
+    bookkeeping.setUnresolvedSellHandler(() => {});
+    const c6 = () => bookkeeping.getUnresolvedFills().filter((f) => f.tsym === 'NIFTYPU6').length;
+    await bookkeeping.recordFill(fill('Buy', 'NIFTYPU6', 200, 100, 'pub6'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, 110, 'pub6x'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 40, NaN, undefined));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, NaN, 'pub6x'));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, NaN, 'pub6x'));
+    assert(c6() === 2, 'unpriced redelivery of an id stays parked (one entry per id)');
+    assert(bookkeeping.getUnresolvedFills().find((f) => f.brokerOrderId === 'pub6x')?.seen === 2, 'entry counts times seen');
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU6', 50, 110, 'pub6x'));
+    assert(c6() === 1, 'already-processed redelivery with a price clears that order id only');
+    assert(bookkeeping.getUnresolvedFills().some((f) => f.tsym === 'NIFTYPU6' && f.quantity === 40), 'the other (id-less) entry is untouched');
+
+    // 7. A Sell against an untracked contract (no row) does not flat-clear parked entries of that contract.
+    const c7 = () => bookkeeping.getUnresolvedFills().filter((f) => f.tsym === 'NIFTYPU7').length;
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU7', 75, NaN, undefined));
+    await bookkeeping.recordFill(fill('Sell', 'NIFTYPU7', 30, 110, 'pub7'));
+    assert(c7() === 1, 'untracked contract: booked Sell does not flat-clear the parked entry');
+    bookkeeping.setUnresolvedSellHandler(undefined);
 }
 main().then(() => process.exit(process.exitCode ?? 0), (e) => { console.error(e); process.exit(1); });

@@ -192,7 +192,7 @@ class OrderBookkeeping {
     // Fill ids whose booking threw after the raw doc may have been written (see recordFill).
     private failedBookingFillIds: Set<string> = new Set();
     // Sell fills that arrived with an unusable price and were deliberately NOT booked (see recordFill); cleared when the same order is later booked.
-    private unresolvedFills: Map<string, { tsym: string; user: string; broker?: string; quantity: number; brokerOrderId?: string; at: Date; alertedAt?: number }> = new Map();
+    private unresolvedFills: Map<string, { tsym: string; user: string; broker?: string; quantity: number; brokerOrderId?: string; at: Date; alertedAt?: number; seen: number }> = new Map();
     private unresolvedKey(t: { broker?: string; user?: string; tsym: string }): string { return `${t.broker ?? 'kite'}|${t.user || 'Default'}|${t.tsym}`; }
     // One entry per distinct fill. The Trade event carries no stable identity besides brokerOrderId (no exchange trade id / fill time), so an
     // id-less fill is keyed broker|user|tsym|qty: a redelivery (poller / sync every cycle) refreshes that entry instead of adding one. Two
@@ -201,22 +201,36 @@ class OrderBookkeeping {
     private parkUnresolvedSell(t: Trade): void {
         const key = t.brokerOrderId != null ? String(t.brokerOrderId) : `${this.unresolvedKey(t)}|noid|${Number(t.quantity)}`;
         const prev = this.unresolvedFills.get(key);
-        this.unresolvedFills.set(key, { tsym: t.tsym, user: t.user || 'Default', broker: t.broker, quantity: Number(t.quantity), brokerOrderId: t.brokerOrderId, at: prev?.at ?? new Date(), alertedAt: prev?.alertedAt });
+        this.unresolvedFills.set(key, { tsym: t.tsym, user: t.user || 'Default', broker: t.broker, quantity: Number(t.quantity), brokerOrderId: t.brokerOrderId, at: prev?.at ?? new Date(), alertedAt: prev?.alertedAt, seen: (prev?.seen ?? 0) + 1 });
         while (this.unresolvedFills.size > OrderBookkeeping.MAX_UNRESOLVED) {
             const oldest = this.unresolvedFills.keys().next().value as string;
+            const ev = this.unresolvedFills.get(oldest);
             this.unresolvedFills.delete(oldest);
+            Log.log(`[order] ALERT: unresolved-sell list is full (${OrderBookkeeping.MAX_UNRESOLVED}); evicted the oldest parked Sell without it being booked: user ${ev?.user}, ${ev?.tsym}, broker ${ev?.broker ?? 'kite'}, qty ${ev?.quantity}, order ${ev?.brokerOrderId ?? 'unknown'}, seen ${ev?.seen}x`);
         }
     }
     // Called only after a Sell was newly booked. Clears (a) the parked entry of this same order id, (b) an id-less parked entry of the same
     // broker/user/tsym and the same quantity, (c) every parked entry of the broker/user/tsym once the tracked position is flat. Booking the
     // same fill as pieces (parked 75, booked 50+25) cannot match by quantity, and decrementing a parked quantity by any booked Sell would
     // wrongly shrink it for an unrelated Sell; flat is the unambiguous proof that no unbooked sold quantity remains for that contract.
-    private clearParkedSells(t: Trade): void {
+    // Early-return paths (already processed / stored / paper) call clearParkedSellById: the order id is already booked, so only that order's own
+    // entry may go - never the quantity or flat rules, which are limited to a Sell booked just now. (An unpriced redelivery returns before it.)
+    private clearParkedSellById(t: Trade): void {
+        if (t.action === 'Sell' && t.brokerOrderId != null) this.unresolvedFills.delete(String(t.brokerOrderId));
+    }
+    // hadRow: the contract had a tracked row when this Sell was booked. A Sell against an untracked contract booked nothing, so it is no proof
+    // the contract is flat (untracked != closed): the flat rule is skipped then.
+    private clearParkedSells(t: Trade, hadRow = true): void {
         if (t.brokerOrderId != null) this.unresolvedFills.delete(String(t.brokerOrderId));
         this.unresolvedFills.delete(`${this.unresolvedKey(t)}|noid|${Number(t.quantity)}`);
         const broker = t.broker ?? 'kite', user = t.user || 'Default';
         if (this.trades.some((x) => (x.broker ?? 'kite') === broker && (x.user || 'Default') === user && x.tsym === t.tsym && Number(x.quantity) > 0)) return;
-        for (const [k, v] of this.unresolvedFills) if ((v.broker ?? 'kite') === broker && v.user === user && v.tsym === t.tsym) this.unresolvedFills.delete(k);
+        if (!hadRow) return;
+        for (const [k, v] of this.unresolvedFills) {
+            if ((v.broker ?? 'kite') !== broker || v.user !== user || v.tsym !== t.tsym) continue;
+            Log.log(`[order] Parked Sell dropped by the flat rule (${t.tsym} is flat after order ${t.brokerOrderId ?? 'unknown'}): user ${v.user}, broker ${broker}, qty ${v.quantity}, order ${v.brokerOrderId ?? 'unknown'}, seen ${v.seen}x`);
+            this.unresolvedFills.delete(k);
+        }
     }
     getUnresolvedFills() { return [...this.unresolvedFills.values()]; }
     // Set by the order process: asked (debounced there) to re-read the broker's trade book when a Sell is parked for an unusable price.
@@ -224,12 +238,12 @@ class OrderBookkeeping {
     setUnresolvedSellHandler(fn: ((broker: string, tsym: string) => void) | undefined): void { this.unresolvedSellHandler = fn; }
     // Repeated ALERT (once per `repeatMs` per order) for a parked Sell still unbooked after `ageMs`. Returns the entries alerted.
     alertStaleUnresolvedFills(now = Date.now(), ageMs = 15 * 60_000, repeatMs = 15 * 60_000) {
-        const out: { tsym: string; user: string; broker?: string; quantity: number; brokerOrderId?: string; at: Date }[] = [];
+        const out: { tsym: string; user: string; broker?: string; quantity: number; brokerOrderId?: string; at: Date; seen: number }[] = [];
         for (const f of this.unresolvedFills.values()) {
             if (now - f.at.getTime() < ageMs) continue;
             if (f.alertedAt !== undefined && now - f.alertedAt < repeatMs) continue;
             f.alertedAt = now;
-            Log.log(`[order] ALERT: Sell fill still NOT booked after ${Math.round((now - f.at.getTime()) / 60_000)} min (unusable price): user ${f.user}, ${f.tsym}, broker ${f.broker ?? 'kite'}, qty ${f.quantity}, order ${f.brokerOrderId ?? 'unknown'} - the position is still open in memory; run POST /sync or book it manually`);
+            Log.log(`[order] ALERT: Sell fill still NOT booked after ${Math.round((now - f.at.getTime()) / 60_000)} min (unusable price): user ${f.user}, ${f.tsym}, broker ${f.broker ?? 'kite'}, qty ${f.quantity}, order ${f.brokerOrderId ?? 'unknown'}${f.seen > 1 ? `, seen ${f.seen}x (same-size id-less sells collapse into this entry)` : ''} - the position is still open in memory; run POST /sync or book it manually`);
             out.push(f);
         }
         return out;
@@ -1194,11 +1208,12 @@ class OrderBookkeeping {
         // Paper broker (in-memory only): nothing is read from or written to Mongo; the id is still claimed so a redelivered fill is ignored.
         const paper = tradeEvent.broker === 'paper';
         if (id && paper) {
-            if (this.processedFillIds.has(id)) return;
+            if (this.processedFillIds.has(id)) { this.clearParkedSellById(tradeEvent); return; }
             this.processedFillIds.add(id);
         } else if (id) {
             if (this.processedFillIds.has(id)) {
                 Log.log(`[order] Ignoring redelivered fill for broker order ${id} (${tradeEvent.tsym}) - already processed`);
+                this.clearParkedSellById(tradeEvent);
                 return;
             }
             // Claim the id BEFORE the first await: the Mongo lookup below yields, and two concurrent deliveries of the same
@@ -1214,6 +1229,7 @@ class OrderBookkeeping {
                 if (await this.fillAlreadyStored(tradeEvent)) {
                     if (!this.failedBookingFillIds.has(id)) {
                         Log.log(`[order] Ignoring fill for broker order ${id} (${tradeEvent.tsym}) - already stored in Mongo`);
+                        this.clearParkedSellById(tradeEvent);
                         return; // id stays claimed
                     }
                     // A previous attempt wrote the raw doc then threw before the in-memory update: this retry must update memory
@@ -1228,6 +1244,7 @@ class OrderBookkeeping {
                 throw e;
             }
         }
+        const hadRow = this.trades.some((x) => (x.broker ?? 'kite') === (tradeEvent.broker ?? 'kite') && (x.user || 'Default') === (tradeEvent.user || 'Default') && x.tsym === tradeEvent.tsym);
         try {
             await this._processTradeEvent(tradeEvent, skipInsert);
         } catch (e) {
@@ -1241,7 +1258,7 @@ class OrderBookkeeping {
         }
         if (id) this.failedBookingFillIds.delete(id);
         // Newly booked (every duplicate / already-stored path returned above): only now may a parked Sell be cleared.
-        if (tradeEvent.action === 'Sell') this.clearParkedSells(tradeEvent);
+        if (tradeEvent.action === 'Sell') this.clearParkedSells(tradeEvent, hadRow);
         // One throwing listener must not skip the rest (the strategy notification) after the position is already booked.
         for (const l of this.fillListeners) {
             try { l(tradeEvent.user || 'Default', tradeEvent); } catch (e) { Log.log(`[order] ALERT: a fill listener threw for ${tradeEvent.tsym} order ${tradeEvent.brokerOrderId} (the other listeners still ran):`, e); }

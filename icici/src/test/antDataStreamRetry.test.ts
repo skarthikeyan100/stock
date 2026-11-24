@@ -9,7 +9,7 @@ import AntSession from '../ant/AntSession';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const marketHoursModule = require('../util/marketHours') as { isPastMarketClose: (now?: Date) => boolean };
 const originalIsPastMarketClose = marketHoursModule.isPastMarketClose;
-marketHoursModule.isPastMarketClose = () => false;
+marketHoursModule.isPastMarketClose = (_now?: Date) => false;
 import { nextReconnectDelayMs, isAuthError, RECONNECT_MAX_MS, RECONNECT_AUTH_MIN_MS, RECONNECT_AUTH_MAX_MS } from '../processes/data/connectRetry';
 
 function assert(c: boolean, m: string) {
