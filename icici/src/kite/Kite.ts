@@ -40,7 +40,7 @@ export function stopLimitPrice(stopTrigger: number): number {
 //    (response interceptor): the SDK has no rate-limit exception class and the rejected object carries no HTTP status. If Kite's reply body has
 //    `error_type` that body is the error; otherwise the error is {error_type:'NetworkException', message:<HTTP statusText>}, so a 429 arrives as a
 //    NetworkException with message 'Too Many Requests'. GeneralException ('Unknown error') and DataException ('Unknown content type') are the SDK's own
-//    fallbacks, not reply-derived. So it is recognised by the message /too many requests/i (or a numeric 429 in status/statusCode/response.status if
+//    fallbacks, not reply-derived. So it is recognised by error_type NetworkException with the message /too many requests/i only (or a numeric 429 in status/statusCode/response.status if
 //    present) and checked BEFORE the network class. It matches nothing else, so 'timed out' style messages stay may-be-live.
 const KITE_REFUSAL_TYPES = /^(InputException|TokenException|PermissionException|MarginException|OrderException)$/;
 const RATE_LIMIT_MESSAGE = /too many requests/i;
@@ -50,7 +50,7 @@ export function classifyKitePlacementError(e: any): any {
     const type = String(e?.error_type ?? '');
     if (KITE_REFUSAL_TYPES.test(type)) return markNotPlaced(e);
     const httpStatus = Number(e?.status ?? e?.statusCode ?? e?.response?.status);
-    if (httpStatus === 429 || RATE_LIMIT_MESSAGE.test(String(e?.message ?? ''))) return markNotPlaced(e);
+    if (httpStatus === 429 || (type === 'NetworkException' && RATE_LIMIT_MESSAGE.test(String(e?.message ?? '')))) return markNotPlaced(e);
     const networkClass = type === 'NetworkException' || NETWORK_ERROR_CODES.test(String(e?.code ?? '')) || /timeout|timed out/i.test(String(e?.message ?? ''));
     if (!networkClass && !type && (e instanceof TypeError || e instanceof RangeError) && !(e as any).request && !(e as any).response) return markNotPlaced(e);
     if (e && typeof e === 'object') { e.orderMayBeLive = true; return e; }

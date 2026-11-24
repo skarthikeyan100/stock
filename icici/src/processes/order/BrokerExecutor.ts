@@ -9,7 +9,9 @@ import type { BrokerName } from '../../util/brokerName';
 // placed a second full-quantity sell (90.50): two sells for one position. Every sell placement (limit or market) of a contract therefore runs
 // under this lock, so the second one starts only after the first is tracked and then sees it (the guard clamps or refuses it). Not re-entrant:
 // never call a locked sell from inside another one for the same key.
-const SELL_LOCK_MAX_WAIT_MS = Number(process.env.SELL_LOCK_MAX_WAIT_MS_TEST) > 0 ? Number(process.env.SELL_LOCK_MAX_WAIT_MS_TEST) : 60_000;
+let SELL_LOCK_MAX_WAIT_MS = 60_000;
+/** Test-only: shorten the bounded wait. Never called by production code. */
+export function setSellLockMaxWaitMsForTest(ms: number): void { SELL_LOCK_MAX_WAIT_MS = ms > 0 ? ms : 60_000; }
 const sellLocks = new Map<string, Promise<void>>();
 export async function withSellLock<T>(broker: string, userId: string, tradingSymbol: string, fn: () => Promise<T>): Promise<T> {
     const key = `${broker}|${userId}|${tradingSymbol}`;

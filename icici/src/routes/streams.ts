@@ -9,6 +9,7 @@ import OrderClient from '../processes/strategies/OrderClient';
 import StrategiesClient from '../ipc/StrategiesClient';
 import { DataLink } from '../ipc/DataLink';
 import { isLoopback } from '../middleware/cloudflareOnly';
+import { demoLeaseHeld } from './demoLease';
 import { asyncRouter } from './asyncRouter';
 import { resolveUser, requireAuth, requireAdmin, requireSelfOrAdmin } from './session';
 
@@ -90,7 +91,7 @@ const DEMO_STREAM_PER_IP = 3;
 const DEMO_STREAM_TOTAL = 200;
 const demoStreamOpen = new Map<string, number>();
 let demoStreamTotal = 0;
-let demoOptionStreamsOpen = 0; // open anonymous /demo/optionstream connections (streams are not per token: every option tick goes to every client)
+const demoOptionStreamsByIp = new Map<string, number>(); // open anonymous /demo/optionstream connections per client IP (streams are not per token: every option tick goes to every client)
 function demoStream(clients: Set<express.Response>, replay?: () => string | null, countsAsOptionStream = false) {
     return (req: express.Request, res: express.Response) => {
         const ip = clientIp(req);
@@ -100,12 +101,15 @@ function demoStream(clients: Set<express.Response>, replay?: () => string | null
         }
         demoStreamTotal++;
         demoStreamOpen.set(ip, (demoStreamOpen.get(ip) ?? 0) + 1);
-        if (countsAsOptionStream) demoOptionStreamsOpen++;
+        if (countsAsOptionStream) demoOptionStreamsByIp.set(ip, (demoOptionStreamsByIp.get(ip) ?? 0) + 1);
         let released = false;
         const release = () => {
             if (released) return;
             released = true;
-            if (countsAsOptionStream) demoOptionStreamsOpen--;
+            if (countsAsOptionStream) {
+                const o = (demoOptionStreamsByIp.get(ip) ?? 1) - 1;
+                if (o <= 0) demoOptionStreamsByIp.delete(ip); else demoOptionStreamsByIp.set(ip, o);
+            }
             demoStreamTotal--;
             const n = (demoStreamOpen.get(ip) ?? 1) - 1;
             if (n <= 0) demoStreamOpen.delete(ip); else demoStreamOpen.set(ip, n);
@@ -130,17 +134,19 @@ const demoSubscribed = new Map<string, number>(); // token -> demo subscriber co
 const DEMO_MAX_TOKENS = 20;
 const demoHits = new Map<string, { n: number; resetAt: number }>();
 // Lease: a visitor who closes the tab never sends the unsubscribe, which leaked a hold until restart (20 leaks = demo subscribe refused for everyone).
-// A token not re-subscribed for DEMO_LEASE_MS is released - unless a demo option stream is still connected: the stream is shared by all
-// tokens (not one per token), so while any is open every held token's lease is refreshed instead.
+// A token not re-subscribed for DEMO_LEASE_MS is released - unless a client IP that subscribed it still has a demo option stream connected
+// (the stream is shared by all tokens, so the IP is the only link between a stream and its tokens). Tokens of closed tabs still expire.
 const DEMO_LEASE_MS = 30 * 60_000;
 const demoLastSubscribeAt = new Map<string, number>();
+const demoTokenIps = new Map<string, Set<string>>(); // token -> client IPs that subscribed it
 setInterval(() => {
     const now = Date.now();
     const cutoff = now - DEMO_LEASE_MS;
     for (const [token, at] of Array.from(demoLastSubscribeAt)) {
-        if (demoOptionStreamsOpen > 0 && demoSubscribed.has(token)) { demoLastSubscribeAt.set(token, now); continue; }
+        if (demoSubscribed.has(token) && demoLeaseHeld(demoTokenIps.get(token), demoOptionStreamsByIp)) { demoLastSubscribeAt.set(token, now); continue; }
         if (at >= cutoff) continue;
         demoLastSubscribeAt.delete(token);
+        demoTokenIps.delete(token);
         if (!demoSubscribed.has(token)) continue;
         demoSubscribed.delete(token);
         strategiesClient.unsubscribeToken(token).catch((e) => Log.log('[frontend] demo lease release failed:', token, e));
@@ -184,10 +190,12 @@ router.get('/demo/subscribe', async function (req, res) {
             if (count === 1) {
                 demoSubscribed.delete(token);
                 demoLastSubscribeAt.delete(token);
+                const ips = demoTokenIps.get(token);
+                demoTokenIps.delete(token);
                 try {
                     await strategiesClient.unsubscribeToken(token);
                 } catch (e) {
-                    demoSubscribed.set(token, 1); demoLastSubscribeAt.set(token, Date.now()); // the hold is still in place: keep counting it so a retry can release it
+                    demoSubscribed.set(token, 1); demoLastSubscribeAt.set(token, Date.now()); if (ips) demoTokenIps.set(token, ips); // the hold is still in place: keep counting it so a retry can release it
                     throw e;
                 }
             } else {
@@ -199,6 +207,7 @@ router.get('/demo/subscribe', async function (req, res) {
             demoSubscribed.set(token, (demoSubscribed.get(token) ?? 0) + 1);
             counted = token;
             demoLastSubscribeAt.set(token, Date.now());
+            (demoTokenIps.get(token) ?? demoTokenIps.set(token, new Set()).get(token)!).add(ip);
             await strategiesClient.subscribeToken(token);
             counted = null;
         }
@@ -207,7 +216,7 @@ router.get('/demo/subscribe', async function (req, res) {
         // The subscribe did not happen: undo the count taken before the await, or a failure leaks the 20-token cap.
         if (counted) {
             const c = (demoSubscribed.get(counted) ?? 1) - 1;
-            if (c <= 0) demoSubscribed.delete(counted); else demoSubscribed.set(counted, c);
+            if (c <= 0) { demoSubscribed.delete(counted); demoTokenIps.delete(counted); } else demoSubscribed.set(counted, c);
         }
         Log.log(e);
         res.status(500).json({ error: 'Subscription failed' });

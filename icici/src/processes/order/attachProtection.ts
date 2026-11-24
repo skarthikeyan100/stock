@@ -92,8 +92,10 @@ export async function cancelProtection(
             await Mongo.getInstance()?.db.collection('Trade').updateMany({ tsym: trade.tsym, user: trade.user, action: 'Buy', gttTriggerId: { $in: deleted } }, { $unset: { gttTriggerId: '' } });
         } catch (e) { Log.log(`[order] cancelProtection: could not clear the stored GTT id of ${tradingSymbol} (${userId}):`, e); }
     }
-    if (deleteError) throw deleteError; // a GTT may still be live: the caller must know (its id was kept)
+    // Drop the in-app watch and refresh the target/SL view BEFORE surfacing a delete failure: the caller is told to stop, and a monitor left
+    // registered with the old exits would race its own exit. A GTT whose delete failed is still live at Kite and keeps its persisted id.
     if (trade.token && (broker === 'kite' || broker === 'ant')) exitMonitor.unregisterTrade(userId, trade.token, broker);
     bookkeeping.notifyTargetStopLossChanged();
+    if (deleteError) throw deleteError; // a GTT may still be live: the caller must know (its id was kept)
     return { gttDeleted };
 }

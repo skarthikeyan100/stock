@@ -23,7 +23,8 @@ assert.ok(live(classifyKitePlacementError({ error_type: 'DataException', message
 assert.ok(live(classifyKitePlacementError(new Error('something odd'))), 'untyped error -> may be live');
 assert.ok(live(classifyKitePlacementError('a string')), 'non-object rejection -> may be live');
 assert.ok(refused(classifyKitePlacementError({ error_type: 'NetworkException', message: 'Too Many Requests' })), 'SDK-wrapped 429 -> not placed');
-assert.ok(refused(classifyKitePlacementError({ error_type: 'GeneralException', message: 'Too many requests' })), 'body error_type with rate-limit message -> not placed');
+assert.ok(live(classifyKitePlacementError({ error_type: 'GeneralException', message: 'Too many requests' })), 'rate-limit text on a non-NetworkException stays may-be-live');
+assert.ok(live(classifyKitePlacementError(new Error('Too many requests'))), 'untyped error with rate-limit text stays may-be-live');
 assert.ok(refused(classifyKitePlacementError({ error_type: 'NetworkException', message: 'x', response: { status: 429 } })), 'numeric 429 in response.status -> not placed');
 assert.ok(refused(classifyKitePlacementError(Object.assign(new Error('x'), { status: 429 }))), 'numeric 429 in status -> not placed');
 assert.ok(live(classifyKitePlacementError({ error_type: 'NetworkException', message: 'No response from server with error code: ECONNRESET' })), 'plain ECONNRESET NetworkException -> may be live');

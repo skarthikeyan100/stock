@@ -1,15 +1,16 @@
 /**
  * Review fixes: unusable Sell price is not booked; cancelProtection releases extra GTTs and only unsets deleted ids; cancelAndRecheck second
  * read is best-effort; withSellLock chains later sells on the timed-out sell.
- * Run: SELL_LOCK_MAX_WAIT_MS_TEST=300 node ./dist/test/reviewFixesBookkeepingGtt.test.js
+ * Run: node ./dist/test/reviewFixesBookkeepingGtt.test.js
  */
-process.env.SELL_LOCK_MAX_WAIT_MS_TEST = '300';
 import { Trade } from '../model/model';
 import bookkeeping from '../processes/order/bookkeeping';
 import Kite from '../kite/Kite';
 import Mongo from '../tools/mongo';
 import { cancelProtection } from '../processes/order/attachProtection';
-import { cancelAndRecheck, withSellLock, OrderAlreadyFilledError } from '../processes/order/BrokerExecutor';
+import { cancelAndRecheck, withSellLock, OrderAlreadyFilledError, setSellLockMaxWaitMsForTest } from '../processes/order/BrokerExecutor';
+
+setSellLockMaxWaitMsForTest(300);
 
 function assert(c: boolean, m: string) { console.log(`  ${c ? 'PASS' : 'FAIL'}: ${m}`); if (!c) process.exitCode = 1; }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
