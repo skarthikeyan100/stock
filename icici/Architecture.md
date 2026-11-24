@@ -6,6 +6,10 @@ Kept out of `CLAUDE.md` on purpose (that file is loaded on every prompt). Read t
 
 `npm run processes` runs `tsc -w` and `dist/orchestrator.js` side by side (`package.json`). The orchestrator spawns four sibling processes, wires their stdio, and restarts **only the child whose compiled output changed**. The orchestrator itself is never restarted by `tsc -w`, so a save never tears down every child at once. That is the point of the split. Logs go to `logs/orchestrator-YYYY-MM-DD.log` (per day, append-only across restarts; `orchestrator.log` is a symlink to today's file) via `scripts/orchestrator-log.sh`.
 
+## Crash respawner give-up policy
+
+(`src/orchestratorPolicy.ts`, decided by the user 2026-11-24.) The orchestrator respawns a crashed child, but gives up on it after repeated quick crashes or failed spawns: **10** for the other roles (`data`, `frontend`), **2** for `trading`. `trading` is deliberately strict so it does not retry continuously while it keeps being rejected or crashing. This means two early failures in a row (for example Mongo or a broker unreachable at startup) leave `trading` down for the day: no strategies or orders run until a code change (which resets the counters) or an orchestrator restart. An ALERT line is logged to the orchestrator log when it gives up. Raise `MAX_QUICK_CRASHES_TRADING` if a longer retry window is wanted.
+
 ## Broker naming
 
 Exactly four real brokers are supported, plus the internal `paper` broker (2026-11-17: in-memory fills for strategies only, nothing in Mongo, no login; `src/processes/order/paperExecutor.ts`, see `strategies.md`). Use only the canonical name in code, config, Mongo, API, UI and docs.
