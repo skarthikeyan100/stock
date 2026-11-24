@@ -93,3 +93,7 @@ Last reviewed commit: `59d6def`; fixes are in `a36a96f`. Seventh review covers `
 ## Seventh review - 2026-11-24
 `/code-review medium 59d6def..a36a96f`: 5 findings, all FIXED. Rule now: a parked Sell is cleared only when this process verifiably booked it into memory (bookedFillIds); the already-stored-in-Mongo path leaves it parked; hadRow needs qty>0; alert wording; demo comment. tsc clean, 126/126.
 Last reviewed commit: `a36a96f`; fixes are in `0bf7fe8`. Eighth review covers `a36a96f..0bf7fe8`.
+
+## Eighth review - 2026-11-24
+`/code-review medium a36a96f..0bf7fe8`: 4 findings, all FIXED (central markSellBooked used by recordFill, foreign-sell sync, EOD sync and restore netting; stale ALERT text corrected; redelivery count seen-1; bookedFillIds is Sell-only, unpruned like processedFillIds). Still parked by design: a user fully closed in Mongo with no restored row. tsc clean, 126/126.
+Last reviewed commit: `0bf7fe8`; fixes are in `58d9816`. Ninth review covers `0bf7fe8..58d9816`.
