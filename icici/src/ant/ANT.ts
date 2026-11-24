@@ -1,4 +1,4 @@
-import { markNotPlaced } from '../util/notPlaced';
+import { markNotPlaced, isNotPlaced } from '../util/notPlaced';
 import { createHash } from 'crypto';
 import Log from '../util/Log';
 import fs from 'fs';
@@ -303,7 +303,8 @@ class ANT {
 
 
 
-    async getTrades(): Promise<any[]> {
+    // strict=true: a non-Ok envelope throws instead of returning [] (only the EC926 "No trades found" reply is a definitive empty book).
+    async getTrades(opts?: { strict?: boolean }): Promise<any[]> {
         try {
             if (!this.userSession) {
                 throw new Error('No active session. Please login first.');
@@ -318,6 +319,9 @@ class ANT {
             Log.log('ANT Trades response:', tradesResp.data?.status);
             if (tradesResp.data?.status === 'Ok' && tradesResp.data?.result) {
                 return tradesResp.data.result;
+            }
+            if (opts?.strict && !(tradesResp.data?.status === 'EC926' && /No (positions|trades) found/i.test(String(tradesResp.data?.message ?? '')))) {
+                throw new Error(`ANT trades not Ok: ${JSON.stringify(tradesResp.data).slice(0, 200)}`);
             }
             return [];
         } catch (e: any) {
@@ -673,20 +677,24 @@ class ANT {
                 { headers }
             ));
         } catch (e: any) {
+            if (isNotPlaced(e)) throw e; // the queue refused it (waited too long): nothing was sent - keep the definite-refusal flag
             if (!e?.response) {
+                // orderMayBeLive makes the order process tag the failure [ORDER_MAY_BE_LIVE], so a strategy never frees the slot and re-buys.
                 throw Object.assign(
                     new Error(`ANT ${label} outcome UNKNOWN (no response: ${e?.message ?? e}) - the order may have been placed; verify before retrying`),
-                    { ambiguousPlacement: true }
+                    { ambiguousPlacement: true, orderMayBeLive: true }
                 );
             }
-            throw e;
+            const status = Number(e.response.status);
+            if (status >= 400 && status < 500) throw markNotPlaced(e); // the broker answered with a rejection: nothing was placed
+            throw Object.assign(e, { ambiguousPlacement: true, orderMayBeLive: true }); // a 5xx may still have reached the matching engine
         }
         Log.log(`[ANT] ${label} response:`, JSON.stringify(resp.data));
         // Confirmed live: the field is brokerOrderId, not orderNo (AliceBlue's
         // own doc pages disagreed here too).
         const orderNo = resp.data?.result?.[0]?.brokerOrderId;
         if (!orderNo) {
-            throw new Error(`ANT ${label} failed: ${JSON.stringify(resp.data)}`);
+            throw markNotPlaced(new Error(`ANT ${label} failed: ${JSON.stringify(resp.data)}`)); // the broker replied without an order id: nothing was placed
         }
         this.placedOrderIds.add(String(orderNo));
         return { orderNo };

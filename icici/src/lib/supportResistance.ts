@@ -113,9 +113,12 @@ export function processTick(state: SRState, tick: SRTick, config: SRConfig): { s
     let buffer = last && Math.abs(tick.ltp - last.ltp) > config.maxJump ? [tick] : [...state.buffer, tick];
 
     const cutoff = tick.ltt - config.confirmWindowMs;
+    // The span is proven by ANY tick at or before the cutoff (the old filter-then-compare only held when a tick landed exactly on it).
+    // Keep the newest such tick as the anchor; the range is judged on the ticks inside the window.
+    const spanReached = buffer.length > 0 && buffer[0].ltt <= cutoff;
+    const older = buffer.filter(t => t.ltt < cutoff);
+    const anchor = older.length > 0 ? [older[older.length - 1]] : [];
     buffer = buffer.filter(t => t.ltt >= cutoff);
-
-    const spanReached = buffer.length > 0 && tick.ltt - buffer[0].ltt >= config.confirmWindowMs;
     if (spanReached) {
         const prices = buffer.map(t => t.ltp);
         const min = Math.min(...prices);
@@ -130,7 +133,7 @@ export function processTick(state: SRState, tick: SRTick, config: SRConfig): { s
         }
     }
 
-    return { state: { phase: 'SEEKING', buffer, support: null, resistance: null, lockedAt: null, pendingBreach: null }, event: { type: 'NONE' } };
+    return { state: { phase: 'SEEKING', buffer: [...anchor, ...buffer], support: null, resistance: null, lockedAt: null, pendingBreach: null }, event: { type: 'NONE' } };
 }
 
 function seedSeeking(tick: SRTick): SRState {

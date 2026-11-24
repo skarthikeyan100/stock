@@ -126,6 +126,21 @@ router.get('/demo/health', (_req, res) => { res.json({ ok: true }); });
 const demoSubscribed = new Map<string, number>(); // token -> demo subscriber count
 const DEMO_MAX_TOKENS = 20;
 const demoHits = new Map<string, { n: number; resetAt: number }>();
+// Lease: a visitor who closes the tab never sends the unsubscribe, which leaked a hold until restart (20 leaks = demo subscribe refused for everyone).
+// A token not re-subscribed for DEMO_LEASE_MS is released.
+const DEMO_LEASE_MS = 30 * 60_000;
+const demoLastSubscribeAt = new Map<string, number>();
+setInterval(() => {
+    const cutoff = Date.now() - DEMO_LEASE_MS;
+    for (const [token, at] of Array.from(demoLastSubscribeAt)) {
+        if (at >= cutoff) continue;
+        demoLastSubscribeAt.delete(token);
+        if (!demoSubscribed.has(token)) continue;
+        demoSubscribed.delete(token);
+        strategiesClient.unsubscribeToken(token).catch((e) => Log.log('[frontend] demo lease release failed:', token, e));
+        Log.log(`[frontend] demo hold on token ${token} expired (no subscribe for ${DEMO_LEASE_MS / 60000} min) - released`);
+    }
+}, 5 * 60_000).unref();
 // Only tokens this server itself handed out (via /demo/resolve or /demo/symbols) may be subscribed: an anonymous caller can no longer
 // pick an arbitrary numeric token. Bounded so a long-running server cannot grow it without limit.
 const demoAllowedTokens = new Set<string>();
@@ -176,6 +191,7 @@ router.get('/demo/subscribe', async function (req, res) {
             if (!demoSubscribed.has(token) && demoSubscribed.size >= DEMO_MAX_TOKENS) { res.status(429).json({ error: 'Demo subscription limit reached' }); return; }
             demoSubscribed.set(token, (demoSubscribed.get(token) ?? 0) + 1);
             counted = token;
+            demoLastSubscribeAt.set(token, Date.now());
             await strategiesClient.subscribeToken(token);
             counted = null;
         }
@@ -254,15 +270,28 @@ router.get('/positionstream', requireAuth, async function (req, res) {
 });
 
 // One stats() round trip per change, fanned out to every connected client (was one per client).
+// Sequenced: a burst of fills used to start concurrent stats() calls whose replies could be applied out of order (an older snapshot
+// last). At most one runs at a time; changes that arrive meanwhile coalesce into ONE more run, which reads the newest state.
+let positionsFanOutRunning = false;
+let positionsFanOutAgain = false;
 orderClient.onPositionsChanged(async () => {
     if (positionStreamClients.size === 0) return;
+    if (positionsFanOutRunning) { positionsFanOutAgain = true; return; }
+    positionsFanOutRunning = true;
     try {
-        const stats = await orderClient.stats();
-        for (const [res, user] of positionStreamClients) {
-            pushPositionSnapshot(res, user, stats);
-        }
-    } catch (e) {
-        Log.log('[frontend] positions fan-out failed:', e);
+        do {
+            positionsFanOutAgain = false;
+            try {
+                const stats = await orderClient.stats();
+                for (const [res, user] of positionStreamClients) {
+                    pushPositionSnapshot(res, user, stats);
+                }
+            } catch (e) {
+                Log.log('[frontend] positions fan-out failed:', e);
+            }
+        } while (positionsFanOutAgain && positionStreamClients.size > 0);
+    } finally {
+        positionsFanOutRunning = false;
     }
 });
 

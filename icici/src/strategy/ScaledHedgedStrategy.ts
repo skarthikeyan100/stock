@@ -38,6 +38,10 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //   G. A same-direction re-buy (after a target fill) is skipped when that contract already has an open leg.
 //   E. (also in SimpleContinuousStrategy) When the FIRST order (root) closes at a profit with no hedge ever bought, it does not buy the same
 //      direction again: the contract selection (PCR direction, premium floor, ATM pick) runs again for a new root and a new CE/PE pair.
+// NOTE (review 2026-11-24): the numbered list below is the ORIGINAL description. Where it contradicts rules A-G above or the code, A-G and
+// the code win: the root is `initialQuantity` (item 1's onePositionPerSide sizing is gone), item 5's double-up add no longer happens (a hedge's
+// profitable sell does not add to the parent), maxInvestment gates EVERY buy (item 6), and `onePositionPerSide` is ignored (item 7's first mode:
+// one open leg per right is always enforced).
 // ScaledHedgedStrategy (config keys: initialQuantity, maxInvestment, priceDiff, plus enabled/brokers):
 //   1. PCR gives the direction of the ROOT entry (PCR > 1 -> PE, else CE), `initialQuantity` at market. There is ONE root per day;
 //      every later order is a hedge or a double-up. With `onePositionPerSide: true` `initialQuantity` is IGNORED: the root buys as many whole
@@ -422,14 +426,18 @@ export default class ScaledHedgedStrategy extends Strategy {
 
     // ---- entry ----
 
+    private pcrRetryAt = 0;
+
     private async direction(quote: NiftyQuote): Promise<Right | null> {
         const now = this.toMillis(quote.ltt) ?? Date.now();
         if (!this.lastPcr || now - this.lastPcr.at >= PCR_RECHECK_MS) {
+            if (now < this.pcrRetryAt) return null; // a failed fetch is retried at most every 30 s, not on every tick (two REST calls each)
             try {
                 const value = await OrderClient.getInstance().getPCR(this.userId, 'NIFTY', quote.ltp, PCR_WINDOW_POINTS);
-                if (value == null) return null;
+                if (value == null || !Number.isFinite(value)) { this.pcrRetryAt = now + 30_000; return null; } // a NaN PCR must not silently pick CE
                 this.lastPcr = { value, at: now };
             } catch (e) {
+                this.pcrRetryAt = now + 30_000;
                 Log.log('[ScaledHedgedStrategy] PCR check failed, blocking entry (fail-closed):', e);
                 this.lastPcr = null;
                 return null;
@@ -853,7 +861,7 @@ export default class ScaledHedgedStrategy extends Strategy {
                 trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, hedgeQty, contract.exchange, contract.premium, this.broker());
             } catch (e) {
                 if (this.noteBuyError(e, `hedge buy ${contract.tradingSymbol}`, false)) {
-                    leg.hedged = false; // nothing was placed: the next tick may try again
+                    leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // nothing was placed: retried from the open leg's ticks, or (closed leg) the Nifty-tick retry
                     Log.log('[ScaledHedgedStrategy] hedge buy failed (not placed, will retry):', e);
                     this.save();
                     return;
@@ -862,7 +870,7 @@ export default class ScaledHedgedStrategy extends Strategy {
                 Log.log(`[ScaledHedgedStrategy] hedge buy of ${contract.tradingSymbol} unconfirmed (${(e as any)?.message ?? e}) - checking the broker`);
                 const res = await this.resolveUnconfirmedBuy(contract);
                 if (res.kind === 'none') {
-                    leg.hedged = false; // cancelled with 0 filled: the hedge is retried
+                    leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // cancelled with 0 filled: the hedge is retried (a closed leg only by the Nifty-tick retry)
                     Log.log(`[ScaledHedgedStrategy] hedge buy of ${contract.tradingSymbol} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
                     this.save();
                     return;
@@ -888,7 +896,7 @@ export default class ScaledHedgedStrategy extends Strategy {
             await this.placeSell(hedgeLeg);
         } catch (e) {
             // pickContract failed before any order: allow a retry.
-            leg.hedged = false;
+            leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // a closed leg gets no option ticks: the Nifty-tick retry picks this up
             this.save();
             Log.log('[ScaledHedgedStrategy] hedge contract lookup failed, will retry:', e);
         } finally {

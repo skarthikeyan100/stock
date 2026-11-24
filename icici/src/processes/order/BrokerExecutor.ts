@@ -1,5 +1,6 @@
 import { Trade } from '../../model/model';
 import Log from '../../util/Log';
+import { sleep } from '../../util/sleep';
 import type { BrokerName } from '../../util/brokerName';
 
 // ONE SELL AT A TIME per (broker, user, contract). A sell is invisible to every "is a sell already resting?" check (the pending tracker, the
@@ -8,6 +9,7 @@ import type { BrokerName } from '../../util/brokerName';
 // placed a second full-quantity sell (90.50): two sells for one position. Every sell placement (limit or market) of a contract therefore runs
 // under this lock, so the second one starts only after the first is tracked and then sees it (the guard clamps or refuses it). Not re-entrant:
 // never call a locked sell from inside another one for the same key.
+const SELL_LOCK_MAX_WAIT_MS = 60_000;
 const sellLocks = new Map<string, Promise<void>>();
 export async function withSellLock<T>(broker: string, userId: string, tradingSymbol: string, fn: () => Promise<T>): Promise<T> {
     const key = `${broker}|${userId}|${tradingSymbol}`;
@@ -16,7 +18,12 @@ export async function withSellLock<T>(broker: string, userId: string, tradingSym
     const mine = new Promise<void>((r) => { release = r; });
     const tail = prev.then(() => mine);
     sellLocks.set(key, tail);
-    await prev;
+    // Bounded wait: one sell whose broker call hangs must not queue every later sell of this contract (a stop-loss, the 15:15 force close)
+    // behind it forever. After the bound this one proceeds anyway (the never-short guard still protects against an over-sell).
+    let waitTimer: NodeJS.Timeout | undefined;
+    const timedOut = await Promise.race([prev.then(() => false), new Promise<boolean>((r) => { waitTimer = setTimeout(() => r(true), SELL_LOCK_MAX_WAIT_MS); })]);
+    if (waitTimer) clearTimeout(waitTimer);
+    if (timedOut) Log.log(`[order] ALERT: sell lock for ${key} still held after ${SELL_LOCK_MAX_WAIT_MS / 1000}s - proceeding without it`);
     try {
         return await fn();
     } finally {
@@ -277,6 +284,20 @@ async function cancelAndRecheck(params: {
         throw new OrderAlreadyFilledError(params.orderId, filledQuantity);
     }
     if (cancelFailed) throw cancelError;
+    // A partial fill that happened while the cancel was being processed may not be visible in the first read after it: look once more
+    // before untracking, or the tracker (which would book the partial from the CANCELLED status) never sees it.
+    await sleep(1500);
+    try {
+        const second = await params.isFilled();
+        if (second.filledQuantity > 0) {
+            Log.log(`[order] ${params.label}: ${params.orderId} showed a fill (qty=${second.filledQuantity}) on the second post-cancel read - leaving tracked so the next poll records it`);
+            throw new OrderAlreadyFilledError(params.orderId, second.filledQuantity);
+        }
+    } catch (e) {
+        if (e instanceof OrderAlreadyFilledError) throw e;
+        Log.log(`[order] ${params.label}: second post-cancel read of ${params.orderId} failed - leaving tracked:`, e);
+        throw e;
+    }
     params.untrack();
 }
 

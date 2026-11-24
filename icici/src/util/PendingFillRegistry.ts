@@ -12,7 +12,8 @@ interface Outcome<T> {
 // price sanity checks) stays in its own file; only the generic "settle or buffer, then let a
 // late waiter pick up a buffered result" mechanics live here.
 export default class PendingFillRegistry<T> {
-    private pending = new Map<string, { resolve: (value: T) => void; reject: (err: Error) => void; timer: NodeJS.Timeout }>();
+    // Several waiters can share one key (a re-check overlapping a square-off wait): a settle reaches all of them, and a timeout removes only its own.
+    private pending = new Map<string, { resolve: (value: T) => void; reject: (err: Error) => void; timer: NodeJS.Timeout }[]>();
     private buffered: TtlBuffer<Outcome<T>>;
 
     constructor(bufferTtlMs: number) {
@@ -23,11 +24,13 @@ export default class PendingFillRegistry<T> {
     // waiter; otherwise buffers the outcome so a `wait()` registered moments later (the REST call
     // that hands the caller this key may not have returned yet) still sees it instead of timing out.
     settle(key: string, outcome: Outcome<T>): void {
-        const pending = this.pending.get(key);
-        if (pending) {
-            clearTimeout(pending.timer);
+        const waiters = this.pending.get(key);
+        if (waiters && waiters.length > 0) {
             this.pending.delete(key);
-            if (outcome.error) pending.reject(outcome.error); else pending.resolve(outcome.value!);
+            for (const w of waiters) {
+                clearTimeout(w.timer);
+                if (outcome.error) w.reject(outcome.error); else w.resolve(outcome.value!);
+            }
             return;
         }
         this.buffered.set(key, outcome);
@@ -40,11 +43,13 @@ export default class PendingFillRegistry<T> {
             return buffered.error ? Promise.reject(buffered.error) : Promise.resolve(buffered.value!);
         }
         return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.pending.delete(key);
+            const entry = { resolve, reject, timer: undefined as unknown as NodeJS.Timeout };
+            entry.timer = setTimeout(() => {
+                const list = (this.pending.get(key) ?? []).filter((w) => w !== entry);
+                if (list.length > 0) this.pending.set(key, list); else this.pending.delete(key);
                 reject(onTimeout());
             }, timeoutMs);
-            this.pending.set(key, { resolve, reject, timer });
+            this.pending.set(key, [...(this.pending.get(key) ?? []), entry]);
         });
     }
 }

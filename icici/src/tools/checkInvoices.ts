@@ -3,6 +3,7 @@
  * past the deadline. The frontend process also runs it hourly; this is the on-demand run.   npm run check-invoices
  */
 import 'dotenv/config';
+import '../util/tz'; // pin IST: week buckets, invoice reminders and EOD dates use local time
 import Mongo from './mongo';
 import { runInvoiceCheck } from '../invoiceRule';
 

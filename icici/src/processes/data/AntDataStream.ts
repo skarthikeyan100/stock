@@ -21,6 +21,7 @@ class AntDataStream implements DataStream {
     private connected = false;
     private reconnectTimer: NodeJS.Timeout | null = null;
     private reconnectDelayMs = RECONNECT_INITIAL_MS;
+    private connectedAt = 0;
     private connectFailures = 0;
     private manualDisconnect = false;
     private connecting: Promise<void> | null = null;
@@ -38,6 +39,7 @@ class AntDataStream implements DataStream {
     private lastFutTickAt = 0;
     private lastFutHeartbeatAt = 0;
     private lastFutAlertAt = 0;
+    private lastFutSilenceAlertAt = 0; // separate from lastFutAlertAt: a stream of 'ap is zero' issue alerts must not suppress the silence alert
     private lastFutMissingAlertAt = 0;
     private readonly FUT_HEARTBEAT_MS = 60_000;
     private readonly FUT_ALERT_REPEAT_MS = 5 * 60_000;
@@ -147,7 +149,7 @@ class AntDataStream implements DataStream {
         if (this.ws !== ws) return; // disconnect() raced the connect
 
         this.connected = true;
-        this.reconnectDelayMs = RECONNECT_INITIAL_MS; // reset backoff on a successful connect
+        this.connectedAt = Date.now(); // the backoff resets only once the socket has stayed up (see scheduleReconnect), so connect-then-drop flapping backs off
         this.connectFailures = 0;
         Log.log('[AntDataStream] Connected and streaming');
     }
@@ -184,8 +186,12 @@ class AntDataStream implements DataStream {
     // via reconnect() below.
     private scheduleReconnect(): void {
         if (this.reconnectTimer) return;
-        Log.log(`[AntDataStream] Reconnecting in ${this.reconnectDelayMs}ms...`);
-        this.armReconnectTimer(this.reconnectDelayMs);
+        if (this.connectedAt && Date.now() - this.connectedAt >= 60_000) this.reconnectDelayMs = RECONNECT_INITIAL_MS; // it was stable: start the backoff over
+        this.connectedAt = 0;
+        const delay = this.reconnectDelayMs;
+        this.reconnectDelayMs = nextReconnectDelayMs(delay, undefined);
+        Log.log(`[AntDataStream] Reconnecting in ${delay}ms...`);
+        this.armReconnectTimer(delay);
     }
 
     private armReconnectTimer(delayMs: number): void {
@@ -294,8 +300,8 @@ class AntDataStream implements DataStream {
     private checkFutSilence(): void {
         if (!this.futToken || this.firstFutTickAt === 0) return;
         const now = Date.now();
-        if (now - this.lastFutTickAt >= 60_000 && now - this.lastFutAlertAt >= this.FUT_ALERT_REPEAT_MS) {
-            this.lastFutAlertAt = now;
+        if (now - this.lastFutTickAt >= 60_000 && now - this.lastFutSilenceAlertAt >= this.FUT_ALERT_REPEAT_MS) {
+            this.lastFutSilenceAlertAt = now;
             Log.log(`[VWAP-FEED] ALERT: no ${this.futSymbol} tick for ${Math.round((now - this.lastFutTickAt) / 1000)}s while NIFTY ticks keep arriving`);
         }
     }

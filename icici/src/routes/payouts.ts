@@ -1,11 +1,11 @@
-import { getUser } from '../user';
+import { getUser, reopenInvoiceClosedAccount } from '../user';
 import { computePayout, createPayoutRecord, markPayoutDecision, markPayoutPaidWithProof, setPayoutEmailStatus, claimPayoutEmailSend, getPayout, generateInvoiceHtml, getPayoutDecisionLog, periodFromInputs, displayPeriodEnd } from '../payout';
 import { GridFSBucket, ObjectId } from 'mongodb';
 import { sendPayoutPaidEmail } from '../mailer';
 import Mongo from '../tools/mongo';
 import { startOfWeek } from '../util/weekWindow';
 import { asyncRouter } from './asyncRouter';
-import { resolveUser, requestIsLoopback, requireAdmin, requireSelfOrAdmin } from './session';
+import { resolveUser, requestIsLoopback, requireAdmin, requireSelfOrAdmin, pushUserToOrderProcess } from './session';
 import { upload, detectDocumentType } from './users';
 
 const router = asyncRouter();
@@ -299,7 +299,19 @@ router.post('/admin/payouts/:id/invoice-received', requireAdmin, async function 
             { returnDocument: 'after' }
         );
         if (!r?.value) { res.status(404).json({ error: 'No payout of that id is waiting for an invoice' }); return; }
-        res.json(r.value);
+        // "Reopened when the invoice arrives" (levelTable / invoiceRule): reopen only if this payout is what closed the account and no other overdue invoice remains.
+        let accountReopened = false;
+        try {
+            if (r.value.invoiceClosedAt) {
+                const stillOverdue = await Mongo.getInstance().db.collection('payouts').countDocuments({ user: r.value.user, invoiceStatus: 'pending', invoiceClosedAt: { $exists: true } });
+                if (stillOverdue === 0 && await reopenInvoiceClosedAccount(r.value.user)) {
+                    accountReopened = true;
+                    const reopened = await getUser(r.value.user);
+                    if (reopened) await pushUserToOrderProcess(reopened, 'invoice-received');
+                }
+            }
+        } catch (e) { console.error('Reopening the account after the invoice failed:', e); }
+        res.json({ ...r.value, accountReopened });
     } catch (e: any) {
         res.status(400).json({ error: e?.message ?? 'Failed to mark the invoice received' });
     }

@@ -145,14 +145,14 @@ async function onOrderCancelled(userId: string, notification: OrderCancelledNoti
 // Concurrent requests share the run that is in flight; once it finishes a later request runs again.
 let reconcileInFlight: Promise<void> | null = null;
 
-function runReconcile(): Promise<void> {
+function runReconcile(onlyUnloaded = false): Promise<void> {
     if (!reconcileInFlight) {
-        reconcileInFlight = reconcileStrategies().finally(() => { reconcileInFlight = null; });
+        reconcileInFlight = reconcileStrategies(onlyUnloaded).finally(() => { reconcileInFlight = null; });
     }
     return reconcileInFlight;
 }
 
-async function reconcileStrategies(): Promise<void> {
+async function reconcileStrategies(onlyUnloaded = false): Promise<void> {
     // Only a handful of strategies implement reconcile() today (ContinuousStrategy,
     // BulkPcrStrategy, SupportResistanceStrategy, HourlyStrategy) - optional-chained
     // since other strategies don't need it, and each call
@@ -160,6 +160,7 @@ async function reconcileStrategies(): Promise<void> {
     // block the others (reconcile() itself already fails closed internally -
     // see ContinuousStrategy.reconcile).
     for (const strategy of strategies.getList()) {
+        if (onlyUnloaded && strategy.stateLoaded) continue; // a retry pass touches only the strategies whose reconcile failed
         // Runs for disabled strategies too: reconcile restores state. A strategy that would place an order while reconciling (BulkPcr's
         // exit re-placement and lockout close) checks `enabled` itself.
         try {
@@ -188,6 +189,11 @@ async function startupReconcile(): Promise<void> {
             const restored = await OrderClient.getInstance().restoreFromMongo();
             if (!restored.ok) throw new Error(restored.error ?? 'the restore from Mongo did not complete');
             await runReconcile();
+            // A strategy whose reconcile() threw stays unloaded (no ticks, fills or cancellations): retry just those, bounded.
+            for (let retry = 1; retry <= 10 && strategies.getList().some((s) => !s.stateLoaded); retry++) {
+                await new Promise((r) => setTimeout(r, STARTUP_RECONCILE_IPC_RETRY_MS * retry));
+                await runReconcile(true);
+            }
             const pending = strategies.getList().filter((s) => !s.stateLoaded);
             if (pending.length > 0) Log.log(`[strategies] ALERT: startup restore left ${pending.map((s) => s.userId).join(', ')} unloaded - they receive nothing until POST /reconcile succeeds`);
             else Log.log('[strategies] Startup restore complete (from Mongo, no broker read) - ticks and fills are now delivered');

@@ -34,7 +34,16 @@ export async function onEntryFill(userId: string, trade: Trade): Promise<void> {
         const row = (await c.findOne({ userId, orderId: String(trade.brokerOrderId) })) as EntryExit | null;
         if (!row) return;
         if ((await c.deleteOne({ userId, orderId: row.orderId })).deletedCount !== 1) return; // another event claimed it
-        const r = await attachProtection(userId, row.broker, row.tsym, row.targetPrice, row.stopLossPrice);
+        // The row is already claimed, so a transient failure (Mongo/GTT call) would lose the exits for good: retry a few times first.
+        let r: Awaited<ReturnType<typeof attachProtection>> | undefined;
+        for (let attempt = 1; !r; attempt++) {
+            try { r = await attachProtection(userId, row.broker, row.tsym, row.targetPrice, row.stopLossPrice); }
+            catch (err) {
+                if (attempt >= 3) throw err;
+                Log.log(`[order] resting entry ${row.tsym} (${userId}): attaching target/stop failed (attempt ${attempt}/3), retrying in 5s:`, (err as any)?.message ?? err);
+                await new Promise((res) => setTimeout(res, 5000));
+            }
+        }
         Log.log(`[order] resting entry ${row.tsym} (${userId}) filled at ${trade.price}: target ${row.targetPrice} / stop ${row.stopLossPrice} attached (${r.mode})`);
     } catch (e) {
         Log.log(`[order] ALERT: resting entry ${trade.tsym} (${userId}) filled at ${trade.price} but its target/stop could NOT be attached - the position has no exit:`, e);

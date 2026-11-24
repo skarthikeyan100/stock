@@ -12,7 +12,8 @@ const usable = (n: unknown): number | undefined => (typeof n === 'number' && Num
 export function gateBuy(a: { role?: string; level: unknown; contract?: string; targetPoints?: number; stopLossPoints?: number; globalTarget?: number; globalStopLoss?: number }): BuyGateResult {
     if (a.role === 'admin') return { allowed: true, targetPoints: a.targetPoints, stopLossPoints: a.stopLossPoints };
     // Advanced: own target/stop, but a stop of 0 would mean no protection AND no per-trade cap (quantity is sized from the stop), so it falls back to the global stop.
-    if (normalizeLevel(a.level) === 'advanced') return { allowed: true, targetPoints: a.targetPoints, stopLossPoints: a.stopLossPoints === 0 ? usable(a.globalStopLoss) : a.stopLossPoints };
+    // A target of 0 is treated the same way: the executors arm exits only when BOTH target and stop are positive, so a 0 target silently dropped the stop too.
+    if (normalizeLevel(a.level) === 'advanced') return { allowed: true, targetPoints: a.targetPoints === 0 ? usable(a.globalTarget) : a.targetPoints, stopLossPoints: a.stopLossPoints === 0 ? usable(a.globalStopLoss) : a.stopLossPoints };
     if (a.contract) return { allowed: false, error: 'Search & Buy is available at the Advanced level' };
     return { allowed: true, targetPoints: usable(a.globalTarget), stopLossPoints: usable(a.globalStopLoss) };
 }

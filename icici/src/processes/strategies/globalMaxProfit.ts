@@ -96,7 +96,8 @@ export async function checkOne(userId: string, broker: string, cap: number, stat
                 placed.delete(key);
                 if (res.filledQty > 0) continue; // part or all sold while cancelling: the next cycle sizes what is really left from fresh stats
             } else {
-                // A sell from before a restart of this monitor may still rest (its price is unknown): leave it, it is re-priced only by us.
+                // A sell from before a restart of this monitor may still rest (its price is unknown): it is ADOPTED with price 0, which counts as stale, so after
+                // REPRICE_AFTER_MS the next cycle cancels every resting sell of the contract (a strategy's own target/stop sell included) and re-places the lock price.
                 const pending = await OrderClient.getInstance().getPendingSells(userId, broker, t.tsym);
                 if (pending.reduce((s, p) => s + num(p.quantity), 0) >= num(t.quantity)) { placed.set(key, { qty: num(t.quantity), price: 0, at: Date.now() }); continue; }
             }

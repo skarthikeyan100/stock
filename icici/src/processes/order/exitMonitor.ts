@@ -245,6 +245,7 @@ export function reconcileFromTrades(trades: Trade[]): void {
     let reconciled = 0;
     for (const trade of trades) {
         if (!trade.token) continue;
+        if (trade.broker === 'paper') continue; // paper exits are not enforced by this monitor; mapping the row to Kite made every attempt fail and retry forever
         const reBroker: Broker = trade.broker === 'ant' || trade.broker === 'prism' || trade.broker === 'kite' || trade.broker === 'breeze'
             ? trade.broker
             : trade.antOrderNo ? 'ant' : trade.prismCoverOrderNo ? 'prism' : 'kite';

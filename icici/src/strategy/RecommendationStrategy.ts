@@ -234,6 +234,12 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         rec.brokers = live;
         this.save();
         if (live.length === 0) { await this.disableBlock(); return; }
+        if (String(w.index).toUpperCase() === 'SENSEX') {
+            // The tick driving this strategy is a NIFTY tick and atmStrike() uses a 50 step: a SENSEX reverse would pick a NIFTY-level strike on the SENSEX chain.
+            Log.log(`[${this.logTag}] ALERT: reverse on SENSEX is not supported (no SENSEX spot tick / 100-point strike step here) - NOT buying; the strategy is finished`);
+            await this.disableBlock();
+            return;
+        }
         const right = oppositeRight(w.right), strike = atmStrike(quote.ltp);
         Log.log(`[${this.logTag}] reverse: ${cfg.contract} is back at ${cfg.entryPrice} - buying ${strike} ${right} at the best bid on ${live.join(', ')}`);
         await this.startCycle(`${key}|reverse`, { index: w.index, strike, right }, (b) => investmentForBroker(cfg, b), undefined, live);

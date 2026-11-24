@@ -704,9 +704,10 @@ export default class Prism {
         if (!match) return { status: 'PENDING', filledQuantity: 0 };
         // Left undefined when the record omits the field, so a caller can tell "zero filled" from "unknown".
         const filledQuantity = match.fillshares === undefined || match.fillshares === null ? undefined : Number(match.fillshares);
+        const rowPrice = match.avgprc ?? match.flprc ?? match.avgPrice;
+        const fillPrice = rowPrice && Number(rowPrice) > 0 ? Number(rowPrice) : undefined;
         if (match.status === 'COMPLETE') {
-            const fillPrice = match.avgprc ?? match.flprc ?? match.avgPrice;
-            return { status: 'COMPLETE', fillPrice: fillPrice ? Number(fillPrice) : undefined, filledQuantity };
+            return { status: 'COMPLETE', fillPrice, filledQuantity };
         }
         // Accept both spellings seen across Shoonya/Finvasia's own
         // documentation for a rejection ('REJECTED' per the official FAQ's
@@ -717,10 +718,11 @@ export default class Prism {
         // canonical string either way so callers never need their own
         // spelling table.
         if (match.status === 'REJECTED' || match.status === 'REJECT') {
-            return { status: 'REJECTED', filledQuantity };
+            return { status: 'REJECTED', filledQuantity, ...(Number(filledQuantity ?? 0) > 0 && fillPrice ? { fillPrice } : {}) };
         }
         if (match.status === 'CANCELED' || match.status === 'CANCELLED') {
-            return { status: 'CANCELLED', filledQuantity };
+            // A partial fill before the cancel: its average price travels with it so the caller can book the filled part.
+            return { status: 'CANCELLED', filledQuantity, ...(Number(filledQuantity ?? 0) > 0 && fillPrice ? { fillPrice } : {}) };
         }
         return { status: 'PENDING', filledQuantity };
     }

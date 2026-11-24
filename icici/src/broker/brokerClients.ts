@@ -65,7 +65,7 @@ export const BROKER_CLIENTS: Record<BrokerName, BrokerClient> = {
             const toDate = new Date();
             const fromDate = new Date(toDate);
             fromDate.setDate(fromDate.getDate() - 7);
-            const result = await Breeze.getInstance().getTradeList({ fromDate: fromDate.toISOString(), toDate: toDate.toISOString(), exchangeCode: 'NFO' });
+            const result = await Breeze.getInstance().getTradeListAllExchanges({ fromDate: fromDate.toISOString(), toDate: toDate.toISOString() });
             return Array.isArray(result?.Success) ? result.Success : [];
         },
         getPositions: async () => {

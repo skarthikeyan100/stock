@@ -14,6 +14,8 @@ export default class AppConfig {
     strategies?: StrategyInstanceConfig[];
 }
 
+// NOTE: these class defaults are NOT applied when config.yml is loaded (ConfigService casts the parsed YAML, it does not instantiate this class): the
+// values in config.yml are the only ones in effect, and a key absent there is simply undefined.
 export class Settings {
     minPrice = 20
     maxPrice = 150

@@ -156,15 +156,24 @@ export abstract class LimitEntryStrategy extends Strategy {
         return path.join(__dirname, `../../.${this.strategyType}.${this.userId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`);
     }
 
+    private stateUnreadable = false;
+
     private ensureLoaded(): void {
         const today = localDayKey();
         if (this.loaded && this.state.day === today) return;
         this.loaded = true;
+        this.stateUnreadable = false;
         let fresh: State = { day: today, keys: [], legs: {}, sellIdsTracked: true, seenSells: [] };
         try {
             const raw = JSON.parse(fs.readFileSync(this.stateFile(), 'utf8')) as State;
-            if (raw?.day === today) fresh = raw;
-            else if (raw?.legs) {
+            if (raw?.day === today) {
+                fresh = raw;
+                // A persisted `exitRetryAt === -1` ("exit placement in flight") is meaningless after a restart and would stop the exit from ever
+                // being placed: clear it. (`closing` is left alone: the checkpoint/half-sell flows use it too.)
+                for (const leg of Object.values(fresh.legs ?? {})) {
+                    if (leg.exitRetryAt === -1) { leg.exitRetryAt = undefined; Log.log(`[${this.logTag}] ${leg.tsym}: cleared a stale 'exit placement in flight' marker after restart`); }
+                }
+            } else if (raw?.legs) {
                 // A previous day's leg that never closed is not managed any more (strategies hold no state across days): say so.
                 for (const leg of Object.values(raw.legs)) {
                     if (leg.status === 'filled' || leg.status === 'resting' || leg.status === 'placing') {
@@ -172,15 +181,27 @@ export abstract class LimitEntryStrategy extends Strategy {
                     }
                 }
             }
-        } catch { /* no file yet */ }
+        } catch (e: any) {
+            // ENOENT = no state yet (normal first run). Any other failure (a truncated/corrupt file) must NOT read as "nothing fired and
+            // nothing held": that would re-fire today's slots. Fail closed - save() refuses, so no order is placed until the file is fixed.
+            if (e?.code !== 'ENOENT') {
+                this.stateUnreadable = true;
+                Log.log(`[${this.logTag}] ALERT: state file ${this.stateFile()} exists but could not be read (${e?.message ?? e}) - no order will be placed until it is fixed or removed, then restart`);
+            }
+        }
         this.state = fresh;
         for (const leg of Object.values(this.state.legs)) this.rewatch(leg);
     }
 
     // Returns false when the state could not be written. Callers that are about to place an order must then not place it.
     protected save(): boolean {
+        if (this.stateUnreadable) return false; // the persisted state could not be read: overwriting it would destroy it
         try {
-            fs.writeFileSync(this.stateFile(), JSON.stringify(this.state));
+            // Temp file + rename: a crash or full disk mid-write must leave the previous, readable file.
+            const file = this.stateFile();
+            const tmp = `${file}.tmp`;
+            fs.writeFileSync(tmp, JSON.stringify(this.state));
+            fs.renameSync(tmp, file);
             return true;
         } catch (e: any) {
             Log.log(`[${this.logTag}] ALERT: could not persist state: ${e?.message ?? e}`);
@@ -744,7 +765,7 @@ export abstract class LimitEntryStrategy extends Strategy {
     async reconcile(): Promise<void> {
         this.ensureLoaded();
         let open: any[] = [];
-        try { open = await OrderClient.getInstance().getOpenTrades(this.userId); } catch (e) { Log.log(`[${this.logTag}] reconcile: could not read open trades:`, e); return; }
+        try { open = await OrderClient.getInstance().getOpenTrades(this.userId); } catch (e) { Log.log(`[${this.logTag}] reconcile: could not read open trades:`, e); throw e; } // fail the reconcile: returning would mark the strategy loaded with nothing reconciled
         let closedAny = false;
         // A leg the order side no longer holds that the platform's OWN order sold (a lock-profits sell that filled while this strategy was disabled and so
         // was not told) is booked as a normal close; only the lots no platform sell explains reach the 'closed outside the platform' ALERT below.

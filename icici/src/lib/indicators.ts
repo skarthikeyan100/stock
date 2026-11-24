@@ -133,7 +133,8 @@ export function calcRSI(
         avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
     }
 
-    const value = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+    // Flat prices (no gains and no losses) leave RSI undefined: report neutral 50 rather than a spurious 100.
+    const value = avgLoss === 0 ? (avgGain === 0 ? 50 : 100) : 100 - (100 / (1 + avgGain / avgLoss));
     const trend = value > overbought ? 'DOWN' : value < oversold ? 'UP' : 'NEUTRAL';
 
     return { header: rsiName(period, overbought, oversold), period, overbought, oversold, value, trend };
@@ -165,7 +166,10 @@ export function calcRSIReversed(
     const avgGain = totalGain / period;
     const avgLoss = totalLoss / period;
 
-    // No losses = strong uptrend → contrarian buy signal
+    // No losses = strong uptrend → contrarian buy signal (flat prices - no gains either - are neutral, not a signal)
+    if (avgLoss === 0 && avgGain === 0) {
+        return { header: rsiNameReversed(period, overbought, oversold), period, overbought, oversold, value: 50, trend: 'NEUTRAL' };
+    }
     if (avgLoss === 0) {
         return { header: rsiNameReversed(period, overbought, oversold), period, overbought, oversold, value: 100, trend: 'UP' };
     }

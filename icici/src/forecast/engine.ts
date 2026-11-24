@@ -16,6 +16,7 @@ import { isNiftyExpiryDay } from '../util/marketHours';
 import { CandleBuilder } from './candles';
 import { DEFAULT_ORDER_BOOK, DepthSnapshot, Filter, FilterContext, OrderBookImbalanceFilter, PassThroughAlarm, TrendFilter, assertEngineFilters, evaluateAll } from './filters';
 import { ForecastConfig, checkSubmission, getForecastConfig, istParts } from './rules';
+import { acquireKeyLock } from '../util/keyedLock';
 import { ForecastDoc, forecastsOfDay, insertForecast, niftyTicksCol, openForecasts, scoreOpenForecast } from './store';
 import { Outcome, Tick, scoreFromTicks } from './scorer';
 import { Contractor } from '../contractors/types';
@@ -128,7 +129,13 @@ export class ForecastEngine {
     ordersEnabled(): boolean { return (configService.getConfig() as any)?.forecast?.orders?.enabled === true; }
     latest(): { ltp: number; ts: number } | null { return this.last; }
 
+    // Serialised per contractor: the daily-limit and one-open-window checks are read-then-insert, so two parallel requests both passed them.
     async submit(c: Contractor, body: any, now = new Date(this.clock())): Promise<SubmitResult> {
+        const release = await acquireKeyLock(`forecast:${c.id}`);
+        try { return await this.submitLocked(c, body, now); } finally { release(); }
+    }
+
+    private async submitLocked(c: Contractor, body: any, now: Date): Promise<SubmitResult> {
         if (c.type !== 'INDIVIDUAL') return { ok: false, status: 403, error: 'Forecasts are for Beginner (Individual) contractors' };
         if (!this.submitLimiter.allow(c.id)) return { ok: false, status: 429, error: 'Too many attempts. Try again in a minute.' };
         const blocked = submissionBlock(c, await currentVersion());

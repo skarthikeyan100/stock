@@ -17,7 +17,7 @@ import { exitDistance, exitRulesFrom, legacyExitKeysIn, ExitRules } from './exit
 //   2. Price check: Nifty now minus Nifty at the previous slot today must match that direction (CE needs a rise, PE a fall) and be at
 //      least minMovePoints in size (config; 0 / omitted = any move). Otherwise no trade. The first slot of the day has no previous slot
 //      and never trades.
-//   3. Entry: one LIMIT buy per broker at the option's prevailing LTP, sized from maxInvestment (per broker) at runtime.
+//   3. Entry: one LIMIT buy per broker at the central order price (best bid, rounded down), sized from maxInvestment (per broker) at runtime.
 //   4. Exit: target and stop come from the global settings `target` / `stopLoss` (points, "N%" of the fill, or 'none'), overridable in this
 //      block with the same keys (see exitRules.ts). With a target: a resting LIMIT sell at the target is placed as soon as the entry fills,
 //      and the stop goes in with it when one is set (protectLeg). Without a target but with a stop: the stop is watched on ticks. With
@@ -187,7 +187,7 @@ export default class MomentumAtFixedTimeStrategy extends LimitEntryStrategy {
             this.markCycle(key);
             if (slotTime.isBefore(MomentumAtFixedTimeStrategy.processStartedAt)) {
                 Log.log(`[${this.logTag}] ${timeStr} slot skipped - process started at ${MomentumAtFixedTimeStrategy.processStartedAt.format('HH:mm:ss')}, after it`);
-                this.setSlotPrice(ltp > 0 ? ltp : null);
+                this.setSlotPrice(null); // no slot-time price exists: the current price would make the next slot compare a shorter window than designed
                 continue;
             }
             if (now.diff(slotTime, 'minutes') > LATE_WINDOW_MINUTES) {

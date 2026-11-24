@@ -228,6 +228,9 @@ export default class TopStockOptionsOpeningGapStrategy extends Strategy {
 
 
     reset(): void {
+        super.reset(); // clears this strategy's global max-profit latch (TopStock is judged by the global monitor)
+        // The fired-today marker too: without it the next tick read "already fired today" and set the phase back to done, so an admin reset did nothing.
+        try { fs.rmSync(this.firedTodayFile, { force: true }); } catch (e: any) { Log.log(`[${this.userId}] reset: could not remove the fired-today marker: ${e?.message ?? e}`); }
         this.phase = 'idle';
         this.lastAttemptAt = 0;
         Log.log(`[${this.userId}] Reset via admin request`);

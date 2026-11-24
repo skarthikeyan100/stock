@@ -103,6 +103,7 @@ export default class NiftyChangeStrategy extends LimitEntryStrategy {
                     Log.log(`[${this.logTag}] CATCH-UP: ${timeStr} slot came due at ${slotTime.format('HH:mm:ss')}, before this process started at ${NiftyChangeStrategy.processStartedAt.format('HH:mm:ss')} (now ${now.format('HH:mm:ss')}) - firing it if no earlier position is still open`);
                 } else {
                     Log.log(`[${this.logTag}] ${timeStr} slot skipped - process started at ${NiftyChangeStrategy.processStartedAt.format('HH:mm:ss')}, after it${timeStr === catchUpSlot ? ` and more than ${LATE_WINDOW_MINUTES} min ago, too late to catch up` : ''}`);
+                    this.setSlotPrice(null); // a price stored by an earlier slot must not become the "previous slot" reference of a later one
                     continue;
                 }
             } else if (now.diff(slotTime, 'minutes') > LATE_WINDOW_MINUTES) { Log.log(`[${this.logTag}] Missed ${timeStr} slot (now ${now.format('HH:mm:ss')}) - skipping`); this.setSlotPrice(null); continue; }

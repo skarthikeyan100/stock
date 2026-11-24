@@ -55,6 +55,7 @@ export class TrailStop {
     onTick(entry: number, ltp: number): TrailDecision {
         if (!this.enabled() || !(entry > 0) || !(ltp > 0 && Number.isFinite(ltp))) return { action: 'hold', peak: this.peak, changed: false };
         const activation = this.deps.getActivation();
+        if (!Number.isFinite(activation)) return { action: 'hold', peak: this.peak, changed: false }; // a NaN activation would arm at once and never exit
         if (!this.armed) {
             if (ltp < entry + activation) return { action: 'hold', peak: null, changed: false };
             this.armed = true;

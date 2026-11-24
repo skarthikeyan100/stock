@@ -1,5 +1,6 @@
 /** Recommendations (Advanced) and the owner's approval of them, plus the contractor's scoped read-only trade view. Spec v2.1 sections 6 and 9. */
 import express from 'express';
+import { acquireKeyLock } from '../util/keyedLock';
 import Log from '../util/Log';
 import { asyncRouter } from './asyncRouter';
 import { requireAdmin, requireAuth, resolveRealUser, resolveUser } from './session';
@@ -40,13 +41,18 @@ router.post('/recommendations', requireAuth, async function (req, res) {
     if (!v.ok) { res.status(400).json({ error: (v as { error: string }).error }); return; }
     const ok = v as Extract<typeof v, { ok: true }>;
     const day = istDate();
-    const mine = (await recommendationsCol().find({ contractorId: c.id, day }).toArray()) as RecommendationDoc[];
-    if (mine.some((r) => r.status === 'PENDING')) { res.status(409).json({ error: 'You already have a recommendation waiting for approval.' }); return; }
-    if (mine.length >= rules.perDay) { res.status(409).json({ error: `At most ${rules.perDay} recommendation(s) per day.` }); return; }
-    if (await tradeInProgress(c)) { res.status(409).json({ error: 'Not accepted: a trade of yours is still in progress.' }); return; }
-    const doc: RecommendationDoc = { ...ok.value, contractorId: c.id, contractorName: c.name, contractorEmail: c.email, contract: ok.contract, orderPrice: ok.orderPrice, day, status: 'PENDING', createdAt: new Date() };
-    const ins = await recommendationsCol().insertOne(doc);
-    doc._id = ins.insertedId;
+    // The pending / per-day checks and the insert are one critical section per contractor (parallel requests both passed the checks).
+    const releaseLock = await acquireKeyLock(`recommendation:${c.id}`);
+    let doc: RecommendationDoc;
+    try {
+        const mine = (await recommendationsCol().find({ contractorId: c.id, day }).toArray()) as RecommendationDoc[];
+        if (mine.some((r) => r.status === 'PENDING')) { res.status(409).json({ error: 'You already have a recommendation waiting for approval.' }); return; }
+        if (mine.length >= rules.perDay) { res.status(409).json({ error: `At most ${rules.perDay} recommendation(s) per day.` }); return; }
+        if (await tradeInProgress(c)) { res.status(409).json({ error: 'Not accepted: a trade of yours is still in progress.' }); return; }
+        doc = { ...ok.value, contractorId: c.id, contractorName: c.name, contractorEmail: c.email, contract: ok.contract, orderPrice: ok.orderPrice, day, status: 'PENDING', createdAt: new Date() };
+        const ins = await recommendationsCol().insertOne(doc);
+        doc._id = ins.insertedId;
+    } finally { releaseLock(); }
     await appendDecision({ kind: 'recommendation_submitted', recommendationId: String(doc._id), contractorId: c.id, contract: doc.contract, entry: doc.entry, target: doc.target, stop: doc.stop });
     await notifyAdmins('approval_required', `${c.name}: ${doc.index} ${doc.contract} entry ${doc.entry}, target ${doc.target}, stop ${doc.stop}. Approve or reject.`, { recommendationId: String(doc._id) });
     res.json(ownView(doc));

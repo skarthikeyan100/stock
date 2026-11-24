@@ -29,7 +29,7 @@ const LOCAL_OUTPUT_CSV = path.join(GAPSCREENER_DIR, 'gap-screener.csv');
 async function main(): Promise<void> {
     console.log('=== Gap-Screener Generate ===');
     console.log(`Running screener in: ${SCREENER_PROJECT_DIR}`);
-    execSync('npm start', { cwd: SCREENER_PROJECT_DIR, stdio: 'inherit' });
+    execSync('npm start', { cwd: SCREENER_PROJECT_DIR, stdio: 'inherit', timeout: 20 * 60_000 });
 
     if (!fs.existsSync(SCREENER_OUTPUT_CSV)) {
         throw new Error(`Screener did not produce ${SCREENER_OUTPUT_CSV}`);

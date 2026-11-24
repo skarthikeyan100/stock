@@ -358,14 +358,18 @@ export default class SimpleContinuousStrategy extends Strategy {
 
     // ---- entry ----
 
+    private pcrRetryAt = 0;
+
     private async direction(quote: NiftyQuote): Promise<Right | null> {
         const now = this.toMillis(quote.ltt) ?? Date.now();
         if (!this.lastPcr || now - this.lastPcr.at >= PCR_RECHECK_MS) {
+            if (now < this.pcrRetryAt) return null; // a failed fetch is retried at most every 30 s, not on every tick (two REST calls each)
             try {
                 const value = await OrderClient.getInstance().getPCR(this.userId, 'NIFTY', quote.ltp, PCR_WINDOW_POINTS);
-                if (value == null) return null;
+                if (value == null || !Number.isFinite(value)) { this.pcrRetryAt = now + 30_000; return null; } // a NaN PCR must not silently pick CE
                 this.lastPcr = { value, at: now };
             } catch (e) {
+                this.pcrRetryAt = now + 30_000;
                 Log.log('[SimpleContinuousStrategy] PCR check failed, blocking entry (fail-closed):', e);
                 this.lastPcr = null;
                 return null;
@@ -694,7 +698,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 trade = await OrderClient.getInstance().buyContractBare(this.userId, contract.tradingSymbol, contract.token, leg.qty, contract.exchange, contract.premium, this.broker(), { hedgeRebuy: true });
             } catch (e) {
                 if (this.noteBuyError(e, `hedge buy ${contract.tradingSymbol}`, false)) {
-                    leg.hedged = false; // nothing was placed: the next tick may try again
+                    leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // nothing was placed: retried from the open leg's ticks, or (closed leg) the Nifty-tick retry
                     Log.log('[SimpleContinuousStrategy] hedge buy failed (not placed, will retry):', e);
                     this.save();
                     return;
@@ -703,7 +707,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 Log.log(`[SimpleContinuousStrategy] hedge buy of ${contract.tradingSymbol} unconfirmed (${(e as any)?.message ?? e}) - checking the broker`);
                 const res = await this.resolveUnconfirmedBuy(contract);
                 if (res.kind === 'none') {
-                    leg.hedged = false; // cancelled with 0 filled: the hedge is retried
+                    leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // cancelled with 0 filled: the hedge is retried (a closed leg only by the Nifty-tick retry)
                     Log.log(`[SimpleContinuousStrategy] hedge buy of ${contract.tradingSymbol} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
                     this.save();
                     return;
@@ -727,7 +731,7 @@ export default class SimpleContinuousStrategy extends Strategy {
             await this.placeSell(hedgeLeg);
         } catch (e) {
             // pickContract failed before any order: allow a retry.
-            leg.hedged = false;
+            leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = same; this.lastWaitingHedgeRetry = Date.now() + 25_000; /* ~30 s between retries of a failed hedge */ // a closed leg gets no option ticks: the Nifty-tick retry picks this up
             this.save();
             Log.log('[SimpleContinuousStrategy] hedge contract lookup failed, will retry:', e);
         } finally {

@@ -273,7 +273,7 @@ export async function computePnlSummary(user: string, from: Date, to: Date, brea
         const drawdown = computeDrawdownForfeiture(weekTrades, investmentAmount, maxDailyDrawdownPercent, maxWeeklyDrawdownPercent);
         const weekEligible = eligiblePnL(weekRawPnL, drawdown.forfeited);
         weeks.push({
-            weekStart: weekStart.toISOString().slice(0, 10),
+            weekStart: weekStart.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }), // the IST date (the UTC date of an IST midnight is the day before)
             weekEnd: weekEnd.toISOString().slice(0, 10),
             rawPnL: weekRawPnL,
             eligiblePnL: weekEligible,
@@ -573,7 +573,7 @@ export async function generateInvoiceHtml(payoutId: any, email?: string): Promis
     const userDoc = await getUser(payout.user);
 
     // Rendered from what was persisted at creation (gstVerified), not today's user doc: it must match the tax actually applied.
-    const taxLine = payout.entityType === 'company' && payout.gstVerified !== false
+    const taxLine = payout.entityType === 'company' && payout.gstVerified === true // same test as computeTax: a legacy row without the field had TDS deducted
         ? `<tr><td>GST Registered — No TDS Applicable${userDoc?.gstin ? `, GSTIN: ${escapeHtml(userDoc.gstin)}` : ''}</td><td style="text-align:right">₹0.00</td></tr>`
         : `<tr><td>TDS Deducted (10%)</td><td style="text-align:right">₹${payout.tdsAmount.toFixed(2)}</td></tr>`;
 

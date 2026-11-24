@@ -17,7 +17,7 @@ import { ExBroker, ExPending, ExState, MAX_ENTRY_RETRIES, PENDING_MAX_AGE_MS, Ri
 //
 // Per broker (independent: each broker has its own cycle, leg, pending entry and retry count; `startCycle(..., [broker])`):
 //   1. First entry as soon as the strategy is enabled: the ATM option of `right` (nearest expiry, also on its own expiry day), ONE limit buy at the
-//      option's LTP, quantity from maxInvestment (per broker; maxInvestmentByBroker overrides one broker). Target and stop in option points from the fill.
+//      central order price (best bid), quantity from maxInvestment (per broker; maxInvestmentByBroker overrides one broker). Target and stop in option points from the fill.
 //   2. Target hit: the position is sold at the target, and the SAME contract is bought again with a limit at the ORIGINAL bought price.
 //   3. Stop hit: the position is sold at the stop, and the OPPOSITE right is bought at once (fresh ATM, limit at its LTP).
 //   4. Drift: while ANY buy (the first entry or a re-buy) is unfilled and the option's LTP is more than `driftPoints` above its limit price, the order is

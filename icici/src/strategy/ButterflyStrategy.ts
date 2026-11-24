@@ -148,6 +148,17 @@ export default class ButterflyStrategy extends Strategy {
         if (this.cycleDay !== today) { this.cycleDay = today; this.cyclesToday = 0; }
         if (this.cyclesToday >= Number(this.cfg().maxCyclesPerDay ?? 1)) return;
 
+        // Refuse to arm (and so to use up the day's cycle) on a config that could never exit or never trade. The validator already rejects a non-numeric
+        // target/stop at load; this guards a NaN that arrives some other way (`netPoints >= NaN` is never true, so no exit would ever fire).
+        if (!(this.targetPoints() > 0) || !(this.stopLossPoints() > 0)) {
+            Log.log(`[ButterflyStrategy:${this.userId}] ALERT: targetPoints (${this.cfg().targetPoints}) / stopLossPoints (${this.cfg().stopLossPoints}) must be positive numbers - not arming`);
+            return;
+        }
+        if (this.configuredBrokers().length === 0) {
+            Log.log(`[ButterflyStrategy:${this.userId}] ALERT: no broker is configured - not arming (the cycle is not used up)`);
+            return;
+        }
+
         // Synchronous flip BEFORE any await - blocks a concurrent tick from double-entering
         // (identical to BulkPcrStrategy's phase='running' pre-await pattern).
         this.phase = 'running';
@@ -291,7 +302,10 @@ export default class ButterflyStrategy extends Strategy {
             if (results[i].status === 'rejected') Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] sell leg ${roles[i]} failed:`, (results[i] as PromiseRejectedResult).reason);
         }
         Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] sell leg(s) failed: ${failedRoles.join(',')} - buying back filled sell leg(s), flagging error`);
-        await Promise.allSettled(filledRoles.map((role) => this.closeOneLeg(pos, role, 'buyToCloseShort')));
+        // A sell whose outcome is unknown (timeout) may have filled: read the broker and adopt it, or it would be a live, unmanaged short.
+        await this.adoptUnknownOutcomeLegs(pos);
+        const toClose = roles.filter((role) => filledRoles.includes(role) || (pos.legs[role].status === 'open' && pos.legs[role].filledQty > 0));
+        await Promise.allSettled(toClose.map((role) => this.closeOneLeg(pos, role, 'buyToCloseShort')));
         pos.phase = 'error';
         this.persistState();
         return false;
@@ -314,56 +328,6 @@ export default class ButterflyStrategy extends Strategy {
         leg.filledQty = trade.quantity;
         leg.entryAvg = trade.price;
         leg.status = 'open';
-    }
-
-    // reconcile()-only variant of placeSellLegs: cross-checks each sell-role leg's LIVE
-    // quantity at the broker first (same discipline reconcileResubscribeOpenLegs/
-    // reconcileCloseWhateverIsOpen already use), since a restart can land after a sell
-    // order actually filled at the broker but before that fill was ever persisted. A leg
-    // already live-short is adopted as-is (filledQty from the broker, entryAvg estimated
-    // from the current LTP since the true fill price was never recorded - flagged loudly,
-    // since netComboPoints' accuracy for that leg depends on it) rather than sold again;
-    // only a leg genuinely not yet open gets a fresh sell-to-open placed.
-    private async resumeOrPlaceSellLegs(pos: BrokerButterflyPosition): Promise<boolean> {
-        const roles = this.sellRoles(pos);
-        const toPlace: LegRole[] = [];
-        let adoptedWithoutPrice = false;
-        for (const role of roles) {
-            const leg = pos.legs[role];
-            const liveQty = await this.getLiveQuantity(pos, leg);
-            if (liveQty === null) throw new Error(`live quantity of ${leg.tsym} unknown - cannot decide between adopting and re-selling`); // retried by reconcile(); never re-sell blind
-            if (liveQty > 0) {
-                const ltp = this.latestLtp.get(leg.token!);
-                Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] reconcile: ${leg.tsym} (${role}) is already short ${liveQty} at the broker - adopting instead of re-selling. ALERT: true entry price was never persisted, estimating from current ltp=${ltp ?? 'unknown'} - netComboPoints for this leg may be inaccurate until it closes.`);
-                leg.filledQty = liveQty;
-                leg.entryAvg = ltp ?? 0;
-                leg.status = 'open';
-                // entryAvg 0 on a short leg reads as an enormous loss (entry - ltp) and would stop the whole combo
-                // out on its first tick. Without a price to estimate from, do not self-monitor: flag for review.
-                if (ltp == null) adoptedWithoutPrice = true;
-            } else {
-                toPlace.push(role);
-            }
-        }
-        if (adoptedWithoutPrice) {
-            Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] ALERT: adopted a short leg with no price to estimate its entry from - not self-monitoring this combo, manual review required`);
-            return false;
-        }
-        if (toPlace.length === 0) return true;
-
-        const results = await Promise.allSettled(toPlace.map((role) => this.placeOneSellLeg(pos, role)));
-        const filledRoles = toPlace.filter((_role, i) => results[i].status === 'fulfilled');
-        const failedRoles = toPlace.filter((_role, i) => results[i].status === 'rejected');
-        if (failedRoles.length === 0) return true;
-
-        for (let i = 0; i < toPlace.length; i++) {
-            if (results[i].status === 'rejected') Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] reconcile: sell leg ${toPlace[i]} failed:`, (results[i] as PromiseRejectedResult).reason);
-        }
-        Log.log(`[ButterflyStrategy:${this.userId}] [${pos.broker}] reconcile: sell leg(s) failed: ${failedRoles.join(',')} - buying back filled sell leg(s), flagging error`);
-        await Promise.allSettled([...filledRoles, ...roles.filter((r) => !toPlace.includes(r))].map((role) => this.closeOneLeg(pos, role, 'buyToCloseShort')));
-        pos.phase = 'error';
-        this.persistState();
-        return false;
     }
 
     // A leg whose entry order threw (timeout / transport error) is parked as 'error' with filledQty 0, but the order
@@ -422,7 +386,9 @@ export default class ButterflyStrategy extends Strategy {
         leg.closeAvg = trade.price;
         if (leg.closedQty >= leg.filledQty) {
             leg.status = 'closed';
-            unwatchTokenOnSource('ant', leg.token!, this, leg.exchange!);
+            // The ANT-native token is the same for every broker of this instance: keep the tick watch while another broker's leg still uses it.
+            const usedElsewhere = Array.from(this.positions.values()).some((p) => p !== pos && ALL_LEG_ROLES.some((r) => p.legs[r].token === leg.token && p.legs[r].status !== 'closed' && p.legs[r].filledQty > 0));
+            if (!usedElsewhere) unwatchTokenOnSource('ant', leg.token!, this, leg.exchange!);
         }
         // Per leg, not only at the start of the close: a crash between legs otherwise leaves the disk state saying every leg is
         // still open with nothing closed, and the resumed close re-trades legs that were already closed.

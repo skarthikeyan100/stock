@@ -44,8 +44,26 @@ class BreezeDataStream implements DataStream {
         Log.log('[BreezeDataStream] socket connected, (re)subscribing to', this.dynamicOptionTokens.size, 'token(s)');
         for (const token of this.dynamicOptionTokens) this.sendSubscribe(token);
     };
-    private onSocketDisconnected = (reason: any) => Log.log('[BreezeDataStream] socket disconnected:', reason);
-    private onSocketErr = (e: any) => Log.log('[BreezeDataStream] socket connect_error:', e?.message ?? e);
+    private onSocketDisconnected = (reason: any) => {
+        Log.log('[BreezeDataStream] socket disconnected:', reason);
+        this.scheduleSocketRevive();
+    };
+    private onSocketErr = (e: any) => {
+        Log.log('[BreezeDataStream] socket connect_error:', e?.message ?? e);
+        this.scheduleSocketRevive();
+    };
+    // socket.io only auto-reconnects transport drops; a server-initiated disconnect or auth rejection leaves the socket idle forever
+    // (while `connected` stays true), so check shortly after and reconnect by hand unless the stream was stopped on purpose.
+    private reviveTimer: NodeJS.Timeout | null = null;
+    private scheduleSocketRevive(): void {
+        if (this.reviveTimer || this.manualDisconnect || isPastMarketClose()) return;
+        this.reviveTimer = setTimeout(() => {
+            this.reviveTimer = null;
+            if (this.manualDisconnect) return;
+            if (Breeze.getInstance().reviveSocketIfIdle()) Log.log('[BreezeDataStream] socket was idle after a server disconnect / auth error - reconnecting it');
+        }, 5000);
+        this.reviveTimer.unref?.();
+    }
 
     async connect(): Promise<void> {
         if (this.connected) {

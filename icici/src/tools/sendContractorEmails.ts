@@ -5,6 +5,7 @@
  * goes only to that address (subject prefixed [TEST for <contractor>]). Logic: src/contractors/emails.ts.
  */
 import 'dotenv/config';
+import '../util/tz'; // pin IST: week buckets, invoice reminders and EOD dates use local time
 import Mongo from './mongo';
 import { runDailyEmails } from '../contractors/emails';
 

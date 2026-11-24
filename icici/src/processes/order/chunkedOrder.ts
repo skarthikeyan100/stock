@@ -101,6 +101,11 @@ export async function buyChunked(
             filledQty += trade.quantity;
             filledValue += trade.quantity * trade.price;
             Log.log(`[order] buyChunked: ${request.tradingSymbol} chunk ${i + 1}/${chunks.length} filled qty=${trade.quantity} @ ${trade.price} for ${request.userId} (bought ${filledQty}/${request.quantity})`);
+            if (trade.quantity < chunks[i] && i < chunks.length - 1) {
+                // A chunk filled short (a partial whose remainder was cancelled): do not stack more orders behind it. The caller gets the booked quantity.
+                Log.log(`[order] ALERT: buyChunked: ${request.tradingSymbol} chunk ${i + 1}/${chunks.length} filled only ${trade.quantity}/${chunks[i]} - stopping, bought ${filledQty}/${request.quantity} for ${request.userId}`);
+                break;
+            }
         } catch (e: any) {
             if (e?.driftCancelled && !e.fillStateUnknown) {
                 // Fold in any partial fill THIS chunk contributed before being

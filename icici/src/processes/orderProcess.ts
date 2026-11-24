@@ -57,7 +57,7 @@ import { USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, CALL } from '../constants';
 import { resolveMaxInvestment, investmentForBroker } from '../prism/configVocabulary';
 import { getUser, getAllUsers } from '../user';
 import { OptionQuote, Trade } from '../model/model';
-import { isPastExpirySquareOffTime, isPastReconcileTime, isPastTime } from '../util/marketHours';
+import { isPastExpirySquareOffTime, isPastSensexExpirySquareOffTime, isPastReconcileTime, isPastTime } from '../util/marketHours';
 import { effectiveEodReconcileTime } from '../util/eodReconcile';
 import { localDayKey } from '../strategy/dayKey';
 import { normalizeBrokerName, configuredBrokersOf } from '../util/brokerName';
@@ -670,8 +670,8 @@ async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean):
     // (2)+(3) Group by owning user + broker + contract. Rows are read AFTER the buy cancels (a fill booked meanwhile is included).
     const groups = new Map<string, Trade[]>();
     for (const t of bookkeeping.trades) {
-        if (!t.broker || !(t.quantity > 0)) continue;
-        const b = normalizeBrokerName(t.broker);
+        if (!(t.quantity > 0)) continue;
+        const b = normalizeBrokerName(t.broker || 'kite'); // a row with no broker is a Kite row everywhere else
         if (!brokers.includes(b)) continue;
         const key = `${t.user}|${b}|${t.tsym}`;
         groups.set(key, [...(groups.get(key) ?? []), t]);
@@ -688,7 +688,10 @@ async function lockProfitsOnce(brokerArg: string | undefined, reprice: boolean):
         result.positions.push(entry);
         try {
             const prior = lockProfitsPlaced.get(key);
-            if (!reprice && prior && Date.now() - prior.at < LOCK_PROFITS_COOLDOWN_MS) {
+            // "Still locked" means the prior lock sell is still tracked as resting, not that it is younger than N minutes: a repeat call must not
+            // cancel a lock and re-rest it at a LOWER price just because the cooldown passed (it gives back locked profit).
+            const stillResting = !!prior && getBrokerExecutor(user, broker).findPendingOrders(user, tsym).some((o) => o.action === 'Sell');
+            if (!reprice && prior && (stillResting || Date.now() - prior.at < LOCK_PROFITS_COOLDOWN_MS)) {
                 entry.limitPrice = prior.limitPrice;
                 entry.status = 'skipped';
                 entry.note = `already locked at ${prior.limitPrice} ${Math.round((Date.now() - prior.at) / 1000)}s ago and still open - pass reprice=true to re-price`;
@@ -1562,7 +1565,7 @@ function startReconcile(logContext: string): void {
 const EOD_BROKERS = ['kite', 'ant', 'breeze', 'prism'] as const;
 let eodRun: Promise<Record<string, EodBrokerReport>> | null = null;
 
-async function loadEodMarker(): Promise<{ brokers?: Record<string, { ok?: boolean }> } | null> {
+async function loadEodMarker(): Promise<{ brokers?: Record<string, { ok?: boolean; afterClose?: boolean }> } | null> {
     try {
         return await Mongo.getInstance()?.db.collection('eodReconcileRuns').findOne({ _id: localDayKey() as any }) ?? null;
     } catch { return null; }
@@ -1583,7 +1586,9 @@ function runEodRepair(context: string, brokers: readonly (typeof EOD_BROKERS)[nu
         exitMonitor.reconcileFromTrades(bookkeeping.trades);
         try {
             const set: Record<string, unknown> = { updatedAt: new Date() };
-            for (const [b, r] of Object.entries(reports)) set[`brokers.${b}`] = { ok: r.ok, at: new Date(), skipped: r.skipped ?? null, error: r.error ?? null, bookedFills: r.bookedFills, bookedFlat: r.bookedFlat, repairedClosed: r.repairedClosed, mismatches: r.mismatches };
+            // afterClose: only a run made at/after the EOD sync time counts as "the EOD sync is done" - an intraday /reconcile or `npm run sync` must not stop the scheduled one.
+            const afterClose = isPastTime(effectiveEodReconcileTime(), '15:45');
+            for (const [b, r] of Object.entries(reports)) set[`brokers.${b}`] = { ok: r.ok, afterClose, at: new Date(), skipped: r.skipped ?? null, error: r.error ?? null, bookedFills: r.bookedFills, bookedFlat: r.bookedFlat, repairedClosed: r.repairedClosed, mismatches: r.mismatches };
             await Mongo.getInstance()?.db.collection('eodReconcileRuns').updateOne({ _id: localDayKey() as any }, { $set: set }, { upsert: true });
         } catch (e: any) {
             Log.log('[order] EOD sync: could not store the run report in Mongo (eodReconcileRuns):', e?.message ?? e);
@@ -1612,7 +1617,7 @@ async function eodReconcileTick(): Promise<void> {
     if (eodRun || reconcileInFlight) return;
     if (Date.now() - lastEodAttemptAt < 5 * 60_000) return;
     const marker = await loadEodMarker();
-    const pending = EOD_BROKERS.filter((b) => marker?.brokers?.[b]?.ok !== true);
+    const pending = EOD_BROKERS.filter((b) => marker?.brokers?.[b]?.ok !== true || marker?.brokers?.[b]?.afterClose !== true);
     if (pending.length === 0) return;
     lastEodAttemptAt = Date.now();
     await runEodRepair('scheduled, after the close', pending);
@@ -1779,8 +1784,11 @@ export async function startOrderProcess() {
     // Sell fill has removed it from bookkeeping.trades; a failed attempt is
     // simply retried on the next tick since the trade is still open.
     setInterval(() => {
-        if (!isPastExpirySquareOffTime()) return;
+        const niftyExpiry = isPastExpirySquareOffTime();
+        const sensexExpiry = !niftyExpiry && isPastSensexExpirySquareOffTime(); // on a SENSEX expiry day only SENSEX contracts are swept
+        if (!niftyExpiry && !sensexExpiry) return;
         for (const trade of bookkeeping.trades.slice()) {
+            if (sensexExpiry && !String(trade.tsym ?? '').toUpperCase().startsWith('SENSEX')) continue;
             // Shares forceCloseTrade's in-flight guard with the drawdown-breach handler.
             forceCloseTrade(trade)
                 .catch((e) => Log.log('[order] Expiry-day auto-squareoff failed for', trade.tsym, e));
@@ -1790,6 +1798,7 @@ export async function startOrderProcess() {
         // separately cover bookkeeping.shortTrades, or a SellToOpen leg still open at the
         // 3:15pm expiry deadline would ride uncovered with nothing to force-close it.
         for (const shortTrade of bookkeeping.shortTrades) {
+            if (sensexExpiry && !String(shortTrade.tsym ?? '').toUpperCase().startsWith('SENSEX')) continue;
             const key = shortCloseKey(shortTrade);
             if (expirySquareOffInFlight.has(key)) continue;
             expirySquareOffInFlight.add(key);

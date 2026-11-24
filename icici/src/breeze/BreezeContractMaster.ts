@@ -77,6 +77,7 @@ export function breezeExpiryFromCode(code: string): string | undefined {
 // to the old expiry-less form rather than inventing one.
 export function breezeTsym(stockCode: string, expiryDate: string, strike: number | string, optionType: 'CE' | 'PE'): string {
     const code = breezeExpiryCode(expiryDate);
+    if (!code) console.log(`[BreezeContractMaster] ALERT: expiry '${expiryDate}' of ${stockCode} ${strike}${optionType} could not be read - using the legacy expiry-less tsym, which cannot tell two expiries apart (the 2026-11-09 double buy)`);
     return `${indexNameFor(String(stockCode))}${code ?? ''}${strike}${optionType}`;
 }
 

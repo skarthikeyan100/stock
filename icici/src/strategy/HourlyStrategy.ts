@@ -345,14 +345,10 @@ export default class HourlyStrategy extends Strategy {
         // A new 10-minute candle started - the previous one just closed.
         const closed = this.currentCandle!;
 
-        // Entry check FIRST, using the confirmation from the candle that
-        // just finished (i.e. exactly one bucket after the confirming
-        // close) - before this new candle's confirmation check can overwrite
-        // pendingConfirmation.
-        if (this.pendingConfirmation && this.pendingConfirmation.confirmedAtBucket + TEN_MIN_MS === bucket) {
-            await this.tryEnter(this.pendingConfirmation, quote);
-        }
-        this.pendingConfirmation = null; // either consumed above, or stale (more than one bucket late) - drop it either way
+        // The confirmation is created below from the candle that just closed and is acted on in this same call: this tick IS the open of
+        // the very next candle. (It used to be checked on the NEXT candle change, when `confirmedAtBucket + 10 min` could never match
+        // any more, so no entry was ever made.)
+        this.pendingConfirmation = null;
 
         // Confirmation check on the candle that just closed, for the NEXT candle's open.
         if (!this.triggeredThisHour && !this.hasOpenPosition() && this.resistance != null && this.support != null) {
@@ -365,6 +361,14 @@ export default class HourlyStrategy extends Strategy {
                 this.pendingConfirmation = { direction: PUT, slLevel: closed.high, confirmedAtBucket: closed.bucket };
                 if (this.cfg().logEnabled) Log.log(`[Hourly] Breakdown confirmed below support=${this.support} (candle ${bodyLow}-${bodyHigh}) - entering PUT on next candle's open`);
             }
+            if (this.pendingConfirmation) {
+                const confirmation = this.pendingConfirmation;
+                this.pendingConfirmation = null; // consumed: entered (or refused) now, never replayed
+                this.currentTenMinBucket = bucket;
+                this.currentCandle = { bucket, open: ltp, high: ltp, low: ltp, close: ltp };
+                await this.tryEnter(confirmation, quote);
+                return;
+            }
         }
 
         this.currentTenMinBucket = bucket;
@@ -376,6 +380,15 @@ export default class HourlyStrategy extends Strategy {
         if (this.triggeredThisHour || this.hasOpenPosition()) return;
         if (!this.isCooldownElapsed(cfg.cooldownSeconds ?? 60)) {
             Log.log('[Hourly] Entry skipped - cooldown not elapsed, dropping stale confirmation');
+            return;
+        }
+
+        // An open that already gaps through the confirming candle's invalidation level would be a certain round trip (the invalidation exit
+        // fires the moment the exit sell is placed): do not enter.
+        const openLtp = Number(quote.ltp);
+        const gapped = confirmation.direction === CALL ? openLtp <= confirmation.slLevel : openLtp >= confirmation.slLevel;
+        if (openLtp > 0 && gapped) {
+            Log.log(`[Hourly] Entry skipped - the open ${openLtp} is already through the invalidation level ${confirmation.slLevel} (${confirmation.direction})`);
             return;
         }
 

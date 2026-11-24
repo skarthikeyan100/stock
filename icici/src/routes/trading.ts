@@ -37,6 +37,7 @@ function validateBuyQuery(q: Record<string, unknown>): string | null {
     for (const k of ['right', 'index', 'contract']) {
         if (q[k] !== undefined && typeof q[k] !== 'string') return `${k} must be a string`;
     }
+    if (q.right !== undefined && q.right !== '' && !['call', 'put'].includes(String(q.right))) return "right must be 'call' or 'put'"; // anything else used to become a PUT
     if (q.index !== undefined && !['NIFTY', 'SENSEX', 'BANKNIFTY', 'FINNIFTY'].includes(String(q.index).toUpperCase())) return 'index must be NIFTY, SENSEX, BANKNIFTY or FINNIFTY';
     return null;
 }
@@ -110,7 +111,12 @@ router.post('/order/lock-profits', requireAdmin, async function (req, res) {
         const toDisable = (cfg.strategies || []).filter((s: any) => s.enabled);
         const disabledStrategies = toDisable.map((s: any) => s.userId || s.type);
         toDisable.forEach((s: any) => { s.enabled = false; });
-        configService.writeConfig(cfg);
+        try {
+            configService.writeConfig(cfg);
+        } catch (writeErr) {
+            toDisable.forEach((s: any) => { s.enabled = true; }); // the file was not changed: this process's copy must not claim it was
+            throw writeErr;
+        }
         configService.reloadNow();
         const lock = await orderClient.lockProfits({ broker, reprice });
         res.json({ disabledStrategies, lock });

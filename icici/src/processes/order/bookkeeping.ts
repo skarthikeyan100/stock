@@ -196,6 +196,16 @@ class OrderBookkeeping {
     // Per-session, per-user set of drawdown-warning thresholds (80, 100) already
     // notified, so a losing streak doesn't spam a fresh notification per trade.
     private notifiedThresholds: Map<string, Set<number>> = new Map();
+    // The session figure (userPnL) and the 80%/100% warnings are per trading day: a process left running overnight must not compare a
+    // multi-day total with the per-session loss limit. (The drawdown BLOCK reads closedTrades by day/week and was never affected.)
+    private pnlDay = localDayKey();
+    private rollPnlDay(): void {
+        const today = localDayKey();
+        if (today === this.pnlDay) return;
+        this.pnlDay = today;
+        this.userPnL.clear();
+        this.notifiedThresholds.clear();
+    }
     userSettingsCache: Map<string, UserSettings> = new Map();
     private fillListeners: FillListener[] = [];
     // Broker order ids of sells the BROKER itself executed (a GTT target/stop that fired), booked by the GTT poll. Not stored in Mongo. A fill
@@ -229,7 +239,9 @@ class OrderBookkeeping {
     }
 
     private notifyPositionsChanged() {
-        for (const l of this.positionsChangedListeners) l();
+        for (const l of this.positionsChangedListeners) {
+            try { l(); } catch (e) { Log.log('[order] ALERT: a positions-changed listener threw (the others still ran):', e); }
+        }
     }
 
     // Public entry point for callers outside this class that can't call
@@ -625,7 +637,7 @@ class OrderBookkeeping {
             const landed = new Set(rows.map((r) => String(r._id)));
             const held = heldSnapshot
                 .filter(([id]) => !landed.has(id))
-                .reduce((sum, [, p]) => sum + p.realizedPnL, 0);
+                .reduce((sum, [, p]) => sum + (Number(p.realizedPnL) || 0), 0); // sanitised like the Mongo rows below
             return rows.reduce((sum, r) => sum + (r.realizedPnL || 0), 0) + held;
         } catch (e) {
             Log.log('[order] getRealizedPnLSince failed - drawdown check will block until it can be read:', e);
@@ -1110,6 +1122,17 @@ class OrderBookkeeping {
     // Records a fill directly (used by the Kite buy/GTT-trigger path, which
     // doesn't go through Prism's websocket 'om' message shape at all).
     async recordFill(tradeEvent: Trade): Promise<void> {
+        this.rollPnlDay();
+        // A NaN/negative price or a non-positive quantity would poison the aggregate average, every later P&L and the investment gate
+        // (NaN >= cap is false, so the gate opens). Quantity cannot be repaired; an unusable price is booked as 0 (the callers already treat 0 as "unknown").
+        if (!(Number(tradeEvent.quantity) > 0)) {
+            Log.log(`[order] ALERT: ignoring fill with unusable quantity ${tradeEvent.quantity} (${tradeEvent.tsym}, order ${tradeEvent.brokerOrderId})`);
+            return;
+        }
+        if (!Number.isFinite(Number(tradeEvent.price)) || Number(tradeEvent.price) < 0) {
+            Log.log(`[order] ALERT: fill price ${tradeEvent.price} is unusable (${tradeEvent.tsym}, order ${tradeEvent.brokerOrderId}) - booking it at 0, manual review required`);
+            tradeEvent.price = 0;
+        }
         let skipInsert = false;
         const id = tradeEvent.brokerOrderId;
         // Paper broker (in-memory only): nothing is read from or written to Mongo; the id is still claimed so a redelivered fill is ignored.
@@ -1161,7 +1184,10 @@ class OrderBookkeeping {
             throw e;
         }
         if (id) this.failedBookingFillIds.delete(id);
-        for (const l of this.fillListeners) l(tradeEvent.user || 'Default', tradeEvent);
+        // One throwing listener must not skip the rest (the strategy notification) after the position is already booked.
+        for (const l of this.fillListeners) {
+            try { l(tradeEvent.user || 'Default', tradeEvent); } catch (e) { Log.log(`[order] ALERT: a fill listener threw for ${tradeEvent.tsym} order ${tradeEvent.brokerOrderId} (the other listeners still ran):`, e); }
+        }
         // 'Whenever another trade happens': any booked trade of this broker and contract re-checks it for a non-platform sell (debounced; a sell booked by
         // the check itself does not re-trigger it).
         if (tradeEvent.broker && tradeEvent.broker !== 'paper' && !this.foreignBookedIds.has(String(id ?? ''))) this.foreignWatch.request(tradeEvent.broker as BrokerKey, tradeEvent.tsym, 'own-trade');
@@ -1175,6 +1201,7 @@ class OrderBookkeeping {
     // create a phantom open-long that nothing ever naturally closes. Additive only - every
     // other strategy's bookkeeping behavior via recordFill/_processTradeEvent is untouched.
     async recordShortFill(tradeEvent: Trade): Promise<void> {
+        this.rollPnlDay();
         if (tradeEvent.brokerOrderId) {
             if (this.processedFillIds.has(tradeEvent.brokerOrderId)) {
                 Log.log(`[order] Ignoring redelivered short fill for broker order ${tradeEvent.brokerOrderId} (${tradeEvent.tsym}) - already processed`);
@@ -1302,9 +1329,20 @@ class OrderBookkeeping {
         // is what actually prevents an unhandled promise rejection from
         // crashing the `order` process on a transient Mongo error.
         if (!skipInsert && tradeEvent.broker !== 'paper') {
-            const p = Mongo.getInstance()?.insert(tradeEvent).catch((e) => {
-                Log.log('[order] Mongo insert failed for trade event (continuing without persistence):', tradeEvent.tsym, e);
-            });
+            // A lost raw doc means a restart cannot restore this fill (a Buy never comes back as a position, a Sell leaves a closed one open):
+            // retry twice before giving up with an ALERT. A duplicate-key error on a retry just means an earlier attempt did land.
+            const insertWithRetry = async (): Promise<void> => {
+                for (let attempt = 1; ; attempt++) {
+                    try { await Mongo.getInstance()!.insert(tradeEvent); return; }
+                    catch (e: any) {
+                        if (e?.code === 11000) return;
+                        if (attempt >= 3) { Log.log(`[order] ALERT: Mongo insert of the ${tradeEvent.action} fill ${tradeEvent.tsym} (order ${tradeEvent.brokerOrderId}) failed ${attempt} times - memory is right but a restart would NOT restore it; run the sync:`, e); return; }
+                        Log.log(`[order] Mongo insert failed for trade event ${tradeEvent.tsym} (attempt ${attempt}/3), retrying:`, e?.message ?? e);
+                        await new Promise((r) => setTimeout(r, attempt * 1500));
+                    }
+                }
+            };
+            const p = Mongo.getInstance() ? insertWithRetry() : undefined;
             const oid = tradeEvent.brokerOrderId;
             if (p && oid) {
                 // Chained with any earlier insert for the same order so a retry waits for all of them, not just the latest.
@@ -1429,6 +1467,16 @@ class OrderBookkeeping {
     }
 
     // Deletes the GTT of a position that has just been sold from, then hands what is left (if anything) to the in-app exit monitor.
+    // Releases every GTT a tracked trade still carries when that trade is dropped or cut by a path other than a booked Sell (a GTT bypasses
+    // the never-short guard: one left live, or sized for a larger quantity, can sell more than is held).
+    private releaseTradeGtts(t: Trade): void {
+        const ids = [t.gttTriggerId, ...(t.extraGttTriggerIds ?? [])].filter((id): id is number => id != null);
+        if (ids.length === 0) return;
+        t.gttTriggerId = undefined as any;
+        t.extraGttTriggerIds = undefined;
+        this.trackGttRelease(this.releaseGtt(t, ids));
+    }
+
     private async releaseGtt(trade: Trade, gttTriggerIds: number[]): Promise<void> {
         for (const gttTriggerId of gttTriggerIds) {
             try {
@@ -1602,7 +1650,7 @@ class OrderBookkeeping {
     async reconcileAntPositions(): Promise<boolean> {
         const restored: Trade[] = [];
         try {
-            const positions = await ANT.getInstance().getPositions();
+            const positions = await ANT.getInstance().getPositions({ strict: true });
             const list = Array.isArray(positions) ? positions : [];
             const open = list.filter((p: any) => Number(p.netQuantity ?? 0) !== 0 && OrderBookkeeping.isOptionContract(p.tradingSymbol));
             for (const p of open) {
@@ -1748,6 +1796,7 @@ class OrderBookkeeping {
                 restored.push(...(await this.restoreOpenTradesForTsym(g.newest, null, g.token, g.broker, undefined, [g.token], others.length > 0 ? others : undefined)));
             }
             this.mergeRestored(restored);
+            await this.restoreShortTradesFromMongo(db);
             result.restored = restored.length;
             result.ok = true;
             Log.log(`[order] Restored ${restored.length} open trade(s) from Mongo alone (${result.contracts} live contract(s) with a recent Buy; no broker was read)`);
@@ -1760,6 +1809,39 @@ class OrderBookkeeping {
             Log.log('[order] ALERT: restore from Mongo failed - no trade was restored:', e);
         }
         return result;
+    }
+
+    // ButterflyStrategy's short legs are not in `trades` and used to be lost on a restart (the expiry sweep and the drawdown buy-to-close loops
+    // iterate shortTrades, and a later BuyToClose found nothing to close and booked no P&L). Rebuilds today's open shorts from the raw
+    // SellToOpen / BuyToClose docs (shorts are intraday), netted per user + broker + contract. Never replaces a short already tracked.
+    private async restoreShortTradesFromMongo(db: any): Promise<void> {
+        try {
+            const docs: any[] = await db.collection('Trade').find({ action: { $in: ['SellToOpen', 'BuyToClose'] }, entryTime: { $gte: OrderBookkeeping.startOfDay() } }).sort({ entryTime: 1 }).toArray();
+            const nets = new Map<string, { doc: any; qty: number; value: number }>();
+            for (const d of docs) {
+                const broker = d.broker == null || String(d.broker).trim() === '' ? 'kite' : normalizeBrokerName(d.broker);
+                const key = `${d.user}|${broker}|${d.tsym}`;
+                const n = nets.get(key) ?? { doc: { ...d, broker }, qty: 0, value: 0 };
+                const q = Number(d.quantity) || 0;
+                if (d.action === 'SellToOpen') { n.qty += q; n.value += q * (Number(d.price) || 0); }
+                else if (n.qty > 0) { const avg = n.value / n.qty; const c = Math.min(q, n.qty); n.qty -= c; n.value -= c * avg; }
+                nets.set(key, n);
+            }
+            let restored = 0;
+            for (const n of nets.values()) {
+                if (!(n.qty > 0)) continue;
+                const exists = this.shortTrades.some((t) => t.tsym === n.doc.tsym && t.user === n.doc.user && t.broker === n.doc.broker);
+                if (exists) continue;
+                const t = Object.assign(new Trade(), n.doc, { quantity: n.qty, price: n.value / n.qty, action: 'SellToOpen' });
+                delete (t as any)._id;
+                this.shortTrades.push(t);
+                restored++;
+                Log.log(`[order] restored short leg ${t.tsym} (${t.user}, ${t.broker}) qty=${t.quantity} @ ${t.price.toFixed(2)} from Mongo`);
+            }
+            if (restored > 0) this.notifyPositionsChanged();
+        } catch (e: any) {
+            Log.log('[order] ALERT: restoring short legs from Mongo failed - an open short would be unmanaged after this restart:', e?.message ?? e);
+        }
     }
 
     // ---- Closes that happened outside the platform (2026-11-11) ----
@@ -1790,7 +1872,7 @@ class OrderBookkeeping {
                 return net.map((p: any) => ({ tsyms: [String(p.tradingsymbol)], tokens: p.instrument_token != null ? [String(p.instrument_token)] : [], qty: Number(p.quantity ?? 0), soldQty: num(p.sell_quantity), soldValue: num(p.sell_value), ltp: num(p.last_price) }));
             }
             if (broker === 'ant') {
-                const list = await ANT.getInstance().getPositions();
+                const list = await ANT.getInstance().getPositions({ strict: true }); // a non-Ok envelope throws (-> null below), never reads as flat
                 if (!Array.isArray(list)) return null;
                 return list.map((p: any) => ({ tsyms: [String(p.tradingSymbol)], tokens: p.instrumentId != null ? [String(p.instrumentId)] : [], qty: Number(p.netQuantity ?? 0), soldQty: num(p.daySellQuantity), soldValue: num(p.daySellValue), ltp: num(p.ltp) }));
             }
@@ -2037,6 +2119,7 @@ class OrderBookkeeping {
                         this.trades.splice(idx, 1);
                         if (t.token) exitMonitor.unregisterTrade(t.user, t.token, t.broker === 'ant' || t.broker === 'prism' || t.broker === 'kite' ? t.broker : undefined);
                     }
+                    this.releaseTradeGtts(t);
                     Log.log(`[order] ALERT: ${t.user} ${t.tsym} (${broker}) qty=${t.quantity} was tracked as open but Mongo's fills show it already closed (a Sell is booked) - dropped from memory, NO second close booked`);
                     this.flatSeen.delete(flatKey(t));
                     this.notifyPositionsChanged();
@@ -2107,7 +2190,7 @@ class OrderBookkeeping {
                 return timedFillsFromKite(r);
             }
             if (broker === 'ant') {
-                const r = await ANT.getInstance().getTrades();
+                const r = await ANT.getInstance().getTrades({ strict: true });
                 if (!Array.isArray(r)) return null;
                 rows = r;
                 const keys = describeRowKeys('ant', rows); if (keys) Log.log(`[order] ${keys}`);
@@ -2118,7 +2201,7 @@ class OrderBookkeeping {
                 const from = new Date(); from.setHours(0, 0, 0, 0);
                 let result: any;
                 try {
-                    result = await withTimeout(Breeze.getInstance().getTradeList({ fromDate: from.toISOString(), toDate: new Date().toISOString(), exchangeCode: 'NFO' }), 20000, 'Breeze getTradeList');
+                    result = await withTimeout(Breeze.getInstance().getTradeListAllExchanges({ fromDate: from.toISOString(), toDate: new Date().toISOString() }), 20000, 'Breeze getTradeList');
                 } catch (e: any) {
                     if (/No Data Found/i.test(String(e?.message ?? e))) return { fills: [], untimed: [] };
                     throw e;
@@ -2457,7 +2540,7 @@ class OrderBookkeeping {
                 return sum(rows.flatMap((r: any) => { const a = act(r.transaction_type); return a ? [{ orderId: String(r.order_id ?? ''), action: a, tsym: String(r.tradingsymbol), qty: num(r.quantity), price: num(r.average_price) }] : []; }));
             }
             if (broker === 'ant') {
-                const rows = await ANT.getInstance().getTrades();
+                const rows = await ANT.getInstance().getTrades({ strict: true });
                 if (!Array.isArray(rows)) return null;
                 const antAvg = antOrderAveragePrices(rows); // tradedPrice is a cumulative average per row: the order's average is its last row's price
                 return sum(rows.flatMap((r: any) => { const a = act(r.transactionType); return a ? [{ orderId: String(r.brokerOrderId ?? ''), action: a, tsym: String(r.tradingSymbol), token: r.instrumentId != null ? String(r.instrumentId) : undefined, qty: num(r.filledQuantity), price: antAvg.get(String(r.brokerOrderId)) ?? num(r.tradedPrice) }] : []; }));
@@ -2467,7 +2550,7 @@ class OrderBookkeeping {
                 const from = new Date(); from.setHours(0, 0, 0, 0);
                 let result: any;
                 try {
-                    result = await withTimeout(Breeze.getInstance().getTradeList({ fromDate: from.toISOString(), toDate: new Date().toISOString(), exchangeCode: 'NFO' }), 20000, 'Breeze getTradeList');
+                    result = await withTimeout(Breeze.getInstance().getTradeListAllExchanges({ fromDate: from.toISOString(), toDate: new Date().toISOString() }), 20000, 'Breeze getTradeList');
                 } catch (e: any) {
                     // Breeze answers an EMPTY trade list with Error 'No Data Found' (live every sync on a day Breeze traded nothing): that is a readable, empty book.
                     if (/No Data Found/i.test(String(e?.message ?? e))) return [];
@@ -2640,6 +2723,7 @@ class OrderBookkeeping {
                             if (excess <= 0) break;
                             const cut = Math.min(excess, Number(t.quantity));
                             excess -= cut;
+                            this.releaseTradeGtts(t); // a whole drop leaves its GTT live; a cut leaves it sized for the old quantity
                             if (cut >= Number(t.quantity)) {
                                 const idx = this.trades.indexOf(t);
                                 if (idx !== -1) this.trades.splice(idx, 1);
@@ -2966,12 +3050,16 @@ class OrderBookkeeping {
             trade.open = true;
             trade.targetPrice = row.targetPrice;
             trade.stopLossPrice = row.stopLossPrice;
-            trade.gttTriggerId = row.gttTriggerId;
+            // Every surviving lot may carry its own GTT (separate buys): keep them ALL so each is released on the exit, not just the newest lot's.
+            const gttIds = Array.from(new Set(rows.map((r: any) => r.gttTriggerId).filter((g: any) => g != null)));
+            trade.gttTriggerId = row.gttTriggerId ?? (gttIds[0] as any);
+            const extraGtts = gttIds.filter((g: any) => g !== trade.gttTriggerId);
+            if (extraGtts.length > 0) trade.extraGttTriggerIds = extraGtts as number[];
             trade.antOrderNo = row.antOrderNo;
             trade.product = row.product;
             trade.prismCoverOrderNo = row.prismCoverOrderNo;
             trade.strategy = row.strategy;
-            trade.entryTime = row.entryTime;
+            trade.entryTime = firstFill.entryTime ?? row.entryTime; // the position's earliest surviving lot, not the newest
 
             restored.push(trade);
             totalRestoredQty += totalQty;

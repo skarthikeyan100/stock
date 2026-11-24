@@ -227,6 +227,9 @@ interface BrokerPosition {
     // In-memory only: the resting re-buy is being cancelled / settled right now (fill notifications are ignored meanwhile - the
     // settle reads the position back from the broker instead, so a fill is never counted twice).
     cancellingRebuy?: boolean;
+    // In-memory only: Buy fills that arrive while the re-buy limit orders are still being placed (phase 'buying', `rebuy` not yet recorded).
+    // They used to be dropped, leaving filled lots uncounted and unprotected; they are replayed once the re-buy is recorded.
+    placingRebuy?: { tsym: string; fills: Trade[] };
 }
 
 interface PersistedState {
@@ -372,7 +375,14 @@ export default class BulkPcrStrategy extends Strategy {
     private statsDay = '';
     // Slots whose resting exit is being placed right now. closeBroker skips them; placeExitSellAtTargetPrice
     // closes the slot itself once placement returns, so a sell placed after the cancel cannot be left resting.
-    private placingKeys = new Set<string>();
+    // A counter, not a Set: two placements for one slot overlapping (an onOrderCancelled re-placement during an in-flight placement) must keep the
+    // key present until BOTH finish, or closeBroker would run while the second is still placing.
+    private placingKeys = new (class {
+        private counts = new Map<string, number>();
+        add(k: string): void { this.counts.set(k, (this.counts.get(k) ?? 0) + 1); }
+        delete(k: string): void { const n = (this.counts.get(k) ?? 0) - 1; if (n > 0) this.counts.set(k, n); else this.counts.delete(k); }
+        has(k: string): boolean { return (this.counts.get(k) ?? 0) > 0; }
+    })();
     // True while reconcile() runs. A restored stop only blocks new buys after a restart (maxloss.md B3.7),
     // so the in-flight stop handling in placeExitSellAtTargetPrice is skipped then.
     private reconciling = false;
@@ -514,12 +524,14 @@ export default class BulkPcrStrategy extends Strategy {
         const positions: Partial<Record<BrokerName, BrokerPosition>> = {};
         // squaringOff is in-memory only: persisted true would survive a crash mid-close and block updateTrade after restart.
         for (const [broker, pos] of this.positions) {
-            const { squaringOff: _inFlight, trailBusy: _trailInFlight, cancellingRebuy: _cancelInFlight, ...durable } = pos;
+            const { squaringOff: _inFlight, trailBusy: _trailInFlight, cancellingRebuy: _cancelInFlight, placingRebuy: _placingRebuy, ...durable } = pos;
             positions[broker] = durable as BrokerPosition;
         }
-        const stoppedSlots = this.sideKeys().filter((k) => this.stops.get(k)?.isLatched() === true);
-        const stoppedBrokers = this.configuredBrokers().filter((b) => isPairBroker(b) && stoppedSlots.some((k) => brokerOfKey(k) === b));
-        const profitStoppedBrokers = this.configuredBrokers().filter((b) => isPairBroker(b) && this.profitStops.get(b)?.isLatched() === true);
+        // Over EVERY pair broker, not only the configured ones: AutoStart narrows `brokers:` after a broker's lockout tripped, and a lockout
+        // dropped from this document here was forgotten by a restart (the broker then traded again after its loss lock-out).
+        const stoppedSlots = Array.from(PAIR_BROKERS).flatMap((b) => [slotKey(b, CALL), slotKey(b, PUT)]).filter((k) => this.stops.get(k)?.isLatched() === true);
+        const stoppedBrokers = Array.from(PAIR_BROKERS).filter((b) => stoppedSlots.some((k) => brokerOfKey(k) === b));
+        const profitStoppedBrokers = Array.from(PAIR_BROKERS).filter((b) => this.profitStops.get(b)?.isLatched() === true);
         // The document is snapshotted now; the writes themselves run strictly in call order (SerialWriter), so an
         // older snapshot can never land after a newer one.
         const doc = {
@@ -634,8 +646,8 @@ export default class BulkPcrStrategy extends Strategy {
     // A broker's maxLossPerOrder just tripped (called once per broker per check): cut its cap and start the cooldown after which the
     // lockout is released (lossCooldownSeconds = 0: no release, locked for the day). Durable via the persistState that lockOutBroker does.
     private onLossTrip(broker: BrokerName): void {
-        this.cutsByBroker.set(broker, (this.cutsByBroker.get(broker) ?? 0) + this.cfg().lossInvestmentCut);
-        const cooldownMs = this.cfg().lossCooldownSeconds * 1000;
+        this.cutsByBroker.set(broker, (this.cutsByBroker.get(broker) ?? 0) + (Number(this.cfg().lossInvestmentCut) || 0)); // an absent key would make the cap NaN
+        const cooldownMs = (Number(this.cfg().lossCooldownSeconds) || 0) * 1000; // absent/NaN = no cooldown, locked for the day (fail closed)
         Log.log(`[BulkPcrStrategy] [${broker}] loss trip: investment cap ${this.baseCap(broker)} cut to ${this.effectiveCap(broker)}${cooldownMs > 0 ? `, lockout released in ${cooldownMs / 1000}s` : ', locked out for the rest of the day (no cooldown)'}`);
         this.pushCap(broker);
         if (cooldownMs > 0) {
@@ -801,8 +813,7 @@ export default class BulkPcrStrategy extends Strategy {
                 if (Number.isFinite(Number(base)) && !this.profitBaselineByBroker.has(broker as BrokerName)) this.profitBaselineByBroker.set(broker as BrokerName, Number(base));
             }
         }
-        for (const broker of this.configuredBrokers()) {
-            if (!isPairBroker(broker)) continue;
+        for (const broker of PAIR_BROKERS) { // every pair broker: a broker AutoStart dropped from `brokers:` keeps today's lockout
             if (this.cutsByBroker.has(broker)) this.pushCap(broker);
             for (const side of [CALL, PUT]) {
                 const key = slotKey(broker, side);
@@ -1006,6 +1017,7 @@ export default class BulkPcrStrategy extends Strategy {
                 Log.log(`[BulkPcrStrategy] [${pos.broker}] deferred exit for ${pos.heldTsym}: placing the exit sell for ${quantity} (wanted ${wanted}, held ${held.quantity})`);
                 if (pos.phase === 'selling') await this.placeExitSellAtTargetPrice(key, quantity, false);
                 else await this.placeExitSell(key, quantity);
+                this.finishIfFlat(); // a stop/EOD during the placement closed it at once: the cycle may now be over
             }
         } finally {
             this.deferredBusy = false;
@@ -1154,6 +1166,7 @@ export default class BulkPcrStrategy extends Strategy {
             if (result.orderMayBeLive) this.latchLiveRemainder(broker, `${pos.heldTsym} entry`, result.quantity);
             pos.entryQuantity = result.quantity;
             await this.placeExitSell(key, result.quantity);
+            this.finishIfFlat();
         } catch (e: any) {
             // Distinguish "nothing was bought" from a real broker-order-level problem, and
             // auto-retry only the former - a persistent/ambiguous failure still needs the same
@@ -1187,6 +1200,15 @@ export default class BulkPcrStrategy extends Strategy {
             if (nothingWasBought && !isRetry) {
                 Log.log(`[BulkPcrStrategy] [${broker}] Chunked entry failed with nothing bought - retrying once in 10s: ${message || e}`);
                 await sleep(10000);
+                // A loss/profit lockout or the EOD close may have started during the wait: the retry must not buy into it. Nothing was bought, so the slot is simply done.
+                if (this.eodDone || (isPairBroker(broker) && this.isBrokerStopped(broker))) {
+                    Log.log(`[BulkPcrStrategy] [${broker}] Retry cancelled: the broker was stopped / EOD started during the 10s wait - nothing bought, slot done`);
+                    const stoppedPos = this.positions.get(key);
+                    if (stoppedPos) stoppedPos.phase = 'done';
+                    this.persistState();
+                    this.finishIfFlat();
+                    return;
+                }
                 // The first attempt's PCR read and LTP are stale by now (the order-notify wait,
                 // cancel and 10s sleep can be ~2 min). Re-resolve direction and use the latest
                 // tick's LTP. Proceed with whatever direction is confirmed now, even if it
@@ -1691,6 +1713,7 @@ export default class BulkPcrStrategy extends Strategy {
                 this.onBuyNotFilled(pos, message);
             } else {
                 pos.phase = 'error';
+                this.latchLiveRemainder(pos.broker, `${pos.right} re-buy (outcome unconfirmed)`, 0);
                 Log.log(`[BulkPcrStrategy] [${pos.broker}] ALERT: ${pos.right} buy outcome unconfirmed or partially filled - position may be LIVE and UNPROTECTED, manual review required: ${message}`);
             }
         }
@@ -1730,6 +1753,7 @@ export default class BulkPcrStrategy extends Strategy {
         }
         pos.phase = 'buying';
         pos.lastBuyAttemptAt = Date.now();
+        pos.placingRebuy = { tsym, fills: [] };
         this.persistState();
         const exchange = exchangeForTsym(tsym);
         const chunks = splitIntoFreezeQtyChunks(toPlace, exchange === 'BFO' ? SENSEX_FREEZE_QUANTITY : NIFTY_FREEZE_QUANTITY);
@@ -1758,6 +1782,7 @@ export default class BulkPcrStrategy extends Strategy {
                 this.onBuyNotFilled(pos, message);
             } else {
                 pos.phase = 'error';
+                this.latchLiveRemainder(broker, `${pos.right} re-buy limit (placement outcome unconfirmed)`, 0); // keeps recoverFlatErrors from clearing a slot whose order may still fill
                 Log.log(`[BulkPcrStrategy] [${broker}] ALERT: ${pos.right} re-buy limit placement outcome unconfirmed - an order may be LIVE, manual review required: ${message}`);
             }
             this.persistState();
@@ -1771,6 +1796,10 @@ export default class BulkPcrStrategy extends Strategy {
         pos.buyAttempts = 0;
         pos.rebuy = { orderIds, quantity: carriedQty + placedQty, filledQty: carriedQty, filledValue: carriedValue };
         pos.phase = 'resting';
+        const earlyFills = pos.placingRebuy?.fills ?? [];
+        pos.placingRebuy = undefined;
+        for (const f of earlyFills) await this.onRebuyFill(f, pos); // fills that landed while the chunks were still being placed
+        if (pos.phase !== 'resting') return; // the early fills completed the re-buy
         this.watchSlot(pos); // its ticks drive checkRebuyDrift (idempotent: the contract is usually still watched from the sold cycle)
         Log.log(`[BulkPcrStrategy] [${broker}] ${tsym} re-buy limit resting: qty=${placedQty} @ ${price} (${orderIds.length} order(s))${carriedQty > 0 ? `, ${carriedQty} already bought` : ''}`);
         this.persistState();
@@ -2049,6 +2078,7 @@ export default class BulkPcrStrategy extends Strategy {
                 // Whatever happened, the slot's exit is re-placed for everything still open (original size if the buy bought nothing).
                 const remaining = pos.targetQuantity - pos.soldQty;
                 if (remaining > 0) await this.placeExitSellAtTargetPrice(key, remaining, false);
+                this.finishIfFlat();
             }
         } finally {
             pos.squaringOff = false;
@@ -2330,6 +2360,10 @@ export default class BulkPcrStrategy extends Strategy {
         const pos = this.slotFor(broker, trade.tsym);
         if (pos && pos.phase === 'resting' && trade.action === 'Buy') {
             await this.onRebuyFill(trade, pos);
+            return;
+        }
+        if (pos && pos.phase === 'buying' && pos.placingRebuy && trade.action === 'Buy' && trade.tsym === pos.placingRebuy.tsym) {
+            pos.placingRebuy.fills.push(trade); // the re-buy limit is still being placed: replay once it is recorded
             return;
         }
         if (!pos || pos.phase !== 'selling' || pos.squaringOff) return;

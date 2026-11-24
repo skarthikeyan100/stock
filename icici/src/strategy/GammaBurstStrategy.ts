@@ -19,7 +19,7 @@ import { INDEX_LOT_SIZE } from '../constants';
 //   Breakout: BreakoutData.from(c1, c2) - c2 closes above its open and above c1's high = call; below its open and below c1's low = put.
 //   Entry:    when a candle closes and BOTH agree, the candle closed at or after 14:00 (the first candle that can trade is 13:59-14:01,
 //             closing at 14:01), and it is an expiry day: one limit buy per broker of the ATM option (call = CE, put = PE) at the option's
-//             LTP, sized from the broker's investment (maxInvestment / maxInvestmentByBroker): whole lots that fit the budget at that price.
+//             best bid (central order price), sized from the broker's investment (maxInvestment / maxInvestmentByBroker): whole lots that fit the budget at that price.
 //   Exit:     target only (2 points on the option by config), no stop: a resting target sell, otherwise the EOD close.
 //   One trade at a time. After a trade closes, no new entry for COOLDOWN_MS; the next candle that agrees after that is taken.
 //   Entries are evaluated on candle closes only, so the wait matters when a trade closes less than a minute before a candle closes.

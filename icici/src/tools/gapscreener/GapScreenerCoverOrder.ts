@@ -103,12 +103,17 @@ async function waitUntilConnected(client: OrderClient, timeoutMs: number): Promi
 
 async function main(): Promise<void> {
     console.log('=== Gap-Screener Cover Order ===');
-    // Strategy-specific, so it lives on the GapStrategy block (not in the global settings). The block's `enabled` is the Gap strategy's own
-    // switch and does not gate this separate tool; coverOrderEnabled does.
+    // Strategy-specific, so it lives on the GapStrategy block (not in the global settings). A disabled strategy takes no action of any kind
+    // (CLAUDE.md), so the block's `enabled` gates this tool too, in addition to coverOrderEnabled.
     const settings = configService.getStrategyConfig('GapStrategy') as any;
 
     if (settings.coverOrderEnabled !== true) {
         console.log('[gapScreenerCoverOrder] coverOrderEnabled is not true on the GapStrategy block - nothing to do.');
+        return;
+    }
+
+    if (settings.enabled !== true) {
+        console.log('[gapScreenerCoverOrder] the GapStrategy block is enabled: false - a disabled strategy takes no action, nothing to do.');
         return;
     }
 

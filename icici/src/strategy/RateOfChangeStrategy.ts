@@ -56,7 +56,12 @@ class RateOfChangeContract {
             Log.log(`[RoC] Selling ${this.contract}: TIMEOUT P&L=${round(profit)}`);
             this.sellOrderPlaced = true;
             strategy.recordOutcome('timeout', profit);
-            await strategy.sellContract(this.contract, this.quantity, quote.ltp);
+            try {
+                await strategy.sellContract(this.contract, this.quantity, quote.ltp);
+            } catch (e) {
+                this.sellOrderPlaced = false; // a failed timeout sell is retried on the next tick (the never-short guard bounds an over-sell)
+                Log.log('[RoC] timeout sell failed, will retry:', e);
+            }
         }
 
         return false;

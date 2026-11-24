@@ -78,7 +78,8 @@ export async function applyAdvanced(email: string, a: { via: 'admin' | 'gstin'; 
         accountCapital: a.capital ?? defaults.accountCapital,
         profitSplitPercent: defaults.profitSplitPercent,
         via: a.via,
-        acceptance: a.acceptance ?? { acceptedAt: new Date(), termsSha256: advancedTermsSha256() },
+        // Only a real acceptance is recorded (the GSTIN self-upgrade is made with the user's own acceptance of the terms). An admin-forced upgrade has none: stamping one would be false evidence that the trader accepted.
+        acceptance: a.acceptance ?? (a.via === 'gstin' ? { acceptedAt: new Date(), termsSha256: advancedTermsSha256() } : undefined),
     });
     return getUser(email);
 }

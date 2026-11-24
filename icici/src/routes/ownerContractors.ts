@@ -195,7 +195,11 @@ router.post('/owner/agreements', requireAdmin, upload.fields([{ name: 'individua
     fs.writeFileSync(agreementPath('INDIVIDUAL', version), (ind as Express.Multer.File).buffer);
     fs.writeFileSync(agreementPath('BUSINESS', version), (biz as Express.Multer.File).buffer);
     try { res.json(await scheduleVersion(version, effectiveDate, resolveRealUser(req) ?? 'admin')); }
-    catch (e: any) { res.status(400).json({ error: String(e?.message ?? e) }); }
+    catch (e: any) {
+        // Scheduling failed after the PDFs were written: remove them, or the version number could never be reused (versionAvailable would be true).
+        try { fs.rmSync(path.dirname(agreementPath('INDIVIDUAL', version)), { recursive: true, force: true }); } catch { /* best effort */ }
+        res.status(400).json({ error: String(e?.message ?? e) });
+    }
 });
 
 export default router;

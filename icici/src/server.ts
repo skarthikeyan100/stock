@@ -17,10 +17,9 @@ import 'dotenv/config';
 // dns.setDefaultResultOrder('ipv4first') looks like the fix but does NOT
 // actually change the connected family (confirmed live in orderProcess.ts -
 // see kiteDns.ts's comment); forcing IPv4 process-wide also broke Breeze
-// (session generation/trade list/positions also happen in this process -
-// see Breeze.getInstance() calls below), whose registered "static IP" is
-// apparently the IPv6 address. So this is scoped to just the specific
-// hostnames that need it, same as orderProcess.ts.
+// (session generation/trade list/positions also happen in this process).
+// So this is scoped to just the specific hostnames listed in kiteDns.ts
+// (Kite, ANT and, since 2026-10-19, Breeze's own host), same as orderProcess.ts.
 import { installIpv4OnlyHostOverride } from './processes/order/kiteDns';
 installIpv4OnlyHostOverride();
 
@@ -197,9 +196,13 @@ async function main() {
 
     // Invoice rule (src/invoiceRule.ts): hourly, remind a GSTIN-Advanced user whose invoice is due within a day and close the account of one past the deadline.
     setInterval(() => { runInvoiceCheck().catch((e) => Log.log('[invoice] hourly check failed:', e)); }, 60 * 60 * 1000).unref();
+    // Also once shortly after start: every restart (hot restart on a code change) resets the hourly timers, so on an active day they could go
+    // hours without running. The jobs are idempotent.
+    setTimeout(() => { runInvoiceCheck().catch((e) => Log.log('[invoice] startup check failed:', e)); }, 2 * 60 * 1000).unref();
 
     // Contractor portal: when a new agreement version takes effect, contractors on an older one go to AGREEMENT_PENDING.
     setInterval(() => { runContractorHourlyJobs().catch((e) => Log.log('[contractor] hourly jobs failed:', e)); }, 60 * 60 * 1000).unref();
+    setTimeout(() => { runContractorHourlyJobs().catch((e) => Log.log('[contractor] startup jobs failed:', e)); }, 3 * 60 * 1000).unref();
 
     const port = Number(process.env.PORT) || 3000;
     const mainServer = app.listen(port, () => Log.log(`[frontend] Listening on ${port}`));

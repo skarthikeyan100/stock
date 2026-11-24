@@ -37,7 +37,7 @@ export interface InvoiceCheckDeps {
 
 const defaultDeps: InvoiceCheckDeps = {
     remind: async (payout, user) => {
-        if (!isMailConfigured()) { Log.log('[invoice] mail is not configured: reminder for', payout.invoiceNumber, 'not sent'); return; }
+        if (!isMailConfigured()) throw new Error(`mail is not configured: reminder for ${payout.invoiceNumber} not sent`); // thrown so the caller does not stamp invoiceReminderSentAt; retried at the next hourly check
         const { testRecipient } = await import('./eodEmail'); // lazy: eodEmail imports payout, which imports this file
         const test = testRecipient();
         const due = new Date(payout.invoiceDueAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'full', timeStyle: 'short' });

@@ -16,7 +16,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 /** The canonical contract string manualBuy takes: NIFTY_24150_CE, TCS_3500_PE. */
 export const canonicalContract = (underlying: string, strike: number, right: 'CE' | 'PE') => `${underlying.toUpperCase()}_${strike}_${right}`;
 
-/** A trade of this contractor is open now, or one was opened today: the same one-at-a-time rule the slot strategy had. */
+/** True when a trade of this contractor is OPEN now (a trade opened and already closed today does not count - only open trades are checked). */
 export async function tradeInProgress(c: Contractor): Promise<boolean> {
     const stats = await OrderClient.getInstance().stats(c.email);
     return (stats.trades ?? []).some((t: any) => t.user === c.email && t.open !== false);

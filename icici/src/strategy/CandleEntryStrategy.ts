@@ -6,7 +6,7 @@ import { LimitEntryStrategy, Leg } from './LimitEntryStrategy';
 import { splitLots } from './halfTrail';
 import { exitDistance, exitRulesFrom, legacyExitKeysIn, ExitRules } from './exitRules';
 
-// Base of the 15-minute-candle strategies (NextWeekStrategy, BreakoutStrategy): one LIMIT buy per broker at the option's prevailing LTP, a
+// Base of the 15-minute-candle strategies (NextWeekStrategy, BreakoutStrategy): one LIMIT buy per broker at the central order price (best bid, rounded down), a
 // FIXED quantity (config `quantity`, per broker) and the target / stopLoss exit that MomentumAtFixedTimeStrategy uses (same keys, same
 // semantics: the block's value, else settings.target / settings.stopLoss; points, "N%" of the fill, or 'none'; see exitRules.ts).
 //

@@ -14,7 +14,7 @@ import { INDEX_LOT_SIZE } from '../constants';
 //   c2.close >= c1.high + 10  -> buy CE (c2 closes outside c1's range, above its high, by at least 10 index points)
 //   c2.close <= c1.low - 10   -> buy PE (c2 closes outside c1's range, below its low, by at least 10 index points)
 //   anything else (c2 closes inside c1's range, or outside it by less than 10 points) -> no trade.
-// Entry: when a candle closes and it agrees: one limit buy per broker of the ATM option at its LTP (this/next expiry as the global
+// Entry: when a candle closes and it agrees: one limit buy per broker of the ATM option at the central order price (best bid) (this/next expiry as the global
 //   skipNearestExpiry settings decide). One trade at a time; a candle is handled once (also across a restart).
 // Exit (checkpointTrail.ts; needs 2+ whole lots): stopLoss on ticks for the whole leg. `target` is the CHECKPOINT: when a 5-minute candle of the option
 //   closes at or above buy + target, half the lots sell at market and the stop of the rest moves to that close - 2; the rest exits at buy + 1.5 x target

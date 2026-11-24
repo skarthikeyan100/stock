@@ -39,9 +39,11 @@ export async function runInvoiceChecks(now = new Date()): Promise<number> {
     let n = 0;
     for (const s of (await statementsCol().find({ status: 'PAID' }).toArray()) as StatementDoc[]) {
         if (!s.invoiceDueAt || s.invoice || s.invoiceFlagged || s.invoiceDueAt.getTime() >= now.getTime()) continue;
-        await statementsCol().updateOne({ id: s.id }, { $set: { invoiceFlagged: true } });
         const r = await contractorsCol().updateOne({ id: s.contractorId, status: 'ACTIVE' }, { $set: { status: 'PAUSED_INVOICE', statusReason: 'Invoice overdue' } });
         const c: any = await contractorsCol().findOne({ id: s.contractorId });
+        // Flag the statement as handled only once the pause applied or can never apply. A contractor who is not ACTIVE right now (paused, agreement pending)
+        // keeps the statement un-flagged, so the pause still happens if they come back to ACTIVE with the invoice missing.
+        if (r.matchedCount || !c || c.status === 'PAUSED_INVOICE' || c.status === 'TERMINATED') await statementsCol().updateOne({ id: s.id }, { $set: { invoiceFlagged: true } });
         if (r.matchedCount && c) { n++; await notifyUser(c.email, 'status', 'An invoice is overdue, so new recommendations are paused. Upload it to continue.'); await notifyAdmins('invoice_overdue', `${c.name}: invoice overdue for statement ${s.periodFrom} to ${s.periodTo}.`, { contractorId: c.id }); }
     }
     return n;
@@ -74,7 +76,8 @@ export async function runContractorHourlyJobs(now = new Date()): Promise<void> {
     const day = istDate(now);
     if (istHHMM(now) >= '06:00') {
         const wd = new Date(day + 'T00:00:00Z').getUTCDay();
-        if (wd === 3) await runWeeklyStatements(day);
-        if (day.endsWith('-01')) await runMonthlyRetainers(day);
+        // Wed-Fri / days 1-3: creation is idempotent, so a frontend that was down on the due day catches up the next day instead of waiting for a manual run.
+        if (wd >= 3 && wd <= 5) await runWeeklyStatements(day);
+        if (Number(day.slice(8, 10)) <= 3) await runMonthlyRetainers(day);
     }
 }

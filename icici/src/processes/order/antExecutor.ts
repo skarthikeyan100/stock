@@ -305,8 +305,10 @@ export async function enterPosition(
         } catch (fallbackErr: any) {
             // The history poll could not confirm a fill, so the order may still be resting
             // at the broker. Resolve the real outcome before recording anything.
-            const parentIsBrokerBracketOrCover = useCover || useBracket;
-            const resolved = await resolveUnconfirmedAntBuy(ant, orderNo, quantity, !parentIsBrokerBracketOrCover, fallbackErr);
+            // mayCancel is true for a bracket/cover parent too: the entry is a passive limit (best bid), so an unfilled parent is the normal
+            // case, and leaving it resting meant it could fill later with broker-side legs the platform never tracked. resolveUnconfirmedAntBuy
+            // re-reads the trade book after the cancel and raises manual review if it filled in the race.
+            const resolved = await resolveUnconfirmedAntBuy(ant, orderNo, quantity, true, fallbackErr);
             entryPrice = resolved.avgPrice;
             filledQuantity = resolved.quantity;
             Log.log(`[order] unconfirmed ANT buy ${orderNo} resolved: ${filledQuantity}/${quantity} filled @ ${entryPrice} for ${userId}`);
@@ -334,11 +336,16 @@ export async function enterPosition(
         // placeCoverOrder), not from an absolute price we send, so there's no
         // equivalent broker-rejection risk here today; this is purely
         // local-field hygiene.
-        trade.stopLossPrice = roundToTick(entryPrice - stopLossPoints);
-        if (!useCover) {
-            // Cover orders carry no target leg - nothing to record.
-            trade.targetPoints = targetPoints;
-            trade.targetPrice = roundToTick(entryPrice + targetPoints);
+        // A fill resolved from the trade book can carry price 0: stop/target derived from it would be negative/nonsense.
+        if (!(entryPrice > 0)) {
+            Log.log(`[order] ALERT: ${tradingSymbol} entry for ${userId} filled ${filledQuantity} but its price is unusable (${entryPrice}) - no stop/target set locally; manual review required.`);
+        } else {
+            trade.stopLossPrice = roundToTick(entryPrice - stopLossPoints);
+            if (!useCover) {
+                // Cover orders carry no target leg - nothing to record.
+                trade.targetPoints = targetPoints;
+                trade.targetPrice = roundToTick(entryPrice + targetPoints);
+            }
         }
 
         if (useBracket || useCover) {
@@ -1215,6 +1222,13 @@ export async function squareOffOnAnt(userId: string, tsym: string, quantity: num
         } else {
             // exitBracketOrder path (existing?.antOrderNo) - no separate orderNo to poll a fill price for.
             trade.price = existing?.lastTradePrice ?? existing?.price ?? 0;
+            // exitBracketOrder closes the WHOLE bracket at the broker whatever quantity was asked for, so book what really went: all of the
+            // open row. (A partial request used to book only that part and leave the rest "open" in the books while the broker was flat.)
+            const wholeBracket = openQuantity(userId, tsym);
+            if (wholeBracket > quantity) {
+                Log.log(`[order] ALERT: ${tsym} (${userId}) bracket exit closed the whole position at the broker: booking ${wholeBracket} instead of the requested ${quantity}`);
+                trade.quantity = wholeBracket;
+            }
         }
 
         await bookkeeping.recordFill(trade);

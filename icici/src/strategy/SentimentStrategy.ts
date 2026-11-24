@@ -92,7 +92,12 @@ class Contract {
                     && (quote.ltp - this.lastOrderedPrice) < -averageThreshold) {
                         this.orderPlaced = true
                         this.averageCount++
-                        this.strategy.buyContract(this.contract, orderQuantity, quote.ltp)
+                        const added = await this.strategy.buyContract(this.contract, orderQuantity, quote.ltp)
+                        // A refused add-on (definite: nothing was placed) must not leave `orderPlaced` set forever - it also blocks the target sell.
+                        if (!added && (this.strategy as any).lastBuyDefinitelyNotPlaced) {
+                            this.orderPlaced = false
+                            this.averageCount--
+                        }
                 }
             
             //Handle positive direction
@@ -103,7 +108,12 @@ class Contract {
                 canSell == true && !this.orderPlaced) {
                 this.orderPlaced = true
                 Log.log('SentimentStrategy: sell contract ', this.contract, ' at ', quote.ltp)
-                await this.strategy.sellContract(this.contract, this.qty, quote.ltp)
+                try {
+                    await this.strategy.sellContract(this.contract, this.qty, quote.ltp)
+                } catch (e) {
+                    this.orderPlaced = false // the sell failed: retry on the next tick (the order process's never-short guard bounds an over-sell)
+                    Log.log('SentimentStrategy: sell failed, will retry:', e)
+                }
             }
     
         }

@@ -104,7 +104,12 @@ class AntOrderNotifyStream {
         // In-flight guard: concurrent callers (reconnect timer + manual connect) share one attempt
         // instead of each opening their own socket.
         if (this.connecting) return this.connecting;
-        this.connecting = this.doConnect().finally(() => {
+        this.connecting = this.doConnect().catch((e) => {
+            // A failure BEFORE a socket exists (createWsToken failed) arms no close handler: schedule the retry here, or one transient
+            // failure at startup would disable push fills for the whole session.
+            if (!this.ws && !this.manualDisconnect && !isPastMarketClose() && !this.reconnectTimer) this.scheduleReconnect();
+            throw e;
+        }).finally(() => {
             this.connecting = null;
         });
         return this.connecting;

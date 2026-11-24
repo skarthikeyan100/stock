@@ -76,12 +76,20 @@ class BreezeOrderNotifyStream {
 
     private onNotification = (data: any) => this.handleMessage(data);
 
+    private connectedSessionVersion = -1;
+
     async connect(): Promise<void> {
-        if (this.connected) {
+        const breeze = Breeze.getInstance();
+        if (this.connected && this.connectedSessionVersion === breeze.sessionVersion) {
             Log.log('[BreezeOrderNotifyStream] Already connected');
             return;
         }
-        const breeze = Breeze.getInstance();
+        if (this.connected) {
+            // A re-login since this socket was built: it still carries the old session key and never receives a push. Rebuild it.
+            Log.log('[BreezeOrderNotifyStream] session changed since the order socket was created - rebuilding it');
+            breeze.resetOrderSocket();
+            this.connected = false;
+        }
         // Stable handler: Breeze.onOrderNotification dedupes by identity, so a retried connect()
         // can't double-deliver every fill.
         breeze.onOrderNotification(this.onNotification);
@@ -94,6 +102,7 @@ class BreezeOrderNotifyStream {
             throw e;
         }
         this.connected = true;
+        this.connectedSessionVersion = breeze.sessionVersion;
         Log.log('[BreezeOrderNotifyStream] Connected and subscribed to order notifications');
     }
 

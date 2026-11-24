@@ -43,6 +43,16 @@ class Strategies {
                 if (strategy) strategy.enabled = cfg.enabled;
             }
         }
+        if (syncEnabled) {
+            // An instance whose block (or `brokers:` entry) was removed must stop: it keeps no config of its own, and instanceConfig() would
+            // otherwise fall back to ANOTHER block of the same type.
+            for (const strategy of this.list) {
+                if (strategy.enabled && !this.expandedConfigs.has(strategy.userId)) {
+                    strategy.enabled = false;
+                    Log.log(`[Strategies] ${strategy.userId} no longer has a config block - disabled it`);
+                }
+            }
+        }
         return this.expandedConfigs.size;
     }
 

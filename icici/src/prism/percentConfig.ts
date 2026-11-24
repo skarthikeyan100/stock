@@ -60,7 +60,7 @@ export function drawdownLimit(settings: Record<string, any> | undefined, key: ke
 export type DrawdownState = 'ok' | 'breached' | 'unknown';
 
 export function drawdownDecision(pnl: number | null, investmentAmount: number, limitPercent: number): DrawdownState {
-    if (pnl === null) return 'unknown';
+    if (pnl === null || !Number.isFinite(pnl)) return 'unknown'; // NaN <= -limit is false: a NaN total used to read as 'ok'
     // No investment base (0/NaN): a 0 threshold would call every flat day a breach.
     if (!(investmentAmount > 0)) return 'unknown';
     return pnl <= -(investmentAmount * limitPercent) / 100 ? 'breached' : 'ok';
@@ -76,7 +76,7 @@ export function formatPercentFields<T extends Record<string, any>>(obj: T): T {
         // maxProfit is an amount in rupees for SimpleContinuousStrategy (validation rejects a '%' there): writing "20000%" back made
         // config.yml invalid after any config write (2026-11-11 12:14, the Recommendation block switching itself off), so a new process
         // could not start.
-        if (key === 'maxProfit' && (out.type === undefined || out.type === 'SimpleContinuousStrategy' || out.type === 'ScaledHedgedStrategy')) continue; // out.type undefined = the settings block: settings.maxProfit is rupees too
+        if (key === 'maxProfit' && (out.type === undefined || out.type === 'SimpleContinuousStrategy' || out.type === 'ScaledHedgedStrategy' || out.type === 'ExpiryStrategy')) continue; // ExpiryStrategy's block maxProfit is rupees as well (configValidation, globalMaxProfit RUPEE_BLOCK_MAX_PROFIT) // out.type undefined = the settings block: settings.maxProfit is rupees too
         const n = toPercentNumber(out[key]);
         if (n !== null) out[key] = `${n}%`;
     }

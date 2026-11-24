@@ -330,10 +330,10 @@ export async function updateUserSettings(email: string, settings: { lossLimit?: 
 }
 
 /** Makes the user Advanced (once: a no-op when they already are) and sets the Advanced capital and profit share. Returns whether this call did it. */
-export async function markAdvanced(email: string, f: { accountCapital: number; profitSplitPercent: number; via: 'admin' | 'gstin'; acceptance: { acceptedAt: Date; termsSha256: string } }): Promise<boolean> {
+export async function markAdvanced(email: string, f: { accountCapital: number; profitSplitPercent: number; via: 'admin' | 'gstin'; acceptance?: { acceptedAt: Date; termsSha256: string } }): Promise<boolean> {
     const res: any = await collection().updateOne(
         { email, proficiencyLevel: { $ne: 'advanced' } },
-        { $set: { proficiencyLevel: 'advanced', advancedSince: new Date(), advancedVia: f.via, advancedAcceptance: f.acceptance, accountCapital: f.accountCapital, investmentAmount: f.accountCapital, profitSplitPercent: f.profitSplitPercent } }
+        { $set: { proficiencyLevel: 'advanced', advancedSince: new Date(), advancedVia: f.via, ...(f.acceptance ? { advancedAcceptance: f.acceptance } : {}), accountCapital: f.accountCapital, investmentAmount: f.accountCapital, profitSplitPercent: f.profitSplitPercent } }
     );
     return (res?.modifiedCount ?? res?.result?.nModified ?? 0) > 0;
 }
@@ -349,6 +349,15 @@ export async function closeUserAccount(email: string, reason: string): Promise<v
         { email, accountClosed: { $ne: true } },
         { $set: { accountClosed: true, accountClosedAt: new Date(), accountClosedReason: reason } }
     );
+}
+
+/** Reopens an account that the invoice rule closed (reason "Invoice not received for payout ..."); an account closed for any other reason (weekly drawdown) is left closed. Returns true when it reopened. */
+export async function reopenInvoiceClosedAccount(email: string): Promise<boolean> {
+    const r = await collection().updateOne(
+        { email, accountClosed: true, accountClosedReason: { $regex: '^Invoice not received for payout' } },
+        { $set: { accountClosed: false }, $unset: { accountClosedAt: '', accountClosedReason: '' } }
+    );
+    return r.modifiedCount > 0;
 }
 
 const AADHAR_PATTERN = /^\d{12}$/;

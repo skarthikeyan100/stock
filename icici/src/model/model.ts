@@ -51,8 +51,12 @@ export class NiftyQuote {
     // just lp/pc/ft/tk) - only map what's actually present, no fabricated values.
     // prevClose is cached across ticks since it's constant for the trading day.
     private static lastPrevClose = new Map<string, number>();
+    private static prevCloseDay = '';
 
     static fromAnt(response): NiftyQuote {
+        // The anchor is once per trading day: a data process that spans days must not keep yesterday's previous close.
+        const today = new Date().toDateString();
+        if (NiftyQuote.prevCloseDay !== today) { NiftyQuote.lastPrevClose.clear(); NiftyQuote.prevCloseDay = today; }
         const quote = new NiftyQuote();
         quote.ltp = parseFloat(response.lp)
         quote.ltt = response.ft

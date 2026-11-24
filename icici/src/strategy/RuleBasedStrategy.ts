@@ -388,6 +388,12 @@ export default class RuleBasedStrategy extends Strategy {
             return;
         }
 
+        if (!(Number(config.quantity) > 0)) {
+            Log.log(`[Rule:${this.userId}] ALERT: quantity ${config.quantity} is not a positive number - not buying`);
+            this.contract = null;
+            return;
+        }
+
         Log.log(`[Rule:${this.userId}] TRIGGERED: ${right}, buying ${contract} qty=${config.quantity} token=${token}`);
 
         this.contract.contract = contract;

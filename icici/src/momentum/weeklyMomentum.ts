@@ -119,8 +119,11 @@ async function calculateMomentum() {
         const earlyVolumes = days.filter(d => earlyDates.includes(d.date)).map(d => d.volume);
         const lateVolumes = days.filter(d => lateDates.includes(d.date)).map(d => d.volume);
 
-        const avgEarly = earlyVolumes.reduce((a, b) => a + b, 0) / earlyVolumes.length || 1;
-        const avgLate = lateVolumes.reduce((a, b) => a + b, 0) / lateVolumes.length || 1;
+        // A missing half (a missed daily fetch, a new constituent) cannot be ranked: the old `|| 1` made its ratio ~1e6 or ~1e-6 and topped/bottomed the list.
+        if (earlyVolumes.length === 0 || lateVolumes.length === 0) continue;
+        const avgEarly = earlyVolumes.reduce((a, b) => a + b, 0) / earlyVolumes.length;
+        const avgLate = lateVolumes.reduce((a, b) => a + b, 0) / lateVolumes.length;
+        if (!(avgEarly > 0) || !(avgLate >= 0)) continue;
         const volumeRatio = avgLate / avgEarly;
 
         const momentumScore = priceTrend * volumeRatio;

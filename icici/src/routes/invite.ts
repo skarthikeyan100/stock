@@ -4,6 +4,7 @@
  * cookie means a new invite. Spec: SPEC-forecast-contractor-portal-v2.1.md sections 3 to 6.
  */
 import express from 'express';
+import { acquireKeyLock } from '../util/keyedLock';
 import Log from '../util/Log';
 import { asyncRouter } from './asyncRouter';
 import { getActiveUser, invalidateUserCache, requireAuth, resolveUser } from './session';
@@ -167,7 +168,7 @@ router.post('/invite/:token/accept', async function (req, res) {
     }
 
     // ---- a new contractor ----
-    // A Business contractor needs no email: without an email locked to the invite, its account id is its SEBI number (<INH number>@example.com, never mailed).
+    // A Business contractor needs no email: without an email locked to the invite, its account id is derived from its GSTIN (<gstin>@example.com, never mailed).
     const gstinForId = invite.type === 'BUSINESS' ? normGstin(body.kyc?.gstin) : '';
     const email = str(body.email, 254).toLowerCase() || (invite.type === 'BUSINESS' && !invite.emailLock && gstinForId.length === 15 ? placeholderEmailFor(gstinForId) : '');
     const name = str(body.name, 120) || str(body.kyc?.entityName, 120) || email.split('@')[0]; // a name can be added later on the profile page
@@ -194,13 +195,19 @@ router.post('/invite/:token/accept', async function (req, res) {
         Log.log('[contractor] accept failed after the invite was consumed; releasing the invite:', e);
         await invitesCol().updateOne({ _id: invite._id }, { $unset: { usedAt: '', contractorId: '' } }).catch(() => undefined);
         await contractorsCol().updateOne({ id: c.id }, { $set: { status: 'TERMINATED', statusReason: 'accept failed' } }).catch(() => undefined);
+        // The user row ensureContractorUser created for THIS attempt (tagged with this contractor id) must go too, or the retry hits "already registered".
+        await Mongo.getInstance().db.collection('users').deleteOne({ email: c.email, contractorId: c.id }).catch(() => undefined);
         res.status(500).json({ error: 'Could not complete the acceptance. Try the link again.' }); return;
     }
     // No owner approval step: a contractor who has accepted is active at once, unless the cap of active contractors is reached (then they wait for a free place).
-    if ((await activeCount()) < maxActiveContractors()) {
-        await contractorsCol().updateOne({ id: c.id, status: 'INVITED' }, { $set: { status: 'ACTIVE', activatedAt: new Date() } });
-        c.status = 'ACTIVE';
-    }
+    // Count + activate is one critical section: concurrent acceptances each saw a free place and together exceeded the cap.
+    const releaseCap = await acquireKeyLock('activeContractors');
+    try {
+        if ((await activeCount()) < maxActiveContractors()) {
+            await contractorsCol().updateOne({ id: c.id, status: 'INVITED' }, { $set: { status: 'ACTIVE', activatedAt: new Date() } });
+            c.status = 'ACTIVE';
+        }
+    } finally { releaseCap(); }
     invalidateUserCache(email);
     setContractorCookie(res, email, c.type);
     sendWelcomeIfDue(c).catch(() => undefined); // never blocks or fails the acceptance

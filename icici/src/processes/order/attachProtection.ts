@@ -1,5 +1,6 @@
 import Log from '../../util/Log';
 import Kite from '../../kite/Kite';
+import Mongo from '../../tools/mongo';
 import { roundToTick } from '../../util/tick';
 import bookkeeping from './bookkeeping';
 import * as exitMonitor from './exitMonitor';
@@ -73,6 +74,11 @@ export async function cancelProtection(
         await Kite.getInstance().deleteGTT(trade.gttTriggerId);
         trade.gttTriggerId = undefined as any;
         gttDeleted = true;
+        // The Buy document keeps the id written by persistGttTriggerId: forget it there too, or a restart restores the deleted GTT, the GTT
+        // poll finds it missing and falls back to an in-app watch that re-arms the exits the caller just cancelled.
+        try {
+            await Mongo.getInstance()?.db.collection('Trade').updateMany({ tsym: trade.tsym, user: trade.user, action: 'Buy', gttTriggerId: { $exists: true } }, { $unset: { gttTriggerId: '' } });
+        } catch (e) { Log.log(`[order] cancelProtection: could not clear the stored GTT id of ${tradingSymbol} (${userId}):`, e); }
     }
     if (trade.token && (broker === 'kite' || broker === 'ant')) exitMonitor.unregisterTrade(userId, trade.token, broker);
     bookkeeping.notifyTargetStopLossChanged();

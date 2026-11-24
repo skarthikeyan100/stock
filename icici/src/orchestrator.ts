@@ -17,14 +17,9 @@ import * as yaml from 'js-yaml';
 // NOTE: do NOT force IPv4 globally here (e.g. via NODE_OPTIONS=--dns-result-
 // order=ipv4first) - tried that 2026-09-25 to fix Kite's IPv4-only IP
 // allowlist rejecting our IPv6 address, but it broke Breeze/ICICI in the same
-// process: a Breeze order that filled fine minutes earlier (over whatever
-// family was default, almost certainly IPv6 - this machine's public IPv4 is
-// NAT'd/CGNAT and not the one ICICI has on file) started failing with
-// "IP address used does not match with the static IP declared when this API
-// key was created" the moment IPv4 was forced process-wide. Kite and Breeze
-// apparently have opposite requirements, so the fix has to be scoped to only
-// Kite's hostname - see src/processes/order/kiteDns.ts, applied in
-// orderProcess.ts (the only process that calls api.kite.trade).
+// process (a Breeze order started failing with an IP-mismatch error). The override is therefore scoped to named hosts only
+// (Kite, ANT and - since 2026-10-19 - Breeze's api.icicidirect.com too); see src/processes/order/kiteDns.ts for the exact list
+// and the reason, and which processes install it.
 
 // The parent. Spawns data/trading/frontend as sibling processes (`trading` = order + strategies merged, review decision 2). They find
 // each other through Unix sockets, not through the orchestrator:
@@ -113,12 +108,18 @@ const MAX_FAILED_RESTARTS = 10;
 function makeRespawner(name: string, restart: (opts?: { onlyIfDead?: boolean }) => Promise<RestartOutcome>): () => void {
     let failures = 0;
     let failedRestarts = 0; // consecutive restarts that could not start a child (a persistently missing dist file would loop forever)
+    let quickCrashes = 0; // consecutive respawns of a child that spawned fine but exited again within a minute (a startup that throws every time)
     let lastStart = Date.now();
     let pending = false;
     const respawn = (): void => {
         if (pending || shuttingDown) return;
         if (failedRestarts >= MAX_FAILED_RESTARTS) {
             log(name, `ALERT: ${failedRestarts} consecutive restarts failed - giving up until the next code change or orchestrator restart`);
+            return;
+        }
+        if (Date.now() - lastStart > 60_000) quickCrashes = 0; else quickCrashes++;
+        if (quickCrashes >= MAX_FAILED_RESTARTS) {
+            log(name, `ALERT: ${quickCrashes} consecutive crashes within a minute of starting - giving up until the next code change or orchestrator restart`);
             return;
         }
         pending = true;
@@ -190,20 +191,27 @@ function watchAndRestart(name: string, watchPaths: string[], onChange: () => voi
     const graceEndsAt = Date.now() + HOT_RESTART_BOOT_GRACE_MS;
     const snapshots = new Map(existing.map((t) => [t, hashTree(t)] as const));
     let debounce: NodeJS.Timeout | null = null;
+    let suppressedLogged = false;
     const checkAndRestart = () => {
-        let changed = false;
+        const fresh = new Map<string, Map<string, string>>();
         for (const t of existing) {
             const now = hashTree(t);
-            if (!sameHashes(snapshots.get(t)!, now)) { snapshots.set(t, now); changed = true; }
+            if (!sameHashes(snapshots.get(t)!, now)) fresh.set(t, now);
         }
-        if (!changed) return;
+        if (fresh.size === 0) return;
         // Editing src/ during market hours used to hot-restart the trading process with open legs (twice on 2026-11-02). Unless
         // HOT_RESTART=true is set explicitly, a change seen between 09:00 and 15:35 on a weekday is NOT applied: restart by hand when flat.
         // The config.yml key is read at the moment of the change (not cached), so it can be flipped at runtime; see shouldApplyCodeChange.
         if (!shouldApplyCodeChange({ envHotRestart: process.env.HOT_RESTART, configAllows: readHotRestartSetting(), inMarketHours: duringMarketHours() })) {
-            console.log(`[orchestrator] ${name}: code changed during market hours - NOT restarting it (set settings.hotRestartDuringMarketHours: true in config.yml, or restart by hand when flat)`);
+            // The baseline snapshot is NOT advanced, so the change stays pending: re-check every minute and apply it once the window closes.
+            if (!suppressedLogged) console.log(`[orchestrator] ${name}: code changed during market hours - NOT restarting it now; it is applied after 15:35 (or set settings.hotRestartDuringMarketHours: true in config.yml, or restart by hand when flat)`);
+            suppressedLogged = true;
+            if (debounce) clearTimeout(debounce);
+            debounce = setTimeout(checkAndRestart, 60_000);
             return;
         }
+        suppressedLogged = false;
+        for (const [t, h] of fresh) snapshots.set(t, h);
         onChange();
     };
     for (const target of existing) {
@@ -247,8 +255,10 @@ function makeRole(name: string, script: string, env: Record<string, string>): Ro
         child: undefined as unknown as ChildProcessWithoutNullStreams,
         start: () => { role.child = spawnChild(name, script, CHILD_STDIO, env, role.respawn); },
         restart: (opts) => serial(name, async () => {
+            if (shuttingDown) return 'skipped';
             if (replacementAlreadyRunning(name, role.child, opts)) return 'skipped';
             await stopChild(role.child);
+            if (shuttingDown) return 'skipped'; // shutdown began while the old child was exiting: do not spawn an orphan
             role.start();
             return 'started';
         }),
@@ -267,7 +277,7 @@ function hotRestart(name: string, role: Role, watchPaths: string[]): void {
 }
 
 // dist/ directories every child imports from; a change in one restarts each child that watches it.
-const sharedDirs = (...extra: string[]) => [...['ant', 'kite', 'breeze', 'model', 'util', 'prism', 'tools', 'ipc', 'lib', ...extra].map((d) => path.join(DIST, d))];
+const sharedDirs = (...extra: string[]) => [...['ant', 'kite', 'breeze', 'broker', 'model', 'util', 'prism', 'tools', 'ipc', 'lib', ...extra].map((d) => path.join(DIST, d))];
 
 async function main() {
     // --- data: owns the broker websockets and serves ticks on its socket. Never restarted automatically (review decision 5): a crash
@@ -288,7 +298,7 @@ async function main() {
         path.join(DIST, 'processes', 'order'), path.join(DIST, 'processes', 'orderProcess.js'),
         path.join(DIST, 'strategy'), path.join(DIST, 'processes', 'strategiesProcess.js'), path.join(DIST, 'processes', 'strategies'),
         path.join(DIST, 'processes', 'tradingProcess.js'),
-        ...sharedDirs(), ...topLevel('constants.js', 'orderList.js', 'nse_index.js'),
+        ...sharedDirs(), ...topLevel('constants.js', 'orderList.js', 'nse_index.js', 'prism.js', 'user.js', 'levelLimits.js', 'levelRules.js'),
     ]);
 
     // Give trading a moment to bind its sockets before the frontend tries to connect (it reconnects on drop anyway, so this is an
@@ -302,8 +312,8 @@ async function main() {
     hotRestart('frontend', frontend, [
         path.join(DIST, 'server.js'), path.join(DIST, 'middleware'),
         // The route modules and the contractor portal (invites, forecast engine, agreements) run in this process too: without them an edit there never restarted it.
-        path.join(DIST, 'routes'), path.join(DIST, 'contractors'), path.join(DIST, 'forecast'), path.join(DIST, 'agreements'),
-        ...sharedDirs(), ...topLevel('user.js', 'payout.js', 'tax.js', 'constants.js', 'nse_index.js', 'orderList.js',
+        path.join(DIST, 'routes'), path.join(DIST, 'processes', 'strategies', 'OrderClient.js'), path.join(DIST, 'contractors'), path.join(DIST, 'forecast'), path.join(DIST, 'agreements'),
+        ...sharedDirs(), ...topLevel('prism.js', 'user.js', 'payout.js', 'tax.js', 'constants.js', 'nse_index.js', 'orderList.js',
             'invoiceRule.js', 'levelGate.js', 'levelRules.js', 'levelTable.js', 'levelUpgrade.js', 'levelLimits.js', 'capitalRequests.js', 'successfulWeeks.js',
             'mailer.js', 'mailStorage.js', 'eodEmail.js', 'eodPdf.js', 'welcomeEmail.js', 'upgradeEmail.js', 'legalPdf.js', 'pdfSigning.js', 'accountDeletion.js'),
     ]);

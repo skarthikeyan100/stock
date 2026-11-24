@@ -407,12 +407,17 @@ export function detectDocumentType(buf: Buffer): 'image/jpeg' | 'image/png' | 'a
 // so a burst of uploads cannot stall SSE/API/auth for everyone.
 const OCR_TIMEOUT_MS = 60_000;
 let ocrChain: Promise<unknown> = Promise.resolve();
+let ocrWaiting = 0;
+const OCR_MAX_QUEUED = 3; // each queued upload holds a 5 MB buffer and its HTTP request: refuse beyond this instead of piling up
 function runOcrExclusive<T>(job: () => Promise<T>): Promise<T> {
+    if (ocrWaiting >= OCR_MAX_QUEUED) return Promise.reject(new Error('OCR is busy - try again in a minute'));
+    ocrWaiting++;
     const run = ocrChain.then(() => Promise.race([
         job(),
         new Promise<T>((_, reject) => setTimeout(() => reject(new Error('OCR timed out')), OCR_TIMEOUT_MS)),
     ]));
     ocrChain = run.catch(() => undefined);
+    run.then(() => undefined, () => undefined).finally(() => { ocrWaiting--; });
     return run;
 }
 
@@ -422,6 +427,12 @@ async function extractIdNumber(docType: 'pan' | 'aadhar', buffer: Buffer, mimety
         // pdf-to-img is ESM-only; this project compiles to CommonJS, so it
         // must be dynamically imported rather than statically at the top of
         // the file.
+        // A PDF with an enormous MediaBox would be rasterised at scale 5 into a gigantic bitmap: an ID card is A4-sized at most.
+        const MAX_PDF_POINTS = 2000;
+        for (const m of buffer.toString('latin1').matchAll(/\/MediaBox\s*\[\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s*\]/g)) {
+            const w = Math.abs(Number(m[3]) - Number(m[1])), h = Math.abs(Number(m[4]) - Number(m[2]));
+            if (!(w > 0 && h > 0) || w > MAX_PDF_POINTS || h > MAX_PDF_POINTS) throw new Error('PDF page size is not supported');
+        }
         const { pdf } = await import('pdf-to-img');
         const doc = await pdf(buffer, { scale: 5 });
         imageBuffer = await doc.getPage(1);

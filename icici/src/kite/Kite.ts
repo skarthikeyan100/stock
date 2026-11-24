@@ -1,4 +1,4 @@
-import { markNotPlaced, PRICE_BAND_REJECTION } from '../util/notPlaced';
+import { markNotPlaced, isNotPlaced, PRICE_BAND_REJECTION } from '../util/notPlaced';
 import { cancelThenRecheck, fillStateUnknownError } from '../util/fillWait';
 import { KiteConnect } from 'kiteconnect';
 import Log from '../util/Log';
@@ -27,6 +27,19 @@ export function stopLimitPrice(stopTrigger: number): number {
     return Math.max(NFO_TICK_SIZE, roundToTick(stopTrigger * (1 - GTT_STOP_LIMIT_BUFFER)));
 }
 
+
+// A Kite placeOrder failure is a definite refusal when Kite answered with a client-side error type (bad input / margin / token /
+// permission); a timeout or network failure (no `error_type`, or NetworkException) means the order may have been accepted.
+function classifyKitePlacementError(e: any): any {
+    if (isNotPlaced(e)) return e;
+    const type = String(e?.error_type ?? '');
+    if (/^(InputException|TokenException|PermissionException|MarginException)$/.test(type)) return markNotPlaced(e);
+    if (!type || type === 'NetworkException') {
+        if (e && typeof e === 'object') { e.orderMayBeLive = true; return e; }
+        return Object.assign(new Error(String(e)), { orderMayBeLive: true });
+    }
+    return e;
+}
 
 class Kite {
     private static instance: Kite;
@@ -61,7 +74,7 @@ class Kite {
 
     // Every Kite order placement goes through the per-broker order queue (one at a time, one second apart; see util/brokerOrderQueue.ts).
     private queuedPlaceOrder(params: Parameters<KiteConnect['placeOrder']>[1]) {
-        return runOrderWrite('kite', `placeOrder ${params.transaction_type} ${params.tradingsymbol}`, () => this.kc.placeOrder('regular', params));
+        return runOrderWrite('kite', `placeOrder ${params.transaction_type} ${params.tradingsymbol}`, () => this.kc.placeOrder('regular', params)).catch((e) => { throw classifyKitePlacementError(e); });
     }
 
     private assertBuysNotHalted(): void {
@@ -242,6 +255,7 @@ class Kite {
     // Every caller now fetches a live ANT-sourced quote first and prices a marketable
     // limit here instead.
     async placeLimitBuyOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+        if (!Number.isFinite(price) || price <= 0) throw markNotPlaced(new Error(`Kite placeLimitBuyOption refused: invalid limit price ${price} (an empty book prices at 0)`)); // nothing was sent
         this.assertBuysNotHalted();
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
@@ -344,6 +358,7 @@ class Kite {
     }
 
     async placeLimitSellOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string; quantity: number; clamped: boolean }> {
+        if (!Number.isFinite(price) || price <= 0) throw markNotPlaced(new Error(`Kite placeLimitSellOption refused: invalid limit price ${price} (an empty book prices at 0)`)); // nothing was sent
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
         }
@@ -651,6 +666,7 @@ class Kite {
     // NOT call getSellableQuantity/sellsInFlight and never should - any caller reaching this
     // other than the butterflySellToOpen IPC case (orderProcess.ts) is a bug.
     async placeShortEntryOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string }> {
+        if (!Number.isFinite(price) || price <= 0) throw markNotPlaced(new Error(`Kite placeShortEntryOption refused: invalid limit price ${price} (an empty book prices at 0)`)); // nothing was sent
         this.assertBuysNotHalted();
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');

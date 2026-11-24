@@ -60,6 +60,7 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
     private firedToday = new Set<string>();
     // The errored-broker list of the last STUCK alert, so the same cause is not re-alerted on every later slot.
     private lastStuckCause = '';
+    private lastStuckDay = ''; // the stuck alert is raised once per cause PER DAY
 
     receive(oldStats: any, newStats: any) {}
     async processOptionQuote(quote: OptionQuote) {}
@@ -215,8 +216,9 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
                 // already requires) - this strategy does not auto-clear it.
                 // The alert is raised once per distinct cause; later slots with the same cause log a plain skip line.
                 const cause = target.erroredBrokers().sort().join(',');
-                if (cause !== this.lastStuckCause) {
+                if (cause !== this.lastStuckCause || this.lastStuckDay !== localDayKey()) {
                     this.lastStuckCause = cause;
+                    this.lastStuckDay = localDayKey();
                     Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: '${targetUserId}' STUCK in a broker error state (${cause || 'unknown broker'}) - manual review and reset() required before any further slot can arm. Skipping.`);
                 } else {
                     Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: '${targetUserId}' still in the broker error state (${cause}) - skipping`);
@@ -224,6 +226,13 @@ export default class BulkPcrAutoStartStrategy extends Strategy {
             } else {
                 Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: '${targetUserId}' already running - skipping`);
             }
+            return;
+        }
+
+        // reset() below clears the target's positions and overwrites its persisted state: never do that to a target whose own reconcile
+        // failed (it would lose the slots a later successful reconcile needs).
+        if (!target.stateLoaded) {
+            Log.log(`[BulkPcrAutoStart:${this.userId}] ${timeStr} slot: '${targetUserId}' has not finished its startup reconcile - skipping this slot`);
             return;
         }
 

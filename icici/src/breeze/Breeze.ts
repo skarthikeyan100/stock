@@ -5,6 +5,7 @@ import path from 'path';
 import axios from 'axios';
 import { sleep } from '../util/sleep';
 import { runOrderWrite } from '../util/brokerOrderQueue';
+import { markNotPlaced } from '../util/notPlaced';
 import { SessionValidityCache } from '../util/SessionValidityCache';
 
 // breezeconnect ships no TypeScript types and is a plain CommonJS export
@@ -125,7 +126,9 @@ class Breeze {
             throw new Error(`Breeze ${methodName} failed: ${message ?? (e instanceof Error ? e.message : undefined) ?? 'breezeconnect SDK threw with no recoverable diagnostic'}`);
         }
         if (result?.Error || (result?.Status && result.Status !== 200)) {
-            throw new Error(`Breeze ${methodName} failed: ${result.Error ?? `unexpected status ${result.Status}`}`);
+            const refusal = new Error(`Breeze ${methodName} failed: ${result.Error ?? `unexpected status ${result.Status}`}`);
+            // ICICI answered the placement with an error envelope: it was refused, nothing is resting.
+            throw methodName === 'placeOrder' ? markNotPlaced(refusal) : refusal;
         }
         return result;
     }
@@ -236,6 +239,10 @@ class Breeze {
         if (this.wsOwners.size > 0) return; // someone else still needs the socket
         if (this.wsSocketOpen) {
             this.breeze.wsDisconnect();
+            // The SDK's wsConnect() only creates a socket when `socket` is null and never clears it, so without this a later
+            // wsConnect() (a re-login / manual reconnect) is a silent no-op that leaves the old, manually-disconnected socket
+            // (with its stale auth) in place. Dropping it makes the next wsConnect() build a fresh socket from the current session.
+            this.breeze.socket = null;
             this.wsSocketOpen = false;
         }
     }
@@ -269,6 +276,25 @@ class Breeze {
         }
     }
 
+    // The SDK's watch() adds `socket.on('stock', onMessage)` on EVERY subscribeFeeds call and never removes it, so each repeat
+    // subscribe (heartbeat, watchdog, reconnect) made every tick run the handler once more. Keep exactly one.
+    private dedupeStockListeners(): void {
+        const sock = this.breeze.socket;
+        const fn = this.breeze.onMessage;
+        if (!sock || typeof sock.listeners !== 'function' || typeof fn !== 'function') return;
+        const extra = sock.listeners('stock').filter((l: unknown) => l === fn).length - 1;
+        for (let i = 0; i < extra; i++) sock.off('stock', fn);
+    }
+
+    // socket.io does not auto-reconnect after a server-initiated disconnect or an auth rejection (socket.active is false then).
+    // Returns true when a manual reconnect was started.
+    reviveSocketIfIdle(): boolean {
+        const sock = this.breeze.socket;
+        if (!sock || sock.connected || sock.active) return false;
+        sock.connect();
+        return true;
+    }
+
     onSocketConnect(callback: () => void): void {
         this.addSocketHook('connect', callback);
     }
@@ -299,7 +325,11 @@ class Breeze {
         getOrderNotification?: boolean;
     }): Promise<any> {
         await this.requireSession();
-        return this.callSdk('subscribeFeeds', () => this.breeze.subscribeFeeds(params));
+        try {
+            return await this.callSdk('subscribeFeeds', () => this.breeze.subscribeFeeds(params));
+        } finally {
+            this.dedupeStockListeners();
+        }
     }
 
     async unsubscribeFeeds(params: {
@@ -367,8 +397,19 @@ class Breeze {
             throw e;
         }
         this.apiSession = apiSession;
+        this.sessionVersion++;
         this.saveSession();
         Log.log('[Breeze] Session generated and saved');
+    }
+
+    // Bumped on every successful login: the SDK captures the session key when it creates the ORDER socket, so that socket is stale after a re-login.
+    sessionVersion = 0;
+    // Drops the SDK's order-notification socket so the next subscribeFeeds({ getOrderNotification: true }) builds one with the current session.
+    resetOrderSocket(): void {
+        const sock = this.breeze.socketOrder;
+        if (!sock) return;
+        try { sock.disconnect(); } catch { /* already gone */ }
+        this.breeze.socketOrder = null;
     }
 
     private sessionValidity = new SessionValidityCache();
@@ -533,6 +574,25 @@ class Breeze {
     }): Promise<any> {
         await this.requireSession();
         return this.callSdk('getTradeList', () => this.breeze.getTradeList(params));
+    }
+
+    // The trade book of BOTH derivative exchanges (NFO for NIFTY, BFO for SENSEX), merged into one `{ Success: [...] }`. Breeze answers
+    // an empty book with Error 'No Data Found', which is a readable empty list here, not a failure. An NFO failure of any other kind
+    // throws; a BFO failure is logged and read as empty (NFO is the established read).
+    async getTradeListAllExchanges(params: { fromDate: string; toDate: string; productType?: string; action?: string; stockCode?: string }): Promise<{ Success: any[] }> {
+        const read = async (exchangeCode: 'NFO' | 'BFO'): Promise<any[]> => {
+            try {
+                const r = await this.getTradeList({ ...params, exchangeCode });
+                return Array.isArray(r?.Success) ? r.Success : [];
+            } catch (e: any) {
+                if (/No Data Found/i.test(String(e?.message ?? e))) return [];
+                throw e;
+            }
+        };
+        const nfo = await read('NFO');
+        let bfo: any[] = [];
+        try { bfo = await read('BFO'); } catch (e: any) { Log.log('[Breeze] BFO trade book read failed (treated as empty):', e?.message ?? e); }
+        return { Success: [...nfo, ...bfo] };
     }
 
     // Polls getOrderDetail until the fill price is known - mirrors

@@ -72,6 +72,12 @@ class ConfigService {
       settings: formatPercentFields(config.settings as any),
       strategies: (config.strategies || []).map(s => formatPercentFields(s)),
     } as AppConfig;
+    // A caller that built the config from settings + strategies only (POST /config via flatToConfig) must not delete the other top-level
+    // blocks of the file (`forecast:` and any future one): keep every top-level key the file has and the new object lacks.
+    try {
+      const onDisk: any = load(readFileSync(this.configPath, 'utf8'));
+      if (onDisk && typeof onDisk === 'object') for (const k of Object.keys(onDisk)) if (!(k in shaped)) (shaped as any)[k] = onDisk[k];
+    } catch { /* unreadable file: write what we have */ }
     // Atomic: write a temp file in the same directory, fsync, then rename over the target. A watcher/reader (or a crash,
     // ENOSPC) can therefore never see an empty or half-written config.yml. Synchronous end to end, so two POST /config
     // handlers in this process cannot interleave their writes either.

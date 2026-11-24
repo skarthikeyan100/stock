@@ -98,7 +98,7 @@ export async function monthlyRetainerStatement(c: Contractor, ym: string): Promi
     const fc = feeCfg();
     if (!(Number(fc.retainerMonthly) > 0)) return null;
     const dim = daysInMonthOf(ym), from = `${ym}-01`, to = `${ym}-${String(dim).padStart(2, '0')}`;
-    const act: string | undefined = (c as any).activatedAt ? new Date((c as any).activatedAt).toISOString().slice(0, 10) : undefined;
+    const act: string | undefined = (c as any).activatedAt ? new Date((c as any).activatedAt).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : undefined; // IST date, not UTC
     const firstDay = act && act > from ? act : from;
     const lastDay = c.terminatedAt && c.terminatedAt < to ? c.terminatedAt : to;
     if (firstDay > to || lastDay < from) return null;
@@ -206,7 +206,7 @@ export type Step = { ok: true; doc: StatementDoc } | { ok: false; status: number
 export async function approveStatement(id: string, by: string, contractor: Contractor | null): Promise<Step> {
     const cur = (await statementsCol().findOne({ id })) as StatementDoc | null;
     if (!cur) return { ok: false, status: 404, error: 'Not found' };
-    if (contractor && !contractor.isTest && !taxPhaseComplete()) return { ok: false, status: 409, error: 'Payments are locked until the tax phase is complete (forecast.taxPhaseComplete). Statements and accruals keep working.' };
+    if ((!contractor || !contractor.isTest) && !taxPhaseComplete()) return { ok: false, status: 409, error: 'Payments are locked until the tax phase is complete (forecast.taxPhaseComplete). Statements and accruals keep working.' };
     const r = await statementsCol().updateOne({ id, status: 'DRAFT' }, { $set: { status: 'APPROVED', approvedAt: new Date(), approvedBy: by } });
     if (!r.matchedCount) return { ok: false, status: 409, error: `Statement is ${cur.status}, not DRAFT` };
     return { ok: true, doc: (await statementsCol().findOne({ id })) as StatementDoc };
@@ -214,7 +214,7 @@ export async function approveStatement(id: string, by: string, contractor: Contr
 export async function markPaid(id: string, by: string, utr: string, contractor: Contractor | null, now = new Date()): Promise<Step> {
     const cur = (await statementsCol().findOne({ id })) as StatementDoc | null;
     if (!cur) return { ok: false, status: 404, error: 'Not found' };
-    if (contractor && !contractor.isTest && !taxPhaseComplete()) return { ok: false, status: 409, error: 'Mark PAID is locked until the tax phase is complete (forecast.taxPhaseComplete).' };
+    if ((!contractor || !contractor.isTest) && !taxPhaseComplete()) return { ok: false, status: 409, error: 'Mark PAID is locked until the tax phase is complete (forecast.taxPhaseComplete).' };
     if (!utr.trim()) return { ok: false, status: 400, error: 'A UTR reference is required' };
     const set: Record<string, unknown> = { status: 'PAID', paidAt: now, paidBy: by, utr: utr.trim() };
     // an Advanced contractor owes an invoice within 2 days of payment, by end of day IST (paid date + 2 days, 23:59)

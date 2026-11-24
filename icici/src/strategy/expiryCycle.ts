@@ -7,7 +7,7 @@ export function opposite(r: Right): Right {
 }
 
 // What one broker is to buy next. `price` set = a limit at exactly that price on the SAME strike (the re-buy at the bought price after a target);
-// absent = the ATM strike of the NIFTY level at that moment, limit at the option's LTP.
+// absent = the ATM strike of the NIFTY level at that moment, limit at the central order price (best bid).
 export interface ExPending {
     right: Right;
     price?: number;

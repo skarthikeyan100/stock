@@ -123,6 +123,8 @@ export default class BreakoutStrategy extends CandleEntryStrategy {
         const partial = this.firstCandlePartial;
         const side = vwap ? sideVsVwap(rec.close, vwap.vwap) : undefined;
         this.candle1 = { ...rec, vwap, side, partial, traded: false, note: '' };
+        // Stored now (analysis only): written only at candle 2, a restart between 09:30 and 09:45 lost candle 1 and stored `candle1: null`.
+        Mongo.getInstance()?.db?.collection('breakoutAnalysis').updateOne({ _id: today as any }, { $set: { updatedAt: new Date(), candle1: { start: rec.start, open: rec.open, high: rec.high, low: rec.low, close: rec.close, vwap: vwap?.vwap ?? null, vwapSource: vwap?.source ?? null, side: side ?? null, partial } } }, { upsert: true }).catch(() => undefined);
         const head = `candle 1 (09:15-09:30, ${quote.token}) closed: ${text} | future vwap ${vwapText} | close vs vwap ${vwap ? (rec.close - vwap.vwap >= 0 ? '+' : '') + (rec.close - vwap.vwap).toFixed(2) : 'n/a'} -> ${side ?? 'none'}`;
         const skip = (why: string) => { this.candle1!.note = why; Log.log(`[${this.logTag}] ${head} -> no trade: ${why}`); };
 
@@ -175,7 +177,7 @@ export default class BreakoutStrategy extends CandleEntryStrategy {
             await Mongo.getInstance()?.db?.collection('breakoutAnalysis').updateOne({ _id: localDayKey() as any }, {
                 $set: {
                     updatedAt: new Date(),
-                    candle1: c1 ? { start: c1.start, open: c1.open, high: c1.high, low: c1.low, close: c1.close, vwap: c1.vwap?.vwap ?? null, vwapSource: c1.vwap?.source ?? null, side: c1.side ?? null, partial: c1.partial, traded: c1.traded, note: c1.note } : null,
+                    ...(c1 ? { candle1: { start: c1.start, open: c1.open, high: c1.high, low: c1.low, close: c1.close, vwap: c1.vwap?.vwap ?? null, vwapSource: c1.vwap?.source ?? null, side: c1.side ?? null, partial: c1.partial, traded: c1.traded, note: c1.note } } : {}), // never overwrite the candle 1 stored at its close with null after a restart
                     candle2: { start: rec.start, open: rec.open, high: rec.high, low: rec.low, close: rec.close, vwap: vwap?.vwap ?? null, vwapSource: vwap?.source ?? null, sideVsVwap: side2 ?? null, patternSide: patternSide ?? null },
                     confirmedByVwap, confirmedByPattern, legsAtCandle2Close: legs,
                 },

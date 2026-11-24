@@ -1,9 +1,7 @@
 import readline from 'readline';
 
-// Shared newline-delimited-JSON framing, reused for both the stdio pipes
-// (orchestrator -> data -> strategies/frontend) and the order<->strategies/frontend
-// Unix-domain-socket channel - a net.Socket and a process stdin/stdout are both
-// plain Node Readable/Writable streams, so one framing helper covers both transports.
+// Shared newline-delimited-JSON framing for the Unix-domain-socket channels (data, order, strategies). Any Node
+// Readable/Writable stream works, so the helper is transport-agnostic.
 
 export function writeJsonLine(stream: NodeJS.WritableStream, obj: unknown): void {
     stream.write(JSON.stringify(obj) + '\n');

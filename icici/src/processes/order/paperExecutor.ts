@@ -136,10 +136,14 @@ function restingSellQty(userId: string, tsym: string): number {
 // The price a market-style paper order fills at: the last tick for the contract, else ANT's quote.
 async function marketPrice(token: string, exchange: OptionExchange): Promise<number> {
     const seen = lastLtp.get(token);
+    // A fresh tick, as for a buy: after the last order's subscription is released nothing refreshes the tick, and an exit filled at an old price is wrong.
+    if (seen !== undefined && seen > 0 && Date.now() - (lastTickAt.get(token) ?? 0) <= FRESH_TICK_MS) return seen;
+    try {
+        const q = Number(await ANT.getInstance().getScripQuote(exchange, token));
+        if (q > 0) return q;
+    } catch (e) { Log.log('[paper] no quote for a market exit, using the last tick:', e); }
     if (seen !== undefined && seen > 0) return seen;
-    const q = Number(await ANT.getInstance().getScripQuote(exchange, token));
-    if (!(q > 0)) throw new Error(`paper: no price for token ${token}`);
-    return q;
+    throw new Error(`paper: no price for token ${token}`);
 }
 
 // Called for every option tick the order process receives (orderProcess.onTick): records the price and fills resting sells it reaches.

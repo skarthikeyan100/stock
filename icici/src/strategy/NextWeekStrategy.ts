@@ -13,7 +13,7 @@ import { isPastTime } from '../util/marketHours';
 // 15-minute NIFTY candles + a 50 EMA trend + the breakout candle pattern, traded on the NEXT-week expiry (expiryOffset 1).
 //   Trend:    candle close above the 50 EMA = call, below = put.
 //   Breakout: BreakoutData.from(c1, c2) - c2 closes above its open and above c1's high = call; below its open and below c1's low = put.
-//   Entry:    when a candle closes and BOTH agree: one limit buy per broker of the ATM option (call = CE, put = PE) at the option's prevailing LTP,
+//   Entry:    when a candle closes and BOTH agree: one limit buy per broker of the ATM option (call = CE, put = PE) at the central order price (best bid, rounded down),
 //             `quantity` units (config), next-week expiry. Otherwise nothing.
 //   Exit:     target / stopLoss (block or settings), else the EOD close - see CandleEntryStrategy.
 // One position at a time. A candle is evaluated once (persisted key), so a restart never re-fires it.

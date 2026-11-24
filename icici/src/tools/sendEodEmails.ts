@@ -8,6 +8,7 @@
  * address (subject prefixed `[TEST for <user>]`); remove the key to email real users. Logic and records: src/eodEmail.ts.
  */
 import 'dotenv/config';
+import '../util/tz'; // pin IST: week buckets, invoice reminders and EOD dates use local time
 import Mongo from './mongo';
 import { sendEodEmails, todayIst } from '../eodEmail';
 

@@ -53,7 +53,12 @@ export class DataLink {
         });
         readJsonLines(
             socket,
-            (tick) => { for (const h of this.tickHandlers) h(tick); },
+            (tick) => {
+                // One throwing handler must not starve the handlers after it, nor be reported as a parse error.
+                for (const h of this.tickHandlers) {
+                    try { h(tick); } catch (e) { Log.log('[data-link] A tick handler threw (the other handlers still got the tick):', e); }
+                }
+            },
             (line, err) => { if (line) Log.log('[data-link] Failed to parse a tick:', line, err); },
         );
         socket.on('error', () => { /* 'close' follows and retries */ });

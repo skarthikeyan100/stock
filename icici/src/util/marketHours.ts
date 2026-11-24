@@ -45,13 +45,30 @@ export function isNiftyExpiryDay(): boolean {
   return isExpiryDayFor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()), nearest, now.getDay());
 }
 
+// True when SENSEX (BFO) lists its nearest option expiry today. Only the master can say (no weekday fallback: a stale or unreadable
+// master means "not known", never "expiry day", so no SENSEX position is force-closed on a guess).
+export function isSensexExpiryDay(): boolean {
+  const now = new Date();
+  try {
+    const nearest = AntContractMaster.getInstance().nearestExpiryDayMs('SENSEX', 'BFO');
+    return nearest !== undefined && nearest === Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  } catch {
+    return false;
+  }
+}
+
+function isPastExpiryDeadline(now: Date = new Date()): boolean {
+  return now.getHours() > EXPIRY_SQUAREOFF_HOUR || (now.getHours() === EXPIRY_SQUAREOFF_HOUR && now.getMinutes() >= EXPIRY_SQUAREOFF_MINUTE);
+}
+
 export function isPastExpirySquareOffTime(): boolean {
   if (!isNiftyExpiryDay()) return false;
-  const now = new Date();
-  return (
-    now.getHours() > EXPIRY_SQUAREOFF_HOUR ||
-    (now.getHours() === EXPIRY_SQUAREOFF_HOUR && now.getMinutes() >= EXPIRY_SQUAREOFF_MINUTE)
-  );
+  return isPastExpiryDeadline();
+}
+
+// SENSEX positions expire on SENSEX's own calendar (Thursdays), which the NIFTY check above never sees.
+export function isPastSensexExpirySquareOffTime(): boolean {
+  return isPastExpiryDeadline() && isSensexExpiryDay();
 }
 
 const RECONCILE_AFTER_HOUR = 9;

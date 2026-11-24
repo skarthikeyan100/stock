@@ -72,7 +72,7 @@ export const AntExecutor: BrokerExecutor = {
 
     // Same 'NSE'-is-Breeze-only reasoning as KiteExecutor above.
     squareOff: (userId, tradingSymbol, quantity, exchange) =>
-        antExecutor.squareOffOnAnt(userId, tradingSymbol, quantity, exchange as Exch),
+        withSellLock('ant', userId, tradingSymbol, () => antExecutor.squareOffOnAnt(userId, tradingSymbol, quantity, exchange as Exch)),
 
     squareOffLimit: (userId, tradingSymbol, instrumentId, quantity, exchange, limitPrice) =>
         withSellLock('ant', userId, tradingSymbol, () => antExecutor.placeLimitSellBareOnAnt(userId, tradingSymbol, instrumentId, quantity, limitPrice, exchange as Exch)),
@@ -83,7 +83,7 @@ export const AntExecutor: BrokerExecutor = {
     buyToClose: antExecutor.buyToClosePosition,
     marketBuy: (userId, tradingSymbol, instrumentToken, quantity, exchange) =>
         antExecutor.enterPosition(userId, tradingSymbol, instrumentToken, quantity, exchange, 0, 0, 'target-only'),
-    marketSell: (userId, tradingSymbol, _instrumentToken, quantity, exchange) => antExecutor.squareOffOnAnt(userId, tradingSymbol, quantity, exchange),
+    marketSell: (userId, tradingSymbol, _instrumentToken, quantity, exchange) => withSellLock('ant', userId, tradingSymbol, () => antExecutor.squareOffOnAnt(userId, tradingSymbol, quantity, exchange)),
     placeLimitBuy: antExecutor.placeLimitBuyBareOnAnt,
     getLiveQuantity: antExecutor.getLiveNetQuantity,
     resolveContract: async (index, strike, right, skipNearestExpiryDay, expiryOffset = 0): Promise<ResolvedContract> => {

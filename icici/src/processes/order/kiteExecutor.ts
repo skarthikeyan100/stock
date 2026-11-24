@@ -428,6 +428,8 @@ async function setTargetStopLossOnLeg(trade: Trade, targetPoints: number, stopLo
     const hasTarget = Number.isFinite(targetPoints) && targetPoints > 0;
     const hasStop = Number.isFinite(stopLossPoints) && stopLossPoints > 0;
     if (!hasTarget && !hasStop) throw new Error('setTargetStopLoss: targetPoints and/or stopLossPoints must be a positive number');
+    // An ANT bracket/cover keeps the levels it was placed with at the broker and cannot be modified here: refuse instead of showing levels nothing enforces.
+    if (trade.broker === 'ant' && trade.antOrderNo) throw new Error(`setTargetStopLoss: ${trade.tsym} is an ANT bracket/cover position - its target/stop live at the broker and cannot be changed here`);
     if (hasTarget) {
         trade.targetPrice = trade.price + targetPoints;
         trade.targetPoints = targetPoints;
@@ -452,6 +454,10 @@ async function setTargetStopLossOnLeg(trade: Trade, targetPoints: number, stopLo
     // one (manual buy with no exit points) must start the watch here. Re-registering an already-watched trade just replaces its entry
     // (the monitor reads trade.targetPrice/stopLossPrice live off the same object).
     if (trade.broker === 'breeze' && trade.token) exitMonitor.registerTrade(trade, exchangeForTsym(trade.tsym), 'breeze');
+    // Kite/ANT position with no GTT and no bracket (bought without exit points): nothing would enforce the new levels, so arm the in-app watch.
+    else if ((trade.broker === 'ant' || (trade.broker ?? 'kite') === 'kite') && !trade.gttTriggerId && trade.token && trade.targetPrice !== undefined && trade.stopLossPrice !== undefined) {
+        exitMonitor.registerTrade(trade, exchangeForTsym(trade.tsym), trade.broker === 'ant' ? 'ant' : 'kite');
+    }
     bookkeeping.notifyTargetStopLossChanged();
 }
 
