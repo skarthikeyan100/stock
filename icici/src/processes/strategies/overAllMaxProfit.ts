@@ -6,11 +6,10 @@ import { isOpenedToday } from '../../util/openedToday';
 import { localDayKey } from '../../strategy/dayKey';
 import { NonFiniteAlert } from '../../strategy/finiteGuard';
 import { disableAllAndLockProfits } from '../lockAllProfits';
-import { markOf } from './globalMaxProfit';
 import OrderClient from './OrderClient';
 
 // settings.overAllMaxProfit (rupees, optional, absent = off): when the COMBINED day P&L of every strategy on every real broker (realized + open positions at
-// the live price, trades opened today; the paper broker is not counted) reaches it, the lock-profits action runs once - every strategy is disabled in
+// the order process's last tick price (no broker call), trades opened today; the paper broker is not counted) reaches it, the lock-profits action runs once - every strategy is disabled in
 // config.yml and every open long is limit-sold at its live price (disableAllAndLockProfits, the same code as POST /order/lock-profits).
 // One trip per day, durable in Mongo (strategyLatches, ownerType 'OverAllMaxProfit'): re-enabling strategies afterwards does not trip it again
 // the same day. A trip whose lock failed (`locked` false) is retried every cycle.
@@ -25,12 +24,14 @@ export function overAllMaxProfit(settings?: Record<string, any> | null): number 
     return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
 }
 
-export async function combinedPnl(stats: { trades: any[]; closedTrades: any[] }): Promise<number> {
+export function combinedPnl(stats: { trades: any[]; closedTrades: any[] }): number {
     const mine = (t: any) => String(t.broker || 'kite') !== 'paper' && isOpenedToday(t.entryTime);
     const open = stats.trades.filter((t) => mine(t) && num(t.quantity) > 0 && Number.isFinite(Number(t.price)) && Number(t.price) > 0);
     const realized = stats.closedTrades.filter(mine).reduce((s, t) => s + num(t.realizedPnL), 0) + open.reduce((s, t) => s + num(t.realizedPnL), 0);
     let unrealized = 0;
-    for (const t of open) unrealized += ((await markOf(t)) - num(t.price)) * num(t.quantity);
+    // No broker call: each open row is valued at the last price the order process holds for it (lastTradePrice, refreshed by ticks), else its cost.
+    // A row no tick has updated (restored by reconcile) therefore adds 0 unrealized - the total under-counts, it never over-counts.
+    for (const t of open) unrealized += ((num(t.lastTradePrice) > 0 ? num(t.lastTradePrice) : num(t.price)) - num(t.price)) * num(t.quantity);
     return realized + unrealized;
 }
 
@@ -51,7 +52,7 @@ async function runOnce(orderClient: OrderClient): Promise<void> {
     try {
         const latch = await readLatch();
         if (!latch) {
-            const total = await combinedPnl(await orderClient.stats());
+            const total = combinedPnl(await orderClient.stats());
             if (!Number.isFinite(total)) { nonFiniteAlert.report('overall:total', `[OverAllMaxProfit] total is ${String(total)} - NOT tripping`); return; }
             if (!(total >= cap)) return;
             const col = Mongo.getInstance()?.db.collection('strategyLatches');
