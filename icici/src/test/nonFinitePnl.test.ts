@@ -179,7 +179,7 @@ function addLeg(s: any, id: string, o: any = {}) {
         let latched = 0;
         (latch as any).latchGlobalMaxProfit = async () => { latched++; return true; };
         const stats = (trades: any[], closed: any[] = []) => ({ trades, closedTrades: closed });
-        const T = (o: any) => ({ user: 'G1', broker: 'kite', entryTime: new Date().toISOString(), tsym: 'NIFTYX', token: '1', quantity: 100, price: 100, realizedPnL: 0, ...o });
+        const T = (o: any) => ({ user: 'G1', broker: 'kite', entryTime: new Date().toISOString(), tsym: 'NIFTYX', token: '1', quantity: 100, price: 100, lastTradePrice: fakeLtp, realizedPnL: 0, ...o });
         fakeLtp = 150;
         // undefined price: the old num() made it 0 -> a fake +15000 profit and a trip
         logged = []; calls = []; latched = 0;
