@@ -282,8 +282,13 @@ const matchQ=allMode?"&match="+encodeURIComponent("^[^@]+$"):(enabledNames?"&mat
 const byBroker=parse(require("child_process").execFileSync("curl",["-s","-m10","localhost:"+process.env.PORT+"/strategyPnl?by=broker&opened="+process.env.OPENED+matchQ]).toString());
 if(byBroker){for(let i=byBroker.length-1;i>=0;i--)if(byBroker[i].strategy==="paper"||byBroker[i].broker==="paper")byBroker.splice(i,1)} // paper is its own broker row on a server that predates the real-only route
 if(byBroker)snapUnreal(byBroker,r=>r.broker??r.strategy,tableDetail);
-if(byBroker&&byBroker.length){console.log("");table("BY BROKER",byBroker)}
-else console.log("\n(by-broker table unavailable: the API process predates the ?by=broker option - restart it)");
+// An empty array is a valid answer (no trades yet). A server that predates ?by=broker ignores it and returns BY STRATEGY rows (named by strategy,
+// not by broker), so a row whose name is a strategy of the table above (and no broker name) means the option is missing; null = no/unparseable reply.
+const brokerNames=new Set(["kite","ant","breeze","prism","shoonya","paper"]);
+const oldServer=byBroker&&byBroker.some(r=>!brokerNames.has(r.strategy)&&byStrategy.some(s=>s.strategy===r.strategy));
+if(!byBroker||oldServer)console.log("\n(by-broker table unavailable: "+(byBroker?"the API process predates the ?by=broker option - restart it":"no valid reply from the API")+")");
+else if(byBroker.length){console.log("");table("BY BROKER",byBroker)}
+else console.log("\nBY BROKER: no trades");
 
 // ---- Unrealized by broker and strategy, per open position ----
 const detail=parse(process.env.DETAIL);
