@@ -664,7 +664,7 @@ export async function squareOffOnBreeze(userId: string, tsym: string, quantity: 
 // Shared by cancelOrderOnBreeze's isFilled below and squareOffOnBreeze's
 // own cancel-failed-but-filled fallback branch, which need the same
 // quantity+price pair together rather than isFilled's quantity-only view.
-// terminal = pending_quantity === 0, i.e. nothing is still resting at the
+// terminal = the order's status is final (see classifyBreezeOrderRecord), i.e. nothing is still resting at the
 // broker for this order - either the whole thing filled, or whatever didn't
 // fill was genuinely cancelled/rejected. false means the order (or some
 // part of it) is STILL LIVE and can fill further - callers must not treat
@@ -674,24 +674,36 @@ async function getBreezeOrderFillInfo(orderId: string, exchange: BreezeExchange)
     const result = await Breeze.getInstance().getOrderDetail(exchange, orderId);
     const record = Array.isArray(result?.Success) ? result.Success[0] : result?.Success;
     if (!record) return undefined;
-    // An order REJECTED outright (never rested at all) was never seen live
-    // for this field combination, so don't trust quantity math alone to
-    // derive filledQuantity for it (confirmed via code review: a rejected
-    // order could plausibly report pending_quantity=0/cancelled_quantity=0
-    // just like a genuinely fully-filled one, which would compute
-    // filledQuantity as the FULL requested quantity - wrongly treating a
-    // rejection as a complete fill). average_price is the one field
-    // Breeze.getFillPrice already trusts as the fill signal - a rejection
-    // never populates it, so gate on that too, not quantity arithmetic
-    // alone.
-    if (record.status && /rejected/i.test(String(record.status))) {
-        return { filledQuantity: 0, avgPrice: 0, terminal: true };
+    return classifyBreezeOrderRecord(record);
+}
+
+// Pure classification of one Breeze getOrderDetail record (exported for the unit test). Terminal state comes from the order `status`
+// (the vocabulary BreezeOrderNotifyStream uses: Executed / Partially Executed / Ordered / Requested / Queued / Rejected / Cancelled /
+// Expired), NOT from pending_quantity alone: live 2026-11-25 11:53 (order 202611253800004502) a Cancelled order still reported
+// pending_quantity = its full quantity (195) with cancelled_quantity 195, so `pending === 0` read a dead order as still open and the
+// failed second cancel latched a false "buy may be live" manual review. Rules:
+//  - Rejected / Cancelled / Expired (any casing/spelling variant containing reject|cancel|expire): terminal; filled = quantity minus
+//    cancelled (or minus pending when no cancelled figure), only when average_price > 0 (a rejection/cancel with no fill is 0).
+//  - Executed: terminal; filled = quantity - cancelled (pending ignored).
+//  - Any other non-empty status (Ordered, Requested, Queued, Partially Executed, or one we do not know): NOT terminal (fail closed).
+//  - No status at all: the legacy pending_quantity === 0 test.
+export function classifyBreezeOrderRecord(record: any): { filledQuantity: number; avgPrice: number; terminal: boolean } {
+    const status = String(record?.status ?? '').trim().toLowerCase();
+    const quantity = Number(record?.quantity ?? 0);
+    const pending = Number(record?.pending_quantity ?? 0);
+    const cancelled = Number(record?.cancelled_quantity ?? 0);
+    const avgPrice = Number(record?.average_price ?? 0);
+    const priced = avgPrice > 0;
+    if (/reject|cancel|expire/.test(status)) {
+        const remainder = cancelled > 0 ? cancelled : pending;
+        return { filledQuantity: priced ? Math.max(0, quantity - remainder) : 0, avgPrice: priced ? avgPrice : 0, terminal: true };
     }
-    const quantity = Number(record.quantity ?? 0);
-    const pending = Number(record.pending_quantity ?? 0);
-    const cancelled = Number(record.cancelled_quantity ?? 0);
-    const avgPrice = Number(record.average_price ?? 0);
-    return { filledQuantity: avgPrice > 0 ? Math.max(0, quantity - pending - cancelled) : 0, avgPrice, terminal: pending === 0 };
+    if (status === 'executed') {
+        return { filledQuantity: priced ? Math.max(0, quantity - Math.max(0, cancelled)) : 0, avgPrice, terminal: true };
+    }
+    // average_price gates the quantity math (a never-filled order must not read as a full fill when pending and cancelled are both 0).
+    const filledQuantity = priced ? Math.max(0, quantity - pending - cancelled) : 0;
+    return { filledQuantity, avgPrice, terminal: status === '' ? pending === 0 : false };
 }
 
 // Cancels and untracks - mirrors kiteExecutor.cancelOrderOnKite.
