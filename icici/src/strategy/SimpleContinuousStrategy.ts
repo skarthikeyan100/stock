@@ -68,6 +68,7 @@ const PCR_RECHECK_MS = 5 * 60 * 1000;
 const ROOT_MIN_PREMIUM = 100; // ContinuousStrategy's default; there is deliberately no config key for it
 const SELL_RETRY_MS = 10_000;
 const WAITING_HEDGE_RETRY_MS = 5_000;
+const PENDING_HEDGE_RETRY_MS = 30_000; // poll of a recorded unconfirmed hedge buy (the cancel notification settles it at once)
 const EOD_RETRY_MS = 5_000;
 const DEFAULT_STACK_RECOVERY_POINTS = 20;
 
@@ -100,6 +101,11 @@ export interface SimpleLeg {
     pnlRefPending?: boolean; // the maxProfit counting started while the leg was open: pnlRef is set from its next tick
     restarted?: boolean;    // the FIRST order (root) closed at a profit with no hedge bought: no same-direction re-buy, the contract selection runs again for a new root
     lastLtp?: number;       // last option tick (in memory use only; refreshed by ticks)
+    // The hedge buy of this leg was UNCONFIRMED (timeout / cancel failed / broker unreadable) and may be live. `hedged` stays true meanwhile (no second
+    // buy) and every buy of the strategy waits; the record is settled against the broker (cancelled with 0 filled -> `hedged` cleared and the hedge retried
+    // through hedgeWaiting; filled -> adopted as the hedge child, never bought again). Persisted, so it survives a restart and a manual-review reset
+    // (2026-11-25 Breeze L12: the flag stayed true with no hedge leg after the restart cleared the in-memory latch, so the leg hung unhedged).
+    pendingHedge?: { tsym: string; token: string; exchange: 'NFO' | 'BFO'; strike: number; right: Right; premium: number; qty: number; same: boolean; at: number };
 }
 
 interface State { day: string; legs: Record<string, SimpleLeg>; seq: number; pnlStarted?: boolean; realizedPnl: number; profitTripped: boolean;
@@ -118,6 +124,8 @@ export default class SimpleContinuousStrategy extends Strategy {
     private lastNiftyLtp = 0;
     private lastPcr: { value: number; at: number } | null = null;
     private entering = false;
+    private settling = new Set<string>();        // leg ids whose pending hedge buy is being settled against the broker
+    private lastPendingSettle = new Map<string, number>();
     private manualReview = false; // an unconfirmed buy may be live: no new buys until a human looks and reset() clears it
     private blocked = false;      // reconcile could not read the open trades: no new entries
     private pendingSides = new Set<Right>();    // sides with a hedge buy in flight (not yet an open leg), so two hedges cannot both pass the one-per-side check
@@ -332,7 +340,8 @@ export default class SimpleContinuousStrategy extends Strategy {
         // Broker positions this strategy has no record of (state file lost): adopt them. hedged is inferred from the book -
         // a CE and a PE both open means the pair is already hedged.
         const known = new Set(this.openLegs().map((l) => l.token));
-        const orphans = openTrades.filter((t) => Number(t.quantity) > 0 && !known.has(String(t.token)) && !this.openLegs().some((l) => l.tsym === t.tsym));
+        const pendingTsyms = new Set(Object.values(this.state.legs).filter((l) => l.pendingHedge).map((l) => l.pendingHedge!.tsym)); // a pending hedge buy is settled from the broker, not adopted as an unknown position
+        const orphans = openTrades.filter((t) => Number(t.quantity) > 0 && !pendingTsyms.has(t.tsym) && !known.has(String(t.token)) && !this.openLegs().some((l) => l.tsym === t.tsym));
         const rights = new Set<Right>();
         for (const l of this.openLegs()) rights.add(l.right);
         const adopted: SimpleLeg[] = [];
@@ -351,6 +360,15 @@ export default class SimpleContinuousStrategy extends Strategy {
             Log.log(`[SimpleContinuousStrategy] reconcile: adopted unknown broker position ${leg.tsym} qty=${leg.qty} entry=${leg.entry}`);
         }
         if (rights.size > 1) for (const l of adopted) l.hedged = true;
+        // An open leg marked hedged with no child leg, no pending record and no open leg on the hedge side is either a legitimate no-child case (the
+        // first order closed at a profit, an adopted pair) or the 2026-11-25 defect (a cancelled / unconfirmed hedge buy left hedged: true, from code
+        // before pendingHedge was recorded). State alone cannot tell them from a manual exit, so nothing is cleared (a wrong clear could buy a second
+        // hedge): it is only reported. A recorded pendingHedge is the unambiguous case and is settled against the broker (settlePendingHedges).
+        for (const leg of this.openLegs()) {
+            if (leg.hedged && !leg.pendingHedge && !leg.restarted && !Object.values(this.state.legs).some((l) => l.parentId === leg.id) && !this.openLegs().some((l) => l.right === opposite(leg.right))) {
+                Log.log(`[SimpleContinuousStrategy] ALERT: reconcile: ${leg.tsym} is open and marked hedged but has no hedge leg and no ${opposite(leg.right)} leg is open - check whether its hedge was ever filled (a strategy reset does not clear it; set hedged false in the state file to have it hedged on the next adverse move)`);
+            }
+        }
         // Which legs already have a resting sell (so ticks do not place a second one).
         for (const leg of this.openLegs()) {
             try {
@@ -394,6 +412,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         this.ensureLoaded();
         this.lastNiftyLtp = quote.ltp;
         if (!this.enabled) { this.gateLog.log('disabled'); return; }
+        await this.settlePendingHedges(false); // an unconfirmed hedge buy is settled even at EOD / after the max-profit trip / during a manual review
         if (this.isStopped()) {
             if (Date.now() - this.lastEodAttempt > EOD_RETRY_MS) {
                 this.lastEodAttempt = Date.now();
@@ -402,7 +421,7 @@ export default class SimpleContinuousStrategy extends Strategy {
             return;
         }
         if (!this.isTimeInRange()) { this.gateLog.log('outside time window'); return; }
-        if (this.manualReview) { this.gateLog.log('manual review pending (unconfirmed buy)'); return; }
+        if (this.buysBlocked()) { this.gateLog.log('manual review / unconfirmed hedge buy pending'); return; }
         if (this.blocked || !this.stateLoaded) { this.gateLog.log('state not loaded / open trades unreadable'); return; }
         await this.retryWaitingHedges();
         if (this.entering) return;
@@ -446,7 +465,7 @@ export default class SimpleContinuousStrategy extends Strategy {
             this.gateLog.log(`root ${contract.tradingSymbol} @${contract.premium} x${qty} would exceed maxInvestment`);
             return;
         }
-        if (!this.enabled || this.manualReview) return; // changed while the contract was being picked
+        if (!this.enabled || this.buysBlocked()) return; // changed while the contract was being picked
         let trade: Trade;
         try {
             trade = await ops.buy(this.userId, contract.tradingSymbol, contract.token, qty, contract.exchange, contract.premium);
@@ -716,9 +735,50 @@ export default class SimpleContinuousStrategy extends Strategy {
         return resolveUnconfirmedBuyShared(this.userId, this.brokerOrKite(), contract, heldBefore);
     }
 
+    // Every buy waits while a human review is pending or a hedge buy is unconfirmed (it may be live: a second one would double-buy).
+    private buysBlocked(): boolean {
+        return this.manualReview || Object.values(this.state.legs).some((l) => !!l.pendingHedge);
+    }
+
+    // Settles the recorded unconfirmed hedge buys against the broker (cancel whatever still rests, read the live quantity):
+    //   nothing bought -> `hedged` cleared and the hedge retried through hedgeWaiting (open leg: its own ticks / the Nifty-tick retry);
+    //   bought -> the fill is adopted as the hedge child leg, never bought again;
+    //   unreadable / cancel failed -> stays pending, retried (throttled).
+    // `force` ignores the throttle (a cancel notification, a reset); `onlyTsym` limits it to that contract. A busy leg is skipped.
+    private async settlePendingHedges(force: boolean, onlyTsym?: string): Promise<void> {
+        for (const leg of Object.values(this.state.legs)) {
+            const p = leg.pendingHedge;
+            if (!p || (onlyTsym && p.tsym !== onlyTsym) || this.busy.has(leg.id) || this.settling.has(leg.id)) continue;
+            if (!force && Date.now() - (this.lastPendingSettle.get(leg.id) ?? 0) < PENDING_HEDGE_RETRY_MS) continue;
+            this.lastPendingSettle.set(leg.id, Date.now());
+            this.settling.add(leg.id);
+            try {
+                const res = await this.resolveUnconfirmedBuy({ tradingSymbol: p.tsym, premium: p.premium });
+                if (leg.pendingHedge !== p) continue; // settled / reset meanwhile
+                if (res.kind === 'unknown') { Log.log(`[SimpleContinuousStrategy] pending hedge buy ${p.tsym} of ${leg.tsym} still unresolved (${res.why}) - retrying`); continue; }
+                leg.pendingHedge = undefined;
+                if (res.kind === 'none') {
+                    leg.hedged = false; leg.hedgeWaiting = true; leg.hedgeSame = p.same;
+                    this.lastWaitingHedgeRetry = 0; // retried on the next Nifty tick
+                    this.save();
+                    Log.log(`[SimpleContinuousStrategy] pending hedge buy ${p.tsym} was cancelled with 0 filled - hedge flag of ${leg.tsym} cleared, will retry`);
+                    continue;
+                }
+                const adopted = Object.assign(new Trade(), { quantity: res.qty, price: res.price });
+                const hedgeLeg = this.addLeg(adopted, { tradingSymbol: p.tsym, token: p.token, exchange: p.exchange, strike: p.strike, premium: p.premium }, p.right, 'hedge', false, leg.id);
+                Log.log(`[SimpleContinuousStrategy] pending hedge buy of ${p.tsym} had filled: adopted qty=${hedgeLeg.qty} @${hedgeLeg.entry} as the hedge of ${leg.tsym}`);
+                if (!this.isStopped()) await this.placeSell(hedgeLeg); // when stopped the close-all path sells it
+            } catch (e) {
+                Log.log(`[SimpleContinuousStrategy] settling the pending buy of ${p.tsym} failed, retrying:`, e);
+            } finally {
+                this.settling.delete(leg.id);
+            }
+        }
+    }
+
     // `same`: follow the leg's direction (buy the same right) instead of the opposite one - used when the leg closed at a profit.
     private async hedge(leg: SimpleLeg, reason: string, same = false): Promise<void> {
-        if (leg.hedged || this.busy.has(leg.id) || !this.enabled || this.manualReview || this.isStopped()) return;
+        if (leg.hedged || this.busy.has(leg.id) || !this.enabled || this.buysBlocked() || this.isStopped()) return;
         const right = same ? leg.right : opposite(leg.right);
         if (this.sideBlocked(right)) {
             // Stacking guard / side occupied: leave the leg un-hedged. An open leg is retried by its own ticks, a closed one from Nifty ticks.
@@ -760,8 +820,10 @@ export default class SimpleContinuousStrategy extends Strategy {
                     return;
                 }
                 if (res.kind === 'unknown') {
-                    this.manualReview = true;
-                    Log.log(`[SimpleContinuousStrategy] ALERT: hedge buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - no new buys until it is reviewed and the strategy is reset`);
+                    // hedged stays true (no second buy) but the order is RECORDED: settled from the broker (cancelled -> hedged cleared and retried,
+                    // filled -> adopted) by the cancel notification / the Nifty-tick poll, also after a restart or a manual-review reset. No buy meanwhile.
+                    leg.pendingHedge = { tsym: contract.tradingSymbol, token: contract.token, exchange: contract.exchange, strike: contract.strike, right, premium: contract.premium, qty: leg.qty, same, at: Date.now() };
+                    Log.log(`[SimpleContinuousStrategy] ALERT: hedge buy ${contract.tradingSymbol} may be live at the broker (${res.why}) - recorded as pending on ${leg.tsym}; no new buys until it is settled from the broker`);
                     this.save();
                     return;
                 }
@@ -841,7 +903,7 @@ export default class SimpleContinuousStrategy extends Strategy {
     // No open leg, no hedge waiting to be placed and no hedge buy in flight: with the one-root-per-day gate shut nothing could ever place another order.
     private chainDead(): boolean {
         if (this.openLegs().length > 0 || this.pendingSides.size > 0) return false;
-        return !Object.values(this.state.legs).some((l) => l.hedgeWaiting && !l.hedged);
+        return !Object.values(this.state.legs).some((l) => (l.hedgeWaiting && !l.hedged) || !!l.pendingHedge); // a recorded unconfirmed hedge buy is settled, not re-bought
     }
 
     onOrderCancelled = async (n: OrderCancelledNotification): Promise<void> => {
@@ -849,6 +911,12 @@ export default class SimpleContinuousStrategy extends Strategy {
         // Only a cancelled SELL on that leg's own contract counts: a cancelled/unfilled hedge BUY (or a sell on
         // another contract) leaves every other leg's resting sell live, and resetting them made the tick retry try to
         // place a duplicate sell every 10 s (refused by the never-short guard, but an ALERT each time).
+        if (n.action === 'Buy') {
+            // A cancelled / rejected BUY matters only for a recorded unconfirmed hedge buy of that contract: settle it from the broker now.
+            this.ensureLoaded();
+            if (Object.values(this.state.legs).some((l) => l.pendingHedge?.tsym === n.tradingSymbol)) await this.settlePendingHedges(true, n.tradingSymbol);
+            return;
+        }
         if (n.action !== 'Sell') return;
         for (const leg of this.openLegs()) {
             if (leg.tsym !== n.tradingSymbol || leg.sellQty <= 0 || this.busy.has(leg.id)) continue;
@@ -1045,7 +1113,7 @@ export default class SimpleContinuousStrategy extends Strategy {
         // Opens the one-root gate: closed roots (e.g. closed by the MAX PROFIT lock) are marked `restarted` so the contract selection runs again for a
         // new root. Never while the chain is live: any open leg (a root or a hedge; a second root would make two live chains) or a closed leg whose
         // hedge is still held back (hedgeWaiting) keeps the gate shut. The new root sizes from the free part of maxInvestment (invested() = open legs).
-        const live = Object.values(this.state.legs).filter((l) => l.status === 'open' || (l.hedgeWaiting && !l.hedged));
+        const live = Object.values(this.state.legs).filter((l) => l.status === 'open' || (l.hedgeWaiting && !l.hedged) || !!l.pendingHedge);
         const reopened = live.length > 0 ? [] : Object.values(this.state.legs).filter((l) => l.role === 'root' && l.status === 'closed' && !l.restarted);
         for (const l of reopened) { l.restarted = true; l.hedged = true; l.hedgeWaiting = false; } // hedged: nothing follows the closed root
         if (reopened.length) Log.log(`[SimpleContinuousStrategy] reset: closed root(s) ${reopened.map((l) => l.tsym).join(', ')} re-opened for selection (root gate open, new root allowed)`);
@@ -1054,5 +1122,6 @@ export default class SimpleContinuousStrategy extends Strategy {
         this.manualReview = false;
         this.entering = false;
         this.busy.clear();
+        void this.settlePendingHedges(true); // a reset after a human looked: resolve the recorded unconfirmed hedge buys against the broker now
     }
 }
