@@ -83,8 +83,11 @@ export async function neverShortSellable(args: {
     restingSellQuantity: number;
     // Quantity other users' strategies already rest as sells on the same contract and broker ACCOUNT (the position is netted per account).
     otherUsersRestingSellQuantity?: number;
-    // Re-read once after a short wait before refusing on a flat reading. Only for a sell placed right after the entry fill (a target
-    // sell, a sell-back), where the positions endpoint can lag; never for a stop-loss/EOD exit, which must not wait.
+    // Re-read (up to twice, 2.5 s apart) while the live position cannot cover the requested sell, before refusing or clamping. Only
+    // for a sell placed right after the entry fill (a target sell, a sell-back), where the positions endpoint can lag the fill: flat
+    // (nothing booked yet) or PARTIAL (2026-11-25 10:00:48: ANT 195-lot buy, positions still showed the first 65-lot partial fill, so
+    // the target sell was clamped 195 -> 65). A genuine shortfall still clamps/refuses after the rereads. Never for a stop-loss/EOD
+    // exit, which must not wait.
     recheckIfFlat?: boolean;
     // One line saying whether a sell made outside the platform explains a 'nothing sellable' refusal (bookkeeping.explainNeverShort). Diagnostic only,
     // bounded to 8 s, never throws.
@@ -96,7 +99,7 @@ export async function neverShortSellable(args: {
         live = await args.livePosition();
         // A positions endpoint can lag a fill by a few seconds (a target sell placed right after the entry fill, a sell-back right
         // after its buy): before refusing on a flat reading, look once more.
-        if (args.recheckIfFlat && Number.isFinite(live) && live - args.restingSellQuantity - others <= 0) {
+        for (let i = 0; i < 2 && args.recheckIfFlat && Number.isFinite(live) && live - args.restingSellQuantity - others < args.quantity; i++) {
             await new Promise((r) => setTimeout(r, 2500));
             live = await args.livePosition();
         }
