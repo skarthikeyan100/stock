@@ -19,6 +19,7 @@ import { trackPendingLimitOrder, untrackPendingLimitOrder, findPendingOrdersForS
 import { BuyRequest, cancelOrderWithFillRecheck, OrderAlreadyFilledError, emptyExitTrade } from './BrokerExecutor';
 import { exchangeForTsym } from '../../util/underlyings';
 import { loadOrderOwners, recordOrderOwner } from './orderOwners';
+import { ownerSellCap } from './neverShortClass';
 import Mongo from '../../tools/mongo';
 import { registerEntryExit } from './entryExits';
 import { manualBuyChunked, squareOffAutoChunked, defaultFreezeQty } from './chunkedOrder';
@@ -465,6 +466,13 @@ async function setTargetStopLossOnLeg(trade: Trade, targetPoints: number, stopLo
     bookkeeping.notifyTargetStopLossChanged();
 }
 
+// The most `userId` may sell of `tsym` while other platform owners hold the same contract on the shared Kite account (own open lots minus the owner's
+// own tracked resting sells); undefined when the owner is alone on the contract.
+export function kiteOwnerCap(userId: string, tsym: string): number | undefined {
+    const resting = findPendingOrdersForSymbol(userId, tsym).filter((o) => o.action === 'Sell').reduce((s, o) => s + Number((o as any).quantity ?? 0), 0);
+    return ownerSellCap(bookkeeping.ownerHoldings('kite', tsym, userId), resting);
+}
+
 export async function squareOffOnKite(userId: string, tsym: string, quantity: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<Trade> {
     const kite = Kite.getInstance();
     // One exit operation per position at a time (shared with the ANT path): a duplicate call (manual
@@ -487,7 +495,10 @@ export async function squareOffOnKite(userId: string, tsym: string, quantity: nu
 
         // The row carries broker GTTs: one of them may have FIRED already (its lot is sold at the broker, the poll has not booked it yet). Book those
         // first, so this exit sells only what is really still held (a duplicate exit on top of a fired GTT is refused by the never-short guard).
-        if (gttIdsOf(existing).length > 0) {
+        // A row restored without its GTT id (restart) has none to look at: ask the poll to re-adopt/settle this contract's GTT too (live 2026-11-12 10:11: the stop GTT
+        // had fired at the broker, the active in-app monitor then tried the same sell 280 times).
+        if (gttIdsOf(existing).length === 0 && existing.targetPrice != null || gttIdsOf(existing).length === 0 && existing.stopLossPrice != null) gttAdoptNow.add(tsym);
+        if (gttIdsOf(existing).length > 0 || gttAdoptNow.has(tsym)) {
             try { await pollGttFills(); } catch (e) { Log.log(`[order] squareOffOnKite: GTT settle before the exit of ${tsym} (${userId}) failed:`, (e as any)?.message ?? e); }
             if (!bookkeeping.trades.includes(existing) || !(existing.quantity > 0)) {
                 Log.log(`[order] squareOffOnKite: ${tsym} (${userId}) was closed by its broker GTT - nothing to sell`);
@@ -524,7 +535,7 @@ export async function squareOffOnKite(userId: string, tsym: string, quantity: nu
         let orderId: string;
         try {
             const sellPrice = await getMarketableKitePrice(token, exchange, 'SELL');
-            const placed = await kite.placeLimitSellOption(tsym, quantity, sellPrice, exchange);
+            const placed = await kite.placeLimitSellOption(tsym, quantity, sellPrice, exchange, () => kiteOwnerCap(userId, tsym));
             orderId = placed.orderId;
             // The never-short guard may have clamped the sell: book what was actually placed.
             if (placed.quantity !== quantity) {
@@ -684,7 +695,7 @@ export async function marketSellBareOnKite(userId: string, tradingSymbol: string
     const kite = Kite.getInstance();
     Log.log(`[order] Bare market sell ${tradingSymbol} qty=${quantity} for ${userId}`);
     const sellPrice = await getMarketableKitePrice(instrumentToken, exchange, 'SELL');
-    const placed = await kite.placeLimitSellOption(tradingSymbol, quantity, sellPrice, exchange);
+    const placed = await kite.placeLimitSellOption(tradingSymbol, quantity, sellPrice, exchange, () => kiteOwnerCap(userId, tradingSymbol));
     const orderId = placed.orderId;
     // The never-short guard may have clamped the sell: book what was actually placed, not what was requested.
     if (placed.quantity !== quantity) {
@@ -771,7 +782,7 @@ export async function placeLimitSellBareOnKite(userId: string, tradingSymbol: st
         throw new Error('Kite session not active - complete /kite/login first.');
     }
     Log.log(`[order] Bare limit sell ${tradingSymbol} qty=${quantity} price=${price} for ${userId}`);
-    const placed = await kite.placeLimitSellOption(tradingSymbol, quantity, price, exchange);
+    const placed = await kite.placeLimitSellOption(tradingSymbol, quantity, price, exchange, () => kiteOwnerCap(userId, tradingSymbol));
     const orderId = placed.orderId;
     // Track the quantity actually placed (the never-short guard may have clamped it) so the fill is booked correctly.
     trackPendingLimitOrder({ orderId, userId, tradingSymbol, instrumentToken, quantity: placed.quantity, exchange, action: 'Sell' });

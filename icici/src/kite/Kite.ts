@@ -8,6 +8,7 @@ import { sleep } from '../util/sleep';
 import { runOrderWrite } from '../util/brokerOrderQueue';
 import { SessionValidityCache } from '../util/SessionValidityCache';
 import { NFO_TICK_SIZE, roundToTick } from '../util/tick';
+import { classifyRefusal, ownerSellCap } from '../processes/order/neverShortClass';
 
 // NFO/BFO options tick size - Kite rejects GTT trigger/order prices that
 // aren't an exact multiple of this (confirmed live: "Stoploss trigger price
@@ -346,7 +347,7 @@ class Kite {
     // broker's own GTT had already sold it) must not turn each retry into broker traffic or an ALERT line. Within the window the refusal is
     // answered from memory; one ALERT per minute per contract reports how many were suppressed. Only refusals are cached - a positive
     // sellable quantity is always re-read, so a real sell is never delayed by this.
-    private sellRefusals = new Map<string, { until: number; suppressed: number; loggedAt: number }>();
+    private sellRefusals = new Map<string, { until: number; suppressed: number; loggedAt: number; real: boolean }>();
     private static readonly SELL_REFUSAL_TTL_MS = 5_000;
     private static readonly SELL_REFUSAL_LOG_EVERY_MS = 60_000;
 
@@ -356,6 +357,12 @@ class Kite {
     // resting in open sells. 2026-10-19: strategies sold their tracked quantity again on retries and
     // mass closes while earlier sells had already filled, leaving a naked short (see docs/status/bugs.md).
     async getSellableQuantity(tradingSymbol: string): Promise<number> {
+        return (await this.getSellFacts(tradingSymbol)).sellable;
+    }
+
+    // The numbers behind getSellableQuantity: live = the lower of the broker's net and the net implied by today's orders, openSells = quantity resting in open sells
+    // of the whole ACCOUNT (own and other owners', the broker does not say whose).
+    async getSellFacts(tradingSymbol: string): Promise<{ live: number; openSells: number; sellable: number }> {
         const positions = await (this.kc as any).getPositions();
         const pos = (positions?.net ?? []).find((p: any) => p.tradingsymbol === tradingSymbol);
         const positionNet = Number(pos?.quantity ?? 0);
@@ -370,10 +377,13 @@ class Kite {
                 openSells += Math.max(0, Number(o.quantity ?? 0) - filled);
             }
         }
-        return Math.min(positionNet, ordersNet) - openSells;
+        const live = Math.min(positionNet, ordersNet);
+        return { live, openSells, sellable: live - openSells };
     }
 
-    async placeLimitSellOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO'): Promise<{ orderId: string; quantity: number; clamped: boolean }> {
+    // `ownerCap`: the most the CALLING owner may sell while other platform owners hold the same contract on this (shared) account (ownerSellCap); the
+    // account's net position is one number, so an owner's sell may never take another owner's lots. Omitted = no owner awareness.
+    async placeLimitSellOption(tradingSymbol: string, quantity: number, price: number, exchange: 'NFO' | 'BFO' = 'NFO', ownerCap?: () => number | undefined): Promise<{ orderId: string; quantity: number; clamped: boolean }> {
         if (!Number.isFinite(price) || price <= 0) throw markNotPlaced(new Error(`Kite placeLimitSellOption refused: invalid limit price ${price} (an empty book prices at 0)`)); // nothing was sent
         if (!this.accessToken) {
             throw new Error('No active session. Please login first.');
@@ -385,24 +395,26 @@ class Kite {
         const cached = this.sellRefusals.get(tradingSymbol);
         if (cached && Date.now() < cached.until) {
             cached.suppressed++;
-            try { Kite.neverShortRepair?.(tradingSymbol); } catch { /* never blocks the refusal */ }
+            if (cached.real) try { Kite.neverShortRepair?.(tradingSymbol); } catch { /* never blocks the refusal */ }
             if (Date.now() - cached.loggedAt >= Kite.SELL_REFUSAL_LOG_EVERY_MS) {
-                Log.log(`[Kite] ALERT: NEVER-SHORT GUARD still refusing sells of ${tradingSymbol} (${cached.suppressed} refusal(s) answered from memory, no broker call)`);
+                Log.log(`[Kite] ${cached.real ? 'ALERT: ' : ''}NEVER-SHORT GUARD still refusing sells of ${tradingSymbol} (${cached.suppressed} refusal(s) answered from memory, no broker call)`);
                 cached.loggedAt = Date.now();
                 cached.suppressed = 0;
             }
             throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${tradingSymbol} (sellable=0, refusal remembered for ${Kite.SELL_REFUSAL_TTL_MS / 1000}s) - refusing to sell ${quantity}`);
         }
         {
-            const sellable = await this.getSellableQuantity(tradingSymbol);
+            const facts = await this.getSellFacts(tradingSymbol);
+            const sellable = facts.sellable;
             if (sellable <= 0) {
-                try { Kite.neverShortRepair?.(tradingSymbol); } catch { /* never blocks the refusal */ }
+                const refusal = classifyRefusal({ requested: quantity, live: facts.live, ownResting: facts.openSells, othersResting: 0 });
+                if (refusal.real) try { Kite.neverShortRepair?.(tradingSymbol); } catch { /* never blocks the refusal */ }
                 const prev = this.sellRefusals.get(tradingSymbol);
                 const logNow = !prev || Date.now() - prev.loggedAt >= Kite.SELL_REFUSAL_LOG_EVERY_MS;
-                this.sellRefusals.set(tradingSymbol, { until: Date.now() + Kite.SELL_REFUSAL_TTL_MS, suppressed: 0, loggedAt: logNow ? Date.now() : prev!.loggedAt });
+                this.sellRefusals.set(tradingSymbol, { until: Date.now() + Kite.SELL_REFUSAL_TTL_MS, suppressed: 0, loggedAt: logNow ? Date.now() : prev!.loggedAt, real: refusal.real });
                 if (logNow) {
-                    Log.log(`[Kite] ALERT: NEVER-SHORT GUARD refused a sell of ${quantity} ${tradingSymbol} - nothing sellable (sellable=${sellable}); the caller's position tracking is out of sync with the broker`);
-                    if (Kite.neverShortExplainer) {
+                    Log.log(`[Kite] ${refusal.real ? 'ALERT: ' : ''}NEVER-SHORT GUARD refused a sell of ${quantity} ${tradingSymbol} - nothing sellable (sellable=${sellable}, live=${facts.live}, open sells=${facts.openSells}, cause class: ${refusal.cls}); the caller's position tracking is out of sync with the broker`);
+                    if (Kite.neverShortExplainer && refusal.real) {
                         let timer: NodeJS.Timeout | undefined;
                         const why = await Promise.race([
                             Kite.neverShortExplainer(tradingSymbol).catch((e: any) => `cause check failed: ${e?.message ?? e}`),
@@ -415,9 +427,18 @@ class Kite {
                 throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${tradingSymbol} (sellable=${sellable}) - refusing to sell ${quantity}`);
             }
             const requestedQuantity = quantity;
-            if (quantity > sellable) {
-                Log.log(`[Kite] ALERT: NEVER-SHORT GUARD clamped a sell of ${tradingSymbol} from ${quantity} to ${sellable} - the caller's position tracking is out of sync with the broker`);
-                quantity = sellable;
+            let allowed = sellable;
+            let cappedByOwner = false;
+            let cap: number | undefined;
+            try { cap = ownerCap?.(); } catch { cap = undefined; }
+            if (cap !== undefined && cap < allowed) { allowed = cap; cappedByOwner = true; }
+            if (allowed <= 0) {
+                Log.log(`[Kite] ALERT: NEVER-SHORT GUARD refused a sell of ${quantity} ${tradingSymbol} - the caller's own lots are all reserved and another platform owner holds the rest of this account's position (sellable=${sellable}, cause class: other-owner-lots)`);
+                throw new Error(`NEVER-SHORT GUARD: nothing sellable for ${tradingSymbol} (sellable=${sellable}, owner cap ${cap}) - refusing to sell ${quantity}`);
+            }
+            if (quantity > allowed) {
+                Log.log(`[Kite] ALERT: NEVER-SHORT GUARD clamped a sell of ${tradingSymbol} from ${quantity} to ${allowed} (account sellable=${sellable}${cappedByOwner ? `, owner cap=${cap}` : ''}; cause class: ${cappedByOwner ? 'other-owner-lots' : 'broker-short'}) - the caller's position tracking is out of sync with the broker`);
+                quantity = allowed;
             }
             Log.log(`[Kite] Placing NRML limit sell: ${tradingSymbol} qty=${quantity} price=${price} exchange=${exchange}`);
             const response = await this.queuedPlaceOrder({
