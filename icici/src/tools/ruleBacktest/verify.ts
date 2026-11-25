@@ -35,11 +35,6 @@ export async function verifyDay(
     let curTick = { ltt: 0, ltp: 0 };
     const real: RealTrade[] = [];
     const stub: any = {
-        getContractByPriceRange: async (_u: string, right: string) => {
-            const c = pickContract(day, niftyLtp, right === 'call' ? 'CE' : 'PE', maxStrikeDistance);
-            return c ? c.tsym : null;
-        },
-        getToken: async (_u: string, tsym: string) => `OPT_${tsymToKey.get(tsym)}`,
         getOpenTrades: async () => [],
     };
     const origGetInstance = (OrderClient as any).getInstance;
@@ -61,16 +56,20 @@ export async function verifyDay(
         s.isTimeInRange = () => { const m = istMinuteOfDay(nowMs); return m >= 600 && m < 900; };
         s.getConfig = () => ({ enabled: true, indicators: lines.map((names) => names.join(',')), quantity: LOT_SIZE, maxHoldTimeMinutes: cell.timeoutMinutes, logEnabled: false, requireAllIndicators: requireAll });
         s.setting = (k: string) => (k === 'target' ? rawExit(cell.target) : k === 'stopLoss' ? rawExit(cell.stop) : k === 'maxHoldTimeMinutes' ? (Number.isFinite(cell.timeoutMinutes) ? cell.timeoutMinutes : 'none') : k === 'cooldownSeconds' ? 0 : undefined);
-        s.buyContract = async (contract: string, qty: number) => { pendingBuy = { tsym: contract, qty }; return { contract, price: 0, qty, token: '' }; };
-        s.sellContract = async (contract: string, qty: number, price?: number) => { pendingSell = { tsym: contract, qty, price: Number(price) }; };
+        s.pickEntry = async (right: string) => {
+            const c = pickContract(day, niftyLtp, right === 'call' ? 'CE' : 'PE', maxStrikeDistance);
+            return c ? { tsym: c.tsym, token: `OPT_${tsymToKey.get(c.tsym)}`, exchange: 'NFO', premium: 0 } : null;
+        };
+        s.buyEntry = async (entry: { tsym: string }, qty: number) => { pendingBuy = { tsym: entry.tsym, qty }; return { quantity: qty, price: 0 }; };
+        s.sellPosition = async (_broker: string, contract: string, qty: number, price?: number) => { pendingSell = { tsym: contract, qty, price: Number(price) }; };
         s.recordOutcome = (outcome: string) => {
             if (!fillEntry) return;
             real.push({ contractKey: fillEntry.key, entryLtt: fillEntry.entryLtt, entryPx: fillEntry.entryPx, exitLtt: curTick.ltt, exitPx: pendingExitPx, reason: outcome });
             fillEntry = null;
         };
         let pendingExitPx = 0;
-        const origSell = s.sellContract;
-        s.sellContract = async (contract: string, qty: number, price?: number) => { pendingExitPx = Number(price); return origSell(contract, qty, price); };
+        const origSell = s.sellPosition;
+        s.sellPosition = async (broker: string, contract: string, qty: number, price?: number) => { pendingExitPx = Number(price); return origSell(broker, contract, qty, price); };
 
         const builder = createStatsBuilder(interval);
         // Merged feed: NIFTY first on equal times (the order the strategy would see them live).

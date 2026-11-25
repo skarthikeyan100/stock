@@ -8,6 +8,9 @@ import { registerTrade } from '../processes/strategies/tokenRouter';
 import { BROKER_TO_FEED_SOURCE, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
 import { exchangeForTsym } from '../util/underlyings';
 import { ExitRule, ExitRules, exitDistance, exitRulesFrom, legacyExitKeysIn, timeoutFrom } from './exitRules';
+import { BrokerName, configuredBrokersOf, normalizeBrokerName } from '../util/brokerName';
+import { brokerLegOps, chunkedLegSell } from './LegBrokerOps';
+import { expiryDayOverrideOf } from '../util/expirySkip';
 import { RuleIndicator, parseRuleIndicator, ruleSignal, consensusOf, parseRuleLines, combineRules } from './ruleIndicators';
 
 const round = (num: number) => Math.round(num * 100) / 100;
@@ -15,12 +18,17 @@ const round = (num: number) => Math.round(num * 100) / 100;
 // Keys a RuleBased block carried before target/stopLoss became global. They are ignored; the constructor reports them.
 const LEGACY_EXIT_KEYS = ['targetProfitPercent', 'stopLossPercent', 'targetPoints', 'stopLossPoints'];
 
+interface RuleEntry { tsym: string; token: string; exchange: 'NFO' | 'BFO'; premium: number }
+
 class RuleBasedContract {
     contract: string = '';
     token: string = '';
     price: number = 0;
     quantity: number = 0;
     right: string = '';
+    // The broker this position is held on: the instance's own broker for a new entry, the trade row's broker for a restored one
+    // (a position opened on another broker than the config now lists is still exited where it is held).
+    broker: BrokerName = 'kite';
     entryTime: number = 0;
     buyOrderPlaced: boolean = false;
     sellOrderPlaced: boolean = false;
@@ -43,6 +51,7 @@ class RuleBasedContract {
         this.price = 0;
         this.quantity = 0;
         this.right = '';
+        this.broker = 'kite';
         this.entryTime = 0;
         this.buyOrderPlaced = false;
         this.sellOrderPlaced = false;
@@ -93,7 +102,13 @@ class RuleBasedContract {
             this.sellOrderPlaced = true;
             this.exitReason = reason;
             this.exitPnl = profit;
-            await strategy.sellContract(this.contract, this.quantity, quote.ltp);
+            try {
+                await strategy.sellPosition(this.broker, this.contract, this.quantity, quote.ltp);
+            } catch (e: any) {
+                // sellOrderPlaced stays set: the sell may be live at the broker, a blind retry could stack a second one (the order side's
+                // NEVER-SHORT guard and the sell fill / reconcile settle it).
+                Log.log(`[Rule:${strategy.userId}] ALERT: exit sell of ${this.contract} (${this.broker}) failed or is unconfirmed - check the broker: ${e?.message ?? e}`);
+            }
         }
 
         return false;
@@ -209,6 +224,8 @@ export default class RuleBasedStrategy extends Strategy {
 
         return {
             enabled: myConfig?.enabled ?? false,
+            // The instance's own broker (expanded per `brokers:` entry by util/strategyInstances.ts); a block not expanded yet falls back to its first listed broker, default kite.
+            broker: (normalizeBrokerName(myConfig?.broker) || configuredBrokersOf(myConfig)[0] || 'kite') as BrokerName,
             indicators: myConfig?.indicators || [],
             quantity: myConfig?.quantity ?? 0,
             logEnabled: myConfig?.logEnabled ?? true,
@@ -288,8 +305,12 @@ export default class RuleBasedStrategy extends Strategy {
         return ruleSignal(ind, stats.results);
     }
 
-    // No-op: all decisions happen in receive()
-    async processNiftyQuote(_quote: NiftyQuote) {}
+    private lastNiftyLtp = 0;
+
+    // Decisions happen in receive(); the quote only keeps the underlying LTP the entry's contract pick needs.
+    async processNiftyQuote(quote: NiftyQuote) {
+        if (Number(quote?.ltp) > 0) this.lastNiftyLtp = Number(quote.ltp);
+    }
 
     async processOptionQuote(quote: OptionQuote) {
         if (this.contract) {
@@ -341,6 +362,9 @@ export default class RuleBasedStrategy extends Strategy {
         c.price = Number(t.price);
         c.quantity = Number(t.quantity);
         c.right = /CE$|C\d+$/.test(String(t.tsym)) ? CALL : PUT;
+        // The row's own broker, not the config's: a position opened on another broker (e.g. Prism, before the block listed kite only) is exited there.
+        const broker = (normalizeBrokerName(t.broker ?? 'kite') || 'kite') as BrokerName;
+        c.broker = broker;
         const entryMs = t.entryTime ? new Date(t.entryTime).getTime() : NaN;
         c.entryTime = Number.isFinite(entryMs) ? entryMs : Date.now();
         c.maxHoldMinutes = maxHoldMinutes;
@@ -348,7 +372,6 @@ export default class RuleBasedStrategy extends Strategy {
         c.stopRule = exits.stop;
         c.applyLevels();
         this.contract = c;
-        const broker = String(t.broker ?? 'kite');
         registerTrade(c.token, this, BROKER_TO_FEED_SOURCE[broker] ?? DEFAULT_FEED_SOURCE, exchangeForTsym(c.contract));
         Log.log(`[Rule:${this.userId}] reconcile: restored the open position ${c.contract} (${broker}) qty=${c.quantity} avg=${c.price} entered ${new Date(c.entryTime).toISOString()}; target=${c.targetDist ?? 'none'} stop=${c.stopDist ?? 'none'} timeout=${c.maxHoldMinutes || 'none'} min - its exit runs from ticks`);
     }
@@ -363,6 +386,38 @@ export default class RuleBasedStrategy extends Strategy {
         }
     }
 
+    // The contract to buy on this instance's broker: ATM-first strike walk from the live NIFTY LTP with a premium floor of settings.minPrice
+    // (the same range the Prism-only lookup used, settings.minPrice..maxPrice), in the broker's own symbology. null = none in range.
+    protected async pickEntry(right: string): Promise<RuleEntry | null> {
+        if (!(this.lastNiftyLtp > 0)) throw new Error('no NIFTY LTP yet');
+        const settings = (configService.getConfig().settings ?? {}) as any;
+        const minPremium = Number(settings.minPrice) > 0 ? Number(settings.minPrice) : 1;
+        const maxPrice = Number(settings.maxPrice);
+        const ops = brokerLegOps(() => this.getConfig().broker);
+        const c = await ops.pickContract(this.userId, this.lastNiftyLtp, right === CALL ? 'CE' : 'PE', minPremium, [], expiryDayOverrideOf(this.instanceConfig()));
+        if (Number.isFinite(maxPrice) && maxPrice > 0 && c.premium > maxPrice) return null;
+        return { tsym: c.tradingSymbol, token: c.token, exchange: c.exchange, premium: c.premium };
+    }
+
+    // Market buy on this instance's broker only (never another broker's path). Returns null on any failure: the caller verifies what is held.
+    protected async buyEntry(entry: RuleEntry, quantity: number): Promise<{ quantity: number; price: number } | null> {
+        Log.log('Buy Contract by ', this.userId, ' for contract: ', entry.tsym, ' on ', this.getConfig().broker);
+        try {
+            const ops = brokerLegOps(() => this.getConfig().broker);
+            const t = await ops.buy(this.userId, entry.tsym, entry.token, quantity, entry.exchange, entry.premium);
+            return { quantity: Number(t?.quantity), price: Number(t?.price) };
+        } catch (e) {
+            Log.log(this.userId, ' buy failed: ', e);
+            return null;
+        }
+    }
+
+    // Exit sell on the broker the position is held on (the instance's own for a new entry, the trade row's for a restored one).
+    async sellPosition(broker: BrokerName, contract: string, quantity: number, _price?: number): Promise<void> {
+        Log.log('Sell Contract by ', this.userId, ' for contract: ', contract, ' on ', broker);
+        await chunkedLegSell(this.userId, contract, quantity, broker);
+    }
+
     private async executeTrade(right: string, exits: ExitRules, maxHoldMinutes: number) {
         // Set sentinel immediately to block re-entry from concurrent receive() calls
         this.contract = new RuleBasedContract();
@@ -373,20 +428,8 @@ export default class RuleBasedStrategy extends Strategy {
 
         const config = this.getConfig();
         const orderClient = OrderClient.getInstance();
-
-        const contract = await orderClient.getContractByPriceRange(this.userId, right);
-        if (!contract) {
-            Log.log(`[Rule:${this.userId}] No contract found in price range`);
-            this.contract = null;
-            return;
-        }
-
-        const token = await orderClient.getToken(this.userId, contract);
-        if (!token) {
-            Log.log(`[Rule:${this.userId}] Token not found for contract ${contract}`);
-            this.contract = null;
-            return;
-        }
+        const broker = config.broker;
+        this.contract.broker = broker;
 
         if (!(Number(config.quantity) > 0)) {
             Log.log(`[Rule:${this.userId}] ALERT: quantity ${config.quantity} is not a positive number - not buying`);
@@ -394,13 +437,29 @@ export default class RuleBasedStrategy extends Strategy {
             return;
         }
 
-        Log.log(`[Rule:${this.userId}] TRIGGERED: ${right}, buying ${contract} qty=${config.quantity} token=${token}`);
+        let entry: RuleEntry | null;
+        try {
+            entry = await this.pickEntry(right);
+        } catch (e: any) {
+            Log.log(`[Rule:${this.userId}] No ${broker} contract found: ${e?.message ?? e}`);
+            this.contract = null;
+            return;
+        }
+        if (!entry) {
+            Log.log(`[Rule:${this.userId}] No contract found in price range`);
+            this.contract = null;
+            return;
+        }
+        const contract = entry.tsym;
+        const token = entry.token;
+
+        Log.log(`[Rule:${this.userId}] TRIGGERED: ${right}, buying ${contract} (${broker}) qty=${config.quantity} token=${token}`);
 
         this.contract.contract = contract;
         this.contract.token = token;
         this.contract.buyOrderPlaced = true;
 
-        const order = await this.buyContract(contract, config.quantity);
+        const order = await this.buyEntry(entry, config.quantity);
         if (!order && this.contract && this.contract.price === 0) {
             // buyContract swallows every error, including a timeout where the order may have filled. Only release the
             // sentinel once the order process confirms the contract is NOT held; if it is held (or the check fails)

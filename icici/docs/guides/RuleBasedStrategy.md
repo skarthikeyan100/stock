@@ -115,6 +115,15 @@ The levels are fixed when the buy fills and are recomputed if a freeze-split chu
 by the strategy at the tick price; no resting broker order is placed for them. The exit depends on option ticks reaching
 the strategy, the same as the timeout.
 
+## Brokers
+
+`brokers: [...]` (default `[kite]`) is honoured like every other strategy: the block becomes one instance per listed broker
+(`RuleBased` for kite, `RuleBased-ANT`, `RuleBased-Breeze`, `RuleBased-Prism`), each with its own one-position gate, its own
+`quantity` and its own P&L. An instance picks its contract (ATM-first, premium floor `settings.minPrice`, cap `settings.maxPrice`),
+buys and sells only on its own broker, in that broker's symbols. A position restored after a restart is exited on the broker its
+trade row says, even if the block no longer lists that broker. Before 2026-11-25 the strategy ignored `brokers` and always used the
+Prism-only order path.
+
 ## Monitoring
 
 Log lines (with `logEnabled: true`):
