@@ -60,6 +60,8 @@ import { MOCK_BROKER, PCR_WINDOW_POINTS, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY }
 //      the position is adopted as the hedge leg; unreadable -> manual review, as before.
 //   10. First order (2026-11-13): a root whose sell fills at a profit with no hedge ever bought does not re-buy the same direction; it is marked
 //      `restarted`, the one-root gate opens and the contract selection runs again for a new root.
+//   11. Last leg closed (stop loss or target) with a stale `hedged` flag and nothing open / waiting / in flight (2026-11-25): it is hedged again from that
+//      leg (loss: opposite right, profit: same right), so the chain never dies behind the one-root gate.
 // State (hedged / quantities) is kept per day in a JSON file and checked against the broker's open trades at reconcile.
 
 const PCR_RECHECK_MS = 5 * 60 * 1000;
