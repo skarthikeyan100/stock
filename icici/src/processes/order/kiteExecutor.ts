@@ -1299,7 +1299,7 @@ export async function bookFiredGtt(trade: TradeRow, gtt: any, readOrders: () => 
         // Nothing open to book it against: the account was sold twice (the caller ALERTs). The order is still the platform's own: remember it so no
         // check calls it a sell made outside the platform.
         const id = String(sellFill.order_id);
-        bookkeeping.brokerOwnedExitOrderIds.add(id); bookkeeping.gttFiredOrders.set(id, firedId);
+        bookkeeping.markGttExit('kite', id, firedId);
         recordOrderOwner(id, trade.user, 'kite', {});
         return false;
     }
@@ -1325,7 +1325,7 @@ export async function bookFiredGtt(trade: TradeRow, gtt: any, readOrders: () => 
         trade.extraGttTriggerIds = rest.length > 0 ? rest : undefined;
     }
     const orderId = String(sellTrade.brokerOrderId);
-    if (sellTrade.brokerOrderId) { bookkeeping.brokerOwnedExitOrderIds.add(orderId); bookkeeping.gttFiredOrders.set(orderId, firedId); }
+    if (sellTrade.brokerOrderId) bookkeeping.markGttExit('kite', orderId, firedId);
     try {
         await bookkeeping.recordFill(sellTrade);
     } catch (e) {
@@ -1416,7 +1416,7 @@ async function reconcileManualSellsOnce(): Promise<void> {
     );
     if (candidates.length === 0) return;
     // The persistent ownership ledger (written when this platform places or books an order) survives a restart, unlike isOwnOrder.
-    const owners = await loadOrderOwners(candidates.map((o: any) => String(o.order_id)));
+    const owners = await loadOrderOwners(candidates.map((o: any) => String(o.order_id)), 'kite');
     for (const o of candidates) {
         const id = String(o.order_id);
         if (owners.has(id)) continue;

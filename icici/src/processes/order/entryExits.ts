@@ -31,7 +31,7 @@ export async function onEntryFill(userId: string, trade: Trade): Promise<void> {
     const c = col();
     if (!c) return;
     try {
-        const row = (await c.findOne({ userId, orderId: String(trade.brokerOrderId) })) as EntryExit | null;
+        const row = (await c.findOne({ userId, orderId: String(trade.brokerOrderId), ...(trade.broker ? { broker: trade.broker } : {}) })) as EntryExit | null;
         if (!row) return;
         if ((await c.deleteOne({ userId, orderId: row.orderId })).deletedCount !== 1) return; // another event claimed it
         // The row is already claimed, so a transient failure (Mongo/GTT call) would lose the exits for good: retry a few times first.

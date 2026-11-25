@@ -107,7 +107,7 @@ async function main() {
     assert(row.gttTriggerId === 346264900 && row.extraGttTriggerIds === undefined, 'the live primary GTT stays on the row, the fired id is gone');
     await bookkeeping.whenGttReleased();
     assert(deleted.length === 0, 'the other lot\'s live GTT is NOT deleted by the fired GTT\'s booking');
-    assert(bookkeeping.isFillProcessed('2125484549093126144') && bookkeeping.brokerOwnedExitOrderIds.has('2125484549093126144'), 'the fired order is registered as the platform\'s own');
+    assert(bookkeeping.isFillProcessed('2125484549093126144') && bookkeeping.isBrokerOwnedExit('kite', '2125484549093126144'), 'the fired order is registered as the platform\'s own');
     assert(!lines.some((l) => /outside the platform|NEVER-SHORT/.test(l)), 'no NEVER-SHORT / foreign-sell line');
     // the exit monitor stays watch-only above the target: no duplicate exit
     const quote = (ltp: number) => { const o = new OptionQuote(); o.token = '47846'; o.ltp = ltp; o.ltt = Date.now(); return o; };

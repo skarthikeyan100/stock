@@ -11,7 +11,7 @@ import { UserContext, closeUserAccount } from '../../user';
 import { PUT, CALL, UNKNOWN_USER_LOSS_LIMIT, DEFAULT_LOT_LIMIT, DEFAULT_MAX_INVESTMENT, INDEX_LOT_SIZE, NIFTY_FREEZE_QUANTITY, SENSEX_FREEZE_QUANTITY } from '../../constants';
 import * as exitMonitor from './exitMonitor';
 import { collapseFillsByOrderId, netFifoLots, pairFillsFifo, netWithShortCover } from './fillNetting';
-import { recordOrderOwner, loadOrderOwners } from './orderOwners';
+import { recordOrderOwner, loadOrderOwners, loadOrderOwnerRows } from './orderOwners';
 import { setOwnerHoldingsLookup } from './neverShortClass';
 import { foreignSellExcess, piecesForShortfall } from './foreignSells';
 import { ForeignSellWatch, type WatchReason } from './foreignSellWatch';
@@ -199,14 +199,18 @@ class OrderBookkeeping {
     // other than the failed-booking release), so this set, a subset of it, lives and grows the same way - per process.
     private bookedFillIds: Set<string> = new Set();
     // The ONE place a Sell is declared booked into this process's memory: records the proof and clears that order's parked entry.
-    private markSellBooked(id: string | undefined | null): void {
+    private markSellBooked(id: string | undefined | null, broker: string | undefined): void {
         if (id == null || id === '') return;
-        this.bookedFillIds.add(String(id));
-        this.dropParked(String(id));
+        this.bookedFillIds.add(this.fk(broker, id)); // broker|id: ANT and Prism issue colliding Noren-style ids
+        this.dropParked(this.fk(broker, id));
     }
     // Sell fills that arrived with an unusable price and were deliberately NOT booked (see recordFill); cleared when the same order is later booked.
     private unresolvedFills: Map<string, { tsym: string; user: string; broker?: string; quantity: number; brokerOrderId?: string; at: Date; alertedAt?: number; seen: number }> = new Map();
     private unresolvedKey(t: { broker?: string; user?: string; tsym: string }): string { return `${t.broker ?? 'kite'}|${t.user || 'Default'}|${t.tsym}`; }
+    // A parked Sell is keyed broker|orderId (a bare id collided across brokers: one broker's booking cleared another broker's parked Sell).
+    private parkedKey(t: { broker?: string; user?: string; tsym: string; quantity: number; brokerOrderId?: string }): string {
+        return t.brokerOrderId != null ? this.fk(t.broker, t.brokerOrderId) : `${this.unresolvedKey(t)}|noid|${Number(t.quantity)}`;
+    }
     // One entry per distinct fill. The Trade event carries no stable identity besides brokerOrderId (no exchange trade id / fill time), so an
     // id-less fill is keyed broker|user|tsym|qty: a redelivery (poller / sync every cycle) refreshes that entry instead of adding one. Two
     // genuinely distinct id-less unpriced Sells of the same size on one contract collapse into one entry (accepted: the alert still shows).
@@ -243,13 +247,17 @@ class OrderBookkeeping {
             if (!col) return 0;
             const rows: any[] = await col.find({}).toArray();
             for (const r of rows) {
-                const key = String(r._id);
-                if (this.unresolvedFills.has(key)) continue;
+                let key = String(r._id);
                 const broker = r.broker ?? 'kite', user = r.user || 'Default';
+                // A row written before the keys were broker-scoped has the bare order id as _id: re-keyed to broker|id (old document removed below).
+                const legacyKey = r.brokerOrderId != null && key === String(r.brokerOrderId) ? key : undefined;
+                if (legacyKey) key = this.fk(broker, r.brokerOrderId);
+                if (this.unresolvedFills.has(key)) continue;
                 const at = new Date(r.at);
                 const open = this.trades.some((x) => (x.broker ?? 'kite') === broker && (x.user || 'Default') === user && x.tsym === r.tsym && Number(x.quantity) > 0);
-                if (!open || !(at.getTime() >= OrderBookkeeping.startOfDay().getTime())) { await col.deleteOne({ _id: key } as any); continue; }
+                if (!open || !(at.getTime() >= OrderBookkeeping.startOfDay().getTime())) { await col.deleteOne({ _id: r._id } as any); continue; }
                 this.unresolvedFills.set(key, { tsym: r.tsym, user, broker: r.broker, quantity: Number(r.quantity), brokerOrderId: r.brokerOrderId, at, seen: Number(r.seen) || 1 });
+                if (legacyKey) { this.persistParked(key); await col.deleteOne({ _id: r._id } as any); }
                 n++;
             }
             if (n > 0) Log.log(`[order] ALERT: ${n} parked unresolved Sell(s) restored from Mongo after a restart (position still open, Sell not booked): ${this.getUnresolvedFills().map((f) => `${f.user} ${f.tsym} qty ${f.quantity} order ${f.brokerOrderId ?? 'unknown'}`).join('; ')}`);
@@ -259,7 +267,7 @@ class OrderBookkeeping {
         return n;
     }
     private parkUnresolvedSell(t: Trade): void {
-        const key = t.brokerOrderId != null ? String(t.brokerOrderId) : `${this.unresolvedKey(t)}|noid|${Number(t.quantity)}`;
+        const key = this.parkedKey(t);
         const prev = this.unresolvedFills.get(key);
         this.unresolvedFills.set(key, { tsym: t.tsym, user: t.user || 'Default', broker: t.broker, quantity: Number(t.quantity), brokerOrderId: t.brokerOrderId, at: prev?.at ?? new Date(), alertedAt: prev?.alertedAt, seen: (prev?.seen ?? 0) + 1 });
         this.persistParked(key);
@@ -278,13 +286,13 @@ class OrderBookkeeping {
     // an id claimed by a delivery still mid-booking (which may yet throw) or one merely found stored in Mongo proves nothing and stays parked. Only
     // that order's own entry may go - never the quantity or flat rules, which are limited to a Sell booked just now. (An unpriced redelivery returns before it.)
     private clearParkedSellById(t: Trade): void {
-        if (t.action === 'Sell' && t.brokerOrderId != null && this.bookedFillIds.has(String(t.brokerOrderId))) this.dropParked(String(t.brokerOrderId));
+        if (t.action === 'Sell' && t.brokerOrderId != null && this.bookedFillIds.has(this.fk(t.broker, t.brokerOrderId))) this.dropParked(this.fk(t.broker, t.brokerOrderId));
     }
     // hadRow: the contract had a tracked row when this Sell was booked. A Sell against an untracked contract booked nothing, so it is no proof
     // the contract is flat (untracked != closed): the flat rule is skipped then.
     private clearParkedSells(t: Trade, hadRow = true): void {
         if (!hadRow) return; // a Sell that reduced no tracked row proves nothing was booked: every parked entry stays
-        if (t.brokerOrderId != null) this.dropParked(String(t.brokerOrderId));
+        if (t.brokerOrderId != null) this.dropParked(this.fk(t.broker, t.brokerOrderId));
         this.dropParked(`${this.unresolvedKey(t)}|noid|${Number(t.quantity)}`);
         const broker = t.broker ?? 'kite', user = t.user || 'Default';
         if (this.trades.some((x) => (x.broker ?? 'kite') === broker && (x.user || 'Default') === user && x.tsym === t.tsym && Number(x.quantity) > 0)) return;
@@ -336,10 +344,13 @@ class OrderBookkeeping {
     private fillListeners: FillListener[] = [];
     // Broker order ids of sells the BROKER itself executed (a GTT target/stop that fired), booked by the GTT poll. Not stored in Mongo. A fill
     // listener (mirror.ts) reads it to tell a broker-side exit, which the matching admin GTT performs by itself, from a sell this platform placed.
-    readonly brokerOwnedExitOrderIds = new Set<string>();
+    // Keyed broker|orderId (a Prism/ANT order with the same bare id is not a GTT exit); use markGttExit / isBrokerOwnedExit / gttFiredId.
+    private readonly brokerOwnedExitOrderIds = new Set<string>();
     // Sell order id -> id of the Kite GTT whose trigger placed it (set by the GTT poll before it books the exit). recordFill reads it: a GTT-fired exit
     // sold ONE lot, so the row's other GTTs (the other lots' exits) stay live while lots remain.
-    readonly gttFiredOrders = new Map<string, number>();
+    private readonly gttFiredOrders = new Map<string, number>();
+    markGttExit(broker: string, orderId: string | number, gttId: number): void { const k = this.fk(broker, orderId); this.brokerOwnedExitOrderIds.add(k); this.gttFiredOrders.set(k, gttId); }
+    isBrokerOwnedExit(broker: string | undefined, orderId: string | number | undefined): boolean { return orderId != null && orderId !== '' && this.brokerOwnedExitOrderIds.has(this.fk(broker, orderId)); }
     // Kite GTT support injected by kiteExecutor (this module cannot import it): the order ids that triggered GTTs of the platform's open rows placed
     // at the broker (those sells are the platform's own, whether or not the GTT poll has booked them yet), and a poll that books them.
     private gttSupport?: { exitOrderIds: () => Promise<Set<string>>; poll: () => Promise<void>; bookOrphan: (trade: Trade, gtt: any) => Promise<boolean> };
@@ -364,6 +375,8 @@ class OrderBookkeeping {
     // Fill-identity key. Broker order ids are only unique WITHIN a broker: ANT (Alice Blue) and Shoonya/Prism both issue Noren-style numbers
     // (live 2026-11-25: ANT buy 26112500161991 collided with a Prism buy of another contract stored at 11:17, so the ANT fill was dropped as
     // 'already stored in Mongo' and never registered in memory). Every fill dedupe set/lookup is therefore scoped by broker.
+    // Mongo filter for a broker's rows: Kite rows may carry a legacy 'Zerodha' spelling, rows older than the broker field carry none.
+    private static brokerFilter(broker: string): any { return { $in: broker === 'kite' ? ['kite', /^\s*zerodha\s*$/i, null] : [broker, null] }; }
     private fk(broker: string | undefined, id: string | number): string { return `${broker ?? 'kite'}|${id}`; }
     isFillProcessed(orderId: string, broker: string = 'kite'): boolean { return this.processedFillIds.has(this.fk(broker, orderId)); }
 
@@ -1272,13 +1285,14 @@ class OrderBookkeeping {
         if (queue.length === 0) this.pendingOrdersByTsym.delete(tsym);
     }
 
-    trackOrder(orderNo: string, user: string) {
-        this.orderUserMap.set(orderNo, user);
+    // Keyed broker|orderNo (ANT and Prism share Noren-style ids); only Prism's own placement path tracks orders here, hence the default.
+    trackOrder(orderNo: string, user: string, broker: string = 'prism') {
+        this.orderUserMap.set(this.fk(broker, orderNo), user);
     }
 
-    resolveUser(orderNo: string, tsym?: string): string {
+    resolveUser(orderNo: string, tsym?: string, broker: string = 'prism'): string {
         if (orderNo) {
-            const user = this.orderUserMap.get(orderNo);
+            const user = this.orderUserMap.get(this.fk(broker, orderNo));
             if (user) return user;
         }
         if (tsym) {
@@ -1288,8 +1302,8 @@ class OrderBookkeeping {
         return 'Default';
     }
 
-    clearOrder(orderNo: string) {
-        if (orderNo) this.orderUserMap.delete(orderNo);
+    clearOrder(orderNo: string, broker: string = 'prism') {
+        if (orderNo) this.orderUserMap.delete(this.fk(broker, orderNo));
     }
 
     refreshTrades(trades: Trade[]) {
@@ -1331,7 +1345,7 @@ class OrderBookkeeping {
                 // A redelivery of a Sell this process already claimed or booked (a duplicate with a bad price) must not be parked: nothing could ever
                 // clear that entry (the Sell is booked), giving a false 'NOT booked' ALERT and a trade-book sync until restart.
                 const dupId = tradeEvent.brokerOrderId;
-                if (dupId != null && (this.processedFillIds.has(this.fk(tradeEvent.broker, dupId)) || this.bookedFillIds.has(String(dupId)))) {
+                if (dupId != null && (this.processedFillIds.has(this.fk(tradeEvent.broker, dupId)) || this.bookedFillIds.has(this.fk(tradeEvent.broker, dupId)))) {
                     Log.log(`[order] Ignoring redelivered Sell for broker order ${dupId} (${tradeEvent.tsym}) with unusable price ${tradeEvent.price} - already processed, not parked`);
                     return;
                 }
@@ -1405,7 +1419,7 @@ class OrderBookkeeping {
             }
             throw e;
         }
-        if (id) { this.failedBookingFillIds.delete(key); if (tradeEvent.action === 'Sell' && hadRow) this.markSellBooked(id); }
+        if (id) { this.failedBookingFillIds.delete(key); if (tradeEvent.action === 'Sell' && hadRow) this.markSellBooked(id, tradeEvent.broker); }
         // Newly booked (every duplicate / already-stored path returned above): only now may a parked Sell be cleared.
         if (tradeEvent.action === 'Sell') this.clearParkedSells(tradeEvent, hadRow);
         // One throwing listener must not skip the rest (the strategy notification) after the position is already booked.
@@ -1656,7 +1670,7 @@ class OrderBookkeeping {
                 // A GTT's own exit (the poll removed the fired id from the row first) sold ONE lot: the row's other GTTs are the other lots' broker
                 // exits and stay live while lots remain (releasing them handed those lots to the in-app monitor, and a fired-but-unbooked one was lost).
                 // Nothing left: whatever is still live must go (it would sell a flat account short).
-                if (tradeEvent.brokerOrderId && this.gttFiredOrders.has(String(tradeEvent.brokerOrderId)) && buyTrade.quantity > 0) gttsToRelease = [];
+                if (tradeEvent.brokerOrderId && this.gttFiredOrders.has(this.fk(tradeEvent.broker, tradeEvent.brokerOrderId)) && buyTrade.quantity > 0) gttsToRelease = [];
                 if (gttsToRelease.length > 0) {
                     buyTrade.gttTriggerId = undefined as any;
                     buyTrade.extraGttTriggerIds = undefined;
@@ -2177,7 +2191,7 @@ class OrderBookkeeping {
             const docs: any[] = await db.collection('Trade').find({ user, tsym, action: 'Sell', brokerOrderId: { $exists: true, $nin: [null, ''] }, entryTime: { $gte: OrderBookkeeping.startOfDay() }, ...brokerMatch }).sort({ entryTime: 1 }).toArray();
             const ids = Array.from(new Set(docs.map((d) => String(d.brokerOrderId)).filter((id) => !id.startsWith('BROKER-SYNC-'))));
             if (ids.length === 0) return [];
-            const ledger: any[] = await db.collection('orderOwners').find({ orderId: { $in: ids } }).toArray();
+            const ledger: any[] = await loadOrderOwnerRows(ids, broker);
             const own = new Set(ledger.filter((r) => String(r.user) === user && r.foreign !== true).map((r) => String(r.orderId)));
             const byOrder = new Map<string, { orderId: string; quantity: number; value: number; at: number }>();
             for (const d of docs) {
@@ -2245,7 +2259,7 @@ class OrderBookkeeping {
                 if (!OrderBookkeeping.isOptionContract(tsym)) continue;
                 const probe = Object.assign(new Trade(), { tsym, token: fills.find((f) => f.token != null)?.token });
                 if (OrderBookkeeping.rowsFor(rows, probe).reduce((sum, r) => sum + r.qty, 0) !== 0) continue; // still held: the restore owns it
-                const owners = await loadOrderOwners(Array.from(new Set(fills.map((f) => f.brokerOrderId).filter(Boolean).map(String))));
+                const owners = await loadOrderOwners(Array.from(new Set(fills.map((f) => f.brokerOrderId).filter(Boolean).map(String))), broker);
                 const { fills: owned, ambiguousOrderIds } = collapseFillsByOrderId(fills, (id) => owners.get(id));
                 if (ambiguousOrderIds.length > 0) continue; // an order booked under several users: not guessed at (the restore holds it for review too)
                 for (const user of Array.from(new Set(owned.map((f: any) => String(f.user))))) {
@@ -2501,7 +2515,7 @@ class OrderBookkeeping {
         const belongs = (x: { tsym: string; ts: Trade[] }, f: { tsym: string; aliases?: string[]; token?: string }) =>
             f.tsym === x.tsym || (f.token != null && x.ts.some((t) => t.token != null && String(t.token) === f.token)) || (f.aliases?.includes(x.tsym) ?? false);
         const wanted = book.fills.filter((f) => short.some((x) => belongs(x, f)));
-        const owners = await loadOrderOwners(Array.from(new Set(wanted.map((f) => f.orderId))));
+        const owners = await loadOrderOwners(Array.from(new Set(wanted.map((f) => f.orderId))), broker);
         const own = opts.isOwnOrder ?? await this.clientOwnOrderTest(broker);
         const extraOwn = this.extraOwnOrderTests.get(broker);
         // A sell that a triggered Kite GTT of one of the platform's own rows placed is the platform's (cause class: gtt-fired). Until the GTT poll books
@@ -2614,11 +2628,11 @@ class OrderBookkeeping {
         try {
             const id = String(row.orderId ?? '');
             if (!id) return false;
-            if (this.processedFillIds.has(this.fk(broker, id)) || this.orderUserMap.has(id)) return false;
+            if (this.processedFillIds.has(this.fk(broker, id)) || this.orderUserMap.has(this.fk(broker, id))) return false;
             if (row.fillAt != null && Number.isFinite(row.fillAt) && row.filled) this.eventFillTimes.set(`${broker}|${id}`, row.fillAt);
             const own = (await this.clientOwnOrderTest(broker))(id) || (this.extraOwnOrderTests.get(broker)?.(id) ?? false);
             if (own) return false;
-            if ((await loadOrderOwners([id])).has(id)) return false;
+            if ((await loadOrderOwners([id], broker)).has(id)) return false;
             if (row.side === 'Sell' && row.filled && (row.tsym ? this.holdsOpen(broker, row.tsym) : this.holdsOpen(broker, '*'))) {
                 this.foreignWatch.request(broker, row.tsym ?? '*', 'foreign-sell-event');
             }
@@ -2758,7 +2772,7 @@ class OrderBookkeeping {
                     if (opts.notifyStrategies) await this.recordFill(ev);
                     else {
                         this.processedFillIds.add(this.fk(broker, id));
-                        const hadQty = Number(target.quantity) > 0; try { await this._processTradeEvent(ev); if (hadQty) this.markSellBooked(id); } catch (e) { this.processedFillIds.delete(this.fk(broker, id)); throw e; }
+                        const hadQty = Number(target.quantity) > 0; try { await this._processTradeEvent(ev); if (hadQty) this.markSellBooked(id, broker); } catch (e) { this.processedFillIds.delete(this.fk(broker, id)); throw e; }
                     }
                     booked++;
                     bookedOrders.push(`${id} (${qty} @ ${piece.price.toFixed(2)})`);
@@ -2857,7 +2871,7 @@ class OrderBookkeeping {
         if (!have) return 0;
         const missing = fills.filter((f) => !have.keys.has(`${f.action}|${f.orderId}`));
         if (missing.length === 0) return 0;
-        const owners = await loadOrderOwners(Array.from(new Set(missing.map((f) => f.orderId))));
+        const owners = await loadOrderOwners(Array.from(new Set(missing.map((f) => f.orderId))), broker);
         let booked = 0;
         for (const f of missing) {
             // A fill on a contract this platform never traded (in the last days) is the user's own trade in the broker's app: not ours to report.
@@ -2897,7 +2911,7 @@ class OrderBookkeeping {
             this.processedFillIds.add(this.fk(broker, f.orderId));
             const hadQty = Number(target.quantity) > 0; // captured before the booking mutates the row
             try { await this._processTradeEvent(ev); } catch (e) { this.processedFillIds.delete(this.fk(broker, f.orderId)); throw e; }
-            if (hadQty) this.markSellBooked(f.orderId);
+            if (hadQty) this.markSellBooked(f.orderId, broker);
             booked++;
         }
         return booked;
@@ -2959,7 +2973,7 @@ class OrderBookkeeping {
                 if (sum !== held) continue; // the order ids do not account for the broker position (a manual order, a partial): reported as before
                 for (const [u, r] of nets) {
                     for (const sp of r.shortPieces) {
-                        const exists = await db.collection('closedTrades').findOne({ user: u, tsym, shortFirst: true, sellOrderId: String(sp.sell.brokerOrderId), buyOrderId: String(sp.buy.brokerOrderId) });
+                        const exists = await db.collection('closedTrades').findOne({ user: u, tsym, shortFirst: true, sellOrderId: String(sp.sell.brokerOrderId), buyOrderId: String(sp.buy.brokerOrderId), broker: OrderBookkeeping.brokerFilter(broker) });
                         if (exists) continue;
                         const sellPx = Number(sp.sell.price), buyPx = Number(sp.buy.price);
                         const pnl = (sellPx - buyPx) * sp.qty;
@@ -3040,7 +3054,7 @@ class OrderBookkeeping {
             const all: any[] = await db.collection('Trade').find(fillFilter).sort({ entryTime: 1 }).toArray();
             // One tsym can name several contracts (a Breeze tsym had no expiry before 2026-11-09): the token keeps them apart when both sides carry one.
             const ofContract = c.token ? all.filter((f) => f.token == null || String(f.token) === c.token) : all;
-            const owners = await loadOrderOwners(Array.from(new Set(ofContract.map((f) => f.brokerOrderId).filter(Boolean).map(String))));
+            const owners = await loadOrderOwners(Array.from(new Set(ofContract.map((f) => f.brokerOrderId).filter(Boolean).map(String))), broker);
             const { fills, ambiguousOrderIds } = collapseFillsByOrderId(ofContract, (id) => owners.get(id));
             if (ambiguousOrderIds.length > 0) {
                 mismatches.push({ kind: 'sellWithoutBuy', broker, tsym: c.tsym, note: `broker order(s) ${ambiguousOrderIds.join(', ')} are booked under more than one user with no recorded owner - closed trades of this contract not repaired` });
@@ -3049,7 +3063,7 @@ class OrderBookkeeping {
             const { pieces, unmatched } = pairFillsFifo(fills.filter((f) => f.user === c.user));
             for (const u of unmatched) {
                 // A Sell that came before the Buy that covers it was written as a short round trip by attributeByOrderIds (per-user order-id nets): not a gap.
-                if (u.sell.brokerOrderId && await db.collection('closedTrades').findOne({ user: c.user, tsym: c.tsym, shortFirst: true, sellOrderId: String(u.sell.brokerOrderId) })) continue;
+                if (u.sell.brokerOrderId && await db.collection('closedTrades').findOne({ user: c.user, tsym: c.tsym, shortFirst: true, sellOrderId: String(u.sell.brokerOrderId), broker: OrderBookkeeping.brokerFilter(broker) })) continue;
                 if (new Date(u.sell.entryTime) >= since) mismatches.push({ kind: 'sellWithoutBuy', broker, tsym: c.tsym, mongoQty: u.qty, note: `${c.user}: a Sell of ${u.qty} @ ${Number(u.sell.price).toFixed(2)} (order ${u.sell.brokerOrderId ?? '-'}) has no Buy before it in Mongo - no closed trade written` });
             }
             const wanted = pieces.filter((p) => new Date(p.sell.entryTime) >= since);
@@ -3198,7 +3212,7 @@ class OrderBookkeeping {
                 users = Array.from(new Set(allFills.filter((f: any) => f.action === 'Buy').map((f: any) => String(f.user))));
             }
         }
-        const owners = await loadOrderOwners(Array.from(new Set(allFills.map((f: any) => f.brokerOrderId).filter(Boolean).map(String))));
+        const owners = await loadOrderOwners(Array.from(new Set(allFills.map((f: any) => f.brokerOrderId).filter(Boolean).map(String))), broker);
         const { fills: ownedFills, ambiguousOrderIds } = collapseFillsByOrderId(allFills, (id) => owners.get(id));
         if (ambiguousOrderIds.length > 0) return { users, ownedFills, ambiguous: ambiguousOrderIds };
         return { users, ownedFills };

@@ -184,7 +184,7 @@ export function onUserSell(userId: string, trade: Trade): void {
     if (trade.action !== 'Sell' || !(trade.quantity > 0) || !eligibleUser(userId)) return;
     const token = trade.token;
     const before = openQty(userId, token) + trade.quantity; // listeners run after booking: the sold units are already out of trades
-    const brokerOwned = !!trade.brokerOrderId && bookkeeping.brokerOwnedExitOrderIds.has(String(trade.brokerOrderId));
+    const brokerOwned = bookkeeping.isBrokerOwnedExit(trade.broker, trade.brokerOrderId);
     serialized(`${userId}|${token}`, () => closeMirror(userId, token, { qty: trade.quantity, before }, undefined, brokerOwned))
         .catch((e) => Log.log(`[order] ALERT: mirror close for ${userId} ${trade.tsym} failed - the admin leg may still be open:`, e));
 }
