@@ -546,13 +546,41 @@ export default class SimpleContinuousStrategy extends Strategy {
         this.save();
     }
 
+    // A live-path close of a leg the order side no longer holds (a refused sell, a max-profit pass whose fill event never came). The platform's OWN sell may
+    // be what emptied it, with its fill event not delivered to this strategy (live 2026-11-25 12:10: the ANT stop-loss sell filled and was booked by the order
+    // process, the event waited behind the hedge buy in this strategy's fill queue, the 10 s retry was refused as nothing sellable and the leg was closed as an
+    // outside close with its -9399 missing from realizedPnl): such a sell is booked as a normal close at its booked price, with the same follow-up as
+    // updateTrade. Only what no platform sell explains is closed outside the platform (neutral, ALERT).
+    private async closeGone(leg: SimpleLeg, why: string): Promise<void> {
+        if (leg.status !== 'open') return;
+        const hedgeWaiting = leg.hedgeWaiting;
+        try {
+            await bookPlatformSoldLegs({
+                tag: this.name, userId: this.userId, broker: this.brokerOrKite(),
+                legs: Object.values(this.state.legs), gone: [leg],
+                seenIds: this.state.sellIdsTracked ? new Set(this.state.seenSells ?? []) : null,
+                markSeen: (ids) => this.noteSeenSells(ids),
+                book: (l, qty, price) => this.bookPlatformSell(l, qty, price),
+            });
+        } catch (e) {
+            Log.log(`[SimpleContinuousStrategy] ${why}: could not look up the platform's own sells of ${leg.tsym}:`, e);
+        }
+        if ((leg.status as string) === 'closed') {
+            leg.hedgeWaiting = hedgeWaiting; // bookPlatformSell clears it (a reconcile places nothing); a live close keeps it as updateTrade does
+            this.save();
+            await this.afterLegClosed(leg);
+            return;
+        }
+        if (leg.status === 'open') this.closeOutside(leg, why); // not covered, or only in part: the rest has no platform sell behind it
+    }
+
     // A sell refused as "nothing sellable" (the broker's never-short guard): the position is gone if the order side holds nothing for the leg.
     // Returns true when the leg was closed for that reason, so the caller stops retrying.
     private async closeIfNotHeld(leg: SimpleLeg, e: unknown): Promise<boolean> {
         if (!/nothing sellable/.test(String((e as any)?.message ?? e))) return false;
         if (leg.status !== 'open') return true;
         if ((await heldQuantity(this.userId, leg.token, leg.tsym)) !== 0) return false;
-        if (leg.status === 'open') this.closeOutside(leg, 'sell refused');
+        if (leg.status === 'open') await this.closeGone(leg, 'sell refused');
         return true;
     }
 
@@ -851,21 +879,27 @@ export default class SimpleContinuousStrategy extends Strategy {
 
     // ---- fills ----
 
-    updateTrade = async (trade: Trade): Promise<void> => {
-        if (trade.action !== 'Sell') return; // our own buys are handled synchronously where they are placed
+    // Books a platform Sell fill onto its leg (synchronously: no broker call) and returns the follow-up (max-profit check, hedge / re-entry) still to run,
+    // or undefined when nothing follows (not our leg, a partial chunk, an order already booked).
+    private bookSell(trade: Trade): (() => Promise<void>) | undefined {
+        if (trade.action !== 'Sell') return undefined; // our own buys are handled synchronously where they are placed
         this.ensureLoaded();
+        const orderId = trade.brokerOrderId ? String(trade.brokerOrderId) : undefined;
+        // An order already booked (the live-path repair of closeGone, or a reconcile, booked it from the order process's own record) is not booked again:
+        // a late event must not land on another open leg of the same contract.
+        if (orderId && this.state.sellIdsTracked && (this.state.seenSells ?? []).includes(orderId)) return undefined;
         const leg = this.legByToken(String(trade.token), trade.tsym);
-        if (!leg) return;
+        if (!leg) return undefined;
         const qty = Number(trade.quantity);
-        if (!(qty > 0)) return;
-        this.noteSeenSells(trade.brokerOrderId ? [String(trade.brokerOrderId)] : []);
+        if (!(qty > 0)) return undefined;
+        this.noteSeenSells(orderId ? [orderId] : []);
         // The maxProfit total: this fill's P&L from the leg's reference (a leg that was open when counting started and has had no tick yet: 0).
         const fillPrice = Number(trade.price);
         const ref = leg.pnlRefPending ? fillPrice : (leg.pnlRef ?? leg.entry);
         this.state.realizedPnl += qty * (fillPrice - ref);
         leg.soldQty += qty;
         leg.soldValue += qty * Number(trade.price);
-        if (leg.soldQty < leg.qty) { this.save(); return; } // chunked sell: the rest is still resting
+        if (leg.soldQty < leg.qty) { this.save(); return undefined; } // chunked sell: the rest is still resting
         leg.status = 'closed';
         leg.sellQty = 0;
         leg.sellShortfall = 0;
@@ -875,6 +909,25 @@ export default class SimpleContinuousStrategy extends Strategy {
         this.recordOutcome(pnl >= 0 ? 'win' : 'loss', pnl);
         Log.log(`[SimpleContinuousStrategy] ${leg.tsym} closed qty=${leg.qty} entry=${leg.entry.toFixed(2)} sell=${avgSell.toFixed(2)} pnl=${Math.round(pnl)}`);
         this.save();
+        return () => this.afterLegClosed(leg);
+    }
+
+    updateTrade = async (trade: Trade): Promise<void> => {
+        const followUp = this.bookSell(trade);
+        if (followUp) await followUp();
+    };
+
+    // The fill dispatch of the strategies process: the sell is booked at once and the follow-up (a hedge buy waits up to ~25 s for its fill) runs detached.
+    // Awaiting it inside the per-user fill queue held every later fill of this strategy behind the buy (live 2026-11-25 12:10: a stop-loss sell fill sat
+    // 10 s in the queue, the strategy's own retry saw the position gone and closed the leg as an outside close without its P&L).
+    onFillBooked = async (trade: Trade): Promise<void> => {
+        const followUp = this.bookSell(trade);
+        if (followUp) void followUp().catch((e) => Log.log('[SimpleContinuousStrategy] ALERT: follow-up of a closed leg failed:', e));
+    };
+
+    // What follows a leg that just closed: the max-profit check, then the hedge / re-entry.
+    private async afterLegClosed(leg: SimpleLeg): Promise<void> {
+        const avgSell = leg.soldValue / leg.soldQty;
         await this.checkMaxProfit();
         if (this.isStopped()) return;
         // Closed at a profit: follow the direction (buy the same right again); closed at a loss: buy the opposite right. An adverse-move
@@ -898,7 +951,7 @@ export default class SimpleContinuousStrategy extends Strategy {
             Log.log(`[SimpleContinuousStrategy] ${leg.tsym} closed as the last leg of the chain with a stale hedged flag and nothing open: continuing the cycle from it`);
             await this.hedge(leg, same ? 'target met' : 'stop loss', same);
         }
-    };
+    }
 
     // No open leg, no hedge waiting to be placed and no hedge buy in flight: with the one-root-per-day gate shut nothing could ever place another order.
     private chainDead(): boolean {
@@ -961,7 +1014,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 const expired = Date.now() - (this.tripGuard.fillWait(leg.id) ?? Date.now()) > TRIP_FILL_WAIT_MS;
                 if (!expired) { Log.log(`[SimpleContinuousStrategy] MAX PROFIT: ${leg.tsym} is (partly) sold per the order side (held ${heldNow} of ${this.remaining(leg)}), waiting for its fill events before re-pricing (nothing cancelled or placed)`); return; }
                 this.tripGuard.clearFill(leg.id);
-                if (heldNow === 0) { this.closeOutside(leg, 'MAX PROFIT (fill events never arrived)'); return; }
+                if (heldNow === 0) { await this.closeGone(leg, 'MAX PROFIT (fill events never arrived)'); return; }
             }
             const res = await OrderClient.getInstance().cancelRestingLimitSells(this.userId, { tradingSymbol: leg.tsym, broker: this.brokerOrKite() });
             if (res.cancelFailed) {
@@ -990,7 +1043,7 @@ export default class SimpleContinuousStrategy extends Strategy {
             if (held === 0) {
                 if (!expired) { Log.log(`[SimpleContinuousStrategy] MAX PROFIT: ${leg.tsym} is fully sold per the order side, waiting for its fill events (nothing placed)`); return; }
                 this.tripGuard.clearFill(leg.id);
-                this.closeOutside(leg, 'MAX PROFIT (fill events never arrived)');
+                await this.closeGone(leg, 'MAX PROFIT (fill events never arrived)');
                 return;
             }
             if ((held === undefined || held < quantity) && !expired) return; // the fills are not booked on the leg yet: its remaining/realized would misprice the sell
@@ -1032,7 +1085,7 @@ export default class SimpleContinuousStrategy extends Strategy {
                 // The never-short guard sees nothing to sell (live 14:35:29: the leg had just been sold, its fill event had not arrived). Held nothing: give the
                 // event its grace, then close the leg; held something else: a resting sell this strategy does not know of, retried with backoff.
                 if ((await heldQuantity(this.userId, leg.token, leg.tsym)) === 0) {
-                    if (this.tripGuard.goneExpired(leg.id)) this.closeOutside(leg, 'MAX PROFIT sell refused');
+                    if (this.tripGuard.goneExpired(leg.id)) await this.closeGone(leg, 'MAX PROFIT sell refused');
                     else Log.log(`[SimpleContinuousStrategy] MAX PROFIT: ${leg.tsym} has nothing sellable at the broker - waiting for its fill events before closing the leg`);
                     return;
                 }

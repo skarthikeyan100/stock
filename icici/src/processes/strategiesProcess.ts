@@ -124,7 +124,9 @@ async function onFill(userId: string, raw: any, openQuantity?: number) {
             unregisterTrade(trade.token, strategy, feed, exchange);
         }
     }
-    await strategy.updateTrade(trade);
+    // A strategy that books a sell at once and runs its follow-up (a hedge buy) detached keeps this user's fill queue moving (SimpleContinuousStrategy.onFillBooked).
+    const booked = (strategy as any).onFillBooked as ((t: Trade) => Promise<void>) | undefined;
+    if (booked) await booked.call(strategy, trade); else await strategy.updateTrade(trade);
 }
 
 async function onOrderCancelled(userId: string, notification: OrderCancelledNotification) {
