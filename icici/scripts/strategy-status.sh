@@ -16,7 +16,7 @@
 # ?closed=1 for the closed rows). The admin email also carries the mirrored shares of other users buys (settings.mirrorPercentage); a trade row
 # does not record that, so admin rows are not marked. The strategy tables are not printed in this mode; `all` works the same way.
 # `net` prints today's P&L from the brokers' OWN books (kite, ant, prism, breeze), so orders placed outside the platform (manual) count too. This is the one exception to the manual-orders-are-ignored rule.
-# Table: broker, realized, unrealized, total (2 decimals, equal to the broker's own figures), a TOTAL row, one `users*` row, then the NET line. Every broker uses its DAY-AVERAGE convention (realized = sold qty x (avg sell - avg buy), unrealized = open qty x (ltp - avg of the open side)), not FIFO: kite derives the split from its buy/sell value fields (it reports every pnl as unrealised), ant and prism use their own realized/unrealized fields, breeze (no P&L reported) is derived from its trade book. A proof per broker (total = the broker's own pnl / MtoM / amounts, breeze net quantity and average = its positions) or a carried-over contract prints "ERROR: <why>" instead of a number and the NET line then says it excludes that broker. The `users*` row (real frontend users, from /strategyPnl) is NOT added to TOTAL / NET: their trades are already in the brokers' books.
+# Table: broker, realized, unrealized, total (2 decimals, equal to the broker's own figures), a TOTAL row, one `users*` row, then the NET line. Each broker uses its OWN convention: kite, ant, prism the DAY-AVERAGE (realized = sold qty x (avg sell - avg buy), unrealized = open qty x (ltp - avg of the open side)), not FIFO); breeze reports the average of its still-open lots, so it is FIFO per contract from its trade book. Kite derives the split from its buy/sell value fields (it reports every pnl as unrealised), ant and prism use their own realized/unrealized fields, breeze (no P&L reported) is derived from its trade book. A proof per broker (total = the broker's own pnl / MtoM / amounts, breeze net quantity and FIFO open-lot average = its positions) or a carried-over contract prints "ERROR: <why>" instead of a number and the NET line then says it excludes that broker. The `users*` row (real frontend users, from /strategyPnl) is NOT added to TOTAL / NET: their trades are already in the brokers' books.
 # Paper is left out by the BROKER of each trade / position, never by a strategy's current config: a real trade of a strategy that is on paper now stays
 # in BY STRATEGY and BY BROKER (their TOTALs agree), a paper trade never shows, and a paper-only strategy with no real trade has no row.
 # Usage: scripts/strategy-status.sh [net|users] [all] [port]
@@ -41,14 +41,14 @@ LIST
 fi; done
 if [ "$NET" = 1 ]; then
   # `status net` (user's rule 2026-11-20: the brokers' OWN books, so manual / non-platform orders count too; 2026-11-25: realized, unrealized and total
-  # must equal what each broker itself reports, rupee for rupee, 2 decimals). Per broker (all four use the broker's DAY-AVERAGE convention: realized =
-  # sold qty * (average sell - average buy), unrealized = open qty * (ltp - average of the open side); NOT FIFO; checked against all three brokers' own fields):
+  # must equal what each broker itself reports, rupee for rupee, 2 decimals). Per broker (kite/ant/prism use the broker's DAY-AVERAGE convention: realized =
+  # sold qty * (average sell - average buy), unrealized = open qty * (ltp - average of the open side); NOT FIFO; verified 2026-11-25: ANT and Prism netAveragePrice = day buy average and their realized equals the day-average figure, not FIFO; Breeze below is FIFO)::
   #   kite   = positions.day (today's trades only; `net` adds nothing for a contract traded today and would also carry earlier-day lots). Kite labels
   #            every pnl "unrealised" (realised is always 0), so the split is derived from its own buy/sell value and quantity fields with that convention.
   #   ant    = realizedPnl / unrealizedPnl of its positions (its own fields); proof MtoM = realized + unrealized.
   #   prism  = rpnl / urmtom of its positions (its own fields); proof (totsellamt - totbuyamt + netqty*lp) = rpnl + urmtom.
-  #   breeze = reports no P&L (positions pnl is null), so derived from today's trade book with the same day-average convention; proof: net quantity
-  #            and average price per open contract equal the broker's positions. No broker figure exists to compare the money with.
+  #   breeze = reports no P&L (positions pnl is null), so derived from today's trade book with FIFO per contract (its position average_price is the average of the open lots,
+  #            verified 2026-11-25; the book lists newest first); proof: net quantity and FIFO open-lot average (0.05) per open contract equal the positions. No broker figure exists to compare the money with.
   # Any proof that fails, a carried-over contract (earlier-day quantity) or an unreadable book prints "ERROR: <why>" for that broker, never a different number.
   # The `users` row is the real frontend users (emails) from /strategyPnl; it is NOT part of TOTAL / NET (their trades are inside the brokers' books).
   K="$(curl -s -m20 "localhost:$PORT/broker/kite/positions")"; A="$(curl -s -m20 "localhost:$PORT/broker/ant/positions")"
@@ -120,26 +120,35 @@ const breeze=()=>{
   const key=t=>[t.expiry_date,num(t.strike_price),t.right].join("|");
   const rows=bt.trades;
   if(rows.length>=100&&rows[rows.length-1].trade_date===today)return {name:"breeze",err:"trade book is capped at 100 rows and today alone fills it"};
+  // FIFO per contract (Breeze reports its position average as the average of the lots still OPEN, verified 2026-11-25). The book lists newest first,
+  // so today'"'"'s rows are walked in reverse (oldest first). A lot is signed (+ long, - short); an opposite fill consumes the oldest open lots first.
   const c=new Map();
-  for(const t of rows.filter(t=>t.trade_date===today)){
+  for(const t of rows.filter(t=>t.trade_date===today).reverse()){
     const q=num(t.quantity),px=num(t.average_cost);
     if(!(q>0)||!(px>0)||(t.action!=="Buy"&&t.action!=="Sell"))return {name:"breeze",err:"trade book has an unreadable row"};
-    const k=key(t);if(!c.has(k))c.set(k,{bq:0,bv:0,sq:0,sv:0});const x=c.get(k);
-    if(t.action==="Buy"){x.bq+=q;x.bv+=q*px}else{x.sq+=q;x.sv+=q*px}
+    const k=key(t);if(!c.has(k))c.set(k,{lots:[],r:0});const x=c.get(k);
+    let left=q;const sgn=t.action==="Buy"?1:-1;
+    while(left>0&&x.lots.length&&Math.sign(x.lots[0].q)===-sgn){
+      const l=x.lots[0],n=Math.min(left,Math.abs(l.q));
+      x.r+=n*(l.q>0?px-l.px:l.px-px); // long lot closed by a sell, short lot closed by a buy
+      l.q-=Math.sign(l.q)*n;left-=n;if(l.q===0)x.lots.shift();
+    }
+    if(left>0)x.lots.push({q:sgn*left,px});
   }
   const pos=new Map();
   for(const p of b.positions){const q=num(p.quantity);if(q>0)pos.set(key(p),{q:p.action==="Sell"?-q:q,avg:num(p.average_price),ltp:num(p.ltp)})}
   let r=0,u=0;
   for(const [k,x] of c){
-    const q=x.bq-x.sq,p=pos.get(k);
+    const q=sum(x.lots,l=>l.q),p=pos.get(k);
     if(q!==0&&(!p||p.q!==q))return {name:"breeze",err:"proof failed: trade book net quantity "+q+" != positions for "+k};
     if(q===0&&p)return {name:"breeze",err:"proof failed: positions hold "+k+" the trade book has closed"};
+    r+=x.r;
     if(q!==0){
       if(!(p.ltp>0))return {name:"breeze",err:"no ltp for an open leg"};
-      const avg=q>0?x.bv/x.bq:x.sv/x.sq;
-      if(Math.abs(avg-p.avg)>0.051)return {name:"breeze",err:"proof failed: open average "+avg.toFixed(2)+" != positions average "+p.avg+" for "+k};
+      const avg=sum(x.lots,l=>Math.abs(l.q)*l.px)/Math.abs(q);
+      if(Math.abs(avg-p.avg)>0.051)return {name:"breeze",err:"proof failed: FIFO open-lot average "+avg.toFixed(2)+" != positions average "+p.avg+" for "+k};
+      u+=sum(x.lots,l=>l.q*(p.ltp-l.px));
     }
-    const s=split(x.bq,x.bv,x.sq,x.sv,q,q!==0?p.ltp:0);r+=s.r;u+=s.u;
   }
   for(const k of pos.keys())if(!c.has(k))return {name:"breeze",err:"carried-over contract "+k+" (no trade today)"};
   return {name:"breeze",r,u};
