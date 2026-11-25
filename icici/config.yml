@@ -6,6 +6,7 @@ settings:
   trailingDistance: 4
   cooldownSeconds: 0
   logQuotes: false
+  storeTicks: true
   maxDailyDrawdownPercent: 25%
   maxWeeklyDrawdownPercent: 50%
   targetPoints: 2
