@@ -87,6 +87,7 @@ This file is a snapshot of pending/in-progress work, kept current by hand (there
 
 ## status net vs status discrepancy (2026-11-23)
 - Restart the order process after market hours to load open-review-items.md 131 (ANT booked the last chunk's price `flprc` instead of the order's `avgprc`; ANT trade-book `tradedPrice` is a cumulative average, now read via src/ant/tradeBook.ts). `status net` already uses the fix (script, no restart).
+- `status net` now prints each broker's own realized/unrealized/total (day-average convention, proof-checked, ERROR instead of a differing number) plus a `users*` row outside NET; it no longer computes FIFO from the trade books, so the ANT/Breeze fill-level differences above no longer show in it.
 - Optional, when the user agrees: `node scripts/repair-closed-trades.js` (dry run) then `node scripts/repair-closed-trades.js --apply` corrects today's 5 already-written rows (ant +50.70, prism -2.60, breeze -1.95); restart the order process afterwards so its in-memory rows match Mongo.
 
 ## ExpiryStrategy maxProfit 20000 (2026-11-23)

@@ -15,9 +15,8 @@
 # OPEN POSITIONS by user (target/stop as stored on the position, "-" if none) and the day's closed TRADES one row each (?match=@ on /strategyPnl,
 # ?closed=1 for the closed rows). The admin email also carries the mirrored shares of other users buys (settings.mirrorPercentage); a trade row
 # does not record that, so admin rows are not marked. The strategy tables are not printed in this mode; `all` works the same way.
-# `net` prints ONE number and nothing else: today's net P&L (realized + unrealized) from the brokers' OWN position books (kite, ant, prism,
-# breeze), so orders placed outside the platform (manual) count too. This is the one exception to the manual-orders-are-ignored rule.
-# It prints a table (broker, realized, unrealized, total; a broker that cannot be read shows "ERROR: <what> unavailable", is never counted as 0, and the NET line then says it excludes that broker) and then the NET line. Breeze and ANT are computed from their trade books (FIFO per contract, today only; an ANT order is priced at its last execution row, whose tradedPrice is the order's cumulative average).
+# `net` prints today's P&L from the brokers' OWN books (kite, ant, prism, breeze), so orders placed outside the platform (manual) count too. This is the one exception to the manual-orders-are-ignored rule.
+# Table: broker, realized, unrealized, total (2 decimals, equal to the broker's own figures), a TOTAL row, one `users*` row, then the NET line. Every broker uses its DAY-AVERAGE convention (realized = sold qty x (avg sell - avg buy), unrealized = open qty x (ltp - avg of the open side)), not FIFO: kite derives the split from its buy/sell value fields (it reports every pnl as unrealised), ant and prism use their own realized/unrealized fields, breeze (no P&L reported) is derived from its trade book. A proof per broker (total = the broker's own pnl / MtoM / amounts, breeze net quantity and average = its positions) or a carried-over contract prints "ERROR: <why>" instead of a number and the NET line then says it excludes that broker. The `users*` row (real frontend users, from /strategyPnl) is NOT added to TOTAL / NET: their trades are already in the brokers' books.
 # Paper is left out by the BROKER of each trade / position, never by a strategy's current config: a real trade of a strategy that is on paper now stays
 # in BY STRATEGY and BY BROKER (their TOTALs agree), a paper trade never shows, and a paper-only strategy with no real trade has no row.
 # Usage: scripts/strategy-status.sh [net|users] [all] [port]
@@ -34,110 +33,138 @@ status             3 tables (BY STRATEGY, BY BROKER, UNREALIZED BY BROKER AND ST
 status all         the same 3 tables, also trades opened on an earlier day and closed today or still open; includes disabled strategies
 status users       the real users (emails) who trade from the frontend: BY USER, BY BROKER, OPEN POSITIONS, closed TRADES (opened today)
 status users all   the same, also earlier-day trades
-status net         table of the brokers' own books (realized, unrealized, total per broker) then NET; manual non-platform orders included
+status net         brokers' own books, equal to each broker's figures (realized, unrealized, total per broker, proof-checked), a users* row (not in NET), then NET; manual orders included
 status paper       paper-broker strategies (GammaBurst, HighLow on paper): config, paper positions and trades, log lines
 status list        this list
 LIST
   exit 0
 fi; done
 if [ "$NET" = 1 ]; then
-  # User's rule (2026-11-20, `status net` only): the broker's OWN books, so non-platform (manual) orders count too. Per broker, today's net P&L
-  # as the broker reports it: kite = sum of day-position pnl, ant = computed from its trade book (its position book rounds the averages), prism = rpnl + urmtom, breeze = computed from its trade book (it reports no P&L on its positions).
+  # `status net` (user's rule 2026-11-20: the brokers' OWN books, so manual / non-platform orders count too; 2026-11-25: realized, unrealized and total
+  # must equal what each broker itself reports, rupee for rupee, 2 decimals). Per broker (all four use the broker's DAY-AVERAGE convention: realized =
+  # sold qty * (average sell - average buy), unrealized = open qty * (ltp - average of the open side); NOT FIFO; checked against all three brokers' own fields):
+  #   kite   = positions.day (today's trades only; `net` adds nothing for a contract traded today and would also carry earlier-day lots). Kite labels
+  #            every pnl "unrealised" (realised is always 0), so the split is derived from its own buy/sell value and quantity fields with that convention.
+  #   ant    = realizedPnl / unrealizedPnl of its positions (its own fields); proof MtoM = realized + unrealized.
+  #   prism  = rpnl / urmtom of its positions (its own fields); proof (totsellamt - totbuyamt + netqty*lp) = rpnl + urmtom.
+  #   breeze = reports no P&L (positions pnl is null), so derived from today's trade book with the same day-average convention; proof: net quantity
+  #            and average price per open contract equal the broker's positions. No broker figure exists to compare the money with.
+  # Any proof that fails, a carried-over contract (earlier-day quantity) or an unreadable book prints "ERROR: <why>" for that broker, never a different number.
+  # The `users` row is the real frontend users (emails) from /strategyPnl; it is NOT part of TOTAL / NET (their trades are inside the brokers' books).
   K="$(curl -s -m20 "localhost:$PORT/broker/kite/positions")"; A="$(curl -s -m20 "localhost:$PORT/broker/ant/positions")"
   P="$(curl -s -m20 "localhost:$PORT/broker/prism/positions")"; B="$(curl -s -m20 "localhost:$PORT/broker/breeze/positions")"
-  BT="$(curl -s -m20 "localhost:$PORT/broker/breeze/trades")"; AT="$(curl -s -m20 "localhost:$PORT/broker/ant/trades")"
-  K="$K" A="$A" P="$P" B="$B" BT="$BT" AT="$AT" node -e '
+  BT="$(curl -s -m20 "localhost:$PORT/broker/breeze/trades")"
+  UQ="opened=$OPENED&match=%40"
+  UU="$(curl -s -m10 "localhost:$PORT/strategyPnl?$UQ")"; UD="$(curl -s -m20 "localhost:$PORT/strategyPnl?detail=1&$UQ")"
+  K="$K" A="$A" P="$P" B="$B" BT="$BT" UU="$UU" UD="$UD" node -e '
 const parse=s=>{try{return JSON.parse(s)}catch{return null}};
 const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:0};
+const has=v=>v!==null&&v!==undefined&&v!==""&&Number.isFinite(parseFloat(v));
 const sum=(rows,f)=>rows.reduce((a,r)=>a+f(r),0);
-// Per broker: realized / unrealized as the broker reports them. Kite labels every day-position P&L "unrealised" (realised is always 0), so
-// a contract with net quantity 0 counts as realized and a contract still open counts as unrealized (its figure then also holds that
-// contract earlier closed trades; Kite does not split them).
-const brokers=[];
-const k=parse(process.env.K);
-brokers.push(k&&k.success&&k.positions&&Array.isArray(k.positions.day)?{name:"kite",r:sum(k.positions.day.filter(p=>num(p.quantity)===0),p=>num(p.pnl)),u:sum(k.positions.day.filter(p=>num(p.quantity)!==0),p=>num(p.pnl))}:{name:"kite"});
-const p=parse(process.env.P);
-brokers.push(p&&p.success&&Array.isArray(p.positions)?{name:"prism",r:sum(p.positions,x=>num(x.rpnl)),u:sum(p.positions,x=>num(x.urmtom))}:{name:"prism"});
-// FIFO per contract over a trade book (shared by Breeze and ANT). `fills` oldest first: {k: contract key, side: "Buy"|"Sell", q, px, ltp?}.
-// A Sell consumes the oldest open Buy lots, realized += qty*(sell - lot price); unrealized = each lot left open, qty*(ltp - lot price), ltp from
-// `posLtp` (the broker'"'"'s positions, by the same contract key), else the ltp carried on the book rows. A sell with no earlier buy today, or an
-// open leg with no ltp, is an ERROR (never 0): returns {err}.
-const fifo=(name,fills,posLtp)=>{
-  const lots=new Map(),tradeLtp=new Map();let r=0;
-  for(const t of fills){
-    if(t.ltp>0)tradeLtp.set(t.k,t.ltp);
-    if(!lots.has(t.k))lots.set(t.k,[]);
-    const L=lots.get(t.k);
-    if(t.side==="Buy"){L.push({q:t.q,px:t.px});continue}
-    let rem=t.q;
-    while(rem>0&&L.length){const c=Math.min(rem,L[0].q);r+=c*(t.px-L[0].px);L[0].q-=c;rem-=c;if(L[0].q===0)L.shift()}
-    if(rem>0)return {name,err:"trade book has a sell with no earlier buy today"};
+const TOL=0.011; // broker figures carry paise; a proof may differ by float noise only
+// Day-average split of one contract from its totals: bq/bv = bought qty/value, sq/sv = sold qty/value, q = net qty (signed), last = ltp (already x multiplier).
+// long (q>=0): realized = sv - sq*avgBuy, unrealized = q*(last - avgBuy); short (q<0): realized = bq*avgSell - bv, unrealized = -q*(avgSell - last).
+// realized + unrealized = sv - bv + q*last always (the broker total).
+const split=(bq,bv,sq,sv,q,last)=>{
+  if(q>=0){const ab=bq>0?bv/bq:0;return {r:sq>0?sv-sq*ab:0,u:q*(last-ab)}}
+  const as=sq>0?sv/sq:0;return {r:bq>0?bq*as-bv:0,u:-q*(as-last)};
+};
+const kite=()=>{
+  const k=parse(process.env.K);
+  if(!(k&&k.success&&k.positions&&Array.isArray(k.positions.day)))return {name:"kite",err:"positions unavailable"};
+  let r=0,u=0,tot=0;
+  for(const p of k.positions.day){
+    if(!has(p.pnl)||!has(p.buy_value)||!has(p.sell_value)||!has(p.quantity)||!has(p.last_price))return {name:"kite",err:"a position row is unreadable ("+p.tradingsymbol+")"};
+    if(num(p.overnight_quantity)!==0)return {name:"kite",err:"carried-over contract "+p.tradingsymbol+" (earlier-day quantity): realized/unrealized split not derivable from the day row"};
+    const m=num(p.multiplier)||1,s=split(num(p.buy_quantity),num(p.buy_value),num(p.sell_quantity),num(p.sell_value),num(p.quantity),num(p.last_price)*m);
+    if(Math.abs(s.r+s.u-num(p.pnl))>TOL)return {name:"kite",err:"proof failed on "+p.tradingsymbol+": realized+unrealized "+(s.r+s.u).toFixed(2)+" != Kite pnl "+num(p.pnl).toFixed(2)};
+    r+=s.r;u+=s.u;tot+=num(p.pnl);
   }
-  let u=0;
-  for(const [k,L] of lots){
-    if(!L.length)continue;
-    const ltp=posLtp.get(k)??tradeLtp.get(k);
-    if(ltp===undefined)return {name,err:"no ltp for an open leg"};
-    for(const l of L)u+=l.q*(ltp-l.px);
+  if(Math.abs(r+u-tot)>TOL)return {name:"kite",err:"proof failed: total "+(r+u).toFixed(2)+" != sum of Kite pnl "+tot.toFixed(2)};
+  return {name:"kite",r,u};
+};
+const ant=()=>{
+  const a=parse(process.env.A);
+  if(!(a&&a.success===true&&Array.isArray(a.positions)))return {name:"ant",err:"positions unavailable"};
+  let r=0,u=0,tot=0;
+  for(const p of a.positions){
+    if(!has(p.realizedPnl)||!has(p.unrealizedPnl)||!has(p.MtoM))return {name:"ant",err:"a position row is unreadable ("+p.tradingSymbol+")"};
+    if(num(p.overnightQuantity)!==0)return {name:"ant",err:"carried-over contract "+p.tradingSymbol+" (earlier-day quantity)"};
+    if(Math.abs(num(p.realizedPnl)+num(p.unrealizedPnl)-num(p.MtoM))>TOL)return {name:"ant",err:"proof failed on "+p.tradingSymbol+": realized+unrealized != MtoM"};
+    r+=num(p.realizedPnl);u+=num(p.unrealizedPnl);tot+=num(p.MtoM);
   }
-  return {name,r,u};
+  if(Math.abs(r+u-tot)>TOL)return {name:"ant",err:"proof failed: total != sum of MtoM"};
+  return {name:"ant",r,u};
+};
+const prism=()=>{
+  const p=parse(process.env.P);
+  if(!(p&&p.success&&Array.isArray(p.positions)))return {name:"prism",err:"positions unavailable"};
+  let r=0,u=0;
+  for(const x of p.positions){
+    if(!has(x.rpnl)||!has(x.urmtom)||!has(x.totbuyamt)||!has(x.totsellamt)||!has(x.netqty)||!has(x.lp))return {name:"prism",err:"a position row is unreadable ("+x.tsym+")"};
+    if(num(x.cfbuyqty)!==0||num(x.cfsellqty)!==0)return {name:"prism",err:"carried-over contract "+x.tsym+" (earlier-day quantity)"};
+    const t=(num(x.totsellamt)-num(x.totbuyamt)+num(x.netqty)*num(x.lp))*(num(x.mult)||1)*(num(x.prcftr)||1);
+    // Prism rounds each row to paise but computes rpnl and urmtom from the unrounded averages: allow 1 rupee per row
+    if(Math.abs(num(x.rpnl)+num(x.urmtom)-t)>1)return {name:"prism",err:"proof failed on "+x.tsym+": rpnl+urmtom "+(num(x.rpnl)+num(x.urmtom)).toFixed(2)+" != sell-buy+net*ltp "+t.toFixed(2)};
+    r+=num(x.rpnl);u+=num(x.urmtom);
+  }
+  return {name:"prism",r,u};
 };
 const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const ist=new Date(Date.now()+330*60000);
-const dd=String(ist.getUTCDate()).padStart(2,"0");
-// Breeze reports no P&L (positions "pnl" is null, no realized field), so it is computed from its trade book: today'"'"'s trades (trade_date
-// dd-Mon-yyyy, IST), oldest first (the book lists newest first), FIFO per contract (expiry_date+strike_price+right). Either read failing is an ERROR row, never 0.
+const today=String(ist.getUTCDate()).padStart(2,"0")+"-"+MON[ist.getUTCMonth()]+"-"+ist.getUTCFullYear();
 const breeze=()=>{
   const bt=parse(process.env.BT),b=parse(process.env.B);
   if(!(bt&&bt.success===true&&Array.isArray(bt.trades)))return {name:"breeze",err:"trade book unavailable"};
   if(!(b&&b.success===true&&Array.isArray(b.positions)))return {name:"breeze",err:"positions unavailable"};
-  const today=dd+"-"+MON[ist.getUTCMonth()]+"-"+ist.getUTCFullYear();
   const key=t=>[t.expiry_date,num(t.strike_price),t.right].join("|");
-  const fills=[];
-  for(const t of bt.trades.filter(t=>t.trade_date===today).reverse()){
+  const rows=bt.trades;
+  if(rows.length>=100&&rows[rows.length-1].trade_date===today)return {name:"breeze",err:"trade book is capped at 100 rows and today alone fills it"};
+  const c=new Map();
+  for(const t of rows.filter(t=>t.trade_date===today)){
     const q=num(t.quantity),px=num(t.average_cost);
     if(!(q>0)||!(px>0)||(t.action!=="Buy"&&t.action!=="Sell"))return {name:"breeze",err:"trade book has an unreadable row"};
-    fills.push({k:key(t),side:t.action,q,px,ltp:t.ltp!=null?num(t.ltp):0});
+    const k=key(t);if(!c.has(k))c.set(k,{bq:0,bv:0,sq:0,sv:0});const x=c.get(k);
+    if(t.action==="Buy"){x.bq+=q;x.bv+=q*px}else{x.sq+=q;x.sv+=q*px}
   }
-  return fifo("breeze",fills,new Map(b.positions.map(x=>[key(x),num(x.ltp)]).filter(e=>e[1]>0)));
-};
-// ANT: its own position book rounds the averages (realizedPnl differs from the fills by a few rupees), so it is computed from its trade book like
-// Breeze. The book lists one row per execution and its tradedPrice is a CUMULATIVE average of the order so far, so an order'"'"'s price is the
-// tradedPrice of its LAST execution row (highest exchangeTradeId; same rule as src/ant/tradeBook.ts). Orders in time order (fillTimestamp
-// dd-mm-yyyy hh:mm:ss, IST, today only; ties by order id), FIFO per contract (instrumentId); ltp of an open leg from the ANT positions (same instrumentId).
-const ant=()=>{
-  const at=parse(process.env.AT),a=parse(process.env.A);
-  if(!(at&&at.success===true&&Array.isArray(at.trades)))return {name:"ant",err:"trade book unavailable"};
-  if(!(a&&a.success===true&&Array.isArray(a.positions)))return {name:"ant",err:"positions unavailable"};
-  const today=dd+"-"+String(ist.getUTCMonth()+1).padStart(2,"0")+"-"+ist.getUTCFullYear();
-  const orders=new Map();
-  for(const t of at.trades){
-    if(String(t.fillTimestamp||"").slice(0,10)!==today)continue;
-    const q=num(t.filledQuantity),px=num(t.tradedPrice),side=String(t.transactionType).toUpperCase()==="BUY"?"Buy":String(t.transactionType).toUpperCase()==="SELL"?"Sell":null;
-    if(!(q>0)||!(px>0)||!side||!t.brokerOrderId||t.instrumentId==null)return {name:"ant",err:"trade book has an unreadable row"};
-    const id=String(t.brokerOrderId),tid=Number(t.exchangeTradeId);
-    const o=orders.get(id)||{id,k:String(t.instrumentId),side,q:0,px:0,tid:-2,ts:""};
-    o.q+=q;
-    if(!Number.isFinite(tid)){if(o.tid===-2){o.px=px;o.tid=-1}}else if(tid>o.tid){o.px=px;o.tid=tid}
-    if(String(t.fillTimestamp)>o.ts)o.ts=String(t.fillTimestamp);
-    orders.set(id,o);
+  const pos=new Map();
+  for(const p of b.positions){const q=num(p.quantity);if(q>0)pos.set(key(p),{q:p.action==="Sell"?-q:q,avg:num(p.average_price),ltp:num(p.ltp)})}
+  let r=0,u=0;
+  for(const [k,x] of c){
+    const q=x.bq-x.sq,p=pos.get(k);
+    if(q!==0&&(!p||p.q!==q))return {name:"breeze",err:"proof failed: trade book net quantity "+q+" != positions for "+k};
+    if(q===0&&p)return {name:"breeze",err:"proof failed: positions hold "+k+" the trade book has closed"};
+    if(q!==0){
+      if(!(p.ltp>0))return {name:"breeze",err:"no ltp for an open leg"};
+      const avg=q>0?x.bv/x.bq:x.sv/x.sq;
+      if(Math.abs(avg-p.avg)>0.051)return {name:"breeze",err:"proof failed: open average "+avg.toFixed(2)+" != positions average "+p.avg+" for "+k};
+    }
+    const s=split(x.bq,x.bv,x.sq,x.sv,q,q!==0?p.ltp:0);r+=s.r;u+=s.u;
   }
-  const hms=s=>s.slice(11);
-  const fills=[...orders.values()].sort((x,y)=>hms(x.ts)<hms(y.ts)?-1:hms(x.ts)>hms(y.ts)?1:num(x.id)-num(y.id));
-  return fifo("ant",fills,new Map(a.positions.map(x=>[String(x.instrumentId),num(x.ltp)]).filter(e=>e[1]>0)));
+  for(const k of pos.keys())if(!c.has(k))return {name:"breeze",err:"carried-over contract "+k+" (no trade today)"};
+  return {name:"breeze",r,u};
 };
-brokers.splice(1,0,ant()); // table order: kite, ant, prism, breeze
-brokers.push(breeze());
-const f=n=>(n<0?"-":"")+Math.abs(Math.round(n)).toLocaleString("en-US");
+const brokers=[kite(),ant(),prism(),breeze()];
+// users row: real frontend users (emails), same source as `status users`. Realized from the user rows, unrealized from the one ?detail=1 snapshot.
+const users=()=>{
+  const uu=parse(process.env.UU),ud=parse(process.env.UD);
+  if(!Array.isArray(uu)||!Array.isArray(ud))return {name:"users",err:"cannot be computed: /strategyPnl unavailable"};
+  const real=ud.filter(d=>d.broker!=="paper");
+  return {name:"users",r:sum(uu,x=>num(x.realized)),u:sum(real,d=>num(d.unrealized))};
+};
+const f=n=>(n<0?"-":"")+Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 const pad=(t,w)=>String(t).padStart(w);
 let R=0,U=0;const bad=[];
-console.log("BROKER   "+pad("REALIZED",12)+pad("UNREALIZED",12)+pad("TOTAL",12));
+console.log("BROKER   "+pad("REALIZED",14)+pad("UNREALIZED",14)+pad("TOTAL",14));
 for(const x of brokers){
-  if(x.r===undefined){const e=x.err||"positions unavailable";console.log(x.name.padEnd(8)+"  ERROR: "+e);bad.push(x.name+" ("+e+")");continue}
+  if(x.r===undefined){console.log(x.name.padEnd(8)+"  ERROR: "+x.err);bad.push(x.name+" ("+x.err+")");continue}
   R+=x.r;U+=x.u;
-  console.log(x.name.padEnd(8)+"  "+pad(f(x.r),12)+pad(f(x.u),12)+pad(f(x.r+x.u),12));
+  console.log(x.name.padEnd(8)+"  "+pad(f(x.r),14)+pad(f(x.u),14)+pad(f(x.r+x.u),14));
 }
-console.log("TOTAL   "+"  "+pad(f(R),12)+pad(f(U),12)+pad(f(R+U),12));
+console.log("TOTAL   "+"  "+pad(f(R),14)+pad(f(U),14)+pad(f(R+U),14));
+const us=users();
+console.log(us.r===undefined?"users*    ERROR: "+us.err:"users*    "+pad(f(us.r),14)+pad(f(us.u),14)+pad(f(us.r+us.u),14));
+console.log("* users = real frontend users (emails), trades opened "+(process.env.OPENED==="all"?"today or earlier":"today")+"; already inside the broker books above, NOT added to TOTAL / NET.");
 console.log("");
 console.log("NET "+f(R+U)+(bad.length?"  (EXCLUDES "+bad.join(", ")+")":""));'
   exit 0
