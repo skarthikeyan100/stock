@@ -19,6 +19,7 @@ function assert(condition: boolean, message: string) {
 
 let calls: { fn: string; args: any[] }[] = [];
 let attachFails = false;
+let optionLtp: number | Error = 118; // within the default entryTolerance (10) of the Recommendation entry 120
 const fake: any = new Proxy({}, {
     get: (_t, fn: string) => async (...args: any[]) => {
         calls.push({ fn, args });
@@ -26,7 +27,7 @@ const fake: any = new Proxy({}, {
             case 'resolveOptionContract': return { tsym: `NIFTY${args[1].strike}${args[1].right}`, token: 'T1', exchange: 'NFO' };
             case 'placeLimitBuyBare': return { orderId: 'B1' };
             case 'brokerPlaceLimitSellBare': return { orderId: 'S1' };
-            case 'getOptionLtp': return 100;
+            case 'getOptionLtp': if (optionLtp instanceof Error) throw optionLtp; return optionLtp;
             case 'getOrderPrice': return { price: 100, bid: 100, ask: 100.05, ltp: 100, spread: 0.05 };
             case 'attachProtection': if (attachFails) throw new Error('no protection primitive'); return { mode: 'gtt', gttTriggerId: 7 };
             case 'cancelRestingLimitBuys': case 'cancelRestingLimitSells': return { filledQty: 0, cancelFailed: false };
@@ -94,6 +95,57 @@ const last = (fn: string) => calls.filter((c) => c.fn === fn).pop();
     rec = make(RecommendationStrategy, recCfg); rec.enabled = false;
     await rec.processNiftyQuote({ ltp: 22700 });
     assert(calls.length === 0, 'disabled strategy places nothing');
+
+
+    console.log('RecommendationStrategy entryTolerance');
+    const placed = () => calls.filter((c) => c.fn === 'placeLimitBuyBare').length;
+    const cfgOf = (id: string, extra: any = {}) => ({ ...recCfg, userId: id, ...extra });
+    const setEnabled: string[] = [];
+    calls = []; optionLtp = 147.65;
+    rec = make(RecommendationStrategy, cfgOf('Rec-t1'));
+    rec.disableBlock = async () => { setEnabled.push('t1'); };
+    await rec.processNiftyQuote({ ltp: 22700 });
+    assert(placed() === 0, 'LTP 147.65 vs entry 120 (default tolerance 10): not placed');
+    assert(rec.cycleStarted(RecommendationStrategy.keyOf(recCfg)) && setEnabled.includes('t1'), 'key recorded and the block is disabled (cycle ended with nothing filled)');
+    await rec.processNiftyQuote({ ltp: 22700 });
+    assert(placed() === 0, 'not retried on the next tick');
+    calls = []; optionLtp = 92;
+    rec = make(RecommendationStrategy, cfgOf('Rec-t2'));
+    rec.disableBlock = async () => {};
+    await rec.processNiftyQuote({ ltp: 22700 });
+    assert(placed() === 0, 'LTP below the entry by more than the tolerance: not placed');
+    calls = []; optionLtp = 130;
+    rec = make(RecommendationStrategy, cfgOf('Rec-t3'));
+    await rec.processNiftyQuote({ ltp: 22700 });
+    assert(placed() === 1, 'LTP exactly at the tolerance (+10): placed');
+    calls = []; optionLtp = 110;
+    rec = make(RecommendationStrategy, cfgOf('Rec-t4'));
+    await rec.processNiftyQuote({ ltp: 22700 });
+    assert(placed() === 1, 'LTP exactly at the tolerance (-10): placed');
+    calls = []; optionLtp = 130.05;
+    rec = make(RecommendationStrategy, cfgOf('Rec-t5'));
+    rec.disableBlock = async () => {};
+    await rec.processNiftyQuote({ ltp: 22700 });
+    assert(placed() === 0, 'LTP 10.05 away: not placed');
+    calls = []; optionLtp = 147.65;
+    rec = make(RecommendationStrategy, cfgOf('Rec-t6', { entryTolerance: 30 }));
+    await rec.processNiftyQuote({ ltp: 22700 });
+    assert(placed() === 1, 'entryTolerance 30 lets LTP 147.65 through');
+    calls = []; optionLtp = 100;
+    rec = make(RecommendationStrategy, cfgOf('Rec-t7', { entryTolerance: 'abc' }));
+    await rec.processNiftyQuote({ ltp: 22700 });
+    assert(placed() === 0, 'a non-numeric entryTolerance is an invalid recommendation: not placed');
+    calls = []; optionLtp = new Error('no quote');
+    rec = make(RecommendationStrategy, cfgOf('Rec-t8'));
+    await rec.processNiftyQuote({ ltp: 22700 });
+    assert(placed() === 1, 'LTP unreadable: placed as before');
+    calls = []; optionLtp = 147.65;
+    rec = make(RecommendationStrategy, cfgOf('Rec-t9', { brokers: ['kite', 'breeze'] }));
+    rec.disableBlock = async () => {};
+    await rec.processNiftyQuote({ ltp: 22700 });
+    assert(placed() === 0, 'two brokers, LTP far from the entry: neither is placed');
+    optionLtp = 118;
+    for (const id of ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8', 't9']) { try { require('fs').unlinkSync(`/tmp/limit-entry-test-Rec-${id}-${process.pid}.json`); } catch { /* none */ } }
 
     console.log('NiftyChangeStrategy');
     NiftyChangeStrategy.processStartedAt = moment().subtract(1, 'hour');

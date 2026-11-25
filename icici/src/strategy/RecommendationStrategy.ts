@@ -12,6 +12,8 @@ import { isGlobalMaxProfitLatched } from './globalMaxProfitLatch';
 import { normalizeBrokerName } from '../util/brokerName';
 import { RecState, RecWatch, atmStrike, backAtEntry, hitTarget, nextAction, oppositeRight } from './recommendationCycle';
 
+const DEFAULT_ENTRY_TOLERANCE = 10; // option-price points
+
 // Trades one analyst recommendation given in config.yml: a contract ("22750 CE"), an entry price, a target and a stop loss.
 // Places a LIMIT buy at (entryPrice - entryOffset) on every configured broker, sized from maxInvestment (the amount PER
 // broker, maxInvestmentByBroker overrides one broker), and once it fills attaches the target and stop loss:
@@ -32,6 +34,9 @@ import { RecState, RecWatch, atmStrike, backAtEntry, hitTarget, nextAction, oppo
 //   (the buy fills at or below the order price, so the exits are placed at fill + targetDistance / fill - stopDistance, not at the raw prices)
 //   maxInvestment: 100000   - rupee budget per broker
 //   entryOffset: 5                - default 5
+//   entryTolerance: 10            - option-price points, default 10: when the contract's LTP at placing time is MORE than this away from entryPrice (above or
+//                                   below) nothing is placed (ALERT) and the recommendation ends like an unfilled entry (block set to enabled: false, key used).
+//                                   Exactly at the tolerance still places. An LTP that cannot be read does not block. Not part of the recommendation key.
 //   index: NIFTY                  - default NIFTY
 //   brokers: [kite]
 //   repeat: false                 - true: after the trade SELLS AT ITS TARGET, buy the same contract again at the same order price (entryPrice - entryOffset), same
@@ -111,8 +116,10 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         const budget = resolveMaxInvestment(cfg);
         const offset = cfg.entryOffset == null ? 5 : Number(cfg.entryOffset);
         const orderPrice = roundToTick(entryPrice - offset);
+        const tolerance = cfg.entryTolerance == null ? DEFAULT_ENTRY_TOLERANCE : Number(cfg.entryTolerance);
         const problem = !parsed ? `contract '${cfg.contract}' is not like '22750 CE'`
             : !(entryPrice > 0 && target > 0 && stop > 0 && budget > 0 && Number.isFinite(offset) && offset >= 0) ? 'entryPrice, targetPrice, stopLoss and maxInvestment must be positive numbers'
+            : !(Number.isFinite(tolerance) && tolerance >= 0) ? `entryTolerance (${cfg.entryTolerance}) must be a number >= 0`
             : !(stop < orderPrice && orderPrice < target) ? `need stopLoss (${stop}) < order price (${orderPrice} = entryPrice - entryOffset) < targetPrice (${target})`
             : null;
         const key = RecommendationStrategy.keyOf(cfg);
@@ -133,10 +140,17 @@ export default class RecommendationStrategy extends LimitEntryStrategy {
         this.state.baseKey = RecommendationStrategy.baseKeyOf(cfg);
         this.state.rec = { stage: 0 };
         await this.startCycle(key, entry, (b) => investmentForBroker(cfg, b), async (c) => {
-            // Logged with the order: a limit buy ABOVE the market fills at the market, and the supplied target/stop were meant for the
-            // entry price (2026-11-02: entry 110 vs LTP 80 filled at 78.85, so target 172 / stop 50 became +93 / -29 from the real cost).
+            // Read before the order: the contract's LTP must be within entryTolerance of the recommended entry, else nothing is placed (returning
+            // a price of 0 makes startCycle skip this broker; when every broker is skipped the cycle ends with nothing filled and the block is
+            // disabled, like an entry cancelled unfilled). An unreadable LTP does not block: the order goes in as before.
+            // Otherwise the LTP is logged with the order: a limit buy ABOVE the market fills at the market, and the supplied target/stop were meant
+            // for the entry price (2026-11-02: entry 110 vs LTP 80 filled at 78.85, so target 172 / stop 50 became +93 / -29 from the real cost).
             try {
                 const ltp = await OrderClient.getInstance().getOptionLtp(this.userId, { tradingSymbol: c.tsym, token: c.token, exchange: c.exchange });
+                if (ltp > 0 && Math.round(Math.abs(ltp - entryPrice) * 100) / 100 > tolerance) {
+                    Log.log(`[${this.logTag}] ALERT: ${c.tsym} LTP ${ltp} is more than ${tolerance} away from the recommended entry ${entryPrice} - entry not placed`);
+                    return 0;
+                }
                 if (ltp > 0 && orderPrice > ltp) {
                     Log.log(`[${this.logTag}] ALERT: ${c.tsym} LTP ${ltp} is BELOW the order price ${orderPrice}: the buy will fill at about the LTP, not at ${orderPrice}, so the target (+${target - entryPrice}) and stop (-${entryPrice - stop}) distances from the entry ${entryPrice} are applied to the real fill automatically (rebased on fill)`);
                 } else if (ltp > 0) {

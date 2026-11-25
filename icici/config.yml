@@ -335,6 +335,7 @@ strategies:
     targetPrice: 150
     stopLoss: 110
     entryOffset: 5
+    entryTolerance: 10
     maxInvestment: 100000
     index: NIFTY
     brokers:
