@@ -152,7 +152,7 @@ async function main() {
     assert(validateConfigFile(blk({ brokers: ['nosuchbroker'] })).some((e) => e.includes('unknown broker')), 'an unknown broker in brokers is rejected');
     assert(validateConfigFile(blk({ brokers: ['kite'], broker: 'kite' })).some((e) => e.includes('REMOVED')), 'the removed broker: key is rejected');
     assert(validateConfigFile(blk({ enabled: false, brokers: undefined })).length === 0, 'a disabled block without brokers is exempt');
-    for (const type of ['SimpleContinuousStrategy', 'ScaledHedgedStrategy']) {
+    for (const type of ['SimpleContinuousStrategy', 'ScaledHedgedStrategy', 'ExperimentalScaledStrategy']) {
         const sc = (over: Record<string, any>, settings: Record<string, any>) => blk({ type, maxInvestment: 100000, ...over }, settings);
         assert(validateConfigFile(sc({ brokers: ['kite', 'ant'] }, { maxProfit: 5000 })).filter((e) => e.includes('maxProfit')).length === 0,
             `${type} with no own maxProfit is accepted when settings.maxProfit is a number`);
@@ -162,6 +162,10 @@ async function main() {
         assert(validateConfigFile(sc({ brokers: ['kite', 'ant'], maxProfit: 4000 }, {})).filter((e) => e.includes('maxProfit')).length === 0,
             `${type} with its own maxProfit needs no global cap`);
     }
+    assert(validateConfigFile(blk({ type: 'ExperimentalScaledStrategy', maxInvestment: 100000, priceDiff: 10, initialQuantity: undefined }, { maxProfit: 5000 })).some((e) => e.includes('ExperimentalScaledStrategy.initialQuantity is required')),
+        'ExperimentalScaledStrategy requires initialQuantity like ScaledHedgedStrategy');
+    assert(validateConfigFile(blk({ type: 'ExperimentalScaledStrategy', maxInvestment: 100000, priceDiff: 10, initialQuantity: 130, maxProfit: '10%' }, {})).some((e) => e.includes('maxProfit must be a positive number of rupees')),
+        'ExperimentalScaledStrategy.maxProfit is rupees, a percent is rejected');
     for (const key of ['repeat', 'reverse']) {
         assert(validateConfigFile(blk({ type: 'RecommendationStrategy', [key]: true }, {})).every((e) => !e.includes(`${key} must be`)), `RecommendationStrategy.${key}: true is accepted`);
         assert(validateConfigFile(blk({ type: 'RecommendationStrategy', [key]: 'yes' }, {})).some((e) => e.includes(`RecommendationStrategy.${key} must be true or false`)), `RecommendationStrategy.${key}: 'yes' is rejected`);

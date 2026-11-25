@@ -18,7 +18,7 @@ import type { Strategy } from '../../strategy/strategy';
 // (never the live bid) - and no new buy of that strategy on that broker is placed for the rest of the day (the latch is durable in Mongo, see
 // globalMaxProfitLatch.ts, and enforced by the order process in bookkeeping.canPlaceOrder). A disabled strategy is never touched.
 const OWN_MAX_PROFIT = new Set([
-    'ContinuousStrategy', 'SupportResistanceStrategy', 'BulkPcrStrategy', 'BulkPcrAutoStartStrategy', 'SimpleContinuousStrategy', 'ScaledHedgedStrategy',
+    'ContinuousStrategy', 'SupportResistanceStrategy', 'BulkPcrStrategy', 'BulkPcrAutoStartStrategy', 'SimpleContinuousStrategy', 'ScaledHedgedStrategy', 'ExperimentalScaledStrategy',
 ]);
 // Strategy types whose block `maxProfit` is an AMOUNT IN RUPEES (per broker, same unit as the global cap): it replaces settings.maxProfit for that
 // block. For every other type a numeric block maxProfit is a percent of maxInvestment (configValidation), never read here as rupees.

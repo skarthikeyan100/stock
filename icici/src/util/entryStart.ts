@@ -1,4 +1,4 @@
-// settings.entryStartTime (config.yml, 'HH:mm'): the one earliest time a strategy that honours it may open a NEW position (ScaledHedgedStrategy,
+// settings.entryStartTime (config.yml, 'HH:mm'): the one earliest time a strategy that honours it may open a NEW position (ScaledHedgedStrategy, ExperimentalScaledStrategy,
 // HighLowStrategy). Global only: configValidation rejects it on a strategy block. Missing = the strategy's own default (no extra limit for
 // HighLow, 10:00 for ScaledHedged). Exits, hedges already due and the EOD close never wait for it.
 import configService from '../prism/ConfigService';

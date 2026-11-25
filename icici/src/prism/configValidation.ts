@@ -245,7 +245,7 @@ export function validateNumericRanges(label: string, obj: Record<string, any>): 
         }
     }
 
-    // entryStartTime: global only ('HH:mm', 24-hour): earliest new entry for ScaledHedgedStrategy and HighLowStrategy.
+    // entryStartTime: global only ('HH:mm', 24-hour): earliest new entry for ScaledHedgedStrategy, ExperimentalScaledStrategy and HighLowStrategy.
     if (obj.entryStartTime != null) {
         if (label !== 'settings') {
             errors.push(`${label}.entryStartTime is a global setting - move it to settings.entryStartTime`);
@@ -339,7 +339,7 @@ export function validateConfigFile(parsed: any): string[] {
         }
         // Same reasoning for the other strategies that size a live order from their own config: a missing quantity used to fall back to a
         // hidden 65 (a NIFTY lot) - wrong for a SENSEX Butterfly (lot 20) and for any size the operator never chose.
-        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'], ScaledHedgedStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'] };
+        const requiredByType: Record<string, string[]> = { HourlyStrategy: ['quantity'], ButterflyStrategy: ['quantity', 'targetPoints', 'stopLossPoints'], SimpleContinuousStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'], ScaledHedgedStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'], ExperimentalScaledStrategy: ['initialQuantity', 'maxInvestment', 'priceDiff'] };
         // Strategies that take their target and stop from the global exits: each must be set in the block or in settings (a value or 'none').
         // An absent key is refused rather than read as "no stop" (strategies/exitRules.ts).
         if (s.type === 'RuleBasedStrategy' || s.type === 'MomentumAtFixedTimeStrategy' || s.type === 'NextWeekStrategy' || s.type === 'BreakoutStrategy' || s.type === 'HighLowStrategy' || s.type === 'ExpiryStrategy') {
@@ -412,12 +412,12 @@ export function validateConfigFile(parsed: any): string[] {
         }
         // maxProfit is an AMOUNT in rupees for SimpleContinuous (the other strategies' maxProfit is a percent of maxInvestment): a '%' string
         // or a non-positive number is rejected, and the key is required (no default in code).
-        if ((s.type === 'SimpleContinuousStrategy' || s.type === 'ScaledHedgedStrategy' || s.type === 'ExpiryStrategy') && s.maxProfit !== undefined && !(typeof s.maxProfit === 'number' && Number.isFinite(s.maxProfit) && s.maxProfit > 0)) {
+        if ((s.type === 'SimpleContinuousStrategy' || s.type === 'ScaledHedgedStrategy' || s.type === 'ExperimentalScaledStrategy' || s.type === 'ExpiryStrategy') && s.maxProfit !== undefined && !(typeof s.maxProfit === 'number' && Number.isFinite(s.maxProfit) && s.maxProfit > 0)) {
             errors.push(`${s.type}.maxProfit must be a positive number of rupees, not a percent (got ${JSON.stringify(s.maxProfit)})`);
         }
         // (ExpiryStrategy: the block's maxProfit is the rupee cap the global monitor uses instead of settings.maxProfit; optional there.)
         // Their maxProfit is the block's own value, or else settings.maxProfit (one number of rupees) must be set: one error per block.
-        if ((s.type === 'SimpleContinuousStrategy' || s.type === 'ScaledHedgedStrategy') && s.maxProfit === undefined) {
+        if ((s.type === 'SimpleContinuousStrategy' || s.type === 'ScaledHedgedStrategy' || s.type === 'ExperimentalScaledStrategy') && s.maxProfit === undefined) {
             const g = parsed.settings?.maxProfit;
             if (!(typeof g === 'number' && Number.isFinite(g) && g > 0)) errors.push(`${s.type}.maxProfit is not set in the block and settings.maxProfit is not a positive number of rupees`);
         }

@@ -11,6 +11,7 @@ import TargetReachStrategy from './TargetReachStrategy';
 import ContinuousStrategy from './ContinuousStrategy';
 import SimpleContinuousStrategy from './SimpleContinuousStrategy';
 import ScaledHedgedStrategy from './ScaledHedgedStrategy';
+import ExperimentalScaledStrategy from './ExperimentalScaledStrategy';
 import BulkPcrStrategy from './BulkPcrStrategy';
 import BulkPcrAutoStartStrategy from './BulkPcrAutoStartStrategy';
 import TopStockOptionsOpeningGapStrategy from './TopStockOptionsOpeningGapStrategy';
@@ -52,6 +53,7 @@ STRATEGY_REGISTRY.set('ExpiryStrategy', ExpiryStrategy);
 STRATEGY_REGISTRY.set('HighLowStrategy', HighLowStrategy);
 STRATEGY_REGISTRY.set('SimpleContinuousStrategy', SimpleContinuousStrategy);
 STRATEGY_REGISTRY.set('ScaledHedgedStrategy', ScaledHedgedStrategy);
+STRATEGY_REGISTRY.set('ExperimentalScaledStrategy', ExperimentalScaledStrategy);
 
 export function createStrategy(config: StrategyInstanceConfig): Strategy | null {
     const StrategyClass = STRATEGY_REGISTRY.get(config.type);

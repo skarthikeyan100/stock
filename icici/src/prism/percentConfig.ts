@@ -76,7 +76,7 @@ export function formatPercentFields<T extends Record<string, any>>(obj: T): T {
         // maxProfit is an amount in rupees for SimpleContinuousStrategy (validation rejects a '%' there): writing "20000%" back made
         // config.yml invalid after any config write (2026-11-11 12:14, the Recommendation block switching itself off), so a new process
         // could not start.
-        if (key === 'maxProfit' && (out.type === undefined || out.type === 'SimpleContinuousStrategy' || out.type === 'ScaledHedgedStrategy' || out.type === 'ExpiryStrategy')) continue; // ExpiryStrategy's block maxProfit is rupees as well (configValidation, globalMaxProfit RUPEE_BLOCK_MAX_PROFIT) // out.type undefined = the settings block: settings.maxProfit is rupees too
+        if (key === 'maxProfit' && (out.type === undefined || out.type === 'SimpleContinuousStrategy' || out.type === 'ScaledHedgedStrategy' || out.type === 'ExperimentalScaledStrategy' || out.type === 'ExpiryStrategy')) continue; // ExpiryStrategy's block maxProfit is rupees as well (configValidation, globalMaxProfit RUPEE_BLOCK_MAX_PROFIT) // out.type undefined = the settings block: settings.maxProfit is rupees too
         const n = toPercentNumber(out[key]);
         if (n !== null) out[key] = `${n}%`;
     }

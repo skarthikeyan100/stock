@@ -62,6 +62,7 @@ src/tools/gapscreener/*.csv
 .NiftyChangeStrategy.*.json
 .SimpleContinuousStrategy.*.json
 .ScaledHedgedStrategy.*.json
+.ExperimentalScaledStrategy.*.json
 .BreakoutStrategy.*.json
 .NextWeekStrategy.*.json
 .MomentumAtFixedTimeStrategy.*.json

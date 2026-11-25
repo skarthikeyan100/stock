@@ -32,7 +32,7 @@ export class Settings {
     storeTicks?: boolean
     /** 'HH:mm': the one end-of-day close time for every strategy (never a per-strategy key) */
     eodCloseTime?: string
-    /** 'HH:mm': earliest time ScaledHedgedStrategy (default 10:00) and HighLowStrategy (default no limit) may open a new position */
+    /** 'HH:mm': earliest time ScaledHedgedStrategy and ExperimentalScaledStrategy (default 10:00) and HighLowStrategy (default no limit) may open a new position */
     entryStartTime?: string
     /** 'HH:mm' (default 15:45, at or after the close): when the end-of-day broker -> Mongo sync runs; `npm run sync` runs it on demand */
     eodReconcileTime?: string
