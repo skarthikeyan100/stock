@@ -35,6 +35,8 @@ class AntDataStream implements DataStream {
     private readonly futVwap = new FutVwapTracker();
     private futTicks = 0;
     private firstFutTickLogged = false;
+    private futDay = '';
+    private readonly FUT_SESSION_START_SEC = 9 * 3600 + 15 * 60; // 09:15 local (IST in production): the VWAP starts with the first tick of the session
     private firstFutTickAt = 0;
     private lastFutTickAt = 0;
     private lastFutHeartbeatAt = 0;
@@ -236,6 +238,8 @@ class AntDataStream implements DataStream {
                 this.firstFutTickLogged = false;
                 this.firstFutTickAt = 0;
             }
+            // A reconnect (the future's ticks stopped with the old socket): restart the silence clock so it does not fire on the gap.
+            if (this.firstFutTickAt > 0) this.lastFutTickAt = Date.now();
             this.futToken = fut.token;
             this.futSymbol = fut.tradingSymbol;
             Log.log(`[VWAP-FEED] subscribing NIFTY future ${fut.tradingSymbol} token ${fut.token} (expires ${new Date(fut.expiryMs).toISOString().slice(0, 10)}) for VWAP`);
@@ -252,6 +256,10 @@ class AntDataStream implements DataStream {
     private onFutTick(data: any): void {
         const now = Date.now();
         const day = localDayKey();
+        // Pre-open ticks (ap=0, auction volume, call-auction price) must not seed the VWAP or raise feed alerts: nothing is recorded until 09:15.
+        const d = new Date(now);
+        if (d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds() < this.FUT_SESSION_START_SEC) return;
+        if (day !== this.futDay) { this.futDay = day; this.firstFutTickLogged = false; this.firstFutTickAt = 0; this.futTicks = 0; }
         this.lastFutTickAt = now;
         this.futTicks++;
         if (!this.firstFutTickLogged) {
