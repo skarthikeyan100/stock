@@ -294,7 +294,12 @@ export async function cancelAndRecheck(params: {
         Log.log(`[order] ${params.label}: ${params.orderId} filled (qty=${filledQuantity}) in the cancel race window - leaving tracked so the next poll records the fill`);
         throw new OrderAlreadyFilledError(params.orderId, filledQuantity);
     }
-    if (cancelFailed) throw cancelError;
+    // cancel() failed but the recheck shows the order FINAL (terminal) with nothing filled: it was already cancelled/rejected before
+    // our cancel ran (e.g. the placing path's own timeout cancel, live 2026-11-25 10:20 Breeze 'Modification/Cancellation of Order is
+    // not possible: Please verify the order status'). It is confirmed not live, so this is a successful cancel, not a failure
+    // (cancelFailed && !terminal already threw above; a filled order threw OrderAlreadyFilledError). An unreadable status never gets
+    // here: the recheck throwing rethrows the cancel error (fail-closed).
+    if (cancelFailed) Log.log(`[order] ${params.label}: cancel of ${params.orderId} failed but the broker shows it final with 0 filled (already cancelled/rejected) - treating as cancelled`);
     // A partial fill that happened while the cancel was being processed may not be visible in the first read after it: look once more
     // before untracking, or the tracker (which would book the partial from the CANCELLED status) never sees it.
     await sleep(1500);

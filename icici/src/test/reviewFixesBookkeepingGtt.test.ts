@@ -93,6 +93,22 @@ async function main() {
     err = undefined;
     try { await cancelAndRecheck({ orderId: 'o3', label: 't', cancel: async () => {}, isFilled: async () => { throw new Error('first'); }, untrack: () => {} }); } catch (e) { err = e; }
     assert(!!err && err.message === 'first', 'first read failure is still rethrown');
+    // cancel failed because the order was already cancelled (final, 0 filled): a successful cancel, untracked
+    untracked = false; err = undefined;
+    try { await cancelAndRecheck({ orderId: 'o4', label: 't', cancel: async () => { throw new Error('Order cannot be cancelled'); }, isFilled: async () => ({ filledQuantity: 0, terminal: true }), untrack: () => { untracked = true; } }); } catch (e) { err = e; }
+    assert(!err && untracked, 'cancel failed + order final with 0 filled = already cancelled, not a failure');
+    // cancel failed and the order is still open: still a failure
+    err = undefined;
+    try { await cancelAndRecheck({ orderId: 'o5', label: 't', cancel: async () => { throw new Error('cancel boom'); }, isFilled: async () => ({ filledQuantity: 0, terminal: false }), untrack: () => {} }); } catch (e) { err = e; }
+    assert(!!err && err.message === 'cancel boom', 'cancel failed + still open stays a failure');
+    // cancel failed and the status cannot be read: fail-closed with the cancel error
+    err = undefined;
+    try { await cancelAndRecheck({ orderId: 'o6', label: 't', cancel: async () => { throw new Error('cancel boom'); }, isFilled: async () => { throw new Error('net'); }, untrack: () => {} }); } catch (e) { err = e; }
+    assert(!!err && err.message === 'cancel boom', 'cancel failed + unreadable status stays a failure');
+    // cancel failed but the order had filled (partial) before it went final: booked via OrderAlreadyFilledError
+    err = undefined;
+    try { await cancelAndRecheck({ orderId: 'o7', label: 't', cancel: async () => { throw new Error('cancel boom'); }, isFilled: async () => ({ filledQuantity: 65, terminal: true }), untrack: () => {} }); } catch (e) { err = e; }
+    assert(err instanceof OrderAlreadyFilledError && err.filledQuantity === 65, 'cancel failed + partial fill propagates the fill');
 
     // 4. withSellLock
     let release!: () => void;
