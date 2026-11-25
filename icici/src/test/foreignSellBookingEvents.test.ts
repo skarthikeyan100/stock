@@ -120,7 +120,7 @@ async function main() {
     pending = [{ orderId: 'PEND1', userId: 'ContinuousStrategy', tradingSymbol: TS, action: 'Sell', quantity: 65 }];
     assert(await bookkeeping.noteBrokerOrderEvent('kite', { orderId: 'PEND1', side: 'Sell', tsym: TS, filled: true }) === false, 'a tracked pending order is not foreign');
     pending = [];
-    b.processedFillIds.add('BOOKED1');
+    b.processedFillIds.add('kite|BOOKED1');
     assert(await bookkeeping.noteBrokerOrderEvent('kite', { orderId: 'BOOKED1', side: 'Sell', tsym: TS, filled: true }) === false, 'an already booked order is not foreign');
     await sleep(100);
     assert(runLog.length === 0, 'none of those triggered a check');

@@ -361,7 +361,11 @@ class OrderBookkeeping {
     private drawdownBreachListeners: DrawdownBreachListener[] = [];
 
     /** True when this broker order id was already booked (or is being booked) in this process. */
-    isFillProcessed(orderId: string): boolean { return this.processedFillIds.has(orderId); }
+    // Fill-identity key. Broker order ids are only unique WITHIN a broker: ANT (Alice Blue) and Shoonya/Prism both issue Noren-style numbers
+    // (live 2026-11-25: ANT buy 26112500161991 collided with a Prism buy of another contract stored at 11:17, so the ANT fill was dropped as
+    // 'already stored in Mongo' and never registered in memory). Every fill dedupe set/lookup is therefore scoped by broker.
+    private fk(broker: string | undefined, id: string | number): string { return `${broker ?? 'kite'}|${id}`; }
+    isFillProcessed(orderId: string, broker: string = 'kite'): boolean { return this.processedFillIds.has(this.fk(broker, orderId)); }
 
     onFill(listener: FillListener) {
         this.fillListeners.push(listener);
@@ -1299,7 +1303,8 @@ class OrderBookkeeping {
         try {
             const db = Mongo.getInstance()?.db;
             if (!db || !tradeEvent.brokerOrderId) return false;
-            const hit = await db.collection('Trade').findOne({ brokerOrderId: tradeEvent.brokerOrderId, action: tradeEvent.action }, { projection: { _id: 1 } });
+            // Scoped to the broker (a doc written before the broker field existed has none and still matches).
+            const hit = await db.collection('Trade').findOne({ brokerOrderId: tradeEvent.brokerOrderId, action: tradeEvent.action, broker: { $in: [tradeEvent.broker ?? 'kite', null] } }, { projection: { _id: 1 } });
             return !!hit;
         } catch (e) {
             Log.log('[order] fillAlreadyStored: Mongo lookup failed (treating as not stored):', tradeEvent.brokerOrderId, e);
@@ -1326,7 +1331,7 @@ class OrderBookkeeping {
                 // A redelivery of a Sell this process already claimed or booked (a duplicate with a bad price) must not be parked: nothing could ever
                 // clear that entry (the Sell is booked), giving a false 'NOT booked' ALERT and a trade-book sync until restart.
                 const dupId = tradeEvent.brokerOrderId;
-                if (dupId != null && (this.processedFillIds.has(dupId) || this.bookedFillIds.has(String(dupId)))) {
+                if (dupId != null && (this.processedFillIds.has(this.fk(tradeEvent.broker, dupId)) || this.bookedFillIds.has(String(dupId)))) {
                     Log.log(`[order] Ignoring redelivered Sell for broker order ${dupId} (${tradeEvent.tsym}) with unusable price ${tradeEvent.price} - already processed, not parked`);
                     return;
                 }
@@ -1343,29 +1348,30 @@ class OrderBookkeeping {
         }
         let skipInsert = false;
         const id = tradeEvent.brokerOrderId;
+        const key = id ? this.fk(tradeEvent.broker, id) : '';
         // Paper broker (in-memory only): nothing is read from or written to Mongo; the id is still claimed so a redelivered fill is ignored.
         const paper = tradeEvent.broker === 'paper';
         if (id && paper) {
-            if (this.processedFillIds.has(id)) { this.clearParkedSellById(tradeEvent); return; }
-            this.processedFillIds.add(id);
+            if (this.processedFillIds.has(key)) { this.clearParkedSellById(tradeEvent); return; }
+            this.processedFillIds.add(key);
         } else if (id) {
-            if (this.processedFillIds.has(id)) {
+            if (this.processedFillIds.has(key)) {
                 Log.log(`[order] Ignoring redelivered fill for broker order ${id} (${tradeEvent.tsym}) - already processed`);
                 this.clearParkedSellById(tradeEvent);
                 return;
             }
             // Claim the id BEFORE the first await: the Mongo lookup below yields, and two concurrent deliveries of the same
             // order (exit path + poller) would otherwise both pass has() and both book it.
-            this.processedFillIds.add(id);
+            this.processedFillIds.add(key);
             try {
                 // Let an in-flight raw-doc insert for this order settle so the lookup below does not race the write (bounded: a hung
                 // driver call must not wedge the claimed id).
-                const inflight = this.pendingFillInserts.get(id);
+                const inflight = this.pendingFillInserts.get(key);
                 if (inflight) await Promise.race([inflight, new Promise((r) => setTimeout(r, 5000))]);
                 // processedFillIds dies with the process; the raw fill doc does not. A restart used to forget it, so the same broker
                 // order was booked a second time (real 2026-10-27: one Kite sell sat in Mongo under two users).
                 if (await this.fillAlreadyStored(tradeEvent)) {
-                    if (!this.failedBookingFillIds.has(id)) {
+                    if (!this.failedBookingFillIds.has(key)) {
                         // The stored raw doc does not prove THIS process's memory was reduced (the restore never replaces a tracked row), so a
                         // parked entry is cleared here ONLY when bookedFillIds has the id (a restore never adds ids); otherwise it stays until booked or flat.
                         this.clearParkedSellById(tradeEvent);
@@ -1380,7 +1386,7 @@ class OrderBookkeeping {
                 // in the same call that placed them.
                 recordOrderOwner(id, tradeEvent.user, tradeEvent.broker ?? 'kite');
             } catch (e) {
-                this.processedFillIds.delete(id);
+                this.processedFillIds.delete(key);
                 throw e;
             }
         }
@@ -1394,12 +1400,12 @@ class OrderBookkeeping {
             // Not booked in memory: release the id so a retry is processed instead of silently dropped as a duplicate, and
             // remember that the raw doc may already exist so the retry does not mistake it for a completed booking.
             if (id) {
-                this.processedFillIds.delete(id);
-                this.failedBookingFillIds.add(id);
+                this.processedFillIds.delete(key);
+                this.failedBookingFillIds.add(key);
             }
             throw e;
         }
-        if (id) { this.failedBookingFillIds.delete(id); if (tradeEvent.action === 'Sell' && hadRow) this.markSellBooked(id); }
+        if (id) { this.failedBookingFillIds.delete(key); if (tradeEvent.action === 'Sell' && hadRow) this.markSellBooked(id); }
         // Newly booked (every duplicate / already-stored path returned above): only now may a parked Sell be cleared.
         if (tradeEvent.action === 'Sell') this.clearParkedSells(tradeEvent, hadRow);
         // One throwing listener must not skip the rest (the strategy notification) after the position is already booked.
@@ -1421,11 +1427,11 @@ class OrderBookkeeping {
     async recordShortFill(tradeEvent: Trade): Promise<void> {
         this.rollPnlDay();
         if (tradeEvent.brokerOrderId) {
-            if (this.processedFillIds.has(tradeEvent.brokerOrderId)) {
+            if (this.processedFillIds.has(this.fk(tradeEvent.broker, tradeEvent.brokerOrderId))) {
                 Log.log(`[order] Ignoring redelivered short fill for broker order ${tradeEvent.brokerOrderId} (${tradeEvent.tsym}) - already processed`);
                 return;
             }
-            this.processedFillIds.add(tradeEvent.brokerOrderId);
+            this.processedFillIds.add(this.fk(tradeEvent.broker, tradeEvent.brokerOrderId));
         }
         Log.log(`[order] ${tradeEvent.action} (short) ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} status=${tradeEvent.status}`);
         tradeEvent.entryTime = new Date();
@@ -1561,7 +1567,7 @@ class OrderBookkeeping {
                 }
             };
             const p = Mongo.getInstance() ? insertWithRetry() : undefined;
-            const oid = tradeEvent.brokerOrderId;
+            const oid = tradeEvent.brokerOrderId ? this.fk(tradeEvent.broker, tradeEvent.brokerOrderId) : undefined;
             if (p && oid) {
                 // Chained with any earlier insert for the same order so a retry waits for all of them, not just the latest.
                 const prior = this.pendingFillInserts.get(oid);
@@ -1669,7 +1675,7 @@ class OrderBookkeeping {
                 // No open position in memory for this Sell, so no closed-trade row is written here. The raw fill is stored; once its insert has
                 // landed, rebuild this contract's closes from the fills (a no-op when Mongo holds no Buy for it, i.e. a foreign sell).
                 Log.log(`[order] ALERT: Sell ${tradeEvent.tsym} qty=${tradeEvent.quantity} price=${tradeEvent.price} (${tradeEvent.user}, ${tradeEvent.broker}) has no open position in memory - the fill is stored; repairing its closed trade from Mongo`);
-                const inserted = tradeEvent.brokerOrderId ? this.pendingFillInserts.get(tradeEvent.brokerOrderId) : undefined;
+                const inserted = tradeEvent.brokerOrderId ? this.pendingFillInserts.get(this.fk(tradeEvent.broker, tradeEvent.brokerOrderId)) : undefined;
                 void Promise.resolve(inserted).catch(() => undefined)
                     .then(() => this.repairClosedTradesFromFills(tradeEvent.broker as BrokerKey, [], { lookbackDays: 1, only: { user: tradeEvent.user as string, tsym: tradeEvent.tsym } }))
                     .catch((e) => Log.log('[order] closed-trade repair after an unmatched Sell failed:', e?.message ?? e));
@@ -2504,10 +2510,10 @@ class OrderBookkeeping {
         let gttOwn = new Set<string>();
         if (broker === 'kite' && this.gttSupport) {
             try { gttOwn = await this.gttSupport.exitOrderIds(); } catch { /* unreadable: the other tests decide */ }
-            const unbooked = Array.from(gttOwn).filter((id) => !this.processedFillIds.has(id));
+            const unbooked = Array.from(gttOwn).filter((id) => !this.processedFillIds.has(this.fk(broker, id)));
             if (unbooked.length > 0) { void this.gttSupport.poll().catch(() => undefined); }
         }
-        const isPlatform = (id: string) => have.keys.has(`Buy|${id}`) || have.keys.has(`Sell|${id}`) || owners.has(id) || this.processedFillIds.has(id) || own(id) || (extraOwn?.(id) ?? false) || gttOwn.has(id);
+        const isPlatform = (id: string) => have.keys.has(`Buy|${id}`) || have.keys.has(`Sell|${id}`) || owners.has(id) || this.processedFillIds.has(this.fk(broker, id)) || own(id) || (extraOwn?.(id) ?? false) || gttOwn.has(id);
         const graceFor = (x: { ts: Trade[] }) => x.ts.some((t) => t.gttTriggerId != null) ? Math.max(opts.graceMs ?? 0, GTT_EXIT_GRACE_MS) : (opts.graceMs ?? 0); // a GTT-triggered exit is booked by the GTT poll: its sell order id is unknown to the platform until then
         return short.map((x) => {
             const maxSellAt = Date.now() - graceFor(x);
@@ -2608,7 +2614,7 @@ class OrderBookkeeping {
         try {
             const id = String(row.orderId ?? '');
             if (!id) return false;
-            if (this.processedFillIds.has(id) || this.orderUserMap.has(id)) return false;
+            if (this.processedFillIds.has(this.fk(broker, id)) || this.orderUserMap.has(id)) return false;
             if (row.fillAt != null && Number.isFinite(row.fillAt) && row.filled) this.eventFillTimes.set(`${broker}|${id}`, row.fillAt);
             const own = (await this.clientOwnOrderTest(broker))(id) || (this.extraOwnOrderTests.get(broker)?.(id) ?? false);
             if (own) return false;
@@ -2738,7 +2744,7 @@ class OrderBookkeeping {
                 const bookedOrders: string[] = [];
                 for (const piece of piecesForShortfall(f.pieces, q)) {
                     const id = piece.orderId;
-                    if (this.processedFillIds.has(id) || await this.fillAlreadyStored({ brokerOrderId: id, action: 'Sell' } as Trade)) continue; // booked before: never twice
+                    if (this.processedFillIds.has(this.fk(broker, id)) || await this.fillAlreadyStored({ brokerOrderId: id, action: 'Sell', broker } as Trade)) continue; // booked before: never twice
                     const target = this.trades.find((t) => t.broker === broker && t.tsym === f.tsym && t.user === users[0] && Number(t.quantity) > 0);
                     if (!target) continue;
                     const qty = Math.min(piece.qty, Number(target.quantity));
@@ -2751,8 +2757,8 @@ class OrderBookkeeping {
                     this.foreignBookedIds.add(id);
                     if (opts.notifyStrategies) await this.recordFill(ev);
                     else {
-                        this.processedFillIds.add(id);
-                        const hadQty = Number(target.quantity) > 0; try { await this._processTradeEvent(ev); if (hadQty) this.markSellBooked(id); } catch (e) { this.processedFillIds.delete(id); throw e; }
+                        this.processedFillIds.add(this.fk(broker, id));
+                        const hadQty = Number(target.quantity) > 0; try { await this._processTradeEvent(ev); if (hadQty) this.markSellBooked(id); } catch (e) { this.processedFillIds.delete(this.fk(broker, id)); throw e; }
                     }
                     booked++;
                     bookedOrders.push(`${id} (${qty} @ ${piece.price.toFixed(2)})`);
@@ -2886,11 +2892,11 @@ class OrderBookkeeping {
             ev.action = 'Sell'; ev.status = 'COMPLETE'; ev.user = target.user; ev.broker = broker; ev.strategy = target.strategy; ev.brokerOrderId = f.orderId;
             recordOrderOwner(f.orderId, ev.user, broker);
             // Claim the id like the sibling foreign-sell sync: a live delivery of the same order must not book it a second time.
-            if (this.processedFillIds.has(f.orderId)) continue;
+            if (this.processedFillIds.has(this.fk(broker, f.orderId))) continue;
             Log.log(`[order] ALERT: EOD sync ${broker}: ${target.user} ${target.tsym} - a Sell of ${qty} @ ${f.price.toFixed(2)} (order ${f.orderId}) is in the broker's own fills but was never booked - booking it now`);
-            this.processedFillIds.add(f.orderId);
+            this.processedFillIds.add(this.fk(broker, f.orderId));
             const hadQty = Number(target.quantity) > 0; // captured before the booking mutates the row
-            try { await this._processTradeEvent(ev); } catch (e) { this.processedFillIds.delete(f.orderId); throw e; }
+            try { await this._processTradeEvent(ev); } catch (e) { this.processedFillIds.delete(this.fk(broker, f.orderId)); throw e; }
             if (hadQty) this.markSellBooked(f.orderId);
             booked++;
         }
