@@ -10,6 +10,7 @@ import { FutVwapTracker } from '../../lib/futVwap';
 import { localDayKey } from '../../strategy/dayKey';
 import { FutQuote, NiftyQuote, OptionQuote, SensexQuote } from '../../model/model';
 import { DataStream } from './DataStream';
+import { getTickStore, fromAntTick } from './TickStore';
 import { RECONNECT_INITIAL_MS, nextReconnectDelayMs, describeConnectError } from './connectRetry';
 
 // data process's own tick source. Adapted from src/ant/AntStream.ts: same ANT
@@ -119,6 +120,7 @@ class AntDataStream implements DataStream {
 
         ws.on('quote', (_event, data) => {
             if (this.ws !== ws) return;
+            this.storeOptionTick(data);
             this.persistQuote(data);
             this.emitTick(data);
         });
@@ -338,6 +340,16 @@ class AntDataStream implements DataStream {
         } catch (e) {
             Log.log('[AntDataStream] emitTick failed:', e);
         }
+    }
+
+    // Tick history (tickHistory): option tokens only. Index, SENSEX and the NIFTY future never get here; nothing in this call can throw into
+    // the tick path or delay it (a push on a bounded array).
+    private storeOptionTick(data: any): void {
+        try {
+            const exch = this.dynamicOptionTokens.get(data.tk) ?? this.dynamicDepthTokens.get(data.tk);
+            if (!exch) return;
+            getTickStore().record(fromAntTick(data, exch, Date.now()));
+        } catch (e) { /* the tick history never affects the feed */ }
     }
 
     private persistQuote(data: any): void {

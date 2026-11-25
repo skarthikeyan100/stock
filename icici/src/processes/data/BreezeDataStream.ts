@@ -4,6 +4,7 @@ import { OptionQuote } from '../../model/model';
 import type { BreezeExchange } from '../../breeze/BreezeContractMaster';
 import { DataStream } from './DataStream';
 import { isPastMarketClose } from '../../util/marketHours';
+import { getTickStore, fromBreezeTick } from './TickStore';
 import { RECONNECT_INITIAL_MS, nextReconnectDelayMs, describeConnectError } from './connectRetry';
 
 // data process's Breeze-native tick source, mirroring AntDataStream.ts's
@@ -252,6 +253,7 @@ class BreezeDataStream implements DataStream {
                 this.lastLoggedAt.set(quote.token, now);
                 Log.log(`[BreezeDataStream] tick token=${quote.token} ltp=${quote.ltp} raw=${JSON.stringify(tick)}`);
             }
+            try { getTickStore().record(fromBreezeTick(tick, quote.token, this.tokenExchange.get(quote.token) ?? 'NFO', now)); } catch (e) { /* the tick history never affects the feed */ }
             this.writeTick({ type: 'option', source: 'breeze', quote });
         } catch (e) {
             Log.log('[BreezeDataStream] emitTick failed:', e, 'raw=', JSON.stringify(tick));

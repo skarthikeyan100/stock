@@ -17,6 +17,7 @@ import { DataStream } from './data/DataStream';
 import ANT from '../ant/ANT';
 import Breeze from '../breeze/Breeze';
 import { DataServer } from './data/DataServer';
+import { getTickStore } from './data/TickStore';
 import { FeedSource, DEFAULT_FEED_SOURCE } from '../ipc/feedSource';
 
 // Entry point for the `data` process. Owns every broker connection actually
@@ -79,7 +80,14 @@ async function main() {
         },
     });
     server.start();
-    process.on('SIGTERM', () => { server.stop(); process.exit(0); });
+    // Tick history of option contracts (settings.storeTicks): starts its own flush timer; Mongo may still be down (retried, never fatal).
+    getTickStore().start();
+    process.on('SIGTERM', () => {
+        server.stop();
+        const done = () => process.exit(0);
+        setTimeout(done, 2000).unref?.(); // flush what is buffered, but never hold the shutdown
+        getTickStore().stop().then(done, done);
+    });
 
     // Not fatal if any of these fail (e.g. no session yet for that broker -
     // `data` typically starts before login completes): the command server

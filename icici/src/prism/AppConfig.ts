@@ -28,6 +28,8 @@ export class Settings {
     trailingDistance = 3
     cooldownSeconds = 60
     logQuotes = false
+    /** false stops the option tick history (Mongo `tickHistory`, 36 h TTL, written by the data process); absent or true = on */
+    storeTicks?: boolean
     /** 'HH:mm': the one end-of-day close time for every strategy (never a per-strategy key) */
     eodCloseTime?: string
     /** 'HH:mm': earliest time ScaledHedgedStrategy (default 10:00) and HighLowStrategy (default no limit) may open a new position */

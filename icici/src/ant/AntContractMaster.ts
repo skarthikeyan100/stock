@@ -411,7 +411,7 @@ class AntContractMaster {
   // Deliberately a linear scan rather than a regex over the trading symbol -
   // the tsym format is ambiguous (expiry-code digits run into the strike,
   // e.g. NIFTY2690124200CE), so the cache is the only reliable source.
-  findByToken(token: string): { token: string; strike: number; optionType: string; exch: string; tradingSymbol: string; lotSize: string; expiryMs: number } | undefined {
+  findByToken(token: string): { token: string; strike: number; optionType: string; exch: string; tradingSymbol: string; lotSize: string; expiryMs: number; symbol: string } | undefined {
     const record = this.loadNFO().find((r) => r.Token === token) || this.loadBFO().find((r) => r.Token === token);
     if (!record) return undefined;
     return {
@@ -422,6 +422,7 @@ class AntContractMaster {
       exch: record.Exch,
       tradingSymbol: tradingSymbolOf(record),
       expiryMs: parseInt(record['Expiry Date']),
+      symbol: record.Symbol,
     };
   }
 

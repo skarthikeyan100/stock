@@ -187,7 +187,19 @@ for r in rows:
 for v in evidence.values(): v.sort()
 
 
+# Option tick history (ticks.json, written by trades-summary-dump.js when tickHistory has the day): the last tick at or before t is the mark.
+import bisect
+TICKS = {}
+if os.path.exists(os.path.join(args.dir, 'ticks.json')):
+    for _ts, _v in load('ticks.json').items():
+        TICKS[_ts] = ([dt.datetime.fromtimestamp(m / 1000, IST).replace(tzinfo=None) for m, _ in _v], [p for _, p in _v])
+
+
 def mark(tsym, since, t, fallback):
+    if tsym in TICKS:
+        ts, ps = TICKS[tsym]
+        i = bisect.bisect_right(ts, t) - 1
+        if i >= 0 and ts[i] >= since: return ps[i]
     px = fallback
     for et, p in evidence.get(tsym, []):
         if et > t: break
